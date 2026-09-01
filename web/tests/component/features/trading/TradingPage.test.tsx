@@ -40,11 +40,11 @@ describe("TradingPage", () => {
 
   afterEach(cleanup);
 
-  it("renders the explicit D truth boundary without claiming execution readiness", async () => {
+  it("renders the execution truth boundary without claiming disabled execution readiness", async () => {
     renderTrading();
 
     expect(await screen.findByRole("heading", { name: "Alpha / Execution" })).toBeVisible();
-    expect(await screen.findByText(/当前边界只输出 engine-neutral/)).toBeVisible();
+    expect(await screen.findByText(/Alpha 只输出 engine-neutral/)).toBeVisible();
     expect(screen.getAllByText("disabled").length).toBeGreaterThan(0);
     expect(screen.getByText("当前 24 小时窗口没有 Observation。")).toBeVisible();
     expect(screen.getByText("当前 24 小时窗口没有 Command。")).toBeVisible();

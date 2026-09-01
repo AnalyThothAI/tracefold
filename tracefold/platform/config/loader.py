@@ -6,6 +6,7 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import SplitResult, quote, urlsplit, urlunsplit
 
 import yaml
 
@@ -126,6 +127,100 @@ def migrate_pre_433c_trading_config(path: Path) -> Path | None:
         raise ValueError("trading_config_cutover_source_changed")
     _replace_private_file(path, rendered)
     return backup_path
+
+
+def migrate_pre_449_postgres_config(path: Path) -> Path | None:
+    """Atomically hard-cut the exact retired multi-login PostgreSQL config."""
+
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("config_path_not_regular_file")
+    original = path.read_bytes()
+    loaded = yaml.safe_load(original)
+    if loaded is None:
+        loaded = {}
+    if not isinstance(loaded, dict):
+        raise ValueError(f"{path.name} must contain a mapping at {path}")
+    current = dict(loaded)
+    storage = _require_mapping(current.get("storage", {}), error_code="postgres_config_cutover_storage_invalid")
+    postgres_value = storage.get("postgres")
+    if not isinstance(postgres_value, Mapping):
+        return None
+    postgres = dict(postgres_value)
+    retired_dsn_keys = {"serve_dsn", "workers_dsn", "migrate_dsn", "nautilus_dsn"}
+    if not retired_dsn_keys.intersection(postgres):
+        return None
+    if "dsn" in postgres or "password_file" in postgres:
+        raise ValueError("postgres_config_cutover_mixed_shape")
+    _require_exact_keys(
+        postgres,
+        allowed={
+            *retired_dsn_keys,
+            "serve_password_file",
+            "workers_password_file",
+            "migrate_password_file",
+            "nautilus_password_file",
+            "connect_timeout_seconds",
+        },
+        error_code="postgres_config_cutover_unknown_key",
+    )
+    required = ("serve_dsn", "workers_dsn", "migrate_dsn")
+    if any(key not in postgres for key in required):
+        raise ValueError("postgres_config_cutover_dsn_missing")
+    parsed = [_parse_legacy_postgres_dsn(postgres[key]) for key in required]
+    if "nautilus_dsn" in postgres:
+        parsed.append(_parse_legacy_postgres_dsn(postgres["nautilus_dsn"]))
+    targets = {(value.scheme, value.hostname, value.port, value.path, value.query, value.fragment) for value in parsed}
+    if len(targets) != 1:
+        raise ValueError("postgres_config_cutover_target_mismatch")
+    selected = parsed[0]
+    host = selected.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if selected.port is not None:
+        host = f"{host}:{selected.port}"
+    dsn = urlunsplit(
+        (
+            selected.scheme,
+            f"{quote('tracefold', safe='')}@{host}",
+            selected.path,
+            selected.query,
+            selected.fragment,
+        )
+    )
+    migrated_postgres = {
+        "dsn": dsn,
+        "password_file": "postgres_database_password",
+        "connect_timeout_seconds": postgres.get("connect_timeout_seconds", 5),
+    }
+    migrated = {**current, "storage": {**storage, "postgres": migrated_postgres}}
+    Settings.model_validate(migrated)
+    rendered = yaml.safe_dump(migrated, sort_keys=False, allow_unicode=True).encode()
+    if path.is_symlink() or path.read_bytes() != original:
+        raise ValueError("postgres_config_cutover_source_changed")
+    backup_path = path.parent / "config.pre-449.yaml"
+    _write_private_backup(backup_path, original)
+    if path.is_symlink() or path.read_bytes() != original:
+        raise ValueError("postgres_config_cutover_source_changed")
+    _replace_private_file(path, rendered)
+    return backup_path
+
+
+def _parse_legacy_postgres_dsn(value: object) -> SplitResult:
+    parsed = urlsplit(str(value or "").strip())
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("postgres_config_cutover_dsn_invalid") from exc
+    if (
+        parsed.scheme not in {"postgres", "postgresql"}
+        or parsed.hostname is None
+        or not parsed.path
+        or parsed.username is None
+        or parsed.password is not None
+    ):
+        raise ValueError("postgres_config_cutover_dsn_invalid")
+    del port
+    return parsed
 
 
 def _require_mapping(value: object, *, error_code: str) -> dict[str, Any]:

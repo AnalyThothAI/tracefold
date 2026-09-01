@@ -90,11 +90,13 @@ payloads are never persisted or echoed. A 2xx reply proves only durable intent
 recording. Telegram delivery failures stay outside the execution callback and
 cannot block protection, exit, or reconciliation.
 
-The dormant Nautilus service is excluded from the default Compose model by the
-explicit `execution` profile and is not a required deployment runtime before
-#433-E. It alone has read-only mounts for the Binance pair. Neither plaintext nor
-path enters PostgreSQL, HTTP, logs, artifacts, or Issues. No execution credential
-is exposed to Workers, Serve, News, RabbitMQ, or public HTTP.
+The Nautilus service is excluded from the default Compose model and remains
+absent while execution is disabled. Canonical paper/live deployment enables
+the explicit `execution` profile and requires Nautilus readiness. It alone has
+read-only mounts for the Binance pair; absent, empty, symlinked, oversized, or
+over-permissive files fail startup. Neither plaintext nor path enters
+PostgreSQL, HTTP, logs, artifacts, or Issues. No execution credential is
+exposed to Workers, Serve, News, RabbitMQ, or public HTTP.
 
 Worker topology, clocks, deadlines, batches, leases, retries, timeouts,
 resource budgets, history limits, product windows/venues, and model

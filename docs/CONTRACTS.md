@@ -39,6 +39,14 @@ and the backup path. Mixed old/new shapes, unknown former fields, non-regular
 config paths, and conflicting backups fail without replacing the active
 config. Subsequent normal init runs are content-idempotent.
 
+The later #449 single-login cutover is the second explicit normal-init
+exception. An exact supported multi-login PostgreSQL mapping is copied
+byte-for-byte to mode-`0600` `config.pre-449.yaml`, then atomically rewritten
+to one `storage.postgres` DSN/password reference for the `tracefold` login.
+Mixed shapes, unknown keys, non-regular paths, and backup conflicts fail before
+replacement. The two migrations run sequentially and each reports only whether
+it changed the config and its backup path.
+
 The configuration schema is exactly the top-level keys `ws_token`, `api`
 (`host`, `port`), `storage.postgres`, `llm`, `news`, and `trading`, each a typed nested
 model with `extra=forbid`. `ws_token` is the HTTP
@@ -238,7 +246,7 @@ delivery consumer settles `terminal/delivery_unavailable`.
   is `BLOCKED/source_stale` and emits no Signal;
 - `execution.mode`: `disabled|paper|live`, default `disabled`;
 - `execution.profile_id` and `execution.account_slot`, cold immutable
-  identities for the future Runtime;
+  identities for the profile-gated Runtime;
 - `execution.credentials.api_key_file` / `api_secret_file`, operator-owned
   Binance USD-M secret references;
 - `control.enabled`, default `false`; when true it requires secure
@@ -249,9 +257,10 @@ delivery consumer settles `terminal/delivery_unavailable`.
 
 Secret-file paths are resolved relative to the operator config directory
 unless absolute. Config and status may report only the resolved path or whether
-it is configured; they never expose secret contents. In #433-D the App Nautilus
-root accepts only `disabled`; `paper` or `live` fails closed as
-`oi_runtime_activation_not_available_before_433e`.
+it is configured; they never expose secret contents. `disabled` constructs no
+TradingNode. `paper` and `live` require secure non-empty files and select the
+same canonical Nautilus owner with Binance `DEMO` and `LIVE` environments,
+respectively.
 
 There is no live symbol, route, quantity, notional, leverage, grant, reservation,
 approval, backend selector, or Intent-acceptance configuration, and no
@@ -272,9 +281,11 @@ committed as exactly one `TradeSignalV1` plus `Case=SIGNAL_EMITTED`; `NO_TRADE`
 creates no Signal. The Signal is venue-neutral and carries no execution
 authority. Legacy binding, Capital, capability, catalog, Intent, order, replay,
 and evidence-clock tables remain queryable only as immutable historical audit
-after `20260901_0341`; #433-D writes only the current
-`trading_operator_intents` / `trading_execution_observations` transport and the
-`0342` append-only notification delivery ledger, never those legacy owners.
+after `20260901_0341`; current execution writes only
+`trading_operator_intents`, append-only `trading_execution_observations`, the
+`0342` append-only notification delivery ledger, immutable profile activations,
+and the generation-fenced `0343` current Runtime projection, never those legacy
+owners.
 
 All database consumers use `storage.postgres.dsn` and `password_file`. Process
 identity is the connection's stable `application_name`; Serve's HTTP pool is
@@ -294,13 +305,16 @@ The fresh-clone operator contract is `make up`. It preflights `uv`, Docker,
 Compose, `curl`, an authenticated GitHub CLI, and daemon access; runs idempotent
 initialization; builds the frontend and backend image; performs fresh-volume role bootstrap; runs the
 one-shot migration; starts Serve and Workers; and waits for required health and
-console boundaries. Execution credentials are not a deployment prerequisite,
-and the profile-gated Nautilus Runtime is not started before #433-E. A repeated invocation preserves config, passwords, and
+console boundaries. Execution credentials are not a deployment prerequisite
+in disabled mode. Paper/live enables the profile-gated Nautilus Runtime and
+requires its identity-bound readiness. A repeated invocation preserves config, passwords, and
 named-volume data, including across `make down`.
 
 `make status` fails non-zero when PostgreSQL, migration, Serve, Workers, either
 required runtime readiness endpoint, or console HTML is missing or unhealthy.
-It reports the execution Runtime disabled and rejects `paper|live` before #433-E.
+Disabled mode rejects a leftover Nautilus container. Paper/live additionally
+requires the Nautilus container/probe and the exact configured current Runtime
+profile, revision, image, config digest, and readiness gates.
 `make logs` follows the bounded startup services. `make down` stops the stack
 without deleting the named PostgreSQL volume. These targets do not auto-hard-cut
 an unknown non-empty database.
@@ -350,7 +364,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
 | News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, four-layer status, bounded quotes, and one symbol's identity |
-| Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/signals`, `/api/trading/execution/observations`, `/api/trading/gate`, `/api/trading/gate/{event_id}` | one owner per durable aggregate: Alpha and disabled execution readiness, frozen Case decisions, engine-neutral Signals, append-only Runtime Observations, and the Source-admission ledger. Reads only — there is no HTTP write on this surface |
+| Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/signals`, `/api/trading/execution/observations`, `/api/trading/execution/commands`, `/api/trading/gate`, `/api/trading/gate/{event_id}` | one owner per durable aggregate: Alpha and current execution readiness, frozen Case decisions, engine-neutral Signals, append-only Runtime Observations, authenticated operator intents, and the Source-admission ledger. Reads only — there is no HTTP write on this surface |
 
 The public API is exactly these routes plus `/healthz`, `/readyz`, and
 `/metrics`. The retired GMGN-lane routes (`/ws`, `/api/recent`,
@@ -948,7 +962,8 @@ A database on that retired chain must be restored with its exact pre-#449
 image/source, advanced to the old terminal head, and cut over before current
 source is used. A fresh database applies baseline `20260831_0340`, the
 `20260901_0341` Signal hard cut, and additive current head
-`20260901_0342` for the Trading notification delivery ledger. The exact
+`20260901_0343`; `0342` adds the Trading notification delivery ledger and
+`0343` adds the current execution Runtime projection and recovery indexes. The exact
 News base-table set plus four security-barrier review views is asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
 perform no provider, broker, model, or outbound call and have no compatibility
@@ -1005,9 +1020,10 @@ Runtime facts, and status carries readiness plus bounded totals.
 
 - `GET /api/trading/status` — `decision`, `alpha`, `execution`, and `counts`.
   Decision exposes state/heartbeat/reason; Alpha exposes the current frozen
-  policy identity and content digest; execution exposes only mode/profile/account
-  plus `ready=false` and an exact disabled/not-yet-available reason. Serve reads
-  no secret file and constructs no provider client. Counts are bounded durable
+  policy identity and content digest; execution exposes mode/profile/account,
+  exact Runtime/revision/image/config identity, readiness gates, flatness,
+  heartbeat and reconciliation age. Serve reads no secret file and constructs
+  no provider client. Counts are bounded durable
   Case/Signal aggregations: input rows are the 24-hour window plus exceptional
   older open Cases or unexpired Signals, backed by their time/state indexes.
 - `GET /api/trading/cases?underlying={base|crypto:BASE}&state={open|no_trade|blocked|emitted}`
@@ -1020,8 +1036,8 @@ Runtime facts, and status carries readiness plus bounded totals.
   rows newest first, with TTL/expiry and opaque pagination. It publishes no
   account, route, quantity, leverage, order, or execution state.
 - `GET /api/trading/execution/observations` — append-only normalized Runtime
-  observations. In #433-D the canonical Runtime is disabled, so an empty result
-  is not evidence of execution or flatness.
+  observations. An empty result is not evidence of execution or flatness; only
+  a fresh private Binance reconciliation with `account_flat=true` proves flat.
 - `GET /api/trading/execution/commands?profile={profile}&action={action}` —
   authenticated `OperatorIntentV1` facts, expiry, confirmation presence, and
   any final disposition, newest first with opaque pagination. It never returns
@@ -1453,17 +1469,20 @@ queue and ends the batch with a non-zero exit naming the message, the decode
 code and the number already replayed. `purge` is the only command that removes
 evidence.
 
-The `trading` family has no provider-execution command. `trading status` reports the Decision state/heartbeat, exact
-Alpha identity/digests, explicit disabled execution profile, and bounded 24-hour
-Case/Signal counts. It never infers readiness, flatness, protection, PnL, or
-fees. `trading cases [--state] [--limit]` lists the Case ledger;
+The `trading` family has no direct provider-execution command. `trading status`
+reports the Decision state/heartbeat, exact Alpha identity/digests, configured
+execution profile, current Runtime identity/readiness/flatness projection, and
+bounded 24-hour Case/Signal counts. It never infers protection, PnL, or fees.
+`trading cases [--state] [--limit]` lists the Case ledger;
 `trading signals [--limit]` lists engine-neutral `TradeSignalV1` rows; and
 `trading observations [--limit]` lists append-only Runtime observations;
 `trading commands [--action] [--limit]` lists authenticated operator intents
 and their final disposition when present. `trading issue TEXT --request-id ID
 --requested-at-ns NS` is the one local OS-authenticated writer: callers preserve
 both sealed fields on retries, it accepts only the shared closed slash grammar,
-and success says `intent_recorded_not_order_or_fill`. There is no blacklist,
+and manual entry still flows through Runtime risk/OMS; success says
+`intent_recorded_not_order_or_fill`. `trading demo-receipt` is a strict
+read-only Demo closure verifier over durable native receipts. There is no blacklist,
 capability, replay, evidence, quantity, leverage, venue, or direct order command.
 
 ### Historical pre-433-C Trading CLI and manifest (retired)

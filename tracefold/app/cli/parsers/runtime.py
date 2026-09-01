@@ -10,7 +10,7 @@ def add_runtime_commands(
     subcommands.add_parser("workers", help="run the News ingestion, triage, and delivery runtime")
     nautilus = subcommands.add_parser("nautilus", help="run the single OI Nautilus Runtime")
     nautilus_subcommands = nautilus.add_subparsers(dest="nautilus_command", required=True)
-    nautilus_subcommands.add_parser("run", help="run the configured Runtime (disabled until 433-E)")
+    nautilus_subcommands.add_parser("run", help="run the configured disabled, Binance Demo, or Binance Live Runtime")
 
     init = subcommands.add_parser("init", help="create ~/.tracefold/config.yaml")
     init.add_argument("--force", action="store_true", help="overwrite existing config.yaml")

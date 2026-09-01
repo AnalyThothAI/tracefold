@@ -1,4 +1,4 @@
-"""Closed Binance USD-M configuration for the dormant OI Runtime."""
+"""Closed Binance USD-M configuration for the OI Runtime."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from nautilus_trader.adapters.binance import (
     BinanceInstrumentProviderConfig,
 )
 from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
-from nautilus_trader.adapters.binance.common.symbol import BinanceSymbol
 from nautilus_trader.config import (
     CacheConfig,
     LiveDataEngineConfig,
@@ -163,7 +162,7 @@ def build_oi_node_config(
     profile: OiRuntimeProfile,
     credentials: BinanceRuntimeCredentials,
 ) -> TradingNodeConfig:
-    """Build the pinned paper/live graph; the dormant app root never calls this in 433-B."""
+    """Build the pinned paper/live graph."""
 
     if profile.mode == "disabled":
         raise ValueError("oi_runtime_disabled_has_no_node")
@@ -187,10 +186,9 @@ def build_oi_node_config(
         environment=environment,
         instrument_provider=provider,
         use_reduce_only=True,
-        futures_leverages={
-            BinanceSymbol(instrument_id.symbol.value.removesuffix("-PERP")): profile.risk.max_leverage
-            for instrument_id in instrument_ids
-        },
+        # Sizing already caps gross notional at the configured leverage. Avoid an
+        # account-wide burst of per-symbol leverage mutations during catalogue load.
+        futures_leverages=None,
         # A transport retry cannot decide whether an economic order exists.
         max_retries=None,
     )

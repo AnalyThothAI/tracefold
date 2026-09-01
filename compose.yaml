@@ -232,8 +232,8 @@ services:
 
   nautilus:
     <<: *tracefold-app
-    # 433-C ships only the dormant Runtime boundary. It is excluded from every default Compose
-    # operation; 433-E owns the explicit activation path and its venue-native acceptance receipts.
+    # Canonical deployment enables this profile only for explicit paper/live config. Disabled
+    # remains the default and constructs no TradingNode or credential-capable process.
     profiles: ["execution"]
     init: true
     restart: unless-stopped
@@ -269,7 +269,7 @@ services:
       # Same interpreter-spawn cost as the other two probes.
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 120s
 
 volumes:
   tracefold-postgres:

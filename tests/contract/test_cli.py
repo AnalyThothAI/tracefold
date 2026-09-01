@@ -707,6 +707,45 @@ def test_init_migrates_the_pre_433c_trading_config_without_losing_operator_value
     assert backup_path.read_bytes() == old_bytes
 
 
+def test_init_migrates_pre_449_postgres_roles_to_one_login(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    app_home = tmp_path / ".tracefold"
+    app_home.mkdir(parents=True)
+    config_path = app_home / "config.yaml"
+    old_payload = {
+        "storage": {
+            "postgres": {
+                "serve_dsn": "postgresql://tracefold_serve@postgres:5432/tracefold",
+                "workers_dsn": "postgresql://tracefold_workers@postgres:5432/tracefold",
+                "migrate_dsn": "postgresql://tracefold_owner@postgres:5432/tracefold",
+                "serve_password_file": "postgres_serve_password",
+                "workers_password_file": "postgres_workers_password",
+                "migrate_password_file": "postgres_migrate_password",
+                "connect_timeout_seconds": 7,
+            }
+        }
+    }
+    old_bytes = yaml.safe_dump(old_payload, sort_keys=False).encode()
+    config_path.write_bytes(old_bytes)
+
+    stdout = io.StringIO()
+    assert main(["init"], stdout=stdout) == 0
+
+    result = json.loads(stdout.getvalue())["data"]
+    backup_path = app_home / "config.pre-449.yaml"
+    assert result["config_migrated"] is True
+    assert result["config_backup_path"] == str(backup_path)
+    assert result["config_backup_paths"] == [str(backup_path)]
+    assert backup_path.read_bytes() == old_bytes
+    migrated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert migrated["storage"]["postgres"] == {
+        "dsn": "postgresql://tracefold@postgres:5432/tracefold",
+        "password_file": "postgres_database_password",
+        "connect_timeout_seconds": 7,
+    }
+    Settings.model_validate(migrated)
+
+
 def test_init_refuses_a_mixed_pre_and_post_433c_trading_config_without_writing(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     app_home = tmp_path / ".tracefold"

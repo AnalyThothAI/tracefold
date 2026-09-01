@@ -69,8 +69,6 @@ async def _wire_components(
     finite: FiniteOperations,
     telemetry: TelemetryRegistry,
 ) -> _Components:
-    if settings.trading.execution.mode != "disabled":
-        raise RuntimeError("oi_runtime_activation_not_available_before_433e")
     if settings.news.push.enabled and not settings.news.enabled:
         raise RuntimeError("news_push_unavailable:news_item_push_news_disabled")
     news_pipeline: NewsPipeline | None = None

@@ -23,7 +23,24 @@ class TradingExecutionReadinessData(ExactApiSchema):
     profile_id: str
     account_slot: str
     ready: bool
-    reason: Literal["disabled", "activation_not_available_before_433e"]
+    reason: str
+    runtime_release: str | None = None
+    config_sha256: str | None = None
+    runtime_revision: str | None = None
+    image_digest: str | None = None
+    credential_fingerprint: str | None = None
+    lifecycle_state: Literal["starting", "running", "stopping", "stopped", "failed"] | None = None
+    heartbeat_at_ns: int | None = None
+    reconciliation_observed_at_ns: int | None = None
+    reconciliation_age_ms: int | None = None
+    singleton_ready: bool = False
+    credential_ready: bool = False
+    activation_ready: bool = False
+    startup_reconciled: bool = False
+    portfolio_ready: bool = False
+    audit_ready: bool = False
+    unexpected_exposure: bool = False
+    account_flat: bool = False
 
 
 class TradingRuntimeCountsData(ExactApiSchema):

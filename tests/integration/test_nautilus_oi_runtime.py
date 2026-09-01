@@ -29,6 +29,7 @@ from tracefold.integrations.nautilus.oi_runtime.signal_client import (
     wait_for_execution_stream_wake,
 )
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
+from tracefold.integrations.nautilus.oi_runtime.strategy import RuntimeControlSnapshot
 from tracefold.integrations.telegram_control import TelegramControlWebhook
 from tracefold.trading.storage.execution_stream import (
     ExecutionProfileActivation,
@@ -168,6 +169,23 @@ def test_restart_control_state_folds_durable_pause_resume_and_sticky_halt() -> N
         assert state.entries_paused is True
         assert state.emergency_halted is True
         assert state.flatten_pending == ()
+    finally:
+        conn.close()
+
+
+def test_restart_control_state_without_accepted_history_stays_paused() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        _activate(repo)
+
+        state = load_runtime_control_state(repositories_for_connection(conn), "oi-paper-profile")
+
+        assert state == RuntimeControlSnapshot(
+            entries_paused=True,
+            emergency_halted=False,
+            flatten_pending=(),
+        )
     finally:
         conn.close()
 

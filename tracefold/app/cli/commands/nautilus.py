@@ -1,4 +1,4 @@
-"""Profile-gated OI Runtime entry point; 433-C can only report disabled readiness."""
+"""Profile-gated OI Runtime entry point."""
 
 from __future__ import annotations
 

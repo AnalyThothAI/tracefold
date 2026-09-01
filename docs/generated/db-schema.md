@@ -788,6 +788,35 @@
 | `config_sha256` | `TEXT` | False | `None` |
 | `created_at_ns` | `BIGINT` | False | `None` |
 
+## `trading_execution_runtime_state`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `account_slot` | `TEXT` | False | `None` |
+| `runtime_profile_id` | `TEXT` | False | `None` |
+| `mode` | `TEXT` | False | `None` |
+| `runtime_release` | `TEXT` | False | `None` |
+| `config_sha256` | `TEXT` | False | `None` |
+| `runtime_id` | `UUID` | False | `None` |
+| `runtime_revision` | `TEXT` | False | `None` |
+| `image_digest` | `TEXT` | False | `None` |
+| `credential_fingerprint` | `TEXT` | False | `None` |
+| `lifecycle_state` | `TEXT` | False | `None` |
+| `ready` | `BOOLEAN` | False | `None` |
+| `singleton_ready` | `BOOLEAN` | False | `None` |
+| `credential_ready` | `BOOLEAN` | False | `None` |
+| `activation_ready` | `BOOLEAN` | False | `None` |
+| `startup_reconciled` | `BOOLEAN` | False | `None` |
+| `portfolio_ready` | `BOOLEAN` | False | `None` |
+| `audit_ready` | `BOOLEAN` | False | `None` |
+| `unexpected_exposure` | `BOOLEAN` | False | `None` |
+| `account_flat` | `BOOLEAN` | False | `None` |
+| `reconciliation_observed_at_ns` | `BIGINT` | False | `None` |
+| `heartbeat_at_ns` | `BIGINT` | False | `None` |
+| `unavailable_reason` | `TEXT` | True | `None` |
+| `started_at_ns` | `BIGINT` | False | `None` |
+| `updated_at_ns` | `BIGINT` | False | `None` |
+
 ## `trading_intents`
 
 | Column | Type | Nullable | Default |

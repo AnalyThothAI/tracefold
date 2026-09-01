@@ -15,7 +15,7 @@ from nautilus_trader.model.enums import OrderSide, OrderType, PositionSide, Trig
 from nautilus_trader.model.identifiers import ClientId, ClientOrderId, PositionId
 from nautilus_trader.trading.strategy import Strategy
 
-from tracefold.trading import OperatorIntentV1, TradeSignalV1
+from tracefold.trading import OperatorIntentV1, TradeSignalV1, canonical_sha256
 
 from .audit_sink import AuditSink
 from .config import OiInstrumentRoute, OiRuntimeProfile
@@ -51,6 +51,30 @@ def _protection_leg(generation: int, quantity: Decimal) -> str:
 
 def _exit_leg(generation: int) -> str:
     return "exit" if generation == 0 else f"exit:{generation}"
+
+
+def manual_entry_signal(command: OperatorIntentV1) -> TradeSignalV1:
+    """Project one durable manual command into the shared entry-risk path."""
+
+    if command.action != "manual_entry" or command.market_key is None or command.direction is None:
+        raise ValueError("oi_runtime_manual_entry_invalid")
+    return TradeSignalV1(
+        seq=command.seq,
+        signal_id=command.command_id,
+        case_id=f"manual:{command.command_id}",
+        alpha_contract_sha256=canonical_sha256({"contract": "operator_manual_entry_v1"}),
+        market_key=command.market_key,
+        direction=command.direction,
+        observed_at_ns=command.requested_at_ns,
+        expires_at_ns=command.expires_at_ns,
+        evidence_sha256=canonical_sha256(
+            {
+                "contract": "operator_manual_entry_v1",
+                "command": command.model_dump(mode="json"),
+            }
+        ),
+        alpha_metadata={"source": "operator_manual_entry"},
+    )
 
 
 def oi_strategy_config(profile: OiRuntimeProfile) -> StrategyConfig:
@@ -173,6 +197,7 @@ class RecoveredExecutionSeed:
 
     signal: TradeSignalV1
     entry_client_order_id: ClientOrderId
+    command: OperatorIntentV1 | None = None
     position_id: PositionId | None = None
     protections: tuple[RecoveredProtectionSeed, ...] = ()
     exit_client_order_id: ClientOrderId | None = None
@@ -194,6 +219,7 @@ class _ExecutionState:
     entry_order: Any
     submitted_at_ns: int
     disposition_reason: str
+    command: OperatorIntentV1 | None = None
     active: bool = True
     entry_query_pending: bool = True
     position_id: PositionId | None = None
@@ -262,7 +288,9 @@ class OiNautilusStrategy(Strategy):
         self._positions: dict[PositionId, str] = {}
         self._disposed: set[str] = set()
         self._disposed_commands: set[str] = set()
-        control_state = initial_control_state or RuntimeControlSnapshot(False, False, ())
+        # A new activation cannot admit capital until an authenticated durable
+        # resume command explicitly opens the entry gate.
+        control_state = initial_control_state or RuntimeControlSnapshot(True, False, ())
         if control_state.flatten_pending:
             raise ValueError("oi_runtime_initial_control_state_invalid")
         self._entries_paused = control_state.entries_paused
@@ -410,6 +438,9 @@ class OiNautilusStrategy(Strategy):
         positions: dict[PositionId, str] = {}
         for seed in snapshot.executions:
             signal = seed.signal
+            if seed.command is not None and signal != manual_entry_signal(seed.command):
+                self._readiness.halt_for_unexpected_exposure()
+                return False
             route = self._routes.get(signal.market_key)
             expected_entry = deterministic_client_order_id(
                 namespace=self._profile.client_order_namespace,
@@ -432,6 +463,7 @@ class OiNautilusStrategy(Strategy):
                 entry_order=entry,
                 submitted_at_ns=snapshot.reconciliation_observed_at_ns,
                 disposition_reason="recovered",
+                command=seed.command,
                 entry_query_pending=bool(entry.is_inflight or entry.is_active_local),
             )
             states[signal.signal_id] = state
@@ -704,20 +736,20 @@ class OiNautilusStrategy(Strategy):
             safe = False
         return safe
 
-    def _handle_signal(self, signal: TradeSignalV1) -> None:
+    def _handle_signal(self, signal: TradeSignalV1, *, command: OperatorIntentV1 | None = None) -> None:
         now_ns = int(self.clock.timestamp_ns())
-        if signal.signal_id in self._disposed:
+        if command is None and signal.signal_id in self._disposed:
             return
         existing_state = self._states.get(signal.signal_id)
         if existing_state is not None:
-            self._dispose_signal(signal, existing_state.disposition_reason)
+            self._dispose_entry(signal, existing_state.disposition_reason, command or existing_state.command)
             return
         route = self._routes.get(signal.market_key)
         if route is None:
-            self._dispose_signal(signal, "instrument_unmapped")
+            self._dispose_entry(signal, "instrument_unmapped", command)
             return
         if any(state.active and state.route.instrument_id == route.instrument_id for state in self._states.values()):
-            self._dispose_signal(signal, "instrument_busy")
+            self._dispose_entry(signal, "instrument_busy", command)
             return
         client_order_id = deterministic_client_order_id(
             namespace=self._profile.client_order_namespace,
@@ -729,7 +761,7 @@ class OiNautilusStrategy(Strategy):
         if existing is not None:
             if not self._entry_order_valid(signal=signal, route=route, entry=existing):
                 self._readiness.halt_for_unexpected_exposure()
-                self._dispose_signal(signal, "cached_entry_invalid")
+                self._dispose_entry(signal, "cached_entry_invalid", command)
                 return
             position = self.cache.position_for_order(existing.client_order_id)
             expected_position_side = PositionSide.LONG if signal.direction == "long" else PositionSide.SHORT
@@ -744,7 +776,7 @@ class OiNautilusStrategy(Strategy):
                 )
             ):
                 self._readiness.halt_for_unexpected_exposure()
-                self._dispose_signal(signal, "cached_position_invalid")
+                self._dispose_entry(signal, "cached_position_invalid", command)
                 return
             self._orders[client_order_id] = (signal.signal_id, "entry")
             state = _ExecutionState(
@@ -753,6 +785,7 @@ class OiNautilusStrategy(Strategy):
                 entry_order=existing,
                 submitted_at_ns=now_ns,
                 disposition_reason="replayed_query_first",
+                command=command,
                 active=bool(position is not None and position.is_open) or not existing.is_closed,
                 entry_query_pending=bool(existing.is_inflight or existing.is_active_local),
             )
@@ -765,30 +798,30 @@ class OiNautilusStrategy(Strategy):
                 self._readiness.halt_for_unexpected_exposure()
                 self.flatten_position(position.id)
             self.query_order(existing, client_id=ClientId("BINANCE"))
-            self._dispose_signal(signal, "replayed_query_first")
+            self._dispose_entry(signal, "replayed_query_first", command)
             return
         if signal.expires_at_ns <= now_ns:
-            self._dispose_signal(signal, "expired")
+            self._dispose_entry(signal, "expired", command)
             return
         if self._emergency_halted:
-            self._dispose_signal(signal, "operator_halt")
+            self._dispose_entry(signal, "operator_halt", command)
             return
         if self._entries_paused:
-            self._dispose_signal(signal, "operator_paused")
+            self._dispose_entry(signal, "operator_paused", command)
             return
         exposure_ready = self._verify_owned_exposure()
         ready = self.readiness()
         if not exposure_ready or not ready.ready:
-            self._dispose_signal(signal, ready.reason if not ready.ready else "protection_unproven")
+            self._dispose_entry(signal, ready.reason if not ready.ready else "protection_unproven", command)
             return
         day_start = self._current_day_start()
         if day_start is None:
-            self._dispose_signal(signal, "day_start_baseline_missing")
+            self._dispose_entry(signal, "day_start_baseline_missing", command)
             return
         instrument = self.cache.instrument(route.instrument_id)
         quote = self.cache.quote_tick(route.instrument_id)
         if instrument is None or quote is None:
-            self._dispose_signal(signal, "instrument_or_market_missing")
+            self._dispose_entry(signal, "instrument_or_market_missing", command)
             return
         account_clock, reconciliation_clock = self._readiness.facts_clock()
         try:
@@ -805,7 +838,7 @@ class OiNautilusStrategy(Strategy):
                 reconciliation_observed_at_ns=reconciliation_clock,
             )
         except RuntimeError as exc:
-            self._dispose_signal(signal, str(exc))
+            self._dispose_entry(signal, str(exc), command)
             return
         if facts.unexpected_exposure:
             self._readiness.halt_for_unexpected_exposure()
@@ -822,14 +855,14 @@ class OiNautilusStrategy(Strategy):
             candidate_is_new_position=True,
         )
         if decision.action in {"deny", "halt"}:
-            self._dispose_signal(signal, decision.reason)
+            self._dispose_entry(signal, decision.reason, command)
             return
         bid = Decimal(str(quote.bid_price))
         ask = Decimal(str(quote.ask_price))
         midpoint = (bid + ask) / Decimal(2)
         spread_bps = (ask - bid) * Decimal(10_000) / midpoint
         if spread_bps > _MAX_SPREAD_BPS:
-            self._dispose_signal(signal, "spread_limit")
+            self._dispose_entry(signal, "spread_limit", command)
             return
         executable_price = ask if signal.direction == "long" else bid
         price = executable_price * (Decimal(1) + _MAX_ENTRY_DRIFT_BPS / Decimal(10_000))
@@ -848,11 +881,11 @@ class OiNautilusStrategy(Strategy):
                 size_increment=instrument.size_increment.as_decimal(),
             )
         except ValueError as exc:
-            self._dispose_signal(signal, str(exc))
+            self._dispose_entry(signal, str(exc), command)
             return
         quantity = instrument.make_qty(raw_quantity)
         if quantity.as_decimal() <= 0:
-            self._dispose_signal(signal, "quantity_below_increment")
+            self._dispose_entry(signal, "quantity_below_increment", command)
             return
         stop_fraction = Decimal(route.stop_distance_bps) / Decimal(10_000)
         quantity_notional = quantity.as_decimal() * price
@@ -860,16 +893,16 @@ class OiNautilusStrategy(Strategy):
             facts.gross_position_notional_usd + facts.open_order_notional_usd + facts.inflight_order_notional_usd
         )
         if quantity_notional * stop_fraction > decision.allowed_risk_usd:
-            self._dispose_signal(signal, "quantity_exceeds_risk_after_rounding")
+            self._dispose_entry(signal, "quantity_exceeds_risk_after_rounding", command)
             return
         if existing_notional + quantity_notional > facts.equity_usd * self._profile.risk.max_leverage:
-            self._dispose_signal(signal, "quantity_exceeds_leverage_after_rounding")
+            self._dispose_entry(signal, "quantity_exceeds_leverage_after_rounding", command)
             return
         if instrument.min_quantity is not None and quantity < instrument.min_quantity:
-            self._dispose_signal(signal, "quantity_below_minimum")
+            self._dispose_entry(signal, "quantity_below_minimum", command)
             return
         if instrument.min_notional is not None and quantity.as_decimal() * price < instrument.min_notional.as_decimal():
-            self._dispose_signal(signal, "notional_below_minimum")
+            self._dispose_entry(signal, "notional_below_minimum", command)
             return
         side = OrderSide.BUY if signal.direction == "long" else OrderSide.SELL
         order = self.order_factory.market(
@@ -886,6 +919,7 @@ class OiNautilusStrategy(Strategy):
             entry_order=order,
             submitted_at_ns=now_ns,
             disposition_reason="accepted",
+            command=command,
         )
         self._states[signal.signal_id] = state
         try:
@@ -894,10 +928,10 @@ class OiNautilusStrategy(Strategy):
             state.disposition_reason = "unknown_query_first"
             self.query_order(order, client_id=ClientId("BINANCE"))
             self._observe_order(state, order, "entry", "unknown_query_first")
-            self._dispose_signal(signal, "unknown_query_first")
+            self._dispose_entry(signal, "unknown_query_first", command)
             return
         self._observe_order(state, order, "entry", "submitted")
-        self._dispose_signal(signal, "accepted")
+        self._dispose_entry(signal, "accepted", command)
 
     def _handle_command(self, command: OperatorIntentV1) -> None:
         now_ns = int(self.clock.timestamp_ns())
@@ -926,7 +960,7 @@ class OiNautilusStrategy(Strategy):
             self._dispose_command(command, "accepted", "emergency_halted")
             return
         if command.action == "manual_entry":
-            self._dispose_command(command, "rejected", "manual_entry_not_enabled")
+            self._handle_signal(manual_entry_signal(command), command=command)
             return
         if command.action != "flatten" or command.scope != "account":
             self._dispose_command(command, "rejected", "flatten_scope_unsupported")
@@ -1031,12 +1065,32 @@ class OiNautilusStrategy(Strategy):
             raise _AuditBackpressure("oi_runtime_audit_backpressure")
         self._disposed.add(signal.signal_id)
 
+    def _dispose_entry(
+        self,
+        signal: TradeSignalV1,
+        reason: str,
+        command: OperatorIntentV1 | None,
+    ) -> None:
+        if command is None:
+            self._dispose_signal(signal, reason)
+            return
+        disposition = (
+            "accepted" if reason in {"accepted", "replayed_query_first", "unknown_query_first"} else "rejected"
+        )
+        self._dispose_command(command, disposition, reason)
+
+    @staticmethod
+    def _observation_correlation(state: _ExecutionState) -> dict[str, str]:
+        if state.command is not None:
+            return {"command_id": state.command.command_id}
+        return {"signal_id": state.signal.signal_id}
+
     def _observe_order(self, state: _ExecutionState, order: Any, leg: str, status: str) -> None:
         occurred_at_ns = int(order.ts_init)
         self._audit.offer(
             self._observations.create(
                 normalized_kind="protection" if leg == "protection" else "order",
-                signal_id=state.signal.signal_id,
+                **self._observation_correlation(state),
                 occurred_at_ns=occurred_at_ns,
                 observed_at_ns=occurred_at_ns,
                 native_identity_references=(order.client_order_id.value,),
@@ -1143,7 +1197,7 @@ class OiNautilusStrategy(Strategy):
         self._audit.offer(
             self._observations.create(
                 normalized_kind="fill",
-                signal_id=state.signal.signal_id,
+                **self._observation_correlation(state),
                 occurred_at_ns=now_ns,
                 observed_at_ns=max(now_ns, int(self.clock.timestamp_ns())),
                 native_identity_references=references,
@@ -1197,7 +1251,7 @@ class OiNautilusStrategy(Strategy):
         self._audit.offer(
             self._observations.create(
                 normalized_kind="order" if identity[1] in {"entry", "exit"} else "protection",
-                signal_id=state.signal.signal_id,
+                **self._observation_correlation(state),
                 occurred_at_ns=now_ns,
                 observed_at_ns=now_ns,
                 native_identity_references=(event.client_order_id.value,),
@@ -1261,7 +1315,7 @@ class OiNautilusStrategy(Strategy):
         self._audit.offer(
             self._observations.create(
                 normalized_kind="order" if leg in {"entry", "exit"} else "protection",
-                signal_id=state.signal.signal_id,
+                **self._observation_correlation(state),
                 occurred_at_ns=now_ns,
                 observed_at_ns=max(now_ns, int(self.clock.timestamp_ns())),
                 native_identity_references=references,
@@ -1354,7 +1408,7 @@ class OiNautilusStrategy(Strategy):
         self._audit.offer(
             self._observations.create(
                 normalized_kind="protection",
-                signal_id=state.signal.signal_id,
+                **self._observation_correlation(state),
                 occurred_at_ns=now_ns,
                 observed_at_ns=now_ns,
                 native_identity_references=(client_order_id.value,),
@@ -1483,7 +1537,7 @@ class OiNautilusStrategy(Strategy):
         self._audit.offer(
             self._observations.create(
                 normalized_kind="position",
-                signal_id=state.signal.signal_id,
+                **self._observation_correlation(state),
                 occurred_at_ns=occurred_at_ns,
                 observed_at_ns=observed_at_ns,
                 native_identity_references=references,
@@ -1507,5 +1561,6 @@ __all__ = [
     "RuntimeReadinessSnapshot",
     "RuntimeReconciliationSnapshot",
     "deterministic_client_order_id",
+    "manual_entry_signal",
     "oi_strategy_config",
 ]

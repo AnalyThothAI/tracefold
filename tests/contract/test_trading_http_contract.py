@@ -1,4 +1,4 @@
-"""Read-only Case, Signal, Observation, and disabled-runtime HTTP contract."""
+"""Read-only Case, Signal, Observation, and execution-runtime HTTP contract."""
 
 from __future__ import annotations
 
@@ -33,6 +33,9 @@ class _Trading:
             "cases_open": 0,
             "signals_unexpired": 1,
         }
+
+    def execution_runtime_state(self, _account_slot: str) -> None:
+        return None
 
     def console_cases(self, **kwargs: Any) -> list[dict[str, Any]]:
         self.calls.append(("console_cases", kwargs))
@@ -153,13 +156,17 @@ def test_status_keeps_execution_truthfully_disabled(client: tuple[TestClient, _T
     data = api.get("/api/trading/status", params={"token": TOKEN}).json()["data"]
 
     assert data["decision"]["state"] == "RUNNING"
-    assert data["execution"] == {
+    expected = {
         "mode": "disabled",
         "profile_id": "binance_usdm_primary",
         "account_slot": "binance_usdm_primary",
         "ready": False,
         "reason": "disabled",
     }
+    assert {key: data["execution"][key] for key in expected} == expected
+    assert data["execution"]["runtime_release"] is None
+    assert data["execution"]["singleton_ready"] is False
+    assert data["execution"]["account_flat"] is False
     assert data["counts"]["signals_24h"] == 1
     assert data["alpha"]["policy_id"] == "source_native_oi_smart_money_long_v4"
     assert "capital" not in data and "bindings" not in data and "budget" not in data

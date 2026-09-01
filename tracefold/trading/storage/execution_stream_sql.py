@@ -1,4 +1,4 @@
-"""Production unresolved reads for the dormant execution stream."""
+"""Production unresolved reads for the execution stream."""
 
 from __future__ import annotations
 

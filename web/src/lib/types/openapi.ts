@@ -2419,22 +2419,77 @@ export interface components {
         };
         /** TradingExecutionReadinessData */
         TradingExecutionReadinessData: {
+            /**
+             * Account Flat
+             * @default false
+             */
+            account_flat: boolean;
             /** Account Slot */
             account_slot: string;
+            /**
+             * Activation Ready
+             * @default false
+             */
+            activation_ready: boolean;
+            /**
+             * Audit Ready
+             * @default false
+             */
+            audit_ready: boolean;
+            /** Config Sha256 */
+            config_sha256?: string | null;
+            /** Credential Fingerprint */
+            credential_fingerprint?: string | null;
+            /**
+             * Credential Ready
+             * @default false
+             */
+            credential_ready: boolean;
+            /** Heartbeat At Ns */
+            heartbeat_at_ns?: number | null;
+            /** Image Digest */
+            image_digest?: string | null;
+            /** Lifecycle State */
+            lifecycle_state?: ("starting" | "running" | "stopping" | "stopped" | "failed") | null;
             /**
              * Mode
              * @enum {string}
              */
             mode: "disabled" | "paper" | "live";
+            /**
+             * Portfolio Ready
+             * @default false
+             */
+            portfolio_ready: boolean;
             /** Profile Id */
             profile_id: string;
             /** Ready */
             ready: boolean;
+            /** Reason */
+            reason: string;
+            /** Reconciliation Age Ms */
+            reconciliation_age_ms?: number | null;
+            /** Reconciliation Observed At Ns */
+            reconciliation_observed_at_ns?: number | null;
+            /** Runtime Release */
+            runtime_release?: string | null;
+            /** Runtime Revision */
+            runtime_revision?: string | null;
             /**
-             * Reason
-             * @enum {string}
+             * Singleton Ready
+             * @default false
              */
-            reason: "disabled" | "activation_not_available_before_433e";
+            singleton_ready: boolean;
+            /**
+             * Startup Reconciled
+             * @default false
+             */
+            startup_reconciled: boolean;
+            /**
+             * Unexpected Exposure
+             * @default false
+             */
+            unexpected_exposure: boolean;
         };
         /** TradingGateConfigData */
         TradingGateConfigData: {

@@ -34,6 +34,10 @@ def add_trading_commands(
     )
     operator_intents.add_argument("--limit", type=_positive_int, default=20)
 
+    receipt = commands.add_parser("demo-receipt", help="verify a paper entry/restart/flatten venue receipt")
+    receipt.add_argument("--entry-command-id", required=True)
+    receipt.add_argument("--flatten-command-id", required=True)
+
     issue = commands.add_parser("issue", help="durably record one local OS-authenticated operator intent")
     issue.add_argument("text", help="closed slash command, for example '/pause maintenance'")
     issue.add_argument(
