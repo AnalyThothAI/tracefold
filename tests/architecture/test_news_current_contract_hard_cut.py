@@ -40,8 +40,10 @@ _RETIRED_VERSION_IDENTITIES = frozenset(
         "news_liquidation_policy_v1",
         "news_oi_signal_v1",
         "news_reader_history_v1",
+        "news_reader_history_v2",
         "told_context_selector_v1",
         "told_context_selector_v2",
+        "told_context_selector_v3",
     }
 )
 

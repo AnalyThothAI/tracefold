@@ -344,9 +344,11 @@ class TriageConsumer:
             if outcome.stale:
                 if not isinstance(judged.judgment, ScoredJudgment):
                     raise RuntimeError("news_stale_non_model_judgment")
-                # A card landed while the model was thinking: ask once more with the ledger it did not see (rare,
-                # ~0.6% of calls at 8 pushes/h) instead of pushing a restatement the reader just received. Everything
-                # the model and decide() look at is re-read under a fresh stamp so the second input is consistent.
+                # A card landed while the model was thinking: ask once more with the ledger it did not see instead
+                # of pushing a restatement the reader just received. Budgeted at ~0.6% of calls when the reader got
+                # 8 pushes/h; at 38/h the 2026-09-01 audit measured 8.0% told re-asks and 8.5% evidence re-asks
+                # (#491), so this is a paid second execution on roughly one judgment in six. Everything the model
+                # and decide() look at is re-read under a fresh stamp so the second input is consistent.
                 refreshed = await self._refresh_after_stale(
                     route,
                     event_id=event_id,

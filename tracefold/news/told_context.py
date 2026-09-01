@@ -12,21 +12,29 @@ from .models import base_symbol
 from .reader_history import (
     READER_HISTORY_SHA256,
     RECENT_HISTORY_MAX,
-    RECENT_HISTORY_WINDOW_MS,
+    SIMILAR_TITLE_MAX,
     TARGETED_ASSET_MAX,
     TARGETED_EXACT_MAX,
     HistoryReason,
     HistoryScope,
     news_retrieval_sha256,
 )
-from .similarity import similarity
+from .similarity import trigram_similarity
 
-TOLD_WINDOW_MS: Final[int] = RECENT_HISTORY_WINDOW_MS
-TOLD_SOURCE_MAX: Final[int] = RECENT_HISTORY_MAX + TARGETED_EXACT_MAX + TARGETED_ASSET_MAX
+# Every row the bounded history can hand over: the four bands' caps summed. Selection sorts the source newest
+# first and truncates here, so the bound has to admit the whole title-similarity band or the oldest of its rows
+# — the ones the 4 h ledger could not see, which is what the band exists for — would be the first dropped (#491).
+TOLD_SOURCE_MAX: Final[int] = RECENT_HISTORY_MAX + TARGETED_EXACT_MAX + TARGETED_ASSET_MAX + SIMILAR_TITLE_MAX
 TOLD_MAX: Final[int] = 16
 TOLD_STORYLINE_TIER_MAX: Final[int] = 8
 TOLD_SYMBOLS_MAX: Final[int] = 6
-TOLD_FACT_SIMILARITY_MIN: Final[float] = 0.25
+# The tier boundary for a cross-storyline row: at or above this pg_trgm score a row is shown as a same-fact
+# title match rather than as recency filler. On the 2026-09-01 audit 0.15 admits 2.2% of random English title
+# pairs and 0.25 admits 0.10%; the labelled duplicates sit at a median of 0.19 (cross-window) to 0.27 (already
+# shown). Ranking inside every tier uses the raw score, never this floor: zeroing sub-threshold scores and then
+# filling by recency is what let 2-3 English near-misses plus the last few minutes occupy a storyline tier of
+# 360 same-key cards a day, while the card the candidate actually repeated sat 59 min back.
+TOLD_FACT_SIMILARITY_MIN: Final[float] = 0.15
 ToldTier = Literal["exact_fact", "storyline", "asset_overlap", "fact_similarity", "recency"]
 TOLD_TIER_ORDER: Final[tuple[ToldTier, ...]] = (
     "exact_fact",
@@ -35,7 +43,7 @@ TOLD_TIER_ORDER: Final[tuple[ToldTier, ...]] = (
     "fact_similarity",
     "recency",
 )
-TOLD_SELECTOR_ID: Final[str] = "told_context_selector_v3"
+TOLD_SELECTOR_ID: Final[str] = "told_context_selector_v4"
 TOLD_SELECTOR_SHA256: Final[str] = canonical_sha(
     {
         "selector": TOLD_SELECTOR_ID,
@@ -64,9 +72,10 @@ TOLD_SELECTOR_SHA256: Final[str] = canonical_sha(
             "canonical_asset_overlap": "asset_overlap",
         },
         "symbol_primitive": "base_symbol_v1",
-        "similarity_primitive": "character_bigram_jaccard_v1",
+        "similarity_primitive": "pg_trgm_word_trigram_jaccard_v1",
         "similarity_field": "comparison_title",
         "similarity_min": TOLD_FACT_SIMILARITY_MIN,
+        "similarity_ranking": "raw_score_in_every_tier",
         "rank_order": ["tier", "-similarity", "-at_ms", "event_id"],
         "storyline_tier_max": TOLD_STORYLINE_TIER_MAX,
         "dedup": "event_id",
@@ -142,16 +151,15 @@ def _row_symbols(row: Mapping[str, Any]) -> frozenset[str]:
     return frozenset(symbol for symbol in symbols if symbol)
 
 
-def _take_with_tier_caps(
-    ranked: Sequence[tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]],
-    *,
-    limit: int,
-) -> list[tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]]:
+_Ranked = tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]
+
+
+def _take_with_tier_caps(ranked: Sequence[_Ranked], *, limit: int) -> list[_Ranked]:
     caps = {TOLD_TIER_ORDER.index("storyline"): TOLD_STORYLINE_TIER_MAX}
     filler_tier = TOLD_TIER_ORDER.index("recency")
-    chosen: list[tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]] = []
-    overflow: list[tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]] = []
-    filler: list[tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]] = []
+    chosen: list[_Ranked] = []
+    overflow: list[_Ranked] = []
+    filler: list[_Ranked] = []
     used: dict[int, int] = {}
     for item in ranked:
         tier_index = item[0]
@@ -198,7 +206,7 @@ class ToldLedgerSnapshot(_ExactContractModel):
             rows,
             key=lambda row: (-int(row.get("at_ms") or 0), str(row.get("event_id") or "")),
         )[:TOLD_SOURCE_MAX]
-        ranked: list[tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]] = []
+        ranked: list[_Ranked] = []
         deduped: set[str] = set()
         for row in window:
             unexpected = set(row).difference(_TOLD_SOURCE_FIELDS)
@@ -215,8 +223,7 @@ class ToldLedgerSnapshot(_ExactContractModel):
             at_ms = int(row.get("at_ms") or 0)
             row_key = str(row.get("storyline_key") or "")
             row_symbols = _row_symbols(row)
-            score = similarity(candidate_title, str(row.get("comparison_title") or ""))
-            fact_similarity = score if score >= TOLD_FACT_SIMILARITY_MIN else 0.0
+            score = trigram_similarity(candidate_title, str(row.get("comparison_title") or ""))
             tier: ToldTier
             if row.get("history_scope") == "targeted" and row.get("retrieval_reason") == "exact_fingerprint":
                 tier = "exact_fact"
@@ -226,11 +233,13 @@ class ToldLedgerSnapshot(_ExactContractModel):
                 row.get("history_scope") == "targeted" and row.get("retrieval_reason") == "canonical_asset_overlap"
             ) or (candidate_symbols and candidate_symbols & row_symbols):
                 tier = "asset_overlap"
-            elif fact_similarity:
+            elif score >= TOLD_FACT_SIMILARITY_MIN:
                 tier = "fact_similarity"
             else:
                 tier = "recency"
-            ranked.append((TOLD_TIER_ORDER.index(tier), -fact_similarity, -at_ms, event_id, row, tier, fact_similarity))
+            # The raw score orders every tier, recency included: the most title-similar of the rows that earned
+            # no tier is a better use of a filler slot than the newest of them.
+            ranked.append((TOLD_TIER_ORDER.index(tier), -score, -at_ms, event_id, row, tier, score))
         ranked.sort(key=lambda item: item[:4])
         chosen = _take_with_tier_caps(ranked, limit=bounded)
         return cls(
@@ -251,11 +260,11 @@ class ToldLedgerSnapshot(_ExactContractModel):
                     headline_zh=str(row["headline_zh"])[:60],
                     why_zh=str(row["why_zh"])[:140],
                     tier=tier,
-                    similarity=round(fact_similarity, 4),
+                    similarity=round(score, 4),
                     history_scope=cast(HistoryScope, str(row.get("history_scope") or "recent")),
                     retrieval_reason=cast(HistoryReason, str(row.get("retrieval_reason") or "recent")),
                 )
-                for index, (_, _, _, _, row, tier, fact_similarity) in enumerate(chosen)
+                for index, (_, _, _, _, row, tier, score) in enumerate(chosen)
             ),
         )
 
@@ -270,7 +279,6 @@ __all__ = [
     "TOLD_STORYLINE_TIER_MAX",
     "TOLD_SYMBOLS_MAX",
     "TOLD_TIER_ORDER",
-    "TOLD_WINDOW_MS",
     "ToldLedgerEntry",
     "ToldLedgerSnapshot",
 ]

@@ -544,7 +544,8 @@ title alone selects a deterministic route.
   rather than restating a ticker that answers to itself. For a grounded
   restatement, the decide step includes the prior Event id, sent timestamp,
   headline, history scope, and retrieval reason (`recent`,
-  `exact_fingerprint`, or `canonical_asset_overlap`). `tracefold news why`
+  `exact_fingerprint`, `canonical_asset_overlap`, or `title_similarity`).
+  `tracefold news why`
   prints the same `outcome` sentence and timeline. Unknown ids return 404.
 - `GET /api/news/status` returns `state` (`ready`, `warming`, `degraded`,
   `unavailable`), the Workers state, `health` (four thresholded items
@@ -974,7 +975,7 @@ A database on that retired chain must be restored with its exact pre-#449
 image/source, advanced to the old terminal head, and cut over before current
 source is used. A fresh database applies baseline `20260831_0340`, the
 `20260901_0341` Signal hard cut, and current head
-`20260902_0349`; `0342` adds the Trading notification delivery ledger,
+`20260902_0350`; `0342` adds the Trading notification delivery ledger,
 `0343` adds the current execution Runtime projection and recovery indexes, and
 destructive `0344` restates the `news_verdicts` judgment CHECK for the News
 open-interest push cut, dropping `news_oi_signals.rank_in_window` and every
@@ -990,7 +991,10 @@ triggers, defaults and CHECKs called; their 390 archived rows were dumped to
 `~/.tracefold/backups` first. `0348` hard-cuts Runtime readiness into liveness,
 existing-exposure safety, and new-entry admission while adding the profile-keyed
 current control projection. `0349` adds the bounded nullable Runtime-owned
-current account JSON projection without changing any append-only ledger. The exact
+current account JSON projection without changing any append-only ledger.
+Additive `0350` pins the `pg_trgm` extension and admits the `title_similarity`
+retrieval reason into the `news_verdicts` told trace CHECK for the
+reader-history title-similarity band (#491). The exact
 News base-table set plus four security-barrier review views is asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
 perform no provider, broker, model, or outbound call and have no compatibility

@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from tracefold.news.similarity import character_bigrams, max_similarity, similarity
+from tracefold.news.similarity import (
+    character_bigrams,
+    max_similarity,
+    similarity,
+    trigram_similarity,
+    word_trigrams,
+)
 
 
 def test_identical_and_unrelated_headlines_sit_at_the_ends() -> None:
@@ -41,3 +47,51 @@ def test_max_similarity_names_which_card_it_matched() -> None:
     assert index == 1 and score > 0.6
     assert max_similarity("完全无关的一条新闻", []) == (0.0, -1)
     assert max_similarity("", ledger) == (0.0, -1)
+
+
+def test_word_trigrams_are_pg_trgm_show_trgm() -> None:
+    """Vectors taken from `SELECT show_trgm(...)` on pg_trgm 1.6, PostgreSQL 18, en_US.utf8. Multibyte trigrams
+    are hashed in pg_trgm's output, so the ASCII subset is compared exactly and the total is compared by count."""
+
+    assert word_trigrams("cat") == {"  c", " ca", "cat", "at "}
+    assert word_trigrams("a") == {"  a", " a "}
+    assert word_trigrams("") == frozenset()
+    assert word_trigrams(" -- ") == frozenset()
+
+    trigrams = word_trigrams("据axios 特朗普正在考虑 num_22 Trump")
+    assert len(trigrams) == 28
+    assert sorted(t for t in trigrams if t.isascii()) == [
+        "  2", "  n", "  t", " 22", " nu", " tr", "22 ", "axi", "ios", "mp ", "num", "os ", "rum", "tru",
+        "um ", "ump", "xio",
+    ]  # fmt: skip
+    # `_` is not alphanumeric, so "num_22" is two words; "Trump" is lower-cased before padding.
+    assert len(word_trigrams("特朗普正在考虑")) == 8
+    assert len(word_trigrams("据axios")) == 7
+
+
+def test_trigram_similarity_matches_pg_trgm_similarity() -> None:
+    """`SELECT similarity(a, b)` on the same server for the same pairs."""
+
+    assert (
+        trigram_similarity(
+            "fact sheet president donald j trump announces historic oil agreement",
+            "this deal secures stable low cost oil for americans",
+        )
+        == 0.125
+    )
+    assert abs(trigram_similarity("特朗普正在考虑对伊朗进行有限打击", "特朗普考虑对伊朗有限打击") - 0.42857143) < 1e-6
+    assert trigram_similarity("据axios 特朗普", "特朗普 据axios") == 1.0
+    assert trigram_similarity("", "anything") == 0.0
+    assert trigram_similarity("Trump", "trump") == 1.0
+
+
+def test_word_trigrams_separate_a_shared_template_from_a_shared_fact_better_than_bigrams() -> None:
+    """The told selector ranks on `comparison_title`, English 87% of the time. On 22k random English title pairs
+    from the 2026-09-01 ledger, character bigrams put 4.6% above 0.25 and word trigrams 0.10%; the labelled
+    duplicate pairs keep a median of 0.19-0.27 on either. These two pairs are the shape of that difference."""
+
+    outlet_a = "trump says us is refilling the strategic petroleum reserve"
+    outlet_b = "trump wants to fill up the strategic petroleum reserve"
+    unrelated = "the treasury will sell num_50000000000 of num_10 year notes on thursday"
+    assert trigram_similarity(outlet_a, outlet_b) > 0.25 > trigram_similarity(outlet_a, unrelated)
+    assert similarity(outlet_a, unrelated) > trigram_similarity(outlet_a, unrelated)
