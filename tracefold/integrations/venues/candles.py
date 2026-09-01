@@ -10,7 +10,6 @@ Only trade prices: no mark, oracle, index or mid history is mixed into `reaction
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 
@@ -34,19 +33,6 @@ _BINANCE_LIMIT_MAX: Final = 1000
 _INTERVAL_MS: Final = {"1m": 60_000, CANDLE_INTERVAL: CANDLE_INTERVAL_MS}
 
 
-@dataclass(frozen=True, slots=True)
-class VenueBar:
-    """Provider OHLCV normalized to exclusive close time; no execution semantics."""
-
-    open_at_ms: int
-    close_at_ms: int
-    open: Decimal
-    high: Decimal
-    low: Decimal
-    close: Decimal
-    volume: Decimal
-
-
 async def fetch_binance_candles(
     venue_symbol: str,
     *,
@@ -59,7 +45,7 @@ async def fetch_binance_candles(
     futures_base_url: str = BINANCE_FUTURES_BASE_URL,
 ) -> tuple[Candle, ...]:
     if interval == CANDLE_INTERVAL:
-        bars = await fetch_binance_bars(
+        return await _fetch_binance_reaction_candles(
             venue_symbol,
             venue=venue,
             start_ms=start_ms,
@@ -68,7 +54,6 @@ async def fetch_binance_candles(
             spot_base_url=spot_base_url,
             futures_base_url=futures_base_url,
         )
-        return tuple(Candle(open_at_ms=bar.open_at_ms, close_at_ms=bar.close_at_ms, close=bar.close) for bar in bars)
     interval_ms = _interval_ms(interval)
     payload = await _fetch_binance_payload(
         venue_symbol,
@@ -91,16 +76,25 @@ async def fetch_binance_candles(
     return tuple(out)
 
 
-async def fetch_binance_bars(
+async def _fetch_binance_reaction_candles(
     venue_symbol: str,
     *,
     venue: str,
     start_ms: int,
     end_ms: int,
-    transport: httpx.AsyncBaseTransport | None = None,
-    spot_base_url: str = BINANCE_SPOT_BASE_URL,
-    futures_base_url: str = BINANCE_FUTURES_BASE_URL,
-) -> tuple[VenueBar, ...]:
+    transport: httpx.AsyncBaseTransport | None,
+    spot_base_url: str,
+    futures_base_url: str,
+) -> tuple[Candle, ...]:
+    """The `reaction_v1` interval, which reads O/H/L/V it does not keep.
+
+    Only `close` reaches a `Candle`, but a bar whose high is below its own open or close is not a bar
+    that lost precision — it is a row the provider did not mean, and taking its close would put a price
+    into a reaction measurement that no trade ever printed. Parsing all six fields is how that row is
+    recognized, so the general-interval branch below (which asks for five) stays a different function
+    rather than becoming a looser version of this one.
+    """
+
     payload = await _fetch_binance_payload(
         venue_symbol,
         venue=venue,
@@ -112,7 +106,7 @@ async def fetch_binance_bars(
         spot_base_url=spot_base_url,
         futures_base_url=futures_base_url,
     )
-    out: list[VenueBar] = []
+    out: list[Candle] = []
     for entry in payload:
         if not isinstance(entry, Sequence) or isinstance(entry, str | bytes) or len(entry) < 6:
             continue
@@ -126,17 +120,7 @@ async def fetch_binance_bars(
             continue
         if high < max(open_price, close) or low > min(open_price, close):
             continue
-        out.append(
-            VenueBar(
-                open_at_ms=open_at_ms,
-                close_at_ms=open_at_ms + CANDLE_INTERVAL_MS,
-                open=open_price,
-                high=high,
-                low=low,
-                close=close,
-                volume=volume,
-            )
-        )
+        out.append(Candle(open_at_ms=open_at_ms, close_at_ms=open_at_ms + CANDLE_INTERVAL_MS, close=close))
     return tuple(out)
 
 
@@ -197,62 +181,6 @@ async def fetch_hyperliquid_candles(
         if open_at_ms is None or close is None:
             continue
         out.append(Candle(open_at_ms=open_at_ms, close_at_ms=open_at_ms + interval_ms, close=close))
-    return tuple(out)
-
-
-async def fetch_hyperliquid_bars(
-    venue_symbol: str,
-    *,
-    venue: str,
-    start_ms: int,
-    end_ms: int,
-    transport: httpx.AsyncBaseTransport | None = None,
-    base_url: str = HYPERLIQUID_BASE_URL,
-) -> tuple[VenueBar, ...]:
-    """`coin` is the market key: `BTC` on the main perp, `@107` on spot, `xyz:AAPL` on a builder DEX."""
-
-    payload = await _fetch_hyperliquid_payload(
-        venue_symbol,
-        venue=venue,
-        start_ms=start_ms,
-        end_ms=end_ms,
-        interval=CANDLE_INTERVAL,
-        transport=transport,
-        base_url=base_url,
-    )
-    out: list[VenueBar] = []
-    for entry in payload:
-        if not isinstance(entry, Mapping):
-            continue
-        open_at_ms = _optional_int(entry.get("t"))
-        open_price = parse_price(entry.get("o"))
-        high = parse_price(entry.get("h"))
-        low = parse_price(entry.get("l"))
-        close = parse_price(entry.get("c"))
-        volume = _nonnegative_decimal(entry.get("v"))
-        if open_at_ms is None or None in (open_price, high, low, close, volume):
-            continue
-        if (
-            not isinstance(open_price, Decimal)
-            or not isinstance(high, Decimal)
-            or not isinstance(low, Decimal)
-            or not isinstance(close, Decimal)
-            or not isinstance(volume, Decimal)
-        ):
-            continue
-        if high < max(open_price, close) or low > min(open_price, close):
-            continue
-        out.append(
-            VenueBar(
-                open_at_ms=open_at_ms,
-                close_at_ms=open_at_ms + CANDLE_INTERVAL_MS,
-                open=open_price,
-                high=high,
-                low=low,
-                close=close,
-                volume=volume,
-            )
-        )
     return tuple(out)
 
 
@@ -452,11 +380,8 @@ __all__ = [
     "BINANCE_FUTURES_BASE_URL",
     "BINANCE_SPOT_BASE_URL",
     "HYPERLIQUID_BASE_URL",
-    "VenueBar",
-    "fetch_binance_bars",
     "fetch_binance_candles",
     "fetch_bitget_candles",
-    "fetch_hyperliquid_bars",
     "fetch_hyperliquid_candles",
     "fetch_lighter_candles",
     "fetch_okx_candles",

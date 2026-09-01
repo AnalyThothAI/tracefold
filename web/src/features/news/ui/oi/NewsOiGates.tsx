@@ -66,7 +66,8 @@ export function NewsOiGates({
         <PolicyTile
           /*
            * #376: source venue selects one code-owned execution binding. There is no venue priority
-           * and no cross-venue fallback. `RESEARCH_ONLY` remains only on historical ledger rows.
+           * and no cross-venue fallback. `RESEARCH_ONLY` was a fifth gate status for a venue that
+           * could be studied and not traded; no row ever carried it, and #460 removed the name.
            *
            * The rank ceiling and the per-symbol cooldown used to sit in this panel and are gone with
            * the gates themselves (#348) — a panel naming a threshold nothing enforces is worse than

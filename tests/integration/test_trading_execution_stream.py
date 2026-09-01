@@ -103,7 +103,7 @@ def _observation(
         "event_id": event * 64,
         "runtime_profile_id": "demo-v1",
         "runtime_release": "sha256:" + "1" * 64,
-        "execution_strategy": "oi-nautilus-v1",
+        "execution_strategy": "oi_nautilus_v1",
         "signal_id": signal_id,
         "command_id": command_id,
         "normalized_kind": kind,
@@ -252,7 +252,7 @@ def test_operator_ingress_leaves_active_profile_command_for_the_runtime() -> Non
         with conn.transaction():
             unresolved = repo.unresolved_operator_intents(
                 runtime_profile_id="demo-v1",
-                execution_strategy="oi-nautilus-v1",
+                execution_strategy="oi_nautilus_v1",
                 limit=10,
             )
         assert materialize_operator_intents(unresolved) == (command.value.model_copy(update={"seq": 1}),)
@@ -528,16 +528,16 @@ def test_activation_fence_and_final_disposition_drive_bounded_anti_join_reads() 
         command = materialize_operator_intent(command_row)
         with conn.transaction():
             first_signal_read = repo.unresolved_trade_signals(
-                runtime_profile_id="demo-v1", execution_strategy="oi-nautilus-v1", limit=10
+                runtime_profile_id="demo-v1", execution_strategy="oi_nautilus_v1", limit=10
             )
             second_signal_read = repo.unresolved_trade_signals(
-                runtime_profile_id="demo-v1", execution_strategy="oi-nautilus-v1", limit=10
+                runtime_profile_id="demo-v1", execution_strategy="oi_nautilus_v1", limit=10
             )
             first_command_read = repo.unresolved_operator_intents(
-                runtime_profile_id="demo-v1", execution_strategy="oi-nautilus-v1", limit=10
+                runtime_profile_id="demo-v1", execution_strategy="oi_nautilus_v1", limit=10
             )
             second_command_read = repo.unresolved_operator_intents(
-                runtime_profile_id="demo-v1", execution_strategy="oi-nautilus-v1", limit=10
+                runtime_profile_id="demo-v1", execution_strategy="oi_nautilus_v1", limit=10
             )
         assert materialize_trade_signals(first_signal_read) == (signal,)
         assert materialize_trade_signals(second_signal_read) == (signal,)
@@ -566,10 +566,10 @@ def test_activation_fence_and_final_disposition_drive_bounded_anti_join_reads() 
 
         with conn.transaction():
             final_signal_read = repo.unresolved_trade_signals(
-                runtime_profile_id="demo-v1", execution_strategy="oi-nautilus-v1", limit=10
+                runtime_profile_id="demo-v1", execution_strategy="oi_nautilus_v1", limit=10
             )
             final_command_read = repo.unresolved_operator_intents(
-                runtime_profile_id="demo-v1", execution_strategy="oi-nautilus-v1", limit=10
+                runtime_profile_id="demo-v1", execution_strategy="oi_nautilus_v1", limit=10
             )
         assert materialize_trade_signals(final_signal_read) == ()
         assert materialize_operator_intents(final_command_read) == ()

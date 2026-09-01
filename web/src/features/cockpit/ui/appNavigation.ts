@@ -1,10 +1,5 @@
-import { newsAlphaPath, newsOiPath, newsPath, tradingPath } from "@shared/routing/paths";
-import {
-  EventStreamIcon,
-  LeverageGaugeIcon,
-  TelemetryPulseIcon,
-  TradeFlowIcon,
-} from "@shared/ui/icons";
+import { newsOiPath, newsPath, tradingPath } from "@shared/routing/paths";
+import { EventStreamIcon, TelemetryPulseIcon, TradeFlowIcon } from "@shared/ui/icons";
 import type { LucideIcon } from "lucide-react";
 
 export type AppNavigationItem = {
@@ -12,7 +7,7 @@ export type AppNavigationItem = {
   badge?: "tradingEnvironment";
   children?: AppNavigationItem[];
   /** Which count from `AppNavigationCounts` this destination shows, if any. */
-  count?: "cases" | "events" | "oiFrames";
+  count?: "events" | "oiFrames";
   /** What the count is counting, as the link's own tooltip. Every destination counts a different thing. */
   countTitle?: string;
   icon: LucideIcon;
@@ -43,9 +38,11 @@ export type AppNavigationGroup = {
  * fronted is a CLI lane — `tracefold news review queue / evidence / submit` — writing the same
  * `news_reviews` rows the learning lane reads. One path in, not two.
  *
- * Alpha 判定 takes a workbench slot beside it. It and OI 来源与准入审计 read the same deterministic lane and answer
- * different questions with different thresholds: what Alpha decided, versus whether the telemetry
- * itself parsed and cleared the push gates.
+ * Alpha 判定 held a workbench slot beside 交易 and no longer exists (#460). It read the same
+ * `GET /api/trading/cases` the Trading workbench reads, and the one thing it showed that the workbench
+ * did not — a Case's frozen per-check evidence — moved into the Case card there. OI 来源与准入审计 stays
+ * separate because it answers a different question with different thresholds: whether the telemetry
+ * itself parsed and cleared the gates, not what Alpha then decided.
  *
  * One model, three presentations: the desktop sidebar, the tablet drawer and the phone tab bar all read this
  * list, so a destination cannot exist in one and be missing from another.
@@ -64,25 +61,13 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
       },
       {
         /*
-         * The Signal lane's own 24 h Case count comes from the existing `/api/trading/status` read. It was
-         * left blank when the slot landed on the
-         * theory that the honest figure needed a fourth poll; it does not, and an empty right edge beside
-         * three numbered siblings reads as "nothing came through here" rather than as "not counted".
-         *
-         * Cases, not frames: the destination is what the lane decided, and the frame population is the OI
-         * audit's own count one group below.
+         * A word, not a volume, and still only one of them after #460 folded Alpha 判定's slot into this
+         * destination. Inheriting that slot's `count: "cases"` was tried and reverted: the row is 204px,
+         * the badge already spends ~85px of it, and `交易` — a `flex: 1` label with `text-overflow:
+         * ellipsis` — came out as a single clipped glyph beside `7 RUNNING · disabled`. The count is the
+         * lesser of the two here anyway: "is any of this real money" is what a reader needs before
+         * opening it, and `CASES 24H` is the first figure on the page itself.
          */
-        count: "cases",
-        /* Not 「过去 24 小时」 like its two siblings: their fields are named `*_24h` and the window is part
-           of the field, where the Case aggregate follows the Signal lane's published `window_hours` and a
-           tooltip that hard-coded 24 would be wrong the first time an operator changed it. */
-        countTitle: "Alpha 成案 · 账本滚动窗口",
-        icon: LeverageGaugeIcon,
-        isActive: (pathname) => pathname === "/news/alpha",
-        label: "Alpha 判定",
-        to: newsAlphaPath(),
-      },
-      {
         badge: "tradingEnvironment",
         icon: TradeFlowIcon,
         isActive: (pathname) => pathname === "/trading",

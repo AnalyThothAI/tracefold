@@ -6074,7 +6074,6 @@
                 "enum": [
                   "DEFERRED",
                   "REJECTED",
-                  "RESEARCH_ONLY",
                   "CASE_CREATED",
                   "EXPIRED"
                 ],
@@ -6096,11 +6095,6 @@
               }
             ],
             "title": "Gate Version"
-          },
-          "research_only": {
-            "default": false,
-            "title": "Research Only",
-            "type": "boolean"
           },
           "source_key": {
             "title": "Source Key",

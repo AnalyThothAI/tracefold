@@ -248,6 +248,7 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
     from tracefold import trading
 
     assert trading.__all__ == [
+        "EXECUTION_STRATEGY_ID",
         "AlphaDecision",
         "Bar",
         "BinanceDemoReceipt",

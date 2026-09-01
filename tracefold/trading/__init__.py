@@ -7,6 +7,7 @@ only durable facts shared with application seams.
 from __future__ import annotations
 
 from .contracts import (
+    EXECUTION_STRATEGY_ID,
     AlphaDecision,
     Bar,
     CaseState,
@@ -31,6 +32,7 @@ from .operator_control import (
 from .storage.execution_stream import PreparedOperatorIntent, prepare_execution_observations
 
 __all__ = [
+    "EXECUTION_STRATEGY_ID",
     "AlphaDecision",
     "Bar",
     "BinanceDemoReceipt",

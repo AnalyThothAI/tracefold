@@ -249,9 +249,81 @@
     font-size: var(--font-size-meta);
   }
 
+  /*
+   * One Case's frozen evidence, moved off `/news/alpha` with #460.
+   *
+   * A Case row is a button now, so it needs the surrounding `.trading-current-row` geometry back:
+   * the element defaults reset the border, background and text alignment a `<button>` brings, and
+   * `min-width` keeps it on the same horizontal scroll track as the rows above it.
+   */
+  .trading-case-row {
+    width: 100%;
+    border-width: 0 0 1px;
+    border-style: solid;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-size: var(--font-size-mono-meta);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .trading-case-row[data-selected] {
+    background: var(--surface-raised);
+  }
+
+  .trading-case-detail {
+    display: grid;
+    gap: 12px;
+    padding: 12px 14px;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .trading-case-checks {
+    display: grid;
+    gap: 4px;
+  }
+
+  .trading-case-check {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) auto minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: baseline;
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: var(--font-size-mono-meta);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .trading-case-check:last-child {
+    border-bottom: none;
+  }
+
+  .trading-case-check[data-passed="false"] {
+    color: var(--signal-caution);
+  }
+
+  .trading-case-facts {
+    display: grid;
+    gap: 3px;
+    margin: 0;
+    font-size: var(--font-size-mono-meta);
+  }
+
+  .trading-case-fact {
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+    color: var(--text-subtle);
+  }
+
   @media (max-width: 767px) {
     .trading-heading-aside {
       width: 100%;
+    }
+
+    .trading-case-check {
+      grid-template-columns: minmax(0, 1fr) auto;
     }
   }
 }

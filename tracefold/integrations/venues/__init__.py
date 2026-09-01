@@ -19,18 +19,14 @@ from .binance import (
 )
 from .bitget import BITGET_BASE_URL, fetch_bitget_instruments
 from .candles import (
-    VenueBar,
-    fetch_binance_bars,
     fetch_binance_candles,
     fetch_bitget_candles,
-    fetch_hyperliquid_bars,
     fetch_hyperliquid_candles,
     fetch_lighter_candles,
     fetch_okx_candles,
 )
 from .delivery_prices import fetch_delivery_price_points
 from .errors import VenueExpectedError
-from .funding import VenueFundingRate, fetch_binance_funding_rates, fetch_hyperliquid_funding_rates
 from .hyperliquid import HYPERLIQUID_BASE_URL, fetch_hyperliquid_instruments
 from .lighter import LIGHTER_BASE_URL, fetch_lighter_instruments
 from .okx import OKX_BASE_URL, fetch_okx_instruments
@@ -61,13 +57,9 @@ __all__ = [
     "OKX_BASE_URL",
     "US_REFERENCE_BASE_URL",
     "US_REFERENCE_VENUE",
-    "VenueBar",
     "VenueCatalogTradabilityVerifier",
     "VenueExpectedError",
-    "VenueFundingRate",
-    "fetch_binance_bars",
     "fetch_binance_candles",
-    "fetch_binance_funding_rates",
     "fetch_binance_futures_day_quotes",
     "fetch_binance_futures_quotes",
     "fetch_binance_instruments",
@@ -78,9 +70,7 @@ __all__ = [
     "fetch_bitget_instruments",
     "fetch_bitget_recent_trades",
     "fetch_delivery_price_points",
-    "fetch_hyperliquid_bars",
     "fetch_hyperliquid_candles",
-    "fetch_hyperliquid_funding_rates",
     "fetch_hyperliquid_instruments",
     "fetch_hyperliquid_quotes",
     "fetch_hyperliquid_recent_trades",

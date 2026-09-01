@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from tracefold.platform.postgres.audit import ReadQuerySpec
+from tracefold.trading.contracts import EXECUTION_STRATEGY_ID
 
 from .execution_stream_sql import UNRESOLVED_OPERATOR_INTENTS_SQL, UNRESOLVED_TRADE_SIGNALS_SQL
 
@@ -10,7 +11,7 @@ from .execution_stream_sql import UNRESOLVED_OPERATOR_INTENTS_SQL, UNRESOLVED_TR
 def execution_stream_query_specs(
     *,
     runtime_profile_id: str = "query-audit-disabled",
-    execution_strategy: str = "oi-nautilus-v1",
+    execution_strategy: str = EXECUTION_STRATEGY_ID,
 ) -> tuple[ReadQuerySpec, ...]:
     params = (execution_strategy, runtime_profile_id, 100)
     return (

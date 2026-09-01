@@ -29,6 +29,19 @@ const tradingArchetype = {
   settled: (page: Page) => page.getByRole("heading", { name: "执行观察" }),
 } as const;
 
+/*
+ * The state `/news/alpha` used to own (#460): one Case open, with the frozen check table and the frozen
+ * config beneath it. Kept as its own archetype rather than folded into `trading` because the two are
+ * different pictures — a status page of six ledgers, and that page with a document expanded inside one
+ * of them — and a single baseline could only hold one of them.
+ */
+const tradingCaseArchetype = {
+  name: "trading-case",
+  path: "/trading?case=case-hype",
+  ready: (page: Page) => page.getByRole("region", { name: /^案例 / }),
+  settled: (page: Page) => page.getByRole("heading", { name: /^冻结判定证据 / }),
+} as const;
+
 const symbolArchetype = {
   // The token page composes several endpoints into one column, including the Signal lane's Case/Signal
   // projection. The baseline keeps the identity band, rank window, Alpha 复盘 and
@@ -51,14 +64,6 @@ const archetypes = [
     path: "/news/events/evt-global-policy",
     ready: (page: Page) => page.locator(".news-detail-hero"),
     settled: (page: Page) => page.locator(".news-timeline-step").first(),
-  },
-  {
-    // #256: a list of cases beside one case in full. The baseline is what keeps the two measures from
-    // drifting apart, and what would catch the pane silently disappearing at a viewport.
-    name: "alpha",
-    path: "/news/alpha",
-    ready: (page: Page) => page.getByRole("region", { name: "案例列表" }),
-    settled: (page: Page) => page.getByRole("region", { name: /^案例 / }),
   },
   {
     name: "status",
@@ -90,7 +95,7 @@ test("freezes the OI monitor at every project viewport", async ({ page }) => {
  */
 test("freezes the Alpha and execution pages at every project viewport", async ({ page }) => {
   await page.clock.setFixedTime(new Date("2026-08-25T12:00:00Z"));
-  await freezeArchetypes(page, [symbolArchetype, tradingArchetype]);
+  await freezeArchetypes(page, [symbolArchetype, tradingArchetype, tradingCaseArchetype]);
 });
 
 async function freezeArchetypes(
@@ -98,6 +103,7 @@ async function freezeArchetypes(
   routes: readonly (
     | typeof oiArchetype
     | typeof tradingArchetype
+    | typeof tradingCaseArchetype
     | typeof symbolArchetype
     | (typeof archetypes)[number]
   )[],
@@ -111,7 +117,7 @@ async function freezeArchetypes(
     }
     if (route.name === "oi") await expectOiOverflowContract(page);
     if (route.name === "trading") await expectTradingOverflowContract(page);
-    if (route.name === "alpha") await expectLeverageScrollContract(page);
+    if (route.name === "trading-case") await expectTradingCaseOverflowContract(page);
     await waitForSettledFeedCount(page);
     await waitForStableWorkbench(page);
     await expect(page).toHaveScreenshot(`archetype-${route.name}.png`, {
@@ -133,35 +139,32 @@ async function freezeArchetypes(
 }
 
 /**
- * The case list is a bounded nested scroller (#280), which `docs/FRONTEND.md` allows only with a
- * reachability assertion behind it. Two things have to stay true and neither is visible in a screenshot:
- * the last card must be reachable inside the list, and the provenance line below the whole body must be
- * reachable on the page — the second is what `overscroll-behavior: contain` would have quietly broken.
+ * The Case detail sits inside the Case card, so it inherits `.trading-table`'s horizontal scroller
+ * (#460). Neither of these is visible in a screenshot: the frozen check table must not push the page
+ * itself sideways, and the last frozen-config row must stay reachable. The page is the only vertical
+ * scroller here, where `/news/alpha` had a bounded nested one that `overscroll-behavior: contain`
+ * could quietly turn into a wheel trap.
  */
-async function expectLeverageScrollContract(page: Page) {
-  const list = ".news-leverage-list";
-  const bounded = await page.evaluate((selector) => {
-    const el = document.querySelector<HTMLElement>(selector);
-    if (!el) return null;
+async function expectTradingCaseOverflowContract(page: Page) {
+  const widths = await page.evaluate(() => {
+    const route = document.querySelector<HTMLElement>(".center-column");
     return {
-      sticky: getComputedStyle(el).position === "sticky",
-      chains: getComputedStyle(el).overscrollBehaviorY !== "contain",
-      capped: el.clientHeight <= window.innerHeight,
+      documentClient: document.documentElement.clientWidth,
+      documentScroll: document.documentElement.scrollWidth,
+      routeClient: route?.clientWidth ?? 0,
+      routeScroll: route?.scrollWidth ?? 0,
     };
-  }, list);
-  expect(bounded).not.toBeNull();
-  expect(bounded?.chains, "the list must not trap the wheel above the funnel").toBe(true);
-  expect(bounded?.capped, "the list must not grow past the viewport").toBe(true);
-  // Desktop only: below 1280 the list is a plain block and the page is the only scroller.
-  if ((page.viewportSize()?.width ?? 0) >= 1280) expect(bounded?.sticky).toBe(true);
+  });
+  expect(widths.documentScroll).toBe(widths.documentClient);
+  expect(widths.routeScroll).toBe(widths.routeClient);
 
-  await expectScrollableToLastMeaningfulElement(page, list, `${list} > *:last-child`);
-  await expectScrollableToLastMeaningfulElement(page, ".center-column", ".news-leverage-source");
-  // Both scrollers, not just the page: reaching the last card scrolls the list itself, and a baseline
-  // taken from there would freeze a half-cropped first card as the intended look.
+  await expectScrollableToLastMeaningfulElement(
+    page,
+    ".center-column",
+    ".trading-case-detail > *:last-child",
+  );
   await page.evaluate(() => {
     document.querySelector(".center-column")?.scrollTo(0, 0);
-    document.querySelector(".news-leverage-list")?.scrollTo(0, 0);
   });
 }
 

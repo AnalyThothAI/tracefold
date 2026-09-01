@@ -12,7 +12,12 @@ from tracefold.trading.notification_policy import (
     notifiable_policy_rows,
 )
 
-from .query_sql import TRADING_STATUS_CASE_COUNTS_SQL, TRADING_STATUS_SIGNAL_COUNTS_SQL
+from .query_sql import (
+    TRADING_CASE_COUNTS_SQL,
+    TRADING_CASE_REASON_COUNTS_SQL,
+    TRADING_STATUS_CASE_COUNTS_SQL,
+    TRADING_STATUS_SIGNAL_COUNTS_SQL,
+)
 
 
 class QueryStorage:
@@ -33,18 +38,11 @@ class QueryStorage:
         return {key: int(value or 0) for key, value in values.items()}
 
     def case_counts(self, *, since_ms: int) -> dict[str, int]:
-        rows = self.conn.execute(
-            "SELECT state, count(*) AS n FROM trading_cases WHERE created_at_ms >= %s GROUP BY state",
-            (int(since_ms),),
-        ).fetchall()
+        rows = self.conn.execute(TRADING_CASE_COUNTS_SQL, (int(since_ms),)).fetchall()
         return {str(row["state"]): int(row["n"]) for row in rows}
 
     def case_reason_counts(self, *, since_ms: int) -> dict[str, int]:
-        rows = self.conn.execute(
-            "SELECT coalesce(policy_reason, 'undecided') AS reason, count(*) AS n "
-            "FROM trading_cases WHERE created_at_ms >= %s GROUP BY reason",
-            (int(since_ms),),
-        ).fetchall()
+        rows = self.conn.execute(TRADING_CASE_REASON_COUNTS_SQL, (int(since_ms),)).fetchall()
         return {str(row["reason"]): int(row["n"]) for row in rows}
 
     def console_cases(
