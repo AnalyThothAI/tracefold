@@ -1132,15 +1132,16 @@ class _MeteredLearningLM(dspy.BaseLM):  # type: ignore[misc]
                 if not isinstance(response, dspy.LMResponse):
                     raise dspy.LMUnexpectedError("news_program_compile_lm_response_invalid")
             except BaseException as exc:
-                self._settle_error(exc, receipt_index=receipt_index)
+                receipt_verified = self._settle_error(exc, receipt_index=receipt_index)
                 if _is_retryable_lm_failure(exc) and attempt < _NUM_RETRIES:
                     self.transport_retries += 1
                     last = exc
                     continue
                 if not isinstance(exc, LMOutputTruncatedError):
                     self.transport_failures += 1
-                terminal = self._terminal_error(exc)
-                if not self._is_candidate_failure(exc):
+                candidate_failure = self._is_candidate_failure(exc, receipt_verified=receipt_verified)
+                terminal = exc if candidate_failure else self._terminal_error(exc)
+                if not candidate_failure:
                     self._meter.remember_terminal(terminal)
                 if terminal is exc:
                     raise
@@ -1159,15 +1160,16 @@ class _MeteredLearningLM(dspy.BaseLM):  # type: ignore[misc]
                 if not isinstance(response, dspy.LMResponse):
                     raise dspy.LMUnexpectedError("news_program_compile_lm_response_invalid")
             except BaseException as exc:
-                self._settle_error(exc, receipt_index=receipt_index)
+                receipt_verified = self._settle_error(exc, receipt_index=receipt_index)
                 if _is_retryable_lm_failure(exc) and attempt < _NUM_RETRIES:
                     self.transport_retries += 1
                     last = exc
                     continue
                 if not isinstance(exc, LMOutputTruncatedError):
                     self.transport_failures += 1
-                terminal = self._terminal_error(exc)
-                if not self._is_candidate_failure(exc):
+                candidate_failure = self._is_candidate_failure(exc, receipt_verified=receipt_verified)
+                terminal = exc if candidate_failure else self._terminal_error(exc)
+                if not candidate_failure:
                     self._meter.remember_terminal(terminal)
                 if terminal is exc:
                     raise
@@ -1176,7 +1178,7 @@ class _MeteredLearningLM(dspy.BaseLM):  # type: ignore[misc]
             return response
         raise last if last is not None else RuntimeError("news_program_compile_lm_retry_invariant")
 
-    def _settle_error(self, exc: BaseException, *, receipt_index: int | None) -> None:
+    def _settle_error(self, exc: BaseException, *, receipt_index: int | None) -> bool:
         # GEPA is fixed to one worker. The audited LM writes this physical provider-success receipt before
         # raising truncation, so learning can settle the exact answer without changing the production
         # execution envelope or fabricating a second provider call.
@@ -1191,20 +1193,19 @@ class _MeteredLearningLM(dspy.BaseLM):  # type: ignore[misc]
                     and receipt.error_code == "news_program_lm_output_truncated"
                 ):
                     self._meter.after_receipt(self._role, receipt)
-                    return
+                    return True
         self._meter.after_provider_failure(self._role, provider_reached=_provider_reached(exc))
+        return False
 
     def _terminal_error(self, exc: BaseException) -> BaseException:
         if _is_retryable_lm_failure(exc):
             return OptimizationRunTerminated(f"news_program_compile_{self._role}_provider_unavailable")
         if isinstance(exc, LMOutputTruncatedError):
-            if self._role == "task":
-                return exc
             return OptimizationRunTerminated(f"news_program_compile_{self._role}_model_output_truncated")
         return exc
 
-    def _is_candidate_failure(self, exc: BaseException) -> bool:
-        return self._role == "task" and isinstance(exc, LMOutputTruncatedError)
+    def _is_candidate_failure(self, exc: BaseException, *, receipt_verified: bool) -> bool:
+        return receipt_verified and self._role == "task" and isinstance(exc, LMOutputTruncatedError)
 
 
 @dataclass(frozen=True)

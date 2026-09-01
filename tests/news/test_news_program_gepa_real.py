@@ -357,5 +357,8 @@ def test_candidate_task_truncation_is_scored_unsafe_without_terminating_gepa() -
     ]
     assert len(truncated_indexes) == 1
     truncated_index = truncated_indexes[0]
-    assert ledger.receipts[truncated_index].terminal_disposition == "provider_success"
+    truncated = ledger.receipts[truncated_index]
+    assert truncated.terminal_disposition == "provider_success"
+    assert (truncated.input_tokens, truncated.output_tokens, truncated.total_tokens) == (11, 7, 18)
+    assert truncated.provider_cost_microusd == 3
     assert any(receipt.model_binding == "task" for receipt in ledger.receipts[truncated_index + 1 :])

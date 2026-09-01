@@ -218,7 +218,7 @@ def test_budget_meter_refuses_every_call_after_a_terminal_error() -> None:
     assert meter.task_model_calls == 0
 
 
-def test_truncated_task_output_remains_a_receiptable_candidate_failure() -> None:
+def test_unreceipted_task_truncation_remains_a_run_termination() -> None:
     task = _TruncatedRoleLM("task")
     meter = _BudgetMeter(
         OptimizationBudget(
@@ -234,14 +234,14 @@ def test_truncated_task_output_remains_a_receiptable_candidate_failure() -> None
     )
     metered = _MeteredLearningLM(task, meter=meter, role="task")
 
-    with pytest.raises(LMOutputTruncatedError, match="news_program_lm_output_truncated"):
+    with pytest.raises(OptimizationRunTerminated, match="news_program_compile_task_model_output_truncated"):
         metered(messages=[{"role": "user", "content": "classify"}])
 
     assert meter.task_model_calls == 1
     assert meter.task_total_tokens == 0
     assert meter.task_cost_microusd == 10
     assert meter.imputed_cost_calls == 1
-    assert meter.first_terminal_error is None
+    assert isinstance(meter.first_terminal_error, OptimizationRunTerminated)
     assert metered.transport_failures == 0
 
 
