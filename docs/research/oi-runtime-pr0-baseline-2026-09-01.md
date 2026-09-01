@@ -69,7 +69,7 @@ Reproduce the complete machine-readable schema, including explicit
 uv run pytest -q -s tests/integration/test_nautilus_runtime_pr0_baseline.py
 ```
 
-The diagnostic refuses a dirty tracked tree. It also writes the same JSON to
+The diagnostic refuses a dirty worktree, including untracked source. It also writes the same JSON to
 `artifacts/scheduled/oi-runtime-pr0-baseline.json`, which the scheduled workflow
 uploads even when pytest output capture is enabled. RSS is the current process
 value before and after this diagnostic plus their delta; it is not the

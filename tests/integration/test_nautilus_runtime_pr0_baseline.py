@@ -154,15 +154,15 @@ def _require_clean_tracked_tree() -> str:
         capture_output=True,
         text=True,
     ).stdout.strip()
-    tracked_status = subprocess.run(
-        ["git", "status", "--short", "--untracked-files=no"],
+    worktree_status = subprocess.run(
+        ["git", "status", "--short", "--untracked-files=all"],
         cwd=_ROOT,
         check=True,
         capture_output=True,
         text=True,
     ).stdout.strip()
-    if tracked_status:
-        raise RuntimeError("oi_runtime_pr0_baseline_dirty_tracked_tree")
+    if worktree_status:
+        raise RuntimeError("oi_runtime_pr0_baseline_dirty_worktree")
     return measured_git_sha
 
 
