@@ -210,12 +210,6 @@ class OiFuturesRiskPolicy:
     ) -> RiskDecision:
         if facts.unexpected_exposure:
             return RiskDecision("halt", "unexpected_exposure")
-        if facts.market_observed_at_ns > now_ns:
-            return RiskDecision("halt", "market_clock_invalid")
-        if facts.account_observed_at_ns > now_ns:
-            return RiskDecision("halt", "account_clock_invalid")
-        if facts.reconciliation_observed_at_ns > now_ns:
-            return RiskDecision("halt", "reconciliation_clock_invalid")
         if now_ns - facts.market_observed_at_ns > self.limits.market_stale_after_ns:
             return RiskDecision("halt", "market_stale")
         if now_ns - facts.account_observed_at_ns > self.limits.account_stale_after_ns:
