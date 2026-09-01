@@ -347,3 +347,18 @@ def test_day_start_baseline_has_stable_identity_and_exact_restart_value() -> Non
     assert first == restarted
     assert factory.day_start_event_id("2030-03-17") == observation.event_id
     assert factory.day_start_event_id("2030-03-18") != observation.event_id
+
+
+def test_day_start_baseline_preserves_venue_equity_beyond_micros() -> None:
+    factory = _factory()
+    equity = Decimal("1000.12345678")
+
+    first, observation = factory.day_start_baseline(
+        utc_day="2030-03-17",
+        equity_usd=equity,
+        recorded_at_ns=NOW_NS,
+    )
+    restarted = day_start_baseline_from_observation(observation)
+
+    assert first.equity_usd == equity
+    assert restarted.equity_usd == equity
