@@ -1,7 +1,7 @@
-"""Opt-in #475 PR-0 measurement against isolated PostgreSQL and pinned Nautilus seams.
+"""Opt-in #475 current Runtime measurement against PostgreSQL and pinned Nautilus seams.
 
-This diagnostic establishes a before-change baseline; it does not tune production cadence
-or call Binance. Run it explicitly with ``-s`` and copy only the redacted JSON receipt.
+The immutable PR-0 receipt remains under ``docs/research``. This scheduled diagnostic
+measures the checked-out Runtime for like-for-like comparisons and never calls Binance.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from pathlib import Path
 from threading import Condition, Event
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -57,16 +58,16 @@ _BURST_SIZES = (1, 10, 100)
 _REPEATS = 6
 _REPAIR_SECONDS = 0.2
 _UI_WINDOW_SECONDS = 15.0
-_BASELINE_SOURCE_MAIN = "f495a9fc0d0ba0d528e40b588e76108d80cdfefe"
 _ROOT = Path(__file__).resolve().parents[2]
-_SCHEDULED_RECEIPT = _ROOT / "artifacts/scheduled/oi-runtime-pr0-baseline.json"
+_PR0_BASELINE_RECEIPT = "docs/research/oi-runtime-pr0-baseline-2026-09-01.json"
+_SCHEDULED_RECEIPT = _ROOT / "artifacts/scheduled/oi-runtime-input-diagnostic.json"
 
 _OWNER_MATRIX = (
     {
         "fact": "unresolved_signal_command_read",
         "owner": "OiRuntimeDatabaseBridge._cycle",
         "authority": "PostgreSQL durable indexed anti-join reads",
-        "repair": "production fixed 200 ms cycle; the unused LISTEN loop is the PR-A duplicate to remove",
+        "repair": "the same Bridge owns LISTEN wake and bounded 200 ms indexed-query repair",
         "source": "tracefold/app/nautilus/oi_runtime.py",
         "symbol": "OiRuntimeDatabaseBridge._cycle",
     },
@@ -140,6 +141,11 @@ def _p95(values: list[float]) -> float:
     return ordered[max(0, round(0.95 * len(ordered) + 0.499999) - 1)]
 
 
+def _discard_wake(_conn: object, timeout_seconds: float) -> bool:
+    time.sleep(timeout_seconds)
+    return False
+
+
 def _sha(value: str) -> str:
     import hashlib
 
@@ -162,7 +168,7 @@ def _require_clean_tracked_tree() -> str:
         text=True,
     ).stdout.strip()
     if worktree_status:
-        raise RuntimeError("oi_runtime_pr0_baseline_dirty_worktree")
+        raise RuntimeError("oi_runtime_input_diagnostic_dirty_worktree")
     return measured_git_sha
 
 
@@ -213,7 +219,7 @@ def _append_workload(
     with repo.conn.transaction():
         for index in range(size):
             identity = _sha(f"signal:{seed}:{index}")
-            case_id = f"baseline-{seed}-{index}"
+            case_id = f"runtime-input-{seed}-{index}"
             repo.conn.execute(
                 """
                 INSERT INTO trading_cases (
@@ -223,8 +229,8 @@ def _append_workload(
                   updated_at_ms, strategy_id, strategy_version, strategy_config_digest,
                   capital_disposition, capital_reason
                 ) VALUES (
-                  %s, %s, 'oi', %s, '[]'::jsonb, '{"baseline":"475-pr0"}'::jsonb,
-                  %s, 'SIGNAL_EMITTED', 'long', 'baseline', %s, %s, %s, %s,
+                  %s, %s, 'oi', %s, '[]'::jsonb, '{"diagnostic":"475-runtime-input"}'::jsonb,
+                  %s, 'SIGNAL_EMITTED', 'long', 'runtime_input_diagnostic', %s, %s, %s, %s,
                   'source_native_oi_smart_money_long_v4', 'source_native_oi_smart_money_long_v4',
                   %s, 'not_applicable', NULL
                 )
@@ -232,7 +238,7 @@ def _append_workload(
                 (
                     case_id,
                     f"crypto:{index}",
-                    f"baseline-source:{seed}:{index}",
+                    f"runtime-input-source:{seed}:{index}",
                     _sha(f"manifest:{seed}:{index}"),
                     now_ns // 1_000_000,
                     now_ns // 1_000_000,
@@ -259,8 +265,8 @@ def _append_workload(
                     target_profile_id=profile,
                     action="pause_entries",
                     scope="entries",
-                    reason="475 PR-0 baseline",
-                    operator_identity="diagnostic:475-pr0",
+                    reason="475 Runtime input diagnostic",
+                    operator_identity="diagnostic:475-runtime-input",
                     authentication_identity="diagnostic:isolated-postgres",
                     requested_at_ns=now_ns,
                     expires_at_ns=now_ns + 60_000_000_000,
@@ -352,8 +358,8 @@ def _stream_samples(settings: Settings) -> tuple[dict[str, Any], int]:
             dequeue_ms: list[float] = []
             for repeat in range(_REPEATS):
                 seed = f"{size}-{repeat}"
-                profile = f"baseline-475-{size}-{repeat}"
-                slot = f"baseline-slot-{size}-{repeat}"
+                profile = f"runtime-input-475-{size}-{repeat}"
+                slot = f"runtime-input-slot-{size}-{repeat}"
                 _activate(repo, profile=profile, slot=slot, now_ns=NOW_NS + repeat)
                 client = ExecutionSignalClient(runtime_profile_id=profile, execution_strategy="oi_nautilus_v1")
                 bridge = _runtime_bridge(
@@ -365,8 +371,8 @@ def _stream_samples(settings: Settings) -> tuple[dict[str, Any], int]:
                 bridge.start()
                 try:
                     _wait_until_bridge_connects(bridge)
-                    # Commit only after the first production cycle has definitely finished,
-                    # so admission must traverse the next 200 ms repair cadence.
+                    # Commit at one fixed phase after a completed production cycle so the
+                    # transaction's NOTIFY measures the normal wake path, not construction time.
                     _wait_until_initial_cycle_finishes(bridge)
                     _append_workload(
                         repo,
@@ -398,15 +404,15 @@ def _stream_samples(settings: Settings) -> tuple[dict[str, Any], int]:
                     assert not bridge.connected
             by_burst[str(size)] = {
                 "samples": _REPEATS,
-                "delivery_path": "production_fixed_poll",
+                "delivery_path": "production_listen_notify_with_indexed_repair",
                 "poll_cadence_ms": int(_REPAIR_SECONDS * 1_000),
                 "persisted_to_dequeued_p95_ms": round(_p95(dequeue_ms), 3),
                 "reader_calls_per_cycle": 2,
                 "pending_identity_duplicates": 0,
             }
 
-        profile = "baseline-475-missed-wake"
-        slot = "baseline-slot-repair"
+        profile = "runtime-input-475-missed-wake"
+        slot = "runtime-input-slot-repair"
         _activate(repo, profile=profile, slot=slot, now_ns=NOW_NS + 100)
         client = ExecutionSignalClient(runtime_profile_id=profile, execution_strategy="oi_nautilus_v1")
         bridge = _runtime_bridge(
@@ -415,29 +421,33 @@ def _stream_samples(settings: Settings) -> tuple[dict[str, Any], int]:
             account_slot=slot,
             signals=client,
         )
-        bridge.start()
-        try:
-            _wait_until_bridge_connects(bridge)
-            _wait_until_initial_cycle_finishes(bridge)
-            _append_workload(
-                repo,
-                profile=profile,
-                size=1,
-                seed="repair",
-                now_ns=NOW_NS + 100,
-                before_commit=lambda: _wait_until_next_cycle_finishes(bridge),
-            )
-            committed = time.perf_counter()
-            _wait_until_bridge_delivers(bridge, client, expected_count=2)
-            repaired_ms = (time.perf_counter() - committed) * 1_000
-        finally:
-            bridge.stop()
-            bridge.join(2.0)
-            assert not bridge.connected
+        with patch(
+            "tracefold.app.nautilus.oi_runtime.wait_for_execution_stream_wake",
+            side_effect=_discard_wake,
+        ):
+            bridge.start()
+            try:
+                _wait_until_bridge_connects(bridge)
+                _wait_until_initial_cycle_finishes(bridge)
+                _append_workload(
+                    repo,
+                    profile=profile,
+                    size=1,
+                    seed="repair",
+                    now_ns=NOW_NS + 100,
+                    before_commit=lambda: _wait_until_next_cycle_finishes(bridge),
+                )
+                committed = time.perf_counter()
+                _wait_until_bridge_delivers(bridge, client, expected_count=2)
+                repaired_ms = (time.perf_counter() - committed) * 1_000
+            finally:
+                bridge.stop()
+                bridge.join(2.0)
+                assert not bridge.connected
         return (
             {
                 "status": "observed",
-                "production_delivery_path": "fixed_poll_without_listener",
+                "production_delivery_path": "listen_notify_with_indexed_timeout_repair",
                 "bursts": by_burst,
                 "missed_wake_repair_ms": round(repaired_ms, 3),
                 "repair_cadence_ms": int(_REPAIR_SECONDS * 1_000),
@@ -452,9 +462,9 @@ def _stream_samples(settings: Settings) -> tuple[dict[str, Any], int]:
 def _audit_sample() -> dict[str, Any]:
     conn = connect_postgres_test(read_only=False)
     try:
-        profile = "baseline-475-audit"
+        profile = "runtime-input-475-audit"
         repo = TradingRepository(conn)
-        _activate(repo, profile=profile, slot="baseline-slot-audit", now_ns=NOW_NS + 200)
+        _activate(repo, profile=profile, slot="runtime-input-slot-audit", now_ns=NOW_NS + 200)
         repos = repositories_for_connection(conn)
         signals = ExecutionSignalClient(runtime_profile_id=profile, execution_strategy="oi_nautilus_v1")
         sink = AuditSink(factory=ObservationFactory(profile, "nautilus-1.231.0+oi-v1", "oi_nautilus_v1"))
@@ -466,7 +476,7 @@ def _audit_sample() -> dict[str, Any]:
                     observed_at_ns=NOW_NS + index,
                     summary={"sample": index},
                     payload={"sample": index},
-                    event_identity=f"baseline:{index}",
+                    event_identity=f"runtime-input:{index}",
                 )
             )
         queued_bytes = sink.queued_bytes
@@ -526,7 +536,7 @@ def _runtime_lifecycle_sample() -> dict[str, Any]:
 
 
 def _http_sample(tmp_path: Path) -> dict[str, Any]:
-    settings = Settings(ws_token="475-baseline", storage=postgres_settings_storage())
+    settings = Settings(ws_token="475-runtime-input", storage=postgres_settings_storage())
     settings.set_config_dir(tmp_path / "app-home")
     app = create_app(settings=settings)
     latencies: list[float] = []
@@ -534,7 +544,7 @@ def _http_sample(tmp_path: Path) -> dict[str, Any]:
     with TestClient(app) as client:
         while time.perf_counter() < deadline:
             started = time.perf_counter()
-            response = client.get("/api/trading/status", params={"token": "475-baseline"})
+            response = client.get("/api/trading/status", params={"token": "475-runtime-input"})
             latencies.append((time.perf_counter() - started) * 1_000)
             assert response.status_code == 200
             time.sleep(0.5)
@@ -547,10 +557,10 @@ def _http_sample(tmp_path: Path) -> dict[str, Any]:
     }
 
 
-def test_emit_pr0_runtime_baseline(tmp_path: Path) -> None:
+def test_emit_runtime_input_diagnostic(tmp_path: Path) -> None:
     measured_git_sha = _require_clean_tracked_tree()
     rss_before = _current_rss_bytes()
-    settings = Settings(ws_token="475-baseline", storage=postgres_settings_storage())
+    settings = Settings(ws_token="475-runtime-input", storage=postgres_settings_storage())
     settings.set_config_dir(tmp_path / "bridge-home")
     before = resource.getrusage(resource.RUSAGE_SELF)
     stream, max_connections = _stream_samples(settings)
@@ -560,8 +570,8 @@ def test_emit_pr0_runtime_baseline(tmp_path: Path) -> None:
     after = resource.getrusage(resource.RUSAGE_SELF)
     rss_after = _current_rss_bytes()
     report = {
-        "schema_version": "tracefold_oi_runtime_pr0_baseline_v1",
-        "baseline_source_main": _BASELINE_SOURCE_MAIN,
+        "schema_version": "tracefold_oi_runtime_input_diagnostic_v1",
+        "comparison_baseline_receipt": _PR0_BASELINE_RECEIPT,
         "measured_git_sha": measured_git_sha,
         "captured_at": datetime.now(UTC).isoformat(),
         "environment": {

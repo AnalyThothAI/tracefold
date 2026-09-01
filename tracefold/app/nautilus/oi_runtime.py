@@ -21,7 +21,12 @@ from tracefold.integrations.nautilus.oi_runtime.audit_sink import (
 )
 from tracefold.integrations.nautilus.oi_runtime.config import OiRuntimeProfile
 from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
-from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient, poll_execution_inputs_once
+from tracefold.integrations.nautilus.oi_runtime.signal_client import (
+    ExecutionSignalClient,
+    install_execution_stream_listener,
+    poll_execution_inputs_once,
+    wait_for_execution_stream_wake,
+)
 from tracefold.integrations.nautilus.oi_runtime.strategy import RuntimeControlSnapshot
 from tracefold.trading import ExecutionObservationV1, OperatorIntentV1, TradeSignalV1
 from tracefold.trading.storage.execution_stream import (
@@ -104,11 +109,14 @@ class OiRuntimeDatabaseBridge:
         while not self._stop.is_set():
             try:
                 with open_repositories(self._settings, application_name="tracefold_nautilus_stream") as repos:
+                    install_execution_stream_listener(repos.conn, channel=execution_stream_channel())
                     with self._lock:
                         self._connected = True
                     while not self._stop.is_set():
                         self._cycle(repos)
-                        self._stop.wait(self._poll_seconds)
+                        if self._stop.is_set():
+                            break
+                        wait_for_execution_stream_wake(repos.conn, self._poll_seconds)
             except (InterfaceError, OperationalError):
                 with self._lock:
                     self._connected = False
