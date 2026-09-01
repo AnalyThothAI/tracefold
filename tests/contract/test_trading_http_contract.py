@@ -93,6 +93,27 @@ class _Trading:
         self.calls.append(("console_execution_observations", kwargs))
         return []
 
+    def console_operator_intents(self, **kwargs: Any) -> list[dict[str, Any]]:
+        self.calls.append(("console_operator_intents", kwargs))
+        return [
+            {
+                "seq": 4,
+                "command_id": "f" * 64,
+                "target_profile_id": "binance_usdm_primary",
+                "action": "pause_entries",
+                "scope": "entries",
+                "reason": "operator investigation",
+                "operator_identity": "telegram:user:7001",
+                "requested_at_ns": NOW * 1_000_000,
+                "expires_at_ns": (NOW + 300_000) * 1_000_000,
+                "confirmed": False,
+                "market_key": None,
+                "direction": None,
+                "disposition": "accepted",
+                "disposition_reason": "entries_paused",
+            }
+        ]
+
     def gate_decisions_since(self, **kwargs: Any) -> list[dict[str, Any]]:
         return []
 
@@ -163,13 +184,30 @@ def test_observations_are_empty_while_runtime_is_disabled(client: tuple[TestClie
     assert data["complete"] is True
 
 
+def test_commands_are_read_only_authenticated_intent_projections(client: tuple[TestClient, _Trading]) -> None:
+    api, _ = client
+    data = api.get("/api/trading/execution/commands", params={"token": TOKEN}).json()["data"]
+    command = data["commands"][0]
+
+    assert command["action"] == "pause_entries"
+    assert command["disposition"] == "accepted"
+    assert command["expired"] is False
+    for forbidden in ("authentication_identity", "confirmation_identity", "quantity", "leverage"):
+        assert forbidden not in command
+
+
 def test_retired_execution_routes_are_absent_and_current_routes_are_authenticated(
     client: tuple[TestClient, _Trading],
 ) -> None:
     api, _ = client
     for path in ("/api/trading/intents", "/api/trading/capabilities", "/api/trading/evidence"):
         assert api.get(path, params={"token": TOKEN}).status_code == 404
-    for path in ("/api/trading/cases", "/api/trading/signals", "/api/trading/execution/observations"):
+    for path in (
+        "/api/trading/cases",
+        "/api/trading/signals",
+        "/api/trading/execution/commands",
+        "/api/trading/execution/observations",
+    ):
         assert api.get(path).status_code == 401
 
 

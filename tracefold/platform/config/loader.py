@@ -278,6 +278,13 @@ news:
 
 trading:
   enabled: false
+  control:
+    enabled: false
+    telegram_bot_token_file: "telegram_bot_token"
+    telegram_webhook_secret_file: "telegram_webhook_secret"
+    allowed_chat_ids: []
+    allowed_user_ids: []
+    notification_chat_id:
   execution:
     mode: disabled
     profile_id: binance_usdm_primary

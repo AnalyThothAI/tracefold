@@ -19,7 +19,11 @@ from nautilus_trader.test_kit.stubs.data import TestDataStubs
 from psycopg.rows import dict_row
 
 from tests.nautilus_oi_runtime_fixtures import NOW_NS, oi_profile
-from tracefold.app.nautilus.oi_runtime import flush_audit_once, load_unresolved_trade_signals
+from tracefold.app.nautilus.oi_runtime import (
+    flush_audit_once,
+    load_unresolved_operator_intents,
+    load_unresolved_trade_signals,
+)
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
@@ -33,6 +37,9 @@ from tracefold.integrations.nautilus.oi_runtime.strategy import (
 
 def main() -> None:
     dsn = sys.argv[1]
+    mode = sys.argv[2] if len(sys.argv) > 2 else "signal"
+    if mode not in {"command", "signal"}:
+        raise ValueError("nautilus_process_fixture_mode_invalid")
     conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
     try:
         signals = ExecutionSignalClient(
@@ -40,7 +47,10 @@ def main() -> None:
             execution_strategy="oi_nautilus_v1",
         )
         repos = repositories_for_connection(conn)
-        admitted = signals.poll_once(partial(load_unresolved_trade_signals, repos))
+        admitted = signals.poll_once(partial(load_unresolved_trade_signals, repos)) if mode == "signal" else 0
+        admitted_commands = (
+            signals.poll_commands_once(partial(load_unresolved_operator_intents, repos)) if mode == "command" else 0
+        )
         profile = oi_profile()
         factory = ObservationFactory(profile.profile_id, profile.runtime_release, "oi_nautilus_v1")
         audit = AuditSink(factory=factory)
@@ -106,6 +116,7 @@ def main() -> None:
             json.dumps(
                 {
                     "admitted": admitted,
+                    "admitted_commands": admitted_commands,
                     "orders": [
                         {
                             "client_order_id": order.client_order_id.value,
@@ -118,6 +129,12 @@ def main() -> None:
                     "open_position_quantity": str(positions[0].quantity) if positions else None,
                     "flushed": flushed,
                     "pending": sorted(signals.pending_ids),
+                    "pending_commands": sorted(signals.pending_command_ids),
+                    "control": {
+                        "entries_paused": strategy.control_state().entries_paused,
+                        "emergency_halted": strategy.control_state().emergency_halted,
+                        "flatten_pending": list(strategy.control_state().flatten_pending),
+                    },
                 },
                 sort_keys=True,
             )

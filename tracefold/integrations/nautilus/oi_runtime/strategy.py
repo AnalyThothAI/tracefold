@@ -15,7 +15,7 @@ from nautilus_trader.model.enums import OrderSide, OrderType, PositionSide, Trig
 from nautilus_trader.model.identifiers import ClientId, ClientOrderId, PositionId
 from nautilus_trader.trading.strategy import Strategy
 
-from tracefold.trading import TradeSignalV1
+from tracefold.trading import OperatorIntentV1, TradeSignalV1
 
 from .audit_sink import AuditSink
 from .config import OiInstrumentRoute, OiRuntimeProfile
@@ -75,6 +75,13 @@ class RuntimeReadinessSnapshot:
     day_start_ready: bool
     unexpected_exposure: bool
     reconciliation_observed_at_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeControlSnapshot:
+    entries_paused: bool
+    emergency_halted: bool
+    flatten_pending: tuple[str, ...]
 
 
 class RuntimeReadiness:
@@ -221,6 +228,7 @@ class OiNautilusStrategy(Strategy):
         day_start: DayStartBaseline | None,
         startup_reconciliation: RuntimeReconciliationSnapshot | None = None,
         continuous_reconciliation: Callable[[], RuntimeReconciliationSnapshot | None] | None = None,
+        initial_control_state: RuntimeControlSnapshot | None = None,
         config: StrategyConfig | None = None,
     ) -> None:
         if profile.mode == "disabled":
@@ -253,6 +261,14 @@ class OiNautilusStrategy(Strategy):
         self._orders: dict[ClientOrderId, tuple[str, str]] = {}
         self._positions: dict[PositionId, str] = {}
         self._disposed: set[str] = set()
+        self._disposed_commands: set[str] = set()
+        control_state = initial_control_state or RuntimeControlSnapshot(False, False, ())
+        if control_state.flatten_pending:
+            raise ValueError("oi_runtime_initial_control_state_invalid")
+        self._entries_paused = control_state.entries_paused
+        self._emergency_halted = control_state.emergency_halted
+        self._pending_flatten: dict[str, OperatorIntentV1] = {}
+        self._flatten_accept_observed: set[str] = set()
 
     def on_start(self) -> None:
         if self._startup_reconciliation is not None:
@@ -277,6 +293,15 @@ class OiNautilusStrategy(Strategy):
     def on_timer(self, _event: object) -> None:
         self._refresh_continuous_reconciliation()
         for _ in range(_CALLBACK_BATCH):
+            command = self._signals.next_command_nowait()
+            if command is None:
+                break
+            try:
+                self._handle_command(command)
+            except _AuditBackpressure:
+                break
+        self._advance_pending_flatten()
+        for _ in range(_CALLBACK_BATCH):
             signal = self._signals.next_nowait()
             if signal is None:
                 break
@@ -293,6 +318,13 @@ class OiNautilusStrategy(Strategy):
             singleton_ready=bool(self._singleton_ready()),
             audit_ready=self._audit.can_accept_exposure(),
             day_start_ready=self._current_day_start() is not None,
+        )
+
+    def control_state(self) -> RuntimeControlSnapshot:
+        return RuntimeControlSnapshot(
+            entries_paused=self._entries_paused,
+            emergency_halted=self._emergency_halted,
+            flatten_pending=tuple(sorted(self._pending_flatten)),
         )
 
     def update_day_start(self, baseline: DayStartBaseline) -> None:
@@ -542,6 +574,7 @@ class OiNautilusStrategy(Strategy):
             account_observed_at_ns=snapshot.account_observed_at_ns,
             reconciliation_observed_at_ns=snapshot.reconciliation_observed_at_ns,
         )
+        self._complete_flatten_from_reconciliation(snapshot)
         return True
 
     def _recovered_protection_valid(
@@ -736,6 +769,12 @@ class OiNautilusStrategy(Strategy):
         if signal.expires_at_ns <= now_ns:
             self._dispose_signal(signal, "expired")
             return
+        if self._emergency_halted:
+            self._dispose_signal(signal, "operator_halt")
+            return
+        if self._entries_paused:
+            self._dispose_signal(signal, "operator_paused")
+            return
         exposure_ready = self._verify_owned_exposure()
         ready = self.readiness()
         if not exposure_ready or not ready.ready:
@@ -858,6 +897,118 @@ class OiNautilusStrategy(Strategy):
             return
         self._observe_order(state, order, "entry", "submitted")
         self._dispose_signal(signal, "accepted")
+
+    def _handle_command(self, command: OperatorIntentV1) -> None:
+        now_ns = int(self.clock.timestamp_ns())
+        if command.command_id in self._disposed_commands or command.command_id in self._pending_flatten:
+            return
+        if command.target_profile_id != self._profile.profile_id:
+            self._dispose_command(command, "rejected", "profile_mismatch")
+            return
+        if command.expires_at_ns <= now_ns:
+            self._dispose_command(command, "rejected", "expired")
+            return
+        if command.action == "pause_entries":
+            self._entries_paused = True
+            self._dispose_command(command, "accepted", "entries_paused")
+            return
+        if command.action == "resume_entries":
+            self._entries_paused = False
+            self._dispose_command(command, "accepted", "entries_resumed")
+            return
+        if command.action == "emergency_halt":
+            self._entries_paused = True
+            self._emergency_halted = True
+            self._dispose_command(command, "accepted", "emergency_halted")
+            return
+        if command.action == "manual_entry":
+            self._dispose_command(command, "rejected", "manual_entry_not_enabled")
+            return
+        if command.action != "flatten" or command.scope != "account":
+            self._dispose_command(command, "rejected", "flatten_scope_unsupported")
+            return
+        self._entries_paused = True
+        self._pending_flatten[command.command_id] = command
+        self._advance_pending_flatten()
+
+    def _advance_pending_flatten(self) -> None:
+        if not self._pending_flatten:
+            return
+        now_ns = int(self.clock.timestamp_ns())
+        for command_id, _command in tuple(self._pending_flatten.items()):
+            if command_id not in self._flatten_accept_observed:
+                accepted = self._observations.create(
+                    normalized_kind="readiness",
+                    command_id=command_id,
+                    occurred_at_ns=now_ns,
+                    observed_at_ns=now_ns,
+                    summary={"action": "flatten", "control_stage": "runtime_accepted"},
+                    payload={"command_id": command_id, "action": "flatten", "stage": "runtime_accepted"},
+                    event_identity="runtime_accepted",
+                )
+                if self._audit.offer(accepted):
+                    self._flatten_accept_observed.add(command_id)
+            for state in self._states.values():
+                if state.position_id is not None and state.position_quantity > 0:
+                    self.flatten_position(state.position_id)
+                elif not state.entry_order.is_closed:
+                    self.cancel_order(state.entry_order, client_id=ClientId("BINANCE"))
+
+    def _complete_flatten_from_reconciliation(self, snapshot: RuntimeReconciliationSnapshot) -> None:
+        if not self._pending_flatten or snapshot.executions:
+            return
+        if self.cache.positions_open(account_id=self._profile.account_id):
+            return
+        if self.cache.orders_open(account_id=self._profile.account_id) or self.cache.orders_inflight(
+            account_id=self._profile.account_id
+        ):
+            return
+        for command_id, command in tuple(self._pending_flatten.items()):
+            fresh_at_ns = min(snapshot.account_observed_at_ns, snapshot.reconciliation_observed_at_ns)
+            if fresh_at_ns <= command.requested_at_ns:
+                continue
+            completed = self._observations.create(
+                normalized_kind="control_disposition",
+                command_id=command_id,
+                occurred_at_ns=min(snapshot.account_observed_at_ns, snapshot.reconciliation_observed_at_ns),
+                observed_at_ns=max(snapshot.account_observed_at_ns, snapshot.reconciliation_observed_at_ns),
+                summary={"disposition": "completed", "reason": "binance_account_flat"},
+                payload={
+                    "command_id": command_id,
+                    "disposition": "completed",
+                    "reason": "binance_account_flat",
+                    "account_observed_at_ns": snapshot.account_observed_at_ns,
+                },
+                event_identity="final",
+            )
+            if not self._audit.offer(completed):
+                continue
+            self._pending_flatten.pop(command_id)
+            self._flatten_accept_observed.discard(command_id)
+            self._disposed_commands.add(command_id)
+
+    def _dispose_command(self, command: OperatorIntentV1, disposition: str, reason: str) -> None:
+        if command.command_id in self._disposed_commands:
+            return
+        now_ns = int(self.clock.timestamp_ns())
+        value = self._observations.create(
+            normalized_kind="control_disposition",
+            command_id=command.command_id,
+            occurred_at_ns=now_ns,
+            observed_at_ns=now_ns,
+            summary={"action": command.action, "disposition": disposition, "reason": reason},
+            payload={
+                "command_id": command.command_id,
+                "action": command.action,
+                "disposition": disposition,
+                "reason": reason,
+            },
+            event_identity="final",
+        )
+        if not self._audit.offer(value):
+            self._signals.retry_command(command)
+            raise _AuditBackpressure("oi_runtime_audit_backpressure")
+        self._disposed_commands.add(command.command_id)
 
     def _dispose_signal(self, signal: TradeSignalV1, reason: str) -> None:
         if signal.signal_id in self._disposed:
@@ -1348,6 +1499,7 @@ __all__ = [
     "OiNautilusStrategy",
     "RecoveredExecutionSeed",
     "RecoveredProtectionSeed",
+    "RuntimeControlSnapshot",
     "RuntimeReadiness",
     "RuntimeReadinessSnapshot",
     "RuntimeReconciliationSnapshot",

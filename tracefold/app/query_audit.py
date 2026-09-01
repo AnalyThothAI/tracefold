@@ -15,6 +15,7 @@ from tracefold.trading.storage.query_sql import (
     TRADING_CASE_COUNTS_SQL,
     TRADING_CASE_REASON_COUNTS_SQL,
     TRADING_CONSOLE_CASES_SQL,
+    TRADING_CONSOLE_COMMANDS_SQL,
     TRADING_CONSOLE_OBSERVATIONS_SQL,
     TRADING_CONSOLE_SIGNALS_SQL,
     TRADING_STATUS_CASE_COUNTS_SQL,
@@ -74,6 +75,7 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     ),
     "/api/trading/signals": ("trading_console_signals",),
     "/api/trading/execution/observations": ("trading_console_observations",),
+    "/api/trading/execution/commands": ("trading_console_commands",),
     "/api/trading/gate/{event_id}": ("trading_gate_decision_for_source_key",),
     # #269. The same admission ledger the event endpoint reads one row of, for a whole window — bounded
     # by 24 h and a hard row limit, like the two beside it.
@@ -217,6 +219,12 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="trading_console_observations",
             sql=TRADING_CONSOLE_OBSERVATIONS_SQL,
+            params={"since": since_ms * 1_000_000, "limit": 101},
+            max_read_return_amplification=20.0,
+        ),
+        ReadQuerySpec(
+            name="trading_console_commands",
+            sql=TRADING_CONSOLE_COMMANDS_SQL,
             params={"since": since_ms * 1_000_000, "limit": 101},
             max_read_return_amplification=20.0,
         ),

@@ -6,14 +6,19 @@ from typing import TYPE_CHECKING
 
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
+from tracefold.app.workers.operator_control import WorkersTelegramControl
+from tracefold.app.workers.trading_notifications import TradingNotificationWorker
 from tracefold.app.workers.wiring.database import WorkerTradingDatabase
 from tracefold.app.workers.wiring.news import _wire_news_pipeline
 from tracefold.app.workers.wiring.trading import (
     _wire_signal_lane,
 )
+from tracefold.integrations.telegram import TelegramTradingNotifier
+from tracefold.integrations.telegram_control import TelegramControlWebhook
 from tracefold.news.bus import BrokerBackpressure, BrokerUnavailable
 from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.platform.config.models import Settings
+from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.trading.signal_lane import SignalLane
 
@@ -28,6 +33,8 @@ class _Components:
     runtime_manifest_sha: str | None = None
     signal_lane: SignalLane | None = None
     telemetry: TelemetryRegistry | None = None
+    telegram_control: WorkersTelegramControl | None = None
+    trading_notifications: TradingNotificationWorker | None = None
 
 
 def _task_unavailable_reason(task_name: str | None, exc: BaseException) -> str:
@@ -79,6 +86,11 @@ async def _wire_components(
         await news_pipeline.register_runtime_manifest()
         runtime_manifest_sha = news_pipeline.runtime_manifest_sha
     trading_db = WorkerTradingDatabase(db)
+    telegram_control, trading_notifications = _wire_telegram_control(
+        settings=settings,
+        db=trading_db,
+        finite=finite,
+    )
     signal_lane = _wire_signal_lane(settings=settings, db=db, telemetry=telemetry)
     if signal_lane is None:
         now_ms = int(time.time() * 1_000)
@@ -100,4 +112,43 @@ async def _wire_components(
         runtime_manifest_sha=runtime_manifest_sha,
         signal_lane=signal_lane,
         telemetry=telemetry,
+        telegram_control=telegram_control,
+        trading_notifications=trading_notifications,
+    )
+
+
+def _wire_telegram_control(
+    *,
+    settings: Settings,
+    db: WorkerTradingDatabase,
+    finite: FiniteOperations,
+) -> tuple[WorkersTelegramControl | None, TradingNotificationWorker | None]:
+    control = settings.trading.control
+    if not control.enabled:
+        return None, None
+    secret_path = settings.trading_telegram_webhook_secret_file()
+    bot_token_path = settings.trading_telegram_bot_token_file()
+    if secret_path is None or bot_token_path is None:
+        raise RuntimeError("trading_control_secret_unavailable")
+    try:
+        webhook_secret = read_secure_secret_text(secret_path)
+        bot_token = read_secure_secret_text(bot_token_path)
+    except SecretFileError:
+        raise RuntimeError("trading_control_secret_unavailable") from None
+    chat_id = control.notification_chat_id
+    if chat_id is None:
+        raise RuntimeError("trading_control_notification_chat_unavailable")
+    try:
+        webhook = TelegramControlWebhook(
+            webhook_secret=webhook_secret,
+            allowed_chat_ids=frozenset(control.allowed_chat_ids),
+            allowed_user_ids=frozenset(control.allowed_user_ids),
+            target_profile_id=settings.trading.execution.profile_id,
+        )
+        notifier = TelegramTradingNotifier(bot_token=bot_token, chat_id=chat_id)
+    except ValueError as exc:
+        raise RuntimeError("trading_control_configuration_invalid") from exc
+    return (
+        WorkersTelegramControl(webhook=webhook, db=db),
+        TradingNotificationWorker(db=db, finite=finite, sender=notifier),
     )

@@ -17,7 +17,8 @@ positional arguments:
     config              print effective runtime configuration
     db                  database lifecycle commands
     news                News V3 broker, ReviewDesk, and learning commands
-    trading             read Alpha Cases, Signals, and execution observations
+    trading             inspect Trading facts and record bounded operator
+                        intent
     ops                 maintenance commands
 
 options:
@@ -745,14 +746,18 @@ options:
 ## `trading`
 
 ```
-usage: tracefold trading [-h] {status,cases,signals,observations} ...
+usage: tracefold trading [-h]
+                         {status,cases,signals,observations,commands,issue} ...
 
 positional arguments:
-  {status,cases,signals,observations}
+  {status,cases,signals,observations,commands,issue}
     status              show Alpha producer and disabled execution readiness
     cases               list Trading cases newest first
     signals             list engine-neutral TradeSignalV1 rows
     observations        list append-only Runtime observations
+    commands            list authenticated OperatorIntentV1 rows
+    issue               durably record one local OS-authenticated operator
+                        intent
 
 options:
   -h, --help            show this help message and exit
@@ -802,6 +807,41 @@ usage: tracefold trading observations [-h] [--limit LIMIT]
 options:
   -h, --help     show this help message and exit
   --limit LIMIT
+
+```
+
+## `trading commands`
+
+```
+usage: tracefold trading commands [-h]
+                                  [--action {pause_entries,resume_entries,emergency_halt,flatten,manual_entry}]
+                                  [--limit LIMIT]
+
+options:
+  -h, --help            show this help message and exit
+  --action {pause_entries,resume_entries,emergency_halt,flatten,manual_entry}
+  --limit LIMIT
+
+```
+
+## `trading issue`
+
+```
+usage: tracefold trading issue [-h] --request-id REQUEST_ID
+                               --requested-at-ns REQUESTED_AT_NS
+                               text
+
+positional arguments:
+  text                  closed slash command, for example '/pause maintenance'
+
+options:
+  -h, --help            show this help message and exit
+  --request-id REQUEST_ID
+                        stable caller identity; preserve it together with
+                        --requested-at-ns on retries
+  --requested-at-ns REQUESTED_AT_NS
+                        caller-sealed Unix nanosecond clock; preserve it on
+                        retries
 
 ```
 

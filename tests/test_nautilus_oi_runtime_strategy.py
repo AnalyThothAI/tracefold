@@ -17,7 +17,9 @@ from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from tests.nautilus_oi_runtime_fixtures import (
     ACCOUNT_ID,
     NOW_NS,
+    CommandRows,
     SignalRows,
+    operator_intent,
     registered_oi_strategy,
     trade_signal,
 )
@@ -119,6 +121,100 @@ def test_expired_duplicate_and_entry_gate_rejections_never_submit() -> None:
     blocked.strategy.on_timer(None)
     assert blocked.strategy.submitted == []
     assert blocked.strategy.readiness().reason == "singleton_unavailable"
+
+
+def test_pause_resume_and_halt_are_distinct_and_never_bypass_entry_risk() -> None:
+    pause = operator_intent(command_id="5" * 64)
+    paused = registered_oi_strategy(values=(trade_signal(),), commands=(pause,))
+    paused.strategy.on_timer(None)
+    assert paused.strategy.submitted == []
+    assert paused.strategy.control_state().entries_paused is True
+    assert paused.strategy.control_state().emergency_halted is False
+
+    resume = operator_intent(command_id="6" * 64, action="resume_entries")
+    resumed = registered_oi_strategy(values=(trade_signal(),), commands=(pause, resume))
+    resumed.strategy.on_timer(None)
+    assert len(resumed.strategy.submitted) == 1
+    assert resumed.strategy.control_state().entries_paused is False
+    assert resumed.strategy.control_state().emergency_halted is False
+
+    halt = operator_intent(command_id="7" * 64, action="emergency_halt", scope="account")
+    halted = registered_oi_strategy(values=(trade_signal(),), commands=(halt, resume))
+    halted.strategy.on_timer(None)
+    assert halted.strategy.submitted == []
+    assert halted.strategy.control_state().entries_paused is False
+    assert halted.strategy.control_state().emergency_halted is True
+
+
+def test_manual_entry_is_explicitly_rejected_without_quantity_or_leverage_path() -> None:
+    manual = operator_intent(
+        action="manual_entry",
+        scope="market",
+        market_key="crypto:perp:BTC:USDT",
+        direction="long",
+    )
+    context = registered_oi_strategy(commands=(manual,))
+
+    context.strategy.on_timer(None)
+
+    observations = context.audit.flush_once(lambda _values: None)
+    assert len(observations) == 1
+    assert observations[0].command_id == manual.command_id
+    assert observations[0].summary == {
+        "action": "manual_entry",
+        "disposition": "rejected",
+        "reason": "manual_entry_not_enabled",
+    }
+    assert context.strategy.submitted == []
+
+
+def test_flatten_is_runtime_accepted_but_not_complete_until_fresh_flat_reconciliation() -> None:
+    flatten = operator_intent(
+        command_id="8" * 64,
+        action="flatten",
+        scope="account",
+        requested_at_ns=NOW_NS - 1,
+    )
+    context = registered_oi_strategy(commands=(flatten,))
+
+    context.strategy.on_timer(None)
+
+    accepted = context.audit.flush_once(lambda _values: None)
+    assert len(accepted) == 1
+    assert accepted[0].normalized_kind == "readiness"
+    assert accepted[0].summary == {"action": "flatten", "control_stage": "runtime_accepted"}
+    assert context.strategy.control_state().flatten_pending == (flatten.command_id,)
+    assert context.signals.pending_command_ids == {flatten.command_id}
+
+    assert context.strategy.reconcile_runtime(
+        RuntimeReconciliationSnapshot(
+            runtime_profile_id=context.profile.profile_id,
+            account_observed_at_ns=NOW_NS + 1,
+            reconciliation_observed_at_ns=NOW_NS + 2,
+        )
+    )
+    completed = context.audit.flush_once(lambda _values: None)
+    assert len(completed) == 1
+    assert completed[0].normalized_kind == "control_disposition"
+    assert completed[0].summary == {"disposition": "completed", "reason": "binance_account_flat"}
+    assert context.strategy.control_state().flatten_pending == ()
+
+
+def test_flatten_submits_only_owned_reduce_only_exit_and_does_not_equal_halt() -> None:
+    context = registered_oi_strategy(values=(trade_signal(),))
+    context.strategy.on_timer(None)
+    _, position_id = _open_position(context)
+    flatten = operator_intent(command_id="9" * 64, action="flatten", scope="account")
+    context.signals.poll_commands_once(CommandRows(flatten))
+
+    context.strategy.on_timer(None)
+
+    exit_order = context.strategy.submitted[-1][0]
+    assert context.strategy.submitted[-1][1] == position_id
+    assert exit_order.order_type == OrderType.MARKET
+    assert exit_order.is_reduce_only is True
+    assert context.strategy.control_state().entries_paused is True
+    assert context.strategy.control_state().emergency_halted is False
 
 
 def test_restart_replay_queries_same_deterministic_client_id_without_resubmit() -> None:

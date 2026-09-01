@@ -103,15 +103,18 @@ key fails `extra="forbid"` rather than silently overriding the artifact.
 `make up` runs `tracefold init`. The command creates `~/.tracefold/` with mode
 `0700`, `logs/` and `cache/`, one config with a locally generated API bearer
 token (`ws_token`) but no external credentials, two PostgreSQL password files,
-and an empty Telegram token placeholder:
+and empty Telegram and Binance execution placeholders:
 
 ```text
 telegram_bot_token
+telegram_webhook_secret
+binance_usdm_api_key
+binance_usdm_api_secret
 postgres_password
 postgres_database_password
 ```
 
-The config, Telegram token placeholder, and all password files are mode `0600`.
+The config, Telegram placeholders, and all password files are mode `0600`.
 Ordinary `tracefold init` preserves an existing current-schema config, never
 rotates an existing password, and repairs the required permissions on every
 run. The sole content rewrite is the validated, backed-up, one-time #433-C
@@ -122,7 +125,7 @@ PostgreSQL passwords. Back up intentional config changes before using
 
 `tracefold init` is the sole default-config authority. There is no maintained
 static example or `.env` fallback. The generated default creates a local API
-token plus an empty `telegram_bot_token` placeholder but contains no live
+token plus empty `telegram_bot_token` and `telegram_webhook_secret` placeholders but contains no live
 model, OpenNews, Feishu, or Telegram credential, points
 `news.broker.url` at the compose RabbitMQ service, and leaves News push
 disabled. Edit only the operator-owned
@@ -147,8 +150,9 @@ The credentials a live deployment can hold are exactly: the OpenNews token
 `llm.base_url`, `llm.news_triage_model`, plus the optional
 `llm.news_reader_card`, `llm.news_triage_fallback`, and
 `llm.news_reader_card_fallback` triples), the RabbitMQ URL (`news.broker.url`), the
-one push provider's configuration (`news.push.*`), and the PostgreSQL role
-password files.
+one push provider's configuration (`news.push.*`), Trading control's Telegram
+bot token and webhook secret (`trading.control.*` file references), the Binance
+execution pair, and the PostgreSQL role password files.
 
 The product process is usable without optional live credentials, but affected
 lanes report explicit degradation or unavailable evidence:
@@ -432,7 +436,8 @@ paths, booleans, and diagnostic command status; do not paste the API token,
 model keys, provider passwords, or full config payloads into docs or chat.
 
 Alembic has one root: baseline `20260831_0340` and current head
-`20260901_0341`. A new empty PostgreSQL 18 database applies both in order.
+`20260901_0342`. A new empty PostgreSQL 18 database applies baseline, the
+`0341` Signal hard cut, and the additive `0342` Trading notification delivery ledger in order.
 Current source intentionally has no upgrade path from an earlier revision. To
 recover a pre-#449 backup, use the exact pre-cut image/source to restore and
 advance it to the old terminal `20260831_0340`, take a verified backup, perform

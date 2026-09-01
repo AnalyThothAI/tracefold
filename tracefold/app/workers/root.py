@@ -188,7 +188,11 @@ async def run_workers(settings: Settings) -> None:
 
         components = await _wire_components(settings=settings, db=db, finite=finite, telemetry=telemetry)
         probe_state.runtime_manifest_sha = components.runtime_manifest_sha
-        server = _probe_server(probe_state=probe_state, telemetry=telemetry)
+        server = _probe_server(
+            probe_state=probe_state,
+            telemetry=telemetry,
+            telegram_control=components.telegram_control,
+        )
 
         async with asyncio.TaskGroup() as group:
             business_tasks: list[asyncio.Task[Any]] = []
@@ -204,6 +208,7 @@ async def run_workers(settings: Settings) -> None:
                 news_pipeline=components.news_pipeline,
                 signal_lane=components.signal_lane,
                 telemetry=components.telemetry,
+                trading_notifications=components.trading_notifications,
             ):
                 business_tasks.append(
                     group.create_task(
@@ -480,11 +485,13 @@ def _probe_server(
     *,
     probe_state: _ProbeState,
     telemetry: TelemetryRegistry,
+    telegram_control: Any | None = None,
 ) -> uvicorn.Server:
     config = uvicorn.Config(
         _create_workers_probe_app(
             readiness=probe_state.payload,
             render_metrics=telemetry.render_prometheus_text,
+            telegram_control=None if telegram_control is None else telegram_control.handle,
         ),
         host="0.0.0.0",  # noqa: S104 -- published only on the host loopback by compose
         port=_WORKER_INTERNAL_PORT,
@@ -518,6 +525,8 @@ async def _graceful_cleanup(
             await _within(components.news_pipeline.drain(), started_at)
         if components.news_bus is not None:
             await _within(components.news_bus.close(), started_at)
+        if components.trading_notifications is not None:
+            components.trading_notifications.close()
         db.close_business_admission()
         if not await db.drain_business(timeout_seconds=_remaining(started_at)):
             raise RuntimeError("worker_database_business_drain_timeout")

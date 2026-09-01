@@ -125,6 +125,7 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     )
     assert catalog.query_routes["/api/trading/signals"] == ("trading_console_signals",)
     assert catalog.query_routes["/api/trading/execution/observations"] == ("trading_console_observations",)
+    assert catalog.query_routes["/api/trading/execution/commands"] == ("trading_console_commands",)
     assert not any(
         route.startswith(("/api/news/stories", "/api/news/brief", "/api/news/sources"))
         for route in catalog.query_routes

@@ -439,6 +439,129 @@ class TelegramNewsPushSender:
         self._client.close()
 
 
+class TelegramTradingNotifier:
+    """Send bounded execution observations to one operator-owned Telegram chat."""
+
+    def __init__(
+        self,
+        *,
+        bot_token: str,
+        chat_id: int,
+        transport: httpx.BaseTransport | None = None,
+        monotonic: Callable[[], float] | None = None,
+    ) -> None:
+        normalized_token = str(bot_token or "").strip()
+        if not _BOT_TOKEN_RE.fullmatch(normalized_token):
+            raise ValueError("trading_notification_telegram_bot_token_invalid")
+        if isinstance(chat_id, bool) or not isinstance(chat_id, int) or chat_id == 0:
+            raise ValueError("trading_notification_telegram_chat_id_invalid")
+        self._chat_id = chat_id
+        self._target_sha256 = hmac.new(
+            normalized_token.encode(),
+            f"telegram-trading-chat-v1:{chat_id}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        self._prepared = False
+        self._monotonic = monotonic or time.monotonic
+        selected_transport = transport if transport is not None else _TelegramHTTPSBotTransport(normalized_token)
+        self._client = httpx.Client(
+            base_url=f"{_TELEGRAM_API_ORIGIN}/",
+            timeout=httpx.Timeout(_TELEGRAM_TIMEOUT_SECONDS),
+            headers={"Accept-Encoding": "identity", "Content-Type": "application/json"},
+            follow_redirects=False,
+            transport=selected_transport,
+        )
+
+    @property
+    def target_sha256(self) -> str:
+        return self._target_sha256
+
+    def prepare(self) -> None:
+        deadline_at = self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS
+        bot = self._call_api("getMe", {}, deadline_at=deadline_at)
+        chat = self._call_api("getChat", {"chat_id": self._chat_id}, deadline_at=deadline_at)
+        if bot.get("is_bot") is not True or not isinstance(bot.get("id"), int):
+            raise TelegramDeliveryError("trading_notification_telegram_bot_identity_invalid")
+        if chat.get("id") != self._chat_id or chat.get("type") not in {
+            "private",
+            "group",
+            "supergroup",
+            "channel",
+        }:
+            raise TelegramDeliveryError("trading_notification_telegram_target_invalid")
+        self._prepared = True
+
+    def send(self, text: str) -> int:
+        if not self._prepared:
+            raise TelegramDeliveryError("trading_notification_telegram_target_not_prepared")
+        normalized = str(text or "").strip()
+        if not normalized or len(normalized) > _TELEGRAM_TEXT_MAX:
+            raise TelegramDeliveryError("trading_notification_telegram_message_invalid")
+        result = self._call_api(
+            "sendMessage",
+            {
+                "chat_id": self._chat_id,
+                "text": normalized,
+                "link_preview_options": {"is_disabled": True},
+            },
+            deadline_at=self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS,
+        )
+        message_id = result.get("message_id")
+        chat = result.get("chat")
+        if (
+            isinstance(message_id, bool)
+            or not isinstance(message_id, int)
+            or message_id <= 0
+            or not isinstance(chat, Mapping)
+            or chat.get("id") != self._chat_id
+        ):
+            raise TelegramDeliveryError("trading_notification_telegram_response_invalid")
+        return message_id
+
+    def _call_api(self, method: str, payload: Mapping[str, Any], *, deadline_at: float) -> Mapping[str, Any]:
+        remaining = deadline_at - self._monotonic()
+        if remaining < _TELEGRAM_MIN_REQUEST_BUDGET_SECONDS:
+            raise TelegramDeliveryError("trading_notification_telegram_budget_exhausted")
+        phase_timeout = min(_TELEGRAM_MAX_PHASE_TIMEOUT_SECONDS, remaining / 4)
+        try:
+            response = self._client.post(
+                method,
+                json=dict(payload),
+                timeout=httpx.Timeout(
+                    connect=phase_timeout,
+                    read=phase_timeout,
+                    write=phase_timeout,
+                    pool=phase_timeout,
+                ),
+            )
+        except (httpx.TimeoutException, httpx.TransportError):
+            raise TelegramDeliveryError("trading_notification_telegram_transport_failed") from None
+        status_code = int(response.status_code)
+        if status_code == 429 or status_code >= 500:
+            raise TelegramDeliveryError("trading_notification_telegram_http_failed", status_code=status_code)
+        if status_code < 200 or status_code >= 300:
+            raise TelegramDeliveryError("trading_notification_telegram_http_rejected", status_code=status_code)
+        try:
+            response_payload = response.json()
+        except ValueError:
+            raise TelegramDeliveryError(
+                "trading_notification_telegram_response_invalid",
+                status_code=status_code,
+            ) from None
+        if not isinstance(response_payload, Mapping) or response_payload.get("ok") is not True:
+            raise TelegramDeliveryError(
+                "trading_notification_telegram_business_rejected",
+                status_code=status_code,
+            )
+        result = response_payload.get("result")
+        if not isinstance(result, Mapping):
+            raise TelegramDeliveryError("trading_notification_telegram_response_invalid")
+        return result
+
+    def close(self) -> None:
+        self._client.close()
+
+
 def _telegram_message(
     card: Mapping[str, Any],
     *,
@@ -941,4 +1064,4 @@ def _safe_trade_url(value: str) -> bool:
     )
 
 
-__all__ = ["TelegramDeliveryError", "TelegramNewsPushSender"]
+__all__ = ["TelegramDeliveryError", "TelegramNewsPushSender", "TelegramTradingNotifier"]

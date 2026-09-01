@@ -54,6 +54,22 @@ TRADING_CONSOLE_OBSERVATIONS_SQL: Final = """
      ORDER BY observed_at_ns DESC, event_id DESC
      LIMIT %(limit)s
 """
+TRADING_CONSOLE_COMMANDS_SQL: Final = """
+    SELECT command.seq, command.command_id, command.target_profile_id, command.action,
+           command.scope, command.reason, command.operator_identity,
+           command.requested_at_ns, command.expires_at_ns,
+           command.confirmation_identity IS NOT NULL AS confirmed,
+           command.market_key, command.direction,
+           disposition.summary ->> 'disposition' AS disposition,
+           disposition.summary ->> 'reason' AS disposition_reason
+      FROM trading_operator_intents command
+      LEFT JOIN trading_execution_observations disposition
+        ON disposition.command_id = command.command_id
+       AND disposition.normalized_kind = 'control_disposition'
+     WHERE command.requested_at_ns >= %(since)s
+     ORDER BY command.requested_at_ns DESC, command.command_id DESC
+     LIMIT %(limit)s
+"""
 GATE_DECISION_FOR_SOURCE_KEY_SQL: Final = """
     SELECT source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
            source_observed_at_ms, status, stage, reason, retryable, evidence, case_id,

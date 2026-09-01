@@ -11,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from tests.postgres_test_utils import connect_postgres_test
+from tracefold.app.operator_control import persist_operator_intent
 from tracefold.platform.postgres.audit import PostgresQueryAudit, QueryAuditCatalog
 from tracefold.trading.execution_contracts import ExecutionObservationV1
 from tracefold.trading.storage.execution_stream import (
@@ -180,6 +181,126 @@ def test_exact_append_is_idempotent_and_identity_conflicts_fail_closed() -> None
 
     assert materialize_trade_signal(first_row) == materialize_trade_signal(identical_row)
     assert materialize_operator_intent(command_row).command_id == command.value.command_id
+
+
+def test_operator_ingress_records_inactive_profile_disposition_in_the_same_idempotent_transaction() -> None:
+    command = _prepare_command(suffix="9", requested_at_ns=2_000, expires_at_ns=10_000)
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        with conn.transaction():
+            first = persist_operator_intent(repo, command)
+        with conn.transaction():
+            retried = persist_operator_intent(repo, command)
+
+        assert first == retried
+        assert first.disposition == "not_applied"
+        assert first.reason == "execution_profile_inactive"
+        assert conn.execute("SELECT count(*) AS n FROM trading_operator_intents").fetchone()["n"] == 1
+        observation = conn.execute(
+            """
+            SELECT normalized_kind, command_id, summary
+              FROM trading_execution_observations
+             WHERE command_id = %s
+            """,
+            (command.value.command_id,),
+        ).fetchone()
+        assert observation == {
+            "normalized_kind": "control_disposition",
+            "command_id": command.value.command_id,
+            "summary": {"disposition": "not_applied", "reason": "execution_profile_inactive"},
+        }
+    finally:
+        conn.close()
+
+
+def test_operator_ingress_leaves_active_profile_command_for_the_runtime() -> None:
+    command = _prepare_command(suffix="8", requested_at_ns=2_000, expires_at_ns=10_000)
+    activation = ExecutionProfileActivation(
+        runtime_profile_id="demo-v1",
+        account_slot="binance_usdm_primary",
+        activated_after_signal_seq=0,
+        activated_after_command_seq=0,
+        mode="disabled",
+        runtime_release="sha256:" + "1" * 64,
+        config_sha256="3" * 64,
+        created_at_ns=1_500,
+    )
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        with conn.transaction():
+            repo.append_execution_profile_activation(activation)
+        with conn.transaction():
+            receipt = persist_operator_intent(repo, command)
+
+        assert receipt.disposition == "awaiting_runtime"
+        assert (
+            conn.execute(
+                "SELECT count(*) AS n FROM trading_execution_observations WHERE command_id = %s",
+                (command.value.command_id,),
+            ).fetchone()["n"]
+            == 0
+        )
+        with conn.transaction():
+            unresolved = repo.unresolved_operator_intents(
+                runtime_profile_id="demo-v1",
+                execution_strategy="oi-nautilus-v1",
+                limit=10,
+            )
+        assert materialize_operator_intents(unresolved) == (command.value.model_copy(update={"seq": 1}),)
+    finally:
+        conn.close()
+
+
+def test_notification_delivery_is_append_only_and_anti_joined_without_mutating_observation_truth() -> None:
+    non_notifiable = _observation(event="6", kind="risk")
+    observation = _observation(event="7", kind="audit_gap")
+    target = "8" * 64
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        with conn.transaction():
+            sequences = repo.append_execution_observations(
+                prepare_execution_observations((non_notifiable, observation))
+            )
+        assert len(sequences) == 2
+        assert repo.next_execution_notification(target)["event_id"] == observation.event_id
+        with pytest.raises(RuntimeError, match="append_execution_notification_delivery_requires_explicit_transaction"):
+            repo.append_execution_notification_delivery(
+                target_sha256=target,
+                observation_seq=sequences[1],
+                message_id=41,
+                delivered_at_ns=3_000,
+            )
+        with conn.transaction(), pytest.raises(ValueError, match="execution_notification_delivery_out_of_order"):
+            repo.append_execution_notification_delivery(
+                target_sha256=target,
+                observation_seq=sequences[1] + 1,
+                message_id=40,
+                delivered_at_ns=2_999,
+            )
+        with conn.transaction():
+            first = repo.append_execution_notification_delivery(
+                target_sha256=target,
+                observation_seq=sequences[1],
+                message_id=41,
+                delivered_at_ns=3_000,
+            )
+        with conn.transaction():
+            retried = repo.append_execution_notification_delivery(
+                target_sha256=target,
+                observation_seq=sequences[1],
+                message_id=42,
+                delivered_at_ns=3_001,
+            )
+        assert first == retried
+        assert first["message_id"] == 41
+        assert repo.next_execution_notification(target) is None
+        assert conn.execute("SELECT count(*) AS n FROM trading_execution_notification_deliveries").fetchone()["n"] == 1
+        assert conn.execute("SELECT count(*) AS n FROM trading_execution_observations").fetchone()["n"] == 2
+    finally:
+        conn.close()
 
 
 def test_execution_stream_append_requires_caller_owned_transaction() -> None:
@@ -868,6 +989,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "trading_execution_observations_pkey",
         "trading_execution_observations_seq_key",
         "ix_trading_execution_observations_runtime",
+        "trading_execution_notification_candidates_idx",
         "ux_trading_execution_signal_disposition",
         "ux_trading_execution_control_disposition",
         "trading_execution_profile_activations_pkey",

@@ -35,6 +35,7 @@ def test_public_http_is_case_signal_observation_and_readiness_only() -> None:
 
     assert "/api/trading/signals" in paths
     assert "/api/trading/execution/observations" in paths
+    assert "/api/trading/execution/commands" in paths
     assert "/api/trading/intents" not in paths
     assert "/api/trading/capabilities" not in paths
     assert "/api/trading/evidence" not in paths

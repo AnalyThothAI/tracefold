@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 
 import pytest
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from tracefold.app.workers.probe import _create_workers_probe_app
@@ -33,6 +34,23 @@ def test_workers_probe_has_only_private_operational_routes_and_health_never_call
     assert calls == 1
     assert ready.status_code == 503
     assert {route.path for route in app.routes} >= {"/healthz", "/readyz", "/metrics"}
+    assert "/telegram/control" not in {route.path for route in app.routes}
+
+
+def test_workers_probe_mounts_the_control_ingress_only_when_it_is_explicitly_wired() -> None:
+    async def control(_request: object) -> JSONResponse:
+        return JSONResponse({"ok": True, "stage": "intent_recorded"})
+
+    app = _create_workers_probe_app(
+        readiness=lambda: {"ok": True},
+        render_metrics=lambda: "",
+        telegram_control=control,  # type: ignore[arg-type]
+    )
+    with TestClient(app) as client:
+        response = client.post("/telegram/control", content=b"{}")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "stage": "intent_recorded"}
 
 
 @pytest.mark.slow

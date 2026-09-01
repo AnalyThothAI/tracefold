@@ -70,6 +70,7 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
         "/api/trading/cases",
         "/api/trading/signals",
         "/api/trading/execution/observations",
+        "/api/trading/execution/commands",
         # The admission ledger for a window of frames at once, and one Source at a time.
         "/api/trading/gate",
         "/api/trading/gate/{event_id}",
@@ -81,6 +82,7 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
         "/api/trading/cases",
         "/api/trading/signals",
         "/api/trading/execution/observations",
+        "/api/trading/execution/commands",
         "/api/trading/gate",
         "/api/trading/gate/{event_id}",
     ):

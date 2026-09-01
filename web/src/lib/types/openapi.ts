@@ -154,6 +154,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/trading/execution/commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Operator Intents */
+        get: operations["get_operator_intents_api_trading_execution_commands_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/trading/execution/observations": {
         parameters: {
             query?: never;
@@ -397,6 +414,16 @@ export interface components {
         /** ApiEnvelope[TradingGateSourceData] */
         ApiEnvelope_TradingGateSourceData_: {
             data?: components["schemas"]["TradingGateSourceData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[TradingOperatorIntentsData] */
+        ApiEnvelope_TradingOperatorIntentsData_: {
+            data?: components["schemas"]["TradingOperatorIntentsData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -2565,6 +2592,55 @@ export interface components {
             /** Joinable */
             joinable: boolean;
         };
+        /** TradingOperatorIntentData */
+        TradingOperatorIntentData: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "pause_entries" | "resume_entries" | "emergency_halt" | "flatten" | "manual_entry";
+            /** Command Id */
+            command_id: string;
+            /** Confirmed */
+            confirmed: boolean;
+            /** Direction */
+            direction?: ("long" | "short") | null;
+            /** Disposition */
+            disposition?: string | null;
+            /** Disposition Reason */
+            disposition_reason?: string | null;
+            /** Expired */
+            expired: boolean;
+            /** Expires At Ns */
+            expires_at_ns: number;
+            /** Market Key */
+            market_key?: string | null;
+            /** Operator Identity */
+            operator_identity: string;
+            /** Reason */
+            reason: string;
+            /** Requested At Ns */
+            requested_at_ns: number;
+            /** Scope */
+            scope: string;
+            /** Seq */
+            seq: number;
+            /** Target Profile Id */
+            target_profile_id: string;
+        };
+        /** TradingOperatorIntentsData */
+        TradingOperatorIntentsData: {
+            /** Commands */
+            commands?: components["schemas"]["TradingOperatorIntentData"][];
+            /** Complete */
+            complete: boolean;
+            /** Measured At Ms */
+            measured_at_ms: number;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Window Hours */
+            window_hours: number;
+        };
         /** TradingPolicyCheckData */
         TradingPolicyCheckData: {
             /** Check */
@@ -2940,6 +3016,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_TradingCasesData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_operator_intents_api_trading_execution_commands_get: {
+        parameters: {
+            query?: {
+                profile?: string;
+                action?: string;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_TradingOperatorIntentsData_"];
                 };
             };
             /** @description Validation Error */

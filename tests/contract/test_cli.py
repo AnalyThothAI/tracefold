@@ -114,6 +114,24 @@ class CliTests(unittest.TestCase):
                 },
             ),
             (
+                [
+                    "trading",
+                    "issue",
+                    "/pause maintenance",
+                    "--request-id",
+                    "ops-20260901-1",
+                    "--requested-at-ns",
+                    "1788218708000000000",
+                ],
+                {
+                    "command": "trading",
+                    "trading_command": "issue",
+                    "text": "/pause maintenance",
+                    "request_id": "ops-20260901-1",
+                    "requested_at_ns": 1788218708000000000,
+                },
+            ),
+            (
                 ["ops", "validate-projections", "--sample", "5"],
                 {"command": "ops", "ops_command": "validate-projections", "sample": 5},
             ),
@@ -190,6 +208,24 @@ class CliTests(unittest.TestCase):
         ):
             with self.subTest(command=command), self.assertRaises(SystemExit):
                 parser.parse_args(command)
+
+    def test_trading_issue_does_not_accept_capital_or_order_parameters(self):
+        parser = build_parser()
+        for option in ("--quantity", "--notional", "--leverage", "--order-type", "--venue"):
+            with self.subTest(option=option), self.assertRaises(SystemExit):
+                parser.parse_args(
+                    [
+                        "trading",
+                        "issue",
+                        "/pause maintenance",
+                        "--request-id",
+                        "ops-1",
+                        "--requested-at-ns",
+                        "1788218708000000000",
+                        option,
+                        "1",
+                    ]
+                )
 
     def test_cli_rejects_retired_hard_cut_commands(self):
         parser = build_parser()
@@ -430,6 +466,14 @@ class CliTests(unittest.TestCase):
             payload["trading"],
             {
                 "enabled": False,
+                "control": {
+                    "enabled": False,
+                    "telegram_bot_token_file": "telegram_bot_token",
+                    "telegram_webhook_secret_file": "telegram_webhook_secret",
+                    "allowed_chat_ids": [],
+                    "allowed_user_ids": [],
+                    "notification_chat_id": None,
+                },
                 "execution": {
                     "mode": "disabled",
                     "profile_id": "binance_usdm_primary",
@@ -551,6 +595,7 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         assert directory.stat().st_mode & 0o777 == 0o700
     for name in (
         "telegram_bot_token",
+        "telegram_webhook_secret",
         "binance_usdm_api_key",
         "binance_usdm_api_secret",
         "postgres_password",
@@ -560,6 +605,7 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         assert path.is_file()
         assert path.stat().st_mode & 0o777 == 0o600
     assert (app_home / "telegram_bot_token").read_bytes() == b""
+    assert (app_home / "telegram_webhook_secret").read_bytes() == b""
     assert all((app_home / name).read_bytes() == b"" for name in ("binance_usdm_api_key", "binance_usdm_api_secret"))
 
 
@@ -573,6 +619,7 @@ def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeyp
     tracked_names = (
         "config.yaml",
         "telegram_bot_token",
+        "telegram_webhook_secret",
         "binance_usdm_api_key",
         "binance_usdm_api_secret",
         "postgres_password",

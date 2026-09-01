@@ -35,6 +35,7 @@ SIGNAL_PATH = (
 )
 DORMANT_EXECUTION = {
     "trading/execution_contracts.py",
+    "trading/operator_control.py",
     "trading/storage/execution_stream.py",
     "trading/storage/execution_stream_query_specs.py",
     "trading/storage/execution_stream_sql.py",
@@ -45,6 +46,7 @@ WRITE_SQL_TABLE_RE = re.compile(r"\b(?:DELETE\s+FROM|INSERT\s+INTO|UPDATE)\s+(?P
 SQL_TABLE_RE = re.compile(r"\b(?:DELETE\s+FROM|INSERT\s+INTO|FROM|JOIN|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)", re.I)
 _SQL_KEYWORDS = {
     "batch",
+    "delivered",
     "identity_guard",
     "inserted",
     "jsonb_array_elements",
@@ -241,10 +243,16 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
         "DecisionRuntimeV1",
         "ExecutionObservationV1",
         "OiTradeCandidate",
+        "OperatorCommandError",
         "OperatorIntentV1",
+        "ParsedOperatorCommand",
+        "PreparedOperatorIntent",
         "TradeSignalV1",
         "TradingCaseManifest",
         "canonical_sha256",
+        "parse_operator_command",
+        "prepare_execution_observations",
+        "prepare_parsed_operator_intent",
     ]
     assert "TradingRepository" not in trading.__dict__
     assert "CapitalLane" not in trading.__dict__

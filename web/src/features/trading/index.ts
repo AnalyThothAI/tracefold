@@ -3,6 +3,7 @@ export { TradingCaseBadge } from "./ui/TradingCaseBadge";
 export { TradingSymbolSection } from "./ui/TradingSymbolSection";
 export {
   useTradingCasesWithToken,
+  useTradingCommandsWithToken,
   useTradingGateSourceWithToken,
   useTradingGateWithToken,
   useTradingObservationsWithToken,
@@ -12,6 +13,8 @@ export {
   type TradingCases,
   type TradingExecutionObservation,
   type TradingExecutionObservations,
+  type TradingOperatorIntent,
+  type TradingOperatorIntents,
   type TradingGate,
   type TradingGateConfig,
   type TradingGateDecision,

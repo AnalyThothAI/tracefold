@@ -5,6 +5,8 @@ import type {
   TradingExecutionObservations,
   TradingGate,
   TradingGateDecision,
+  TradingOperatorIntent,
+  TradingOperatorIntents,
   TradingSignal,
   TradingSignals,
   TradingStatus,
@@ -177,6 +179,42 @@ export function tradingObservationsFixture(
     measured_at_ms: TRADING_NOW_MS,
     next_cursor: null,
     observations: [],
+    window_hours: 24,
+    ...overrides,
+  };
+}
+
+export function tradingCommandFixture(
+  overrides: Partial<TradingOperatorIntent> = {},
+): TradingOperatorIntent {
+  return {
+    action: "pause_entries",
+    command_id: "9".repeat(64),
+    confirmed: false,
+    direction: null,
+    disposition: "not_applied",
+    disposition_reason: "execution_profile_inactive",
+    expired: false,
+    expires_at_ns: (TRADING_NOW_MS + 300_000) * 1_000_000,
+    market_key: null,
+    operator_identity: "telegram:user:42",
+    reason: "maintenance",
+    requested_at_ns: TRADING_NOW_MS * 1_000_000,
+    scope: "entries",
+    seq: 1,
+    target_profile_id: "demo-v1",
+    ...overrides,
+  };
+}
+
+export function tradingCommandsFixture(
+  overrides: Partial<TradingOperatorIntents> = {},
+): TradingOperatorIntents {
+  return {
+    commands: [],
+    complete: true,
+    measured_at_ms: TRADING_NOW_MS,
+    next_cursor: null,
     window_hours: 24,
     ...overrides,
   };
