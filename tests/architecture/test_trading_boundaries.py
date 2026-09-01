@@ -43,6 +43,7 @@ RESEARCH = {
 EXECUTION_PATH = {
     "trading/demo_receipt.py",
     "trading/execution_contracts.py",
+    "trading/notification_policy.py",
     "trading/operator_control.py",
     "trading/storage/execution_stream.py",
     "trading/storage/execution_stream_query_specs.py",
@@ -54,6 +55,7 @@ WRITE_SQL_TABLE_RE = re.compile(r"\b(?:DELETE\s+FROM|INSERT\s+INTO|UPDATE)\s+(?P
 SQL_TABLE_RE = re.compile(r"\b(?:DELETE\s+FROM|INSERT\s+INTO|FROM|JOIN|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)", re.I)
 _SQL_KEYWORDS = {
     "batch",
+    "candidate",
     "delivered",
     "identity_guard",
     "inserted",
@@ -65,6 +67,7 @@ _SQL_KEYWORDS = {
     "select",
     "set",
     "skip",
+    "unnest",
     "values",
 }
 

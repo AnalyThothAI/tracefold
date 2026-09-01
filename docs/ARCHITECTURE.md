@@ -2043,10 +2043,17 @@ flat. The Strategy callback reaches only Cache/Portfolio and in-memory queues.
 PostgreSQL polling/audit and Telegram I/O remain background work. The optional
 Workers notifier advances through append-only target/observation delivery receipts and
 records one only after delivery; it has no mutable cursor or ACK state machine.
-Telegram or transient database-admission unavailability retries the unreceipted
-observation and cannot block protection, exits, or reconciliation. Delivery is
-at-least-once across the send/receipt crash window, so a duplicate message is
-allowed but a skipped notifiable durable observation is not. HTTP/CLI/React command and
+Its watermark is per observation kind, so a kind held by its own rate bound is not
+buried under an unrelated delivery. Telegram or transient database-admission
+unavailability retries the unreceipted observation and cannot block protection,
+exits, or reconciliation. Delivery is at-least-once across the send/receipt crash
+window, so a duplicate message is allowed. Which observation is notifiable, and how
+often, is stated once in `tracefold.trading.notification_policy`: the read carries it
+into SQL as parameters and the renderer gates on it. `reconciliation` and `readiness`
+arrive on a timer, so they coalesce to the newest pending observation of that kind and
+send at most one per half hour; a superseded observation is dropped rather than queued,
+because a card reporting a position the account has already left is worse than no card.
+Every other notifiable kind is delivered one for one. HTTP/CLI/React command and
 observation views are read projections: recorded, Runtime accepted, order
 accepted, fill, and account flat are five distinct facts.
 

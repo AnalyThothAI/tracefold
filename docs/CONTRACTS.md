@@ -286,7 +286,11 @@ and the generation-fenced `0343` current Runtime projection, never those legacy
 owners. One delivery row per `(target, observation)` carries `delivered_at_ns`
 and, for a Signal card, `result_delivered_at_ns`: the second message that reports
 the 1 h/4 h outcome. `message_id` is present only on a channel that can address a
-sent message again; the deployed Feishu webhook cannot, so it is `NULL` there.
+sent message again; the deployed Feishu webhook cannot, so it is `NULL` there. The
+notifiable predicate reads the summary keys the Runtime writes — `account_flat` for
+reconciliation, `lifecycle` or `control_stage` for readiness — after #472 found it
+asking `reconciliation` for a `state` key no writer has ever produced, which left the
+delivery ledger empty for the life of the feature.
 
 `trading.notifications` has two keys: `enabled` (false) and `channel`
 (`feishu` | `telegram`, default `feishu`). It is deliberately separate from

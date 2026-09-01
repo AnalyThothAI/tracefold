@@ -17,8 +17,10 @@ from tracefold.app.nautilus.root import (
     _observe_runtime_start,
     _preflight_profile,
 )
+from tracefold.app.workers.trading_notifications import trading_notification_text
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.config import BinanceRuntimeCredentials
+from tracefold.trading.notification_policy import is_notifiable
 from tracefold.trading.storage.execution_stream import ExecutionProfileActivation
 
 
@@ -201,3 +203,46 @@ def test_runtime_start_receipt_binds_exact_runtime_image_config_and_credentials(
     assert observation.summary["image_digest"] == state.image_digest
     assert observation.summary["config_sha256"] == state.config_sha256
     assert observation.summary["credential_fingerprint"] == state.credential_fingerprint
+
+
+def test_the_notification_predicate_reads_the_summaries_these_writers_actually_produce() -> None:
+    """#472: the shipped predicate asked for keys no writer has ever emitted.
+
+    It wanted `summary ->> 'state' = 'flat'` from reconciliation and a `control_stage` from every
+    readiness, while these two writers produce `account_flat` and `lifecycle`. Both branches were
+    therefore unreachable for the whole life of the feature, and nothing failed — the delivery queue
+    was simply always empty. Reading the predicate against what the writers return, rather than
+    against a restatement of it, is what makes the next rename fail here instead of in production.
+    """
+
+    audit = AuditSink(
+        factory=ObservationFactory(
+            runtime_profile_id="oi-paper-profile",
+            runtime_release="nautilus-1.231.0+oi-v1",
+            execution_strategy="oi_nautilus_v1",
+        )
+    )
+    state: Any = SimpleNamespace(
+        started_at_ns=1_000,
+        runtime_id="11111111-1111-4111-8111-111111111111",
+        mode="paper",
+        runtime_revision="a" * 40,
+        image_digest="sha256:" + "b" * 64,
+        config_sha256="c" * 64,
+        credential_fingerprint="d" * 64,
+        account_slot="binance_usdm_primary",
+    )
+    position = SimpleNamespace(instrument_id=SimpleNamespace(value="BTCUSDT-PERP.BINANCE"))
+
+    _observe_reconciliation(audit=audit, reports=([], []), observed_at_ns=1_000)
+    _observe_reconciliation(audit=audit, reports=([position], []), observed_at_ns=2_000)
+    _observe_runtime_start(audit=audit, state=state)
+    flat, unflat, started = audit.flush_once(lambda _values: None)
+
+    # The timer's steady state is not a card; exposure and a Runtime restart both are.
+    assert is_notifiable(flat.normalized_kind, flat.summary) is False
+    assert is_notifiable(unflat.normalized_kind, unflat.summary) is True
+    assert is_notifiable(started.normalized_kind, started.summary) is True
+    for observation in (unflat, started):
+        row = {"normalized_kind": observation.normalized_kind, "summary": observation.summary}
+        assert trading_notification_text(row) is not None, f"{observation.normalized_kind} renders no stage"
