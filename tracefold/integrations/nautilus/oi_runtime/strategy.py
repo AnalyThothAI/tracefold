@@ -301,14 +301,15 @@ class OiNautilusStrategy(Strategy):
             except _AuditBackpressure:
                 break
         self._advance_pending_flatten()
-        for _ in range(_CALLBACK_BATCH):
-            signal = self._signals.next_nowait()
-            if signal is None:
-                break
-            try:
-                self._handle_signal(signal)
-            except _AuditBackpressure:
-                break
+        if self._signals.queued_command_count == 0:
+            for _ in range(_CALLBACK_BATCH):
+                signal = self._signals.next_nowait()
+                if signal is None:
+                    break
+                try:
+                    self._handle_signal(signal)
+                except _AuditBackpressure:
+                    break
         self._query_aged_entries()
         self._retry_failed_exits()
         self._verify_owned_exposure()
@@ -929,7 +930,6 @@ class OiNautilusStrategy(Strategy):
             return
         self._entries_paused = True
         self._pending_flatten[command.command_id] = command
-        self._advance_pending_flatten()
 
     def _advance_pending_flatten(self) -> None:
         if not self._pending_flatten:
@@ -951,7 +951,7 @@ class OiNautilusStrategy(Strategy):
             for state in self._states.values():
                 if state.position_id is not None and state.position_quantity > 0:
                     self.flatten_position(state.position_id)
-                elif not state.entry_order.is_closed:
+                if not state.entry_order.is_closed:
                     self.cancel_order(state.entry_order, client_id=ClientId("BINANCE"))
 
     def _complete_flatten_from_reconciliation(self, snapshot: RuntimeReconciliationSnapshot) -> None:

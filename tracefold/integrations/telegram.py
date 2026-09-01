@@ -456,11 +456,8 @@ class TelegramTradingNotifier:
         if isinstance(chat_id, bool) or not isinstance(chat_id, int) or chat_id == 0:
             raise ValueError("trading_notification_telegram_chat_id_invalid")
         self._chat_id = chat_id
-        self._target_sha256 = hmac.new(
-            normalized_token.encode(),
-            f"telegram-trading-chat-v1:{chat_id}".encode(),
-            hashlib.sha256,
-        ).hexdigest()
+        bot_id = int(normalized_token.partition(":")[0])
+        self._target_sha256 = hashlib.sha256(f"telegram-trading-target-v1:{bot_id}:{chat_id}".encode()).hexdigest()
         self._prepared = False
         self._monotonic = monotonic or time.monotonic
         selected_transport = transport if transport is not None else _TelegramHTTPSBotTransport(normalized_token)

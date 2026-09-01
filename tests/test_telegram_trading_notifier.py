@@ -59,3 +59,28 @@ def test_trading_notifier_outage_is_a_sanitized_expected_failure() -> None:
             notifier.prepare()
     finally:
         notifier.close()
+
+
+def test_trading_notification_target_survives_token_rotation_for_the_same_bot_and_chat() -> None:
+    first = TelegramTradingNotifier(
+        bot_token="1234567:" + "a" * 40,
+        chat_id=_CHAT_ID,
+        transport=httpx.MockTransport(lambda _request: httpx.Response(503)),
+    )
+    rotated = TelegramTradingNotifier(
+        bot_token="1234567:" + "b" * 40,
+        chat_id=_CHAT_ID,
+        transport=httpx.MockTransport(lambda _request: httpx.Response(503)),
+    )
+    other_bot = TelegramTradingNotifier(
+        bot_token="7654321:" + "a" * 40,
+        chat_id=_CHAT_ID,
+        transport=httpx.MockTransport(lambda _request: httpx.Response(503)),
+    )
+    try:
+        assert first.target_sha256 == rotated.target_sha256
+        assert first.target_sha256 != other_bot.target_sha256
+    finally:
+        first.close()
+        rotated.close()
+        other_bot.close()

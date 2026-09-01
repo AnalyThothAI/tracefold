@@ -146,6 +146,28 @@ def test_pause_resume_and_halt_are_distinct_and_never_bypass_entry_risk() -> Non
     assert halted.strategy.control_state().emergency_halted is True
 
 
+def test_signal_waits_until_the_persisted_command_backlog_is_drained() -> None:
+    commands = tuple(
+        operator_intent(
+            command_id=f"{index:064x}",
+            action="pause_entries" if index == 17 else "resume_entries",
+        )
+        for index in range(1, 18)
+    )
+    context = registered_oi_strategy(values=(trade_signal(),), commands=commands)
+
+    context.strategy.on_timer(None)
+
+    assert context.signals.queued_command_count == 1
+    assert context.strategy.submitted == []
+
+    context.strategy.on_timer(None)
+
+    assert context.signals.queued_command_count == 0
+    assert context.strategy.control_state().entries_paused is True
+    assert context.strategy.submitted == []
+
+
 def test_manual_entry_is_explicitly_rejected_without_quantity_or_leverage_path() -> None:
     manual = operator_intent(
         action="manual_entry",
@@ -213,6 +235,7 @@ def test_flatten_submits_only_owned_reduce_only_exit_and_does_not_equal_halt() -
     assert context.strategy.submitted[-1][1] == position_id
     assert exit_order.order_type == OrderType.MARKET
     assert exit_order.is_reduce_only is True
+    assert context.strategy.canceled == [context.strategy.submitted[0][0]]
     assert context.strategy.control_state().entries_paused is True
     assert context.strategy.control_state().emergency_halted is False
 

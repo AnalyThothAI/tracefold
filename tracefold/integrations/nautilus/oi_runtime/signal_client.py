@@ -48,6 +48,11 @@ class ExecutionSignalClient:
             return len(self._values) + len(self._commands)
 
     @property
+    def queued_command_count(self) -> int:
+        with self._lock:
+            return len(self._commands)
+
+    @property
     def queued_bytes(self) -> int:
         with self._lock:
             return self._bytes
