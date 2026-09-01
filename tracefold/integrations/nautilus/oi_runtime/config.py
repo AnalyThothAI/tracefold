@@ -206,7 +206,10 @@ def build_oi_node_config(
         data_engine=LiveDataEngineConfig(external_clients=[client_id]),
         risk_engine=LiveRiskEngineConfig(bypass=False),
         exec_engine=LiveExecEngineConfig(
-            reconciliation=True,
+            # The App root owns the one complete startup proof, including Binance
+            # Algo orders. Nautilus retains only its native continuous mechanics:
+            # in-flight query-first and missing open-order/position event repair.
+            reconciliation=False,
             reconciliation_instrument_ids=None,
             filter_unclaimed_external_orders=False,
             filter_position_reports=False,

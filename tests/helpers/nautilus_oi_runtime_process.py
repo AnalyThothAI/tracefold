@@ -71,12 +71,8 @@ def main() -> None:
             readiness=readiness,
             singleton_ready=lambda: True,
             day_start=DayStartBaseline("2030-03-17", Decimal("1000"), NOW_NS - 1, "4" * 64),
+            request_reconciliation=lambda _reason: None,
             initial_control_state=RuntimeControlSnapshot(False, False, ()),
-            startup_reconciliation=RuntimeReconciliationSnapshot(
-                runtime_profile_id=profile.profile_id,
-                account_observed_at_ns=NOW_NS,
-                reconciliation_observed_at_ns=NOW_NS,
-            ),
         )
         instrument = TestInstrumentProvider.btcusdt_perp_binance()
         engine = BacktestEngine(
@@ -113,6 +109,13 @@ def main() -> None:
             ]
         )
         engine.add_strategy(strategy)
+        strategy.reconcile_runtime(
+            RuntimeReconciliationSnapshot(
+                runtime_profile_id=profile.profile_id,
+                account_observed_at_ns=NOW_NS,
+                reconciliation_observed_at_ns=NOW_NS,
+            )
+        )
         engine.run()
         flushed = flush_audit_once(
             repos=repos,

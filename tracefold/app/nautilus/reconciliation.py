@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
@@ -20,6 +21,23 @@ from tracefold.trading import OperatorIntentV1, TradeSignalV1
 _MAX_RECOVERY_GENERATIONS = 128
 
 
+@dataclass(frozen=True, slots=True)
+class CompleteBinanceAccountReports:
+    """One complete private-account proof, including Binance Algo orders."""
+
+    positions: tuple[Any, ...]
+    regular_orders: tuple[Any, ...]
+    algo_orders: tuple[Any, ...]
+
+    @property
+    def orders(self) -> tuple[Any, ...]:
+        return (*self.regular_orders, *self.algo_orders)
+
+    @property
+    def account_flat(self) -> bool:
+        return not self.positions and not self.regular_orders and not self.algo_orders
+
+
 def single_binance_execution_client(engine: Any) -> Any:
     """Return the exact sole Binance execution client or reject the graph."""
 
@@ -33,7 +51,7 @@ def single_binance_execution_client(engine: Any) -> Any:
     return client
 
 
-async def load_complete_binance_account_reports(client: Any) -> tuple[list[Any], list[Any]]:
+async def load_complete_binance_account_reports(client: Any) -> CompleteBinanceAccountReports:
     """Load active positions plus regular and Algo orders without swallowed API errors."""
 
     if client.venue.value != "BINANCE":
@@ -54,20 +72,22 @@ async def load_complete_binance_account_reports(client: Any) -> tuple[list[Any],
             algo_reports.append(report)
     finally:
         client._active_symbols_cache = None
-    return list(positions), [*regular_reports, *algo_reports]
+    return CompleteBinanceAccountReports(
+        positions=tuple(positions),
+        regular_orders=tuple(regular_reports),
+        algo_orders=tuple(algo_reports),
+    )
 
 
-def reconcile_reports_into_cache(*, engine: Any, reports: tuple[list[Any], list[Any]]) -> None:
+def reconcile_reports_into_cache(*, engine: Any, reports: CompleteBinanceAccountReports) -> None:
     """Project every authoritative report through Nautilus ExecutionEngine."""
 
-    positions, orders = reports
-    if not all(engine.reconcile_execution_report(report) for report in (*positions, *orders)):
+    if not all(engine.reconcile_execution_report(report) for report in (*reports.positions, *reports.orders)):
         raise RuntimeError("oi_runtime_execution_report_reconciliation_failed")
 
 
-def account_reports_are_flat(reports: tuple[list[Any], list[Any]]) -> bool:
-    positions, orders = reports
-    return not positions and not orders
+def account_reports_are_flat(reports: CompleteBinanceAccountReports) -> bool:
+    return reports.account_flat
 
 
 def build_runtime_reconciliation_snapshot(
@@ -182,6 +202,7 @@ def _recovered_exit(
 
 
 __all__ = [
+    "CompleteBinanceAccountReports",
     "account_reports_are_flat",
     "build_runtime_reconciliation_snapshot",
     "load_complete_binance_account_reports",

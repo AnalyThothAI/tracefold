@@ -49,7 +49,7 @@ def test_paper_and_live_change_only_cold_identity_and_binance_environment(
     assert execution.use_reduce_only is True
     assert execution.max_retries is None
     assert config.risk_engine.bypass is False
-    assert config.exec_engine.reconciliation is True
+    assert config.exec_engine.reconciliation is False
     assert config.exec_engine.reconciliation_instrument_ids is None
     assert config.exec_engine.generate_missing_orders is True
     assert config.exec_engine.inflight_check_interval_ms == 2_000
@@ -124,6 +124,7 @@ def test_canonical_root_builds_one_real_binance_execution_client() -> None:
             recorded_at_ns=NOW_NS,
             event_id="4" * 64,
         ),
+        request_reconciliation=lambda _reason: None,
     )
     loop = asyncio.new_event_loop()
     node = _build_active_node(

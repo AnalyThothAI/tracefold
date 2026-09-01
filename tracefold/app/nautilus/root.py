@@ -38,6 +38,7 @@ from tracefold.app.nautilus.oi_runtime import (
 from tracefold.app.nautilus.oi_runtime import run_nautilus as run_disabled_runtime
 from tracefold.app.nautilus.probe import create_nautilus_probe_app
 from tracefold.app.nautilus.reconciliation import (
+    CompleteBinanceAccountReports,
     account_reports_are_flat,
     build_runtime_reconciliation_snapshot,
     load_complete_binance_account_reports,
@@ -55,7 +56,12 @@ from tracefold.integrations.nautilus.oi_runtime.config import (
 )
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
-from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrategy, RuntimeReadiness
+from tracefold.integrations.nautilus.oi_runtime.strategy import (
+    PRIVATE_RECONCILIATION_REASONS,
+    OiNautilusStrategy,
+    PrivateReconciliationReason,
+    RuntimeReadiness,
+)
 from tracefold.platform.config.models import Settings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.runtime_identity import runtime_identity
@@ -73,8 +79,9 @@ _EXECUTION_STRATEGY = EXECUTION_STRATEGY_ID
 _INTERNAL_PORT = 8767
 _STOP_TIMEOUT_SECONDS = 20.0
 _START_TIMEOUT_SECONDS = 90.0
-_RECONCILIATION_INTERVAL_SECONDS = 2.0
 _HEARTBEAT_INTERVAL_SECONDS = 0.5
+_HEARTBEAT_INTERVAL_NS = int(_HEARTBEAT_INTERVAL_SECONDS * 1_000_000_000)
+_RECONCILIATION_FRESHNESS_DIVISOR = 2
 _DEFAULT_STOP_DISTANCE_BPS = 100
 _BINANCE_USDM_ACCOUNT_ID = AccountId("BINANCE-USDT_FUTURES-master")
 
@@ -115,6 +122,74 @@ class _ProbeState:
     def readiness(self) -> dict[str, Any]:
         with self.lock:
             return dict(self.payload)
+
+
+@dataclass(frozen=True, slots=True)
+class _PrivateReconciliationResult:
+    reports: CompleteBinanceAccountReports
+    triggers: tuple[str, ...]
+    observed_at_ns: int
+    duration_ns: int
+
+
+class _PrivateReconciliationRequests:
+    """Coalesce Strategy repair hints into the App-owned private-account scan."""
+
+    def __init__(self, *, loop: asyncio.AbstractEventLoop, wake: asyncio.Event) -> None:
+        self._loop = loop
+        self._wake = wake
+        self._pending: set[PrivateReconciliationReason] = set()
+        self._lock = Lock()
+
+    def request(self, reason: PrivateReconciliationReason) -> None:
+        if reason not in PRIVATE_RECONCILIATION_REASONS:
+            raise ValueError("oi_runtime_private_reconciliation_reason_invalid")
+        with self._lock:
+            self._pending.add(reason)
+        self._loop.call_soon_threadsafe(self._wake.set)
+
+    def drain(self) -> tuple[str, ...]:
+        with self._lock:
+            reasons = tuple(sorted(self._pending))
+            self._pending.clear()
+        return reasons
+
+
+class _RuntimeStateProjector:
+    """One persistent repository-session owner for the current Runtime row."""
+
+    def __init__(self, repos: RepositorySession) -> None:
+        self._repos = repos
+        self.current: ExecutionRuntimeState | None = None
+
+    def start(self, state: ExecutionRuntimeState) -> ExecutionRuntimeState:
+        if self.current is not None:
+            raise RuntimeError("oi_runtime_projection_already_started")
+        with self._repos.transaction():
+            self._repos.trading.put_execution_runtime_state(state)
+        self.current = state
+        return state
+
+    def publish(self, candidate: ExecutionRuntimeState) -> ExecutionRuntimeState:
+        current = self.current
+        if current is None:
+            raise RuntimeError("oi_runtime_projection_not_started")
+        semantic_change = self._semantic(candidate) != self._semantic(current)
+        heartbeat_due = candidate.heartbeat_at_ns - current.heartbeat_at_ns >= _HEARTBEAT_INTERVAL_NS
+        if not semantic_change and not heartbeat_due:
+            return current
+        with self._repos.transaction():
+            if not self._repos.trading.update_execution_runtime_state(candidate):
+                raise RuntimeError("oi_runtime_generation_lost")
+        self.current = candidate
+        return candidate
+
+    @staticmethod
+    def _semantic(state: ExecutionRuntimeState) -> dict[str, Any]:
+        values = asdict(state)
+        values.pop("heartbeat_at_ns")
+        values.pop("updated_at_ns")
+        return values
 
 
 def run_nautilus(settings: Settings) -> OiRuntimeReadiness | None:
@@ -166,10 +241,27 @@ async def _run_active_runtime(
     profile = _active_profile(settings, routes)
     with postgres_connection(settings, application_name="tracefold_nautilus_state") as state_conn:
         state_repos = repositories_for_connection(state_conn)
-        existing_activation = _preflight_profile(state_repos, profile)
-        control = (
-            load_runtime_control_state(state_repos, profile.profile_id) if existing_activation is not None else None
+        await _run_active_runtime_with_state(
+            settings=settings,
+            credentials=credentials,
+            credential_fingerprint=credential_fingerprint,
+            singleton=singleton,
+            profile=profile,
+            state_repos=state_repos,
         )
+
+
+async def _run_active_runtime_with_state(
+    *,
+    settings: Settings,
+    credentials: BinanceRuntimeCredentials,
+    credential_fingerprint: str,
+    singleton: AccountSlotSingleton,
+    profile: OiRuntimeProfile,
+    state_repos: RepositorySession,
+) -> None:
+    existing_activation = _preflight_profile(state_repos, profile)
+    control = load_runtime_control_state(state_repos, profile.profile_id) if existing_activation is not None else None
     signals = ExecutionSignalClient(
         runtime_profile_id=profile.profile_id,
         execution_strategy=_EXECUTION_STRATEGY,
@@ -182,6 +274,9 @@ async def _run_active_runtime(
         )
     )
     readiness = RuntimeReadiness()
+    loop = asyncio.get_running_loop()
+    runtime_wake = asyncio.Event()
+    reconciliation_requests = _PrivateReconciliationRequests(loop=loop, wake=runtime_wake)
     strategy = OiNautilusStrategy(
         profile=profile,
         signals=signals,
@@ -189,9 +284,9 @@ async def _run_active_runtime(
         readiness=readiness,
         singleton_ready=lambda: singleton.acquired,
         day_start=None,
+        request_reconciliation=reconciliation_requests.request,
         initial_control_state=control,
     )
-    loop = asyncio.get_running_loop()
     node = _build_active_node(
         profile=profile,
         credentials=credentials,
@@ -201,30 +296,35 @@ async def _run_active_runtime(
     probe = _ProbeState.starting(profile, credential_fingerprint)
     server = _probe_server(probe.readiness)
     stop = asyncio.Event()
-    installed_signals = _install_signal_handlers(loop, stop.set)
+
+    def request_stop() -> None:
+        stop.set()
+        runtime_wake.set()
+
+    installed_signals = _install_signal_handlers(loop, request_stop)
     node_task = asyncio.create_task(node.run_async(), name="oi-nautilus-node")
     probe_task = asyncio.create_task(server.serve(), name="oi-nautilus-probe")
     bridge: OiRuntimeDatabaseBridge | None = None
-    state: ExecutionRuntimeState | None = None
+    projector = _RuntimeStateProjector(state_repos)
     try:
         await _await_node_started(node=node, node_task=node_task)
         client = single_binance_execution_client(node.kernel.exec_engine)
         if client.account_id != profile.account_id:
             raise RuntimeError("oi_runtime_account_identity_mismatch")
-        reports, observed_at_ns = await _reconcile_account(node=node, client=client)
-        with postgres_connection(settings, application_name="tracefold_nautilus_state") as state_conn:
-            state_repos = repositories_for_connection(state_conn)
-            activation = _activate_profile(
-                repos=state_repos,
-                profile=profile,
-                existing=existing_activation,
-                account_flat=account_reports_are_flat(reports),
-                created_at_ns=observed_at_ns,
-            )
-            recovery_signals, recovery_manual_entries = _load_recovery_inputs(
-                state_repos,
-                profile.profile_id,
-            )
+        result = await _reconcile_account(node=node, client=client, triggers=("startup",))
+        reports = result.reports
+        observed_at_ns = result.observed_at_ns
+        activation = _activate_profile(
+            repos=state_repos,
+            profile=profile,
+            existing=existing_activation,
+            account_flat=account_reports_are_flat(reports),
+            created_at_ns=observed_at_ns,
+        )
+        recovery_signals, recovery_manual_entries = _load_recovery_inputs(
+            state_repos,
+            profile.profile_id,
+        )
         readiness.activate()
         snapshot = build_runtime_reconciliation_snapshot(
             profile=profile,
@@ -235,7 +335,7 @@ async def _run_active_runtime(
             reconciliation_observed_at_ns=observed_at_ns,
         )
         strategy.reconcile_runtime(snapshot)
-        _observe_reconciliation(audit=audit, reports=reports, observed_at_ns=observed_at_ns)
+        _observe_reconciliation(audit=audit, result=result)
         bridge = OiRuntimeDatabaseBridge(
             settings=settings,
             profile=profile,
@@ -273,12 +373,11 @@ async def _run_active_runtime(
             updated_at_ns=started_at_ns,
         )
         _observe_runtime_start(audit=audit, state=state)
-        with postgres_connection(settings, application_name="tracefold_nautilus_state") as state_conn:
-            state_repos = repositories_for_connection(state_conn)
-            with state_repos.transaction():
-                state_repos.trading.put_execution_runtime_state(state)
-        next_reconciliation = loop.time() + _RECONCILIATION_INTERVAL_SECONDS
+        projector.start(state)
+        reconciliation_interval = _private_reconciliation_interval_seconds(profile.risk.reconciliation_stale_after_ns)
+        next_reconciliation = loop.time() + reconciliation_interval
         while not stop.is_set():
+            runtime_wake.clear()
             if node_task.done():
                 await node_task
                 raise RuntimeError("oi_runtime_node_returned")
@@ -293,14 +392,22 @@ async def _run_active_runtime(
             equity = _account_equity(node, profile)
             if equity is not None:
                 bridge.set_equity(equity, now_ns)
+            reconciliation_triggers = set(reconciliation_requests.drain())
             if loop.time() >= next_reconciliation:
-                reports, observed_at_ns = await _reconcile_account(node=node, client=client)
-                _observe_reconciliation(audit=audit, reports=reports, observed_at_ns=observed_at_ns)
-                with postgres_connection(settings, application_name="tracefold_nautilus_state") as state_conn:
-                    recovery_signals, recovery_manual_entries = _load_recovery_inputs(
-                        repositories_for_connection(state_conn),
-                        profile.profile_id,
-                    )
+                reconciliation_triggers.add("steady")
+            if reconciliation_triggers:
+                result = await _reconcile_account(
+                    node=node,
+                    client=client,
+                    triggers=tuple(sorted(reconciliation_triggers)),
+                )
+                reports = result.reports
+                observed_at_ns = result.observed_at_ns
+                _observe_reconciliation(audit=audit, result=result)
+                recovery_signals, recovery_manual_entries = _load_recovery_inputs(
+                    state_repos,
+                    profile.profile_id,
+                )
                 strategy.reconcile_runtime(
                     build_runtime_reconciliation_snapshot(
                         profile=profile,
@@ -311,31 +418,33 @@ async def _run_active_runtime(
                         reconciliation_observed_at_ns=observed_at_ns,
                     )
                 )
-                next_reconciliation = loop.time() + _RECONCILIATION_INTERVAL_SECONDS
+                next_reconciliation = loop.time() + reconciliation_interval
             strategy_readiness = strategy.readiness()
             portfolio_ready = bool(node.portfolio.initialized)
             audit_ready = audit.can_accept_exposure() and bridge.connected
-            with postgres_connection(settings, application_name="tracefold_nautilus_state") as state_conn:
-                state_repos = repositories_for_connection(state_conn)
-                latest = state_repos.trading.latest_execution_profile_activation(profile.account_slot)
-                activation_current = latest == activation
-                ready = bool(
-                    strategy_readiness.ready
-                    and activation_current
-                    and portfolio_ready
-                    and audit_ready
-                    and singleton.acquired
-                )
-                reason = _unavailable_reason(
-                    ready=ready,
-                    singleton_ready=singleton.acquired,
-                    activation_ready=activation_current,
-                    portfolio_ready=portfolio_ready,
-                    bridge_connected=bridge.connected,
-                    strategy_reason=strategy_readiness.reason,
-                )
-                state = replace(
-                    state,
+            latest = state_repos.trading.latest_execution_profile_activation(profile.account_slot)
+            activation_current = latest == activation
+            ready = bool(
+                strategy_readiness.ready
+                and activation_current
+                and portfolio_ready
+                and audit_ready
+                and singleton.acquired
+            )
+            reason = _unavailable_reason(
+                ready=ready,
+                singleton_ready=singleton.acquired,
+                activation_ready=activation_current,
+                portfolio_ready=portfolio_ready,
+                bridge_connected=bridge.connected,
+                strategy_reason=strategy_readiness.reason,
+            )
+            current_state = projector.current
+            if current_state is None:
+                raise RuntimeError("oi_runtime_projection_not_started")
+            state = projector.publish(
+                replace(
+                    current_state,
                     lifecycle_state="running",
                     ready=ready,
                     singleton_ready=singleton.acquired,
@@ -350,36 +459,27 @@ async def _run_active_runtime(
                     unavailable_reason=reason,
                     updated_at_ns=now_ns,
                 )
-                with state_repos.transaction():
-                    if not state_repos.trading.update_execution_runtime_state(state):
-                        raise RuntimeError("oi_runtime_generation_lost")
+            )
             probe.publish(_probe_payload(state))
             with suppress(TimeoutError):
-                await asyncio.wait_for(stop.wait(), timeout=_HEARTBEAT_INTERVAL_SECONDS)
+                await asyncio.wait_for(runtime_wake.wait(), timeout=_HEARTBEAT_INTERVAL_SECONDS)
     finally:
         server.should_exit = True
         if bridge is not None:
             bridge.stop()
-        if state is not None and singleton.acquired:
-            stopped_at_ns = max(time.time_ns(), state.heartbeat_at_ns)
+        stopped_state = projector.current
+        if stopped_state is not None and singleton.acquired:
+            stopped_at_ns = max(time.time_ns(), stopped_state.heartbeat_at_ns)
             stopped = replace(
-                state,
+                stopped_state,
                 lifecycle_state="stopped",
                 ready=False,
                 heartbeat_at_ns=stopped_at_ns,
                 unavailable_reason="runtime_stopped",
                 updated_at_ns=stopped_at_ns,
             )
-            with (
-                suppress(Exception),
-                postgres_connection(
-                    settings,
-                    application_name="tracefold_nautilus_state",
-                ) as state_conn,
-            ):
-                state_repos = repositories_for_connection(state_conn)
-                with state_repos.transaction():
-                    state_repos.trading.update_execution_runtime_state(stopped)
+            with suppress(Exception):
+                projector.publish(stopped)
         if node.is_running():
             with suppress(Exception):
                 await asyncio.wait_for(node.stop_async(), timeout=_STOP_TIMEOUT_SECONDS)
@@ -600,22 +700,44 @@ def _load_recovery_inputs(
     return materialize_trade_signals(signal_rows), materialize_operator_intents(command_rows)
 
 
-async def _reconcile_account(*, node: TradingNode, client: Any) -> tuple[tuple[list[Any], list[Any]], int]:
+def _private_reconciliation_interval_seconds(reconciliation_stale_after_ns: int) -> float:
+    if reconciliation_stale_after_ns <= 0:
+        raise ValueError("oi_runtime_reconciliation_staleness_invalid")
+    return reconciliation_stale_after_ns / 1_000_000_000 / _RECONCILIATION_FRESHNESS_DIVISOR
+
+
+async def _reconcile_account(
+    *,
+    node: TradingNode,
+    client: Any,
+    triggers: tuple[str, ...],
+) -> _PrivateReconciliationResult:
+    allowed = {*PRIVATE_RECONCILIATION_REASONS, "startup", "steady"}
+    if not triggers or any(trigger not in allowed for trigger in triggers):
+        raise ValueError("oi_runtime_private_reconciliation_trigger_invalid")
+    started_at_ns = time.perf_counter_ns()
     reports = await load_complete_binance_account_reports(client)
-    for report in (*reports[0], *reports[1]):
+    for report in (*reports.positions, *reports.orders):
         if report.account_id != client.account_id:
             raise RuntimeError("oi_runtime_account_report_scope_invalid")
     reconcile_reports_into_cache(engine=node.kernel.exec_engine, reports=reports)
-    return reports, int(node.kernel.clock.timestamp_ns())
+    return _PrivateReconciliationResult(
+        reports=reports,
+        triggers=tuple(sorted(set(triggers))),
+        observed_at_ns=int(node.kernel.clock.timestamp_ns()),
+        duration_ns=time.perf_counter_ns() - started_at_ns,
+    )
 
 
 def _observe_reconciliation(
     *,
     audit: AuditSink,
-    reports: tuple[list[Any], list[Any]],
-    observed_at_ns: int,
+    result: _PrivateReconciliationResult,
 ) -> None:
-    positions, orders = reports
+    reports = result.reports
+    positions = reports.positions
+    orders = reports.orders
+    observed_at_ns = result.observed_at_ns
     references: set[str] = set()
     for report in (*positions, *orders):
         for name in ("client_order_id", "venue_order_id", "position_id", "instrument_id"):
@@ -632,16 +754,25 @@ def _observe_reconciliation(
             native_identity_references=bounded_references,
             summary={
                 "source": "binance_private_api",
+                "trigger": "+".join(result.triggers),
+                "duration_us": result.duration_ns // 1_000,
                 "positions": len(positions),
+                "regular_orders": len(reports.regular_orders),
+                "algo_orders": len(reports.algo_orders),
                 "orders": len(orders),
                 "account_flat": account_flat,
                 "native_refs_truncated": len(references) > len(bounded_references),
             },
             payload={
                 "source": "binance_private_api",
+                "triggers": list(result.triggers),
+                "duration_ns": result.duration_ns,
                 "position_reports": len(positions),
+                "regular_order_reports": len(reports.regular_orders),
+                "algo_order_reports": len(reports.algo_orders),
                 "order_reports": len(orders),
                 "account_flat": account_flat,
+                "rate_limit_headers_observed": False,
                 "native_identity_references": bounded_references,
             },
             event_identity=f"binance-private:{observed_at_ns}",

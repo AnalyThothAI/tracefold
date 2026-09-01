@@ -103,9 +103,10 @@ def test_pr0_does_not_create_an_oi_collector_or_a_second_execution_bus() -> None
     assert violations == []
 
 
-def test_current_production_wiring_has_one_wake_and_repair_owner_after_pr_a() -> None:
+def test_current_production_wiring_has_one_input_reconciliation_and_projection_owner_after_pr_b() -> None:
     root_source = (ROOT / "tracefold/app/nautilus/root.py").read_text(encoding="utf-8")
     bridge_source = (ROOT / "tracefold/app/nautilus/oi_runtime.py").read_text(encoding="utf-8")
+    config_source = (ROOT / "tracefold/integrations/nautilus/oi_runtime/config.py").read_text(encoding="utf-8")
     signal_client_source = (ROOT / "tracefold/integrations/nautilus/oi_runtime/signal_client.py").read_text(
         encoding="utf-8"
     )
@@ -129,7 +130,17 @@ def test_current_production_wiring_has_one_wake_and_repair_owner_after_pr_a() ->
     assert "load_or_record_day_start(" in bridge_source
     assert "for route in self._profile.routes:\n            self.subscribe_quote_ticks" in strategy_source
     assert "reports = await load_complete_binance_account_reports(client)" in root_source
-    assert "state_repos.trading.update_execution_runtime_state(state)" in root_source
+    assert root_source.count('application_name="tracefold_nautilus_state"') == 1
+    assert "class _RuntimeStateProjector:" in root_source
+    assert "self._repos.trading.update_execution_runtime_state(candidate)" in root_source
+    assert 'triggers=("startup",)' in root_source
+    assert 'reconciliation_triggers.add("steady")' in root_source
+    for reason in ("unknown_outcome", "protection_ambiguity", "flatten_pending"):
+        assert f'self._request_reconciliation("{reason}")' in strategy_source
+    assert "continuous_reconciliation" not in strategy_source
+    assert "reconciliation=False" in config_source
+    assert "open_check_interval_secs=5.0" in config_source
+    assert "position_check_interval_secs=5.0" in config_source
     assert "class _MeasuredRuntimeBridge(OiRuntimeDatabaseBridge):" in diagnostic_source
     assert "super()._cycle(repos)" in diagnostic_source
     assert "before_commit=lambda _bridge=bridge: _wait_until_next_cycle_finishes(_bridge)" in diagnostic_source
