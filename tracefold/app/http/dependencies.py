@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import Request
 
-from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
+from tracefold.platform.config.secret_file import SecretFileError, read_secure_distinct_token
 
 from .exceptions import ApiBadRequest, ApiUnauthorized
 
@@ -32,10 +32,12 @@ def _authenticated_write_runtime(request: Request) -> Any:
     supplied = value.strip() if scheme.lower() == "bearer" else ""
     token_path = runtime.settings.trading_console_write_token_file()
     try:
-        expected = read_secure_secret_text(token_path) if token_path is not None else ""
+        expected = (
+            read_secure_distinct_token(token_path, forbidden_value=runtime.settings.ws_token)
+            if token_path is not None
+            else ""
+        )
     except SecretFileError:
-        expected = ""
-    if len(expected) < 32:
         expected = ""
     if not supplied or not expected or not hmac.compare_digest(supplied, expected):
         raise ApiUnauthorized()

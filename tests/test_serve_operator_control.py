@@ -8,7 +8,7 @@ import pytest
 
 from tracefold.app.http.exceptions import ApiUnavailable
 from tracefold.app.serve_database import ServeDatabase
-from tracefold.app.serve_runtime import ServeRuntime
+from tracefold.app.serve_runtime import ServeRuntime, bootstrap_serve
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.trading import parse_operator_command, prepare_parsed_operator_intent
@@ -85,6 +85,21 @@ def test_operator_command_fails_closed_when_the_single_writer_is_busy() -> None:
             runtime.persist_operator_intent(prepared)
     finally:
         runtime.operator_command_gate.release()
+
+
+def test_serve_rejects_a_console_write_token_equal_to_the_bootstrap_token(tmp_path) -> None:
+    token = "shared-bootstrap-write-token-" + "x" * 32
+    token_path = tmp_path / "trading_console_write_token"
+    token_path.write_text(token + "\n", encoding="utf-8")
+    token_path.chmod(0o600)
+    settings = Settings(
+        ws_token=token,
+        trading={"control": {"console_write_token_file": token_path.name}},
+    )
+    settings.set_config_dir(tmp_path)
+
+    with pytest.raises(ValueError, match="trading_console_write_token_conflicts_with_ws_token"):
+        bootstrap_serve(settings)
 
 
 def _runtime() -> ServeRuntime:

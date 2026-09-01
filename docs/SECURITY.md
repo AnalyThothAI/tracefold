@@ -302,7 +302,9 @@ served console and every other GET `/api/*` route requires it. Read routes also
 accept the legacy query-token transport. The sole Command POST requires a
 separate operator write token from the mode-`0600` file named by
 `trading.control.console_write_token_file`; bootstrap never returns it and the
-console keeps a pasted value only in page memory. The route requires
+console keeps a pasted value only in page memory. Serve refuses to start when
+that token equals the bootstrap-disclosed read token, and every request rereads
+the file and fails closed if a later replacement reuses the read token. The route requires
 `Authorization: Bearer <operator-write-token>`, exact JSON content type, and a
 body no larger than 2 KiB, and authenticates before reading that body. `/healthz`,
 `/readyz`, and `/metrics` are

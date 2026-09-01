@@ -313,6 +313,20 @@ def test_console_command_post_authenticates_before_body_and_rejects_query_tokens
         ).json()["error"]
         == "content_type_json_required"
     )
+    shared_token = "shared-bootstrap-write-token-" + "x" * 32
+    api.app.state.service.settings.ws_token = shared_token
+    token_path = api.app.state.service.settings.trading_console_write_token_file()
+    assert token_path is not None
+    token_path.write_text(shared_token + "\n", encoding="utf-8")
+    token_path.chmod(0o600)
+    assert (
+        api.post(
+            "/api/trading/execution/commands",
+            content=b"{}",
+            headers={"Authorization": f"Bearer {shared_token}", "Content-Type": "application/json"},
+        ).status_code
+        == 401
+    )
     assert trading.persisted == []
 
 

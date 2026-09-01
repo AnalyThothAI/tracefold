@@ -353,7 +353,7 @@ There is no WebSocket endpoint.
 
 - `/healthz` is process liveness.
 - `/readyz` combines a lightweight PostgreSQL liveness check with the cached startup schema/composition result. It does not inspect providers, queues, or business freshness.
-- `/api/bootstrap` returns `{ws_token}` so the served console can authenticate GET reads (`Authorization: Bearer <ws_token>`; read routes also accept a `token` query parameter). The one command POST rejects this bootstrap-disclosed token and requires the separate bearer value from `trading.control.console_write_token_file`. That value is never returned by an API. A missing or wrong credential is `401`.
+- `/api/bootstrap` returns `{ws_token}` so the served console can authenticate GET reads (`Authorization: Bearer <ws_token>`; read routes also accept a `token` query parameter). The one command POST rejects this bootstrap-disclosed token and requires the separate bearer value from `trading.control.console_write_token_file`. That value is never returned by an API. Serve rejects an equal read/write token at startup; a later equal replacement fails closed as `401`, as does any missing or wrong write credential.
 - `/api/status` is exactly `{measured_at_ms, runtime}`. `runtime` combines the database probe (schema revision match) with the Workers heartbeat row and fails closed on stale heartbeats; there is no provider block.
 - Read endpoints do not call providers, execute models, or mutate facts. The one
   command POST only appends an authenticated `OperatorIntentV1`; it cannot call

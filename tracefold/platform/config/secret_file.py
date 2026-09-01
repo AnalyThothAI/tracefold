@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import os
 import stat
 from pathlib import Path
@@ -80,4 +81,20 @@ def read_secure_secret_text(path: Path) -> str:
     return value
 
 
-__all__ = ["SecretFileError", "read_secure_secret_text", "secret_file_configured"]
+def read_secure_distinct_token(path: Path, *, forbidden_value: str | None) -> str:
+    """Read a strong token that cannot reuse a separately disclosed credential."""
+
+    value = read_secure_secret_text(path)
+    if len(value) < 32:
+        raise SecretFileError("too_short")
+    if forbidden_value and hmac.compare_digest(value, forbidden_value):
+        raise SecretFileError("conflict")
+    return value
+
+
+__all__ = [
+    "SecretFileError",
+    "read_secure_distinct_token",
+    "read_secure_secret_text",
+    "secret_file_configured",
+]
