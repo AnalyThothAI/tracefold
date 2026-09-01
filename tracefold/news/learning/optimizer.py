@@ -326,6 +326,8 @@ class _LearningEventSemantics(dspy.Module):  # type: ignore[misc]
         except LMOutputTruncatedError:
             return dspy.Prediction(task_output_failure=_TASK_OUTPUT_FAILURE)
         except ValidationError as exc:
+            if exc.title != EventSemantics.__name__:
+                raise
             return dspy.Prediction(
                 task_output_failure=_TASK_OUTPUT_INVALID,
                 task_output_feedback=f"Typed EventSemantics is invalid: {exc}",
