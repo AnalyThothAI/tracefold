@@ -34,7 +34,8 @@ export function commandProgress(
       (item) =>
         item.normalized_kind === "readiness" && item.summary?.control_stage === "runtime_accepted",
     );
-  const runtimeRejected = command.disposition === "rejected";
+  const runtimeExpired = command.disposition_reason === "expired";
+  const runtimeRejected = command.disposition === "rejected" && !runtimeExpired;
   const orderAccepted = correlated.some(
     (item) =>
       ["order", "protection"].includes(item.normalized_kind) && item.summary?.status === "accepted",
@@ -44,19 +45,19 @@ export function commandProgress(
     command.disposition === "completed" && command.disposition_reason === "binance_account_flat";
   const controlCompleted =
     command.action !== "flatten" && command.disposition === "accepted" && !runtimeRejected;
-  const expired = command.expired && !command.disposition;
+  const expired = runtimeExpired || (command.expired && !command.disposition);
   const venueApplicable = command.action === "flatten";
 
   const steps: ExecutionProgressStep[] = [
     { label: "已持久化", tone: "complete" },
     {
-      label: runtimeRejected ? "Runtime 拒绝" : "Runtime 受理",
+      label: runtimeRejected ? "Runtime 拒绝" : expired ? "Runtime 已过期" : "Runtime 受理",
       tone: runtimeRejected
         ? "rejected"
-        : runtimeAccepted
-          ? "complete"
-          : expired
-            ? "expired"
+        : expired
+          ? "expired"
+          : runtimeAccepted
+            ? "complete"
             : "current",
     },
     {
@@ -126,10 +127,11 @@ export function signalProgress(
   const rawDisposition = disposition?.summary?.disposition;
   const dispositionValue = typeof rawDisposition === "string" ? rawDisposition : "";
   const accepted = dispositionValue === "accepted";
+  const runtimeExpired = dispositionValue === "expired";
   const ambiguous = ["unknown_query_first", "replayed_query_first"].includes(
     dispositionValue ?? "",
   );
-  const rejected = Boolean(disposition && !accepted && !ambiguous);
+  const rejected = Boolean(disposition && !accepted && !ambiguous && !runtimeExpired);
   const orderAccepted = correlated.some(
     (item) => item.normalized_kind === "order" && item.summary?.status === "accepted",
   );
@@ -137,7 +139,7 @@ export function signalProgress(
   const positionOpened = correlated.some(
     (item) => item.normalized_kind === "position" && item.summary?.status === "opened",
   );
-  const expired = signal.expired && !disposition;
+  const expired = runtimeExpired || (signal.expired && !disposition);
   return {
     label: positionOpened
       ? "POSITION OPENED"
@@ -157,7 +159,13 @@ export function signalProgress(
     steps: [
       { label: "Signal 已持久化", tone: "complete" },
       {
-        label: rejected ? "Runtime 拒绝" : ambiguous ? "Runtime 结果不确定" : "Runtime 受理",
+        label: rejected
+          ? "Runtime 拒绝"
+          : ambiguous
+            ? "Runtime 结果不确定"
+            : expired
+              ? "Runtime 已过期"
+              : "Runtime 受理",
         tone: rejected
           ? "rejected"
           : accepted

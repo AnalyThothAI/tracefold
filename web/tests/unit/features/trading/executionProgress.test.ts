@@ -57,6 +57,12 @@ describe("executionProgress", () => {
     expect(commandProgress(tradingCommandFixture({ disposition: "rejected" }), []).label).toBe(
       "RUNTIME REJECTED",
     );
+    expect(
+      commandProgress(
+        tradingCommandFixture({ disposition: "rejected", disposition_reason: "expired" }),
+        [],
+      ).label,
+    ).toBe("EXPIRED");
     expect(commandProgress(tradingCommandFixture({ expired: true }), []).label).toBe("EXPIRED");
   });
 
@@ -101,6 +107,15 @@ describe("executionProgress", () => {
     });
 
     expect(signalProgress(signal, [rejected]).label).toBe("RUNTIME REJECTED");
+    expect(
+      signalProgress(signal, [
+        tradingObservationFixture({
+          normalized_kind: "signal_disposition",
+          signal_id: signal.signal_id,
+          summary: { disposition: "expired" },
+        }),
+      ]).label,
+    ).toBe("EXPIRED");
     expect(signalProgress({ ...signal, expired: true }, []).label).toBe("EXPIRED");
   });
 
