@@ -19,7 +19,6 @@ from threading import Event
 from types import SimpleNamespace
 from typing import Any
 
-import psutil
 import pytest
 from fastapi.testclient import TestClient
 from nautilus_trader.model.enums import PositionSide
@@ -147,6 +146,20 @@ def _require_clean_tracked_tree() -> str:
     if tracked_status:
         raise RuntimeError("oi_runtime_pr0_baseline_dirty_tracked_tree")
     return measured_git_sha
+
+
+def _current_rss_bytes() -> int:
+    statm = Path("/proc/self/statm")
+    if statm.is_file():
+        resident_pages = int(statm.read_text(encoding="utf-8").split()[1])
+        return resident_pages * int(os.sysconf("SC_PAGE_SIZE"))
+    rss_kib = subprocess.run(
+        ["ps", "-o", "rss=", "-p", str(os.getpid())],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return int(rss_kib) * 1_024
 
 
 def _fence(repo: TradingRepository) -> tuple[int, int]:
@@ -485,8 +498,7 @@ def _http_sample(tmp_path: Path) -> dict[str, Any]:
 
 def test_emit_pr0_runtime_baseline(tmp_path: Path) -> None:
     measured_git_sha = _require_clean_tracked_tree()
-    process = psutil.Process()
-    rss_before = process.memory_info().rss
+    rss_before = _current_rss_bytes()
     settings = Settings(ws_token="475-baseline", storage=postgres_settings_storage())
     settings.set_config_dir(tmp_path / "bridge-home")
     before = resource.getrusage(resource.RUSAGE_SELF)
@@ -495,7 +507,7 @@ def test_emit_pr0_runtime_baseline(tmp_path: Path) -> None:
     lifecycle = _runtime_lifecycle_sample()
     http = _http_sample(tmp_path)
     after = resource.getrusage(resource.RUSAGE_SELF)
-    rss_after = process.memory_info().rss
+    rss_after = _current_rss_bytes()
     report = {
         "schema_version": "tracefold_oi_runtime_pr0_baseline_v1",
         "baseline_source_main": _BASELINE_SOURCE_MAIN,
