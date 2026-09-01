@@ -350,6 +350,12 @@ def test_candidate_task_truncation_is_scored_unsafe_without_terminating_gepa() -
     assert meter.imputed_cost_calls == 0
     assert meter.first_terminal_error is None
     assert metered_task.transport_failures == 0
-    truncated = [receipt for receipt in ledger.receipts if receipt.error_code == "news_program_lm_output_truncated"]
-    assert len(truncated) == 1
-    assert truncated[0].terminal_disposition == "provider_success"
+    truncated_indexes = [
+        index
+        for index, receipt in enumerate(ledger.receipts)
+        if receipt.error_code == "news_program_lm_output_truncated"
+    ]
+    assert len(truncated_indexes) == 1
+    truncated_index = truncated_indexes[0]
+    assert ledger.receipts[truncated_index].terminal_disposition == "provider_success"
+    assert any(receipt.model_binding == "task" for receipt in ledger.receipts[truncated_index + 1 :])
