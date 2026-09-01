@@ -103,14 +103,27 @@ def test_pr0_does_not_create_an_oi_collector_or_a_second_execution_bus() -> None
     assert violations == []
 
 
-def test_current_production_wiring_matches_the_measured_pr0_owner_baseline() -> None:
+def test_current_production_wiring_has_one_wake_and_repair_owner_after_pr_a() -> None:
     root_source = (ROOT / "tracefold/app/nautilus/root.py").read_text(encoding="utf-8")
     bridge_source = (ROOT / "tracefold/app/nautilus/oi_runtime.py").read_text(encoding="utf-8")
+    signal_client_source = (ROOT / "tracefold/integrations/nautilus/oi_runtime/signal_client.py").read_text(
+        encoding="utf-8"
+    )
     strategy_source = (ROOT / "tracefold/integrations/nautilus/oi_runtime/strategy.py").read_text(encoding="utf-8")
-    diagnostic_source = (ROOT / "tests/integration/test_nautilus_runtime_pr0_baseline.py").read_text(encoding="utf-8")
+    diagnostic_source = (ROOT / "tests/integration/test_nautilus_runtime_input_diagnostic.py").read_text(
+        encoding="utf-8"
+    )
 
     assert root_source.count("OiRuntimeDatabaseBridge(") == 1
     assert "run_signal_poll_loop" not in root_source
+    assert "def run_signal_poll_loop(" not in signal_client_source
+    assert bridge_source.count("install_execution_stream_listener(") == 1
+    assert bridge_source.count("wait_for_execution_stream_wake(") == 1
+    assert (
+        "install_execution_stream_listener(repos.conn, channel=execution_stream_channel())\n"
+        "                    with self._lock:\n"
+        "                        self._connected = True"
+    ) in bridge_source
     assert "poll_execution_inputs_once(" in bridge_source
     assert "flush_audit_once(" in bridge_source
     assert "load_or_record_day_start(" in bridge_source
@@ -121,7 +134,7 @@ def test_current_production_wiring_matches_the_measured_pr0_owner_baseline() -> 
     assert "super()._cycle(repos)" in diagnostic_source
     assert "before_commit=lambda _bridge=bridge: _wait_until_next_cycle_finishes(_bridge)" in diagnostic_source
     assert "install_execution_stream_listener" not in diagnostic_source
-    assert '"tracefold_oi_runtime_pr0_baseline_v1"' in diagnostic_source
-    assert "oi_runtime_pr0_baseline_dirty_worktree" in diagnostic_source
-    assert "artifacts/scheduled/oi-runtime-pr0-baseline.json" in diagnostic_source
+    assert '"tracefold_oi_runtime_input_diagnostic_v1"' in diagnostic_source
+    assert "oi_runtime_input_diagnostic_dirty_worktree" in diagnostic_source
+    assert "artifacts/scheduled/oi-runtime-input-diagnostic.json" in diagnostic_source
     assert "rss_delta_bytes" in diagnostic_source

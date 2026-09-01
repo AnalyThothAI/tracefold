@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from decimal import Decimal
 from functools import partial
+from threading import Event, Lock
 
 import pytest
 
 from tests.nautilus_oi_runtime_fixtures import NOW_NS, oi_profile
-from tests.postgres_test_utils import connect_postgres_test
+from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
+from tracefold.app.nautilus import oi_runtime as oi_runtime_module
 from tracefold.app.nautilus.oi_runtime import (
+    OiRuntimeDatabaseBridge,
     execution_stream_channel,
     load_or_record_day_start,
     load_runtime_control_state,
@@ -22,7 +28,7 @@ from tracefold.app.nautilus.oi_runtime import (
 )
 from tracefold.app.operator_control import persist_operator_intent
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.integrations.nautilus.oi_runtime.audit_sink import ObservationFactory
+from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.signal_client import (
     ExecutionSignalClient,
     install_execution_stream_listener,
@@ -31,6 +37,7 @@ from tracefold.integrations.nautilus.oi_runtime.signal_client import (
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.integrations.nautilus.oi_runtime.strategy import RuntimeControlSnapshot
 from tracefold.integrations.telegram_control import TelegramControlWebhook
+from tracefold.platform.config.models import Settings
 from tracefold.trading.storage.execution_stream import (
     ExecutionProfileActivation,
     PreparedOperatorIntent,
@@ -111,6 +118,100 @@ def _append_command(repo: TradingRepository, *, suffix: str, action: str) -> Pre
     return prepared
 
 
+def _sha(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _append_input_burst(repo: TradingRepository, *, size: int) -> None:
+    with repo.conn.transaction():
+        for index in range(size):
+            case_id = f"pra-burst-{index}"
+            repo.conn.execute(
+                """
+                INSERT INTO trading_cases (
+                  case_id, underlying_key, trigger_kind, primary_source_key,
+                  supplemental_source_keys, manifest, manifest_sha256, state,
+                  policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
+                  updated_at_ms, strategy_id, strategy_version, strategy_config_digest,
+                  capital_disposition, capital_reason
+                ) VALUES (
+                  %s, %s, 'oi', %s, '[]'::jsonb, '{"test":"475-pra"}'::jsonb,
+                  %s, 'SIGNAL_EMITTED', 'long', '475-pra', 1, 1, 1, 1,
+                  'source_native_oi_smart_money_long_v4', 'source_native_oi_smart_money_long_v4',
+                  %s, 'not_applicable', NULL
+                )
+                """,
+                (
+                    case_id,
+                    f"runtime:{case_id}",
+                    f"runtime-source:{case_id}",
+                    _sha(f"manifest:{index}"),
+                    "5" * 64,
+                ),
+            )
+            repo.append_trade_signal(
+                prepare_trade_signal(
+                    signal_id=_sha(f"signal:{index}"),
+                    case_id=case_id,
+                    alpha_contract_sha256="2" * 64,
+                    market_key="crypto:perp:BTC:USDT",
+                    direction="long",
+                    observed_at_ns=NOW_NS - 1_000_000,
+                    expires_at_ns=NOW_NS + 60_000_000_000,
+                    evidence_sha256="3" * 64,
+                )
+            )
+            repo.append_operator_intent(
+                prepare_operator_intent(
+                    command_id=_sha(f"command:{index}"),
+                    target_profile_id="oi-paper-profile",
+                    action="pause_entries",
+                    scope="entries",
+                    reason="475 PR-A burst",
+                    operator_identity="operator:475-pra",
+                    authentication_identity="test:authenticated",
+                    requested_at_ns=NOW_NS,
+                    expires_at_ns=NOW_NS + 60_000_000_000,
+                    confirmation_identity=None,
+                    market_key=None,
+                    direction=None,
+                )
+            )
+
+
+def _runtime_bridge(signals: ExecutionSignalClient, *, poll_seconds: float = 0.2) -> OiRuntimeDatabaseBridge:
+    profile = oi_profile()
+    return OiRuntimeDatabaseBridge(
+        settings=Settings(ws_token="475-pra", storage=postgres_settings_storage()),
+        profile=profile,
+        signals=signals,
+        audit=AuditSink(factory=ObservationFactory(profile.profile_id, profile.runtime_release, "oi_nautilus_v1")),
+        update_day_start=lambda _baseline: None,
+        poll_seconds=poll_seconds,
+    )
+
+
+def _wait_for_bridge(
+    bridge: OiRuntimeDatabaseBridge,
+    predicate: Callable[[], bool],
+    *,
+    timeout_seconds: float = 3.0,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while not predicate() and time.monotonic() < deadline:
+        if bridge.fatal_error is not None:
+            raise bridge.fatal_error
+        time.sleep(0.005)
+    assert predicate()
+    assert bridge.fatal_error is None
+
+
+def _stop_bridge(bridge: OiRuntimeDatabaseBridge) -> None:
+    bridge.stop()
+    bridge.join(2.0)
+    assert bridge.connected is False
+
+
 def test_listen_is_wake_only_and_poll_repairs_before_and_after_notifications() -> None:
     listener = connect_postgres_test(read_only=False)
     writer = connect_postgres_test(read_only=False)
@@ -140,6 +241,183 @@ def test_listen_is_wake_only_and_poll_repairs_before_and_after_notifications() -
         assert client.next_command_nowait() == command.value
     finally:
         listener.close()
+        writer.close()
+
+
+def test_production_bridge_owns_listener_and_normal_wake_latency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer = connect_postgres_test(read_only=False)
+    bridge: OiRuntimeDatabaseBridge | None = None
+    installed = Event()
+    original_install = oi_runtime_module.install_execution_stream_listener
+
+    def observe_install(conn: object, *, channel: str) -> None:
+        original_install(conn, channel=channel)
+        installed.set()
+
+    monkeypatch.setattr(oi_runtime_module, "install_execution_stream_listener", observe_install)
+    try:
+        repo = TradingRepository(writer)
+        _activate(repo)
+        signals = ExecutionSignalClient(
+            runtime_profile_id="oi-paper-profile",
+            execution_strategy="oi_nautilus_v1",
+        )
+        bridge = _runtime_bridge(signals)
+        bridge.start()
+        assert installed.wait(2.0)
+        _wait_for_bridge(bridge, lambda: bridge.connected)
+
+        latencies: list[float] = []
+        for suffix in "123456":
+            started = time.perf_counter()
+            _append_signal(repo, suffix=suffix)
+            _wait_for_bridge(bridge, lambda: signals.queued_count == 1)
+            assert signals.next_nowait() is not None
+            latencies.append(time.perf_counter() - started)
+
+        p95_seconds = sorted(latencies)[math.ceil(0.95 * len(latencies)) - 1]
+        assert p95_seconds <= 0.25
+        row = writer.execute(
+            """
+            SELECT count(*) AS n
+              FROM pg_stat_activity
+             WHERE datname = current_database()
+               AND application_name = 'tracefold_nautilus_stream'
+            """
+        ).fetchone()
+        assert row == {"n": 1}
+    finally:
+        if bridge is not None:
+            _stop_bridge(bridge)
+        writer.close()
+
+
+def test_production_bridge_repairs_when_every_wake_is_discarded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer = connect_postgres_test(read_only=False)
+    bridge: OiRuntimeDatabaseBridge | None = None
+    waiting = Event()
+
+    def discard_wake(_conn: object, timeout_seconds: float) -> bool:
+        waiting.set()
+        time.sleep(timeout_seconds)
+        return False
+
+    monkeypatch.setattr(oi_runtime_module, "wait_for_execution_stream_wake", discard_wake)
+    try:
+        repo = TradingRepository(writer)
+        _activate(repo)
+        signals = ExecutionSignalClient(
+            runtime_profile_id="oi-paper-profile",
+            execution_strategy="oi_nautilus_v1",
+        )
+        bridge = _runtime_bridge(signals)
+        bridge.start()
+        assert waiting.wait(2.0)
+
+        started = time.perf_counter()
+        _append_signal(repo, suffix="7")
+        _wait_for_bridge(bridge, lambda: signals.queued_count == 1)
+        repaired_seconds = time.perf_counter() - started
+
+        assert repaired_seconds >= 0.15
+        assert repaired_seconds < 20.0  # one third of the 60-second Signal TTL
+        assert len(signals.pending_ids) == 1
+    finally:
+        if bridge is not None:
+            _stop_bridge(bridge)
+        writer.close()
+
+
+def test_production_bridge_100_pair_burst_is_bounded_and_duplicate_wakes_do_not_duplicate_pending() -> None:
+    writer = connect_postgres_test(read_only=False)
+    bridge: OiRuntimeDatabaseBridge | None = None
+    try:
+        repo = TradingRepository(writer)
+        _activate(repo)
+        signals = ExecutionSignalClient(
+            runtime_profile_id="oi-paper-profile",
+            execution_strategy="oi_nautilus_v1",
+        )
+        bridge = _runtime_bridge(signals)
+        bridge.start()
+        _wait_for_bridge(bridge, lambda: bridge.connected)
+
+        _append_input_burst(repo, size=100)
+        _wait_for_bridge(bridge, lambda: signals.queued_count == 200)
+        for _ in range(10):
+            writer.execute("NOTIFY trading_execution_stream")
+        time.sleep(0.25)
+
+        assert signals.queued_count == 200
+        assert signals.queued_command_count == 100
+        assert signals.queued_bytes <= 1_048_576
+        commands = tuple(signals.next_command_nowait() for _ in range(100))
+        values = tuple(signals.next_nowait() for _ in range(100))
+        assert None not in commands
+        assert None not in values
+        assert len({command.command_id for command in commands if command is not None}) == 100
+        assert len({value.signal_id for value in values if value is not None}) == 100
+        assert signals.queued_count == 0
+        assert signals.queued_bytes == 0
+        assert len(signals.pending_command_ids) == 100
+        assert len(signals.pending_ids) == 100
+    finally:
+        if bridge is not None:
+            _stop_bridge(bridge)
+        writer.close()
+
+
+def test_production_bridge_reconnect_reinstalls_listener_before_consuming(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer = connect_postgres_test(read_only=False)
+    bridge: OiRuntimeDatabaseBridge | None = None
+    install_lock = Lock()
+    install_count = 0
+    original_install = oi_runtime_module.install_execution_stream_listener
+
+    def observe_install(conn: object, *, channel: str) -> None:
+        nonlocal install_count
+        original_install(conn, channel=channel)
+        with install_lock:
+            install_count += 1
+
+    def listener_installs() -> int:
+        with install_lock:
+            return install_count
+
+    monkeypatch.setattr(oi_runtime_module, "install_execution_stream_listener", observe_install)
+    try:
+        repo = TradingRepository(writer)
+        _activate(repo)
+        signals = ExecutionSignalClient(
+            runtime_profile_id="oi-paper-profile",
+            execution_strategy="oi_nautilus_v1",
+        )
+        bridge = _runtime_bridge(signals)
+        bridge.start()
+        _wait_for_bridge(bridge, lambda: listener_installs() == 1 and bridge.connected)
+        row = writer.execute(
+            """
+            SELECT pg_terminate_backend(pid) AS terminated
+              FROM pg_stat_activity
+             WHERE datname = current_database()
+               AND application_name = 'tracefold_nautilus_stream'
+            """
+        ).fetchone()
+        assert row == {"terminated": True}
+
+        _wait_for_bridge(bridge, lambda: listener_installs() >= 2 and bridge.connected)
+        _append_signal(repo, suffix="8")
+        _wait_for_bridge(bridge, lambda: signals.queued_count == 1)
+        assert signals.next_nowait() is not None
+    finally:
+        if bridge is not None:
+            _stop_bridge(bridge)
         writer.close()
 
 
@@ -324,6 +602,35 @@ def test_real_postgres_signal_to_pinned_nautilus_callback_to_observation_process
         assert [row["disposition"] for row in rows if row["normalized_kind"] == "signal_disposition"] == ["accepted"]
     finally:
         verify.close()
+
+
+def test_replayed_database_signal_reaches_one_economic_entry_in_pinned_nautilus_process(
+    postgres_clone_dsn: str,
+) -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        _activate(repo)
+        _append_signal(repo)
+    finally:
+        conn.close()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "tests.helpers.nautilus_oi_runtime_process", postgres_clone_dsn, "signal_replay"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout.strip().splitlines()[-1])
+    assert receipt["admitted"] == 1
+    assert receipt["replay_admitted"] == 0
+    assert receipt["pending"] == []
+    economic_entries = [order for order in receipt["orders"] if not order["reduce_only"]]
+    active_protections = [order for order in receipt["orders"] if order["reduce_only"]]
+    assert len(economic_entries) == 1
+    assert len(active_protections) == 1
 
 
 def test_authenticated_webhook_to_postgres_to_nautilus_command_observation_process_seam(

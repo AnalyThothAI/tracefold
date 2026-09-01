@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections import deque
 from collections.abc import Callable, Sequence
-from threading import Event, Lock
+from threading import Lock
 from typing import Any
 
 from tracefold.trading import OperatorIntentV1, TradeSignalV1
@@ -211,30 +211,6 @@ def wait_for_execution_stream_wake(conn: Any, timeout_seconds: float) -> bool:
     return notification is not None
 
 
-def run_signal_poll_loop(
-    *,
-    client: ExecutionSignalClient,
-    reader: SignalReader,
-    command_reader: CommandReader | None = None,
-    listener_conn: Any,
-    channel: str,
-    stop: Event,
-    poll_interval_seconds: float,
-    on_failure: Callable[[BaseException], None],
-) -> None:
-    """Own blocking PostgreSQL work outside the TradingNode callback thread."""
-
-    try:
-        install_execution_stream_listener(listener_conn, channel=channel)
-        while not stop.is_set():
-            poll_execution_inputs_once(client=client, reader=reader, command_reader=command_reader)
-            if stop.is_set():
-                break
-            wait_for_execution_stream_wake(listener_conn, poll_interval_seconds)
-    except BaseException as exc:
-        on_failure(exc)
-
-
 def poll_execution_inputs_once(
     *,
     client: ExecutionSignalClient,
@@ -252,6 +228,5 @@ __all__ = [
     "ExecutionSignalClient",
     "install_execution_stream_listener",
     "poll_execution_inputs_once",
-    "run_signal_poll_loop",
     "wait_for_execution_stream_wake",
 ]

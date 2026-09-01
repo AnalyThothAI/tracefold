@@ -39,7 +39,7 @@ from tracefold.integrations.nautilus.oi_runtime.strategy import (
 def main() -> None:
     dsn = sys.argv[1]
     mode = sys.argv[2] if len(sys.argv) > 2 else "signal"
-    if mode not in {"command", "signal"}:
+    if mode not in {"command", "signal", "signal_replay"}:
         raise ValueError("nautilus_process_fixture_mode_invalid")
     conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
     try:
@@ -48,7 +48,14 @@ def main() -> None:
             execution_strategy="oi_nautilus_v1",
         )
         repos = repositories_for_connection(conn)
-        admitted = signals.poll_once(partial(load_unresolved_trade_signals, repos)) if mode == "signal" else 0
+        admitted = (
+            signals.poll_once(partial(load_unresolved_trade_signals, repos))
+            if mode in {"signal", "signal_replay"}
+            else 0
+        )
+        replay_admitted = (
+            signals.poll_once(partial(load_unresolved_trade_signals, repos)) if mode == "signal_replay" else None
+        )
         admitted_commands = (
             signals.poll_commands_once(partial(load_unresolved_operator_intents, repos)) if mode == "command" else 0
         )
@@ -118,6 +125,7 @@ def main() -> None:
             json.dumps(
                 {
                     "admitted": admitted,
+                    **({"replay_admitted": replay_admitted} if replay_admitted is not None else {}),
                     "admitted_commands": admitted_commands,
                     "orders": [
                         {
