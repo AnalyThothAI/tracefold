@@ -20,6 +20,9 @@ TRADING_STATUS_SIGNAL_COUNTS_SQL: Final = """
       FROM trading_trade_signals
      WHERE observed_at_ns >= %(since)s OR expires_at_ns > %(now)s
 """
+# These two were duplicated as literals inside `queries.py` until #460, so the query-plan audit
+# registered a *copy* of the statement the `/api/trading/cases` route runs. An edit to one and not the
+# other would have left the audit passing on SQL nobody executes.
 TRADING_CASE_COUNTS_SQL: Final = (
     "SELECT state, count(*) AS n FROM trading_cases WHERE created_at_ms >= %s GROUP BY state"
 )

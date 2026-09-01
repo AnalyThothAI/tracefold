@@ -49,8 +49,11 @@ ADMISSION_VERSION: Final = "trading_admission_v6"
 AdmissionStatus = Literal["DEFERRED", "REJECTED", "CASE_CREATED", "EXPIRED"]
 AdmissionStage = Literal["source", "venue", "eligibility", "catalog", "market_context", "freeze"]
 
-# The closed vocabulary. A reason outside this set is a bug, not a new rule: the read model aggregates
-# on it and an unbounded key set is exactly what the retired funnel's venue counter already failed at.
+# The closed vocabulary a *writer* may reach. Reading history does not pass through here, which is why
+# `blacklisted` and `catalog_absent` could leave in #460 while their `tradingLabels.ts` entries stayed:
+# the one stored `eligibility:blacklisted` row is served as a plain string and still renders. A reason
+# outside this set is a bug, not a new rule: an unbounded key set is exactly what the retired funnel's
+# venue counter already failed at.
 ADMISSION_REASONS: Final[frozenset[str]] = frozenset(
     {
         "source_contract_invalid",
@@ -61,12 +64,9 @@ ADMISSION_REASONS: Final[frozenset[str]] = frozenset(
         "venue_unresolved",
         "trigger_stale",
         "oi_value_below_floor",
-        "blacklisted",
         # One name for "this issuer already has an undecided Case". `cooldown` remains retired; Signal
         # TTL and execution risk belong to later boundaries.
         "underlying_busy",
-        # Read-only history from the retired catalogue gate. Current writers never emit it.
-        "catalog_absent",
         "market_data_unavailable",
         "market_data_invalid",
         "already_consumed",

@@ -1326,31 +1326,14 @@ Changing a threshold does not rewrite history: `gate_config_digest` is half the
 key, so an edit starts a new row and the old one stays as the record of what the
 old rule decided.
 
-### OI BAR replay and attribution (#286)
+### OI research replay (#459)
 
-`uv run tracefold trading replay-oi --days 7 --venues
-binance.perp,hl.perp --fidelity bar_v1` freezes the bounded parsed OI source
-population, active capability snapshot and canonical blacklist, then fetches
-source-native public Binance/Hyperliquid OHLCV bars. It gives every selected
-source one terminal decision, coverage reason or fresh Nautilus
-`BacktestEngine` outcome and keeps capital admission separate from the Alpha
-decision.
-
-This is a cold audited research command, not a read-only diagnostic. Before the
-Serve repeatable-read snapshot it uses one short Workers transaction to
-materialize timed blacklist expiry under the canonical revision contract. It
-then performs public market-data I/O outside database transactions, atomically
-publishes a content-addressed artifact under `--out`, and uses one final short
-Workers transaction to insert the immutable `trading_replay_runs` receipt.
-Rerunning an identical spec verifies and reuses the existing artifact/receipt.
-
-The replay process never mounts Binance Demo execution credentials and never
-constructs an execution adapter or performs a provider order write. BAR-v1 is
-reported as BAR-v1: funding and portfolio drawdown remain unavailable, and
-missing source-native history receives a stable coverage reason rather than
-fabricated data. `run_id` binds the source rows, market slices, capability,
-blacklist payload, Gate, Strategy, regime, notional, execution policy, engine,
-fees and fidelity identities.
+`uv run tracefold trading oi-corpus` seals a Binance open-interest corpus under
+`--out`; `uv run tracefold trading oi-replay` scores the one pre-registered rule
+over it and prints the table. Both are cold research commands over local files:
+no database transaction, no receipt, no venue write, and no execution adapter.
+Read `tracefold trading oi-replay --help` for the current flags rather than a
+copy of them here.
 
 ### Price Review plane (#88)
 

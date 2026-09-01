@@ -262,7 +262,6 @@ export function tradingGateDecisionFixture(
     gate_stage: "eligibility",
     gate_status: "REJECTED",
     gate_version: "trading_admission_v6",
-    research_only: false,
     source_key: "oi:evt-oi-storj:oi_signal_v1",
     source_observed_at_ms: TRADING_NOW_MS - 120_000,
     trigger_kind: "oi",
