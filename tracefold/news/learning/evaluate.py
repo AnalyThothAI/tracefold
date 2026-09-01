@@ -60,6 +60,7 @@ from .metric import (
 )
 from .objective import (
     _expected_delivery,
+    development_split_profile_counts,
     production_decision,
 )
 from .profile import _PROFILE, EVALUATOR_VERSION, TRUSTED_ROOT_SHA, development_coverage_blockers
@@ -301,7 +302,7 @@ class CandidateEvaluator:
         ):
             raise ValueError("news_learning_dataset_reader_contract_mismatch")
         candidate = self._registry.load(request.candidate_sha)
-        self._registry.validate(candidate)
+        candidate_plan = self._registry.validate(candidate)
         self._registry.persist(candidate)
         prior_stage = {"holdout": "offline", "shadow": "holdout", "canary": "shadow"}.get(request.stage)
         if prior_stage and not self._registry.has_passed_stage(candidate.candidate_sha, prior_stage):
@@ -397,6 +398,10 @@ class CandidateEvaluator:
             observations=existing,
             execution_errors=execution_errors,
             observation_dimensions=observation_dimensions,
+            development_profile_counts={
+                **development.counts,
+                **development_split_profile_counts(candidate_plan),
+            },
         )
         if observation_manifest_sha:
             evidence["observation_manifest_sha"] = observation_manifest_sha
@@ -1162,11 +1167,12 @@ class CandidateEvaluator:
         observations: Sequence[Mapping[str, Any]],
         execution_errors: Sequence[str],
         observation_dimensions: Mapping[str, Any] | None,
+        development_profile_counts: Mapping[str, Any],
     ) -> dict[str, Any]:
         blockers: list[str] = []
         failures: list[str] = []
         if request.stage in {"offline", "holdout"}:
-            blockers.extend(development_coverage_blockers(development.counts))
+            blockers.extend(development_coverage_blockers(development_profile_counts))
         else:
             prior = "holdout" if request.stage == "shadow" else "shadow"
             if not self._registry.has_passed_stage(candidate.candidate_sha, prior):

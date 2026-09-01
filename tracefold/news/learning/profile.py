@@ -93,6 +93,8 @@ _DEVELOPMENT_COVERAGE_GATES: tuple[tuple[str, str], ...] = (
     ("retention_cluster_n", "retention_clusters_min"),
     ("negative_cluster_n", "negative_clusters_min"),
     ("stratum_n", "strata_min"),
+    ("train_stratum_n", "strata_min"),
+    ("development_selection_stratum_n", "strata_min"),
     ("train_taxonomy_target_cluster_n", "train_taxonomy_target_clusters_min"),
     ("train_taxonomy_control_cluster_n", "train_taxonomy_control_clusters_min"),
     ("development_selection_taxonomy_target_cluster_n", "selection_taxonomy_target_clusters_min"),

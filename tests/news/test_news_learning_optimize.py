@@ -63,7 +63,14 @@ def _budget(*, max_call_cost_microusd: int = 1_000) -> OptimizationBudget:
 
 
 def _ready_dataset() -> FrozenDevelopmentDataset:
-    episodes = tuple(_episode(index, target=index % 2 == 1) for index in range(1, 201))
+    episode_rows = []
+    for index in range(1, 201):
+        episode = _episode(index, target=index % 2 == 1)
+        review = dict(episode.accepted_review)
+        review["should_push"] = "must_push" if index % 2 else "should_hold"
+        review["novelty"] = {"judgment": "new_fact", "duplicate_of": ""}
+        episode_rows.append(episode.model_copy(update={"accepted_review": review}))
+    episodes = tuple(episode_rows)
     payload = {
         **_DATASET_PAYLOAD,
         "counts": {

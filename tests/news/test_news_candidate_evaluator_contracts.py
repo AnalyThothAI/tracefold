@@ -326,6 +326,8 @@ _ONE_DAY_SUFFICIENT = {
     "train_taxonomy_control_cluster_n": 60,
     "development_selection_taxonomy_target_cluster_n": 30,
     "development_selection_taxonomy_control_cluster_n": 30,
+    "train_stratum_n": 3,
+    "development_selection_stratum_n": 3,
     "calibration": {
         "cluster_n": 50,
         "disagreement_unadjudicated_n": 0,
@@ -352,6 +354,17 @@ def test_a_single_calendar_day_with_real_coverage_is_not_blocked() -> None:
     """
 
     assert development_coverage_blockers(_ONE_DAY_SUFFICIENT) == ()
+
+
+def test_each_objective_half_must_carry_enough_strata() -> None:
+    thin_selection = {
+        **_ONE_DAY_SUFFICIENT,
+        "development_selection_stratum_n": 2,
+    }
+
+    assert development_coverage_blockers(thin_selection) == (
+        "development_development_selection_stratum_n_insufficient",
+    )
 
 
 def test_three_calendar_dates_are_not_evidence_when_the_corpus_is_thin() -> None:

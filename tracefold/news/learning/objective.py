@@ -770,7 +770,9 @@ def _expected_delivery(should_push: str) -> bool | None:
 # document answers both "may this corpus be optimized" and "how much separable evidence is in it".
 # A v1 report cannot answer the second question and must not be read as if it could.
 READINESS_SCHEMA: Literal["tracefold.news.gepa_readiness_report.v3"] = "tracefold.news.gepa_readiness_report.v3"
-_TASK_CALLS_PER_METRIC_CALL: Final = 1
+# One Predictor evaluation may use JSONAdapter's single format fallback. This is a physical-call ceiling,
+# not the usual successful-path count, so the readiness receipt must reserve both attempts.
+_TASK_CALLS_PER_METRIC_CALL: Final = 2
 
 
 def _strata_coverage(episodes: Sequence[DevelopmentEpisode]) -> dict[str, int]:
@@ -806,6 +808,17 @@ def _half_counts(plan: GepaObjectivePlan, half: Sequence[DevelopmentEpisode]) ->
     }
 
 
+def development_split_profile_counts(plan: GepaObjectivePlan) -> dict[str, int]:
+    """Project the two sealed Objective halves into the shared release-profile vocabulary."""
+
+    return {
+        "train_stratum_n": sum(value > 0 for value in _strata_coverage(plan.train_episodes).values()),
+        "development_selection_stratum_n": sum(
+            value > 0 for value in _strata_coverage(plan.development_selection_episodes).values()
+        ),
+    }
+
+
 def build_readiness_report(
     plan: GepaObjectivePlan,
     *,
@@ -829,6 +842,7 @@ def build_readiness_report(
     selection = _half_counts(plan, plan.development_selection_episodes)
     profile_counts = {
         **dict(coverage),
+        **development_split_profile_counts(plan),
         "train_taxonomy_target_cluster_n": train["taxonomy_target_cluster_n"],
         "train_taxonomy_control_cluster_n": train["taxonomy_control_cluster_n"],
         "development_selection_taxonomy_target_cluster_n": selection["taxonomy_target_cluster_n"],
@@ -908,7 +922,9 @@ def build_readiness_report(
             "task_model_calls_per_metric_call": _TASK_CALLS_PER_METRIC_CALL,
             "metric_calls_per_full_selection_evaluation": len(plan.development_selection_episodes),
             "metric_calls_per_reflection_minibatch": min(10, len(plan.train_episodes)),
-            "task_model_calls_per_full_selection_evaluation": len(plan.development_selection_episodes),
+            "task_model_calls_per_full_selection_evaluation": (
+                len(plan.development_selection_episodes) * _TASK_CALLS_PER_METRIC_CALL
+            ),
             "reflection_model_calls_per_proposal_round": 1,
         },
         "case_dispositions": [case.model_dump(mode="json") for case in plan.cases],
@@ -925,6 +941,7 @@ __all__ = [
     "ObjectiveCase",
     "build_gepa_objective_plan",
     "build_readiness_report",
+    "development_split_profile_counts",
     "optimizer_population_identity",
     "production_decision",
     "retrieval_receipt",

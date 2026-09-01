@@ -251,7 +251,7 @@ chain names a receipt that no longer validates. Neither re-opens the epoch —
 identity changed, evidence did not — so accepted `news_review_v4`
 truth stays eligible. Every earlier
 review, dataset, recording and release receipt is
-retained as audit history but is never training, metric-v7,
+retained as audit history but is never training, metric-v8,
 validation, holdout or promotion evidence for the current Program factory.
 `0315` then records #288's exact source route and factory-v7 cut without
 rewriting or appending the `program_v7` epoch row. Accepted review labels remain

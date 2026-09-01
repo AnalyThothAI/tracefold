@@ -755,7 +755,7 @@ cannot verify its own policy is a construction bug, and scoring it 0 would blame
 the Program for it.
 
 Migration `0336` removes the pre-genesis replay fixture with the database
-evidence it represented. Current metric-v7 evidence is built only from exact
+evidence it represented. Current metric-v8 evidence is built only from exact
 `news_judgment_v2` rows created in the post-genesis active epoch; tests do not
 carry a repository copy of the retired evidence shape.
 

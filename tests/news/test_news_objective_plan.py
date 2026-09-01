@@ -82,7 +82,14 @@ def test_objective_compilability_and_development_profile_readiness_are_separate(
 
 
 def test_complete_profile_reports_train_selection_counts_and_taxonomy_support() -> None:
-    episodes = tuple(_episode(index, target=index % 2 == 1) for index in range(1, 201))
+    episode_rows = []
+    for index in range(1, 201):
+        episode = _episode(index, target=index % 2 == 1)
+        review = dict(episode.accepted_review)
+        review["should_push"] = "must_push" if index % 2 else "should_hold"
+        review["novelty"] = {"judgment": "new_fact", "duplicate_of": ""}
+        episode_rows.append(episode.model_copy(update={"accepted_review": review}))
+    episodes = tuple(episode_rows)
     plan = build_gepa_objective_plan(episodes)
     coverage = {
         "boundary_cluster_n": 30,
@@ -105,6 +112,8 @@ def test_complete_profile_reports_train_selection_counts_and_taxonomy_support() 
     assert report["train"]["taxonomy_control_cluster_n"] == 70
     assert report["development_selection"]["taxonomy_target_cluster_n"] == 30
     assert report["development_selection"]["taxonomy_control_cluster_n"] == 30
+    assert report["call_envelope"]["task_model_calls_per_metric_call"] == 2
+    assert report["call_envelope"]["task_model_calls_per_full_selection_evaluation"] == 120
     assert report["taxonomy_gold"]["cluster_n"] == 200
     assert report["taxonomy_gold"]["support"]["event_family"] == {
         "product_service_change": 100,

@@ -1197,7 +1197,7 @@ gate zeroed each case (`must_push_miss`, `must_hold_send`,
 `card_lint_self_description`). A gated case keeps its resolved action and its per-dimension
 outcomes: the zero enters every denominator rather than leaving it, or a
 candidate with more hard failures could publish a higher per-dimension hit rate.
-Metric `tracefold.news.production_action_trade_relevance_v7` weights 45% exact
+Metric `tracefold.news.production_action_trade_relevance_v8` weights 45% exact
 final production action, 35% exact TradeRelevance dimensions, 10% existing
 semantics/novelty, 10% ReaderCard reviewer anchors and 10% the deterministic
 ReaderCard copy lint, normalized over the components a case carries. The four
@@ -1381,8 +1381,9 @@ two distinct primary reviewers per task, independent adjudication for every disa
 Agent answer, accepted Gold, duplicate hint or outcome.
 
 Readiness makes no task/reflection/judge call and writes nothing except the operator-requested report file.
-Its call envelope names one EventSemantics task call per metric call and one reflection call per proposal
-round; the taxonomy optimizer has no ReaderCard or semantic-judge envelope. `news learning run` rebuilds
+Its call envelope names the ceiling of two physical EventSemantics task calls per metric call — the primary
+JSONAdapter attempt plus its one format fallback — and one reflection call per proposal round; the taxonomy
+optimizer has no ReaderCard or semantic-judge envelope. `news learning run` rebuilds
 the same report before constructing endpoints and refuses unless both readiness booleans are true.
 CandidateEvaluator re-projects the same v3 plan at registration/evaluation.
 
