@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning import optimizer as optimizer_module
 from tracefold.news.learning.contracts import DevelopmentDatasetRef, OptimizationBudget, PromptPatchV1
+from tracefold.news.learning.objective import build_gepa_objective_plan
 from tracefold.news.learning.optimizer import (
     FrozenDevelopmentDataset,
     OptimizationConfig,
@@ -23,7 +24,7 @@ from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.lm import LMCallContext, LMCallLedger, ScriptedLM
 from tracefold.news.program.runtime import PROGRAM_VERSION
 
-from .test_news_program_gepa_real import _corpus, _episode
+from .test_news_program_gepa_real import _corpus, _episode, _synthetic_compile
 
 _DATASET_PAYLOAD = {
     "role": "development",
@@ -223,6 +224,40 @@ def test_report_keeps_spend_that_exceeds_the_per_call_reservation(monkeypatch: p
     assert result.report.usage["task_cost_microusd"] == 3
     assert result.report.usage["actual_cost_microusd"] == 3
     assert result.report.usage["transport_failures"] == 0
+
+
+def test_incomplete_candidate_zero_is_an_explicit_rejection_with_public_receipts() -> None:
+    dataset = _ready_dataset()
+    plan = build_gepa_objective_plan(dataset.episodes)
+    stable = dataset.parent_program.event_semantics_instruction
+    val_count = len(plan.development_selection_episodes)
+    rows = [dict.fromkeys(range(val_count), 1.0) for _ in range(2)]
+    rows[0][0] = float(-(len(plan.train_episodes) + 1))
+    task, reflection, _ledger = _learning_models(role="reflection")
+
+    result = optimize(
+        dataset,
+        OptimizationConfig(
+            task_lm=task,
+            reflection_lm=reflection,
+            budget=_budget(),
+            compile_fn=_synthetic_compile(
+                instructions=(stable, stable + "\n\nCandidate one."),
+                aggregate_scores=(0.2, 0.8),
+                validation_subscores=tuple(rows),
+            ),
+            now_ms=lambda: 1_800_000_000_000,
+        ),
+    )
+
+    assert result.outcome == "REJECTED"
+    assert result.report.schema_version == "news_optimization_run_report_v4"
+    assert result.report.reasons == ("news_program_compile_candidate_zero_incomplete",)
+    assert result.report.metric is not None
+    assert result.report.metric["taxonomy_selection_score"]["candidate_zero_task_output_failure_n"] == 1
+    assert result.report.gepa_public_result is not None
+    assert result.report.gepa_public_result["tracefold_admitted_index"] is None
+    assert result.candidate is None
 
 
 def test_unready_development_profile_is_a_zero_provider_call_terminal_report() -> None:

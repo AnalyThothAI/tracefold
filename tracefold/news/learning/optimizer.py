@@ -2,7 +2,8 @@
 
 Public ``dspy.GEPA`` compiles the single ``NativeNewsProgram.event_semantics`` Predict against accepted
 taxonomy Gold. Task and reflection calls share one audited ledger and one physical-call meter; the returned
-winner is accepted only when it contains that one Predictor and no demos. ReaderCard stays byte-identical.
+public candidates are scanned for the highest admissible instruction, and each must contain that one Predictor
+and no demos. ReaderCard stays byte-identical.
 The module owns no persistence,
 activation, canary, or promotion authority. A run ends in ``NO_OP``, ``REJECTED``, or ``ADVANCE``, and an
 ``ADVANCE`` candidate is still subject to every downstream release gate.
@@ -294,6 +295,14 @@ class GepaNoProgramChange(ValueError):
         self.result = result
 
 
+class GepaCandidateZeroIncomplete(ValueError):
+    """Candidate zero did not finish its validation pass, so no quality comparison exists."""
+
+    def __init__(self, result: GepaRunResult) -> None:
+        super().__init__("news_program_compile_candidate_zero_incomplete")
+        self.result = result
+
+
 _TASK_OUTPUT_FAILURE = "news_program_compile_task_model_output_truncated"
 _TASK_OUTPUT_INVALID = "news_program_compile_task_model_output_invalid"
 
@@ -581,8 +590,8 @@ def run_gepa(
     scores = [float(value) for value in list(getattr(run, "val_aggregate_scores", ()) or ())]
     if any(not math.isfinite(score) for score in scores):
         raise TypeError("news_program_compile_nonfinite_score")
-    best_idx = run.best_idx
-    if not scores or best_idx < 0 or best_idx >= len(scores):
+    gepa_best_idx = run.best_idx
+    if not scores or gepa_best_idx < 0 or gepa_best_idx >= len(scores):
         raise ValueError("news_program_compile_selection_scores_invalid")
     if len(run.candidates) != len(scores) or len(run.parents) != len(scores):
         raise ValueError("news_program_compile_public_result_invalid")
@@ -600,40 +609,77 @@ def run_gepa(
         for index, episode in enumerate(plan.development_selection_episodes)
         if episode.case_id in set(plan.control_case_ids)
     }
-    controls_regressed = any(
-        float(val_subscores[best_idx][index]) < float(val_subscores[0][index]) for index in control_indexes
+    candidate_instructions = [_winning_event_instruction(candidate) for candidate in run.candidates]
+    candidate_zero_task_output_failure_n = sum(
+        float(score) == task_output_failure_score for score in val_subscores[0].values()
     )
-    strictly_improved = best_idx != 0 and scores[best_idx] > scores[0] and not controls_regressed
-    winner_instruction = _winning_event_instruction(run.candidates[best_idx])
-    validate_program_instruction(winner_instruction)
-    rejected = growth_budget.over({"event_semantics": winner_instruction})
-    if rejected is not None:
-        raise ValueError(rejected[0])
+    admissible_indexes: list[int] = []
+    if candidate_zero_task_output_failure_n == 0:
+        for index, instruction in enumerate(candidate_instructions[1:], start=1):
+            try:
+                validate_program_instruction(instruction)
+            except ValueError as exc:
+                if _instruction_rejection_code(exc) is None:
+                    raise
+                continue
+            if (
+                instruction != base_program.event_semantics_instruction
+                and scores[index] > scores[0]
+                and all(float(val_subscores[index][control]) == 1.0 for control in control_indexes)
+                and growth_budget.over({"event_semantics": instruction}) is None
+            ):
+                admissible_indexes.append(index)
+    admitted_idx = max(admissible_indexes, key=scores.__getitem__) if admissible_indexes else None
+    selected_idx = admitted_idx if admitted_idx is not None else 0
+    selected_instruction = candidate_instructions[selected_idx]
     patch = ProgramStrategyPatchV1.issue(
         parent=base_program,
-        event_semantics_instruction=winner_instruction,
+        event_semantics_instruction=selected_instruction,
         reader_card_instruction=base_program.reader_card_instruction,
     )
     baseline_objectives = {key: float(value) for key, value in objective_scores[0].items()}
-    winner_objectives = {key: float(value) for key, value in objective_scores[best_idx].items()}
+    gepa_best_objectives = {key: float(value) for key, value in objective_scores[gepa_best_idx].items()}
+    admitted_objectives = (
+        {key: float(value) for key, value in objective_scores[admitted_idx].items()}
+        if admitted_idx is not None
+        else None
+    )
     selection = {
-        "schema": "tracefold.news.taxonomy_selection_score.v1",
+        "schema": "tracefold.news.taxonomy_selection_score.v2",
         "candidate_0": {"taxonomy_overall": scores[0], **baseline_objectives},
-        "winner": {"taxonomy_overall": scores[best_idx], **winner_objectives},
-        "delta": {
-            "taxonomy_overall": round(scores[best_idx] - scores[0], 6),
-            **{
-                key: round(winner_objectives.get(key, 0.0) - baseline_objectives.get(key, 0.0), 6)
-                for key in sorted(set(baseline_objectives) | set(winner_objectives))
-            },
-        },
+        "candidate_zero_task_output_failure_n": candidate_zero_task_output_failure_n,
+        "gepa_best_candidate_index": gepa_best_idx,
+        "gepa_best": {"taxonomy_overall": scores[gepa_best_idx], **gepa_best_objectives},
+        "gepa_best_control_failure_n": sum(
+            float(val_subscores[gepa_best_idx][index]) != 1.0 for index in control_indexes
+        ),
+        "admissible_candidate_indexes": admissible_indexes,
+        "tracefold_admitted_candidate_index": admitted_idx,
+        "tracefold_admitted": (
+            {"taxonomy_overall": scores[admitted_idx], **admitted_objectives}
+            if admitted_idx is not None and admitted_objectives is not None
+            else None
+        ),
+        "delta": (
+            {
+                "taxonomy_overall": round(scores[admitted_idx] - scores[0], 6),
+                **{
+                    key: round(admitted_objectives.get(key, 0.0) - baseline_objectives.get(key, 0.0), 6)
+                    for key in sorted(set(baseline_objectives) | set(admitted_objectives))
+                },
+            }
+            if admitted_idx is not None and admitted_objectives is not None
+            else None
+        ),
         "stable_correct_control_n": len(control_indexes),
-        "stable_correct_control_regression_n": sum(
-            float(val_subscores[best_idx][index]) < float(val_subscores[0][index]) for index in control_indexes
+        "tracefold_admitted_control_failure_n": (
+            sum(float(val_subscores[admitted_idx][index]) != 1.0 for index in control_indexes)
+            if admitted_idx is not None
+            else None
         ),
     }
     public_result = {
-        "schema": "tracefold.news.dspy_gepa_public_result.v1",
+        "schema": "tracefold.news.dspy_gepa_public_result.v2",
         "candidate_count": len(run.candidates),
         "parents": run.parents,
         "validation_aggregate_scores": scores,
@@ -641,7 +687,8 @@ def run_gepa(
             {str(key): float(value) for key, value in candidate_scores.items()} for candidate_scores in val_subscores
         ],
         "validation_aggregate_objective_scores": objective_scores,
-        "best_index": best_idx,
+        "gepa_best_index": gepa_best_idx,
+        "tracefold_admitted_index": admitted_idx,
         "total_metric_calls": metric_calls,
     }
     result = GepaRunResult(
@@ -651,7 +698,7 @@ def run_gepa(
             "taxonomy_selection_score": selection,
             "instruction_change": _instruction_change_receipt(
                 base_program,
-                winner_instruction=winner_instruction,
+                winner_instruction=selected_instruction,
             ),
         },
         optimizer_config=config_receipt,
@@ -664,13 +711,15 @@ def run_gepa(
         train_count=len(train_examples),
         val_count=len(val_examples),
     )
-    if not strictly_improved or patch.event_semantics_instruction == base_program.event_semantics_instruction:
+    if candidate_zero_task_output_failure_n:
+        raise GepaCandidateZeroIncomplete(result)
+    if admitted_idx is None:
         raise GepaNoProgramChange(result)
     return result
 
 
 def _winning_event_instruction(program: dspy.Module) -> str:
-    """Read the one public Predict returned at ``candidates[best_idx]``."""
+    """Read the one public Predict from a GEPA candidate."""
 
     predictors = dict(program.named_predictors())
     if len(predictors) != 1:
@@ -1435,6 +1484,10 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
     except GepaNoProgramChange as exc:
         # A complete run that kept the seed. The receipts are the run's, not an empty stand-in.
         run, outcome, reasons = exc.result, "NO_OP", (_NO_OP_CODE,)
+    except GepaCandidateZeroIncomplete as exc:
+        # Candidate zero is the comparison anchor. A truncated anchor leaves a complete trajectory receipt,
+        # but it cannot support either an ADVANCE or a quality NO_OP conclusion.
+        run, outcome, reasons = exc.result, "REJECTED", (str(exc),)
     except OptimizationRunTerminated as exc:
         outcome, reasons = "REJECTED", (str(exc),)
     except ValueError as exc:
