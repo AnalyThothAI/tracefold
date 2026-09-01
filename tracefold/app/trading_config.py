@@ -15,7 +15,7 @@ from tracefold.news import OI_METRIC_VERSION as NEWS_OI_METRIC_VERSION
 from tracefold.platform.config.models import Settings
 from tracefold.trading.admission import ADMISSION_VERSION, AdmissionConfig
 from tracefold.trading.market_context import PriceWindow
-from tracefold.trading.policy import ALPHA_POLICY, AlphaPolicy
+from tracefold.trading.policy import ALPHA_POLICY
 from tracefold.trading.signal_lane import SIGNAL_TTL_MS, SignalLaneConfig
 
 
@@ -36,21 +36,8 @@ def signal_lane_config(settings: Settings) -> SignalLaneConfig:
     )
 
 
-def trading_admission_config(settings: Settings) -> AdmissionConfig:
-    """Admission as the running lane would build it, so a replay cannot describe a floor it is not applying."""
-
-    return signal_lane_config(settings).admission
-
-
-def trading_alpha_policy(settings: Settings) -> AlphaPolicy:
-    """The one production policy. Takes `settings` so every reader goes through the same assembly."""
-
-    return signal_lane_config(settings).policy
-
-
-__all__ = [
-    "ADMISSION_VERSION",
-    "signal_lane_config",
-    "trading_admission_config",
-    "trading_alpha_policy",
-]
+# `trading_admission_config` and `trading_alpha_policy` were here until #460: one-line readers for
+# `signal_lane_config(settings).admission` and `.policy`, written for the replay command that no longer
+# exists. Every current caller wants the whole frozen object, and an accessor whose only job is to hand
+# back one of its fields is a second name for the same rule.
+__all__ = ["ADMISSION_VERSION", "signal_lane_config"]

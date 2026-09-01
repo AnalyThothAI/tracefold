@@ -16,11 +16,12 @@ baseline is `f495a9fc0d0ba0d528e40b588e76108d80cdfefe`. The machine-readable rec
 | current Runtime status | `_run_active_runtime` | one generation-fenced current projection plus a 500 ms heartbeat |
 | durable audit | `OiRuntimeDatabaseBridge._cycle` | bounded `ExecutionObservationV1` batch and explicit `audit_gap` repair |
 
-The matrix describes the production path, not the desired PR-A/B endpoint. In
-particular, `signal_client.run_signal_poll_loop` already implements a second
-LISTEN/timeout reader but production does not construct it. PR-A must retain
-the indexed query as correctness authority, connect wake to that one owner and
-delete the duplicate loop. PR-B must settle the overlap between Nautilus
+The matrix describes the production path at capture time, not the later PR-A/B
+endpoint. In particular, `signal_client.run_signal_poll_loop` then implemented
+a second LISTEN/timeout reader which production did not construct. PR-A later
+retained the indexed query as correctness authority, connected wake to the one
+Bridge owner and deleted that duplicate loop. PR-B must settle the overlap
+between Nautilus
 built-in reconciliation and the custom complete Binance report repair.
 
 ## Measured baseline
@@ -68,19 +69,24 @@ one flatten submission, but it does not replay an identity or exercise
 concurrent admission. Later PRs may report those counts only from the required
 replay/concurrency workload.
 
-Reproduce the complete machine-readable schema, including explicit
-`not_observed` provider fields, with:
+This is a historical pre-change measurement. To reproduce its complete
+machine-readable schema, check out measured commit
+`1e0ac22905ad69d3d36e38157520913b008dbb8e` and run:
 
 ```text
 uv run pytest -q -s tests/integration/test_nautilus_runtime_pr0_baseline.py
 ```
 
-The diagnostic refuses a dirty worktree, including untracked source. It also writes the same JSON to
+At that commit the diagnostic refuses a dirty worktree, including untracked source, and writes the same JSON to
 `artifacts/scheduled/oi-runtime-pr0-baseline.json`, which the scheduled workflow
 uploads even when pytest output capture is enabled. RSS is the current process
 value before and after this diagnostic plus their delta; it is not the
 process-lifetime `ru_maxrss` shared with other scheduled tests.
 
-This diagnostic is scheduled/opt-in and is not fixed-CI merge evidence. The
-architecture contract always validates the owner matrix, forbidden collector
-boundary and receipt shape.
+After PR-A changes the production path, scheduled runs use
+`tests/integration/test_nautilus_runtime_input_diagnostic.py` and write
+`artifacts/scheduled/oi-runtime-input-diagnostic.json`; they compare the
+checked-out Runtime without rewriting this immutable PR-0 receipt. Scheduled
+diagnostics are not fixed-CI merge evidence. The architecture contract always
+validates the historical owner matrix, forbidden collector boundary and receipt
+shape.

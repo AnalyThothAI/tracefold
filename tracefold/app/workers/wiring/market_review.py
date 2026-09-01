@@ -2,20 +2,18 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, Final
 
 from tracefold.integrations.venues import (
-    fetch_binance_candles,
+    candle_fetcher_for,
     fetch_binance_futures_day_quotes,
     fetch_binance_futures_quotes,
     fetch_binance_instruments,
     fetch_binance_spot_day_quotes,
     fetch_binance_spot_quotes,
     fetch_delivery_price_points,
-    fetch_hyperliquid_candles,
     fetch_hyperliquid_instruments,
     fetch_hyperliquid_quotes,
-    fetch_okx_candles,
     fetch_okx_instruments,
     fetch_okx_quotes,
     fetch_us_reference_instruments,
@@ -115,46 +113,30 @@ def _event_reaction_loop(
     )
 
 
+# Narrower than the venue package's five, and left that way. A `reaction_v1` row is a measurement other
+# rows are compared against, so widening the set is a decision about the metric's population rather than
+# about plumbing: production holds 827 reactions on `binance.*` / `hl.*` and none anywhere else, and a
+# symbol whose only listing is on Lighter or Bitget would start receiving them the day this tuple grows.
+_REACTION_VENUE_PREFIXES: Final = ("binance.", "hl.", "okx.")
+
+
 def _candle_fetcher_for(settings: Any, venue: str, *, interval: str) -> Any | None:
     if not _price_venue_enabled(settings, venue):
         return None
-    if venue.startswith("binance."):
+    fetcher = candle_fetcher_for(venue, prefixes=_REACTION_VENUE_PREFIXES)
+    if fetcher is None:
+        return None
 
-        async def binance(venue_symbol: str, start_ms: int, end_ms: int) -> Any:
-            return await fetch_binance_candles(
-                venue_symbol,
-                venue=venue,
-                start_ms=start_ms,
-                end_ms=end_ms,
-                interval=interval,
-            )
+    async def candles(venue_symbol: str, start_ms: int, end_ms: int) -> Any:
+        return await fetcher(
+            venue_symbol,
+            venue=venue,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            interval=interval,
+        )
 
-        return binance
-    if venue.startswith("hl."):
-
-        async def hyperliquid(venue_symbol: str, start_ms: int, end_ms: int) -> Any:
-            return await fetch_hyperliquid_candles(
-                venue_symbol,
-                venue=venue,
-                start_ms=start_ms,
-                end_ms=end_ms,
-                interval=interval,
-            )
-
-        return hyperliquid
-    if venue.startswith("okx."):
-
-        async def okx(venue_symbol: str, start_ms: int, end_ms: int) -> Any:
-            return await fetch_okx_candles(
-                venue_symbol,
-                venue=venue,
-                start_ms=start_ms,
-                end_ms=end_ms,
-                interval=interval,
-            )
-
-        return okx
-    return None
+    return candles
 
 
 def _delivery_price_fetcher_for(settings: Any, venue: str) -> Any | None:

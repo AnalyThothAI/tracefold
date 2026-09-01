@@ -2085,13 +2085,22 @@ one generation-fenced row is the current readiness/status projection.
 #475 PR-0 binds the exact pre-change Runtime owner matrix and concurrency
 measurements in
 [`research/oi-runtime-pr0-baseline-2026-09-01.md`](research/oi-runtime-pr0-baseline-2026-09-01.md).
-It changes no production cadence. The current production input owner remains
+It changed no production cadence. At capture time the production input owner was
 `OiRuntimeDatabaseBridge._cycle`; the dormant LISTEN/timeout loop is measured
 as duplicate implementation, not a second production consumer. The receipt
 also keeps provider-only event-loop, inbound-rate, private-reconciliation and
 rate-limit evidence explicitly unobserved until an active Binance Demo
 Runtime can produce it. A 525-route synthetic count is capacity headroom only
 and is never an OI market-data collector or business SLO.
+
+#475 PR-A hard-cuts that measured duplicate. `OiRuntimeDatabaseBridge` installs
+`LISTEN` on its existing autocommit repository session, then owns the only
+Command-first indexed read, Signal read, bounded in-process queues, audit flush
+and code-owned 200 ms missed-wake repair. `NOTIFY` is only an immediate wake
+hint; every wake and timeout returns to the same durable anti-join queries.
+Database disconnect recovery replaces the session and listener together. The
+standalone `run_signal_poll_loop` no longer exists, and no second connection,
+thread, execution bus or operator cadence setting is introduced.
 
 **Trigger and context are different types.** A trigger is the one persisted
 fact that starts an evaluation and fixes its cutoff. Context may enrich that
