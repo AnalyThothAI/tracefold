@@ -6,7 +6,7 @@ import {
   type TradingGate,
   type TradingGateDecision,
 } from "@features/trading";
-import { newsAlphaPath, newsEventPath, newsSymbolPath } from "@shared/routing/paths";
+import { newsEventPath, newsSymbolPath, tradingCasePath } from "@shared/routing/paths";
 import { useRouteReferrer } from "@shared/routing/routeReferrer";
 import { ActionButton } from "@shared/ui/ActionButton";
 import * as PageState from "@shared/ui/PageState";
@@ -302,11 +302,8 @@ function FrameDetail({
           ) : null}
           {/* The Case this Source authored, when it authored one. A link, never a restated decision. */}
           {caseId ? (
-            <Link
-              className="news-oi-open"
-              to={`${newsAlphaPath()}?case=${encodeURIComponent(caseId)}`}
-            >
-              Alpha 判定 <ChevronRight aria-hidden />
+            <Link className="news-oi-open" to={tradingCasePath(caseId)}>
+              冻结判定 <ChevronRight aria-hidden />
             </Link>
           ) : null}
         </span>

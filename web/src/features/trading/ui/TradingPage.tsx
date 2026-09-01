@@ -1,6 +1,7 @@
 import { Card } from "@shared/ui/Card";
 import { Metric, MetricRow } from "@shared/ui/Metric";
 import * as PageState from "@shared/ui/PageState";
+import { useSearchParams } from "react-router-dom";
 
 import {
   useTradingCasesWithToken,
@@ -12,12 +13,14 @@ import {
 import { caseStateLabel } from "../model/tradingCases";
 import { caseClock, policyReasonLabel } from "../model/tradingLabels";
 
+import { TradingCaseDetail } from "./TradingCaseDetail";
 import { TradingEmptyNote, TradingShell, TradingSourceLine } from "./TradingChrome";
 
 import "./trading.css";
 
 /** Operator view: every execution claim remains tied to a durable Runtime or venue fact. */
 export function TradingPage({ token }: { token: string }) {
+  const [searchParams, setSearchParams] = useSearchParams();
   const statusQuery = useTradingStatusWithToken(token);
   const casesQuery = useTradingCasesWithToken(token);
   const signalsQuery = useTradingSignalsWithToken(token);
@@ -32,6 +35,25 @@ export function TradingPage({ token }: { token: string }) {
     return <PageState.Error error={statusQuery.error} onRetry={() => void statusQuery.refetch()} />;
   }
   if (!status) return null;
+
+  /*
+   * The URL owns the selection, and nothing is selected by default (#460). `/news/alpha` opened on its
+   * first row; this card is one of six on a status page, so auto-expanding a Case would push five
+   * ledgers below the fold to answer a question nobody asked. The three surfaces that link here with
+   * `?case=` are asking about one Case, and they get it open.
+   */
+  const cases = casesQuery.data?.cases ?? [];
+  const selectedCaseId = searchParams.get("case");
+  const selectedCase = selectedCaseId
+    ? cases.find((item) => item.case_id === selectedCaseId)
+    : undefined;
+
+  const selectCase = (caseId: string | null) => {
+    const params = new URLSearchParams(searchParams);
+    if (caseId) params.set("case", caseId);
+    else params.delete("case");
+    setSearchParams(params, { replace: true });
+  };
 
   const failed = [
     casesQuery.isError ? "Case" : "",
@@ -147,18 +169,31 @@ export function TradingPage({ token }: { token: string }) {
             <TradingSourceLine path="GET /api/trading/execution/commands → commands[] · disposition" />
           </Card>
 
-          <Card flush hint="每个 SIGNAL_EMITTED Case 必须且只能对应一个 Signal" title="最近 Case">
-            {casesQuery.data?.cases?.length ? (
+          <Card
+            flush
+            hint="每个 SIGNAL_EMITTED Case 必须且只能对应一个 Signal；点一行读它自己冻结的判定证据"
+            title="最近 Case"
+          >
+            {cases.length ? (
               <div className="trading-table">
-                {casesQuery.data.cases?.map((item) => (
-                  <article className="trading-current-row" key={item.case_id}>
+                {cases.map((item) => (
+                  <button
+                    aria-expanded={item.case_id === selectedCaseId}
+                    className="trading-current-row trading-case-row"
+                    data-selected={item.case_id === selectedCaseId || undefined}
+                    key={item.case_id}
+                    onClick={() =>
+                      selectCase(item.case_id === selectedCaseId ? null : item.case_id)
+                    }
+                    type="button"
+                  >
                     <b>{item.base_symbol}</b>
                     <span>{caseClock(item.observed_at_ms)}</span>
                     <span>{caseStateLabel(item)}</span>
                     <code>{item.market_key ?? "—"}</code>
                     <span>{policyReasonLabel(item.policy_reason)}</span>
                     <code title={item.case_id}>{item.case_id.slice(0, 16)}</code>
-                  </article>
+                  </button>
                 ))}
               </div>
             ) : (
@@ -166,6 +201,16 @@ export function TradingPage({ token }: { token: string }) {
                 {ledgerEmpty(casesQuery.isPending, casesQuery.isError, "Case")}
               </TradingEmptyNote>
             )}
+            {selectedCase ? <TradingCaseDetail item={selectedCase} /> : null}
+            {selectedCaseId && !selectedCase && cases.length ? (
+              /* The window is the lane's published `window_hours`, never a literal: a link from the OI
+                 audit can name a Case the rolling window has already dropped, and saying "24" here
+                 would be wrong the first time an operator changes it. */
+              <TradingEmptyNote>
+                这个案例不在当前窗口的 {cases.length} 条里；账本按{" "}
+                {casesQuery.data?.window_hours ?? "—"} 小时滚动。
+              </TradingEmptyNote>
+            ) : null}
             <TradingSourceLine path="GET /api/trading/cases → cases[] · state_counts_24h" />
           </Card>
 

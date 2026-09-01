@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from typing import Final
 
+# Keyed on `created_at_ms`: when the Case formed, which is what "the lane produced N cases today"
+# means. Deliberately not the clock the admission ledger counts on — `gate_decision_counts` keys on
+# `source_observed_at_ms` so a restarted runner re-reading a backlog cannot move yesterday's frames
+# into today's total, and a Case has no such backlog because it is created once. #460 asked whether
+# to collapse the two; they answer different questions and the third "24 h" figure on the console
+# (`news_items.observed_at_ms`) is News's own table across a bounded-context boundary.
 TRADING_STATUS_CASE_COUNTS_SQL: Final = """
     SELECT
       count(*) FILTER (WHERE created_at_ms >= %(since)s) AS cases_24h,

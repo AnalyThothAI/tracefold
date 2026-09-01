@@ -4,7 +4,7 @@ import { Link, useLocation } from "react-router-dom";
 import { APP_NAVIGATION_GROUPS, type AppNavigationItem } from "./appNavigation";
 import "./AppSidebar.css";
 
-export type AppNavigationCounts = { cases?: number; events?: number; oiFrames?: number };
+export type AppNavigationCounts = { events?: number; oiFrames?: number };
 /**
  * The words a destination can carry instead of a number. `tradingEnvironment` names the sole execution
  * venue so the navigation cannot imply a selectable backend.
