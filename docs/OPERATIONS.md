@@ -1182,6 +1182,8 @@ Diagnose News in this order:
    scores that candidate example below any complete answer; it does not retry or abort later candidates.
    A typed-invalid `EventSemantics` answer similarly remains one aligned example at score zero, rather than
    shortening GEPA's batch.
+   Reflection uses six examples per proposal: the previous ten-example prompt consumed 22,782 input tokens
+   and left a 32K-context thinking teacher only 9,985 output tokens before service truncation.
    Reflection truncation, provider/transport failure and budget refusal reject the run. Official GEPA log/state is retained;
    the optimization report does not mirror trajectory or checkpoint state.
    Then `release

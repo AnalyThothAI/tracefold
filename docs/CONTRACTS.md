@@ -1341,7 +1341,9 @@ the direct metric gives truncation
 retry or a second evaluator, while typed-invalid output keeps the existing invalid-prediction score `0`.
 Reflection truncation, provider/transport failure and budget refusal terminate
 the run. Production keeps its existing fail-closed truncation contract. The compile uses `instruction_proposer=None` and
-`add_format_failure_as_feedback=True`; there is no component selector, ReaderCard execution, composite case
+`add_format_failure_as_feedback=True` and a code-owned six-example reflection minibatch. The latter uses
+GEPA's public knob and leaves the 32K-context thinking teacher output headroom without adding retries or a
+custom proposer. There is no component selector, ReaderCard execution, composite case
 metric or judge. Candidate zero's validation score in that same compile is the sole optimization baseline.
 `best_idx == 0`, a non-strict improvement, or any Stable-correct control regression returns `NO_OP`.
 

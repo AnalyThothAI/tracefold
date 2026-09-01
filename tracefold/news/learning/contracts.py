@@ -52,6 +52,7 @@ ModelExecutionRole = Literal["task", "reflection", "metric_judge"]
 # gave a reflection call the 20 s route deadline. These live here, not beside the optimizer, because the
 # metric judge is built by the baseline harness too and must not pull DSPy's GEPA in to learn its ceiling.
 REFLECTION_MAX_TOKENS = 32_000
+REFLECTION_MINIBATCH_SIZE = 6
 REFLECTION_TIMEOUT_SECONDS = 300.0
 METRIC_JUDGE_MAX_TOKENS = 4_096
 METRIC_JUDGE_TIMEOUT_SECONDS = 120.0
@@ -617,6 +618,7 @@ __all__ = [
     "OPTIMIZATION_RUN_REPORT_SCHEMA",
     "PROMPT_CANDIDATE_SCHEMA",
     "REFLECTION_MAX_TOKENS",
+    "REFLECTION_MINIBATCH_SIZE",
     "REFLECTION_TIMEOUT_SECONDS",
     "ArmManifest",
     "CandidateManifest",
