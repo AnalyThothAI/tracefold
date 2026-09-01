@@ -181,6 +181,29 @@ def test_demo_receipt_requires_entry_restart_exit_and_authoritative_flat() -> No
     assert {"entry-venue", "trade-1", "stop-venue", "exit-venue"} <= set(receipt.venue_native_references)
 
 
+def test_demo_receipt_accepts_private_reconciliation_as_protection_venue_receipt() -> None:
+    observations = [row for row in _observations() if row.event_id != "f" * 64]
+    observations.append(
+        _row(
+            "5",
+            "reconciliation",
+            550,
+            summary={"source": "binance_private_api", "account_flat": False},
+            refs=("stop-client", "stop-venue"),
+        )
+    )
+
+    receipt = verify_binance_demo_receipt(
+        state=_state(),
+        observations=observations,
+        entry_command_id=ENTRY,
+        flatten_command_id=FLATTEN,
+        now_ns=1_000,
+    )
+
+    assert "stop-venue" in receipt.venue_native_references
+
+
 def test_demo_receipt_rejects_flat_without_a_post_fill_restart() -> None:
     observations = [row for row in _observations() if row.event_id != "7" * 64]
 

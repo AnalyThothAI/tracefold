@@ -97,11 +97,26 @@ def verify_binance_demo_receipt(
         predicate=lambda row: row.reduce_only is True and bool(row.explicit_quantity),
         reason="binance_demo_explicit_reduce_only_protection_missing",
     )
-    protection_accepted = _require(
-        entry,
-        kind="protection",
-        predicate=lambda row: row.status == "accepted" and len(row.native_identity_references) >= 2,
-        reason="binance_demo_protection_not_venue_accepted",
+    accepted_protections = [
+        row
+        for row in entry
+        if row.normalized_kind == "protection" and row.status == "accepted" and len(row.native_identity_references) >= 2
+    ]
+    protection_accepted = (
+        max(accepted_protections, key=lambda row: (row.observed_at_ns, row.event_id))
+        if accepted_protections
+        else _require(
+            observations,
+            kind="reconciliation",
+            predicate=lambda row: (
+                row.runtime_profile_id == state.runtime_profile_id
+                and row.source == "binance_private_api"
+                and row.observed_at_ns >= explicit_protection.observed_at_ns
+                and len(row.native_identity_references) >= 2
+                and bool(set(row.native_identity_references) & set(explicit_protection.native_identity_references))
+            ),
+            reason="binance_demo_protection_not_venue_accepted",
+        )
     )
     exit_order = _require(
         entry,
