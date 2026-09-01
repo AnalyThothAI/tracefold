@@ -2190,106 +2190,13 @@ hook. Credential-free public catalog publication is separate: each venue
 appends immutable snapshots and atomically moves only its own pointer; failure
 retains last-known-good and never changes Capital control.
 
-### OI BAR replay and attribution
+### OI research replay (#459)
 
-`tracefold trading replay-oi` is App-owned composition over public News and
-Trading interfaces. After one short Workers transaction materializes timed
-blacklist expiry, it reads the exact bounded OI projection plus the active
-capability and blacklist from one Serve repeatable-read snapshot, then fetches
-each fact's source-native Binance or Hyperliquid OHLCV bars. Every source fact
-receives exactly one terminal replay outcome. Alpha evaluation ignores the
-current blacklist; capital admission is a separate field, so research is not
-rewritten by today's deny policy.
-
-Instrument resolution uses the last immutable News catalogue validity event at
-or before each source timestamp. The mutable current universe remains the live
-view; the event ledger is only its historical listing/relisting/delisting
-evidence, so a future contract cannot leak into an older replay.
-
-Every directional scenario produces a typed replay intent and runs in a fresh
-Nautilus `BacktestEngine`. Live and replay share the quantity, spread/drift,
-stop, maximum-holding, and economic-leg identity policy. BAR fidelity is
-reported honestly: funding and portfolio drawdown are `null`, never fabricated
-as zero. `ReplaySpecV1` contains only input/policy identities, so equal inputs
-produce the same `run_id`. App atomically publishes the content-addressed
-artifact before Workers append the immutable PostgreSQL success receipt; a
-duplicate validates and reuses the exact artifact, while corruption fails
-closed.
-
-The execution state is deliberately small:
-
-```text
-PENDING
-IN_FLIGHT          phase = ENTRY | PROTECTION | EXIT
-OPEN_PROTECTED
-MANUAL_REVIEW
-TERMINAL           outcome = EXPIRED | REJECTED | CLOSED_FLAT
-```
-
-Three invariants define the lifecycle:
-
-1. Before a provider write, Nautilus durably commits the deterministic entry
-   client ID and `entry_fenced_at_ms`. A restart seeing that fence queries and
-   reconciles; it never submits a second economic entry. Unknown entry outcome
-   is `MANUAL_REVIEW`, never a fabricated rejection.
-2. A nonzero authoritative Position is either covered by a working native
-   fixed-quantity reduce-only stop or is being fully flattened. Position
-   quantity changes replace protection by deterministic stop generation.
-   Projection failure stops new claims/fences but does not stop protection or
-   exit work.
-3. `TERMINAL/CLOSED_FLAT` requires fresh targeted venue proof that the Position
-   is zero, the owned closing leg is terminal, and sibling stop/close legs are
-   terminal or canceled. Unknown evidence remains `MANUAL_REVIEW`.
-
-The venue is execution-outcome authority; PostgreSQL becomes durable truth only
-when reconciliation writes the observed result back. The application does not
-copy Nautilus's complete Order/Fill history.
-
-### Production evidence, promotion, and verification (#376, #377)
-
-The evidence clock is a Trading-owned state machine over immutable artifacts and
-append-only PostgreSQL receipts. Discovery capture freezes the News handoff's original
-source Item, venue, availability clock, learning epoch, and source-time instrument
-catalogue. Drain occurs later and freezes the complete bar/funding inputs. A sealed
-corpus can enter only the code-owned finite selector: eligibility is a complete valid
-normalized row with one directional, closed discovery episode for the binding. The
-selector's exact eligible identities and terminal (`CANDIDATE_LOCKED` or
-`NO_CANDIDATE`) are hashed into the candidate receipt; an operator file is never an
-independent strategy-selection authority.
-
-Future capture is a contiguous sequence of append-only batches. PostgreSQL locks the
-candidate receipt and enforces the next interval, maximum capture lag, binding, and
-protocol identity. Each batch records the collector and Workers generation health,
-expected/missing/late/catalog source mass, bar/funding continuity, artifact integrity,
-and the exact source rows. App fetches only value-free bar interval and funding
-timestamp observations; Trading owns continuity and staleness meaning. The database
-recomputes the exact chain extent, blind-health digest, and incident set, so a caller
-cannot seal an incomplete window or supply a healthier summary. Only a complete batch chain can be
-sealed as `FUTURE_CAPTURE`; only its later committed drain can be unblinded once. The
-database overwrites caller timestamps with its actual clock for receipts, future
-batches, and release registration; a caller-provided clock cannot manufacture ordering.
-Filesystem/provider work is completed before a short transaction; no artifact or
-network I/O occurs while a database transaction is open.
-
-Research evidence is not capital authority. A `PROMOTE` future result is hard-linked
-through immutable risk policy, promotion grant, operator arm, reservation,
-authorization, Intent, native protection, authoritative `CLOSED_FLAT`, and settlement
-facts. Before its start, the final seven-day window is registered against one signed
-tag, commit, OCI image, the exact already-running Workers and Serve generations,
-release-tagged authority chain, and nonzero activity floors. Both generations must span
-the window under the registered revision/image. Replacing either process or the release
-makes the window fail rather than silently continuing it.
-The final verifier independently reads News's complete cutoff-bounded OI source
-universe and requires exact equality with Trading's Gate source keys. Its per-binding
-report includes policy/capital and Q1/Q2 reasons, reservation/execution lifecycle,
-stage latency, financial accounting, and explicit source-without-Gate missingness.
-
-`tracefold.trading.evidence_verification` owns the pure meaning of receipt chains, Case,
-Intent, fixed-window, release, canary/restart, and rollback checks. `tracefold.app` only
-collects bounded PostgreSQL rows, raw artifact bytes, local Git identities, and the
-authenticated local Serve observation before passing those facts to Trading. Missing,
-unknown, late, mismatched, nonterminal, unprotected, or unsettled evidence is a named
-failed check; no App handler may reinterpret it as success.
+`tracefold trading oi-corpus` seals a Binance open-interest corpus and
+`tracefold trading oi-replay` scores one pre-registered rule over it, on the
+symbols the rule's originating probe never saw. It is a cold research command
+over a sealed local corpus: it opens no database transaction, writes no receipt,
+and has no execution path.
 
 ### Runtime and cutover
 

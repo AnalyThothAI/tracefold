@@ -358,7 +358,6 @@ def _gate_decision(row: dict[str, Any]) -> dict[str, Any]:
         "base_symbol": _base_symbol(row.get("underlying_key")),
         "trigger_kind": str(row["trigger_kind"]),
         "source_observed_at_ms": int(row["source_observed_at_ms"]),
-        "research_only": status == "RESEARCH_ONLY",
         "case_id": row.get("case_id"),
         "gate_status": status,
         "gate_stage": str(row["stage"]),

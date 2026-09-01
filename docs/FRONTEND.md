@@ -250,15 +250,15 @@ the route components into the eager shell chunk.
   today's configuration.
 
   The floor table is keyed by `strategy_id`, and each row carries the operator
-  its own strategy refuses on. `/api/trading/intents?underlying=` filters on the
-  name alone, so this token's newest case can belong to any lane, and the three
-  freeze disjoint `strategy_config` key sets — one lane's rows over another
-  lane's case label every row 未冻结 and explain nothing. Inclusivity is per key
-  as well: `oi_smart_money_momentum` refuses `whale_oi_ratio_bps <= floor` and
-  `whale_long_profit_bps <= floor`, its own docstring calls that non-negotiable,
-  and its shipped profit floor is 0 — so a table reading `>=` everywhere stamped
-  过地板 on exactly the frames the ledger refused. A row prints `>` or `≥` as
-  the strategy wrote it.
+  its own strategy refuses on. `/api/trading/cases?underlying=` filters on the
+  name alone, so this token's newest case can belong to any identity the ledger
+  holds, and identities freeze disjoint `strategy_config` key sets — one
+  identity's rows over another's case label every row 未冻结 and explain nothing.
+  Inclusivity is per key as well: the OI × smart-money template refuses
+  `whale_oi_ratio_bps <= floor` and `whale_long_profit_bps <= floor`, its own
+  docstring calls that non-negotiable, and its shipped profit floor is 0 — so a
+  table reading `>=` everywhere stamped 过地板 on exactly the frames the ledger
+  refused. A row prints `>` or `≥` as the strategy wrote it.
 
   A floor row has four answers, not three: 过地板 and 低于地板 are comparisons,
   未冻结 is the case having frozen no such floor, and 未测量 is a frozen floor

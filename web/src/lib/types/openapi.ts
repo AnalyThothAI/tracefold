@@ -2507,14 +2507,9 @@ export interface components {
             /** Gate Stage */
             gate_stage?: ("source" | "venue" | "eligibility" | "capability" | "catalog" | "routing" | "market_context" | "freeze") | null;
             /** Gate Status */
-            gate_status?: ("DEFERRED" | "REJECTED" | "RESEARCH_ONLY" | "CASE_CREATED" | "EXPIRED") | null;
+            gate_status?: ("DEFERRED" | "REJECTED" | "CASE_CREATED" | "EXPIRED") | null;
             /** Gate Version */
             gate_version?: string | null;
-            /**
-             * Research Only
-             * @default false
-             */
-            research_only: boolean;
             /** Source Key */
             source_key: string;
             /** Source Observed At Ms */

@@ -15,7 +15,6 @@ one:
 
     Source        a persisted, citable provider-native OI market fact.
     Admission     the durable Gate answer taken *before* a Case exists.
-    RESEARCH_ONLY a legacy terminal archive value; current writers never produce it.
     Case          a frozen candidate that passed live Admission and may run the Alpha policy.
     Decision      the one terminal business answer about a Case: NO_TRADE, BLOCKED, SIGNAL_EMITTED.
     Signal        the immutable, engine-neutral Alpha conclusion handed to a Runtime.
@@ -41,6 +40,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # not comparable with a Case frozen under another. v10 is #433-C's engine-neutral hard cut: it keeps
 # source provenance and a venue-neutral market key, with no execution binding or capital fields.
 TRADING_MANIFEST_VERSION: Final = "trading_manifest_v10"
+# The `execution_strategy` every execution-stream row is keyed on. It lived as three separate literals
+# until #460 — the runtime's own `oi_nautilus_v1`, and `oi-nautilus-v1` in both the query-plan audit and
+# the restore drill. The hyphenated spelling matches no row: production holds 782 observations under
+# `oi_nautilus_v1` and none under the other, so the audit was measuring the plan for a predicate that
+# selects nothing. It lives in Trading rather than beside the runtime because the ledger column is
+# Trading's, and `tracefold.trading.storage` cannot import from `tracefold.app`.
+EXECUTION_STRATEGY_ID: Final = "oi_nautilus_v1"
 # Code-owned persistence timing shared by the Signal lane.
 TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
 
@@ -372,6 +378,7 @@ class TradingCaseManifest(_Frozen):
 
 __all__ = [
     "CURRENT_TERMINAL_STATES",
+    "EXECUTION_STRATEGY_ID",
     "TRADING_COLD_WRITE_TIMEOUT_SECONDS",
     "TRADING_MANIFEST_VERSION",
     "AlphaDecision",

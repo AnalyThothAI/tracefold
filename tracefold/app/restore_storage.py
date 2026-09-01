@@ -12,7 +12,7 @@ from psycopg.rows import dict_row
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.platform.postgres.restore_drill import run_restore_drill as run_platform_restore_drill
-from tracefold.trading import ExecutionObservationV1
+from tracefold.trading import EXECUTION_STRATEGY_ID, ExecutionObservationV1
 from tracefold.trading.storage.execution_stream import (
     ExecutionProfileActivation,
     materialize_operator_intents,
@@ -71,7 +71,7 @@ def _seed_and_summarize(dsn: str) -> dict[str, Any]:
                 event_id=_OBSERVATION_ID,
                 runtime_profile_id=_PROFILE_ID,
                 runtime_release="restore-release",
-                execution_strategy="oi-nautilus-v1",
+                execution_strategy=EXECUTION_STRATEGY_ID,
                 signal_id=_SIGNAL_ID,
                 normalized_kind="signal_disposition",
                 occurred_at_ns=2_000,
@@ -175,7 +175,7 @@ def _smoke(conn: Any) -> dict[str, bool]:
     commands = materialize_operator_intents(
         repos.trading.unresolved_operator_intents(
             runtime_profile_id=_PROFILE_ID,
-            execution_strategy="oi-nautilus-v1",
+            execution_strategy=EXECUTION_STRATEGY_ID,
             limit=10,
         )
     )

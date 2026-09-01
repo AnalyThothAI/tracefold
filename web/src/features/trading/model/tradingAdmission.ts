@@ -99,7 +99,6 @@ export function tradingAdmissionTraceEntries(
     ["结论", GATE_STATUS_ZH[decision.gate_status ?? ""] ?? decision.gate_status ?? "—"],
     ["规则", key ? `${gateReasonLabel(key)}（${key}）` : "—"],
     ["可重试", decision.gate_retryable ? "是" : "否"],
-    ["资本权限", decision.research_only ? "仅研究，无资本权限" : "live"],
     ["首次评估", caseClock(decision.gate_first_evaluated_at_ms)],
     ["最近评估", caseClock(decision.gate_last_evaluated_at_ms)],
     ["评估次数", String(decision.gate_attempt_count ?? "—")],

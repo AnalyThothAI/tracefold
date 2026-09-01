@@ -57,7 +57,7 @@ def _observation(**updates: object) -> ExecutionObservationV1:
         "event_id": "f" * 64,
         "runtime_profile_id": "binance-usdm-demo-v1",
         "runtime_release": "sha256:" + "1" * 64,
-        "execution_strategy": "oi-nautilus-v1",
+        "execution_strategy": "oi_nautilus_v1",
         "signal_id": "a" * 64,
         "command_id": None,
         "normalized_kind": "signal_disposition",

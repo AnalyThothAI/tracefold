@@ -59,7 +59,7 @@ from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrate
 from tracefold.platform.config.models import Settings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.runtime_identity import runtime_identity
-from tracefold.trading import OperatorIntentV1, TradeSignalV1, canonical_sha256
+from tracefold.trading import EXECUTION_STRATEGY_ID, OperatorIntentV1, TradeSignalV1, canonical_sha256
 from tracefold.trading.storage.execution_stream import (
     MAX_EXECUTION_READ_BATCH,
     ExecutionProfileActivation,
@@ -69,7 +69,7 @@ from tracefold.trading.storage.execution_stream import (
 )
 
 _RUNTIME_RELEASE = "nautilus-1.231.0+oi-v1"
-_EXECUTION_STRATEGY = "oi_nautilus_v1"
+_EXECUTION_STRATEGY = EXECUTION_STRATEGY_ID
 _INTERNAL_PORT = 8767
 _STOP_TIMEOUT_SECONDS = 20.0
 _START_TIMEOUT_SECONDS = 90.0

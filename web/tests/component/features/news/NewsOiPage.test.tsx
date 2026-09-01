@@ -632,10 +632,9 @@ describe("NewsOiPage", () => {
                 base_symbol: "NVDA",
                 event_id: "evt-oi-nvda",
                 gate_evidence: gateEvidence({ venue: "binance" }),
-                gate_reason: "research_only_venue",
-                gate_stage: "venue",
-                gate_status: "RESEARCH_ONLY",
-                research_only: true,
+                gate_reason: "no_native_perp",
+                gate_stage: "routing",
+                gate_status: "REJECTED",
                 source_key: "oi:evt-oi-nvda:oi_signal_v1",
                 underlying_key: "stock:NVDA",
               }),
@@ -649,9 +648,10 @@ describe("NewsOiPage", () => {
     const rows = await screen.findAllByRole("button", { expanded: false });
     // The Chinese is the title; the cell carries the status and the raw `stage:reason` an operator greps.
     expect(rows[0]).toHaveTextContent("eligibility:oi_value_below_floor已拒绝");
-    // A real market fact from a venue this lane may study and never trade (#331). Not a refusal, and
-    // not drawn as one: the ledger's own word for it is `RESEARCH_ONLY`.
-    expect(rows[1]).toHaveTextContent("venue:research_only_venue仅研究");
+    // A different refusal, under a stage no current writer emits. `routing` left `AdmissionStage`
+    // with #331 and the ledger still holds eight rows that named it, so a row like this one is what
+    // narrowing `GateStage` to today's writer would turn into a 500 (#460).
+    expect(rows[1]).toHaveTextContent("routing:no_native_perp已拒绝");
     // And a frame with no ledger row at all is an absence, not a refusal.
     expect(rows[2]).toHaveTextContent("未评估");
 

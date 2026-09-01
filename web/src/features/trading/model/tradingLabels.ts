@@ -108,13 +108,12 @@ export const GATE_REASON_ZH: Record<string, string> = {
   "routing:venue_unresolved": "场所标记无法识别",
 };
 
-/** The five answers an admission decision can hold. `DEFERRED` is the only open one. */
+/** The four answers an admission decision can hold. `DEFERRED` is the only open one. */
 export const GATE_STATUS_ZH: Record<string, string> = {
   CASE_CREATED: "已开案",
   DEFERRED: "待重试",
   EXPIRED: "已过期",
   REJECTED: "已拒绝",
-  RESEARCH_ONLY: "仅研究",
 };
 
 export function gateReasonLabel(key: string): string {
