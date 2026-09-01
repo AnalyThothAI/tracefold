@@ -10,7 +10,12 @@ import {
   useTradingSignalsWithToken,
   useTradingStatusWithToken,
 } from "../api/tradingQueries";
-import { ACCOUNT_FLAT_PROOF_FRESH_MS, currentAccountFlatProof } from "../model/accountFlatProof";
+import {
+  ACCOUNT_FLAT_PROOF_FRESH_MS,
+  currentAccountFlatProof,
+  currentPrivateAccountFacts,
+  currentReconciliationAge,
+} from "../model/accountFlatProof";
 import {
   currentExecutionHeartbeat,
   EXECUTION_HEARTBEAT_FRESH_MS,
@@ -38,11 +43,13 @@ export function TradingPage({ token }: { token: string }) {
   const status = statusQuery.data;
   const [, setFreshnessExpiryTick] = useState(0);
   const measuredAtMs = status?.measured_at_ms;
-  const serverFlatProof = status?.execution.account_flat_proven ?? false;
+  const serverPrivateFacts = Boolean(
+    status?.execution.account_flat_proven || status?.execution.current_account,
+  );
   const reconciliationAgeMs = status?.execution.reconciliation_age_ms;
 
   useEffect(() => {
-    if (!serverFlatProof || measuredAtMs == null || reconciliationAgeMs == null) return;
+    if (!serverPrivateFacts || measuredAtMs == null || reconciliationAgeMs == null) return;
     const nowMs = Date.now();
     const expiresAtMs = measuredAtMs + ACCOUNT_FLAT_PROOF_FRESH_MS - reconciliationAgeMs;
     if (measuredAtMs > nowMs || reconciliationAgeMs < 0 || expiresAtMs < nowMs) return;
@@ -51,7 +58,7 @@ export function TradingPage({ token }: { token: string }) {
       expiresAtMs - nowMs + 1,
     );
     return () => window.clearTimeout(timer);
-  }, [measuredAtMs, reconciliationAgeMs, serverFlatProof]);
+  }, [measuredAtMs, reconciliationAgeMs, serverPrivateFacts]);
 
   const heartbeatAtNs = status?.execution.heartbeat_at_ns;
   const serverPositiveSafety = Boolean(
@@ -95,10 +102,22 @@ export function TradingPage({ token }: { token: string }) {
   });
   const positiveExecutionSafety =
     status.execution.alive || status.execution.execution_safe || status.execution.entries_armed;
+  const privateAccountCurrent = currentPrivateAccountFacts({
+    measuredAtMs: status.measured_at_ms,
+    nowMs: Date.now(),
+    queryHealthy: !statusQuery.isError,
+    reconciliationAgeMs: status.execution.reconciliation_age_ms ?? null,
+  });
+  const reconciliationAgeCurrentMs = currentReconciliationAge({
+    measuredAtMs: status.measured_at_ms,
+    nowMs: Date.now(),
+    reconciliationAgeMs: status.execution.reconciliation_age_ms ?? null,
+  });
   const currentExecution = {
     ...status.execution,
     account_flat_proven: accountFlatProven && executionHeartbeatCurrent,
     alive: status.execution.alive && executionHeartbeatCurrent,
+    current_account: privateAccountCurrent ? status.execution.current_account : null,
     entries_armed: status.execution.entries_armed && executionHeartbeatCurrent,
     entry_block_reason:
       positiveExecutionSafety && !executionHeartbeatCurrent
@@ -107,6 +126,7 @@ export function TradingPage({ token }: { token: string }) {
           : "runtime_heartbeat_stale"
         : status.execution.entry_block_reason,
     execution_safe: status.execution.execution_safe && executionHeartbeatCurrent,
+    reconciliation_age_ms: reconciliationAgeCurrentMs,
   };
 
   const cases = casesQuery.data?.cases ?? [];
@@ -295,7 +315,7 @@ export function TradingPage({ token }: { token: string }) {
               <p>
                 profile <code>{status.execution.profile_id}</code> · account slot{" "}
                 <code>{status.execution.account_slot}</code> · reconcile{" "}
-                <code>{status.execution.reconciliation_age_ms ?? "?"}ms</code>
+                <code>{currentExecution.reconciliation_age_ms ?? "?"}ms</code>
               </p>
               <p>
                 runtime <code>{status.execution.runtime_release ?? "unavailable"}</code> · image{" "}
@@ -303,14 +323,14 @@ export function TradingPage({ token }: { token: string }) {
                 <code>{status.execution.credential_fingerprint ?? "unavailable"}</code>
               </p>
               <div className="trading-audit-list">
-                {(status.execution.current_account?.positions ?? []).map((item) => (
+                {(currentExecution.current_account?.positions ?? []).map((item) => (
                   <article key={`position:${item.position_id}`}>
                     <b>current_position</b>
                     <span>{item.side}</span>
                     <code>{item.position_id}</code>
                   </article>
                 ))}
-                {(status.execution.current_account?.orders ?? []).map((item) => (
+                {(currentExecution.current_account?.orders ?? []).map((item) => (
                   <article key={`order:${item.client_order_id}`}>
                     <b>current_order</b>
                     <span>

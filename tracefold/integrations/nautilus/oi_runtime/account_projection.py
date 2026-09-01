@@ -52,13 +52,13 @@ class RuntimeAccountProjector:
             if order.client_order_id not in open_ids
         )
         complete = account is not None
-        equity: Decimal | None = None
+        account_balance: Decimal | None = None
         if account is not None:
             total = account.balance_total(USDT)
             if total is None:
                 complete = False
             else:
-                equity = _decimal(total)
+                account_balance = _decimal(total)
 
         marks: dict[Any, tuple[Decimal, int]] = {}
         market_clocks: list[int] = []
@@ -90,6 +90,8 @@ class RuntimeAccountProjector:
             marks[instrument_id] = (mark, quote_observed_at_ns)
 
         aggregate_risk = Decimal(0)
+        unrealized_total = Decimal(0)
+        position_pnl_complete = True
         position_rows: list[ExecutionAccountPosition] = []
         for position in sorted(raw_positions, key=lambda item: item.id.value):
             mark_fact = marks.get(position.instrument_id)
@@ -99,12 +101,17 @@ class RuntimeAccountProjector:
                 instrument = cache.instrument(position.instrument_id)
                 if instrument is None:
                     complete = False
+                    position_pnl_complete = False
                 else:
                     pnl = position.unrealized_pnl(instrument.make_price(mark))
                     if pnl is not None:
                         unrealized = _decimal(pnl)
-                        if equity is not None:
-                            equity += unrealized
+                        unrealized_total += unrealized
+                    else:
+                        complete = False
+                        position_pnl_complete = False
+            else:
+                position_pnl_complete = False
             stop_bps = self._route_stop_bps.get(position.instrument_id)
             if mark is None or stop_bps is None:
                 complete = False
@@ -163,6 +170,7 @@ class RuntimeAccountProjector:
             if execution.entry_query_pending or execution.private_reconciliation_requested:
                 unknown_ids.add(execution.entry_order.client_order_id.value)
 
+        equity = account_balance + unrealized_total if account_balance is not None and position_pnl_complete else None
         daily_drawdown: Decimal | None = None
         daily_drawdown_bps: int | None = None
         if baseline is not None and equity is not None:

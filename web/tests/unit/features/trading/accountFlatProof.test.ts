@@ -1,4 +1,8 @@
-import { currentAccountFlatProof } from "@features/trading/model/accountFlatProof";
+import {
+  currentAccountFlatProof,
+  currentPrivateAccountFacts,
+  currentReconciliationAge,
+} from "@features/trading/model/accountFlatProof";
 import { describe, expect, it } from "vitest";
 
 describe("currentAccountFlatProof", () => {
@@ -72,6 +76,47 @@ describe("currentAccountFlatProof", () => {
         nowMs: measuredAtMs,
         queryHealthy: true,
         reconciliationAgeMs: null,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("currentPrivateAccountFacts", () => {
+  const measuredAtMs = 1_000_000;
+
+  it("ages the server reconciliation clock across the local cache interval", () => {
+    expect(
+      currentReconciliationAge({
+        measuredAtMs,
+        nowMs: measuredAtMs + 1_250,
+        reconciliationAgeMs: 8_000,
+      }),
+    ).toBe(9_250);
+  });
+
+  it("expires account facts and fails closed across a refresh error", () => {
+    expect(
+      currentPrivateAccountFacts({
+        measuredAtMs,
+        nowMs: measuredAtMs + 1_000,
+        queryHealthy: true,
+        reconciliationAgeMs: 9_000,
+      }),
+    ).toBe(true);
+    expect(
+      currentPrivateAccountFacts({
+        measuredAtMs,
+        nowMs: measuredAtMs + 1_001,
+        queryHealthy: true,
+        reconciliationAgeMs: 9_000,
+      }),
+    ).toBe(false);
+    expect(
+      currentPrivateAccountFacts({
+        measuredAtMs,
+        nowMs: measuredAtMs,
+        queryHealthy: false,
+        reconciliationAgeMs: 0,
       }),
     ).toBe(false);
   });

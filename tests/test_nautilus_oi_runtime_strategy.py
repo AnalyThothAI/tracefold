@@ -1215,6 +1215,9 @@ def test_account_projection_withholds_stale_quote_values() -> None:
 
     assert snapshot.complete is False
     assert snapshot.market_observed_at_ns == NOW_NS
+    assert snapshot.equity_usd is None
+    assert snapshot.daily_drawdown_usd is None
+    assert snapshot.daily_drawdown_bps is None
     assert snapshot.positions[0].mark_price is None
     assert snapshot.positions[0].unrealized_pnl_usd is None
     assert snapshot.aggregate_risk_usd is None

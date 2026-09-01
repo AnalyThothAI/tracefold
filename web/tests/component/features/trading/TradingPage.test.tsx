@@ -203,6 +203,7 @@ describe("TradingPage", () => {
               open_orders_count: 1,
               positions_count: 1,
               protection_status: "pending",
+              reconciliation_age_ms: 0,
               runtime_release: "nautilus-1.231.0+oi-v1",
             }),
           }),
@@ -246,6 +247,7 @@ describe("TradingPage", () => {
               execution_safe: true,
               heartbeat_at_ns: TRADING_NOW_MS * 1_000_000,
               mode: "paper",
+              current_account: tradingCurrentAccountFixture(),
               reconciliation_age_ms: 9_000,
             }),
             measured_at_ms: TRADING_NOW_MS,
@@ -256,12 +258,17 @@ describe("TradingPage", () => {
     renderTrading();
 
     expect(await screen.findByText("PROVEN")).toBeVisible();
+    expect(screen.getByText("$997.50")).toBeVisible();
+    expect(screen.getByText("9,000 ms")).toBeVisible();
     expect(screen.getByRole("button", { name: "Flatten account" })).toBeDisabled();
 
     now.mockReturnValue(TRADING_NOW_MS + 1_001);
     fireEvent.click(screen.getByText("HYPE"));
 
     expect(screen.getByText("NOT PROVEN")).toBeVisible();
+    expect(screen.queryByText("$997.50")).toBeNull();
+    expect(screen.getByText("10,001 ms")).toBeVisible();
+    expect(screen.getAllByText("UNAVAILABLE").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Flatten account" })).toBeEnabled();
   });
 
@@ -287,6 +294,7 @@ describe("TradingPage", () => {
               execution_safe: true,
               heartbeat_at_ns: (TRADING_NOW_MS - 4_000) * 1_000_000,
               mode: "paper",
+              current_account: tradingCurrentAccountFixture(),
               reconciliation_age_ms: 0,
             }),
           }),
@@ -313,6 +321,7 @@ describe("TradingPage", () => {
     await waitFor(() => expect(screen.getByText(/Status 读取失败/)).toBeVisible());
     expect(within(screen.getByLabelText("执行安全状态")).getAllByText("NO")).toHaveLength(3);
     expect(screen.getByText("status_refresh_failed")).toBeVisible();
+    expect(screen.queryByText("$997.50")).toBeNull();
   });
 
   it("confirms resume before posting a stable intent and labels success as persistence only", async () => {
