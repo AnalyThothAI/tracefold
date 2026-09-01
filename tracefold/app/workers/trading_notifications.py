@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from loguru import logger
@@ -26,6 +27,7 @@ from tracefold.app.workers.wiring.database import WorkerTradingDatabase
 from tracefold.integrations.feishu import FeishuDeliveryError
 from tracefold.integrations.telegram import TelegramDeliveryError
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
+from tracefold.trading.notification_policy import is_notifiable
 
 TRADING_NOTIFICATION_TASK_NAME = "trading-observation-notifier"
 _POLL_SECONDS = 2.0
@@ -93,10 +95,13 @@ class TradingNotificationWorker:
                 await asyncio.wait_for(stop_event.wait(), timeout=delay)
 
     async def advance_once(self) -> str:
+        selected_at_ns = int(self._clock_ns())
         try:
             row = await self._db.read(
                 "trading_notification_observation",
-                lambda repos: repos.trading.next_execution_notification(self._sender.target_sha256),
+                lambda repos: repos.trading.next_execution_notification(
+                    self._sender.target_sha256, now_ns=selected_at_ns
+                ),
                 timeout_seconds=_DB_TIMEOUT_SECONDS,
             )
         except (ResourceAdmissionTimeout, ResourceOperationOverrun) as exc:
@@ -118,6 +123,7 @@ class TradingNotificationWorker:
                     observation_seq=int(row["seq"]),
                     message_id=message_id,
                     delivered_at_ns=self._clock_ns(),
+                    selected_at_ns=selected_at_ns,
                 ),
                 timeout_seconds=_DB_TIMEOUT_SECONDS,
             )
@@ -222,33 +228,14 @@ _UNAVAILABLE = _Unavailable()
 
 
 def trading_notification_text(row: dict[str, Any]) -> str | None:
-    """Project only operator-relevant stages; an HTTP or Signal fact is never called a fill."""
+    """Project only what the policy calls notable, in the Runtime's own summary vocabulary."""
 
     kind = str(row.get("normalized_kind") or "")
     summary = row.get("summary")
     values: dict[str, Any] = summary if isinstance(summary, dict) else {}
-    stage: str | None = None
-    if kind == "signal_disposition":
-        stage = f"Signal {values.get('disposition', 'disposed')}"
-    elif kind == "readiness" and values.get("control_stage") == "runtime_accepted":
-        stage = "Runtime accepted"
-    elif kind == "control_disposition":
-        stage = f"Command {values.get('disposition', 'disposed')}"
-    elif kind == "order" and values.get("status") in {
-        "accepted",
-        "rejected",
-        "denied",
-        "expired",
-        "submitted",
-        "submitted_or_unknown",
-    }:
-        stage = f"Order {values['status']}"
-    elif kind == "fill":
-        stage = "Fill observed"
-    elif kind == "reconciliation" and values.get("state") == "flat":
-        stage = "Account flat observed"
-    elif kind == "audit_gap":
-        stage = "Audit gap"
+    if not is_notifiable(kind, values):
+        return None
+    stage = _stage(kind, values)
     if stage is None:
         return None
     event_id = str(row.get("event_id") or "")
@@ -258,13 +245,63 @@ def trading_notification_text(row: dict[str, Any]) -> str | None:
     correlation = command_id or signal_id
     lines = [
         f"Tracefold execution: {stage}",
+        # The observation's own instant, not the send's. A coalesced kind can report a state observed
+        # minutes before the card left, and a reader should never have to guess which (#472).
+        f"at: {_utc_second(row.get('occurred_at_ns'))}",
         f"profile: {profile}",
         f"correlation: {correlation[:16] or '-'}",
         f"event: {event_id[:16] or '-'}",
     ]
+    lines.extend(_stage_detail_lines(kind, values))
     if kind == "signal_disposition":
         lines.extend(_signal_case_lines(row))
     return "\n".join(lines)
+
+
+def _stage(kind: str, values: Mapping[str, Any]) -> str | None:
+    """The card's first line. `None` means the policy admitted a kind this renderer cannot state."""
+
+    if kind == "signal_disposition":
+        return f"Signal {values.get('disposition', 'disposed')}"
+    if kind == "control_disposition":
+        return f"Command {values.get('disposition', 'disposed')}"
+    if kind == "order":
+        return f"Order {values.get('status', 'observed')}"
+    if kind == "fill":
+        return "Fill observed"
+    if kind == "audit_gap":
+        return f"Audit gap: {values.get('cause', 'unknown')}"
+    if kind == "readiness":
+        if values.get("control_stage") == "runtime_accepted":
+            return f"Runtime accepted {values.get('action', 'command')}"
+        return f"Runtime started in {values.get('mode', 'unknown')}"
+    if kind == "reconciliation":
+        return "Account not flat"
+    return None
+
+
+def _stage_detail_lines(kind: str, values: Mapping[str, Any]) -> list[str]:
+    """The one fact that makes each non-Signal stage actionable, and nothing beyond it."""
+
+    if kind == "readiness" and values.get("lifecycle") == "started":
+        return [f"revision: {str(values.get('runtime_revision') or '-')[:12]}"]
+    if kind == "reconciliation":
+        return [f"exposure: {values.get('positions', '?')} positions, {values.get('orders', '?')} orders"]
+    if kind == "fill":
+        return [f"leg: {values.get('leg', '?')} {values.get('last_quantity', '?')} @ {values.get('last_price', '?')}"]
+    return []
+
+
+def _utc_second(occurred_at_ns: Any) -> str:
+    """Whole-second UTC; a card claiming nanosecond precision would be claiming a clock it lacks."""
+
+    try:
+        seconds = int(occurred_at_ns) // 1_000_000_000
+    except (TypeError, ValueError):
+        return "-"
+    if seconds <= 0:
+        return "-"
+    return datetime.fromtimestamp(seconds, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _signal_case_lines(row: Mapping[str, Any]) -> list[str]:

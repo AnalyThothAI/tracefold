@@ -174,6 +174,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.triage_rules",
         "tracefold.trading.signal_lane",
         "tracefold.trading.contracts",
+        # #472: which execution observation is worth an operator card is a Trading judgment, so the
+        # notifier reads the policy rather than restating it. The renderer had its own copy of that
+        # predicate and it drifted from both the SQL and the Runtime for the life of the feature.
+        "tracefold.trading.notification_policy",
         "tracefold.trading.storage.root",
     ),
     "app.nautilus": (
