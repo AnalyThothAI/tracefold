@@ -1932,8 +1932,11 @@ live only in Git history and the pre-cut image. `20260901_0341` performs the
 #433-C Signal hard cut after the baseline; additive `20260901_0342` adds the
 append-only Trading notification delivery ledger; additive `20260901_0343` adds
 the current execution Runtime projection and bounded recovery indexes; and
-destructive `20260901_0344`, the current single head, restates the
-`news_verdicts` judgment CHECK for the News open-interest push cut.
+destructive `20260901_0344` restates the `news_verdicts` judgment CHECK for the
+News open-interest push cut; and `20260901_0345`, the current single head,
+removes the stale execution Runtime constraint that rejected a safe transient
+pairing of independently observed flatness and unexpected exposure. Readiness
+still fails closed on unexpected exposure.
 
 Every new schema change is again a normal linear, immutable, forward-only
 revision after the baseline. Exact-image replacement requires source, image,
@@ -2454,7 +2457,8 @@ counted now.
 `news_oi_signals` is the frame ledger and nothing more: a derived read model with
 one writer, idempotent by `event_id`, rebuildable by re-parsing the Item, and
 cascade-deleted with it. `rank_in_window` was dropped from it in migration
-`20260901_0344` with the rule that computed it. Two consequences of judging
+`20260901_0344` with the rule that computed it. The following `20260901_0345`
+is the current head. Two consequences of judging
 these frames rather than suppressing them are deliberate and worth stating:
 every 1019 frame carries a verdict, so `news.retention` keeps its Item for 365
 days instead of purging at 30 (~70k small rows a year), and every frame is

@@ -960,11 +960,14 @@ A database on that retired chain must be restored with its exact pre-#449
 image/source, advanced to the old terminal head, and cut over before current
 source is used. A fresh database applies baseline `20260831_0340`, the
 `20260901_0341` Signal hard cut, and current head
-`20260901_0344`; `0342` adds the Trading notification delivery ledger,
+`20260901_0345`; `0342` adds the Trading notification delivery ledger,
 `0343` adds the current execution Runtime projection and recovery indexes, and
 destructive `0344` restates the `news_verdicts` judgment CHECK for the News
 open-interest push cut, dropping `news_oi_signals.rank_in_window` and every
-`judgment_origin='oi'` verdict written under the retired program. The exact
+`judgment_origin='oi'` verdict written under the retired program. `0345` removes
+the stale Runtime projection constraint that rejected transient flatness and
+unexpected-exposure observations while readiness continues to fail closed on
+unexpected exposure. The exact
 News base-table set plus four security-barrier review views is asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
 perform no provider, broker, model, or outbound call and have no compatibility
