@@ -11,7 +11,7 @@ import pytest
 from tests.support.news_judgment import news_taxonomy, scored_judgment, trade_relevance
 from tracefold.news.artifact_identity import canonical_json
 from tracefold.news.learning.contracts import OptimizationBudget
-from tracefold.news.learning.objective import DevelopmentEpisode
+from tracefold.news.learning.objective import DevelopmentEpisode, build_gepa_objective_plan
 from tracefold.news.learning.optimizer import (
     GepaNoProgramChange,
     _BudgetMeter,
@@ -265,6 +265,7 @@ def test_real_gepa_uses_one_native_predict_and_returns_public_trajectory() -> No
     )
 
     assert result.patch.event_semantics_instruction == _ADVISORY
+    assert result.metric["schema"] == "tracefold.news.taxonomy_gepa_metric.v3"
     assert result.patch.reader_card_instruction == stable.reader_card_instruction
     assert result.metric["taxonomy_selection_score"]["delta"]["taxonomy_overall"] > 0
     assert result.metric["taxonomy_selection_score"]["stable_correct_control_regression_n"] == 0
@@ -415,11 +416,13 @@ def test_candidate_typed_invalid_output_keeps_gepa_batch_aligned() -> None:
     )
 
     assert result.public_result["best_index"] != 0
-    assert any(
-        score == 0
-        for candidate_scores in result.public_result["validation_subscores"][1:]
-        for score in candidate_scores.values()
+    invalid_validation_index = next(
+        index
+        for index, episode in enumerate(build_gepa_objective_plan(_corpus()).development_selection_episodes)
+        if episode.case_id == f"{11:064x}"
     )
+    best_index = result.public_result["best_index"]
+    assert result.public_result["validation_subscores"][best_index][str(invalid_validation_index)] == 0
     invalid_index = next(
         index
         for index, request in enumerate(task_delegate.requests)

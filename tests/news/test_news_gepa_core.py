@@ -130,6 +130,7 @@ def test_optimizer_receipt_exposes_native_format_feedback_and_no_hidden_selector
         val_count=4,
     )
 
+    assert receipt["schema"] == "tracefold.news.compile_optimizer_config_receipt.v7"
     assert receipt["optimizer"]["evaluator"] == (
         "LearningEventSemantics(NativeNewsProgram.event_semantics) on one explicit task LM"
     )
