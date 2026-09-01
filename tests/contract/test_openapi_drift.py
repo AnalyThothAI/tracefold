@@ -163,8 +163,6 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "NewsLearningRetentionStatusData",
         "NewsFeedOiData",
         "NewsOiStatusData",
-        "NewsOiPolicyData",
-        "NewsOiWindowSymbolData",
         "NewsOutcomeData",
         "NewsTimelineStepData",
         "NewsHealthData",
@@ -225,20 +223,13 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "price",
         "measured_at_ms",
     }
-    assert set(components["NewsOiStatusData"]["properties"]) == {
-        "policy",
-        "by_rule_24h",
-        "window_occupancy",
-    }
-    # The News gates only (#331). The capital lane's thresholds are no longer republished here; a Case's
-    # own frozen checks are the only thing a reader may compare it against.
+    assert set(components["NewsOiStatusData"]["properties"]) == {"by_rule_24h"}
+    # No threshold is republished here at all. #331 removed the capital lane's floors — a Case's own
+    # frozen checks are the only thing a reader may compare it against — and #458 removed the News push
+    # gates themselves, so the lane has no operator-owned number left to serve.
     assert "NewsOiTradeFloorsData" not in components
-    assert set(components["NewsOiPolicyData"]["properties"]) == {
-        "window_ms",
-        "max_rank_in_window",
-        "whale_oi_ratio_above_bps",
-        "oi_change_at_least_bps",
-    }
+    assert "NewsOiPolicyData" not in components
+    assert "NewsOiWindowSymbolData" not in components
     state = components["NewsStatusData"]["properties"]["state"]
     assert state["enum"] == ["ready", "degraded", "warming", "unavailable"]
 

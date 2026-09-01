@@ -19,7 +19,7 @@ from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from tracefold.news.oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
-from tracefold.news.oi_signals import OiPolicy, OiSignal, evaluate_oi, oi_judgment_trace, oi_parse_failure
+from tracefold.news.oi_signals import OiSignal, evaluate_oi, oi_judgment_trace, oi_parse_failure
 from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
 from tracefold.news.source_contracts import (
     EVENT_KINDS,
@@ -201,10 +201,9 @@ def _verdict(news: Any, event_id: str, *, error_code: str | None = None) -> None
     )
 
 
-def test_oi_trade_projection_requires_one_canonical_signal_rank_and_source_identity(conn) -> None:
+def test_oi_trade_projection_requires_one_canonical_signal_and_source_identity(conn) -> None:
     repos = repositories_for_connection(conn)
     news = repos.news
-    policy = OiPolicy()
     signal = OiSignal(
         symbol="BTC",
         direction="rise",
@@ -213,7 +212,7 @@ def test_oi_trade_projection_requires_one_canonical_signal_rank_and_source_ident
         whale_long_profit_bps=8_021,
         whale_oi_ratio_bps=10_071,
     )
-    judgment = evaluate_oi(signal, earlier_eligible_count=0, policy=policy)
+    judgment = evaluate_oi(signal)
     with repos.transaction():
         repos.instruments.apply_snapshot(
             [Instrument("binance.perp", "BTCUSDT", "BTC", "crypto", "USDT")],
@@ -244,7 +243,6 @@ def test_oi_trade_projection_requires_one_canonical_signal_rank_and_source_ident
             whale_long_profit_bps=signal.whale_long_profit_bps,
             whale_oi_ratio_bps=signal.whale_oi_ratio_bps,
             observed_at_ms=NOW,
-            rank_in_window=judgment.rank_in_window,
             now_ms=NOW,
             source_item_id="projection-oi-item",
             source_venue="binance",
@@ -265,8 +263,7 @@ def test_oi_trade_projection_requires_one_canonical_signal_rank_and_source_ident
             "focus_fact_id": str(evidence["focus_fact_id"]),
             "told": [],
             "told_count": 0,
-            "policy": policy.as_dict(),
-            "oi_signal": oi_judgment_trace(judgment, policy=policy),
+            "oi_signal": oi_judgment_trace(judgment),
             "judgment": judgment.judgment_atom,
         }
         news.insert_verdict(
@@ -302,9 +299,7 @@ def test_oi_trade_projection_requires_one_canonical_signal_rank_and_source_ident
             until_created_at_ms=NOW,
         )
 
-    assert [(row["symbol"], row["rank_in_window"], row["source_rule"]) for row in projected()] == [
-        ("BTC", 1, "opening_move_with_whale_concentration")
-    ]
+    assert [(row["symbol"], row["source_rule"]) for row in projected()] == [("BTC", "stored")]
     catalog_rows = news.trade_evidence_catalog_rows(
         metric_version=OI_METRIC_VERSION,
         start_observed_at_ms=NOW,
@@ -335,12 +330,10 @@ def test_oi_trade_projection_requires_one_canonical_signal_rank_and_source_ident
         == []
     )
     conn.execute("UPDATE news_events SET ingest_mode = 'live' WHERE event_id = 'projection-oi-event'")
-    conn.execute("UPDATE news_oi_signals SET rank_in_window = 2 WHERE event_id = 'projection-oi-event'")
-    assert projected() == []
-    conn.execute(
-        "UPDATE news_oi_signals SET rank_in_window = 1, oi_value_usd = oi_value_usd + 1 "
-        "WHERE event_id = 'projection-oi-event'"
-    )
+    # The freeze check binds the verdict's frozen judgment to the ledger row field by field. #458 removed
+    # its `rank_in_window` leg with the column; the six measurements and the three source-contract fields
+    # it still binds have to keep failing closed when the ledger and the verdict disagree.
+    conn.execute("UPDATE news_oi_signals SET oi_value_usd = oi_value_usd + 1 WHERE event_id = 'projection-oi-event'")
     assert projected() == []
     conn.execute(
         "UPDATE news_oi_signals SET oi_value_usd = oi_value_usd - 1, "

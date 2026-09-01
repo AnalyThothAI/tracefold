@@ -47,8 +47,6 @@ export type NewsEventReaction = NewsSchemas["NewsEventReactionData"];
 export type NewsPriceStatus = NewsSchemas["NewsPriceStatusData"];
 export type NewsFeedOi = NewsSchemas["NewsFeedOiData"];
 export type NewsOiStatus = NewsSchemas["NewsOiStatusData"];
-export type NewsOiPolicy = NewsSchemas["NewsOiPolicyData"];
-export type NewsOiWindowSymbol = NewsSchemas["NewsOiWindowSymbolData"];
 export type NewsSymbol = NewsSchemas["NewsSymbolData"];
 export type NewsSymbolContract = NewsSchemas["NewsSymbolContractData"];
 
@@ -106,7 +104,7 @@ export type NewsFeedFilters = {
  * `drop`, and both carry `override_rule = telemetry_deterministic`.
  */
 export type NewsOiOutcome = "pushed" | "withheld" | "parse_failed";
-export const NEWS_OI_TABS = ["all", "pushed", "withheld", "parse_failed"] as const;
+export const NEWS_OI_TABS = ["all", "parse_failed"] as const;
 export type NewsOiTab = (typeof NEWS_OI_TABS)[number];
 /** The monitor is a 24 h read: the counts it shows beside each tab are the server's 24 h aggregates. */
 export const NEWS_OI_HOURS = 24;

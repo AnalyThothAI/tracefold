@@ -337,16 +337,19 @@ describe("NewsSymbolPage", () => {
     expect(screen.queryByText(/条 · 已推送/)).not.toBeInTheDocument();
   });
 
-  it("reports this symbol's rank occupancy from the server, not from the rows below", async () => {
+  it("no longer carries a rank window, which was the page's one forward-looking claim", async () => {
     /*
-     * The events table is a 24 h window and the rank window is four hours. Folding the occupancy out of the
-     * loaded rows would report a fuller window than the judge sees, which is the one number on this page
-     * that is about the *next* frame rather than the last ones.
+     * #458 removed the News push rule and the four-hour rank window it spent. This page's occupancy card
+     * was the only place that said what would happen to the *next* frame for this name, so it is gone
+     * rather than reworded: nothing on the console can answer that question now, and a card that kept the
+     * shape while the rule left would be the console asserting a gate that no code applies.
      */
     renderSymbol();
+    await screen.findByRole("heading", { level: 1 });
 
-    const window = await screen.findByText(/beyond_window_rank|还有名次|没有合格帧/);
-    expect(window).toBeInTheDocument();
+    expect(screen.queryByText(/beyond_window_rank|还有名次|没有合格帧/)).toBeNull();
+    expect(screen.queryByText("OI 窗口名次")).toBeNull();
+    expect(screen.queryByText("OI 窗口")).toBeNull();
   });
 });
 

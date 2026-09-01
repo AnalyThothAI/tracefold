@@ -1,15 +1,17 @@
 import type { TradingGateConfig } from "@features/trading";
+import { tradingPath } from "@shared/routing/paths";
+import { Link } from "react-router-dom";
 
-import type { NewsOiPolicy } from "../../api/newsQueries";
 import { formatCount } from "../../model/newsLabels";
-import { oiValueZh } from "../../model/oiSignals";
+import { OI_PARSE_FAILED_RULE, OI_STORED_RULE, oiValueZh } from "../../model/oiSignals";
 
 /**
- * The two independent gates, side by side and never merged.
+ * What this lane does with a frame, beside what may reach the Signal lane.
  *
- * Left: what decides whether a reader is told. Right: what decides whether a Source may reach the Signal
- * lane. They read the same frame and answer different questions, and the panel's whole job is
- * keeping that visible.
+ * Left: News, which since #458 has no notification rule of its own — it parses a frame and stores it.
+ * Right: what decides whether a Source may reach the Signal lane. The left panel used to hold three
+ * thresholds of its own and is deliberately not replaced by a shorter set of them: over 48 h the two
+ * halves selected disjoint sets of frames, and the fix was to stop having two teachers, not to retune one.
  *
  * **Neither half shows an Alpha threshold.** The Alpha policy's numbers are frozen onto each Case and are
  * shown beside the Case that executed them, on Alpha 判定. A panel that printed today's
@@ -20,41 +22,33 @@ export function NewsOiGates({
   byRule,
   gate,
   gateUnread,
-  policy,
 }: {
   byRule: Record<string, number>;
   gate: TradingGateConfig | undefined;
   gateUnread: boolean;
-  policy: NewsOiPolicy | null;
 }) {
-  const windowLabel = compactDuration(policy?.window_ms);
-  const changeFloor = policy?.oi_change_at_least_bps ?? 0;
   return (
     <>
       <PolicyPanel
         className="news-oi-policy-news"
-        hint="滚动 24h · 决定读者看到什么"
-        title="推送闸门 · NEWS.OI"
+        hint="滚动 24h · 不再决定读者看到什么"
+        title="来源入账 · NEWS.OI"
       >
         <PolicyTile
-          label="鲸鱼占比"
-          note={`拦下 ${gateCount(byRule.whale_ratio_below_threshold)}`}
-          value={policy ? `> ${compactPercent(policy.whale_oi_ratio_above_bps)}` : "—"}
+          label="已入账"
+          note="24h 解析成功的帧"
+          value={gateCount(byRule[OI_STORED_RULE])}
         />
         <PolicyTile
-          /*
-           * 推送窗口名次, not 窗口名次 (#256). A full window withholds the *push* and says nothing about the
-           * move continuing — the note has to carry that, because a reader who read it the other way would
-           * treat a withheld frame as an exhausted one.
-           */
-          label="推送窗口名次"
-          note={`拦下 ${gateCount(byRule.beyond_window_rank)} · 满格只拦推送≠衰竭`}
-          value={policy ? `≤ ${policy.max_rank_in_window} / ${windowLabel}` : "—"}
+          label="解析失败"
+          note="模板变了才会涨"
+          value={gateCount(byRule[OI_PARSE_FAILED_RULE])}
         />
         <PolicyTile
-          label="OI 变动下限"
-          note={`拦下 ${gateCount(byRule.oi_change_below_threshold)}`}
-          value={changeFloor > 0 ? `≥${compactPercent(changeFloor)}` : "0（关）"}
+          /* The third tile is where the push gate used to be, and it now names who owns that decision. */
+          label="推送"
+          note="433-E 通电前为零"
+          value={<Link to={tradingPath()}>Signal 通道 →</Link>}
         />
       </PolicyPanel>
 
@@ -109,7 +103,15 @@ function PolicyPanel({
   );
 }
 
-function PolicyTile({ label, note, value }: { label: string; note?: string; value: string }) {
+function PolicyTile({
+  label,
+  note,
+  value,
+}: {
+  label: string;
+  note?: string;
+  value: React.ReactNode;
+}) {
   return (
     <span className="news-oi-policy-tile">
       <small>{label}</small>
@@ -117,11 +119,6 @@ function PolicyTile({ label, note, value }: { label: string; note?: string; valu
       {note ? <em>{note}</em> : null}
     </span>
   );
-}
-
-function compactPercent(value: number): string {
-  const percent = value / 100;
-  return `${Number.isInteger(percent) ? percent.toFixed(0) : percent.toFixed(2)}%`;
 }
 
 function compactDuration(value: number | null | undefined): string {

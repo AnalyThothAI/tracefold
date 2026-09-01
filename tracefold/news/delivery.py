@@ -34,7 +34,6 @@ from typing import Any, Literal
 
 from .market_review.pricing import parse_price, return_bps
 from .models import ReaderMarketMovement, ReaderTradeTarget
-from .oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
 from .outcome import DIRECTION_ZH, MAGNITUDE_ZH, NOVELTY_ZH
 
 _URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
@@ -296,41 +295,6 @@ def card_assets(verdict: Mapping[str, Any], grounded_assets: Sequence[str]) -> l
     return shown[:_MAX_ASSETS]
 
 
-def reader_assets(
-    *,
-    event_kind: str,
-    verdict: Mapping[str, Any],
-    grounded_assets: Sequence[str],
-    program_version: str = "",
-    verdict_program_sha256: str,
-    expected_program_sha256: str,
-    oi_signal: Mapping[str, Any] | None = None,
-) -> list[str]:
-    """Code-verified assets that the facts and quote lines may name.
-
-    Ordinary News keeps the Gate-grounded intersection. OI telemetry has no provider coin tag, so its
-    deterministic parser's stored rank-ledger row is the grounding fact; all three independent markers must
-    agree before the symbol is exposed to the reader.
-    """
-
-    ordinary = card_assets(verdict, grounded_assets)
-    if (
-        event_kind != "oi"
-        or str(program_version or "") != OI_PROGRAM_VERSION
-        or not verdict_program_sha256
-        or verdict_program_sha256 != expected_program_sha256
-        or not isinstance(oi_signal, Mapping)
-    ):
-        return ordinary
-    symbol = str(oi_signal.get("symbol") or "").strip().upper().removeprefix("XYZ-")
-    primaries = {
-        str(asset.get("symbol") or "").strip().upper().removeprefix("XYZ-")
-        for asset in (verdict.get("assets") or [])
-        if isinstance(asset, Mapping) and asset.get("role") == "primary"
-    }
-    return [symbol] if symbol and symbol in primaries else ordinary
-
-
 def _facts_line(
     *,
     direction: str | None,
@@ -440,7 +404,6 @@ def render_first_card(
 
 __all__ = [
     "card_assets",
-    "reader_assets",
     "reader_market_movements",
     "reader_trade_targets",
     "render_first_card",

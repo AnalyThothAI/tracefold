@@ -67,9 +67,8 @@ def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejecte
     fact at all? The liquidity floor, the deny list, freshness and idempotency belong to Admission,
     and they used to be here as well as in News's SELECT — which is how the same threshold came to be
     executed in three places and a rejection came to be indistinguishable from a row that never
-    existed. (A rank ceiling and a per-symbol cooldown were on that list until #348 retired both.)
-
-    `rank_in_window` is read here because the candidate carries it, not because a ceiling is applied.
+    existed. (A rank ceiling and a per-symbol cooldown were on that list until #348 retired both, and
+    #458 then removed the rank itself along with the News push rule that spent it.)
     """
 
     symbol = canonical_base_symbol(row.get("symbol"))
@@ -98,10 +97,6 @@ def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejecte
     verdict_at = _int(row.get("verdict_created_at_ms"))
     if verdict_at is None:
         return SourceRejected(rule="verdict_time_missing", symbol=symbol)
-
-    rank = _int(row.get("rank_in_window"))
-    if rank is None:
-        return SourceRejected(rule="rank_missing", symbol=symbol)
 
     measurements = {
         "oi_change_bps": _int(row.get("oi_change_bps")),
@@ -140,7 +135,6 @@ def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejecte
             oi_value_usd=measurements["oi_value_usd"],
             whale_long_profit_bps=measurements["whale_long_profit_bps"],
             whale_oi_ratio_bps=measurements["whale_oi_ratio_bps"],
-            rank_in_window=rank,
             final_decision=str(row.get("final_decision") or ""),
             source_rule=source_rule,
             metric_version=str(row.get("metric_version") or ""),

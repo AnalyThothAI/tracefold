@@ -301,10 +301,10 @@ def test_quote_working_set_includes_recent_oi_ledger_symbols(conn) -> None:
         """
         INSERT INTO news_oi_signals (
           event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd,
-          whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, rank_in_window, created_at_ms,
+          whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, created_at_ms,
           source_item_id, source_venue, available_at_ms, learning_epoch
         ) VALUES (
-          'ev-oi', 'oi_signal_v1', 'DOGE', 'rise', 864, 73010000, 8060, 21097, %s, 1, %s,
+          'ev-oi', 'oi_signal_v1', 'DOGE', 'rise', 864, 73010000, 8060, 21097, %s, %s,
           'i-ev-oi', 'binance', %s, 'unproven'
         )
         """,

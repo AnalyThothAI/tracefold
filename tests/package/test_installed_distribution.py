@@ -204,6 +204,7 @@ def test_wheel_ships_the_packaged_resources_the_runtime_reads(built_distribution
         f"{alembic}versions/20260901_0341_trading_signal_hard_cut.py",
         f"{alembic}versions/20260901_0342_trading_notification_deliveries.py",
         f"{alembic}versions/20260901_0343_trading_execution_runtime_state.py",
+        f"{alembic}versions/20260901_0344_news_oi_push_cut.py",
     ]
     assert f"{DISTRIBUTION_NAME}/news/program/resources/registry.json" in members
 

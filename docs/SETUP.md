@@ -94,7 +94,7 @@ EOF
 uv run tracefold config   # confirm it parses before make up
 ```
 
-Note the same key name lives under `news.oi.max_rank_in_window` and is **not**
+Note the same key name lived under `news.oi.max_rank_in_window` until #458 removed the whole `news.oi` section; it was **not**
 retired — that one is the notification gate's rank and is unrelated to capital.
 The regex above is indentation-blind, so check the diff before `make up` if your
 file sets both.
@@ -443,7 +443,7 @@ paths, booleans, and diagnostic command status; do not paste the API token,
 model keys, provider passwords, or full config payloads into docs or chat.
 
 Alembic has one root: baseline `20260831_0340` and current head
-`20260901_0343`. A new empty PostgreSQL 18 database applies baseline, the
+`20260901_0344`. A new empty PostgreSQL 18 database applies baseline, the
 `0341` Signal hard cut, the additive `0342` Trading notification delivery
 ledger, and the additive `0343` execution Runtime projection/indexes in order.
 Current source intentionally has no upgrade path from an earlier revision. To

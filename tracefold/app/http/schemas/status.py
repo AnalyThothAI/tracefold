@@ -118,7 +118,6 @@ class NewsPipelineStatusData(ExactApiSchema):
     model_triage_24h: int = 0
     triage_degraded_24h: int = 0
     decided_push_24h: int = 0
-    telemetry_push_24h: int = 0
     telemetry_received_24h: int = 0
     telemetry_parsed_24h: int = 0
     telemetry_parse_failed_24h: int = 0
@@ -156,37 +155,15 @@ class NewsPipelineStatusData(ExactApiSchema):
     triage_degraded_by_code_24h: dict[str, int] = Field(default_factory=dict)
 
 
-class NewsOiPolicyData(ExactApiSchema):
-    """`news.oi` as it is running right now — the operator-owned thresholds the judge applies."""
-
-    window_ms: int
-    max_rank_in_window: int
-    whale_oi_ratio_above_bps: int
-    oi_change_at_least_bps: int
-
-
-class NewsOiWindowSymbolData(ExactApiSchema):
-    """One symbol's spent rank slots inside the live window. `full` means the next frame hits the ceiling."""
-
-    symbol: str
-    used: int
-    max_rank_in_window: int
-    full: bool
-
-
 class NewsOiStatusData(ExactApiSchema):
     """#137's deterministic telemetry lane, as the 持仓异动 monitor reads it.
 
     `by_rule_24h` is scoped to OI and keyed on the typed judgment's own rule names; the general pipeline
-    reason map remains a cross-lane aggregate.
+    reason map remains a cross-lane aggregate. Since #458 there are two of them — `stored` and
+    `oi_parse_failed` — because the lane judges the provider's format and nothing else.
     """
 
-    policy: NewsOiPolicyData | None = None
     by_rule_24h: dict[str, int] = Field(default_factory=dict)
-    # Measured over `policy.window_ms` ending at `measured_at_ms`. The window's start is deliberately not a
-    # field: it moves with every read and would churn the status ETag on a 15 s poll for every reader, while
-    # the two numbers it is the difference of are already here.
-    window_occupancy: list[NewsOiWindowSymbolData] = Field(default_factory=list)
 
 
 class NewsDeliveryStatusData(ExactApiSchema):
@@ -300,9 +277,7 @@ __all__ = [
     "NewsIngestStatusData",
     "NewsInstrumentUniverse",
     "NewsLearningRetentionStatusData",
-    "NewsOiPolicyData",
     "NewsOiStatusData",
-    "NewsOiWindowSymbolData",
     "NewsPipelineStatusData",
     "NewsPriceStatusData",
     "NewsQuoteVenueData",

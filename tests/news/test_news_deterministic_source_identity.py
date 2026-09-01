@@ -33,10 +33,7 @@ def test_success_and_failure_traces_name_the_source_classifier() -> None:
     )
     assert signal is not None and fact is not None
 
-    oi_trace = oi_signals.oi_judgment_trace(
-        oi_signals.evaluate_oi(signal, earlier_eligible_count=0),
-        policy=oi_signals.DEFAULT_OI_POLICY,
-    )
+    oi_trace = oi_signals.oi_judgment_trace(oi_signals.evaluate_oi(signal))
     liquidation_trace = liquidations.trace(fact)
     _, oi_failure = oi_signals.oi_parse_failure("bad frame", provider_source="binance")
     _, liquidation_failure = liquidations.parse_failure("bad frame", provider_source="binance")

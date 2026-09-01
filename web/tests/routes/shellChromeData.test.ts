@@ -28,7 +28,9 @@ describe("route-aware shell figures", () => {
   it("uses the telemetry and Signal ledgers on the OI monitor", () => {
     const today = Date.parse("2026-08-25T12:00:00Z");
     expect(topbarFigures("/news/oi", news, trading, today)).toEqual([
-      { label: "PUSHED 24H", tone: "accent", value: 3 },
+      // #458: the lane has no push decision of its own, so the chrome counts what it parsed. A figure
+      // left on `telemetry_push_24h` would read a permanent 0 as "the feed went quiet".
+      { label: "PARSED 24H", tone: "accent", value: 139 },
       { label: "24h 成案 · Signal", text: "7 · 1" },
     ]);
 

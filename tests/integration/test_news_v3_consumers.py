@@ -994,7 +994,7 @@ def test_strategy_1019_parse_failure_is_persisted_and_counted_without_a_model(
         "oi_parse_failed",
         "oi_parse_failed",
     )
-    assert verdict["program_version"] == "news_oi_signal_v2"
+    assert verdict["program_version"] == "news_oi_signal_v3"
     assert verdict["trace"]["oi_signal"] == {
         "parsed": False,
         "strategy_id": "1019",

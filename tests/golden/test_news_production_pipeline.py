@@ -11,9 +11,14 @@ from psycopg.rows import dict_row
 
 
 def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden_runtime: Any) -> None:
-    """RabbitMQ, production Workers wiring and PostgreSQL must all participate in this result."""
+    """RabbitMQ, production Workers wiring and PostgreSQL must all participate in this result.
 
-    title = "BTC OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
+    The frame is a liquidation, not an open-interest telemetry frame. #458 stopped the OI lane from
+    pushing, so it can no longer carry a test whose subject is "a frame reaches the reader"; the
+    liquidation lane is the other deterministic judge that still delivers, and it needs no model.
+    """
+
+    title = "BTC Large Short Liquidation 4.55M at $118000"
     golden_runtime.publish_opennews(
         {
             "id": 2_850_001,
@@ -24,8 +29,8 @@ def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden
             "coins": [],
             "ts": int(time.time() * 1_000),
             "strategy": {
-                "id": 1019,
-                "name": "OI Event Monitor",
+                "id": 2000,
+                "name": "实时清算",
                 "engineType": "market",
                 "sourceType": "market",
             },
@@ -35,10 +40,10 @@ def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden
     event = _wait_for_event(golden_runtime, title=title)
     data = _wait_for_complete_detail(golden_runtime, event_id=event["event_id"])
 
-    assert data["event"]["admission"] == "telemetry_deterministic"
+    assert data["event"]["admission"] == "liquidation_deterministic"
     assert data["event"]["published_at_ms"] is not None
     assert data["members"] and data["members"][0]["reporting_origin"] == "binance"
-    assert data["verdicts"][-1]["program_version"] == "news_oi_signal_v2"
+    assert data["verdicts"][-1]["program_version"] == "news_liquidation_fact_v2"
     assert data["verdicts"][-1]["final_decision"] == "push"
     assert len(data["deliveries"]) == 1
     delivery = data["deliveries"][0]
@@ -63,7 +68,7 @@ def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden
 def test_triage_publish_failure_uses_broker_retry_without_restarting_workers(golden_runtime: Any) -> None:
     """The production Triage/outbox path ends in evidence, while the same Workers root stays live."""
 
-    title = "BTC OI Rise 4.55%, OI Value 42.17M, Whale Long Profit 81.21%, Whale/OI Ratio 101.71%"
+    title = "BTC Large Short Liquidation 4.21M at $117000"
     initial_readiness = golden_runtime.workers_readiness()
 
     golden_runtime.set_verdict_route(enabled=False)
@@ -79,8 +84,8 @@ def test_triage_publish_failure_uses_broker_retry_without_restarting_workers(gol
                 "coins": [],
                 "ts": int(time.time() * 1_000),
                 "strategy": {
-                    "id": 1019,
-                    "name": "OI Event Monitor",
+                    "id": 2000,
+                    "name": "实时清算",
                     "engineType": "market",
                     "sourceType": "market",
                 },

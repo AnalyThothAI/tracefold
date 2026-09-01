@@ -39,7 +39,6 @@ from tracefold.news.models import (
     ReaderMarketMovement,
     ReaderTradeTarget,
 )
-from tracefold.news.oi_signals import DEFAULT_OI_POLICY, program_sha256
 from tracefold.news.opennews import OpenNewsHistoryError
 from tracefold.news.pipeline import admission as admission_module
 from tracefold.news.pipeline import delivery as delivery_module
@@ -2984,58 +2983,38 @@ def test_stale_sweep_recovers_after_edit_settlement_and_ambiguity_writes_both_fa
     assert "terminalize_stale_delivery_edits" in news.names()
 
 
-def _oi_delivery_news() -> RecordingNews:
+def _quoted_delivery_news() -> RecordingNews:
+    """A pushed crypto card whose primary the Gate did ground, which is what earns a quote line.
+
+    This used to be an OI frame. #458 stopped the OI lane from pushing, so it can no longer stand in
+    for "a card that reaches delivery"; what the tests below are about — a stale quote, and one whose
+    reference change expired — is the quote line itself, and it is reached the ordinary way.
+    """
+
     return _delivery_news(
-        # Migration can recover the durable kind while retaining the historical
-        # admission. Delivery therefore follows event_kind, not stale routing.
-        event_card=_card(admission="candidate", event_kind="oi", grounded_assets=[]),
+        event_card=_card(admission="candidate", grounded_assets=["DOGE"]),
         latest_verdict=lambda *, event_id, stage: {
             "final_decision": "push",
-            "program_version": "news_oi_signal_v2",
-            "program_sha256": program_sha256(DEFAULT_OI_POLICY),
             "verdict": {
+                "novelty": "new_fact",
+                "restates": -1,
                 "direction": "bullish",
+                "scope": "single_name",
                 "magnitude": 2,
-                "headline_zh": "▲ DOGE 持仓异动8.64%｜持仓7301万｜鲸鱼占比211.0%｜鲸鱼多头盈利80.6%｜4h内第1次",
+                "confidence": 0.8,
+                "audience": "crypto",
+                "headline_zh": "DOGE 现货 ETF 通过",
+                "why_zh": "现货通道打开。",
                 "assets": [{"symbol": "DOGE", "role": "primary", "market_type": "perp"}],
             },
         },
-        oi_signal={"symbol": "DOGE", "metric_version": "oi_signal_v1"},
     )
 
 
-def test_deliverer_prices_the_verified_asset_on_an_oi_card() -> None:
-    price = RecordingPrice(
-        quotes=[
-            {
-                "symbol": "DOGE",
-                "price": "0.2143",
-                "change_pct": 8.64,
-                "change_basis": "rolling_24h",
-                "instrument_class": "crypto",
-                "state": "fresh",
-            }
-        ]
-    )
-    news = _oi_delivery_news()
-    sender = RecordingSender()
-
-    asyncio.run(
-        _deliverer(news, FakeBus(), price=price, sender=sender).handle(
-            _message("verdict", {"event_id": "ev-strong", "kind": "first"})
-        )
-    )
-
-    assert price.requested == [["DOGE"]]
-    lines = sender.cards[0]["elements"][0]["content"].splitlines()
-    assert "DOGE" in lines[0]
-    assert lines[-1] == "行情 DOGE $0.2143 24h +8.64%"
-
-
-def test_deliverer_omits_a_stale_oi_quote_after_requesting_the_verified_symbol() -> None:
+def test_deliverer_omits_a_stale_quote_after_requesting_the_grounded_symbol() -> None:
     price = RecordingPrice(quotes=[{"symbol": "DOGE", "price": "0.2143", "state": "stale"}])
     sender = RecordingSender()
-    news = _oi_delivery_news()
+    news = _quoted_delivery_news()
 
     asyncio.run(
         _deliverer(news, FakeBus(), price=price, sender=sender).handle(
@@ -3062,7 +3041,7 @@ def test_deliverer_keeps_a_fresh_price_after_its_reference_change_expires() -> N
             }
         ]
     )
-    news = _oi_delivery_news()
+    news = _quoted_delivery_news()
     sender = RecordingSender()
 
     asyncio.run(
@@ -3074,29 +3053,6 @@ def test_deliverer_keeps_a_fresh_price_after_its_reference_change_expires() -> N
     lines = sender.cards[0]["elements"][0]["content"].splitlines()
     assert lines[-1] == "行情 DOGE $0.2143"
     assert news.kwargs_of("settle_delivery")["state"] == "sent"
-
-
-def test_deliverer_does_not_upgrade_a_queued_pre_v2_oi_verdict() -> None:
-    news = _oi_delivery_news()
-    current = news.responses["latest_verdict"]
-    pre_v2_program_sha256 = "a0c21e0745d4a7536431db744de3d4df241b223ca8345cc2e389426c245ad626"
-    assert pre_v2_program_sha256 != program_sha256(DEFAULT_OI_POLICY)
-    news.responses["latest_verdict"] = lambda *, event_id, stage: {
-        **current(event_id=event_id, stage=stage),
-        "program_sha256": pre_v2_program_sha256,
-    }
-    price = RecordingPrice(quotes=[{"symbol": "DOGE", "price": "0.2143", "state": "fresh"}])
-    sender = RecordingSender()
-
-    asyncio.run(
-        _deliverer(news, FakeBus(), price=price, sender=sender).handle(
-            _message("verdict", {"event_id": "ev-strong", "kind": "first"})
-        )
-    )
-
-    assert "oi_signal" not in news.names()
-    assert price.requested == []
-    assert "行情" not in json.dumps(sender.cards[0], ensure_ascii=False)
 
 
 def test_deliverer_does_not_price_an_ordinary_ungrounded_model_asset() -> None:
@@ -4998,13 +4954,13 @@ def _oi_card(**overrides: Any) -> dict[str, Any]:
 
 def test_telemetry_is_judged_without_a_model_and_settles_on_the_ordinary_path() -> None:
     """The whole design in one test: no judge call, no arm assignment, and the verdict lands in
-    `news_verdicts` through `_decide_and_persist` like any other Event."""
+    `news_verdicts` through `_decide_and_persist` like any other Event -- and, since #458, nothing
+    is published, because this lane no longer decides that a human should be interrupted."""
 
     news = RecordingNews(
         get_verdict=None,
         event_card=_oi_card(),
         insert_verdict=True,
-        count_recent_eligible_oi_signals=0,
         latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
     )
     bus = FakeBus()
@@ -5015,22 +4971,25 @@ def test_telemetry_is_judged_without_a_model_and_settles_on_the_ordinary_path() 
     assert judge.calls == 0, "a telemetry frame must never reach the model"
     assert "assign_agent_arm" not in news.names(), "no model call means no arm to assign"
     inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "push"
-    assert inserted["override_rule"] == "opening_move_with_whale_concentration"
-    assert inserted["program_version"] == "news_oi_signal_v2" and inserted["degraded"] is False
+    assert inserted["final_decision"] == "drop"
+    assert inserted["override_rule"] == "stored"
+    assert inserted["program_version"] == "news_oi_signal_v3" and inserted["degraded"] is False
     assert inserted["judgment_origin"] == "oi"
     assert inserted["verdict"]["assets"] == [{"symbol": "TRUMP", "market_type": "perp", "role": "primary"}]
     assert inserted["verdict"]["headline_zh"] == (
-        "▲ TRUMP 持仓异动4.55%｜持仓3217万｜鲸鱼占比100.7%｜鲸鱼多头盈利80.2%｜4h内第1次"
+        "▲ TRUMP 持仓异动4.55%｜持仓3217万｜鲸鱼占比100.7%｜鲸鱼多头盈利80.2%"
     )
     assert inserted["verdict"]["why_zh"] == ""
     assert inserted["trace"]["verdict_sha256"] == canonical_sha(inserted["verdict"])
+    # No threshold travels with the verdict any more, because none was applied.
+    assert "policy" not in inserted["trace"]
     history_calls = [kwargs for name, kwargs in news.calls if name == "reader_history"]
     assert history_calls and all(call["include_targeted"] is False for call in history_calls)
-    # The rank ledger is written, and the card goes out on the one delivery lane there has ever been.
+    # The frame ledger is written, and nothing is published: the reader is told by the Signal lane.
     ledger = news.kwargs_of("insert_oi_signal")
-    assert ledger["symbol"] == "TRUMP" and ledger["rank_in_window"] == 1
-    assert bus.routing_keys() == [RK_VERDICT_PUSH]
+    assert ledger["symbol"] == "TRUMP"
+    assert "rank_in_window" not in ledger
+    assert bus.published == []
 
 
 def test_a_judged_telemetry_frame_records_the_asset_its_gate_could_not_ground() -> None:
@@ -5046,7 +5005,6 @@ def test_a_judged_telemetry_frame_records_the_asset_its_gate_could_not_ground() 
         get_verdict=None,
         event_card=_oi_card(),
         insert_verdict=True,
-        count_recent_eligible_oi_signals=0,
         latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
     )
 
@@ -5075,12 +5033,18 @@ def test_a_telemetry_frame_that_matched_no_template_records_no_asset() -> None:
     assert "insert_oi_signal" not in news.names()
 
 
-def test_telemetry_beyond_the_window_rank_preserves_the_arithmetic_hold() -> None:
+def test_a_repeated_symbols_frame_is_stored_like_every_other_one() -> None:
+    """#458: no storyline lock, no count of this symbol's earlier frames, no rank to exceed.
+
+    The rule that made the third frame in four hours different from the first is gone, so the lane
+    does exactly one thing per frame. What used to be asserted here — a `beyond_window_rank` hold —
+    would now be a rule nothing writes.
+    """
+
     news = RecordingNews(
         get_verdict=None,
         event_card=_oi_card(),
         insert_verdict=True,
-        count_recent_eligible_oi_signals=2,
         latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
     )
     bus = FakeBus()
@@ -5088,8 +5052,11 @@ def test_telemetry_beyond_the_window_rank_preserves_the_arithmetic_hold() -> Non
     asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": "ev-oi"})))
 
     inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "drop" and inserted["override_rule"] == "beyond_window_rank"
-    assert news.kwargs_of("insert_oi_signal")["rank_in_window"] == 3
+    assert inserted["final_decision"] == "drop" and inserted["override_rule"] == "stored"
+    # No per-symbol history is read, so nothing about this frame depends on the ones before it. (The
+    # storyline lock the general settlement path takes is a different one and still applies.)
+    assert "count_recent_eligible_oi_signals" not in news.names()
+    assert "rank_in_window" not in news.kwargs_of("insert_oi_signal")
     assert bus.published == []
 
 

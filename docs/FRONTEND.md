@@ -171,7 +171,7 @@ the route components into the eager shell chunk.
   in the pipeline's own indigo/amber, measured against the research constants in
   `oi-agent-design-2026-08-22.md` §1.5 rather than against any lane threshold (#331). The
   page draws no open-interest curve (the provider emits a frame only when its own
-  trigger fires, so a line between them is invented), and edits no threshold — `news.oi` is operator configuration and this
+  trigger fires, so a line between them is invented), and edits no threshold — Trading admission is operator configuration and this
   page reports only what it currently is. The pre-frame 1 h move is absent: it
   needs the price one hour before the frame, and the News price plane stores only
   the Event-anchored `p0/p1/p4`. The OI/price quadrant is gone with the quadrant

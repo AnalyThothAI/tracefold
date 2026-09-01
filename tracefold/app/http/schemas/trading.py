@@ -75,7 +75,6 @@ class TradingGateEvidenceData(ExactApiSchema):
     oi_value_usd: int | None = None
     whale_oi_ratio_bps: int | None = None
     whale_long_profit_bps: int | None = None
-    rank_in_window: int | None = None
     source_decision: str = ""
     source_rule: str = ""
     floor: int | None = None

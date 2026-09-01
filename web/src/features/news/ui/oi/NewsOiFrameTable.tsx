@@ -29,7 +29,6 @@ import {
   oiBuckets,
   oiChangeLabel,
   oiPercent,
-  oiRankLabel,
   oiRuleLabel,
   oiValueZh,
 } from "../../model/oiSignals";
@@ -117,7 +116,6 @@ export function NewsOiFrameTable({
             <span className="news-oi-num">持仓</span>
             <span className="news-oi-num">鲸鱼占比</span>
             <span className="news-oi-num">鲸鱼盈利</span>
-            <span className="news-oi-num">窗口</span>
             <span>研究分桶</span>
             <span>判定</span>
             <span className="news-oi-num">1H / 4H</span>
@@ -211,16 +209,8 @@ function FrameRow({
         </span>
         <span className="news-oi-num news-oi-change">{oiChangeLabel(oi)}</span>
         <span className="news-oi-num">{oiValueZh(oi?.oi_value_usd)}</span>
-        <span
-          className="news-oi-num news-oi-ratio"
-          data-gate={oi?.rule === "whale_ratio_below_threshold" || undefined}
-        >
-          {oiPercent(oi?.whale_oi_ratio_bps)}
-        </span>
+        <span className="news-oi-num news-oi-ratio">{oiPercent(oi?.whale_oi_ratio_bps)}</span>
         <span className="news-oi-num">{oiPercent(oi?.whale_long_profit_bps)}</span>
-        <span className="news-oi-num" data-gate={oi?.rule === "beyond_window_rank" || undefined}>
-          {oiRankLabel(oi)}
-        </span>
         <span className="news-oi-buckets">
           {buckets.map((bucket) => (
             <span
@@ -372,12 +362,7 @@ function traceEntries(oi: NonNullable<NewsFeedEvent["oi"]>): Array<[string, stri
       ["oi_value_usd", numeric(oi.oi_value_usd)],
       ["whale_long_profit_bps", numeric(oi.whale_long_profit_bps)],
       ["whale_oi_ratio_bps", numeric(oi.whale_oi_ratio_bps)],
-      ["eligible_rank_in_window", numeric(oi.eligible_rank_in_window)],
-      ["rank_semantics", oi.rank_semantics ?? "—"],
-      ["policy.whale_oi_ratio_above_bps", numeric(oi.whale_oi_ratio_above_bps)],
-      ["policy.max_rank_in_window", numeric(oi.max_rank_in_window)],
-      ["policy.oi_change_at_least_bps", numeric(oi.oi_change_at_least_bps)],
-      ["policy.window_ms", numeric(oi.window_ms)],
+      ["parser_version", oi.parser_version ?? "—"],
     );
     return entries;
   }

@@ -213,7 +213,6 @@ def _result(
             "oi_value_usd": candidate.oi_value_usd,
             "whale_oi_ratio_bps": candidate.whale_oi_ratio_bps,
             "whale_long_profit_bps": candidate.whale_long_profit_bps,
-            "rank_in_window": candidate.rank_in_window,
             "source_decision": candidate.final_decision,
             "source_rule": candidate.source_rule,
             **dict(evidence or {}),

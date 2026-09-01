@@ -1,25 +1,30 @@
-"""Open-interest telemetry lane: parsing, basis points, and the rank rule.
+"""Open-interest telemetry lane: parsing, basis points, and the one outcome a frame can have.
 
 The frames in these fixtures are verbatim production titles from 2026-08-22, including the two
 single-character tickers (`S`, `4`) and the prose sentence about open interest that must NOT parse.
+
+#458 removed this lane's notification rule. What used to be tested here — a whale-concentration
+threshold, an opening-rank ceiling, an OI-move floor, and the push each of them gated — no longer
+exists, so those cases are not retuned versions of themselves: they are replaced by the assertion
+that no measurement changes the answer.
 """
 
 from __future__ import annotations
 
 import pytest
 
+from tracefold.news.oi_contracts import OI_FILTERS, OI_OUTCOMES
+from tracefold.news.oi_contracts import OI_STORED_RULE as STORED_RULE
 from tracefold.news.oi_signals import (
-    DEFAULT_OI_POLICY,
     PROGRAM_VERSION,
     READER_CONTRACT_VERSION,
-    OiPolicy,
     OiSignal,
     evaluate_oi,
     oi_judgment_trace,
     oi_parse_failure,
     parse_oi_signal,
 )
-from tracefold.news.storage.feed import OI_FILTERS, OI_OUTCOMES, _oi_summary
+from tracefold.news.storage.feed import _oi_summary
 
 FRAME = "TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
 
@@ -104,69 +109,77 @@ def test_a_provider_number_that_cannot_fit_the_ledger_is_not_a_signal() -> None:
     assert parse_oi_signal(frame) is None
 
 
-def test_rank_counts_only_eligible_signals_in_the_sliding_window() -> None:
-    first = evaluate_oi(_signal(), earlier_eligible_count=0)
-    assert (first.rule, first.rank_in_window) == ("opening_move_with_whale_concentration", 1)
-    assert first.decision.final == "push"
+def test_every_parsed_frame_is_stored_and_none_is_pushed() -> None:
+    """One rule, one decision, whatever the four numbers say.
 
-    second = evaluate_oi(_signal(), earlier_eligible_count=1)
-    assert second.decision.final == "push" and second.rank_in_window == 2
+    The values swept here are exactly the ones the retired rule discriminated on: a whale ratio under
+    and over the old 80% threshold, a near-zero OI move, and a repeat of a symbol that would have been
+    the third in its window. Each used to produce a different rule and two of them a push.
+    """
 
-    third = evaluate_oi(_signal(), earlier_eligible_count=2)
-    assert third.rule == "beyond_window_rank" and third.rank_in_window == 3
-    assert third.decision.final == "drop"
-
-
-def test_ineligible_frames_between_eligible_signals_do_not_consume_rank() -> None:
-    eligible_count = 0
-    outcomes: list[tuple[int, str]] = []
-    for ratio_bps in (4_000, 9_100, 6_000, 9_200):
-        judgment = evaluate_oi(_signal(whale_oi_ratio_bps=ratio_bps), earlier_eligible_count=eligible_count)
-        outcomes.append((judgment.rank_in_window, judgment.decision.final))
-        eligible_count += int(judgment.rule == "opening_move_with_whale_concentration")
-
-    assert outcomes == [(1, "drop"), (1, "push"), (2, "drop"), (2, "push")]
-
-
-def test_whale_concentration_is_a_strict_threshold() -> None:
-    at_threshold = evaluate_oi(_signal(whale_oi_ratio_bps=8_000), earlier_eligible_count=0)
-    assert at_threshold.rule == "whale_ratio_below_threshold" and at_threshold.decision.final == "drop"
-    just_over = evaluate_oi(_signal(whale_oi_ratio_bps=8_001), earlier_eligible_count=0)
-    assert (just_over.rank_in_window, just_over.decision.final) == (1, "push")
+    for signal in (
+        _signal(),
+        _signal(whale_oi_ratio_bps=100),
+        _signal(whale_oi_ratio_bps=8_000),
+        _signal(whale_oi_ratio_bps=8_001),
+        _signal(oi_change_bps=1),
+        _signal(oi_change_bps=-455, direction="fall"),
+    ):
+        judgment = evaluate_oi(signal)
+        assert judgment.rule == STORED_RULE
+        assert (judgment.decision.final, judgment.decision.rule_baseline) == ("drop", "drop")
+        assert judgment.decision.override_rule == STORED_RULE
+        assert judgment.decision.throttled_by is None
+        assert judgment.verdict.magnitude == 0
 
 
-def test_every_threshold_is_operator_owned() -> None:
-    quiet = _signal(whale_oi_ratio_bps=3_000)
-    assert evaluate_oi(quiet, earlier_eligible_count=0).decision.final == "drop"
-    loud = evaluate_oi(quiet, earlier_eligible_count=0, policy=OiPolicy(whale_oi_ratio_above_bps=0))
-    assert loud.decision.final == "push"
-    assert evaluate_oi(_signal(), earlier_eligible_count=4).decision.final == "drop"
-    wide = evaluate_oi(_signal(), earlier_eligible_count=4, policy=OiPolicy(max_rank_in_window=9))
-    assert wide.decision.final == "push"
+def test_the_frame_is_still_a_complete_directional_presentation() -> None:
+    """Storing is not discarding: the verdict keeps the subject, the direction and the measurements.
+
+    A magnitude-0 verdict is the lane saying "not worth interrupting a human for", not "nothing
+    happened" — the frame table renders this row and Trading's candidate projection reads it.
+    """
+
+    rise = evaluate_oi(_signal()).verdict
+    assert rise.direction == "bullish"
+    assert [(asset.symbol, asset.role) for asset in rise.assets] == [("TRUMP", "primary")]
+    fall = evaluate_oi(_signal(direction="fall")).verdict
+    assert fall.direction == "bearish"
+    # Retired News contract fields never appear on it, and the verdict never copies the action.
+    assert {"event_type", "actionable", "decision", "title_zh"}.isdisjoint(rise.model_dump(mode="json"))
 
 
-def test_oi_judgment_is_the_only_action_authority() -> None:
-    qualifying = evaluate_oi(_signal(), earlier_eligible_count=0)
-    assert (qualifying.decision.final, qualifying.decision.override_rule) == (
-        "push",
-        "opening_move_with_whale_concentration",
-    )
-    rejected = evaluate_oi(_signal(whale_oi_ratio_bps=3_000), earlier_eligible_count=0)
-    assert (rejected.decision.final, rejected.decision.override_rule) == (
-        "drop",
-        "whale_ratio_below_threshold",
-    )
-    assert {"event_type", "actionable", "decision", "title_zh"}.isdisjoint(qualifying.verdict.model_dump(mode="json"))
-    assert qualifying.judgment_sha256 == evaluate_oi(_signal(), earlier_eligible_count=0).judgment_sha256
+def test_the_judgment_carries_no_rank_and_no_thresholds() -> None:
+    """The atom is content-addressed, so a stray field would change every frame's identity.
+
+    `rank_in_window` is gone from it and `policy` is gone from the trace beside it. Both were the
+    retired rule's, and the database's own judgment CHECK names the atom's keys exactly.
+    """
+
+    judgment = evaluate_oi(_signal())
+    assert set(judgment.judgment_atom) == {
+        "judgment_contract_version",
+        "origin",
+        "verdict",
+        "signal",
+        "rule",
+        "decision",
+    }
+    assert "policy" not in oi_judgment_trace(judgment)
+    assert "rank_semantics" not in oi_judgment_trace(judgment)
+    # Same frame, same identity: the judge takes no argument that could vary between two runs.
+    assert judgment.judgment_sha256 == evaluate_oi(_signal()).judgment_sha256
 
 
-def test_reader_text_carries_the_numbers_and_the_position_in_the_run() -> None:
+def test_reader_text_carries_the_four_measurements_and_no_position_in_a_run() -> None:
     """The deterministic numbers form one complete title, with no duplicate body sentence."""
 
-    verdict = evaluate_oi(_signal(), earlier_eligible_count=0).verdict
-    assert verdict.headline_zh == ("▲ TRUMP 持仓异动4.55%｜持仓3217万｜鲸鱼占比100.7%｜鲸鱼多头盈利80.2%｜4h内第1次")
+    verdict = evaluate_oi(_signal()).verdict
+    assert verdict.headline_zh == "▲ TRUMP 持仓异动4.55%｜持仓3217万｜鲸鱼占比100.7%｜鲸鱼多头盈利80.2%"
     assert verdict.why_zh == ""
     assert len(verdict.headline_zh) <= 60
+    # The window clause left with the window (#458): it counted a push queue that no longer exists.
+    assert "第" not in verdict.headline_zh and "4h" not in verdict.headline_zh
     assert "AI" not in verdict.headline_zh and "模型" not in verdict.headline_zh
 
 
@@ -178,12 +191,11 @@ def test_reader_title_compacts_long_symbols_without_losing_any_measurement() -> 
             oi_value_usd=3_860_000_000,
             whale_oi_ratio_bps=21097,
             whale_long_profit_bps=8060,
-        ),
-        earlier_eligible_count=1,
+        )
     ).verdict
 
     assert len(verdict.headline_zh) <= 60
-    for fact in ("SIXTEENCHARACTRS", "1438.20%", "38.60亿", "211.0%", "80.6%", "4h#2"):
+    for fact in ("SIXTEENCHARACTRS", "1438.20%", "38.60亿", "211.0%", "80.6%"):
         assert fact in verdict.headline_zh
 
 
@@ -196,40 +208,18 @@ def test_reader_title_is_bounded_at_the_bigint_storage_limit() -> None:
             oi_value_usd=maximum,
             whale_oi_ratio_bps=maximum,
             whale_long_profit_bps=-maximum,
-        ),
-        earlier_eligible_count=1,
+        )
     ).verdict
 
     assert len(verdict.headline_zh) <= 60
-    for fact in ("SIXTEENCHARACTRS", "Δ9e16%", "O9e18", "W9e16%", "P-9e16%", "4h#2"):
+    for fact in ("SIXTEENCHARACTRS", "Δ9e16%", "O9e18", "W9e16%", "P-9e16%"):
         assert fact in verdict.headline_zh
 
 
-def test_repeats_are_bounded_by_the_rank_ceiling_not_by_content_similarity() -> None:
-    """The lane owns its rank bound; generic content policy is not a second authority."""
+def test_the_program_identity_changed_with_the_rule() -> None:
+    """v2 judged; v3 stores. A shared identity would let a Case cite thresholds nothing applied."""
 
-    first = evaluate_oi(_signal(symbol="BTC"), earlier_eligible_count=0)
-    second = evaluate_oi(_signal(symbol="BTC", oi_change_bps=620), earlier_eligible_count=1)
-    third = evaluate_oi(_signal(symbol="BTC", oi_change_bps=700), earlier_eligible_count=2)
-    assert [(first.rank_in_window, first.decision.final), (second.rank_in_window, second.decision.final)] == [
-        (1, "push"),
-        (2, "push"),
-    ]
-    assert (third.rank_in_window, third.decision.final, third.decision.override_rule) == (
-        3,
-        "drop",
-        "beyond_window_rank",
-    )
-
-
-def test_default_policy_keeps_the_shipped_thresholds() -> None:
-    assert DEFAULT_OI_POLICY.as_dict() == {
-        "window_ms": 4 * 3_600_000,
-        "max_rank_in_window": 2,
-        "whale_oi_ratio_above_bps": 8_000,
-        "oi_change_at_least_bps": 0,
-    }
-    assert (PROGRAM_VERSION, READER_CONTRACT_VERSION) == ("news_oi_signal_v2", "oi_card_v3")
+    assert (PROGRAM_VERSION, READER_CONTRACT_VERSION) == ("news_oi_signal_v3", "oi_card_v4")
 
 
 # ---------------------------------------------------------------- #207: what the 持仓异动 monitor reads
@@ -243,16 +233,13 @@ def test_the_feed_folds_the_judge_trace_back_without_reparsing_the_title() -> No
     judge the moment either side changed.
     """
 
-    judgment = evaluate_oi(_signal(), earlier_eligible_count=0)
-    summary = _oi_summary(
-        judgment.judgment_atom,
-        oi_judgment_trace(judgment, policy=DEFAULT_OI_POLICY),
-    )
+    judgment = evaluate_oi(_signal())
+    summary = _oi_summary(judgment.judgment_atom, oi_judgment_trace(judgment))
 
     assert summary is not None
     assert judgment.signal is not None
     assert summary["parsed"] is True
-    assert summary["rule"] == "opening_move_with_whale_concentration"
+    assert summary["rule"] == STORED_RULE
     # The frame's parsed subject comes from the judgment trace. Public `assets` is a later projection of the
     # durable Event-asset ledger; it does not replace this structured OI fact or justify parsing the title again.
     assert summary["symbol"] == judgment.signal.symbol
@@ -260,13 +247,16 @@ def test_the_feed_folds_the_judge_trace_back_without_reparsing_the_title() -> No
     assert summary["oi_value_usd"] == judgment.signal.oi_value_usd
     assert summary["whale_long_profit_bps"] == judgment.signal.whale_long_profit_bps
     assert summary["whale_oi_ratio_bps"] == judgment.signal.whale_oi_ratio_bps
-    assert summary["eligible_rank_in_window"] == 1
-    assert summary["rank_semantics"] == "eligible_rank_v1"
-    # The thresholds this frame ran under, from its own trace: retuning `news.oi` must not rewrite the
-    # history of a decision it did not make.
-    assert summary["whale_oi_ratio_above_bps"] == DEFAULT_OI_POLICY.whale_oi_ratio_above_bps
-    assert summary["max_rank_in_window"] == DEFAULT_OI_POLICY.max_rank_in_window
-    assert summary["window_ms"] == DEFAULT_OI_POLICY.window_ms
+    # No threshold and no rank reach the browser, because the judge applied neither (#458). A console
+    # that still had a number here would be printing a gate no code runs.
+    assert {
+        "eligible_rank_in_window",
+        "rank_semantics",
+        "whale_oi_ratio_above_bps",
+        "max_rank_in_window",
+        "oi_change_at_least_bps",
+        "window_ms",
+    }.isdisjoint(summary)
     # The provider's identity stays behind: the console does not display Strategy IDs.
     assert {"strategy_id", "provider", "provider_source"}.isdisjoint(summary)
 
@@ -295,26 +285,19 @@ def test_a_row_from_any_other_admission_carries_no_oi_block() -> None:
     assert _oi_summary(None, None) is None
 
 
-def test_the_feed_oi_filter_groups_exactly_the_rules_the_judge_can_write() -> None:
-    """The monitor's tabs are the judge's rules, grouped — the console owns no vocabulary of its own.
+def test_the_feed_oi_filter_names_the_only_rule_worth_narrowing_to() -> None:
+    """The monitor's tabs are the judge's rules — the console owns no vocabulary of its own.
 
-    A rule `evaluate_oi` can produce that no group covers would be silently unreachable from every tab,
-    which is how a gate stops being visible without anyone noticing.
+    The lane writes two rules. `oi_parse_failed` is the narrow tab; `stored` is every other row, which
+    is what 全部 already shows, so grouping it would make the two tabs 全部 and 全部-minus-one. What
+    this pins is that no group names a rule the judge cannot write: a stale key here would render an
+    always-empty tab that reads as "nothing was rejected".
     """
 
-    produced = {
-        evaluate_oi(_signal(whale_oi_ratio_bps=100), earlier_eligible_count=0).rule,
-        evaluate_oi(_signal(), earlier_eligible_count=0).rule,
-        evaluate_oi(_signal(), earlier_eligible_count=9).rule,
-        evaluate_oi(
-            _signal(oi_change_bps=1),
-            earlier_eligible_count=0,
-            policy=OiPolicy(oi_change_at_least_bps=500),
-        ).rule,
-        "oi_parse_failed",
-    }
+    produced = {evaluate_oi(_signal()).rule, "oi_parse_failed"}
     grouped = [rule for rules in OI_FILTERS.values() for rule in rules]
-    assert produced == set(grouped)
+    assert set(grouped) <= produced
+    assert grouped == ["oi_parse_failed"]
     # The groups partition the rules: no rule may appear under two tabs.
     assert len(grouped) == len(set(grouped))
 

@@ -19,7 +19,6 @@ from typing import Any
 import pytest
 
 from tracefold.news.oi_signals import (
-    DEFAULT_OI_POLICY,
     SOURCE_CONTRACT_VERSION,
     evaluate_oi,
     oi_judgment_trace,
@@ -119,9 +118,9 @@ def test_an_unproven_window_is_a_named_reason_in_the_trace_not_a_missing_key() -
 
     signal = parse_oi_signal(FIXTURE["title"])
     assert signal is not None
-    judgment = evaluate_oi(signal, earlier_eligible_count=0, policy=DEFAULT_OI_POLICY)
+    judgment = evaluate_oi(signal)
 
-    unproven = oi_judgment_trace(judgment, policy=DEFAULT_OI_POLICY, source=None)
+    unproven = oi_judgment_trace(judgment, source=None)
     assert unproven["source_contract_rule"] == "source_window_unproven"
     assert unproven["measurement_window_ms"] is None
     assert unproven["source_strategy_id"] is None
@@ -131,9 +130,7 @@ def test_an_unproven_window_is_a_named_reason_in_the_trace_not_a_missing_key() -
     assert judgment.signal is not None
     assert judgment.judgment_atom["signal"]["oi_change_bps"] == FIXTURE["expected"]["oi_change_bps"]
 
-    proven = oi_judgment_trace(
-        judgment, policy=DEFAULT_OI_POLICY, source=oi_source_contract(FIXTURE["provider_metadata"])
-    )
+    proven = oi_judgment_trace(judgment, source=oi_source_contract(FIXTURE["provider_metadata"]))
     assert proven["source_contract_rule"] == "proven"
     assert proven["measurement_window_ms"] == 300_000
 

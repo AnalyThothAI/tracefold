@@ -407,7 +407,6 @@
 | `whale_long_profit_bps` | `BIGINT` | False | `None` |
 | `whale_oi_ratio_bps` | `BIGINT` | False | `None` |
 | `observed_at_ms` | `BIGINT` | False | `None` |
-| `rank_in_window` | `INTEGER` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `source_strategy_id` | `TEXT` | True | `None` |
 | `source_contract_version` | `TEXT` | True | `None` |

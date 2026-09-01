@@ -39,7 +39,6 @@ def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
         oi_value_usd=row["oi_value_usd"],
         whale_long_profit_bps=row["whale_long_profit_bps"],
         whale_oi_ratio_bps=row["whale_oi_ratio_bps"],
-        rank_in_window=row["rank_in_window"],
         observed_at_ms=row["observed_at_ms"],
         source_available_at_ms=row["source_available_at_ms"],
         ingest_mode=row["ingest_mode"],

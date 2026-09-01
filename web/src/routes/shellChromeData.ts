@@ -164,11 +164,13 @@ export function topbarFigures(
   }
 
   if (pathname === "/news/oi") {
+    // Parsed, not pushed (#458). The lane has no push decision of its own any more, and a chrome figure
+    // that stayed on `telemetry_push_24h` would have read a permanent 0 as "the feed went quiet".
     return [
       {
-        label: "PUSHED 24H",
+        label: "PARSED 24H",
         tone: "accent",
-        value: newsStatus?.pipeline.telemetry_push_24h,
+        value: newsStatus?.pipeline.telemetry_parsed_24h,
       },
       oiDailyFigure(tradingStatus, nowMs),
     ];
