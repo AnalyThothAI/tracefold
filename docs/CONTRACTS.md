@@ -1392,9 +1392,10 @@ never imports `news.release`.
 
 `release register --development SHA --candidate FILE --artifact-root DIR
 [--hypothesis TEXT] --out FILE` (#202) binds one `news_prompt_candidate_v2` to
-the active stable Program and a frozen development dataset. Whatever wrote the
-two instructions — `learning run` or a person — enters
-here on identical terms, because the generator is audit, not permission. The
+the active stable Program and a frozen development dataset. Whatever supplied
+the candidate instruction pair — `learning run`, which may change only
+EventSemantics and copies ReaderCard byte-identically, or a person — enters here
+on identical terms, because the generator is audit, not permission. The
 command re-applies the patch to the running stable to derive the candidate's
 Program identity, re-projects the corpus and re-derives the #199 Objective Plan
 rather than trusting the candidate's own `objective_summary`, and refuses a

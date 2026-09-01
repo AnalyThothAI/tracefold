@@ -394,13 +394,14 @@ class OptimizationBudget(BaseModel):
 
 
 class PromptPatchV1(BaseModel):
-    """The entire legal write-set of News learning: two complete Predictor instructions.
+    """The complete two-instruction candidate payload accepted by News release.
 
     `ProgramStrategyPatchV1` says the same two things bound to a parent, because applying a patch to a
-    Program is the Program package's business and needs the parent to refuse a mismatch. This one is the
-    *candidate's* write-set, which is why it carries nothing else — a field here is a field an optimizer
-    could learn to write. The safety bounds are not restated: `validate_program_instruction` is the one
-    implementation, so a candidate cannot be admitted under looser rules than the artifact it becomes.
+    Program is the Program package's business and needs the parent to refuse a mismatch. The taxonomy
+    optimizer may change only EventSemantics and copies ReaderCard byte-identically; retaining both here
+    makes that equality independently verifiable at registration. The safety bounds are not restated:
+    `validate_program_instruction` is the one implementation, so a candidate cannot be admitted under
+    looser rules than the artifact it becomes.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)

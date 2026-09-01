@@ -36,6 +36,7 @@ from ..program.lm import (
     AuditedConfiguredLM,
     LMCallContext,
     LMCallLedger,
+    LMCallReceipt,
     LMOutputTruncatedError,
     RuntimeModelIdentity,
     StructuredOutputMode,
@@ -939,25 +940,46 @@ class _BudgetMeter:
 
     def after(self, role: Literal["task", "reflection"], response: dspy.LMResponse) -> None:
         input_tokens, output_tokens, cached_tokens, total_tokens = _usage_values(response)
+        self._record_usage(role, input_tokens, output_tokens, cached_tokens, total_tokens)
+        self._settle(role, self._cost(response))
+
+    def after_receipt(self, role: Literal["task", "reflection"], receipt: LMCallReceipt) -> None:
+        self._record_usage(
+            role,
+            receipt.input_tokens,
+            receipt.output_tokens,
+            receipt.cached_tokens,
+            receipt.total_tokens,
+        )
+        cost = receipt.provider_cost_microusd
+        self._settle(role, self._cost(None) if cost is None else cost)
+
+    def _record_usage(
+        self,
+        role: Literal["task", "reflection"],
+        input_tokens: int,
+        output_tokens: int,
+        cached_tokens: int,
+        total_tokens: int,
+    ) -> None:
         prefix = "task" if role == "task" else "reflection"
         setattr(self, f"{prefix}_input_tokens", getattr(self, f"{prefix}_input_tokens") + input_tokens)
         setattr(self, f"{prefix}_output_tokens", getattr(self, f"{prefix}_output_tokens") + output_tokens)
         setattr(self, f"{prefix}_cached_tokens", getattr(self, f"{prefix}_cached_tokens") + cached_tokens)
         setattr(self, f"{prefix}_total_tokens", getattr(self, f"{prefix}_total_tokens") + total_tokens)
-        self._settle(role, self._cost(response))
 
     def after_provider_failure(self, role: Literal["task", "reflection"], *, provider_reached: bool) -> None:
         if provider_reached:
             self._settle(role, self._cost(None))
 
     def _settle(self, role: Literal["task", "reflection"], cost: int) -> None:
-        if cost > self.budget.max_call_cost_microusd:
-            raise self._refuse("news_program_compile_call_cost_reservation_exceeded")
         self.actual_cost_microusd += cost
         if role == "task":
             self.task_cost_microusd += cost
         else:
             self.reflection_cost_microusd += cost
+        if cost > self.budget.max_call_cost_microusd:
+            raise self._refuse("news_program_compile_call_cost_reservation_exceeded")
         if self.actual_cost_microusd > self.budget.max_cost_microusd:
             raise self._refuse("news_program_compile_cost_budget_exceeded")
 
@@ -1044,17 +1066,19 @@ class _MeteredLearningLM(dspy.BaseLM):  # type: ignore[misc]
         last: BaseException | None = None
         for attempt in range(_NUM_RETRIES + 1):
             self._meter.before(self._role)
+            receipt_index = len(self.ledger.receipts) if self.ledger is not None else None
             try:
                 response = await self._lm.acall(request=request)
                 if not isinstance(response, dspy.LMResponse):
                     raise dspy.LMUnexpectedError("news_program_compile_lm_response_invalid")
             except BaseException as exc:
-                self._meter.after_provider_failure(self._role, provider_reached=_provider_reached(exc))
+                self._settle_error(exc, receipt_index=receipt_index)
                 if _is_retryable_lm_failure(exc) and attempt < _NUM_RETRIES:
                     self.transport_retries += 1
                     last = exc
                     continue
-                self.transport_failures += 1
+                if not isinstance(exc, LMOutputTruncatedError):
+                    self.transport_failures += 1
                 terminal = self._terminal_error(exc)
                 self._meter.remember_terminal(terminal)
                 raise terminal from exc
@@ -1066,23 +1090,43 @@ class _MeteredLearningLM(dspy.BaseLM):  # type: ignore[misc]
         last: BaseException | None = None
         for attempt in range(_NUM_RETRIES + 1):
             self._meter.before(self._role)
+            receipt_index = len(self.ledger.receipts) if self.ledger is not None else None
             try:
                 response = invoke()
                 if not isinstance(response, dspy.LMResponse):
                     raise dspy.LMUnexpectedError("news_program_compile_lm_response_invalid")
             except BaseException as exc:
-                self._meter.after_provider_failure(self._role, provider_reached=_provider_reached(exc))
+                self._settle_error(exc, receipt_index=receipt_index)
                 if _is_retryable_lm_failure(exc) and attempt < _NUM_RETRIES:
                     self.transport_retries += 1
                     last = exc
                     continue
-                self.transport_failures += 1
+                if not isinstance(exc, LMOutputTruncatedError):
+                    self.transport_failures += 1
                 terminal = self._terminal_error(exc)
                 self._meter.remember_terminal(terminal)
                 raise terminal from exc
             self._meter.after(self._role, response)
             return response
         raise last if last is not None else RuntimeError("news_program_compile_lm_retry_invariant")
+
+    def _settle_error(self, exc: BaseException, *, receipt_index: int | None) -> None:
+        # GEPA is fixed to one worker. The audited LM writes this physical provider-success receipt before
+        # raising truncation, so learning can settle the exact answer without changing the production
+        # execution envelope or fabricating a second provider call.
+        ledger = self.ledger
+        if isinstance(exc, LMOutputTruncatedError) and ledger is not None and receipt_index is not None:
+            receipts = ledger.receipts
+            if len(receipts) == receipt_index + 1:
+                receipt = receipts[receipt_index]
+                if (
+                    receipt.model_binding == self._role
+                    and receipt.terminal_disposition == "provider_success"
+                    and receipt.error_code == "news_program_lm_output_truncated"
+                ):
+                    self._meter.after_receipt(self._role, receipt)
+                    return
+        self._meter.after_provider_failure(self._role, provider_reached=_provider_reached(exc))
 
     def _terminal_error(self, exc: BaseException) -> BaseException:
         if _is_retryable_lm_failure(exc):

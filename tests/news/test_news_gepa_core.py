@@ -165,6 +165,36 @@ def test_budget_meter_reserves_before_a_physical_call() -> None:
         meter.before("task")
 
 
+def test_budget_meter_records_an_answer_before_rejecting_its_reported_cost() -> None:
+    meter = _BudgetMeter(
+        OptimizationBudget(
+            max_metric_calls=10,
+            max_task_model_calls=1,
+            max_reflection_model_calls=1,
+            max_cost_microusd=10,
+            max_call_cost_microusd=2,
+            max_wall_clock_seconds=60,
+            seed=456,
+        ),
+        imputed_call_cost_microusd=2,
+    )
+    response = dspy.LMResponse.from_text(
+        "{}",
+        model="openai/task",
+        usage={"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
+        cost=0.000003,
+    )
+
+    meter.before("task")
+    with pytest.raises(OptimizationBudgetExceeded, match="news_program_compile_call_cost_reservation_exceeded"):
+        meter.after("task", response)
+
+    assert meter.task_model_calls == 1
+    assert meter.task_total_tokens == 18
+    assert meter.task_cost_microusd == 3
+    assert meter.actual_cost_microusd == 3
+
+
 def test_truncated_task_output_becomes_a_receiptable_run_termination() -> None:
     task = _TruncatedRoleLM("task")
     meter = _BudgetMeter(
@@ -188,4 +218,7 @@ def test_truncated_task_output_becomes_a_receiptable_run_termination() -> None:
         metered(messages=[{"role": "user", "content": "classify"}])
 
     assert meter.task_model_calls == 1
+    assert meter.task_total_tokens == 0
     assert meter.task_cost_microusd == 10
+    assert meter.imputed_cost_calls == 1
+    assert metered.transport_failures == 0

@@ -119,7 +119,8 @@ or historical file inventories into permanent architecture contracts.
 **Program identity.** Program identity has two halves and two authors, and both
 are release evidence rather than implementation detail. `program_sha256` covers
 the two Predictor instructions — what a human editing
-`tracefold/news/program/seed.py` or GEPA proposing a replacement may write.
+`tracefold/news/program/seed.py` may write. The taxonomy GEPA path may replace
+only EventSemantics and must copy ReaderCard byte-identically.
 `envelope_sha256` (`compute_execution_identity()` in
 `tracefold/news/program/identity.py`) covers what the code decides about a
 model call: the golden render of each Predictor's chat request in all three

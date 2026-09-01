@@ -190,11 +190,12 @@ Everything else the Program runs on — the graph, Signatures, the Adapter, the
 normalizer and assembler, the model route, the token and deadline budgets — is
 code, proved by shipping the image. Its identity travels beside the artifact as
 the computed `envelope_sha256`; `docs/ARCHITECTURE.md` describes the model.
-An optimizer's write set is those two instructions and nothing else, so no demo
-or endpoint path exists to reach a provider. Production candidate images pass
-normal code review and are shipped in the registry; a database candidate is not
-executable merely because it was persisted, and Prompt-era database fields are
-audit-only.
+The taxonomy optimizer may replace only the EventSemantics instruction; it
+copies ReaderCard byte-identically into the complete two-instruction candidate,
+so no demo or endpoint path exists to reach a provider. Production candidate
+images pass normal code review and are shipped in the registry; a database
+candidate is not executable merely because it was persisted, and Prompt-era
+database fields are audit-only.
 
 The GEPA optimizer is a cold manual development workflow, not a runtime
 Worker. Issue #202 deleted the container platform that used to surround it: the
@@ -202,9 +203,10 @@ sealed image, the launcher, the metered proxy sidecar, the seccomp policy, the
 tariff, the three-party `CompilerBuildAttestation` and the runner. That platform
 answered one question — *where were these two strings produced* — and its threat
 model was "the optimizer might return code". It cannot: public `dspy.GEPA`
-optimizes the two named `dspy.Predict` instructions, and `run_gepa` refuses a
-winner that is not exactly those two with empty demos. Proving provenance was
-never what made a candidate safe to ship.
+optimizes the one named EventSemantics `dspy.Predict`, and `run_gepa` refuses a
+winner that is not exactly that one Predict with empty demos before it restores
+the unchanged ReaderCard instruction. Proving provenance was never what made a
+candidate safe to ship.
 
 What actually bounds the job is what it holds, and that is now a short list.
 `news learning run` reads one frozen development corpus through the shared application login, closes the
