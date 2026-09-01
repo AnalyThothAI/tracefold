@@ -33,7 +33,8 @@ SIGNAL_PATH = (
     "app/workers/wiring/news_to_trading.py",
     "app/trading_config.py",
 )
-DORMANT_EXECUTION = {
+EXECUTION_PATH = {
+    "trading/demo_receipt.py",
     "trading/execution_contracts.py",
     "trading/operator_control.py",
     "trading/storage/execution_stream.py",
@@ -116,7 +117,7 @@ def _trading_sources() -> list[Path]:
 def test_signal_path_manifest_is_complete_and_every_trading_module_is_classified() -> None:
     assert SIGNAL_PATH
     assert [relative for relative in SIGNAL_PATH if not (SRC / relative).is_file()] == []
-    classified = set(SIGNAL_PATH) | DORMANT_EXECUTION
+    classified = set(SIGNAL_PATH) | EXECUTION_PATH
     unclassified = [
         str(path.relative_to(SRC))
         for path in _trading_sources()

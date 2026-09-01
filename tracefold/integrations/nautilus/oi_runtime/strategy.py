@@ -288,7 +288,9 @@ class OiNautilusStrategy(Strategy):
         self._positions: dict[PositionId, str] = {}
         self._disposed: set[str] = set()
         self._disposed_commands: set[str] = set()
-        control_state = initial_control_state or RuntimeControlSnapshot(False, False, ())
+        # A new activation cannot admit capital until an authenticated durable
+        # resume command explicitly opens the entry gate.
+        control_state = initial_control_state or RuntimeControlSnapshot(True, False, ())
         if control_state.flatten_pending:
             raise ValueError("oi_runtime_initial_control_state_invalid")
         self._entries_paused = control_state.entries_paused

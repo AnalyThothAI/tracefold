@@ -29,6 +29,7 @@ from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSi
 from tracefold.integrations.nautilus.oi_runtime.strategy import (
     RecoveredExecutionSeed,
     RecoveredProtectionSeed,
+    RuntimeControlSnapshot,
     RuntimeReconciliationSnapshot,
     deterministic_client_order_id,
 )
@@ -84,6 +85,15 @@ def test_signal_submits_one_native_entry_and_emits_unique_disposition() -> None:
     assert order.client_order_id.value.startswith("tf")
     assert context.signals.pending_ids == {signal.signal_id}
     assert context.audit.queued_count == 2
+
+
+def test_cold_activation_starts_paused_until_an_explicit_resume() -> None:
+    context = registered_oi_strategy(values=(trade_signal(),), initial_control_state=None)
+
+    context.strategy.on_timer(None)
+
+    assert context.strategy.submitted == []
+    assert context.strategy.control_state() == RuntimeControlSnapshot(True, False, ())
 
 
 def test_short_signal_uses_same_strategy_and_opposite_native_sides() -> None:

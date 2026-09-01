@@ -76,6 +76,7 @@ _START_TIMEOUT_SECONDS = 90.0
 _RECONCILIATION_INTERVAL_SECONDS = 2.0
 _HEARTBEAT_INTERVAL_SECONDS = 0.5
 _DEFAULT_STOP_DISTANCE_BPS = 100
+_BINANCE_USDM_ACCOUNT_ID = AccountId("BINANCE-USDT_FUTURES-master")
 
 
 @dataclass(slots=True)
@@ -131,11 +132,11 @@ def run_nautilus(settings: Settings) -> OiRuntimeReadiness | None:
         }
     )
     with postgres_connection(settings, application_name="tracefold_nautilus_singleton") as conn:
-        repos = repositories_for_connection(conn)
+        singleton_repos = repositories_for_connection(conn)
         singleton = AccountSlotSingleton(
             account_slot=execution.account_slot,
-            try_acquire=repos.trading.try_acquire_execution_account_slot,
-            release=repos.trading.release_execution_account_slot,
+            try_acquire=singleton_repos.trading.try_acquire_execution_account_slot,
+            release=singleton_repos.trading.release_execution_account_slot,
             heartbeat=lambda: bool(conn.execute("SELECT 1 AS alive").fetchone()["alive"]),
         )
         if not singleton.acquire():
@@ -147,7 +148,6 @@ def run_nautilus(settings: Settings) -> OiRuntimeReadiness | None:
                     credentials=credentials,
                     credential_fingerprint=credential_fingerprint,
                     singleton=singleton,
-                    repos=repos,
                 )
             )
         finally:
@@ -161,12 +161,15 @@ async def _run_active_runtime(
     credentials: BinanceRuntimeCredentials,
     credential_fingerprint: str,
     singleton: AccountSlotSingleton,
-    repos: RepositorySession,
 ) -> None:
     routes = await _discover_routes(settings.trading.execution.mode, credentials)
     profile = _active_profile(settings, routes)
-    existing_activation = _preflight_profile(repos, profile)
-    control = load_runtime_control_state(repos, profile.profile_id) if existing_activation is not None else None
+    with postgres_connection(settings, application_name="tracefold_nautilus_state") as state_conn:
+        state_repos = repositories_for_connection(state_conn)
+        existing_activation = _preflight_profile(state_repos, profile)
+        control = (
+            load_runtime_control_state(state_repos, profile.profile_id) if existing_activation is not None else None
+        )
     signals = ExecutionSignalClient(
         runtime_profile_id=profile.profile_id,
         execution_strategy=_EXECUTION_STRATEGY,
@@ -189,11 +192,12 @@ async def _run_active_runtime(
         initial_control_state=control,
     )
     loop = asyncio.get_running_loop()
-    node = TradingNode(config=build_oi_node_config(profile, credentials), loop=loop)
-    node.trader.add_strategy(strategy)
-    node.add_data_client_factory(BINANCE, BinanceLiveDataClientFactory)
-    node.add_exec_client_factory(BINANCE, BinanceLiveExecClientFactory)
-    node.build()
+    node = _build_active_node(
+        profile=profile,
+        credentials=credentials,
+        strategy=strategy,
+        loop=loop,
+    )
     probe = _ProbeState.starting(profile, credential_fingerprint)
     server = _probe_server(probe.readiness)
     stop = asyncio.Event()
@@ -208,15 +212,20 @@ async def _run_active_runtime(
         if client.account_id != profile.account_id:
             raise RuntimeError("oi_runtime_account_identity_mismatch")
         reports, observed_at_ns = await _reconcile_account(node=node, client=client)
-        activation = _activate_profile(
-            repos=repos,
-            profile=profile,
-            existing=existing_activation,
-            account_flat=account_reports_are_flat(reports),
-            created_at_ns=observed_at_ns,
-        )
+        with postgres_connection(settings, application_name="tracefold_nautilus_state") as state_conn:
+            state_repos = repositories_for_connection(state_conn)
+            activation = _activate_profile(
+                repos=state_repos,
+                profile=profile,
+                existing=existing_activation,
+                account_flat=account_reports_are_flat(reports),
+                created_at_ns=observed_at_ns,
+            )
+            recovery_signals, recovery_manual_entries = _load_recovery_inputs(
+                state_repos,
+                profile.profile_id,
+            )
         readiness.activate()
-        recovery_signals, recovery_manual_entries = _load_recovery_inputs(repos, profile.profile_id)
         snapshot = build_runtime_reconciliation_snapshot(
             profile=profile,
             signals=recovery_signals,
@@ -264,8 +273,10 @@ async def _run_active_runtime(
             updated_at_ns=started_at_ns,
         )
         _observe_runtime_start(audit=audit, state=state)
-        with repos.transaction():
-            repos.trading.put_execution_runtime_state(state)
+        with postgres_connection(settings, application_name="tracefold_nautilus_state") as state_conn:
+            state_repos = repositories_for_connection(state_conn)
+            with state_repos.transaction():
+                state_repos.trading.put_execution_runtime_state(state)
         next_reconciliation = loop.time() + _RECONCILIATION_INTERVAL_SECONDS
         while not stop.is_set():
             if node_task.done():
@@ -285,7 +296,11 @@ async def _run_active_runtime(
             if loop.time() >= next_reconciliation:
                 reports, observed_at_ns = await _reconcile_account(node=node, client=client)
                 _observe_reconciliation(audit=audit, reports=reports, observed_at_ns=observed_at_ns)
-                recovery_signals, recovery_manual_entries = _load_recovery_inputs(repos, profile.profile_id)
+                with postgres_connection(settings, application_name="tracefold_nautilus_state") as state_conn:
+                    recovery_signals, recovery_manual_entries = _load_recovery_inputs(
+                        repositories_for_connection(state_conn),
+                        profile.profile_id,
+                    )
                 strategy.reconcile_runtime(
                     build_runtime_reconciliation_snapshot(
                         profile=profile,
@@ -297,45 +312,47 @@ async def _run_active_runtime(
                     )
                 )
                 next_reconciliation = loop.time() + _RECONCILIATION_INTERVAL_SECONDS
-            latest = repos.trading.latest_execution_profile_activation(profile.account_slot)
-            activation_current = latest == activation
             strategy_readiness = strategy.readiness()
             portfolio_ready = bool(node.portfolio.initialized)
             audit_ready = audit.can_accept_exposure() and bridge.connected
-            ready = bool(
-                strategy_readiness.ready
-                and activation_current
-                and portfolio_ready
-                and audit_ready
-                and singleton.acquired
-            )
-            reason = _unavailable_reason(
-                ready=ready,
-                singleton_ready=singleton.acquired,
-                activation_ready=activation_current,
-                portfolio_ready=portfolio_ready,
-                bridge_connected=bridge.connected,
-                strategy_reason=strategy_readiness.reason,
-            )
-            state = replace(
-                state,
-                lifecycle_state="running",
-                ready=ready,
-                singleton_ready=singleton.acquired,
-                activation_ready=activation_current,
-                startup_reconciled=strategy_readiness.startup_reconciled,
-                portfolio_ready=portfolio_ready,
-                audit_ready=audit_ready,
-                unexpected_exposure=strategy_readiness.unexpected_exposure,
-                account_flat=account_reports_are_flat(reports),
-                reconciliation_observed_at_ns=strategy_readiness.reconciliation_observed_at_ns,
-                heartbeat_at_ns=now_ns,
-                unavailable_reason=reason,
-                updated_at_ns=now_ns,
-            )
-            with repos.transaction():
-                if not repos.trading.update_execution_runtime_state(state):
-                    raise RuntimeError("oi_runtime_generation_lost")
+            with postgres_connection(settings, application_name="tracefold_nautilus_state") as state_conn:
+                state_repos = repositories_for_connection(state_conn)
+                latest = state_repos.trading.latest_execution_profile_activation(profile.account_slot)
+                activation_current = latest == activation
+                ready = bool(
+                    strategy_readiness.ready
+                    and activation_current
+                    and portfolio_ready
+                    and audit_ready
+                    and singleton.acquired
+                )
+                reason = _unavailable_reason(
+                    ready=ready,
+                    singleton_ready=singleton.acquired,
+                    activation_ready=activation_current,
+                    portfolio_ready=portfolio_ready,
+                    bridge_connected=bridge.connected,
+                    strategy_reason=strategy_readiness.reason,
+                )
+                state = replace(
+                    state,
+                    lifecycle_state="running",
+                    ready=ready,
+                    singleton_ready=singleton.acquired,
+                    activation_ready=activation_current,
+                    startup_reconciled=strategy_readiness.startup_reconciled,
+                    portfolio_ready=portfolio_ready,
+                    audit_ready=audit_ready,
+                    unexpected_exposure=strategy_readiness.unexpected_exposure,
+                    account_flat=account_reports_are_flat(reports),
+                    reconciliation_observed_at_ns=strategy_readiness.reconciliation_observed_at_ns,
+                    heartbeat_at_ns=now_ns,
+                    unavailable_reason=reason,
+                    updated_at_ns=now_ns,
+                )
+                with state_repos.transaction():
+                    if not state_repos.trading.update_execution_runtime_state(state):
+                        raise RuntimeError("oi_runtime_generation_lost")
             probe.publish(_probe_payload(state))
             with suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=_HEARTBEAT_INTERVAL_SECONDS)
@@ -353,8 +370,16 @@ async def _run_active_runtime(
                 unavailable_reason="runtime_stopped",
                 updated_at_ns=stopped_at_ns,
             )
-            with suppress(Exception), repos.transaction():
-                repos.trading.update_execution_runtime_state(stopped)
+            with (
+                suppress(Exception),
+                postgres_connection(
+                    settings,
+                    application_name="tracefold_nautilus_state",
+                ) as state_conn,
+            ):
+                state_repos = repositories_for_connection(state_conn)
+                with state_repos.transaction():
+                    state_repos.trading.update_execution_runtime_state(stopped)
         if node.is_running():
             with suppress(Exception):
                 await asyncio.wait_for(node.stop_async(), timeout=_STOP_TIMEOUT_SECONDS)
@@ -381,7 +406,7 @@ def _disabled_profile(settings: Settings) -> OiRuntimeProfile:
         mode="disabled",
         profile_id=execution.profile_id,
         account_slot=execution.account_slot,
-        account_id=AccountId("BINANCE-001"),
+        account_id=_BINANCE_USDM_ACCOUNT_ID,
         runtime_release=_RUNTIME_RELEASE,
         config_sha256=canonical_sha256(identity),
         credential_namespace=f"tracefold:{execution.profile_id}:disabled",
@@ -401,6 +426,7 @@ def _active_profile(settings: Settings, routes: tuple[OiInstrumentRoute, ...]) -
             "mode": execution.mode,
             "profile_id": execution.profile_id,
             "account_slot": execution.account_slot,
+            "account_id": _BINANCE_USDM_ACCOUNT_ID.value,
             "runtime_release": _RUNTIME_RELEASE,
             "route_rule": "binance_usdm_trading_usdt_perpetual_v1",
             "stop_distance_bps": _DEFAULT_STOP_DISTANCE_BPS,
@@ -412,7 +438,7 @@ def _active_profile(settings: Settings, routes: tuple[OiInstrumentRoute, ...]) -
         mode=execution.mode,
         profile_id=execution.profile_id,
         account_slot=execution.account_slot,
-        account_id=AccountId("BINANCE-001"),
+        account_id=_BINANCE_USDM_ACCOUNT_ID,
         runtime_release=_RUNTIME_RELEASE,
         config_sha256=config_sha256,
         credential_namespace=namespace,
@@ -429,6 +455,22 @@ def _active_mode(profile: OiRuntimeProfile) -> Literal["paper", "live"]:
     if profile.mode == "live":
         return "live"
     raise RuntimeError("oi_runtime_active_mode_invalid")
+
+
+def _build_active_node(
+    *,
+    profile: OiRuntimeProfile,
+    credentials: BinanceRuntimeCredentials,
+    strategy: OiNautilusStrategy,
+    loop: asyncio.AbstractEventLoop,
+) -> TradingNode:
+    node = TradingNode(config=build_oi_node_config(profile, credentials), loop=loop)
+    node.trader.add_strategy(strategy)
+    node.add_data_client_factory(BINANCE, BinanceLiveDataClientFactory)
+    node.add_exec_client_factory(BINANCE, BinanceLiveExecClientFactory)
+    node.build()
+    single_binance_execution_client(node.kernel.exec_engine)
+    return node
 
 
 def _risk_limits() -> OiRiskLimits:

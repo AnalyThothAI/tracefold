@@ -19,6 +19,10 @@ Migration evidence:
 - failure_state: the transaction rolls back completely
 - roll_forward_or_verified_backup_restore: correct with a forward revision or restore
   the verified pre-cut backup
+- archive_current_compatibility: additive indexes cover only current append-only
+  observations; archived facts and readers keep their existing shape
+- evidence_postgresql_image:
+  postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
 
 Revision ID: 20260901_0343
 Revises: 20260901_0342
@@ -43,6 +47,20 @@ def upgrade() -> None:
         CREATE INDEX ix_trading_execution_activations_slot_created
           ON trading_execution_profile_activations
           (account_slot, created_at_ns DESC, runtime_profile_id DESC)
+        """
+    )
+    op.execute(
+        """
+        CREATE INDEX ix_trading_execution_observations_signal_recovery
+          ON trading_execution_observations (runtime_profile_id, signal_id, seq DESC)
+          WHERE signal_id IS NOT NULL
+        """
+    )
+    op.execute(
+        """
+        CREATE INDEX ix_trading_execution_observations_command_recovery
+          ON trading_execution_observations (runtime_profile_id, command_id, seq DESC)
+          WHERE command_id IS NOT NULL
         """
     )
     op.execute(

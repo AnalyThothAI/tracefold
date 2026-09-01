@@ -30,6 +30,7 @@ from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.strategy import (
     OiNautilusStrategy,
+    RuntimeControlSnapshot,
     RuntimeReadiness,
     RuntimeReconciliationSnapshot,
 )
@@ -63,6 +64,7 @@ def main() -> None:
             readiness=readiness,
             singleton_ready=lambda: True,
             day_start=DayStartBaseline("2030-03-17", Decimal("1000"), NOW_NS - 1, "4" * 64),
+            initial_control_state=RuntimeControlSnapshot(False, False, ()),
             startup_reconciliation=RuntimeReconciliationSnapshot(
                 runtime_profile_id=profile.profile_id,
                 account_observed_at_ns=NOW_NS,

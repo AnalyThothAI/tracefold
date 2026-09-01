@@ -686,6 +686,81 @@ def test_manual_entry_recovery_read_is_activation_bounded() -> None:
         rows = repo.execution_recovery_manual_entries(runtime_profile_id="demo-v1", limit=10)
 
         assert materialize_operator_intents(rows) == (after.value.model_copy(update={"seq": rows[0][0]}),)
+        final = _observation(
+            event="9",
+            command_id=after.value.command_id,
+            kind="control_disposition",
+            summary={"action": "manual_entry", "disposition": "rejected"},
+        )
+        with conn.transaction():
+            repo.append_execution_observations(prepare_execution_observations((final,)))
+        assert repo.execution_recovery_manual_entries(runtime_profile_id="demo-v1", limit=10) == ()
+    finally:
+        conn.close()
+
+
+def test_signal_recovery_keeps_only_current_order_or_position_obligations() -> None:
+    active = _prepare_signal(suffix="6", case_id="case-active")
+    closed = _prepare_signal(suffix="7", case_id="case-closed")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        with conn.transaction():
+            _signal_seq, command_seq = repo.execution_stream_fence()
+            repo.append_execution_profile_activation(
+                ExecutionProfileActivation(
+                    runtime_profile_id="demo-v1",
+                    account_slot="binance_usdm_primary",
+                    activated_after_signal_seq=0,
+                    activated_after_command_seq=command_seq,
+                    mode="paper",
+                    runtime_release="nautilus-1.231.0+oi-v1",
+                    config_sha256="3" * 64,
+                    created_at_ns=1_500,
+                )
+            )
+            _append_signal(repo, active)
+            _append_signal(repo, closed)
+            repo.append_execution_observations(
+                prepare_execution_observations(
+                    (
+                        _observation(
+                            event="1",
+                            signal_id=active.value.signal_id,
+                            kind="signal_disposition",
+                        ),
+                        _observation(
+                            event="2",
+                            signal_id=active.value.signal_id,
+                            kind="position",
+                            summary={"status": "opened", "quantity": "0.01"},
+                        ),
+                        _observation(
+                            event="3",
+                            signal_id=closed.value.signal_id,
+                            kind="signal_disposition",
+                        ),
+                        _observation(
+                            event="4",
+                            signal_id=closed.value.signal_id,
+                            kind="position",
+                            summary={"status": "opened", "quantity": "0.01"},
+                        ),
+                        _observation(
+                            event="5",
+                            signal_id=closed.value.signal_id,
+                            kind="position",
+                            summary={"status": "closed", "quantity": "0"},
+                            occurred_at_ns=2_200,
+                            observed_at_ns=2_300,
+                        ),
+                    )
+                )
+            )
+
+        rows = repo.execution_recovery_signals(runtime_profile_id="demo-v1", limit=10)
+
+        assert materialize_trade_signals(rows) == (active.value.model_copy(update={"seq": rows[0][0]}),)
     finally:
         conn.close()
 
@@ -1113,6 +1188,8 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "trading_execution_observations_pkey",
         "trading_execution_observations_seq_key",
         "ix_trading_execution_observations_runtime",
+        "ix_trading_execution_observations_signal_recovery",
+        "ix_trading_execution_observations_command_recovery",
         "trading_execution_notification_candidates_idx",
         "ux_trading_execution_signal_disposition",
         "ux_trading_execution_control_disposition",

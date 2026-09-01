@@ -16,31 +16,28 @@ from fixtures, examples, `.env`, generated docs, or a new CLI process. Report
 paths, redacted configured booleans, source names, error classes, and command
 results; never secret values.
 
-### Trading Signal / disabled execution operation (#433-C)
+### Trading Signal and Binance execution operation (#433-E)
 
-Execution credentials are optional for deployment. The supported state is:
+Execution remains `disabled` by default, so credentials are optional for the
+ordinary deployment. `trading.enabled` controls only the Alpha/Signal lane;
+`trading.execution.mode` independently selects `disabled`, Binance USD-M
+`paper` (Demo), or Binance USD-M `live`. Paper and live run the same one-owner
+Nautilus Strategy/Risk/OMS/reconciliation path and differ only by immutable
+profile identity, credential namespace, and Binance environment.
 
-```text
-Decision RUNNING
-Alpha source_native_oi_smart_money_long_v4
-Execution disabled / ready=false
-```
-
-Before the first #433-C startup, run `uv run tracefold init`; canonical
-`make up` and `make deploy-image` already do so. An exact former
-`trading.order` / `trading.bindings` config is backed up to mode-`0600`
-`~/.tracefold/config.pre-433c.yaml` and atomically moved to the disabled
-execution contract. Treat that backup as sensitive operator configuration and
-report only its path. A mixed/unknown shape or backup conflict stops before the
-active config is replaced. For a direct schema upgrade, require this order:
-`uv run tracefold init`, `uv run tracefold config`, then `make db-migrate`.
+Run `uv run tracefold init` before the first current startup; canonical
+`make up` and `make deploy-image` already do so. The supported pre-#449
+multi-login PostgreSQL config is backed up to mode-`0600`
+`~/.tracefold/config.pre-449.yaml` and atomically rewritten to the single
+`tracefold` DSN/password reference. Treat every backup as sensitive operator
+configuration and report only its path. A mixed/unknown shape or backup
+conflict stops before the active config is replaced. For a direct schema
+upgrade, require this order: `uv run tracefold init`, `uv run tracefold config`,
+then `make db-migrate`.
 
 Run `uv run tracefold config` to inspect only the execution mode, profile,
 account slot, and resolved secret-file references. Never print or copy a
-credential. `make up`, migration, Serve, Workers, and Web remain green without
-an execution credential because no execution process is active in #433-D.
-
-`trading.enabled` controls only the Alpha/Signal lane. Verify with:
+credential. Verify the configured lifecycle with:
 
 ```text
 make up
@@ -48,21 +45,28 @@ make status
 uv run tracefold trading status
 ```
 
-The status must show Decision lifecycle/heartbeat, Alpha identity/digest,
-explicit execution mode/profile/account, `ready=false`, and bounded Case/Signal
-counts. Serve reads no secret file and constructs no provider client. A LONG
-must atomically create one `TradeSignalV1`; `NO_TRADE` creates none.
+Disabled status reports `ready=false` and canonical deployment stops any stale
+Nautilus container. Active status additionally requires exactly one current
+account-slot owner, secure non-empty credential files, immutable activation,
+startup reconciliation, initialized Portfolio, durable audit, fresh heartbeat,
+and the exact configured profile/revision/image/config identity. Serve and
+Workers never receive Binance secrets.
 
-Do not set `execution.mode` to `paper` or `live` to test activation. The App
-root fails closed with `oi_runtime_activation_not_available_before_433e`, and
-the canonical deployment activates no Nautilus service in this slice; the
-Compose definition is isolated behind the explicit `execution` profile.
+For the first Demo activation, confirm the Binance account is authoritatively
+flat, populate the configured Binance files as regular mode-`0600` files,
+choose a new immutable profile, set `execution.mode: paper`, and run `make up`.
+A new profile starts with entries paused. Inspect `make status` and `trading
+status`, then issue an authenticated `/resume REASON CONFIRM` before either a
+Signal or `/long`/`/short` can enter. After the bounded Demo exercise, issue
+`/flatten account TTL_SECONDS CONFIRM`, require a later private Binance flat
+reconciliation, run `trading demo-receipt`, restore `execution.mode: disabled`,
+and run `make up` again. Demo evidence is not live-money evidence. Never select
+`live` or perform a live canary without separate explicit operator authority.
 
 ### Trading operator control (#433-D)
 
-Operator control is disabled by default and does not activate execution. To
-request it, keep `execution.mode: disabled` during D and configure one
-Workers-owned Telegram boundary:
+Operator control is disabled by default and does not itself activate
+execution. Configure the one Workers-owned Telegram boundary:
 
 ```yaml
 trading:
@@ -92,8 +96,8 @@ The closed commands are `/status`, `/pause REASON`, `/resume REASON CONFIRM`,
 `/long MARKET_KEY TTL_SECONDS` / `/short MARKET_KEY TTL_SECONDS`. Flatten and
 manual TTL are 5–120 seconds; control TTL is five minutes. There is no quantity,
 notional, leverage, venue, order type, or direct order option. Manual direction
-is recorded but the D Runtime explicitly rejects it as
-`manual_entry_not_enabled`.
+enters the same Runtime risk, sizing, deterministic client-ID, order,
+protection, reconciliation, and audit path as a Signal; it has no bypass.
 An accepted emergency halt is sticky for the Runtime lifetime: `/resume` is
 explicitly rejected as `emergency_halt_sticky` and cannot manufacture a resumed
 state. The same bot keeps command identity across token rotation; replacing the
@@ -376,9 +380,11 @@ make down
 CLI, and daemon access, runs
 idempotent initialization, builds one shared Python/React image, starts
 PostgreSQL when absent, requires the one-shot migration to succeed, starts
-Serve and Workers, and then runs the same fail-closed status gate. Execution
-credentials do not participate in deployment readiness, and no Nautilus
-process is recreated. It
+Serve and Workers, and then runs the same fail-closed status gate. In disabled
+mode it stops any stale Nautilus container and requires no execution
+credentials. In paper/live mode it enables the explicit Compose execution
+profile, starts the one Nautilus process, and requires its identity-bound
+readiness. It
 does not recreate a running PostgreSQL container. On failure, use `make logs`. Operator config, two
 PostgreSQL password files, and named-volume data remain in place. `make down` stops
 containers without deleting that volume.
@@ -393,8 +399,10 @@ unknown non-empty cluster.
 
 `make status` prints Compose state and returns non-zero unless PostgreSQL,
 migration, Serve, Workers, the Serve and Workers readiness endpoints, and the
-HTML console all pass. Execution-adapter absence is expected at #350 and does
-not weaken those required boundaries.
+HTML console all pass. In active execution mode it also requires the Nautilus
+container, probe, current durable Runtime generation, and exact configured
+profile/revision/image/config identity; in disabled mode it rejects a leftover
+Nautilus process.
 It must not be replaced by a liveness-only `curl` or a
 Compose command whose exit status ignores an unhealthy Worker.
 
@@ -1396,8 +1404,9 @@ snapshot.
 ## Migrations
 
 Alembic has one root, baseline `20260831_0340`, and current head
-`20260901_0342`. A fresh PostgreSQL 18 database applies baseline, `0341`, and
-the additive `0342` notification delivery ledger in order. This
+`20260901_0343`. A fresh PostgreSQL 18 database applies baseline, `0341`, the
+additive `0342` notification delivery ledger, and the additive `0343` current
+execution Runtime projection/indexes in order. This
 source may merge or deploy only after the supported pre-cut database
 is advanced to the old terminal revision with its recorded image, backed up,
 and put through the #449 stopped-writer role catalog cut while retaining the
@@ -1506,7 +1515,7 @@ extra field, invalid identity, unverified snapshot, nonzero or unobserved queue
 count, a Git mismatch, an image/runtime-manifest mismatch or schema-object
 inventory drift before deleting anything.
 
-After deployment, require Alembic head `20260901_0342`; zero rows in every cleared
+After deployment, require Alembic head `20260901_0343`; zero rows in every cleared
 owner except the single new `news_learning_artifacts(kind='epoch_reset')` row
 and fresh singleton rows in `news_ingest_state` and
 `news_learning_retention_state`;

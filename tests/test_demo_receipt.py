@@ -5,11 +5,16 @@ from uuid import UUID
 
 import pytest
 
-from tracefold.app.demo_receipt import DemoReceiptError, verify_binance_demo_receipt
+from tracefold.trading.demo_receipt import (
+    DemoReceiptError,
+    DemoReceiptObservation,
+    verify_binance_demo_receipt,
+)
 from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
 
 ENTRY = "1" * 64
 FLATTEN = "2" * 64
+RESUME = "3" * 64
 
 
 def _state() -> ExecutionRuntimeState:
@@ -49,19 +54,38 @@ def _row(
     command_id: str | None = None,
     summary: Mapping[str, object] | None = None,
     refs: tuple[str, ...] = (),
-) -> dict[str, object]:
-    return {
-        "event_id": event * 64,
-        "runtime_profile_id": "demo-v1",
-        "command_id": command_id,
-        "normalized_kind": kind,
-        "observed_at_ns": at,
-        "summary": dict(summary or {}),
-        "native_identity_references": refs,
-    }
+) -> DemoReceiptObservation:
+    values = dict(summary or {})
+    return DemoReceiptObservation(
+        event_id=event * 64,
+        runtime_profile_id="demo-v1",
+        command_id=command_id,
+        normalized_kind=kind,
+        observed_at_ns=at,
+        native_identity_references=refs,
+        action=values.get("action") if isinstance(values.get("action"), str) else None,
+        disposition=values.get("disposition") if isinstance(values.get("disposition"), str) else None,
+        reason=values.get("reason") if isinstance(values.get("reason"), str) else None,
+        leg=values.get("leg") if isinstance(values.get("leg"), str) else None,
+        status=values.get("status") if isinstance(values.get("status"), str) else None,
+        reduce_only=values.get("reduce_only") if isinstance(values.get("reduce_only"), bool) else None,
+        explicit_quantity=(
+            values.get("explicit_quantity") if isinstance(values.get("explicit_quantity"), str) else None
+        ),
+        source=values.get("source") if isinstance(values.get("source"), str) else None,
+        account_flat=values.get("account_flat") if isinstance(values.get("account_flat"), bool) else None,
+        lifecycle=values.get("lifecycle") if isinstance(values.get("lifecycle"), str) else None,
+        runtime_id=values.get("runtime_id") if isinstance(values.get("runtime_id"), str) else None,
+        runtime_revision=(values.get("runtime_revision") if isinstance(values.get("runtime_revision"), str) else None),
+        image_digest=values.get("image_digest") if isinstance(values.get("image_digest"), str) else None,
+        config_sha256=values.get("config_sha256") if isinstance(values.get("config_sha256"), str) else None,
+        credential_fingerprint=(
+            values.get("credential_fingerprint") if isinstance(values.get("credential_fingerprint"), str) else None
+        ),
+    )
 
 
-def _observations() -> list[dict[str, object]]:
+def _observations() -> list[DemoReceiptObservation]:
     identity = {
         "lifecycle": "started",
         "runtime_id": "11111111-1111-4111-8111-111111111111",
@@ -72,6 +96,13 @@ def _observations() -> list[dict[str, object]]:
     }
     return [
         _row("a", "readiness", 100, summary=identity | {"runtime_id": "old-runtime"}),
+        _row(
+            "6",
+            "control_disposition",
+            150,
+            command_id=RESUME,
+            summary={"action": "resume_entries", "disposition": "accepted"},
+        ),
         _row(
             "b",
             "control_disposition",
@@ -145,15 +176,28 @@ def test_demo_receipt_requires_entry_restart_exit_and_authoritative_flat() -> No
         now_ns=1_000,
     )
 
-    assert receipt["truth"] == "binance_demo_only_not_live_money"
-    assert receipt["runtime_start_event_ids"] == ["a" * 64, "7" * 64]
-    assert {"entry-venue", "trade-1", "stop-venue", "exit-venue"} <= set(receipt["venue_native_references"])
+    assert receipt.truth == "binance_demo_only_not_live_money"
+    assert receipt.runtime_start_event_ids == ("a" * 64, "7" * 64)
+    assert {"entry-venue", "trade-1", "stop-venue", "exit-venue"} <= set(receipt.venue_native_references)
 
 
 def test_demo_receipt_rejects_flat_without_a_post_fill_restart() -> None:
-    observations = [row for row in _observations() if row["event_id"] != "7" * 64]
+    observations = [row for row in _observations() if row.event_id != "7" * 64]
 
     with pytest.raises(DemoReceiptError, match="binance_demo_restart_receipt_missing"):
+        verify_binance_demo_receipt(
+            state=_state(),
+            observations=observations,
+            entry_command_id=ENTRY,
+            flatten_command_id=FLATTEN,
+            now_ns=1_000,
+        )
+
+
+def test_demo_receipt_rejects_entry_without_an_explicit_resume() -> None:
+    observations = [row for row in _observations() if row.command_id != RESUME]
+
+    with pytest.raises(DemoReceiptError, match="binance_demo_explicit_resume_missing"):
         verify_binance_demo_receipt(
             state=_state(),
             observations=observations,

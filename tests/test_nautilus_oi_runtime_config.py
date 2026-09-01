@@ -2,22 +2,29 @@
 
 from __future__ import annotations
 
-import ast
+import asyncio
 from dataclasses import replace
-from pathlib import Path
+from decimal import Decimal
 from typing import cast
 
 import pytest
 from nautilus_trader.adapters.binance import BINANCE, BinanceAccountType
 from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
+from nautilus_trader.model.identifiers import AccountId
 
-from tests.nautilus_oi_runtime_fixtures import oi_profile
+from tests.nautilus_oi_runtime_fixtures import NOW_NS, oi_profile
 from tracefold.app.nautilus.oi_runtime import run_nautilus
+from tracefold.app.nautilus.reconciliation import single_binance_execution_client
+from tracefold.app.nautilus.root import _build_active_node
+from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.config import (
     BinanceRuntimeCredentials,
     RuntimeMode,
     build_oi_node_config,
 )
+from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
+from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
+from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrategy, RuntimeReadiness
 
 
 @pytest.mark.parametrize(
@@ -96,20 +103,38 @@ def test_paper_and_live_have_disjoint_profile_cache_credential_and_client_namesp
     assert paper_node.instance_id != live_node.instance_id
 
 
-def test_canonical_root_references_only_new_runtime_and_activates_one_binance_node() -> None:
-    repository = Path(__file__).resolve().parents[1]
-    source = (repository / "tracefold/app/nautilus/oi_runtime.py").read_text()
-    tree = ast.parse(source)
-    imports = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module is not None}
-
-    assert "tracefold.app.nautilus.root" not in imports
-    assert "tracefold.app.nautilus.database" not in imports
-    assert "tracefold.integrations.nautilus.strategy" not in imports
-    assert "tracefold.trading.intent" not in imports
-    root_source = (repository / "tracefold/app/nautilus/root.py").read_text()
-    assert "tracefold.app.nautilus.oi_runtime" in root_source
-    assert "TradingNode" in root_source
-    assert "BinanceLiveExecClientFactory" in root_source
-    assert "oi_runtime_cold_transition_requires_binance_flat" in root_source
-    assert "tracefold.app.nautilus.database" not in root_source
-    assert "tracefold.integrations.nautilus.strategy" not in root_source
+def test_canonical_root_builds_one_real_binance_execution_client() -> None:
+    profile = replace(oi_profile("paper"), account_id=AccountId("BINANCE-USDT_FUTURES-master"))
+    signals = ExecutionSignalClient(runtime_profile_id=profile.profile_id, execution_strategy="oi_nautilus_v1")
+    strategy = OiNautilusStrategy(
+        profile=profile,
+        signals=signals,
+        audit=AuditSink(
+            factory=ObservationFactory(
+                runtime_profile_id=profile.profile_id,
+                runtime_release=profile.runtime_release,
+                execution_strategy="oi_nautilus_v1",
+            )
+        ),
+        readiness=RuntimeReadiness(),
+        singleton_ready=lambda: True,
+        day_start=DayStartBaseline(
+            utc_day="2030-03-17",
+            equity_usd=Decimal("1000"),
+            recorded_at_ns=NOW_NS,
+            event_id="4" * 64,
+        ),
+    )
+    loop = asyncio.new_event_loop()
+    node = _build_active_node(
+        profile=profile,
+        credentials=BinanceRuntimeCredentials("paper-key", "paper-secret"),
+        strategy=strategy,
+        loop=loop,
+    )
+    try:
+        client = single_binance_execution_client(node.kernel.exec_engine)
+        assert client.account_id == profile.account_id
+    finally:
+        node.dispose()
+        loop.close()

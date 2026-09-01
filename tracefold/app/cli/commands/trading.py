@@ -8,18 +8,21 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
-from tracefold.app.demo_receipt import DemoReceiptError, verify_binance_demo_receipt
 from tracefold.app.execution_status import execution_readiness_projection
 from tracefold.app.operator_control import persist_operator_intent
 from tracefold.app.repository_session import repositories
 from tracefold.app.trading_config import signal_lane_config
 from tracefold.platform.config.loader import load_settings
 from tracefold.trading import (
+    BinanceDemoReceipt,
     DecisionRuntimeV1,
+    DemoReceiptError,
+    DemoReceiptObservation,
     OperatorCommandError,
     canonical_sha256,
     parse_operator_command,
     prepare_parsed_operator_intent,
+    verify_binance_demo_receipt,
 )
 
 _WINDOW_MS = 24 * 3_600_000
@@ -124,23 +127,93 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                 return 2, {"ok": False, "error": "binance_demo_command_identity_invalid"}
             execution = settings.trading.execution
             try:
+                observation_rows = trading.console_execution_observations(
+                    since_ns=(now_ms - _WINDOW_MS) * 1_000_000,
+                    runtime_profile_id=execution.profile_id,
+                    normalized_kind=None,
+                    before=None,
+                    limit=1_000,
+                )
                 receipt = verify_binance_demo_receipt(
                     state=trading.execution_runtime_state(execution.account_slot),
-                    observations=trading.console_execution_observations(
-                        since_ns=(now_ms - _WINDOW_MS) * 1_000_000,
-                        runtime_profile_id=execution.profile_id,
-                        normalized_kind=None,
-                        before=None,
-                        limit=1_000,
-                    ),
+                    observations=tuple(_demo_observation(row) for row in observation_rows),
                     entry_command_id=entry_command_id,
                     flatten_command_id=flatten_command_id,
                     now_ns=now_ms * 1_000_000,
                 )
             except DemoReceiptError as exc:
                 return 1, {"ok": False, "error": str(exc)}
-            return 0, {"ok": True, "data": receipt}
+            return 0, {"ok": True, "data": _demo_receipt_payload(receipt)}
     return 2, {"ok": False, "error": f"unknown trading command: {command}"}
+
+
+def _demo_observation(row: dict[str, Any]) -> DemoReceiptObservation:
+    summary = row["summary"]
+    return DemoReceiptObservation(
+        event_id=str(row["event_id"]),
+        runtime_profile_id=str(row["runtime_profile_id"]),
+        command_id=None if row["command_id"] is None else str(row["command_id"]),
+        normalized_kind=str(row["normalized_kind"]),
+        observed_at_ns=int(row["observed_at_ns"]),
+        native_identity_references=tuple(str(value) for value in row["native_identity_references"]),
+        action=_summary_text(summary, "action"),
+        disposition=_summary_text(summary, "disposition"),
+        reason=_summary_text(summary, "reason"),
+        leg=_summary_text(summary, "leg"),
+        status=_summary_text(summary, "status"),
+        reduce_only=_summary_bool(summary, "reduce_only"),
+        explicit_quantity=_summary_text(summary, "explicit_quantity"),
+        source=_summary_text(summary, "source"),
+        account_flat=_summary_bool(summary, "account_flat"),
+        lifecycle=_summary_text(summary, "lifecycle"),
+        runtime_id=_summary_text(summary, "runtime_id"),
+        runtime_revision=_summary_text(summary, "runtime_revision"),
+        image_digest=_summary_text(summary, "image_digest"),
+        config_sha256=_summary_text(summary, "config_sha256"),
+        credential_fingerprint=_summary_text(summary, "credential_fingerprint"),
+    )
+
+
+def _summary_text(summary: object, key: str) -> str | None:
+    if not isinstance(summary, dict):
+        raise DemoReceiptError("binance_demo_observation_contract_invalid")
+    value = summary.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise DemoReceiptError("binance_demo_observation_contract_invalid")
+    return value
+
+
+def _summary_bool(summary: object, key: str) -> bool | None:
+    if not isinstance(summary, dict):
+        raise DemoReceiptError("binance_demo_observation_contract_invalid")
+    value = summary.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise DemoReceiptError("binance_demo_observation_contract_invalid")
+    return value
+
+
+def _demo_receipt_payload(receipt: BinanceDemoReceipt) -> dict[str, Any]:
+    return {
+        "mode": receipt.mode,
+        "runtime_profile_id": receipt.runtime_profile_id,
+        "runtime_release": receipt.runtime_release,
+        "runtime_id": receipt.runtime_id,
+        "runtime_revision": receipt.runtime_revision,
+        "image_digest": receipt.image_digest,
+        "config_sha256": receipt.config_sha256,
+        "credential_fingerprint": receipt.credential_fingerprint,
+        "entry_command_id": receipt.entry_command_id,
+        "flatten_command_id": receipt.flatten_command_id,
+        "runtime_start_event_ids": list(receipt.runtime_start_event_ids),
+        "evidence_event_ids": list(receipt.evidence_event_ids),
+        "venue_native_references": list(receipt.venue_native_references),
+        "authoritative_flat_observed_at_ns": receipt.authoritative_flat_observed_at_ns,
+        "truth": receipt.truth,
+    }
 
 
 def _issue_operator_intent(args: Any, *, settings: Any) -> tuple[int, dict[str, Any]]:

@@ -56,6 +56,13 @@ commit it. `make up` and `make deploy-image` run this initialization step. If
 applying the database migration directly, first run `uv run tracefold init`,
 then `uv run tracefold config`, and only then `make db-migrate`.
 
+The #449 single-login cutover is the second explicit exception. An exact
+supported multi-login PostgreSQL mapping is backed up byte-for-byte to
+mode-`0600` `~/.tracefold/config.pre-449.yaml` and atomically rewritten to the
+single `tracefold` DSN/password reference. Unknown or mixed shapes and backup
+conflicts fail without replacing the active config. The #433-C and #449
+migrations run sequentially when both are needed.
+
 `news.opennews_strategy_ids` is retired in #126. Which Strategies feed News is
 now decided in the OpenNews account, so delete the key and its list:
 
@@ -117,8 +124,8 @@ postgres_database_password
 The config, Telegram placeholders, and all password files are mode `0600`.
 Ordinary `tracefold init` preserves an existing current-schema config, never
 rotates an existing password, and repairs the required permissions on every
-run. The sole content rewrite is the validated, backed-up, one-time #433-C
-Trading cutover described above. `tracefold init --force` replaces only
+run. The only content rewrites are the validated, backed-up, one-time #433-C
+and #449 cutovers described above. `tracefold init --force` replaces only
 `config.yaml` with a newly generated default; it still preserves all existing
 PostgreSQL passwords. Back up intentional config changes before using
 `--force`.
@@ -436,8 +443,9 @@ paths, booleans, and diagnostic command status; do not paste the API token,
 model keys, provider passwords, or full config payloads into docs or chat.
 
 Alembic has one root: baseline `20260831_0340` and current head
-`20260901_0342`. A new empty PostgreSQL 18 database applies baseline, the
-`0341` Signal hard cut, and the additive `0342` Trading notification delivery ledger in order.
+`20260901_0343`. A new empty PostgreSQL 18 database applies baseline, the
+`0341` Signal hard cut, the additive `0342` Trading notification delivery
+ledger, and the additive `0343` execution Runtime projection/indexes in order.
 Current source intentionally has no upgrade path from an earlier revision. To
 recover a pre-#449 backup, use the exact pre-cut image/source to restore and
 advance it to the old terminal `20260831_0340`, take a verified backup, perform

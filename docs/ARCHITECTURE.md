@@ -41,14 +41,14 @@ commits `Case=SIGNAL_EMITTED` and an engine-neutral `TradeSignalV1` in one
 PostgreSQL transaction. The Signal contains no account, route, quantity,
 notional, leverage, order, grant, reservation, or OMS state.
 
-The #433-B Nautilus Runtime and the Signal/OperatorIntent/Observation transport
-exist, and #433-D adds the authenticated operator-control boundary while the
-Runtime remains cold: current configuration accepts only `execution.mode =
-disabled` at the App root. Workers may durably record commands and asynchronously
-project observations to Telegram, but the canonical deployment starts no
-execution process and cannot submit an order until #433-E. Legacy Capital/Intent/order
-tables are read-only history after migration `20260901_0341`; no active writer
-or compatibility route reaches them. RabbitMQ remains News-only.
+The #433-E Nautilus Runtime consumes the #433-C Signal and #433-D authenticated
+OperatorIntent/Observation transport. Execution is disabled by default; paper
+and live activate one profile-gated Binance USD-M TradingNode under the same
+Strategy/Risk/OMS/reconciliation owner. New profiles are cold, require
+authoritative Binance flatness, and start entry-paused until an authenticated
+durable resume. Legacy Capital/Intent/order tables are read-only history after
+migration `20260901_0341`; no active writer or compatibility route reaches
+them. RabbitMQ remains News-only.
 
 `tracefold serve` initializes only public HTTP/static, read repositories, and
 serve telemetry. `tracefold workers` initializes the bounded external
@@ -154,7 +154,7 @@ evidence rather than executable configuration.
 | US reference instruments | News Market Review | `latest_state` | Nasdaq Trader symbol directories | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | reference rows in `news_market_instruments`; non-crypto classification only |
 | Event Reaction | News Market Review | `derived_work` | persisted Events plus venue candle history | PostgreSQL planner + REST | `news-reactions`; 60 s and bounded immediate catch-up | versioned `news_event_reactions`; review projections |
 | Trading Signal lane | Trading | `derived_work` | one public News OI projection and source-native closed bars | PostgreSQL planner + REST | `trading-signal-lane`; App-owned poll, 2 s when enabled | admission ledger, frozen `trading_cases`, and atomic `trading_trade_signals` |
-| Nautilus OI Runtime | Trading execution | `capital_truth` | `TradeSignalV1`, authenticated `OperatorIntentV1`, Nautilus Cache/Portfolio, Binance | bounded PostgreSQL transport; Workers Telegram/CLI ingress is durable before acknowledgement | no canonical Runtime task before #433-E; optional Workers notification task in D | append-only `ExecutionObservationV1`; execution disabled in #433-D |
+| Nautilus OI Runtime | Trading execution | `capital_truth` | `TradeSignalV1`, authenticated `OperatorIntentV1`, Nautilus Cache/Portfolio, Binance | bounded PostgreSQL transport; Workers Telegram/CLI ingress is durable before acknowledgement | profile-gated `tracefold nautilus`; optional Workers notification task | append-only `ExecutionObservationV1` plus one current durable Runtime generation; disabled by default |
 
 The runtime limits behind that inventory are code-owned safety policy. `shared`
 means one turn-wide cap is divided among the named rows. `adapter-owned` names a
@@ -184,7 +184,7 @@ does not apply.
 | US reference instruments | 6 h; 15 m retry if no venue answers | latest directory | reference family | one directory snapshot | one family fetch | venue families serial | 20 s provider | no / yes / yes | failed reference source is omitted; it cannot remove crypto venue rows |
 | Event Reaction | 60 s; 1 h/4 h horizons; at most 20 chained turns | complete before candle history expires | instrument + merged time range | 100 due rows/turn | 32 merged requests/turn | 4 provider calls | no outer deadline / 8 s provider | yes / yes / no | transient no-answer stays due; terminal gap/expiry is persisted explicitly |
 | Trading Signal lane | App-owned poll, 2 s | source age <= configured admission window; Signal TTL = min(180 s, admission window) | underlying / durable source key | 1 Case freeze and 4 decisions/turn | source-native public bar calls serial | one | adapter-owned provider / 10 s PostgreSQL boundaries | bounded overlap / durable source idempotency / no | missing or uncertain evidence creates no Signal; Case+Signal commit atomically |
-| Nautilus OI Runtime | no canonical Runtime task before #433-E | command TTL; Runtime cadence code-owned | account slot / immutable activation fence | Commands and Signals share one count-and-byte bound; Commands admit and execute first | disabled | one account-slot writer when activated | Runtime-owned | anti-join replay / deterministic client IDs / fail closed | #433-D cannot activate or submit; authenticated commands can be recorded, and no active profile is terminally `not_applied` |
+| Nautilus OI Runtime | active only for `paper|live`; 0.5 s heartbeat and 2 s private reconciliation | command/Signal TTL; reconciliation <=10 s | account slot / immutable activation fence | Commands and Signals share one count-and-byte bound; Commands admit and execute first | one Binance USD-M account | one account-slot writer | Runtime-owned | bounded anti-join replay / deterministic client IDs / fail closed | disabled starts no node; new profiles require flat and explicit resume; unowned exposure or lost singleton halts |
 
 Workers exposes one bounded Prometheus vocabulary at the existing telemetry
 seam. The concrete metric names carry the project prefix:
@@ -403,11 +403,11 @@ tracefold.trading
   sources.py          one projected OI row -> one typed Source, or a named failure
   policy.py           `source_native_oi_smart_money_long_v4`: pure, long-only, frozen evidence
   market_context.py   the price window a Case is frozen against
-  storage/            Case/Signal/current reads plus dormant execution transport behind one repository
+  storage/            Case/Signal/current reads plus active execution transport/state behind one repository
 
 tracefold.integrations
   provider and external-system adapters: OpenNews, RabbitMQ, Feishu, Telegram,
-  public market data, and the dormant pinned Nautilus/Binance OI Runtime
+  public market data, and the profile-gated pinned Nautilus/Binance OI Runtime
 
 tracefold.platform
   config models/loader, PostgreSQL/Alembic (`postgres/client.py`, `audit.py`, `migrations.py`), telemetry, paths,
@@ -502,9 +502,9 @@ into a business-package protocol. The adapters are OpenNews (the authenticated
 Strategy WSS plus the official Strategy list/hits endpoints), RabbitMQ
 (`aio-pika`), Feishu (the custom-bot webhook), Telegram (one operator-bound
 channel via the Bot API; fixed origin and configured target), and the isolated
-public venue catalog/price adapters. The dormant Nautilus Binance Demo boundary
-is retained only for existing Intent recovery evidence and is not a required
-runtime. No provider owns a durable queue. Expected
+public venue catalog/price adapters, and the isolated profile-gated Nautilus
+Binance USD-M boundary. Nautilus is absent in disabled mode and is a required
+identity-bound runtime in paper/live mode. No provider owns a durable queue. Expected
 provider failures stay inside the owning bounded
 loop; an unhandled child exception is deliberately a Workers-root failure and
 the container restarts the single process.
@@ -1929,8 +1929,10 @@ database to the exact old terminal revision, then reused that identity with
 current schema in one step; an already-stamped database does not replay the
 baseline or rewrite business data. Earlier revisions and role bootstrap logic
 live only in Git history and the pre-cut image. `20260901_0341` performs the
-#433-C Signal hard cut after the baseline; additive `20260901_0342` is the
-current single head and adds only the append-only Trading notification delivery ledger.
+#433-C Signal hard cut after the baseline; additive `20260901_0342` adds the
+append-only Trading notification delivery ledger, and additive
+`20260901_0343` is the current single head with the current execution Runtime
+projection and bounded recovery indexes.
 
 Every new schema change is again a normal linear, immutable, forward-only
 revision after the baseline. Exact-image replacement requires source, image,
@@ -2017,7 +2019,7 @@ a savepoint, so an identity or unique-disposition conflict rolls back the whole
 batch rather than leaving a committable prefix. The query-plan audit imports
 the same two unresolved-read statements used by the repository.
 
-#433-B adds a separate dormant `integrations.nautilus.oi_runtime` package. Its
+#433-B added a separate dormant `integrations.nautilus.oi_runtime` package. Its
 Signal client uses `LISTEN/NOTIFY` only as a wake hint and keeps a count-and-byte
 bounded pending set until a unique Signal disposition is durably appended. The
 Nautilus callback reads only Cache/Portfolio and bounded in-memory queues;
@@ -2030,10 +2032,10 @@ durable deterministic Order/Position identities present in Nautilus Cache;
 unowned exposure halts admission. Protection replacement keeps the old stop
 until the new fixed-quantity reduce-only stop is accepted, while a failed or
 ambiguous protection result initiates a deterministic full flatten. Audit
-overflow remains unhealthy until its durable `audit_gap` is appended. The
-App root accepts only `disabled` and constructs no TradingNode, so this stage
-has no CLI/deploy selector, no provider write route, no old `TradeIntent`
-consumer, legacy lifecycle bridge, or dual writer.
+overflow remains unhealthy until its durable `audit_gap` is appended. At that
+stage the App root accepted only `disabled` and constructed no TradingNode; it
+introduced no old `TradeIntent` consumer, legacy lifecycle bridge, or dual
+writer.
 
 #433-D adds one closed operator-control path without adding another execution
 owner. Workers alone exposes `POST /telegram/control` on its loopback probe;
@@ -2064,6 +2066,19 @@ at-least-once across the send/receipt crash window, so a duplicate message is
 allowed but a skipped notifiable durable observation is not. HTTP/CLI/React command and
 observation views are read projections: recorded, Runtime accepted, order
 accepted, fill, and account flat are five distinct facts.
+
+#433-E activates that existing owner without adding a second OMS. Canonical
+up/deploy/status derives the execution Compose profile from operator config:
+disabled stops Nautilus, while paper/live starts exactly one Binance USD-M
+TradingNode. A session advisory lock owns the account slot; ordinary repository
+work uses short connections outside provider I/O. One immutable activation
+fence binds mode, Runtime release and config digest. A new profile requires a
+complete private Binance flat report and starts paused; a current profile may
+roll forward and reclaim only durable unresolved or nonterminal deterministic
+order/position identities from Nautilus Cache. Signals and manual entries share
+the same fixed-risk 1x path. Private reconciliation, Runtime start, order,
+fill, protection, exit and flat facts remain append-only Observations, while
+one generation-fenced row is the current readiness/status projection.
 
 **Trigger and context are different types.** A trigger is the one persisted
 fact that starts an evaluation and fixes its cutoff. Context may enrich that
@@ -2270,11 +2285,13 @@ failed check; no App handler may reinterpret it as success.
 
 ### Runtime and cutover
 
-A deployment with `trading.enabled=true` requires no execution credential and
-no execution process. `make up`, `make deploy-image`, and `make status` require
-PostgreSQL, migration, Serve, Workers, and Web. `execution.mode` defaults to
-`disabled`; any attempt to start the App Nautilus root in `paper` or `live`
-fails closed until #433-E. Decision starts
+A deployment with `execution.mode=disabled` requires no execution credential
+and canonical lifecycle stops any stale Nautilus process. `make up`,
+`make deploy-image`, and `make status` always require PostgreSQL, migration,
+Serve, Workers, and Web. For `paper|live` they additionally require one healthy
+Nautilus runtime whose profile, revision, image, config digest, credentials,
+singleton, Portfolio, audit, startup reconciliation and heartbeat match the
+durable current projection. Decision starts
 `STARTING`, advances to `RUNNING` with a durable heartbeat, and a real
 schema/wiring/policy/generation fault fails Workers startup or records
 `FAULTED` rather than becoming observer mode.
@@ -2359,8 +2376,8 @@ permission, an execution environment or a venue. LONG produces a
 `TradeSignalV1`; the Signal grants no execution authority.
 
 Current product reads are Source/Admission, Case/Alpha, TradeSignal,
-ExecutionObservation, and explicit disabled execution readiness, one HTTP owner
-each. `trading_cases`, `trading_candidate_gate_decisions`,
+ExecutionObservation, and the configured current execution Runtime projection,
+one HTTP owner each. `trading_cases`, `trading_candidate_gate_decisions`,
 `trading_decision_runtime`, and `trading_trade_signals` are current Signal
 facts. Legacy Capital/Intent/order/catalog data remains read-only historical
 audit and has no production writer or public route.
@@ -2372,7 +2389,7 @@ interval — is gone with `dspy_calls_today` and `day_key` (migration
 `20260829_0325`).
 
 Current Signal latency is computed from durable source, Case, and Signal
-timestamps. Future execution latency comes only from append-only Observations.
+timestamps. Execution latency comes only from append-only Observations.
 No report reconstructs an Order or treats an
 HTTP response, process cache, model output, or provider response as alternate
 truth.

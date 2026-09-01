@@ -223,7 +223,9 @@ def load_runtime_control_state(
     rows = repos.trading.operator_control_history(runtime_profile_id=runtime_profile_id, limit=limit + 1)
     if len(rows) > limit:
         return RuntimeControlSnapshot(entries_paused=True, emergency_halted=True, flatten_pending=())
-    entries_paused = False
+    # No accepted control history means the profile has never been explicitly
+    # resumed. Restarts therefore preserve the cold, fail-closed entry gate.
+    entries_paused = True
     emergency_halted = False
     for command_row, disposition_payload in rows:
         if disposition_payload is None:

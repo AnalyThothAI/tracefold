@@ -39,6 +39,7 @@ from tracefold.trading import OperatorIntentV1, TradeSignalV1
 
 NOW_NS = 1_900_000_000_000_000_000
 ACCOUNT_ID = AccountId("BINANCE-001")
+_RESUMED_CONTROL_STATE = RuntimeControlSnapshot(False, False, ())
 
 
 def oi_profile(mode: RuntimeMode = "paper") -> OiRuntimeProfile:
@@ -201,7 +202,7 @@ def registered_oi_strategy(
     startup_reconciliation: RuntimeReconciliationSnapshot | None = None,
     continuous_reconciliation: Callable[[], RuntimeReconciliationSnapshot | None] | None = None,
     mark_reconciled: bool = True,
-    initial_control_state: RuntimeControlSnapshot | None = None,
+    initial_control_state: RuntimeControlSnapshot | None = _RESUMED_CONTROL_STATE,
 ) -> SimpleNamespace:
     profile = oi_profile()
     selected_signals = signal_client or ExecutionSignalClient(

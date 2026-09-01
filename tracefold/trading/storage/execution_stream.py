@@ -532,6 +532,49 @@ class ExecutionStreamStorage:
               JOIN trading_trade_signals signal
                 ON signal.seq > activation.activated_after_signal_seq
              WHERE activation.runtime_profile_id = %s
+               AND (
+                 NOT EXISTS (
+                   SELECT 1
+                     FROM trading_execution_observations disposition
+                    WHERE disposition.runtime_profile_id = activation.runtime_profile_id
+                      AND disposition.signal_id = signal.signal_id
+                      AND disposition.normalized_kind = 'signal_disposition'
+                 )
+                 OR EXISTS (
+                   SELECT 1
+                     FROM trading_execution_observations position_fact
+                    WHERE position_fact.runtime_profile_id = activation.runtime_profile_id
+                      AND position_fact.signal_id = signal.signal_id
+                      AND position_fact.normalized_kind = 'position'
+                      AND position_fact.seq = (
+                        SELECT max(latest_position.seq)
+                          FROM trading_execution_observations latest_position
+                         WHERE latest_position.runtime_profile_id = activation.runtime_profile_id
+                           AND latest_position.signal_id = signal.signal_id
+                           AND latest_position.normalized_kind = 'position'
+                      )
+                      AND position_fact.summary ->> 'status' <> 'closed'
+                 )
+                 OR (
+                   NOT EXISTS (
+                     SELECT 1
+                       FROM trading_execution_observations any_position
+                      WHERE any_position.runtime_profile_id = activation.runtime_profile_id
+                        AND any_position.signal_id = signal.signal_id
+                        AND any_position.normalized_kind = 'position'
+                   )
+                   AND (
+                     SELECT entry_fact.summary ->> 'status'
+                       FROM trading_execution_observations entry_fact
+                      WHERE entry_fact.runtime_profile_id = activation.runtime_profile_id
+                        AND entry_fact.signal_id = signal.signal_id
+                        AND entry_fact.normalized_kind = 'order'
+                        AND entry_fact.summary ->> 'leg' = 'entry'
+                      ORDER BY entry_fact.seq DESC
+                      LIMIT 1
+                   ) NOT IN ('canceled', 'rejected', 'denied', 'expired')
+                 )
+               )
              ORDER BY signal.seq DESC
              LIMIT %s
             """,
@@ -560,6 +603,49 @@ class ExecutionStreamStorage:
                AND command.seq > activation.activated_after_command_seq
              WHERE activation.runtime_profile_id = %s
                AND command.action = 'manual_entry'
+               AND (
+                 NOT EXISTS (
+                   SELECT 1
+                     FROM trading_execution_observations disposition
+                    WHERE disposition.runtime_profile_id = activation.runtime_profile_id
+                      AND disposition.command_id = command.command_id
+                      AND disposition.normalized_kind = 'control_disposition'
+                 )
+                 OR EXISTS (
+                   SELECT 1
+                     FROM trading_execution_observations position_fact
+                    WHERE position_fact.runtime_profile_id = activation.runtime_profile_id
+                      AND position_fact.command_id = command.command_id
+                      AND position_fact.normalized_kind = 'position'
+                      AND position_fact.seq = (
+                        SELECT max(latest_position.seq)
+                          FROM trading_execution_observations latest_position
+                         WHERE latest_position.runtime_profile_id = activation.runtime_profile_id
+                           AND latest_position.command_id = command.command_id
+                           AND latest_position.normalized_kind = 'position'
+                      )
+                      AND position_fact.summary ->> 'status' <> 'closed'
+                 )
+                 OR (
+                   NOT EXISTS (
+                     SELECT 1
+                       FROM trading_execution_observations any_position
+                      WHERE any_position.runtime_profile_id = activation.runtime_profile_id
+                        AND any_position.command_id = command.command_id
+                        AND any_position.normalized_kind = 'position'
+                   )
+                   AND (
+                     SELECT entry_fact.summary ->> 'status'
+                       FROM trading_execution_observations entry_fact
+                      WHERE entry_fact.runtime_profile_id = activation.runtime_profile_id
+                        AND entry_fact.command_id = command.command_id
+                        AND entry_fact.normalized_kind = 'order'
+                        AND entry_fact.summary ->> 'leg' = 'entry'
+                      ORDER BY entry_fact.seq DESC
+                      LIMIT 1
+                   ) NOT IN ('canceled', 'rejected', 'denied', 'expired')
+                 )
+               )
              ORDER BY command.seq DESC
              LIMIT %s
             """,
