@@ -293,12 +293,6 @@ def add_news_commands(
     )
     news_replay.add_argument("path", help="JSON file: {strategy_id: [hit, ...]} or [hit, ...]")
     news_replay.add_argument(
-        "--gate-policy",
-        choices=("config", "open", "strict"),
-        default="config",
-        help="Gate low-signal switch: config = news.gate.suppress_low_signal, open = off, strict = on",
-    )
-    news_replay.add_argument(
         "--no-instruments",
         action="store_true",
         help="replay without the instrument universe (offline); the Gate then guesses asset_class from XYZ- tags",

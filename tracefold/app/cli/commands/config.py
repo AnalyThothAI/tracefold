@@ -120,7 +120,6 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                     "watchlist": sorted(settings.news.watchlist_symbols),
                     "policy": settings.news.policy.model_dump(),
                     "retention": settings.news.retention.model_dump(),
-                    "gate": settings.news.gate.model_dump(),
                     "push": {
                         "requested": push_availability.requested,
                         "delivery_available": push_availability.delivery_available,

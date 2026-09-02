@@ -126,7 +126,7 @@ def test_program_identity_is_stable() -> None:
     )
 
 
-def test_liquidation_admission_is_composed_after_unchanged_generic_gate_policy() -> None:
+def test_liquidation_admission_is_composed_after_unchanged_generic_gate_admission() -> None:
     generic = evaluate_gate(
         GateInput(
             title="SOL Large Short Liquidation 10K at $150",

@@ -378,7 +378,6 @@ def _compose_news_pipeline(
             bus=bus,
             db=news_db,
             watchlist_symbols=watchlist_symbols,
-            suppress_low_signal=settings.news.gate.suppress_low_signal,
         ),
         triage=TriageConsumer(
             bus=bus,

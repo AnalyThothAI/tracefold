@@ -334,7 +334,6 @@ class CliTests(unittest.TestCase):
                 "watchlist",
                 "policy",
                 "retention",
-                "gate",
                 "push",
             },
         )
@@ -352,7 +351,6 @@ class CliTests(unittest.TestCase):
         )
         self.assertIs(news["policy"]["restatement_drop"], True)
         self.assertEqual(news["retention"], {"raw_days": 30, "judged_days": 365})
-        self.assertIs(news["gate"]["suppress_low_signal"], False)
         self.assertFalse(news["broker"]["url_configured"])
         self.assertTrue(news["models"]["triage_configured"])
         self.assertEqual(news["models"]["triage_model"], "deepseek-chat")

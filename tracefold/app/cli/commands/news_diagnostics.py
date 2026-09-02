@@ -82,9 +82,6 @@ def _handle_replay(args: Namespace) -> tuple[int, dict[str, Any]]:
     report = replay_hits(
         hits,
         watchlist_symbols=settings.news.watchlist_symbols,
-        suppress_low_signal=(
-            settings.news.gate.suppress_low_signal if args.gate_policy == "config" else args.gate_policy == "strict"
-        ),
         instrument_classes=classes,
     )
     if instruments_error:

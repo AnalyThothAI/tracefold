@@ -1287,7 +1287,7 @@ Diagnose News in this order:
    (expect a handful per day; a surge means same-key floods). Program v8 fails
    closed on missing `novelty` or taxonomy. Migration `0336` deletes pre-current
    trace diagnostics; they do not appear in the current status contract.
-8. `tracefold news replay <hits.json> [--gate-policy open|strict]`: reproduce
+8. `tracefold news replay <hits.json>`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
 
 The current evidence eligibility window starts at the deployment timestamp the

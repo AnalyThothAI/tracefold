@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from tracefold.platform.config.models import NewsPolicySettings, NewsPushSettings
+from tracefold.platform.config.models import NewsPolicySettings, NewsPushSettings, NewsSettings
 
 
 def test_policy_defaults_match_the_live_decide_policy() -> None:
@@ -29,6 +29,15 @@ def test_policy_defaults_match_the_live_decide_policy() -> None:
 def test_retired_policy_keys_are_rejected(key: str) -> None:
     with pytest.raises(ValidationError):
         NewsPolicySettings.model_validate({key: True})
+
+
+def test_retired_gate_low_signal_section_is_rejected() -> None:
+    """#504 D7: the `news.gate` low-signal switch was never switched on and produced zero admissions in the retained
+    history, so the whole `news.gate` section is gone; a config that still carries it fails at startup."""
+
+    with pytest.raises(ValidationError):
+        NewsSettings.model_validate({"gate": {}})
+    assert not hasattr(NewsSettings(), "gate")
 
 
 def test_retired_delivery_quota_key_is_rejected() -> None:

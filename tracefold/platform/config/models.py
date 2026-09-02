@@ -349,12 +349,6 @@ class NewsRetentionSettings(BaseModel):
         return self
 
 
-class NewsGateSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    suppress_low_signal: bool = False
-
-
 class NewsVenuesSettings(BaseModel):
     """Instrument-universe snapshot (#75). Read-only, unauthenticated public catalogues; no credentials."""
 
@@ -403,7 +397,6 @@ class NewsSettings(BaseModel):
     push: NewsPushSettings = Field(default_factory=NewsPushSettings)
     policy: NewsPolicySettings = Field(default_factory=NewsPolicySettings)
     retention: NewsRetentionSettings = Field(default_factory=NewsRetentionSettings)
-    gate: NewsGateSettings = Field(default_factory=NewsGateSettings)
     venues: NewsVenuesSettings = Field(default_factory=NewsVenuesSettings)
     watchlist: tuple[NewsWatchlistEntry, ...] = ()
 

@@ -4,8 +4,8 @@ The Gate no longer decides relevance and keeps no name table of its own: the pro
 ``coins[]`` with a grade, so a B+/A/A+ tag (or a literal ``$TICKER`` cashtag) *is* the grounded asset; Triage — the
 model — verifies which of them are primary. The lexicons only set queue order, the energy context for ``CL``, and the
 preliminary storyline theme. The only admissions that skip the model are recovery replays, deterministic listing
-notices, law-firm PR templates without a grounded asset, and — behind an operator switch that defaults off —
-low-score ungrounded social posts. Provider-specific deterministic lanes compose after this policy.
+notices, law-firm PR templates without a grounded asset, and unscored or under-80 market telemetry frames (#126).
+Provider-specific deterministic lanes compose after this policy.
 """
 
 from __future__ import annotations
@@ -58,7 +58,6 @@ _TICKER_TAG_STOP: Final = frozenset(
 )
 _GROUNDING_GRADES: Final = frozenset({"B+", "A", "A+"})
 _STRONG_GRADES: Final = frozenset({"A", "A+"})
-_LOW_SIGNAL_SCORE: Final = 70.0
 _MARKET_TELEMETRY_MIN_SCORE: Final = 80.0
 
 
@@ -71,7 +70,6 @@ class GateInput:
     ingest_mode: str  # live | recovery
     watchlist_symbols: frozenset[str] = frozenset()
     raw_first_line: str = ""
-    suppress_low_signal: bool = False
     # #89: symbol -> instrument_class from the venue snapshot (aliases included). None falls back to the `XYZ-`
     # prefix heuristic, which is what every pure caller and a worker whose first snapshot has not landed gets.
     instrument_classes: Mapping[str, str] | None = None
@@ -201,15 +199,6 @@ def evaluate_gate(inp: GateInput) -> GateVerdict:
     elif inp.engine_type == "market" and score < _MARKET_TELEMETRY_MIN_SCORE:
         admission = "suppressed_low_signal"
         reasons.append("market_telemetry_below_min_score")
-    elif (
-        inp.suppress_low_signal
-        and inp.engine_type == "meme"
-        and not grounded
-        and not macro
-        and score < _LOW_SIGNAL_SCORE
-    ):
-        admission = "suppressed_low_signal"
-        reasons.append("ungrounded_social_below_min_score")
     else:
         admission = "candidate"
 
