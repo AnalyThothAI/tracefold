@@ -51,7 +51,7 @@ THEMES: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     ),
     (
         "cb_fed",
-        re.compile(r"\bfed\b|fomc|powell|美联储|联储|federal reserve", re.IGNORECASE),
+        re.compile(r"\bfed\b|fomc|powell|美联储|federal reserve", re.IGNORECASE),
     ),
     ("cb_boj", re.compile(r"\bboj\b|bank of japan|日本央行|日银|\bueda\b|植田", re.IGNORECASE)),
     ("cb_ecb", re.compile(r"\becb\b|european central bank|欧洲央行|欧央行|lagarde|拉加德", re.IGNORECASE)),

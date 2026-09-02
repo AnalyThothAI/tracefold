@@ -532,6 +532,9 @@ def test_storyline_lexicon_v3_keys_the_buckets_that_shared_one_budget() -> None:
     # Central banks sit above `rates`: the person or the institution, not the instrument, is the storyline.
     assert _theme("Fed's Powell says the committee is in no hurry to cut") == "theme:cb_fed"
     assert _theme("日本央行维持利率不变") == "theme:cb_boj"
+    # A bare `联储` is not the Fed: the Chinese names of the other reserve banks contain it too.
+    assert _theme("新西兰联储：通胀回落速度快于预期") == "theme:cb_rbnz"
+    assert _theme("澳洲联储主席布洛克：不排除再次加息") == "theme:cb_rba"
     assert _theme("Bank of Canada holds policy rate at 2.75%") == "theme:cb_boc"  # not `trade` via `canada`
     assert _theme("中国央行开展 3000 亿元 MLF 操作") == "theme:cb_pboc"  # not `china_macro`
     assert _theme("US 30-year yield hits 5.32%") == "theme:rates"
