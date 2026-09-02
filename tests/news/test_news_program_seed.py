@@ -156,3 +156,32 @@ def test_the_bounds_no_longer_refuse_ordinary_editorial_prose() -> None:
         "Always choose drop for a law-firm template notice.",
     ):
         assert validate_program_instruction(sentence) == sentence
+
+
+def test_the_event_semantics_seed_carries_the_product_definition() -> None:
+    """#504 D4 (PR-B): the seed states who the reader is, defines the three reader_value tiers against that
+    reader, no longer calls "a new actor's own action" a progression, and asks for the listed ticker instead of
+    forbidding one. The rest of the seed — magnitude table, price a-e, crypto product examples — is untouched."""
+
+    semantics = seed_instruction("event_semantics")
+    for marker in (
+        "Reader: trades coins on Binance/OKX/Hyperliquid and US- and Hong Kong-listed stocks",
+        "reader_value: escalate for a fact that changes what the reader trades today",
+        "single-source report never is",
+        "realtime for a new fact with a tradable instrument or explicit transmission",
+        "background for small-economy data or central-bank talk without G4, Treasury, oil or risk-asset transmission",
+        "one more strike or statement in a running conflict",
+        "a state change such as a ceasefire, a blockade or a sanction in effect",
+        "another strike, statement or casualty figure in a conflict told covers",
+        "Give a US- or Hong Kong-listed company (02015.HK form) or a listed-token issuer its ticker as primary",
+        '"Iranian MP on Fars Telegram: Tehran will retaliate"',
+        '"RBNZ minutes: inflation falling faster than expected"',
+        '"TASS: Ukraine lost 1,200 troops in a day"',
+        '"Iran strikes Gulf bases hosting US forces after US attacks"',
+    ):
+        assert marker in semantics, marker
+    for retired in ("a new actor's own action", "Never invent a ticker", "escalate only for an immediate systemic"):
+        assert retired not in semantics, retired
+    # Unchanged calibrations the product definition must not have displaced.
+    for kept in ("## Magnitude", "## Price-only a-e calibration", "Tesla is finally launching the Cybercab"):
+        assert kept in semantics, kept
