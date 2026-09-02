@@ -712,7 +712,12 @@ def accepted_review_metric(
     }
 
     feedback: list[str] = []
-    decision = production_decision(judgment, projection)
+    decision = production_decision(
+        judgment,
+        projection,
+        member_count=gold.context.evidence.member_count,
+        now_ms=gold.context.now_ms,
+    )
     if pred_name == "reader_card":
         action_feedback_allowed = _reader_card_owns_action_feedback(decision, projection)
     action = decision.final

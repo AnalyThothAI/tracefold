@@ -883,6 +883,8 @@ class CandidateEvaluator:
         decision = production_decision(
             judgment,
             self._datasets._policy_metric_projection(case, state, context=context, arm=arm),
+            member_count=context.evidence.member_count,
+            now_ms=context.now_ms,
         )
         delivered = decision.final in {"push", "escalate"}
         return {

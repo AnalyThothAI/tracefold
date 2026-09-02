@@ -34,7 +34,7 @@
     {"match": "Join the #Binance Alpha KII", "admission": ["candidate"]},
     {"match": "Iran attacked another ship outside the Strait of Hormuz", "admission": ["candidate"], "storyline": ["theme:mideast_energy"]},
     {"match": "US 10-YEAR YIELD RISES TO 4.75%", "admission": ["candidate"], "storyline": ["theme:rates"]},
-    {"match": "FOMC July meeting minutes", "admission": ["candidate"], "storyline": ["theme:rates"]},
+    {"match": "FOMC July meeting minutes", "admission": ["candidate"], "storyline": ["theme:cb_fed"]},
     {"match": "$ACU is now available on", "admission": ["candidate"], "grounded_any": ["ACU"]},
     {"match": "ETHENA WALLET MOVES", "admission": ["candidate"], "grounded_any": ["ENA"]},
     {"match": "Uber Eyes 1 Million Daily Drone", "admission": ["candidate"], "grounded_any": ["UBER"]},

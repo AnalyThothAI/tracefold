@@ -293,7 +293,7 @@ class NewsTriageSettings(BaseModel):
 
 
 class NewsPolicySettings(BaseModel):
-    """The four operator-owned v10 duplicate/safety knobs used by ``decide()``."""
+    """The six operator-owned v12 duplicate/safety/budget knobs used by ``decide()``."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -307,6 +307,11 @@ class NewsPolicySettings(BaseModel):
     # #154: an artifact already this old when the provider pushed it is a replay, not news. Only
     # x/twitter frames carry their own publication time; everything else is unaffected. Zero disables.
     stale_source_max_age_s: int = 12 * 60 * 60
+    # #504 D2: at most `storyline_budget_max` delivered cards per final storyline key inside
+    # `storyline_budget_window_s`, exempting a corroborated escalate, a direction reversal and the `macro:*`
+    # fallback buckets. Either at 0 disables the budget. A content rule per storyline, not a reader quota.
+    storyline_budget_window_s: int = 3600
+    storyline_budget_max: int = 2
 
     @model_validator(mode="after")
     def validate_bounds(self) -> NewsPolicySettings:
@@ -314,6 +319,10 @@ class NewsPolicySettings(BaseModel):
             raise ValueError("news_policy_similarity_max_invalid")
         if int(self.stale_source_max_age_s) < 0:
             raise ValueError("news_policy_stale_source_max_age_s_invalid")
+        if int(self.storyline_budget_window_s) < 0:
+            raise ValueError("news_policy_storyline_budget_window_s_invalid")
+        if int(self.storyline_budget_max) < 0:
+            raise ValueError("news_policy_storyline_budget_max_invalid")
         return self
 
 

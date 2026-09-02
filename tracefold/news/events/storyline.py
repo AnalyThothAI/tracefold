@@ -8,8 +8,14 @@ from typing import Final
 
 from ..market_review.instruments import resolve_base_symbol
 
-STORYLINE_LEXICON_VERSION: Final = "news_storyline_lexicon_v2"
+STORYLINE_LEXICON_VERSION: Final = "news_storyline_lexicon_v3"
 
+# First match wins, so the order is part of the lexicon (#504 D1). Each central bank sits above `rates` so
+# "Fed's Powell" or "RBNZ sets the Official Cash Rate" is that bank's storyline rather than the generic rate
+# bucket; `cb_boc` sits above `trade` because "Bank of Canada" names a bank before it names a country; and
+# `cb_pboc` sits above `china_macro` for the same reason. The Russian, Persian and Hebrew terms are there
+# because the 2026-09-02 audit found TASS, Fars and Israeli Telegram channels contributing 109 pushes a day
+# that all fell through to `macro:general` and so shared one budget bucket with everything else.
 THEMES: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     (
         "crypto_treasury",
@@ -23,7 +29,47 @@ THEMES: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
         "mideast_energy",
         re.compile(
             r"hormuz|霍尔木兹|\bstrait\b|\biran|伊朗|irgc|khamenei|\boman|阿曼|opec"
-            r"|israel|hezbollah|以色列|中东|gulf|houthi|yemen",
+            r"|israel|hezbollah|以色列|中东|persian gulf|gulf states|gulf of oman|houthi|yemen"
+            # Russian: Iran, Israel, Hormuz, Hezbollah, Houthis, Tehran.
+            r"|иран|израил|ормуз|хезболл|хусит|тегеран"
+            # Persian: Iran, Israel, Hormuz, IRGC, Hezbollah, Yemen, Tehran.
+            r"|ایران|اسرائیل|هرمز|سپاه پاسداران|حزب‌الله|حزب الله|یمن|تهران"
+            # Hebrew: Iran, Israel, Hezbollah, Hormuz, Houthis, Yemen.
+            r"|איראן|ישראל|חיזבאללה|הורמוז|חות'ים|חותים|תימן",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "ru_ua",
+        re.compile(
+            r"ukrain|乌克兰|kyiv|\bkiev\b|基辅|zelensk|泽连斯基|kremlin|克里姆林宫|\bputin|普京"
+            r"|\brussia|俄罗斯|俄军|俄乌|donbas|donetsk|kharkiv|odesa|crimea|克里米亚|black sea|黑海"
+            # Russian: Ukraine, Russia, Kremlin, Putin, Kyiv, Zelensky, the armed forces, the defence ministry.
+            r"|украин|росси|кремл|путин|киев|зеленск|\bвсу\b|минобороны",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "cb_fed",
+        re.compile(r"\bfed\b|fomc|powell|美联储|federal reserve", re.IGNORECASE),
+    ),
+    ("cb_boj", re.compile(r"\bboj\b|bank of japan|日本央行|日银|\bueda\b|植田", re.IGNORECASE)),
+    ("cb_ecb", re.compile(r"\becb\b|european central bank|欧洲央行|欧央行|lagarde|拉加德", re.IGNORECASE)),
+    ("cb_boe", re.compile(r"\bboe\b|bank of england|英国央行|英央行|andrew bailey", re.IGNORECASE)),
+    ("cb_boc", re.compile(r"bank of canada|加拿大央行|macklem", re.IGNORECASE)),
+    (
+        "cb_rba",
+        re.compile(r"\brba\b|reserve bank of australia|澳洲联储|澳联储|澳大利亚央行|michele bullock", re.IGNORECASE),
+    ),
+    (
+        "cb_rbnz",
+        re.compile(r"\brbnz\b|reserve bank of new zealand|新西兰联储|新西兰央行|official cash rate", re.IGNORECASE),
+    ),
+    (
+        "cb_pboc",
+        re.compile(
+            r"\bpboc\b|people'?s bank of china|中国人民银行|中国央行|人民银行"
+            r"|\blpr\b|贷款市场报价利率|\bmlf\b|中期借贷便利",
             re.IGNORECASE,
         ),
     ),
@@ -31,13 +77,15 @@ THEMES: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
         "rates",
         re.compile(
             r"30[- ]year|10[- ]year|30年期|10年期|treasury|yields?\b|收益率|国债|jgb"
-            r"|\bfed\b|fomc|powell|美联储|加息|降息"
-            r"|boj|日本央行|ecb|rate (cut|hike|decision)|cpi|pce|nonfarm|payroll",
+            r"|加息|降息|rate (cut|hike|decision)|cpi|pce|nonfarm|payroll",
             re.IGNORECASE,
         ),
     ),
     ("trade", re.compile(r"tariff|关税|trade (deal|talks|war)|canada|加拿大|ustr", re.IGNORECASE)),
-    ("china_macro", re.compile(r"\bchina|中国|pboc|国务院|央行|社融|工业产出|工业增加值", re.IGNORECASE)),
+    (
+        "china_macro",
+        re.compile(r"\bchina|中国|pboc|中国人民银行|国务院|社融|工业产出|工业增加值", re.IGNORECASE),
+    ),
     ("metals", re.compile(r"\bgold\b|黄金|xau|silver|白银|copper|铜价|lme", re.IGNORECASE)),
     ("us_equity_macro", re.compile(r"nasdaq|s&p|\bdow\b|美股|kospi|欧股|stock futures|期货", re.IGNORECASE)),
     (
@@ -48,6 +96,7 @@ THEMES: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
             re.IGNORECASE,
         ),
     ),
+    ("venezuela", re.compile(r"venezuela|委内瑞拉|maduro|马杜罗|pdvsa|caracas|加拉加斯", re.IGNORECASE)),
 )
 
 _CL_SYMBOLS: Final = frozenset({"CL", "XYZ-CL"})

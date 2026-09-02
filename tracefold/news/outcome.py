@@ -83,7 +83,9 @@ OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
     "liquidation_parse_failed": "强平供应商格式无法解析，已安全拦截",
     "watchlist_objective_guard": "命中关注列表客观条件",
     "trade_relevance_escalate": "交易相关性达到重点推送标准",
+    "trade_relevance_escalate_uncorroborated": "达到重点标准但来源权威未知且仅单条来源，降为普通推送",
     "trade_relevance_realtime": "交易相关性达到实时推送标准",
+    "single_name_without_instrument": "单一标的事实未给出可交易标的，不推送",
     "trade_relevance_inconsistent": "交易相关性字段不一致，未达推送标准",
     "reader_value_background": "仅有背景价值，不实时推送",
     "reader_value_none": "无读者价值，不推送",
@@ -127,12 +129,22 @@ DELIVERY_ERROR_ZH: Final[dict[str, str]] = {
 THEME_ZH: Final[dict[str, str]] = {
     "crypto_treasury": "加密财库",
     "mideast_energy": "中东与能源",
-    "rates": "利率与央行",
+    "ru_ua": "俄乌",
+    "cb_fed": "美联储",
+    "cb_boj": "日本央行",
+    "cb_ecb": "欧洲央行",
+    "cb_boe": "英国央行",
+    "cb_boc": "加拿大央行",
+    "cb_rba": "澳洲联储",
+    "cb_rbnz": "新西兰联储",
+    "cb_pboc": "中国央行",
+    "rates": "利率与通胀数据",
     "trade": "贸易与关税",
     "china_macro": "中国宏观",
     "metals": "金属",
     "us_equity_macro": "美股大盘",
     "us_macro_data": "美国宏观数据",
+    "venezuela": "委内瑞拉",
 }
 
 DEDUPE_FAMILY_ZH: Final[dict[str, str]] = {
@@ -163,6 +175,8 @@ DECISION_ZH: Final[dict[str, str]] = {
 }
 
 _SEEN_SUFFIX: Final = ":seen"
+# #504 D2: the per-storyline budget withhold, `storyline:<key>:budget`.
+_BUDGET_SUFFIX: Final = ":budget"
 # #154. Constant rather than per-age so the top-10 `throttled_by_key` map keeps one bucket for the rule.
 _STALE_ARTIFACT_KEY: Final = STALE_SOURCE_KEY
 
@@ -220,6 +234,8 @@ def throttled_by_zh(key: str | None) -> str:
         return "旧闻：这条推文在 provider 推送时就已过时"
     if text.endswith(_SEEN_SUFFIX):
         return "重复：读者刚收到过内容高度相近的卡片"
+    if text.endswith(_BUDGET_SUFFIX):
+        return "同线索预算：过去一小时该线索已推送达到上限，且本条并非方向反转"
     return text
 
 
@@ -310,6 +326,8 @@ def event_outcome(
         throttled_by = str(triage.get("throttled_by") or "")
         if throttled_by.endswith(_SEEN_SUFFIX):
             text = "未推送（重复）"
+        elif throttled_by.endswith(_BUDGET_SUFFIX):
+            text = "未推送（同线索预算）"
         elif throttled_by == _STALE_ARTIFACT_KEY:
             text = "未推送（旧闻）"
         else:

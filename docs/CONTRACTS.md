@@ -719,7 +719,7 @@ the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `news_event_evidence_v3`, `news_judgment_v2`,
 `news_semantic_program_v9` (or `news_oi_signal_v3` /
 `news_liquidation_fact_v2` for deterministic structured lanes),
-`news_triage_policy_v11`, `news_delivery_card_v11`, artifact schema
+`news_triage_policy_v12`, `news_delivery_card_v11`, artifact schema
 `news_program_strategy_artifact_v1`, and source classifier
 `opennews_source_classifier_v1`. The epoch is the running bundle's
 (`bundle_<sha8>`) and is not a declared version. The exact Program identity is
@@ -795,11 +795,16 @@ still carries the section fails at startup. Status exposes
 `telemetry_received_24h`, `telemetry_parsed_24h` and
 `telemetry_parse_failed_24h`; parser-contract failures
 also appear under `dropped_by_rule.oi_parse_failed` and never call a model.
-`news.policy` has exactly four v10 keys: `restatement_drop` (true),
-`similarity_max` (0.25), `listing_exempt_from_duplicate` (true), and
+`news.policy` has exactly six v12 keys: `restatement_drop` (true),
+`similarity_max` (0.25), `listing_exempt_from_duplicate` (true),
 `stale_source_max_age_s` (43200 = 12 h; #154: an x/twitter artifact already older
 than this when the provider pushed it is a replay, withheld as
-`stale_source_artifact`; `escalate` is exempt and 0 disables the rule).
+`stale_source_artifact`; `escalate` is exempt and 0 disables the rule),
+`storyline_budget_window_s` (3600) and `storyline_budget_max` (2; #504: at
+most this many delivered cards per final storyline key inside the window,
+withheld as `storyline:<key>:budget`; a corroborated `escalate`, a direction
+reversal and every `macro:*` fallback key are exempt; either key at 0 disables
+the budget).
 Trade-relevance eligibility and objective-guard ordering are code-owned, not
 operator thresholds. `direct_surface` requires direct/second-order tradability
 and non-empty channels/markets. `material_change` requires `state_change`, or
@@ -809,8 +814,13 @@ restatement guard, the generic v10 action order is deterministic
 listing/telemetry,
 grounded watchlist, eligible `reader_value=escalate`, eligible
 `reader_value=realtime`, background/none, then
-`trade_relevance_inconsistent`; the retained stale-source and same-fact checks
-run after action selection. There is no runtime reader quota. Retired quota and v9
+`trade_relevance_inconsistent`; then the v12 escalate corroboration
+(`trade_relevance_escalate_uncorroborated`: eligible `escalate` with
+code-owned `source_authority = unknown` and a single Event member becomes a
+`push`) and `single_name_without_instrument` (eligible realtime `single_name`
+with no primary asset drops); the retained stale-source and same-fact checks
+and the per-storyline budget run after action selection. There is no
+reader-global quota. Retired quota and v9
 action/priority keys
 are rejected as unknown configuration instead of being silently carried
 forward. `news.retention` keys are `raw_days` (30) and

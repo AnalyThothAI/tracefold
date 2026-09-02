@@ -2067,6 +2067,139 @@ def test_event_feed_funnel_tracks_one_opened_event_cohort_across_durable_stages(
     conn.commit()
 
 
+def test_the_third_card_on_one_storyline_inside_the_budget_window_is_withheld(conn) -> None:
+    """#504 D2 across the real seam: three Events key to one storyline, two are delivered, the third is measured
+    against the sent ledger PostgreSQL projects, withheld as `storyline:<key>:budget`, persisted under the v12
+    judgment CHECK, and counted in `status.pipeline.throttled_by_key`."""
+
+    repos = repositories_for_connection(conn)
+    first, second, third = _admit_test_events(
+        conn,
+        hit_base=1_795_600,
+        titles=(
+            "Iran fires missiles at the US base in Qatar",
+            "Iran says strikes on Gulf states will continue",
+            "Iran closes the Strait of Hormuz to tanker traffic",
+        ),
+        hour=12,
+    )
+    keys = {
+        row["event_id"]: row["storyline_key"]
+        for row in conn.execute(
+            "SELECT event_id, storyline_key FROM news_events WHERE event_id = ANY(%s)", ([first, second, third],)
+        ).fetchall()
+    }
+    assert set(keys.values()) == {"theme:mideast_energy"}
+    # Far enough from every other test's clock that their sent cards fall outside the 4 h recent ledger.
+    now_ms = 2_050_000_000_000
+    with repos.transaction():
+        for offset, event_id in enumerate((first, second)):
+            _insert_test_verdict(
+                repos,
+                event_id=event_id,
+                direction="bearish",
+                final_decision="push",
+                now_ms=now_ms - 40 * 60_000 + offset,
+            )
+            assert (
+                repos.news.begin_delivery(
+                    event_id=event_id, kind="first", card={"event_id": event_id}, now_ms=now_ms - 35 * 60_000 + offset
+                )
+                == "new"
+            )
+            assert repos.news.settle_delivery(
+                event_id=event_id,
+                kind="first",
+                state="sent",
+                receipt={"ok": True},
+                error_code=None,
+                now_ms=now_ms - 30 * 60_000 + offset,
+            )
+
+    # The ledger `decide()` reads is the real projection: settle time and the card's final key, newest first.
+    seen = [
+        row.as_told_row()
+        for row in repos.news.reader_history(event_id=third, now_ms=now_ms, include_targeted=False).recent_seen_rows
+    ]
+    assert [row["event_id"] for row in seen] == [second, first]
+    assert [row["storyline_key"] for row in seen] == ["theme:mideast_energy", "theme:mideast_energy"]
+    assert seen[0]["at_ms"] == now_ms - 30 * 60_000 + 1
+    status = storyline_status("theme:mideast_energy", seen=seen)
+    verdict = TriageVerdict(
+        novelty="new_fact",
+        assets=[],
+        direction="bearish",
+        scope="macro",
+        magnitude=2,
+        confidence=0.8,
+        headline_zh="伊朗封锁霍尔木兹海峡，油轮停运",
+        why_zh="",
+    )
+    judgment = scored_judgment(verdict)
+    facts = GateFacts(grounded_assets=(), watchlist_symbols=frozenset(), admission="candidate", member_count=1)
+    decision = decide(judgment, facts, status, now_ms=now_ms)
+    assert decision.final == "throttled" and decision.throttled_by == "storyline:theme:mideast_energy:budget"
+    assert decision.override_rule == "trade_relevance_realtime" and decision.seen_scope == "all"
+    # A reversal on the same key is not budgeted.
+    reversal = scored_judgment(verdict.model_copy(update={"direction": "bullish", "headline_zh": "伊朗宣布停火"}))
+    assert decide(reversal, facts, status, now_ms=now_ms).final == "push"
+
+    evidence = repos.news.latest_evidence_snapshot(third)
+    assert evidence is not None
+    runtime_manifest_sha = "c" * 64
+    trace = {
+        "judgment_contract_version": judgment.judgment_contract_version,
+        "judgment_origin": "model",
+        "judgment_sha256": judgment.scored_judgment_sha256,
+        "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
+        "editorial_sha256": judgment.editorial.editorial_sha256,
+        "runtime_manifest_sha": runtime_manifest_sha,
+        "program_version": SEMANTIC_PROGRAM_VERSION,
+        "program_sha256": "d" * 64,
+        "evidence_version": int(evidence["evidence_version"]),
+        "evidence_sha256": str(evidence["evidence_sha256"]),
+        "focus_fact_id": str(evidence["focus_fact_id"]),
+        "told": [],
+        "told_count": 0,
+        "seen_scope": decision.seen_scope,
+    }
+    with repos.transaction():
+        assert repos.news.insert_verdict(
+            event_id=third,
+            stage="triage",
+            policy_version=TRIAGE_POLICY_VERSION,
+            judgment_contract_version=judgment.judgment_contract_version,
+            judgment_origin="model",
+            rule_baseline_decision=decision.rule_baseline,
+            final_decision=decision.final,
+            override_rule=decision.override_rule,
+            throttled_by=decision.throttled_by,
+            verdict=verdict.model_dump(),
+            model_editorial=judgment.editorial.model_dump(mode="json"),
+            judgment_sha256=judgment.scored_judgment_sha256,
+            runtime_manifest_sha=runtime_manifest_sha,
+            model="test",
+            program_version=SEMANTIC_PROGRAM_VERSION,
+            program_sha256="d" * 64,
+            degraded=False,
+            error_code=None,
+            trace=trace,
+            evidence_version=int(evidence["evidence_version"]),
+            evidence_sha256=str(evidence["evidence_sha256"]),
+            focus_fact_id=str(evidence["focus_fact_id"]),
+            now_ms=now_ms,
+        )
+    row = conn.execute(
+        "SELECT policy_version, final_decision, throttled_by FROM news_verdicts WHERE event_id = %s", (third,)
+    ).fetchone()
+    assert row is not None and row["policy_version"] == "news_triage_policy_v12"
+    assert row["final_decision"] == "throttled" and row["throttled_by"] == "storyline:theme:mideast_energy:budget"
+    pipeline = repos.news.status_snapshot(now_ms=now_ms)["pipeline"]
+    assert pipeline["throttled_by_key"]["storyline:theme:mideast_energy:budget"] == 1
+    assert pipeline["duplicates_withheld_24h"]["all"] == 0  # a budget withhold is not a same-fact duplicate
+    conn.commit()
+
+
 def test_the_symbol_filter_names_an_identity_rather_than_one_spelling(conn) -> None:
     """#87/#207 PR-W1: the asset chip renders the collapsed base, so the filter behind it has to match it.
 

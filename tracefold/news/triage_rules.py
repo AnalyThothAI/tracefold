@@ -19,7 +19,7 @@ _DIRECTIONAL = frozenset({"bullish", "bearish"})
 
 @dataclass(frozen=True, slots=True)
 class DecidePolicy:
-    """The four safety/duplicate knobs exposed through ``news.policy``.
+    """The six safety/duplicate/budget knobs exposed through ``news.policy``.
 
     Trade relevance and objective guards are a code-owned ordered policy, not
     operator-tunable thresholds.
@@ -46,6 +46,14 @@ class DecidePolicy:
     # admission from being undone one step later. The trade is explicit: a genuine re-send of the
     # same notice is no longer withheld by content.
     listing_exempt_from_duplicate: bool = True
+    # #504 D2: the per-storyline marginal budget, which withdraws policy v7's "no storyline quota" decision. It
+    # is a content rule, not a reader quota: it counts cards the reader actually received *on this storyline
+    # key* inside the window, exempts a direction reversal and a corroborated `escalate`, and never touches a
+    # `macro:*` fallback bucket (which is not a storyline, just "nothing matched"). On the 2026-09-02 day the
+    # model's own novelty judgment let 225 of 355 geopolitical pushes through with >= 8 same-storyline cards
+    # already in the told ledger; the p95 storyline-hour was 17 cards. Either knob at 0 switches it off.
+    storyline_budget_window_s: int = 3600
+    storyline_budget_max: int = 2
 
     def as_dict(self) -> dict[str, Any]:
         """Every tunable, by name. A stored decision has to carry the numbers that produced it: without this the
@@ -70,6 +78,9 @@ class GateFacts:
     # Seconds between the source artifact's own publication and the provider's push (#154). `None` whenever the
     # artifact does not carry its own timestamp, which is every non-x/twitter frame.
     source_age_s: int | None = None
+    # #504 D3: how many provider Items the Deduper merged into this Event. A second independent arrival is the
+    # cheapest corroboration there is; a single Item from a source of unknown authority is none.
+    member_count: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +110,11 @@ class StorylineStatus:
     # reader contract strips parenthesised tickers, so the rendered text cannot answer "is this the same asset?";
     # only a structured field can. Empty for a caller that did not supply assets, which never grants an exemption.
     seen_assets: tuple[frozenset[str], ...] = ()
+    # #504 D2: when each remembered card settled and which final storyline key it settled under, same order.
+    # This is the budget ledger — still receipt evidence about *what the reader got*, never a capacity counter:
+    # a key appears here only because a card on it was proven delivered.
+    seen_at_ms: tuple[int, ...] = ()
+    seen_keys: tuple[str, ...] = ()
 
     @property
     def told_count(self) -> int:
@@ -246,19 +262,57 @@ def grounded_restatement(verdict: TriageVerdict, status: StorylineStatus | None)
     return not flipped
 
 
+_BUDGET_EXEMPT_PREFIX: Final = "macro:"
+
+
+def _budget_exhausted(direction: str, status: StorylineStatus, *, now_ms: int, window_ms: int, budget_max: int) -> bool:
+    """True when the reader already received ``budget_max`` cards on this storyline inside the window and this
+    one does not reverse the newest of them (#504 D2).
+
+    Rows are newest first, so the first in-window row on the key is the latest delivered card; a bullish/bearish
+    flip against it is new information whatever the count says (same test as ``_seen_flip``). A fallback bucket
+    (``macro:<dedupe_family>``) is exempt: it is not a storyline but "no theme matched", and counting it withheld
+    Chile's GDP print behind an RBNZ decision in the 2026-09-02 replay.
+    """
+
+    if status.key.startswith(_BUDGET_EXEMPT_PREFIX):
+        return False
+    delivered = 0
+    latest_direction: str | None = None
+    for index, key in enumerate(status.seen_keys):
+        if key != status.key or index >= len(status.seen_at_ms):
+            continue
+        if now_ms - int(status.seen_at_ms[index]) > window_ms:
+            continue
+        if latest_direction is None:
+            latest_direction = status.seen_directions[index] if index < len(status.seen_directions) else ""
+        delivered += 1
+    if delivered < budget_max:
+        return False
+    flipped = direction in _DIRECTIONAL and latest_direction in _DIRECTIONAL and latest_direction != direction
+    return not flipped
+
+
 def decide(
     judgment: ScoredJudgment,
     facts: GateFacts,
     status: StorylineStatus | None,
     *,
     policy: DecidePolicy = DEFAULT_POLICY,
+    now_ms: int | None = None,
 ) -> DecisionResult:
     """Deterministic policy over one current model judgment.
 
-    Runtime policy has no hourly, 2-hour, or 4-hour reader quota, and no
-    operator mute: once the semantic conditions resolve to push/escalate, only
-    duplicate evidence may withhold the card. Structured and degraded lanes
-    carry their own ``DecisionResult`` and cannot enter this function.
+    Runtime policy has no hourly, 2-hour, or 4-hour *reader* quota and no operator mute. Once the semantic
+    conditions resolve to push/escalate, a card is withheld only by evidence about content the reader already
+    received: a grounded restatement, a stale artifact, a same-fact similarity match, or — policy v12 — the
+    per-storyline marginal budget, which counts delivered cards on this storyline key inside a window.
+    ``now_ms`` is the settle stamp the window is measured from; a caller that passes none opts out of the budget
+    (a pure caller with no ledger time has nothing to measure). Structured and degraded lanes carry their own
+    ``DecisionResult`` and cannot enter this function.
+
+    Order is fixed (#504): restatement drop -> admission / reader_value branch -> escalate corroboration ->
+    ``single_name_without_instrument`` -> stale source -> similarity -> storyline budget.
     """
 
     if facts.admission in {"telemetry_deterministic", "liquidation_deterministic"}:
@@ -294,6 +348,26 @@ def decide(
         final, rule = "drop", f"reader_value_{relevance.reader_value}"
     else:
         final, rule = "drop", "trade_relevance_inconsistent"
+
+    # #504 D3: an `escalate` needs corroboration the model cannot supply. `source_authority` is the code-owned
+    # taxonomy field issued once from the evidence (`taxonomy.py`), and `member_count` is the Deduper's count of
+    # independent arrivals. Unknown source *and* a single Item is a claim, not a fact the reader should be woken
+    # for: 92 of the 126 escalates on 2026-09-02 were exactly that (an Iranian MP's statement on a Telegram
+    # channel was the first v9 escalate). The card keeps every other right of a push. Grounded assets are not
+    # corroboration: a provider tag proves which instrument is mentioned, not that a second party confirmed it.
+    if (
+        rule == "trade_relevance_escalate"
+        and judgment.editorial.taxonomy.source_authority == "unknown"
+        and facts.member_count <= 1
+    ):
+        final, rule = "push", "trade_relevance_escalate_uncorroborated"
+
+    # #504 PR-A: a single-name fact with no primary instrument names nothing the reader can trade. This checks
+    # only that the verdict names *a* primary — never the instrument universe, which has no Hong Kong venue —
+    # so an `02015.HK` primary passes and only influences storyline grouping. The seed (PR-B) is the other
+    # half of this rule: it asks the model for the listed ticker whenever the company has one.
+    if rule == "trade_relevance_realtime" and verdict.scope == "single_name" and not primaries:
+        final, rule = "drop", "single_name_without_instrument"
 
     # #154: a replay is not a push, whatever the verdict says about it. `escalate` is exempt for the same reason
     # it is exempt from the similarity check — a false positive is least affordable on the loudest cards.
@@ -334,6 +408,32 @@ def decide(
                 seen_against,
                 seen_scope,
             )
+    # #504 D2, the last throttle. Only an ordinary push: an `escalate` that survived D3 is corroborated and is
+    # the card the budget exists to make room for.
+    if (
+        final == "push"
+        and status is not None
+        and now_ms is not None
+        and policy.storyline_budget_window_s > 0
+        and policy.storyline_budget_max > 0
+        and _budget_exhausted(
+            verdict.direction,
+            status,
+            now_ms=now_ms,
+            window_ms=policy.storyline_budget_window_s * 1000,
+            budget_max=policy.storyline_budget_max,
+        )
+    ):
+        return DecisionResult(
+            "throttled",
+            rule,
+            f"storyline:{status.key}:budget",
+            baseline,
+            watch_hits,
+            seen_similarity,
+            seen_against,
+            seen_scope,
+        )
     return DecisionResult(final, rule, None, baseline, watch_hits, seen_similarity, seen_against, seen_scope)
 
 
@@ -402,6 +502,8 @@ def storyline_status(
     seen_event_ids = tuple(str(r.get("event_id") or "") for r in rows)
     seen_directions = tuple(str(r.get("direction") or "") for r in rows)
     seen_assets = told_assets if seen is None else tuple(_row_symbols(r) for r in rows)
+    seen_at_ms = tuple(int(r.get("at_ms") or 0) for r in rows)
+    seen_keys = tuple(str(r.get("storyline_key") or "") for r in rows)
     return StorylineStatus(
         key=key,
         told_directions=told_directions,
@@ -410,6 +512,8 @@ def storyline_status(
         seen_event_ids=seen_event_ids,
         seen_directions=seen_directions,
         seen_assets=seen_assets,
+        seen_at_ms=seen_at_ms,
+        seen_keys=seen_keys,
     )
 
 

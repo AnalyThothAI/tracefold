@@ -1054,7 +1054,7 @@ class TriageConsumer:
         status = storyline_status(s.final_key, told=s.told, seen=seen)
         trace = dict(s.trace)
         if isinstance(s.judgment, ScoredJudgment):
-            decision = decide(s.judgment, s.facts, status, policy=s.policy)
+            decision = decide(s.judgment, s.facts, status, policy=s.policy, now_ms=s.stamp)
         else:
             decision = s.deterministic_decision
         trace["status_final"] = {"storyline_key": s.final_key}

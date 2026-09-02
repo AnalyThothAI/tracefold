@@ -265,11 +265,13 @@ news:
     # Alternative provider (do not configure both):
     # feishu_webhook_url: "<Feishu v2 webhook>"
     # feishu_signing_secret:
-  policy:                     # policy-v10 duplicate/safety knobs (all optional; these are the defaults)
+  policy:                     # policy-v12 duplicate/safety/budget knobs (all optional; these are the defaults)
     restatement_drop: true      # a restatement of a card the reader already received never pushes
     similarity_max: 0.25        # ordinary pushes above this sent-ledger similarity are same-fact duplicates
     listing_exempt_from_duplicate: true  # exchange listing frames are duplicates only per instrument
     stale_source_max_age_s: 43200  # an x/twitter artifact already older than 12 h on arrival is a replay
+    storyline_budget_window_s: 3600  # #504: per-storyline budget window; 0 disables
+    storyline_budget_max: 2     # #504: delivered cards per storyline key inside the window; 0 disables
   retention:
     raw_days: 30                # an Item nobody judged is storage
     judged_days: 365            # an Item behind a verdict or accepted review is retained as learning evidence
@@ -311,7 +313,7 @@ Gate admits nearly every Item (only recovery replays, law-firm templates,
 and — behind `suppress_low_signal` — low-score ungrounded social posts skip
 Program execution; exchange listing/delisting frames are admitted and judged like any
 candidate), Triage is the semantic filter, and
-`decide()` applies policy v10 to one `ScoredJudgment`. Semantic generation is
+`decide()` applies policy v12 to one `ScoredJudgment`. Semantic generation is
 the code-owned `EventSemantics.v2 -> deterministic SemanticNormalizer ->
 ReaderCard.v2 -> deterministic assembler` Program; `TradeRelevanceV1` is nested
 inside EventSemantics.v2. It remains behind
@@ -365,7 +367,7 @@ prior-factory judgments are audit-only under exact current-bundle eligibility,
 so the factory-v7 cohort starts at zero.
 The production image has one loader only: the content-addressed
 `news_program_strategy_artifact_v1` document executed as
-`news_semantic_program_v9` under `news_triage_policy_v11`. Prior roots remain
+`news_semantic_program_v9` under `news_triage_policy_v12`. Prior roots remain
 immutable audit history and are not executable by the current image. Rollback
 uses the recorded previous same-schema runtime image, never an alternate
 registry entry or runtime switch.
@@ -445,15 +447,17 @@ paths, booleans, and diagnostic command status; do not paste the API token,
 model keys, provider passwords, or full config payloads into docs or chat.
 
 Alembic has one root: baseline `20260831_0340` and current head
-`20260902_0350`. A new empty PostgreSQL 18 database applies baseline, the
+`20260903_0352`. A new empty PostgreSQL 18 database applies baseline, the
 `0341` Signal hard cut, the additive `0342` Trading notification delivery
 ledger, the additive `0343` execution Runtime projection/indexes, the
 destructive `0344` News open-interest push cut, and the `0345` Runtime
 projection constraint hard cut, followed by the additive `0346` notification
 result, the destructive `0347` retirement-table drop, the `0348` Runtime
 readiness/current-control hard cut, the additive `0349` bounded current
-account read projection, and the additive `0350` `pg_trgm` pin with the
-`title_similarity` told-trace reason, in order.
+account read projection, the additive `0350` `pg_trgm` pin with the
+`title_similarity` told-trace reason, the additive `0351` judgment CHECK
+opening to program v9 with blind review drafts, and the additive `0352`
+judgment CHECK opening to triage policy v12 (#504), in order.
 Current source intentionally has no upgrade path from an earlier revision. To
 recover a pre-#449 backup, use the exact pre-cut image/source to restore and
 advance it to the old terminal `20260831_0340`, take a verified backup, perform

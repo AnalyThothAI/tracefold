@@ -945,7 +945,7 @@ OpenNews account Strategy WSS (whatever the account has enabled; no local allowl
      SemanticJudge.judge(TriageContext) -> EventSemantics.v2 + TradeRelevanceV1 -> SemanticNormalizer
      -> ReaderCard.v2
      -> deterministic assembler -> atomic SemanticJudgment/ScoredJudgment
-     -> policy-v10 decide() -> news_verdicts (editorial + runtime manifest)
+     -> policy-v12 decide() -> news_verdicts (editorial + runtime manifest)
      -> verdict.push (an escalate rides the same key at AMQP priority 5)
   -> q:news.deliver [SAC] Deliverer: one configured-provider attempt per Event (kind first)
   -> RabbitMQ 4.3 native delayed retry inside each business queue: TransientError is a counted return
@@ -1166,6 +1166,16 @@ Diagnose News in this order:
    `throttled_24h`. For one Event, `tracefold news why <event_id>` prints
    raw first line -> normalized title -> gate facts -> triage verdict ->
    decide rule / throttle key -> storyline status snapshots -> delivery.
+   A `storyline:<key>:budget` throttle key is the policy-v12 per-storyline
+   budget (#504): the reader already received `storyline_budget_max` cards on
+   that final storyline key inside `storyline_budget_window_s`, and this one
+   was neither a corroborated escalate nor a direction reversal. `macro:*`
+   keys never appear there. Every budget-withheld card is a `throttled`
+   verdict, so the ReviewDesk sampler queues it at probability 1.0; a
+   `must_push` label on one is a reason to revisit the exemptions, not to
+   raise `storyline_budget_max`. The day's receipt is the two D5 SQL numbers
+   in #504 (`storyline_hour_p95`, `told_saturated_push_share`) against the
+   300-500 / 50-60 product target, which is a receipt metric and not a gate.
    For strategy 1019, compare `telemetry_received_24h`,
    `telemetry_parsed_24h`, `telemetry_parse_failed_24h`, and
    `telemetry_push_24h`; `dropped_by_rule.oi_parse_failed` is a provider parser
@@ -1475,7 +1485,7 @@ snapshot.
 ## Migrations
 
 Alembic has one root, baseline `20260831_0340`, and current head
-`20260902_0350`. A fresh PostgreSQL 18 database applies baseline, `0341`, the
+`20260903_0352`. A fresh PostgreSQL 18 database applies baseline, `0341`, the
 additive `0342` notification delivery ledger, the additive `0343` current
 execution Runtime projection/indexes, and the destructive `0344` News
 open-interest push cut, followed by the `0345` Runtime exposure projection
@@ -1484,7 +1494,9 @@ destructive `0347` drop of the twenty-two read-only execution tables, then the
 `0348` Runtime readiness hard cut and profile-keyed current control projection,
 then the additive `0349` bounded current account read projection, and the
 additive `0350` `pg_trgm` pin plus `title_similarity` told-trace reason for the
-News reader-history title-similarity band, in order. This
+News reader-history title-similarity band, then the additive `0351` (program v9
+judgment CHECK, blind review drafts) and `0352` (triage policy v12 judgment
+CHECK, #504) constraint rewrites, in order. This
 source may merge or deploy only after the supported pre-cut database
 is advanced to the old terminal revision with its recorded image, backed up,
 and put through the #449 stopped-writer role catalog cut while retaining the
@@ -1593,7 +1605,7 @@ extra field, invalid identity, unverified snapshot, nonzero or unobserved queue
 count, a Git mismatch, an image/runtime-manifest mismatch or schema-object
 inventory drift before deleting anything.
 
-After deployment, require Alembic head `20260902_0350`; zero rows in every cleared
+After deployment, require Alembic head `20260903_0352`; zero rows in every cleared
 owner except the single new `news_learning_artifacts(kind='epoch_reset')` row
 and fresh singleton rows in `news_ingest_state` and
 `news_learning_retention_state`;

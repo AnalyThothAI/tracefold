@@ -143,8 +143,15 @@ not exist. The Candidate still passes the existing evaluator and release path.
 
 ## Non-authority and rollback
 
-Changing taxonomy alone must not change `decide()`, Gate, ReaderCard, Delivery,
-or Trading. Since #501 taxonomy is the second of three serial Predictors
+The four model-owned axes (`subject_codes`, `event_family`, `change_state`,
+`assertion_status`) never enter `decide()`, Gate, ReaderCard, Delivery, or
+Trading, and changing them alone must not change any of those. The code-owned
+`source_authority` field is different: since policy v12 (#504) `decide()`
+reads `editorial.taxonomy.source_authority` once, as issued from the evidence,
+as the escalate corroboration fact — an eligible `escalate` from an `unknown`
+source with a single Event member is downgraded to `push`. It is a Gate-side
+evidence fact carried on the taxonomy record, not a model judgment, and it is
+not recomputed inside `decide()`. Since #501 taxonomy is the second of three serial Predictors
 (`event_semantics -> taxonomy -> reader_card`); the common successful production
 route is exactly three physical model calls, and the taxonomy call reads no
 told ledger. #117's "not a third Predictor" decision is withdrawn by #501: the

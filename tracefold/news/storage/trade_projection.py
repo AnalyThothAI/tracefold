@@ -304,7 +304,7 @@ class TradeProjectionStorage:
                AND v.judgment_contract_version = 'news_judgment_v2'
                AND v.judgment_origin = 'oi'
                AND v.program_version = 'news_oi_signal_v3'
-               AND v.policy_version = 'news_triage_policy_v11'
+               AND v.policy_version = 'news_triage_policy_v12'
                AND v.editorial IS NULL
                AND v.program_sha256 ~ '^[0-9a-f]{{64}}$'
                AND v.scored_judgment_sha256 IS NOT NULL
@@ -387,7 +387,7 @@ class TradeProjectionStorage:
                AND v.judgment_contract_version = 'news_judgment_v2'
                AND v.judgment_origin = 'oi'
                AND v.program_version = 'news_oi_signal_v3'
-               AND v.policy_version = 'news_triage_policy_v11'
+               AND v.policy_version = 'news_triage_policy_v12'
                AND v.editorial IS NULL
                AND v.program_sha256 ~ '^[0-9a-f]{64}$'
                AND v.scored_judgment_sha256 IS NOT NULL
@@ -449,7 +449,7 @@ class TradeProjectionStorage:
                  AND v.judgment_contract_version = 'news_judgment_v2'
                  AND v.judgment_origin = 'oi'
                  AND v.program_version = 'news_oi_signal_v3'
-                 AND v.policy_version = 'news_triage_policy_v11'
+                 AND v.policy_version = 'news_triage_policy_v12'
                  AND v.editorial IS NULL
                  AND v.program_sha256 ~ '^[0-9a-f]{64}$'
                  AND v.scored_judgment_sha256 IS NOT NULL
@@ -551,7 +551,7 @@ class TradeProjectionStorage:
                AND v.judgment_contract_version = 'news_judgment_v2'
                AND v.judgment_origin = 'oi'
                AND v.program_version = 'news_oi_signal_v3'
-               AND v.policy_version = 'news_triage_policy_v11'
+               AND v.policy_version = 'news_triage_policy_v12'
                AND v.editorial IS NULL
                AND v.program_sha256 ~ '^[0-9a-f]{64}$'
                AND v.scored_judgment_sha256 IS NOT NULL

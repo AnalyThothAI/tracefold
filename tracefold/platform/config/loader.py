@@ -350,6 +350,8 @@ news:
     similarity_max: 0.25
     listing_exempt_from_duplicate: true
     stale_source_max_age_s: 43200  # #154: an x/twitter artifact older than this on arrival is a replay
+    storyline_budget_window_s: 3600  # #504: per-storyline budget window; 0 disables
+    storyline_budget_max: 2  # #504: delivered cards per storyline inside the window; 0 disables
   retention:
     raw_days: 30
     judged_days: 365

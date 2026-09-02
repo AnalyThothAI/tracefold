@@ -59,6 +59,7 @@ def _episode(
     *,
     relevance: dict[str, Any] | None = None,
     watchlist: bool = False,
+    member_count: int = 1,
 ) -> DevelopmentEpisode:
     projection: dict[str, Any] = {
         "gate": {
@@ -82,7 +83,9 @@ def _episode(
         case_id="c" * 64,
         cluster_id="k" * 64,
         stratum="delivered",
-        context=TriageContext.from_card(_CARD, watchlist=(), told_rows=[], now_ms=1787000000000, queue_lag_ms=0),
+        context=TriageContext.from_card(
+            {**_CARD, "member_count": member_count}, watchlist=(), told_rows=[], now_ms=1787000000000, queue_lag_ms=0
+        ),
         accepted_review={
             "should_push": "should_push",
             "dimensions": {"factual_fidelity": "pass"},
@@ -104,9 +107,10 @@ def _action(
     relevance: dict[str, Any] | None = None,
     policy_values: dict[str, Any] | None = None,
     watchlist: bool = False,
+    member_count: int = 1,
 ) -> str:
     values = DEFAULT_POLICY.as_dict() if policy_values is None else policy_values
-    episode = _episode(values, relevance=relevance, watchlist=watchlist)
+    episode = _episode(values, relevance=relevance, watchlist=watchlist, member_count=member_count)
     judgment = scored_judgment(_VERDICT, relevance=trade_relevance(**(relevance or {})))
     outcome = accepted_review_metric(
         build_compile_example(episode),
@@ -119,10 +123,13 @@ def _action(
 
 
 @pytest.mark.parametrize(
-    ("relevance", "expected"),
+    ("relevance", "member_count", "expected"),
     [
-        ({"reader_value": "realtime"}, "push"),
-        ({"reader_value": "escalate"}, "escalate"),
+        ({"reader_value": "realtime"}, 1, "push"),
+        # #504 D3: an escalate from a source of unknown authority is an escalate only once corroborated; the
+        # replay reads the Event's member count from the frozen context, exactly as production does.
+        ({"reader_value": "escalate"}, 2, "escalate"),
+        ({"reader_value": "escalate"}, 1, "push"),
         (
             {
                 "reader_value": "background",
@@ -130,12 +137,13 @@ def _action(
                 "channels": [],
                 "affected_markets": [],
             },
+            1,
             "drop",
         ),
     ],
 )
-def test_trade_relevance_owns_action(relevance: dict[str, Any], expected: str) -> None:
-    assert _action(relevance=relevance) == expected
+def test_trade_relevance_owns_action(relevance: dict[str, Any], member_count: int, expected: str) -> None:
+    assert _action(relevance=relevance, member_count=member_count) == expected
 
 
 def test_realtime_requires_the_exact_material_direct_surface() -> None:

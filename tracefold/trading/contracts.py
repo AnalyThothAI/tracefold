@@ -243,7 +243,7 @@ class OiTradeCandidate(_Frozen):
     learning_epoch: str = Field(min_length=1, max_length=64)
     program_version: Literal["news_oi_signal_v3"]
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    policy_version: Literal["news_triage_policy_v11"]
+    policy_version: Literal["news_triage_policy_v12"]
     judgment_contract_version: Literal["news_judgment_v2"]
     judgment_origin: Literal["oi"]
     judgment_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

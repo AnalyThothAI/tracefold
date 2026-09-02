@@ -36,6 +36,19 @@ def test_retired_delivery_quota_key_is_rejected() -> None:
         NewsPushSettings.model_validate({"hourly_cap": 20})
 
 
+def test_storyline_budget_knobs_are_non_negative_and_zero_disables() -> None:
+    """#504: the per-storyline budget is exposed through `news.policy`; either knob at 0 switches it off."""
+
+    settings = NewsPolicySettings()
+    assert settings.storyline_budget_window_s == 3600 and settings.storyline_budget_max == 2
+    assert NewsPolicySettings(storyline_budget_max=0).storyline_budget_max == 0
+    assert NewsPolicySettings(storyline_budget_window_s=0).storyline_budget_window_s == 0
+    with pytest.raises(ValidationError, match="news_policy_storyline_budget_max_invalid"):
+        NewsPolicySettings(storyline_budget_max=-1)
+    with pytest.raises(ValidationError, match="news_policy_storyline_budget_window_s_invalid"):
+        NewsPolicySettings(storyline_budget_window_s=-1)
+
+
 def test_similarity_max_is_a_ratio() -> None:
     # 0 switches duplicate similarity off; it never restores a count cap.
     assert NewsPolicySettings(similarity_max=0.0).similarity_max == 0.0
