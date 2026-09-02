@@ -1012,12 +1012,19 @@ registry cannot move a key, and adding a storyline is one row plus one
 assertion rather than a reordering of everything above it. The symbol shape
 accepts one exchange suffix (`02015.HK`, `DTE.DE`). `none` replaces the old
 `macro:<dedupe_family>` fallback: the dedupe family is a column on the Event
-row, not a storyline, and policy v12's budget exempts `none` exactly. The
-preliminary key (status bar and told retrieval before Triage) walks the same
-rank with the Gate's grounded tags standing in for the verdict's primaries; the
-final key is computed after Triage from the verdict's grounded primaries and
-scope, written back to `news_events`, and used by duplicate comparison,
-operator grouping, and advisory locking. `STORYLINE_REGISTRY_SHA256` (the
+row, not a storyline, and policy v12's budget exempts `none` exactly.
+
+The preliminary key (status bar and told retrieval before Triage) walks that
+rank with its first step removed: registry first, then an A/A+ or cashtag
+strong tag, then `none`. A provider tag names an *affected* asset until Triage
+names a primary, so letting it win before Triage keyed "Iran attacked another
+ship outside the Strait of Hormuz" as `asset:BTC` on the strength of a BTC tag,
+and the told ledger's exact-storyline tier then answered a war card with
+Bitcoin cards. A B+ tag never opens a preliminary storyline. The final key is
+computed after Triage from the verdict's grounded primaries and scope — where
+the asset is back on top, because the model has now named its subject against
+the Gate's grounding — written back to `news_events`, and used by duplicate
+comparison, operator grouping, and advisory locking. `STORYLINE_REGISTRY_SHA256` (the
 registry file's bytes) is written into every verdict trace as an audit field.
 It is deliberately not part of `policy_sha256` and opens no learning epoch:
 maintaining the registry is data maintenance, not a policy change.

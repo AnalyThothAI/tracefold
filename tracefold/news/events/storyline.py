@@ -45,8 +45,10 @@ StorylineKind = Literal["conflict", "actor", "geo", "topic"]
 _KIND_RANK: Final[dict[str, int]] = {"conflict": 0, "actor": 1, "geo": 2, "topic": 3}
 _SCRIPTS: Final = ("latin", "zh", "ru", "fa", "he")
 # Structural regex syntax. Every alias is escaped before it reaches a pattern, so this is not what makes matching
-# safe — it is what keeps the registry *data*: a row that tries to smuggle in `.*` is rejected at load.
-_REGEX_METACHARACTERS: Final = frozenset(".^$*+?{}[]()|\\")
+# safe — it is what keeps the registry *data*: a row that tries to smuggle in `.*` or `(a|b)` is rejected at load.
+# `.` is deliberately not on the list: it is a literal in `u.s.` and `s&p 500`-style surface forms, `re.escape`
+# neutralizes it, and forbidding it would cost real aliases for no structural gain.
+_REGEX_METACHARACTERS: Final = frozenset("[]()|*+?{}\\^$")
 _ID_SHAPE: Final = re.compile(r"^[a-z0-9_]+$")
 
 
@@ -276,24 +278,30 @@ def _asset_key(symbols: Sequence[str], aliases: Mapping[str, str] | None) -> str
     return f"asset:{sorted(resolve_base_symbol(symbol, aliases) for symbol in symbols)[0]}"
 
 
-def preliminary_storyline_key(
-    *, title: str, grounded_assets: Sequence[str], asset_class: str, dedupe_family: str
-) -> str:
-    """Key computed before Triage (status bar only), on the same rank as the final key.
+def preliminary_storyline_key(*, title: str, strong_assets: Sequence[str], asset_class: str, dedupe_family: str) -> str:
+    """Key computed before Triage, from the title alone plus the Gate's *strong* tags.
 
-    There is no verdict yet, so the Gate's grounded tags stand in for the model's primaries; the final key then
-    follows the verdict. ``dedupe_family`` is accepted and unused: it is a column on the Event row, and #509
-    stopped pretending it was a storyline."""
+    The rank is the final key's rank with its first step removed: `conflict:` > `actor:` > `geo:` > `topic:` >
+    `asset:<strong tag>` > `none`. The registry deliberately outranks the tag here, and only here. At Gate time
+    nothing has verified that a provider tag is what the headline is *about* — it marks an affected asset — so
+    letting it win would key "Iran attacked another ship outside the Strait of Hormuz" as `asset:BTC` on the
+    strength of a BTC tag, and the told ledger's exact-storyline tier would then answer a war card with Bitcoin
+    cards. After Triage the model has named its primaries and the evidence is real, so ``final_storyline_key``
+    puts the asset back on top.
 
-    scope = "macro" if asset_class in {"macro", "none"} else "single_name"
-    return final_storyline_key(
-        title=title,
-        headline_zh="",
-        scope=scope,
-        verdict_primaries=grounded_assets,
-        grounded_assets=grounded_assets,
-        dedupe_family=dedupe_family,
-    )
+    ``strong_assets`` are ``events.gate.grounded_assets(..., strong_only=True)``: an A/A+ grade or a literal
+    ``$TICKER`` cashtag. A B+ tag may not open a preliminary storyline. ``asset_class`` still gates that last
+    step, so a frame the Gate read as macro does not mint an asset key; ``dedupe_family`` is accepted and
+    unused, because the family is a column on the Event row rather than a storyline (#509 D2)."""
+
+    key = registry_storyline_key(title)
+    if key is not None:
+        return key
+    if asset_class not in {"macro", "none"}:
+        named = [symbol for symbol in strong_assets if symbol.upper() not in _CL_SYMBOLS]
+        if named:
+            return _asset_key(named, None)
+    return NO_STORYLINE_KEY
 
 
 def final_storyline_key(

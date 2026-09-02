@@ -246,7 +246,7 @@ def _prepare_frame(
                 source_contract_reason = "source_contract_drift"
             storyline = preliminary_storyline_key(
                 title=title,
-                grounded_assets=gate.strong_assets,
+                strong_assets=gate.strong_assets,
                 asset_class=gate.asset_class,
                 dedupe_family=family_name,
             )

@@ -287,6 +287,8 @@
       "aliases": {
         "latin": [
           "united states",
+          "u.s.",
+          "u.s",
           "washington",
           "pentagon",
           "centcom",
@@ -904,6 +906,30 @@
           "比特币财库",
           "数字资产储备",
           "加密储备"
+        ]
+      }
+    },
+    {
+      "id": "us_equity",
+      "kind": "topic",
+      "label_zh": "美股大盘",
+      "aliases": {
+        "latin": [
+          "nasdaq",
+          "s&p",
+          "s&p 500",
+          "dow jones",
+          "dow",
+          "russell 2000",
+          "wall street",
+          "stock futures",
+          "kospi"
+        ],
+        "zh": [
+          "美股",
+          "纳指",
+          "标普",
+          "道指"
         ]
       }
     },

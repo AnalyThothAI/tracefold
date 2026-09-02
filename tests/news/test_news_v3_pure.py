@@ -412,7 +412,7 @@ def test_gate_admission_rules() -> None:
 
 # ---------------------------------------------------------------- storyline
 def _prelim(title: str) -> str:
-    return preliminary_storyline_key(title=title, grounded_assets=(), asset_class="macro", dedupe_family="general")
+    return preliminary_storyline_key(title=title, strong_assets=(), asset_class="macro", dedupe_family="general")
 
 
 def test_storyline_registry_is_literal_data_with_one_owner_per_alias() -> None:
@@ -433,7 +433,7 @@ def test_storyline_registry_is_literal_data_with_one_owner_per_alias() -> None:
         for _script, alias in entry.aliases.all():
             assert alias not in owner, f"{alias!r} is claimed by both {owner[alias]} and {entry.id}"
             owner[alias] = entry.id
-            assert not set(alias) & set(".^$*+?{}[]()|\\"), alias
+            assert not set(alias) & set("[]()|*+?{}\\^$"), alias
             assert unicodedata.normalize("NFKC", alias).casefold() == alias, alias
         assert set(entry.members) <= ids
         assert entry.kind == "conflict" or not (entry.members or entry.active)
@@ -498,6 +498,57 @@ def test_storyline_key_is_composed_by_rank_not_by_the_order_of_the_file() -> Non
     assert _prelim("【期货热点追踪】甲醇涨停") == NO_STORYLINE_KEY
     assert _prelim("Fedex raises guidance") == NO_STORYLINE_KEY  # word boundaries, not substrings
     assert _prelim("Tanker traffic in the Persian Gulf halts") == "topic:energy"
+
+
+def test_preliminary_key_does_not_let_an_unverified_provider_tag_take_a_geopolitical_headline() -> None:
+    """#509: the preliminary rank drops the final key's first step, and this is why.
+
+    A provider tag is an *affected* asset until Triage names a primary, and every Middle East headline in the
+    recall corpus carries a BTC tag. Letting the tag win before Triage keyed a war headline `asset:BTC`, and the
+    told ledger's exact-storyline tier then answered a war card with Bitcoin cards. After Triage the model has
+    named its primary against the Gate's grounding, so the asset goes back on top."""
+
+    title = "Iran attacked another ship outside the Strait of Hormuz this morning"
+    assert (
+        preliminary_storyline_key(
+            title=title,
+            strong_assets=("BTC", "CL", "XYZ-CL"),
+            asset_class="equity_or_commodity",
+            dedupe_family="general",
+        )
+        == "conflict:mideast_2026"
+    )
+    assert (
+        final_storyline_key(
+            title=title,
+            headline_zh="伊朗在霍尔木兹海峡外袭击另一艘船只",
+            scope="single_name",
+            verdict_primaries=["BTC"],
+            grounded_assets=["BTC", "CL", "XYZ-CL"],
+            dedupe_family="general",
+        )
+        == "asset:BTC"
+    )
+    # A strong tag still opens a preliminary storyline when the registry has nothing to say about the title.
+    assert (
+        preliminary_storyline_key(
+            title="Home Depot Shares Up 3% Premarket",
+            strong_assets=("HD",),
+            asset_class="equity_or_commodity",
+            dedupe_family="general",
+        )
+        == "asset:HD"
+    )
+    # ... and `CL` is never its own storyline, preliminary or final.
+    assert (
+        preliminary_storyline_key(
+            title="Refinery outage in Rotterdam",
+            strong_assets=("CL",),
+            asset_class="equity_or_commodity",
+            dedupe_family="general",
+        )
+        == "topic:energy"
+    )
 
 
 def test_storyline_key_reads_the_scripts_the_desk_actually_receives() -> None:
@@ -1437,12 +1488,13 @@ def test_storyline_status_carries_told_directions() -> None:
 
 
 def test_mideast_storyline_requires_real_strait_or_mideast_context() -> None:
-    # "STRAITS" was matching the unbounded substring ``strait`` and any
-    # unrelated use of "oil" was classified as Middle East energy.
+    # "STRAITS" was matching the unbounded substring ``strait``, so a crypto liquidation wrap was Middle East
+    # news; the registry only knows the two straits that are storylines. Guyana's oil is `topic:energy`, which
+    # is what it is — the point is that it is not the Middle East.
     assert (
         preliminary_storyline_key(
             title="STRAITS: Crypto surge causes $2.7bn liquidations",
-            grounded_assets=("BTC",),
+            strong_assets=("BTC",),
             asset_class="crypto",
             dedupe_family="market_telemetry",
         )
@@ -1451,16 +1503,16 @@ def test_mideast_storyline_requires_real_strait_or_mideast_context() -> None:
     assert (
         preliminary_storyline_key(
             title="Exxon starts production at new Guyana oil FPSO",
-            grounded_assets=("XOM",),
+            strong_assets=("XOM",),
             asset_class="equity_or_commodity",
             dedupe_family="general",
         )
-        == "asset:XOM"
+        == "topic:energy"
     )
     assert (
         preliminary_storyline_key(
             title="Tanker struck in Strait of Hormuz, Brent supply risk rises",
-            grounded_assets=("CL",),
+            strong_assets=("CL",),
             asset_class="equity_or_commodity",
             dedupe_family="general",
         )
