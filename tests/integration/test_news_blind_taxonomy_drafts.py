@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import uuid
 
+import pytest
+
 from tests.integration.test_news_candidate_evaluator import (
     NOW,
     PRINCIPAL,
@@ -20,6 +22,8 @@ from tracefold.news.learning.contracts import ClosedWindow
 from tracefold.news.learning.dataset import DatasetSpec
 from tracefold.news.review.desk import DeskQuery, EventRubricSubmission, TaskRef
 from tracefold.news.review.drafter import ReviewDraft, submission_payload
+
+pytestmark = pytest.mark.integration
 
 _DRAFTERS = ("openai/deepseek-v4-pro", "openai/minimax-m3")
 _PRODUCT = {

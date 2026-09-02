@@ -137,8 +137,8 @@ def upgrade() -> None:
         """
     )
 
-    # One CHECK holds all four judgment origins, so the whole predicate is restated. The OI and
-    # liquidation branches are byte-identical to `20260901_0344`; the model and degraded branches change
+    # One CHECK holds all four judgment origins, so the whole predicate is restated from `20260901_0344`.
+    # The OI and liquidation branches are byte-identical to it; the model and degraded branches change
     # only their program-version literal, from `= 'news_semantic_program_v8'` to
     # `= ANY (ARRAY['news_semantic_program_v8', 'news_semantic_program_v9'])`.
     op.execute("ALTER TABLE news_verdicts DROP CONSTRAINT news_verdicts_current_judgment_check")
@@ -178,41 +178,25 @@ def upgrade() -> None:
             judgment_contract_version, 'verdict', verdict, 'editorial', editorial, 'verdict_sha256', (trace ->>
             'verdict_sha256'::text))), 'UTF8'::name)), 'hex'::text))) OR ((judgment_origin = 'oi'::text) AND
             (editorial IS NULL) AND (model IS NULL) AND (NOT degraded) AND (program_version =
-            'news_oi_signal_v2'::text) AND (policy_version = 'news_triage_policy_v11'::text) AND
+            'news_oi_signal_v3'::text) AND (policy_version = 'news_triage_policy_v11'::text) AND
             public.news_jsonb_exact_keys((trace -> 'judgment'::text), ARRAY['judgment_contract_version'::text,
-            'origin'::text, 'verdict'::text, 'signal'::text, 'rank_in_window'::text, 'rule'::text,
-            'decision'::text]) AND ((trace #>> '{judgment,judgment_contract_version}'::text[]) =
-            judgment_contract_version) AND ((trace #>> '{judgment,origin}'::text[]) = judgment_origin) AND ((trace
-            #> '{judgment,verdict}'::text[]) = verdict) AND ((jsonb_typeof((trace #> '{judgment,signal}'::text[])) =
-            'null'::text) OR (public.news_current_oi_signal_valid((trace #> '{judgment,signal}'::text[])) IS TRUE))
-            AND public.news_current_oi_metadata_valid((trace -> 'oi_signal'::text), (jsonb_typeof((trace #>
-            '{judgment,signal}'::text[])) = 'object'::text)) AND (jsonb_typeof((trace #>
-            '{judgment,rank_in_window}'::text[])) = 'number'::text) AND ((trace #>>
-            '{judgment,rank_in_window}'::text[]) ~ '^[0-9]+$'::text) AND (jsonb_typeof((trace #>
-            '{judgment,rule}'::text[])) = 'string'::text) AND ((trace #>> '{judgment,rule}'::text[]) <> ''::text)
-            AND public.news_current_decision_valid((trace #> '{judgment,decision}'::text[])) AND ((trace #>>
-            '{judgment,decision,final}'::text[]) = final_decision) AND ((trace #>>
+            'origin'::text, 'verdict'::text, 'signal'::text, 'rule'::text, 'decision'::text]) AND ((trace #>>
+            '{judgment,judgment_contract_version}'::text[]) = judgment_contract_version) AND ((trace #>>
+            '{judgment,origin}'::text[]) = judgment_origin) AND ((trace #> '{judgment,verdict}'::text[]) = verdict)
+            AND ((jsonb_typeof((trace #> '{judgment,signal}'::text[])) = 'null'::text) OR
+            (public.news_current_oi_signal_valid((trace #> '{judgment,signal}'::text[])) IS TRUE)) AND
+            public.news_current_oi_metadata_valid((trace -> 'oi_signal'::text), (jsonb_typeof((trace #>
+            '{judgment,signal}'::text[])) = 'object'::text)) AND (jsonb_typeof((trace #> '{judgment,rule}'::text[]))
+            = 'string'::text) AND public.news_current_decision_valid((trace #> '{judgment,decision}'::text[])) AND
+            ((trace #>> '{judgment,decision,final}'::text[]) = final_decision) AND ((trace #>>
             '{judgment,decision,rule_baseline}'::text[]) = rule_baseline_decision) AND (NOT ((trace #>>
             '{judgment,decision,override_rule}'::text[]) IS DISTINCT FROM override_rule)) AND (NOT ((trace #>>
             '{judgment,decision,throttled_by}'::text[]) IS DISTINCT FROM throttled_by)) AND ((trace #>>
             '{judgment,rule}'::text[]) = override_rule) AND ((trace #>> '{judgment,decision,throttled_by}'::text[])
-            IS NULL) AND CASE WHEN (jsonb_typeof((trace #> '{judgment,signal}'::text[])) = 'null'::text) THEN
-            ((((trace #>> '{judgment,rank_in_window}'::text[]))::numeric = (0)::numeric) AND ((trace #>>
-            '{judgment,rule}'::text[]) = 'oi_parse_failed'::text) AND (final_decision = 'drop'::text) AND
-            (rule_baseline_decision = 'drop'::text)) ELSE ((((trace #>>
-            '{judgment,rank_in_window}'::text[]))::numeric >= (1)::numeric) AND ((trace #>>
-            '{judgment,rule}'::text[]) = CASE WHEN (((trace #>>
-            '{judgment,signal,whale_oi_ratio_bps}'::text[]))::numeric <= ((trace #>>
-            '{oi_signal,policy,whale_oi_ratio_above_bps}'::text[]))::numeric) THEN
-            'whale_ratio_below_threshold'::text WHEN (abs(((trace #>>
-            '{judgment,signal,oi_change_bps}'::text[]))::numeric) < ((trace #>>
-            '{oi_signal,policy,oi_change_at_least_bps}'::text[]))::numeric) THEN 'oi_change_below_threshold'::text
-            WHEN (((trace #>> '{judgment,rank_in_window}'::text[]))::numeric > ((trace #>>
-            '{oi_signal,policy,max_rank_in_window}'::text[]))::numeric) THEN 'beyond_window_rank'::text ELSE
-            'opening_move_with_whale_concentration'::text END) AND (final_decision = CASE WHEN ((trace #>>
-            '{judgment,rule}'::text[]) = 'opening_move_with_whale_concentration'::text) THEN 'push'::text ELSE
-            'drop'::text END) AND (rule_baseline_decision = final_decision)) END AND (scored_judgment_sha256 =
-            encode(sha256(convert_to(public.news_canonical_jsonb((trace -> 'judgment'::text)), 'UTF8'::name)),
+            IS NULL) AND ((trace #>> '{judgment,rule}'::text[]) = CASE WHEN (jsonb_typeof((trace #>
+            '{judgment,signal}'::text[])) = 'null'::text) THEN 'oi_parse_failed'::text ELSE 'stored'::text END) AND
+            (final_decision = 'drop'::text) AND (rule_baseline_decision = 'drop'::text) AND (scored_judgment_sha256
+            = encode(sha256(convert_to(public.news_canonical_jsonb((trace -> 'judgment'::text)), 'UTF8'::name)),
             'hex'::text)) AND (NOT (error_code IS DISTINCT FROM CASE WHEN (jsonb_typeof((trace #>
             '{judgment,signal}'::text[])) = 'null'::text) THEN 'oi_parse_failed'::text ELSE NULL::text END))) OR
             ((judgment_origin = 'liquidation'::text) AND (editorial IS NULL) AND (model IS NULL) AND (NOT degraded)
