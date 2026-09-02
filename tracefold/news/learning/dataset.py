@@ -28,7 +28,6 @@ from ..review.desk import (
     READER_CONTRACT_VERSION,
     REVIEW_RUBRIC_VERSION,
     REVIEW_RUBRIC_VERSIONS,
-    source_only_event_projection,
 )
 from ..storage.root import NewsRepository
 from ..taxonomy import ModelTaxonomyV1, NewsTaxonomyV1, source_authority_from_evidence
@@ -57,7 +56,7 @@ class DatasetSpec(BaseModel):
 
     window: ClosedWindow
     role: Literal["development", "validation"]
-    profile_id: Literal["news_learning_release_v3"] = LEARNING_PROFILE_ID
+    profile_id: Literal["news_learning_release_v4"] = LEARNING_PROFILE_ID
     # No `learning_epoch` (#314). It was a declared field defaulting to a module constant, which meant a
     # caller could name an epoch and the freeze would then check the name against the same constant it came
     # from. The epoch a freeze belongs to is a fact about the deployment, and the ledger is the one place
@@ -170,7 +169,6 @@ class DevelopmentDatasetStore:
         spec: DatasetSpec,
         *,
         admitted: AdmittedCandidate | None = None,
-        calibration_request: Mapping[str, Any] | None = None,
     ) -> DatasetManifest:
         self._ledger.assert_active_stable()
         epoch_started_at_ms = self._ledger.epoch_started_at_ms()
@@ -194,8 +192,6 @@ class DevelopmentDatasetStore:
                 raise ValueError("news_learning_holdout_precedes_candidate_registration")
         elif spec.observation_ref is not None:
             raise ValueError("news_learning_development_observation_ref_not_allowed")
-        if spec.role != "development" and calibration_request is not None:
-            raise ValueError("news_learning_calibration_requires_development_dataset")
 
         cases = self._accepted_cases(
             spec.window,
@@ -204,10 +200,13 @@ class DevelopmentDatasetStore:
         )
         seed = self._seed_receipts(spec.window.from_ms, epoch_started_at_ms=epoch_started_at_ms)
         counts = self._dataset_counts(spec, cases)
-        calibration = self._calibration_receipt(calibration_request, cases) if calibration_request is not None else None
-        if calibration is not None:
-            counts["calibration"] = dict(calibration["statistics"])
         episodes = self._project_episodes(cases, seed)
+        # Inter-drafter agreement over every dual-labelled cluster the corpus carries (#501 D8). Reported
+        # beside the corpus and never a gate: the holdout decides, and an operator reads κ to decide
+        # whether the codebook needs repair before a run is paid for.
+        calibration = self._calibration_receipt(episodes) if spec.role == "development" else None
+        if calibration is not None:
+            counts["calibration"] = dict(calibration)
         distributions, objective_counts = self._dataset_distributions(episodes, cases)
         counts.update(objective_counts)
         counts["distributions"] = distributions
@@ -318,171 +317,58 @@ class DevelopmentDatasetStore:
                 },
             }
 
-        target_ids = set(plan.target_case_ids)
-        control_ids = set(plan.control_case_ids)
-
-        def objective_cluster_n(subset: Sequence[DevelopmentEpisode], case_ids: set[str]) -> int:
-            return len({episode.cluster_id for episode in subset if episode.case_id in case_ids})
-
         distributions = {
             "schema": "tracefold.news.dataset_distributions.v1",
             "full": distribution(typed),
             "train": distribution(plan.train_episodes),
             "development_selection": distribution(plan.development_selection_episodes),
         }
+        # Diagnostics only (#501): the population is every Gold-bearing cluster, and no floor reads these.
         objective_counts = {
-            "train_taxonomy_target_cluster_n": objective_cluster_n(plan.train_episodes, target_ids),
-            "train_taxonomy_control_cluster_n": objective_cluster_n(plan.train_episodes, control_ids),
-            "development_selection_taxonomy_target_cluster_n": objective_cluster_n(
-                plan.development_selection_episodes, target_ids
-            ),
-            "development_selection_taxonomy_control_cluster_n": objective_cluster_n(
-                plan.development_selection_episodes, control_ids
+            "optimizer_cluster_n": len(plan.optimizer_cluster_ids),
+            "train_optimizer_cluster_n": len({episode.cluster_id for episode in plan.train_episodes}),
+            "development_selection_optimizer_cluster_n": len(
+                {episode.cluster_id for episode in plan.development_selection_episodes}
             ),
         }
         return distributions, objective_counts
 
-    def _calibration_receipt(
-        self,
-        request: Mapping[str, Any],
-        cases: Sequence[DatasetCaseRef],
-    ) -> dict[str, Any]:
-        if set(request) != {"tasks"}:
-            raise ValueError("news_learning_calibration_request_fields_invalid")
-        items = request.get("tasks")
-        if not isinstance(items, Sequence) or isinstance(items, (str, bytes)) or len(items) != 50:
-            raise ValueError("news_learning_calibration_requires_50_tasks")
-        case_by_pin = {
-            (str(case.event_id), int(case.evidence_version or 0)): case
-            for case in cases
-            if case.subject_kind == "event"
-        }
-        accepted = self._repository.reviews_by_id([case.review_id for case in case_by_pin.values()])
-        case_by_task: dict[str, tuple[DatasetCaseRef, Mapping[str, Any]]] = {}
-        for case in case_by_pin.values():
-            review = accepted.get(case.review_id)
-            if review is None:
-                raise ValueError("news_learning_calibration_review_missing")
-            task_id = str(review.get("task_id") or "")
-            if not task_id or task_id in case_by_task:
-                raise ValueError("news_learning_calibration_task_duplicate")
-            case_by_task[task_id] = (case, review)
+    @staticmethod
+    def _calibration_receipt(episodes: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+        """κ over every cluster whose accepted review carries two blind drafts, one representative per cluster."""
+
         rows: list[dict[str, Any]] = []
-        entries: list[dict[str, Any]] = []
-        seen_tasks: set[str] = set()
         seen_clusters: set[str] = set()
-        for raw in items:
-            if not isinstance(raw, Mapping):
-                raise ValueError("news_learning_calibration_task_invalid")
-            if set(raw) != {"task_id", "source_projection_sha256"}:
-                raise ValueError("news_learning_calibration_task_fields_invalid")
-            task_id = str(raw.get("task_id") or "")
-            expected_projection = str(raw.get("source_projection_sha256") or "")
-            if not task_id or task_id in seen_tasks:
-                raise ValueError("news_learning_calibration_task_duplicate")
-            seen_tasks.add(task_id)
-            match = case_by_task.get(task_id)
-            if match is None:
-                raise ValueError("news_learning_calibration_task_not_in_dataset")
-            case, accepted_review = match
-            source_row = self._repository.review_task_source(
-                event_id=str(case.event_id),
-                evidence_version=int(case.evidence_version or 0),
-                program_version=self._stable.program_version,
-                program_sha256=self._stable.program_sha256,
-                policy_version=TRIAGE_POLICY_VERSION,
-                bundle_sha=self._stable.bundle_sha,
-            )
-            if source_row is None or str(source_row.get("evidence_sha256") or "") != case.evidence_sha256:
-                raise ValueError("news_learning_calibration_task_not_found")
-            source = source_only_event_projection(source_row)
-            if str(source["task"]["task_id"]) != task_id or str(source["task"]["task_version"]) != str(
-                accepted_review.get("task_version") or ""
-            ):
-                raise ValueError("news_learning_calibration_task_identity_mismatch")
-            if source["projection_sha256"] != expected_projection:
-                raise ValueError("news_learning_calibration_source_projection_mismatch")
-            event_id = str(source["task"]["event_id"])
-            evidence_version = int(source["task"]["evidence_version"])
-            pinned_case = case_by_pin.get((event_id, evidence_version))
-            if pinned_case is None or pinned_case.case_id != case.case_id:
-                raise ValueError("news_learning_calibration_task_not_in_dataset")
-            if case.cluster_id in seen_clusters:
-                raise ValueError("news_learning_calibration_cluster_duplicate")
-            seen_clusters.add(case.cluster_id)
-            reviews = self._repository.event_task_reviews(
-                task_id=task_id,
-                task_version=str(source["task"]["task_version"]),
-            )
-            primary = [
-                review
-                for review in reviews
-                if dict(dict(review.get("payload") or {}).get("taxonomy_review") or {}).get("review_role") == "primary"
-            ]
-            if len(primary) != 2 or len({str(review["reviewer"]) for review in primary}) != 2:
-                raise ValueError("news_learning_calibration_two_primary_reviewers_required")
-
-            def taxonomy(review: Mapping[str, Any]) -> ModelTaxonomyV1:
-                payload = dict(dict(review.get("payload") or {}).get("taxonomy") or {})
-                return ModelTaxonomyV1.model_validate(
-                    {field: payload[field] for field in ModelTaxonomyV1.model_fields if field in payload}
-                )
-
-            left, right = taxonomy(primary[0]), taxonomy(primary[1])
-            disagreement = left != right
-            adjudications = [
-                review
-                for review in reviews
-                if dict(dict(review.get("payload") or {}).get("taxonomy_review") or {}).get("review_role")
-                == "adjudication"
-            ]
-            adjudication = adjudications[-1] if adjudications else None
-            if disagreement:
-                provenance = dict(dict((adjudication or {}).get("payload") or {}).get("taxonomy_review") or {})
-                if (
-                    adjudication is None
-                    or str(adjudication["reviewer"]) in {str(review["reviewer"]) for review in primary}
-                    or provenance.get("adjudicates_review_id") != primary[-1]["review_id"]
-                    or case.review_id != adjudication["review_id"]
-                ):
-                    raise ValueError("news_learning_calibration_adjudication_incomplete")
-            elif case.review_id not in {str(review["review_id"]) for review in primary}:
-                raise ValueError("news_learning_calibration_consensus_not_dataset_gold")
+        drafter_models: set[str] = set()
+        for episode in sorted(episodes, key=lambda item: str(item["case_id"])):
+            provenance = dict(dict(episode.get("accepted_review") or {}).get("taxonomy_review") or {})
+            drafts = dict(provenance.get("drafts") or {})
+            if len(drafts) < 2:
+                continue
+            cluster_id = str(episode["cluster_id"])
+            if cluster_id in seen_clusters:
+                continue
+            seen_clusters.add(cluster_id)
+            (left_model, left), (right_model, right) = sorted(drafts.items())[:2]
+            drafter_models.update((str(left_model), str(right_model)))
             rows.append(
                 {
-                    "task_id": task_id,
-                    "cluster_id": case.cluster_id,
-                    "reviewer_a": left,
-                    "reviewer_b": right,
+                    "task_id": str(episode["case_id"]),
+                    "cluster_id": cluster_id,
+                    "reviewer_a": ModelTaxonomyV1.model_validate(left),
+                    "reviewer_b": ModelTaxonomyV1.model_validate(right),
                 }
             )
-            entries.append(
-                {
-                    "task_id": task_id,
-                    "source_projection_sha256": expected_projection,
-                    "event_id": event_id,
-                    "evidence_version": evidence_version,
-                    "cluster_id": case.cluster_id,
-                    "primary_review_ids": [str(review["review_id"]) for review in primary],
-                    "primary_reviewers": [str(review["reviewer"]) for review in primary],
-                    "adjudication_review_id": (
-                        str(adjudication["review_id"]) if disagreement and adjudication is not None else None
-                    ),
-                }
-            )
-        statistics = {
-            **calibrate_taxonomy(rows),
-            "disagreement_n": sum(
-                ModelTaxonomyV1.model_validate(row["reviewer_a"]) != ModelTaxonomyV1.model_validate(row["reviewer_b"])
-                for row in rows
-            ),
-            "disagreement_unadjudicated_n": 0,
-        }
+        if not rows:
+            return None
+        agreement = calibrate_taxonomy(rows)
         return {
-            "schema": "tracefold.news.dataset_calibration_receipt.v1",
-            "request_sha256": canonical_sha(dict(request)),
-            "tasks": entries,
-            "statistics": statistics,
+            "schema": "tracefold.news.dataset_calibration_receipt.v2",
+            "cluster_n": int(agreement["cluster_n"]),
+            "dual_labeled_n": len(rows),
+            "kappa": dict(agreement["kappa"]),
+            "subject_mean_set_f1": agreement["subject_mean_set_f1"],
+            "drafter_models": sorted(drafter_models),
         }
 
     def development_compile_export(self, dataset_sha: str) -> DevelopmentCompileExport:
@@ -632,6 +518,9 @@ class DevelopmentDatasetStore:
                         "expected_correction": str(review.get("expected_correction") or ""),
                         "note": str(review.get("note") or ""),
                         "taxonomy": model_taxonomy.model_dump(mode="json"),
+                        # Verbatim provenance (#501): label source, drafter and the blind drafts, so κ is
+                        # computable from the sealed corpus alone.
+                        "taxonomy_review": dict(review_payload.get("taxonomy_review") or {}),
                     },
                     "production_judgment": case.get("production_judgment"),
                 }

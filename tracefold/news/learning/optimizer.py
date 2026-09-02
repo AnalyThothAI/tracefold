@@ -1,12 +1,12 @@
 """The one bounded offline optimizer that can produce a News Prompt candidate.
 
-Public ``dspy.GEPA`` compiles the single ``NativeNewsProgram.event_semantics`` Predict against accepted
-taxonomy Gold. Task and reflection calls share one audited ledger and one physical-call meter; the returned
-public candidates are scanned for the highest admissible instruction, and each must contain that one Predictor
-and no demos. ReaderCard stays byte-identical.
-The module owns no persistence,
-activation, canary, or promotion authority. A run ends in ``NO_OP``, ``REJECTED``, or ``ADVANCE``, and an
-``ADVANCE`` candidate is still subject to every downstream release gate.
+Public ``dspy.GEPA`` compiles the single ``NativeNewsProgram.taxonomy`` Predict against accepted taxonomy
+Gold (#501). Task and reflection calls share one audited ledger and one physical-call meter. Admission is
+GEPA's own answer: the candidate at ``best_idx`` advances when its selection score is strictly above the
+seed's and its instruction is valid, and otherwise the run is ``NO_OP``. EventSemantics and ReaderCard stay
+byte-identical. The module owns no persistence, activation, canary, or promotion authority. A run ends in
+``NO_OP``, ``REJECTED``, or ``ADVANCE``, and an ``ADVANCE`` candidate is still subject to every downstream
+release gate, which is where a candidate that overfit the selection set is caught.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Final, Literal, Protocol, cast
 
 import dspy  # type: ignore[import-untyped]
-from dspy.teleprompt.gepa.gepa import DspyGEPAResult  # type: ignore[import-untyped]
+from dspy.teleprompt.gepa.gepa import AUTO_RUN_SETTINGS, DspyGEPAResult  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..artifact_identity import canonical_sha
@@ -46,7 +46,7 @@ from ..program.lm import (
 )
 from ..program.module import NativeNewsProgram
 from ..program.runtime import PROGRAM_VERSION, _estimated_tokens
-from ..program.signatures import EventSemantics
+from ..taxonomy import ModelTaxonomyV1
 from .contracts import (
     REFLECTION_MAX_TOKENS,
     REFLECTION_MINIBATCH_SIZE,
@@ -71,7 +71,8 @@ from .objective import (
 )
 from .taxonomy_metric import TAXONOMY_AXES, compare_taxonomy
 
-OBJECTIVE_SUMMARY_SCHEMA = "tracefold.news.optimization_objective_summary.v3"
+# v4 (#501): the population is `included`/`excluded`; no target/control split, no owner distribution.
+OBJECTIVE_SUMMARY_SCHEMA = "tracefold.news.optimization_objective_summary.v4"
 # v3 (#456): `metric_calls` is null when GEPA terminates before returning its public result. The physical
 # task/reflection call counters remain exact; zero is reserved for a preflight refusal that ran no metric.
 USAGE_SCHEMA = "tracefold.news.optimization_usage.v3"
@@ -145,93 +146,11 @@ class GepaRunResult(_ExactModel):
     # disjoint split and retrieval diagnostics remain public corpus evidence beside native GEPA state.
     split: dict[str, Any]
     retrieval: dict[str, Any]
-    failure_cluster_ids: tuple[str, ...] = Field(min_length=1)
+    optimizer_cluster_ids: tuple[str, ...] = Field(min_length=1)
     target_dimensions: tuple[str, ...] = Field(min_length=1)
     metric_calls: int = Field(ge=0)
     train_count: int = Field(gt=0)
     val_count: int = Field(gt=0)
-
-
-# The offline release gate refuses a candidate whose mean tokens per program observation grow more than
-# 10% over stable. #199's first ADVANCE died exactly there: +2.60 selection points, +4.7KB of instruction,
-# rejected after a four-hour run — nothing in GEPA's world had said bytes cost anything. Measured on live
-# evaluation runs, one observation averages ~9.0k tokens, so the gate's 10% window is ~900 tokens of
-# headroom. The budget therefore charges one envelope over the only writable EventSemantics instruction
-# and is enforced twice:
-# in the proposer, where a re-ask can still teach the reflection model to compress, and in the native
-# Program's candidate guard, which merge proposals reach without ever meeting the proposer (#334).
-INSTRUCTION_GROWTH_BUDGET_TOKENS: Final[int] = 800
-
-
-@dataclass(frozen=True)
-class InstructionGrowthBudget:
-    """One shared token envelope over the whole candidate, anchored to the seed instructions.
-
-    Anchored to the seed, never the current candidate: an anchor that moved with accepted rounds would let
-    the allowance ratchet upward across a run. Components absent from a candidate are counted at their
-    seed size, so a partial mapping cannot dodge the envelope.
-    """
-
-    seed_tokens: Mapping[str, int]
-    max_growth_tokens: int = INSTRUCTION_GROWTH_BUDGET_TOKENS
-
-    @classmethod
-    def from_seeds(
-        cls, seeds: Mapping[str, str], *, max_growth_tokens: int = INSTRUCTION_GROWTH_BUDGET_TOKENS
-    ) -> InstructionGrowthBudget:
-        return cls(
-            seed_tokens={component: _estimated_tokens(text) for component, text in seeds.items()},
-            max_growth_tokens=int(max_growth_tokens),
-        )
-
-    def total_budget(self) -> int:
-        return sum(self.seed_tokens.values()) + self.max_growth_tokens
-
-    def receipt(self) -> dict[str, Any]:
-        return {
-            "seed_tokens": dict(self.seed_tokens),
-            "max_growth_tokens": self.max_growth_tokens,
-            "total_budget": self.total_budget(),
-            "estimator": "utf8_bytes_over_4",
-        }
-
-    def over(self, texts: Mapping[str, str]) -> tuple[str, str] | None:
-        """(code, guidance) when the candidate exceeds the envelope, else None."""
-
-        if not self.seed_tokens:
-            return None
-        total = 0
-        for component, seed in self.seed_tokens.items():
-            text = str(texts.get(component) or "")
-            total += _estimated_tokens(text) if text.strip() else seed
-        budget = self.total_budget()
-        if total <= budget:
-            return None
-        return "news_program_instruction_growth_budget", (
-            f"news_program_instruction_growth_budget: the candidate totals {total} estimated tokens "
-            f"against a budget of {budget} (seeds {dict(self.seed_tokens)} + shared headroom "
-            f"{self.max_growth_tokens}).\n"
-            "The offline release gate refuses a candidate whose per-observation tokens grow more than "
-            "10%, however well it scores, and both instructions ride every observation. Compress rather "
-            "than cut substance: merge overlapping rules and drop restatements of what the instruction "
-            "already says."
-        )
-
-
-def _instruction_rejection(text: str) -> str | None:
-    """The exact code the instruction bounds would refuse this text with, or `None` if it is acceptable."""
-
-    if not text:
-        return None
-    try:
-        validate_program_instruction(text)
-    except ValueError as exc:
-        message = str(exc)
-        for marker in _INSTRUCTION_REJECTIONS:
-            if marker in message:
-                return marker
-        return "news_program_instruction_rejected"
-    return None
 
 
 # --- the bounded GEPA run (was `compiler/gepa.py`) ------------------------------------------------
@@ -295,14 +214,6 @@ class GepaNoProgramChange(ValueError):
         self.result = result
 
 
-class GepaCandidateZeroIncomplete(ValueError):
-    """Candidate zero did not finish its validation pass, so no quality comparison exists."""
-
-    def __init__(self, result: GepaRunResult) -> None:
-        super().__init__("news_program_compile_candidate_zero_incomplete")
-        self.result = result
-
-
 _TASK_OUTPUT_FAILURE = "news_program_compile_task_model_output_truncated"
 _TASK_OUTPUT_INVALID = "news_program_compile_task_model_output_invalid"
 
@@ -317,38 +228,41 @@ def _zero_taxonomy_objectives() -> dict[str, float]:
     }
 
 
-class _LearningEventSemantics(dspy.Module):  # type: ignore[misc]
+class _LearningTaxonomy(dspy.Module):  # type: ignore[misc]
     """Keep one candidate-local task failure as one scoreable GEPA example.
 
-    DSPy 3.3.1 drops typed validation failures and re-raises ``LMError`` while capturing GEPA traces. GEPA
-    assumes the batch stayed aligned and indexes past either shortened result. This adapter is deliberately
-    narrower than an evaluator: it preserves the one native Predict and converts only candidate-local
-    truncation and typed validation into Predictions the existing metric can score.
+    DSPy 3.3.1 drops typed validation failures and re-raises ``LMError`` while capturing GEPA traces
+    (#478). GEPA assumes the batch stayed aligned and indexes past either shortened result. This adapter is
+    the minimal accommodation of that upstream limit, not a process: it preserves the one native Predict
+    and converts only candidate-local truncation and typed validation into Predictions the metric scores
+    at ``failure_score``.
     """
 
     def __init__(self, predictor: dspy.Predict) -> None:
         super().__init__()
-        self.event_semantics = predictor
+        self.taxonomy = predictor
 
     def forward(self, evidence_json: str) -> dspy.Prediction:
         try:
-            return self.event_semantics(evidence_json=evidence_json)
+            return self.taxonomy(evidence_json=evidence_json)
         except LMOutputTruncatedError:
             return dspy.Prediction(task_output_failure=_TASK_OUTPUT_FAILURE)
         except ValidationError as exc:
-            if exc.title != EventSemantics.__name__:
+            if exc.title != ModelTaxonomyV1.__name__:
                 raise
             return dspy.Prediction(
                 task_output_failure=_TASK_OUTPUT_INVALID,
-                task_output_feedback=f"Typed EventSemantics is invalid: {exc}",
+                task_output_feedback=f"Typed ModelTaxonomyV1 is invalid: {exc}",
             )
 
 
 class _DspyTaxonomyMetric:
-    """The four-axis accepted-Gold ruler used by the single EventSemantics Predict."""
+    """The four-axis accepted-Gold ruler used by the single taxonomy Predict.
 
-    def __init__(self, *, task_output_failure_score: float) -> None:
-        self._task_output_failure_score = task_output_failure_score
+    Every failure scores the native ``failure_score`` of 0.0 (#501 D5). The v3 metric scored a truncated
+    output at ``-(train+1)`` so it could be told apart later; that sentinel dominated the Pareto front
+    and left candidate zero with an aggregate below every real candidate.
+    """
 
     def __call__(
         self,
@@ -363,31 +277,24 @@ class _DspyTaxonomyMetric:
         if expected is None:
             raise TypeError("news_program_compile_taxonomy_gold_missing")
         if getattr(pred, "task_output_failure", None) == _TASK_OUTPUT_FAILURE:
-            score = self._task_output_failure_score
             return dspy.Prediction(
-                score=score,
-                feedback="Task output was truncated; this candidate did not complete the example.",
-                objective_scores={
-                    "subject_codes_set_f1": score,
-                    "event_family_accuracy": score,
-                    "change_state_accuracy": score,
-                    "assertion_status_accuracy": score,
-                    "four_axis_exact_accuracy": score,
-                },
+                score=0.0,
+                feedback="output truncated: the candidate did not finish this example's taxonomy JSON.",
+                objective_scores=_zero_taxonomy_objectives(),
             )
         if getattr(pred, "task_output_failure", None) == _TASK_OUTPUT_INVALID:
             return dspy.Prediction(
                 score=0.0,
-                feedback=getattr(pred, "task_output_feedback", "Typed EventSemantics is invalid."),
+                feedback=getattr(pred, "task_output_feedback", "Typed ModelTaxonomyV1 is invalid."),
                 objective_scores=_zero_taxonomy_objectives(),
             )
         try:
-            semantics = EventSemantics.model_validate(getattr(pred, "semantics", None))
-            comparison = compare_taxonomy(expected, semantics.taxonomy)
+            taxonomy = ModelTaxonomyV1.model_validate(getattr(pred, "taxonomy", None))
+            comparison = compare_taxonomy(expected, taxonomy)
         except ValueError as exc:
             return dspy.Prediction(
                 score=0.0,
-                feedback=f"Typed EventSemantics is invalid: {exc}",
+                feedback=f"Typed ModelTaxonomyV1 is invalid: {exc}",
                 objective_scores=_zero_taxonomy_objectives(),
             )
         objectives = {
@@ -409,28 +316,23 @@ def _dspy_taxonomy_example(episode: DevelopmentEpisode) -> dspy.Example:
     if gold is None:
         raise ValueError("news_program_compile_taxonomy_gold_missing")
     return dspy.Example(
-        evidence_json=render_model_evidence_json(
-            episode.context.event_semantics_payload(), predictor="event_semantics"
-        ),
+        evidence_json=render_model_evidence_json(episode.context.taxonomy_payload(), predictor="taxonomy"),
         gold_taxonomy=gold,
         case_id=episode.case_id,
         cluster_id=episode.cluster_id,
     ).with_inputs("evidence_json")
 
 
-def _taxonomy_metric_receipt(
-    *,
-    review_rubric_version: str,
-    task_output_failure_score: float,
-) -> dict[str, Any]:
+def _taxonomy_metric_receipt(*, review_rubric_version: str) -> dict[str, Any]:
     return {
-        "schema": "tracefold.news.taxonomy_gepa_metric.v3",
-        "metric_id": "tracefold.news.taxonomy_gepa_direct_v3",
+        "schema": "tracefold.news.taxonomy_gepa_metric.v4",
+        "metric_id": "tracefold.news.taxonomy_gepa_direct_v4",
         "review_rubric_version": review_rubric_version,
         "scalar": "mean(subject_codes_set_f1,event_family_exact,change_state_exact,assertion_status_exact)",
         "axes": list(TAXONOMY_AXES),
         "invalid_prediction_score": 0.0,
-        "task_output_failure_score": task_output_failure_score,
+        "truncated_output_score": 0.0,
+        "feedback": "codebook definitions of expected and predicted labels plus the matching precedence rules",
     }
 
 
@@ -439,11 +341,10 @@ def _instruction_change_receipt(
     *,
     winner_instruction: str,
 ) -> dict[str, Any]:
-    before = base_program.event_semantics_instruction
-    reader = base_program.reader_card_instruction
+    before = base_program.taxonomy_instruction
     return {
-        "schema": "tracefold.news.taxonomy_instruction_change.v1",
-        "event_semantics": {
+        "schema": "tracefold.news.taxonomy_instruction_change.v2",
+        "taxonomy": {
             "before_sha256": hashlib.sha256(before.encode()).hexdigest(),
             "after_sha256": hashlib.sha256(winner_instruction.encode()).hexdigest(),
             "changed": winner_instruction != before,
@@ -457,14 +358,18 @@ def _instruction_change_receipt(
                 difflib.unified_diff(
                     before.splitlines(),
                     winner_instruction.splitlines(),
-                    fromfile="stable/event_semantics",
-                    tofile="winner/event_semantics",
+                    fromfile="stable/taxonomy",
+                    tofile="winner/taxonomy",
                     lineterm="",
                 )
             ),
         },
+        "event_semantics": {
+            "instruction_sha256": hashlib.sha256(base_program.event_semantics_instruction.encode()).hexdigest(),
+            "unchanged": True,
+        },
         "reader_card": {
-            "instruction_sha256": hashlib.sha256(reader.encode()).hexdigest(),
+            "instruction_sha256": hashlib.sha256(base_program.reader_card_instruction.encode()).hexdigest(),
             "unchanged": True,
         },
     }
@@ -473,8 +378,7 @@ def _instruction_change_receipt(
 @dataclass(frozen=True)
 class _GepaAdmission:
     selected_instruction: str
-    admitted_index: int | None
-    candidate_zero_complete: bool
+    admitted: bool
     selection_receipt: dict[str, Any]
     public_result: dict[str, Any]
 
@@ -483,13 +387,16 @@ def _admit_public_gepa_candidates(
     *,
     run: DspyGEPAResult,
     base_instruction: str,
-    growth_budget: InstructionGrowthBudget,
-    control_indexes: set[int],
     val_count: int,
-    task_output_failure_score: float,
     metric_calls: int,
 ) -> _GepaAdmission:
-    """Validate GEPA's public result and select the highest candidate satisfying Tracefold's contract."""
+    """GEPA's own winner, admitted when it is strictly better than the seed (#501 D4).
+
+    No per-control replay, no per-objective check, no growth budget here: those are what the offline and
+    holdout release gates already decide, and re-deciding them on the selection set only made ADVANCE
+    unreachable — the v2 rule required every Stable-correct control to replay at exactly 1.0, which the
+    seed itself did not satisfy.
+    """
 
     scores = [float(value) for value in list(getattr(run, "val_aggregate_scores", ()) or ())]
     if not scores:
@@ -508,87 +415,42 @@ def _admit_public_gepa_candidates(
     if any(set(candidate_scores) != expected_val_ids for candidate_scores in val_subscores):
         raise ValueError("news_program_compile_public_validation_subscores_invalid")
 
-    gepa_best_idx = run.best_idx
-    candidate_zero_task_output_failure_n = sum(
-        float(score) == task_output_failure_score for score in val_subscores[0].values()
-    )
-    candidate_zero_complete = candidate_zero_task_output_failure_n == 0
-    candidate_instructions: dict[int, str] = {}
-    admissible_indexes: list[int] = []
-    if candidate_zero_complete:
-        for index, candidate in enumerate(run.candidates[1:], start=1):
-            instruction = _winning_event_instruction(candidate)
-            candidate_instructions[index] = instruction
-            try:
-                validate_program_instruction(instruction)
-            except ValueError as exc:
-                if _instruction_rejection_code(exc) is None:
-                    raise
-                continue
-            if (
-                instruction != base_instruction
-                and scores[index] > scores[0]
-                and all(float(val_subscores[index][control]) == 1.0 for control in control_indexes)
-                and growth_budget.over({"event_semantics": instruction}) is None
-            ):
-                admissible_indexes.append(index)
-    admitted_idx = max(admissible_indexes, key=scores.__getitem__) if admissible_indexes else None
-    selected_instruction = candidate_instructions[admitted_idx] if admitted_idx is not None else base_instruction
-
-    def control_counts(index: int) -> tuple[int, int]:
-        exact = sum(float(val_subscores[index][control]) == 1.0 for control in control_indexes)
-        return exact, len(control_indexes) - exact
-
-    candidate_zero_exact_n, candidate_zero_non_exact_n = control_counts(0)
-    gepa_best_exact_n, gepa_best_non_exact_n = control_counts(gepa_best_idx)
-    admitted_counts = control_counts(admitted_idx) if admitted_idx is not None else (None, None)
+    best = int(run.best_idx)
+    if not 0 <= best < len(scores):
+        raise ValueError("news_program_compile_public_result_invalid")
+    best_instruction = _winning_taxonomy_instruction(run.candidates[best])
+    instruction_valid = True
+    try:
+        validate_program_instruction(best_instruction)
+    except ValueError as exc:
+        if _instruction_rejection_code(exc) is None:
+            raise
+        instruction_valid = False
+    admitted = best != 0 and scores[best] > scores[0] and best_instruction != base_instruction and instruction_valid
+    selected_instruction = best_instruction if admitted else base_instruction
     baseline_objectives = {key: float(value) for key, value in objective_scores[0].items()}
-    gepa_best_objectives = {key: float(value) for key, value in objective_scores[gepa_best_idx].items()}
-    admitted_objectives = (
-        {key: float(value) for key, value in objective_scores[admitted_idx].items()}
-        if admitted_idx is not None
-        else None
-    )
+    best_objectives = {key: float(value) for key, value in objective_scores[best].items()}
     selection = {
-        "schema": "tracefold.news.taxonomy_selection_score.v2",
+        "schema": "tracefold.news.taxonomy_selection_score.v3",
         "candidate_0": {"taxonomy_overall": scores[0], **baseline_objectives},
-        "candidate_zero_complete": candidate_zero_complete,
-        "candidate_zero_task_output_failure_n": candidate_zero_task_output_failure_n,
-        "stable_correct_control_n": len(control_indexes),
-        "candidate_zero_control_gold_exact_n": candidate_zero_exact_n,
-        "candidate_zero_control_non_exact_n": candidate_zero_non_exact_n,
-        "gepa_best_candidate_index": gepa_best_idx,
-        "gepa_best": {"taxonomy_overall": scores[gepa_best_idx], **gepa_best_objectives},
-        "gepa_best_control_gold_exact_n": gepa_best_exact_n,
-        "gepa_best_control_non_exact_n": gepa_best_non_exact_n,
-        "admissible_candidate_indexes": admissible_indexes,
-        "tracefold_admitted_candidate_index": admitted_idx,
-        "tracefold_admitted": (
-            {"taxonomy_overall": scores[admitted_idx], **admitted_objectives}
-            if admitted_idx is not None and admitted_objectives is not None
-            else None
-        ),
-        "tracefold_admitted_control_gold_exact_n": admitted_counts[0],
-        "tracefold_admitted_control_non_exact_n": admitted_counts[1],
-        "delta": (
-            {
-                "taxonomy_overall": round(scores[admitted_idx] - scores[0], 6),
-                **{
-                    key: round(admitted_objectives.get(key, 0.0) - baseline_objectives.get(key, 0.0), 6)
-                    for key in sorted(set(baseline_objectives) | set(admitted_objectives))
-                },
-            }
-            if admitted_idx is not None and admitted_objectives is not None
-            else None
-        ),
+        "gepa_best_index": best,
+        "gepa_best": {"taxonomy_overall": scores[best], **best_objectives},
+        "gepa_best_instruction_valid": instruction_valid,
+        "admitted": admitted,
+        "delta": {
+            "taxonomy_overall": round(scores[best] - scores[0], 6),
+            **{
+                key: round(best_objectives.get(key, 0.0) - baseline_objectives.get(key, 0.0), 6)
+                for key in sorted(set(baseline_objectives) | set(best_objectives))
+            },
+        },
     }
     return _GepaAdmission(
         selected_instruction=selected_instruction,
-        admitted_index=admitted_idx,
-        candidate_zero_complete=candidate_zero_complete,
+        admitted=admitted,
         selection_receipt=selection,
         public_result={
-            "schema": "tracefold.news.dspy_gepa_public_result.v2",
+            "schema": "tracefold.news.dspy_gepa_public_result.v3",
             "candidate_count": len(run.candidates),
             "parents": run.parents,
             "validation_aggregate_scores": scores,
@@ -597,10 +459,30 @@ def _admit_public_gepa_candidates(
                 for candidate_scores in val_subscores
             ],
             "validation_aggregate_objective_scores": objective_scores,
-            "gepa_best_index": gepa_best_idx,
-            "tracefold_admitted_index": admitted_idx,
+            "gepa_best_index": best,
+            "admitted": admitted,
             "total_metric_calls": metric_calls,
         },
+    )
+
+
+def resolve_auto_metric_calls(auto: str, *, val_count: int) -> int:
+    """The metric-call budget `dspy.GEPA(auto=...)` will set for itself, computed the way it computes it.
+
+    One Predictor is optimized, so ``num_preds`` is 1. Resolved before `compile` so the receipt and the
+    end-of-step ceiling name the same number whether the compile ran or was injected.
+    """
+
+    if auto not in AUTO_RUN_SETTINGS:
+        raise ValueError("news_program_compile_auto_budget_unknown")
+    # `auto_budget` reads nothing from `self`; calling it unbound avoids building a throwaway optimizer.
+    return int(
+        dspy.GEPA.auto_budget(
+            cast(Any, None),
+            num_preds=1,
+            num_candidates=AUTO_RUN_SETTINGS[auto]["n"],
+            valset_size=val_count,
+        )
     )
 
 
@@ -610,28 +492,27 @@ def run_gepa(
     episodes: Sequence[DevelopmentEpisode],
     task_lm: dspy.BaseLM,
     reflection_lm: Any,
-    max_metric_calls: int,
     seed: int,
     review_rubric_version: str,
+    auto: str | None = None,
+    max_metric_calls: int | None = None,
     compile_fn: Callable[..., dspy.Module] | None = None,
     gepa_log_dir: str | None = None,
 ) -> GepaRunResult:
-    """Optimize only EventSemantics taxonomy against accepted Gold."""
+    """Optimize only the taxonomy Predictor against accepted Gold."""
 
+    if (auto is None) == (max_metric_calls is None):
+        raise ValueError("news_program_compile_budget_requires_exactly_one_of_auto_or_max_metric_calls")
     if gepa_log_dir:
         log_path = Path(gepa_log_dir)
         if log_path.exists() and (not log_path.is_dir() or any(log_path.iterdir())):
             raise ValueError("news_program_compile_gepa_log_dir_not_empty")
     # One Objective Plan, built here rather than by each caller, so the corpus this optimization sees is the
     # corpus `readiness`, the dataset-bound baseline and `CandidateEvaluator` re-derive from the same frozen
-    # episodes. Until #199 this function scoped its targets with an owner-blind "did any review say anything
-    # is wrong" rule and then split *every* episode — so a retrieval miss became an instruction to repair,
-    # and cases nobody had blamed on the Prompt still reached the reflective minibatch as low scores.
+    # episodes.
     plan = build_gepa_objective_plan(episodes)
-    if not plan.target_failure_cluster_ids:
-        raise ValueError("news_program_compile_no_verified_failure_clusters")
-    if not plan.control_cluster_ids:
-        raise ValueError("news_program_compile_no_correct_control_clusters")
+    if not plan.optimizer_cluster_ids:
+        raise ValueError("news_program_compile_no_taxonomy_gold_clusters")
     if plan.split is None:
         # Verbatim: the plan records the exact code `_honest_split` refused with, so this stays the failure
         # the caller has always seen rather than a translation of it.
@@ -643,22 +524,23 @@ def run_gepa(
     val_examples = [_dspy_taxonomy_example(episode) for episode in plan.development_selection_episodes]
     retrieval = retrieval_receipt(episodes)
 
+    resolved_metric_calls = (
+        int(max_metric_calls)
+        if max_metric_calls is not None
+        else resolve_auto_metric_calls(str(auto), val_count=len(val_examples))
+    )
     constructor = optimizer_constructor(
+        auto=auto,
         max_metric_calls=max_metric_calls,
         seed=seed,
         train_count=len(train_examples),
     )
-    task_output_failure_score = float(-(len(train_examples) + 1))
-    metric = _DspyTaxonomyMetric(task_output_failure_score=task_output_failure_score)
-    metric_receipt = _taxonomy_metric_receipt(
-        review_rubric_version=review_rubric_version,
-        task_output_failure_score=task_output_failure_score,
-    )
-    growth_budget = InstructionGrowthBudget.from_seeds({"event_semantics": base_program.event_semantics_instruction})
-    student = _LearningEventSemantics(NativeNewsProgram(base_program).event_semantics)
+    metric = _DspyTaxonomyMetric()
+    metric_receipt = _taxonomy_metric_receipt(review_rubric_version=review_rubric_version)
+    student = _LearningTaxonomy(NativeNewsProgram(base_program).taxonomy)
     config_receipt = optimizer_config_receipt(
-        growth_budget=growth_budget,
         constructor=constructor,
+        resolved_metric_calls=resolved_metric_calls,
         task_lm=task_lm,
         reflection_lm=reflection_lm,
         metric_sha256=canonical_sha(metric_receipt),
@@ -676,7 +558,9 @@ def run_gepa(
         metric=metric,
         reflection_lm=reflection_lm,
         instruction_proposer=None,
-        add_format_failure_as_feedback=True,
+        # Off (#501 D7): dspy 3.3.1 renders format-failure feedback with a hard-coded ChatAdapter, which
+        # describes a request shape this JSONAdapter program never sends.
+        add_format_failure_as_feedback=False,
         log_dir=gepa_log_dir,
         gepa_kwargs={"stop_callbacks": stopper},
         **constructor,
@@ -708,36 +592,36 @@ def run_gepa(
     run = getattr(optimized, "detailed_results", None)
     if not isinstance(run, DspyGEPAResult):
         raise ValueError("news_program_compile_detailed_results_missing")
+    # In `auto` mode dspy fills `max_metric_calls` inside `compile`; the receipt already names the value
+    # computed by the same formula, and the two must agree or the ceiling below is meaningless.
+    filled = getattr(optimizer, "max_metric_calls", None)
+    if isinstance(filled, int) and filled != resolved_metric_calls:
+        raise ValueError(
+            f"news_program_compile_metric_budget_unverifiable:auto={filled},resolved={resolved_metric_calls}"
+        )
 
     reported_calls = getattr(run, "total_metric_calls", None)
     metric_calls = int(reported_calls) if isinstance(reported_calls, int) else -1
     ceiling = gepa_metric_call_ceiling(
-        max_metric_calls=max_metric_calls,
+        max_metric_calls=resolved_metric_calls,
         optimizer_config=config_receipt,
         expected_example_count=len(train_examples) + len(val_examples),
     )
     if metric_calls < 0 or metric_calls > ceiling:
         raise ValueError(
             "news_program_compile_metric_budget_unverifiable:"
-            f"observed={metric_calls},requested={max_metric_calls},ceiling={ceiling}"
+            f"observed={metric_calls},requested={resolved_metric_calls},ceiling={ceiling}"
         )
-    control_indexes = {
-        index
-        for index, episode in enumerate(plan.development_selection_episodes)
-        if episode.case_id in set(plan.control_case_ids)
-    }
     admission = _admit_public_gepa_candidates(
         run=run,
-        base_instruction=base_program.event_semantics_instruction,
-        growth_budget=growth_budget,
-        control_indexes=control_indexes,
+        base_instruction=base_program.taxonomy_instruction,
         val_count=len(val_examples),
-        task_output_failure_score=task_output_failure_score,
         metric_calls=metric_calls,
     )
     patch = ProgramStrategyPatchV1.issue(
         parent=base_program,
-        event_semantics_instruction=admission.selected_instruction,
+        event_semantics_instruction=base_program.event_semantics_instruction,
+        taxonomy_instruction=admission.selected_instruction,
         reader_card_instruction=base_program.reader_card_instruction,
     )
     result = GepaRunResult(
@@ -754,20 +638,18 @@ def run_gepa(
         public_result=admission.public_result,
         split=split_receipt,
         retrieval=retrieval,
-        failure_cluster_ids=plan.target_failure_cluster_ids,
+        optimizer_cluster_ids=plan.optimizer_cluster_ids,
         target_dimensions=plan.target_dimensions,
         metric_calls=metric_calls,
         train_count=len(train_examples),
         val_count=len(val_examples),
     )
-    if not admission.candidate_zero_complete:
-        raise GepaCandidateZeroIncomplete(result)
-    if admission.admitted_index is None:
+    if not admission.admitted:
         raise GepaNoProgramChange(result)
     return result
 
 
-def _winning_event_instruction(program: dspy.Module) -> str:
+def _winning_taxonomy_instruction(program: dspy.Module) -> str:
     """Read the one public Predict from a GEPA candidate."""
 
     predictors = dict(program.named_predictors())
@@ -779,11 +661,24 @@ def _winning_event_instruction(program: dspy.Module) -> str:
     return str(predictor.signature.instructions)
 
 
-def optimizer_constructor(*, max_metric_calls: int, seed: int, train_count: int) -> dict[str, Any]:
-    """The one public `dspy.GEPA` configuration this repository constructs."""
+def optimizer_constructor(
+    *,
+    seed: int,
+    train_count: int,
+    auto: str | None = None,
+    max_metric_calls: int | None = None,
+) -> dict[str, Any]:
+    """The one public `dspy.GEPA` configuration this repository constructs.
 
+    Exactly one of `auto` / `max_metric_calls`, passed through unchanged (#501 D6): `auto` is DSPy's own
+    budget contract, and this repository adds no floor or preflight of its own on top of it.
+    """
+
+    if (auto is None) == (max_metric_calls is None):
+        raise ValueError("news_program_compile_budget_requires_exactly_one_of_auto_or_max_metric_calls")
+    budget: dict[str, Any] = {"auto": auto} if max_metric_calls is None else {"max_metric_calls": int(max_metric_calls)}
     return {
-        "max_metric_calls": max_metric_calls,
+        **budget,
         # GEPA's default is 3, and 3 is too few for this metric. In the first real run every proposal was
         # skipped on an *exact* tie — 1.729166 vs 1.729166, 1.597917 vs 1.597917 — because a good instruction
         # here names recurring evidence patterns (a sentiment index, a comparison base, a crypto-linked
@@ -810,32 +705,35 @@ def optimizer_constructor(*, max_metric_calls: int, seed: int, train_count: int)
 def optimizer_config_receipt(
     *,
     constructor: dict[str, Any],
+    resolved_metric_calls: int,
     task_lm: dspy.BaseLM,
     reflection_lm: Any,
-    growth_budget: InstructionGrowthBudget | None = None,
     metric_sha256: str,
     example_count: int,
     train_count: int,
     val_count: int,
 ) -> dict[str, Any]:
+    scalars = dict(_json_scalars(constructor))
+    # `auto` resolves to a count inside dspy; the receipt carries both the declared mode and the number it
+    # became, and the end-of-step ceiling reads the number.
+    scalars.setdefault("auto", None)
+    scalars["max_metric_calls"] = int(resolved_metric_calls)
     return {
-        "schema": "tracefold.news.compile_optimizer_config_receipt.v7",
+        "schema": "tracefold.news.compile_optimizer_config_receipt.v8",
         "optimizer": {
             "implementation": "dspy.GEPA",
             "dspy_version": importlib.metadata.version("dspy"),
             "gepa_version": importlib.metadata.version("gepa"),
             "adapter": "tracefold.news.program.lm.program_json_adapter",
-            "evaluator": "LearningEventSemantics(NativeNewsProgram.event_semantics) on one explicit task LM",
-            "add_format_failure_as_feedback": True,
+            "evaluator": "LearningTaxonomy(NativeNewsProgram.taxonomy) on one explicit task LM",
+            "add_format_failure_as_feedback": False,
             "terminal_stopper": "shared_physical_lm_meter_system_failures_only",
             "upstream_fixed_arguments": {"display_progress_bar": True, "raise_on_exception": True},
         },
         "metric_sha256": metric_sha256,
-        "constructor_scalar_arguments": _json_scalars(constructor),
+        "constructor_scalar_arguments": scalars,
         "instruction_proposer": None,
-        # v3 (#334): a selection rule that can decide who wins belongs in the compile record. `null` means
-        # the run was not budgeted, which is itself evidence.
-        "instruction_growth_budget": growth_budget.receipt() if growth_budget is not None else None,
+        "admission": "gepa_best_idx_strictly_above_seed",
         "model_identities": {
             "task": require_model_identity(task_lm, role="task").model_dump(mode="json"),
             "reflection": require_model_identity(reflection_lm, role="reflection").model_dump(mode="json"),
@@ -998,8 +896,7 @@ _NUM_RETRIES = 2
 # propagates: laundering a bug into `REJECTED` would retire the traceback that identifies it, and an
 # operator reading a terminal report would see a corpus verdict where there was a broken build.
 _REJECTION_PREFIXES = (
-    "news_program_compile_no_verified_failure_clusters",
-    "news_program_compile_no_correct_control_clusters",
+    "news_program_compile_no_taxonomy_gold_clusters",
     "news_program_compile_objective_blocked",
     "news_program_compile_objective_split_unavailable",
     "news_program_compile_split_",
@@ -1416,18 +1313,15 @@ def objective_summary(plan: GepaObjectivePlan, *, episode_projection_root_sha256
         "episode_projection_root_sha256": episode_projection_root_sha256,
         "case_n": plan.case_n,
         "cluster_n": plan.cluster_n,
-        "target_case_ids": list(plan.target_case_ids),
-        "target_failure_cluster_ids": list(plan.target_failure_cluster_ids),
-        "control_case_ids": list(plan.control_case_ids),
-        "control_cluster_ids": list(plan.control_cluster_ids),
         "optimizer_case_ids": list(plan.optimizer_case_ids),
+        "optimizer_cluster_ids": list(plan.optimizer_cluster_ids),
         **optimizer_population_identity(plan),
         "excluded_case_ids": list(plan.excluded_case_ids),
         "exclusion_reasons": dict(plan.exclusion_reasons),
         "target_predictors": list(plan.target_predictors),
         "target_dimensions": list(plan.target_dimensions),
-        "exact_gold_coverage": dict(plan.exact_gold_coverage),
-        "owner_distribution": dict(plan.owner_distribution),
+        "stable_exact_n": plan.stable_exact_n,
+        "stable_mismatch_n": plan.stable_mismatch_n,
         "blocking_reasons": list(plan.blocking_reasons),
         # The halves the winner was picked on. Registration re-derives the plan from the frozen corpus and
         # compares this, which is the one thing in the summary a second party can disagree with — the rest
@@ -1444,10 +1338,8 @@ def plan_blockers(plan: GepaObjectivePlan) -> tuple[str, ...]:
     """
 
     reasons: list[str] = []
-    if not plan.target_failure_cluster_ids:
-        reasons.append("news_program_compile_no_verified_failure_clusters")
-    if not plan.control_cluster_ids:
-        reasons.append("news_program_compile_no_correct_control_clusters")
+    if not plan.optimizer_cluster_ids:
+        reasons.append("news_program_compile_no_taxonomy_gold_clusters")
     if plan.split is None:
         reasons.append(plan.split_error or "news_program_compile_objective_split_unavailable")
     reasons.extend(plan.blocking_reasons)
@@ -1524,6 +1416,7 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
             episodes=dataset.episodes,
             task_lm=task_lm,
             reflection_lm=reflection_lm,
+            auto=config.budget.auto,
             max_metric_calls=config.budget.max_metric_calls,
             seed=config.budget.seed,
             review_rubric_version=dataset.ref.review_rubric_version,
@@ -1533,10 +1426,6 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
     except GepaNoProgramChange as exc:
         # A complete run that kept the seed. The receipts are the run's, not an empty stand-in.
         run, outcome, reasons = exc.result, "NO_OP", (_NO_OP_CODE,)
-    except GepaCandidateZeroIncomplete as exc:
-        # Candidate zero is the comparison anchor. A truncated anchor leaves a complete trajectory receipt,
-        # but it cannot support either an ADVANCE or a quality NO_OP conclusion.
-        run, outcome, reasons = exc.result, "REJECTED", (str(exc),)
     except OptimizationRunTerminated as exc:
         outcome, reasons = "REJECTED", (str(exc),)
     except ValueError as exc:
@@ -1765,5 +1654,6 @@ __all__ = [
     "optimizer_constructor",
     "plan_blockers",
     "require_model_identity",
+    "resolve_auto_metric_calls",
     "run_gepa",
 ]

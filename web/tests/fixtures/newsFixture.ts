@@ -224,7 +224,7 @@ export function newsVerdictFixture(overrides: Partial<NewsVerdict> = {}): NewsVe
     override_rule: null,
     policy_version: "news_triage_policy_v11",
     program_sha256: "4".repeat(64),
-    program_version: "news_semantic_program_v8",
+    program_version: "news_semantic_program_v9",
     published_at_ms: NEWS_NOW_MS - 60_000,
     rule_baseline_decision: "escalate",
     stage: "triage",

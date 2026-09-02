@@ -123,7 +123,7 @@ def semantic_judgment(
             terminal_disposition="provider_success",
             invocation_sha256=marker * 64,
         )
-        for predictor, marker in (("event_semantics", "8"), ("reader_card", "9"))
+        for predictor, marker in (("event_semantics", "8"), ("taxonomy", "7"), ("reader_card", "9"))
     )
     trace = ProgramTrace(
         program_version=program_version,
@@ -131,6 +131,7 @@ def semantic_judgment(
         context_sha256="1" * 64,
         envelope_sha256="0" * 64,
         event_semantics_sha256="5" * 64,
+        taxonomy_sha256="4" * 64,
         reader_card_sha256="6" * 64,
         verdict_sha256=canonical_sha(typed.model_dump(mode="json")),
         editorial_sha256=editorial.editorial_sha256,

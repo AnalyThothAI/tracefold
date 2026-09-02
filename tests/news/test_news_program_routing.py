@@ -28,12 +28,6 @@ def _semantics(**updates: Any) -> dict[str, Any]:
         "magnitude": 2,
         "confidence": 0.8,
         "audience": "crypto",
-        "taxonomy": {
-            "subject_codes": ["medtop:20001279"],
-            "event_family": "market_access",
-            "change_state": "announced",
-            "assertion_status": "confirmed",
-        },
         "relevance": {
             "impact_breadth": "single_instrument",
             "tradability": "direct",
@@ -46,6 +40,17 @@ def _semantics(**updates: Any) -> dict[str, Any]:
     }
     value.update(updates)
     return {"semantics": value}
+
+
+def _taxonomy() -> dict[str, Any]:
+    return {
+        "taxonomy": {
+            "subject_codes": ["medtop:20001279"],
+            "event_family": "market_access",
+            "change_state": "announced",
+            "assertion_status": "confirmed",
+        }
+    }
 
 
 def _card() -> dict[str, Any]:
@@ -106,14 +111,22 @@ def _route(
     route: str,
     semantics: list[Any],
     cards: list[Any],
+    taxonomies: list[Any] | None = None,
 ) -> RouteLMs:
+    # The taxonomy Predictor runs between the two (#501); by default it answers every call it is asked.
     return RouteLMs(
         event_semantics=_audited(semantics, artifact=artifact, predictor="event_semantics", route=route),
+        taxonomy=_audited(
+            taxonomies if taxonomies is not None else [_taxonomy()] * 8,
+            artifact=artifact,
+            predictor="taxonomy",
+            route=route,
+        ),
         reader_card=_audited(cards, artifact=artifact, predictor="reader_card", route=route),
     )
 
 
-def test_common_primary_success_is_exactly_two_physical_calls() -> None:
+def test_common_primary_success_is_exactly_three_physical_calls() -> None:
     artifact = build_code_owned_program_artifact()
     judge = RoutedSemanticJudge(
         NativeNewsProgram(artifact),
@@ -122,22 +135,25 @@ def test_common_primary_success_is_exactly_two_physical_calls() -> None:
 
     judgment = asyncio.run(judge.judge(_context()))
 
-    assert judgment.usage.call_count == judgment.usage.physical_call_count == 2
-    assert [call.predictor for call in judgment.trace.calls] == ["event_semantics", "reader_card"]
+    assert judgment.usage.call_count == judgment.usage.physical_call_count == 3
+    assert [call.predictor for call in judgment.trace.calls] == ["event_semantics", "taxonomy", "reader_card"]
     assert all(call.terminal_disposition == "provider_success" for call in judgment.trace.calls)
     assert all(call.request_sha256 and call.invocation_sha256 for call in judgment.trace.calls)
+    assert all(call.output_sha256 and call.validated_output for call in judgment.trace.calls)
+    assert judgment.trace.taxonomy_sha256 is not None
+    assert judgment.editorial.taxonomy.event_family == "market_access"
     assert judgment.trace.answering_route == "primary"
     assert judgment.fallback_from is None
 
 
 def test_route_composition_rejects_unwrapped_base_lm_that_cannot_audit_calls() -> None:
     artifact = build_code_owned_program_artifact()
-    bare = ScriptedLM([_semantics(), _card()])
+    bare = ScriptedLM([_semantics(), _taxonomy(), _card()])
 
     with pytest.raises(TypeError, match="news_program_route_lm_invalid"):
         RoutedSemanticJudge(
             NativeNewsProgram(artifact),
-            primary=RouteLMs(event_semantics=bare, reader_card=bare),
+            primary=RouteLMs(event_semantics=bare, taxonomy=bare, reader_card=bare),
         )
 
 
@@ -187,6 +203,7 @@ def test_program_trace_rejects_retired_or_unaddressed_identity(field_name: str, 
     ("trace_field", "judgment_field"),
     (
         ("event_semantics_sha256", None),
+        ("taxonomy_sha256", None),
         ("reader_card_sha256", None),
         ("answering_route", None),
         (None, "answering_model"),
@@ -236,20 +253,23 @@ def test_stock_json_adapter_format_fallback_is_audited_and_route_stays_bounded()
             artifact,
             route="primary",
             semantics=["not-json", _semantics()],
+            taxonomies=["not-json", _taxonomy()],
             cards=["not-json", _card()],
         ),
     )
 
     judgment = asyncio.run(judge.judge(_context()))
 
-    assert judgment.usage.physical_call_count == 4
+    assert judgment.usage.physical_call_count == 6
     assert [call.terminal_disposition for call in judgment.trace.calls] == [
         "adapter_parse_error",
         "provider_success",
         "adapter_parse_error",
         "provider_success",
+        "adapter_parse_error",
+        "provider_success",
     ]
-    assert [call.attempt for call in judgment.trace.calls] == [1, 2, 1, 2]
+    assert [call.attempt for call in judgment.trace.calls] == [1, 2, 1, 2, 1, 2]
 
 
 def test_provider_failure_falls_back_and_restarts_from_event_semantics() -> None:
@@ -270,6 +290,7 @@ def test_provider_failure_falls_back_and_restarts_from_event_semantics() -> None
     assert [(call.route, call.predictor) for call in judgment.trace.calls] == [
         ("primary", "event_semantics"),
         ("fallback", "event_semantics"),
+        ("fallback", "taxonomy"),
         ("fallback", "reader_card"),
     ]
     assert judgment.trace.calls[0].terminal_disposition == "provider_error"
@@ -391,7 +412,7 @@ def test_primary_breaker_opens_after_three_retryable_failures_and_skips_a_physic
         "news_program_lm_server",
         "primary_circuit_open",
     ]
-    assert [item.usage.physical_call_count for item in judgments] == [3, 3, 3, 2]
+    assert [item.usage.physical_call_count for item in judgments] == [4, 4, 4, 3]
     assert all(call.route == "fallback" for call in judgments[-1].trace.calls)
 
 
@@ -485,6 +506,7 @@ def test_route_deadline_cancels_the_physical_call_and_closes_one_terminal_receip
     delegate = _CancelledLM()
     primary = RouteLMs(
         event_semantics=_wrap_provider_spy(delegate, artifact=artifact),
+        taxonomy=_audited([_taxonomy()], artifact=artifact, predictor="taxonomy", route="primary"),
         reader_card=_audited([_card()], artifact=artifact, predictor="reader_card", route="primary"),
     )
     judge = RoutedSemanticJudge(NativeNewsProgram(artifact), primary=primary)
@@ -508,6 +530,7 @@ def test_provider_answer_after_deadline_is_reconciled_as_late_completion(
     delegate = _LateLM(_semantics())
     primary = RouteLMs(
         event_semantics=_wrap_provider_spy(delegate, artifact=artifact),
+        taxonomy=_audited([_taxonomy()], artifact=artifact, predictor="taxonomy", route="primary"),
         reader_card=_audited([_card()], artifact=artifact, predictor="reader_card", route="primary"),
     )
     judge = RoutedSemanticJudge(NativeNewsProgram(artifact), primary=primary)

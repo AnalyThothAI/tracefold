@@ -82,7 +82,8 @@ def _optimize(args: Namespace, settings: Any, stable: Any, *, out: Path, develop
         Namespace(
             development=development,
             out=str(directory),
-            max_metric_calls=int(args.max_metric_calls),
+            auto=getattr(args, "auto", None),
+            max_metric_calls=(None if args.max_metric_calls is None else int(args.max_metric_calls)),
             max_task_model_calls=int(args.max_task_model_calls),
             max_reflection_model_calls=int(args.max_reflection_model_calls),
             max_cost_microusd=int(args.max_cost_microusd),

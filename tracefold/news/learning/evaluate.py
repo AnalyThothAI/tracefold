@@ -73,7 +73,7 @@ from .projection import (
     _program_cost_by_predictor,
     _program_metric,
 )
-from .taxonomy_metric import compare_taxonomy, summarize_taxonomy
+from .taxonomy_metric import summarize_taxonomy
 
 # Re-exported, not restated. A second literal here would be one more copy of the identity #193 exists to
 # stop duplicating — and since #314 there is no literal to copy: the value is computed from the code the
@@ -114,10 +114,14 @@ def _taxonomy_release_evidence(
     observations: Sequence[Mapping[str, Any]],
     reviews: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Aggregate accepted-Gold taxonomy once per arm and expose exact control regressions."""
+    """Aggregate accepted-Gold taxonomy once per arm and expose per-axis deltas.
+
+    #501 removed the "every Stable-correct control must stay exact" failure: the absolute per-cluster rule
+    was the same logic that made selection unreachable, and the per-axis delta gate below already refuses
+    a candidate that is worse than Stable on any axis.
+    """
 
     rows: dict[str, list[dict[str, Any]]] = {"stable": [], "candidate": []}
-    controls: dict[str, dict[str, Any]] = {}
     for item in observations:
         case_ref = dict(item.get("case_ref") or {})
         review = reviews.get(str(case_ref.get("review_id") or ""), {})
@@ -134,15 +138,6 @@ def _taxonomy_release_evidence(
             rows["candidate"].append(
                 {"case_id": case_id, "cluster_id": cluster_id, "gold": gold, "predicted": candidate}
             )
-        explicit_owner = str(dict(review.get("payload") or {}).get("first_bad_owner") or "")
-        if not explicit_owner and stable is not None and candidate is not None and compare_taxonomy(gold, stable).exact:
-            current = controls.get(cluster_id)
-            value = {
-                "case_id": case_id,
-                "candidate_exact": compare_taxonomy(gold, candidate).exact,
-            }
-            if current is None or case_id < str(current["case_id"]):
-                controls[cluster_id] = value
 
     stable_summary = summarize_taxonomy(rows["stable"])
     candidate_summary = summarize_taxonomy(rows["candidate"])
@@ -157,18 +152,12 @@ def _taxonomy_release_evidence(
     regressed_axes = [
         axis for axis in _TAXONOMY_RELEASE_AXES if (axis_delta := delta[axis]) is not None and axis_delta < 0
     ]
-    regressed_controls = sorted(
-        cluster_id for cluster_id, value in controls.items() if not bool(value["candidate_exact"])
-    )
     return {
-        "schema": "tracefold.news.taxonomy_release_evidence.v1",
+        "schema": "tracefold.news.taxonomy_release_evidence.v2",
         "stable": stable_summary,
         "candidate": candidate_summary,
         "delta": delta,
         "regressed_axes": regressed_axes,
-        "stable_correct_control_cluster_n": len(controls),
-        "stable_correct_control_regression_n": len(regressed_controls),
-        "stable_correct_control_regression_cluster_ids": regressed_controls,
     }
 
 
@@ -1323,8 +1312,6 @@ class CandidateEvaluator:
                 blockers.append("taxonomy_release_evidence_empty")
             if taxonomy_evidence["regressed_axes"]:
                 failures.append("candidate_taxonomy_axis_regression")
-            if int(taxonomy_evidence["stable_correct_control_regression_n"]):
-                failures.append("candidate_taxonomy_stable_correct_control_regression")
         if critical_regressions:
             failures.append("must_push_regression")
         if candidate_only_errors and request.stage in {"offline", "holdout"}:

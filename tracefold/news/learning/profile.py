@@ -16,6 +16,11 @@ caught up. Out-of-time generalization is proven once, by the Future Holdout in `
 window must begin after a candidate was registered. `natural_day_n` and `window_duration_hours` survive
 as dataset diagnostics that tell an operator how concentrated the accepted cases are in time; neither is
 a pass/fail input, and no stable-age, window-age or calendar-day gate may replace them.
+
+#501 removed seven more: the taxonomy target/control split floors and the 50-cluster calibration gate
+with its κ and subject-F1 minima. GEPA needs Gold-bearing samples, not a quota of Stable mistakes, and
+a small corpus ends in `NO_OP` on its own; κ is still computed at freeze time and reported beside the
+corpus, but the holdout is the gate.
 """
 
 from __future__ import annotations
@@ -43,13 +48,6 @@ _PROFILE: dict[str, Any] = {
         "negative_clusters_min": 50,
         "strata_min": 3,
         "safety_required": True,
-        "train_taxonomy_target_clusters_min": 60,
-        "train_taxonomy_control_clusters_min": 60,
-        "selection_taxonomy_target_clusters_min": 30,
-        "selection_taxonomy_control_clusters_min": 30,
-        "calibration_clusters_min": 50,
-        "calibration_kappa_min": 0.75,
-        "calibration_subject_set_f1_min": 0.80,
     },
     # The only temporal contract in the profile, and it is a *future* one: the holdout window opens after
     # the candidate was registered, runs at least a day, and has to carry real reviewed clusters.
@@ -95,10 +93,6 @@ _DEVELOPMENT_COVERAGE_GATES: tuple[tuple[str, str], ...] = (
     ("stratum_n", "strata_min"),
     ("train_stratum_n", "strata_min"),
     ("development_selection_stratum_n", "strata_min"),
-    ("train_taxonomy_target_cluster_n", "train_taxonomy_target_clusters_min"),
-    ("train_taxonomy_control_cluster_n", "train_taxonomy_control_clusters_min"),
-    ("development_selection_taxonomy_target_cluster_n", "selection_taxonomy_target_clusters_min"),
-    ("development_selection_taxonomy_control_cluster_n", "selection_taxonomy_control_clusters_min"),
 )
 
 
@@ -113,21 +107,6 @@ def development_coverage_blockers(counts: Mapping[str, Any]) -> tuple[str, ...]:
     ]
     if requirements["safety_required"] and int(counts.get("safety_cluster_n") or 0) == 0:
         blockers.append("development_safety_empty")
-    calibration = counts.get("calibration")
-    if not isinstance(calibration, Mapping):
-        blockers.append("development_calibration_missing")
-        return tuple(blockers)
-    if int(calibration.get("cluster_n") or 0) < int(requirements["calibration_clusters_min"]):
-        blockers.append("development_calibration_cluster_n_insufficient")
-    if int(calibration.get("disagreement_unadjudicated_n") or 0):
-        blockers.append("development_calibration_adjudication_incomplete")
-    blockers.extend(
-        f"development_calibration_{axis}_kappa_insufficient"
-        for axis in ("event_family", "change_state", "assertion_status")
-        if float(dict(calibration.get("kappa") or {}).get(axis) or 0.0) < float(requirements["calibration_kappa_min"])
-    )
-    if float(calibration.get("subject_mean_set_f1") or 0.0) < float(requirements["calibration_subject_set_f1_min"]):
-        blockers.append("development_calibration_subject_set_f1_insufficient")
     return tuple(blockers)
 
 

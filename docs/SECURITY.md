@@ -112,13 +112,13 @@ environment variables, or move code-owned safety budgets into
 The production model consumers are the News semantic Program and the optional
 post-delivery progression verifier. The Program's sole Interface is
 `SemanticJudge.judge(TriageContext) -> SemanticJudgment`. The
-production Adapter executes the fixed two-Predictor native DSPy Program
-`EventSemantics -> deterministic SemanticNormalizer -> ReaderCard.v2 ->
-deterministic VerdictAssembler`; callers
+production Adapter executes the fixed three-Predictor native DSPy Program
+`EventSemantics -> deterministic SemanticNormalizer -> Taxonomy -> ReaderCard.v2
+-> deterministic VerdictAssembler`; callers
 cannot supply instructions, topology, routes, retry policy or artifact paths. A
-normal judgment uses exactly two serial provider calls. DSPy's JSONAdapter may
-make one format fallback per Predictor, so one route is capped at four calls;
-fallback restarts the complete Program and the judgment is capped at eight. The
+normal judgment uses exactly three serial provider calls. DSPy's JSONAdapter may
+make one format fallback per Predictor, so one route is capped at six calls;
+fallback restarts the complete Program and the judgment is capped at twelve. The
 Program factory owns the route deadline and call/token budgets. DSPy's public
 Signature/Predict/JSONAdapter surface owns model-visible rendering and
 structured-output parsing, while stock `dspy.LM`/LiteLLM owns provider I/O.
@@ -127,12 +127,13 @@ Provider retry and cache are disabled. Tracefold's typed
 `response_format`; it records the safe request identity, usage and exactly one
 terminal disposition for every physical delegate call.
 
-EventSemantics uses the primary Triage endpoint. ReaderCard inherits that
-endpoint unless the operator supplies the complete `llm.news_reader_card`
-triple. The fallback route likewise aliases both Predictor slots only when
-`llm.news_reader_card_fallback` is absent; a requested dedicated Reader fallback
-must validate or the entire fallback route is disabled. The two Predictors
-always receive separate explicit LM bindings and code-owned
+EventSemantics uses the primary Triage endpoint. The taxonomy Predictor has no
+operator setting and always aliases the EventSemantics slot of its route.
+ReaderCard inherits that endpoint unless the operator supplies the complete
+`llm.news_reader_card` triple. The fallback route likewise aliases the Reader
+slot only when `llm.news_reader_card_fallback` is absent; a requested dedicated
+Reader fallback must validate or the entire fallback route is disabled. The
+three Predictors always receive separate explicit LM bindings and code-owned
 token caps; endpoint credentials remain application configuration and never
 enter the content-addressed Program artifact or secret-free runtime identity.
 The identity includes only a one-way endpoint fingerprint beside provider and
@@ -226,9 +227,10 @@ Every terminal state writes `news_optimization_run_report_v4`; only `ADVANCE` al
 `news_prompt_candidate_v2`. The only mutable field is the EventSemantics instruction. ReaderCard is copied
 byte-identically, and the report publishes before/after hashes, bytes, estimated tokens, growth and diff
 beside the public native GEPA parent/score/subscore state, GEPA best index and Tracefold admitted index.
-Candidate-zero incompleteness rejects the run, and controls are compared directly with accepted Gold rather
-than with another model output. Registration independently re-applies the patch,
-re-projects the dataset and re-derives Objective Plan v3. Generator provenance grants no release authority;
+Every candidate is compared directly with accepted Gold rather than with another model output, and the
+admitted one is GEPA's own best when strictly above the seed. Registration independently re-applies the
+patch, re-projects the dataset and re-derives Objective Plan v4. Generator provenance grants no release
+authority;
 future holdout, blind pairwise, shadow, canary and manual promotion remain mandatory.
 
 Optimization usage v3 distinguishes a proven zero metric count from an unavailable count: preflight

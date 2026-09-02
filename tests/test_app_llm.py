@@ -160,12 +160,6 @@ def test_configured_provider_capability_shapes_the_actual_native_dspy_request(
             "affected_markets": ["single_asset"],
             "reader_value": "realtime",
         },
-        "taxonomy": {
-            "subject_codes": ["medtop:20001279"],
-            "event_family": "market_access",
-            "change_state": "announced",
-            "assertion_status": "confirmed",
-        },
     }
     delegate_kwargs: dict[str, Any] = {
         "api_key": endpoint.api_key,
@@ -314,8 +308,10 @@ def test_unconfigured_news_program_has_a_stable_empty_runtime_identity() -> None
     assert composition.progression_verifier() is None
     assert composition.secret_free_slot_identities() == {
         "event_semantics.primary": None,
+        "taxonomy.primary": None,
         "reader_card.primary": None,
         "event_semantics.fallback": None,
+        "taxonomy.fallback": None,
         "reader_card.fallback": None,
     }
     assert composition.slot_aliases() == {}
@@ -450,9 +446,11 @@ def test_active_arm_uses_the_composed_secret_free_runtime_bindings() -> None:
     slots = composition.secret_free_slot_identities()
 
     assert arm.runtime_model_bindings_sha256 == composition.runtime_model_bindings_sha256
-    assert slots["event_semantics.primary"] == slots["reader_card.primary"]
-    assert slots["event_semantics.fallback"] == slots["reader_card.fallback"]
+    assert slots["event_semantics.primary"] == slots["taxonomy.primary"] == slots["reader_card.primary"]
+    assert slots["event_semantics.fallback"] == slots["taxonomy.fallback"] == slots["reader_card.fallback"]
     assert composition.slot_aliases() == {
+        "taxonomy.primary": "event_semantics.primary",
+        "taxonomy.fallback": "event_semantics.fallback",
         "reader_card.primary": "event_semantics.primary",
         "reader_card.fallback": "event_semantics.fallback",
     }
@@ -515,7 +513,7 @@ def test_runtime_binding_identity_ignores_credential_rotation() -> None:
     before = learning_runtime.compose_news_program_runtime(settings_with_key("key-before"))
     after = learning_runtime.compose_news_program_runtime(settings_with_key("key-after"))
 
-    assert before.slot_aliases() == after.slot_aliases() == {}
+    assert before.slot_aliases() == after.slot_aliases() == {"taxonomy.primary": "event_semantics.primary"}
     assert before.secret_free_slot_identities() == after.secret_free_slot_identities()
     assert before.runtime_model_bindings_sha256 == after.runtime_model_bindings_sha256
 
@@ -566,7 +564,11 @@ def test_dedicated_reader_fallback_has_its_own_explicit_slot_identity() -> None:
     slots = composition.secret_free_slot_identities()
 
     assert slots["event_semantics.fallback"] != slots["reader_card.fallback"]
-    assert composition.slot_aliases() == {"reader_card.primary": "event_semantics.primary"}
+    assert composition.slot_aliases() == {
+        "taxonomy.primary": "event_semantics.primary",
+        "taxonomy.fallback": "event_semantics.fallback",
+        "reader_card.primary": "event_semantics.primary",
+    }
     rendered = repr(slots)
     assert "event-fallback.test" not in rendered
     assert "reader-fallback.test" not in rendered
@@ -603,8 +605,9 @@ def test_invalid_requested_reader_fallback_disables_the_whole_fallback_route() -
     assert composition.secret_free_slot_identities()["reader_card.fallback"] is None
 
 
-def test_dedicated_reader_endpoint_produces_exact_two_model_trace() -> None:
+def test_dedicated_reader_endpoint_produces_exact_three_model_trace() -> None:
     created: list[tuple[str, int, ScriptedLM]] = []
+    artifact = load_stable_program_artifact()
     semantics = {
         "novelty": "new_fact",
         "restates": -1,
@@ -623,17 +626,24 @@ def test_dedicated_reader_endpoint_produces_exact_two_model_trace() -> None:
             "affected_markets": ["single_asset"],
             "reader_value": "realtime",
         },
-        "taxonomy": {
-            "subject_codes": ["medtop:20001279"],
-            "event_family": "market_access",
-            "change_state": "announced",
-            "assertion_status": "confirmed",
-        },
+    }
+    taxonomy = {
+        "subject_codes": ["medtop:20001279"],
+        "event_family": "market_access",
+        "change_state": "announced",
+        "assertion_status": "confirmed",
     }
     card = {"headline_zh": "比特币将在新交易所上线", "why_zh": "新增交易渠道可扩大现货流动性。"}
 
     def scripted_factory(model: str, **kwargs: Any) -> ScriptedLM:
-        step: dict[str, Any] = {"card": card} if "reader-model" in model else {"semantics": semantics}
+        # The taxonomy slot is an alias of the triage endpoint, so the same model name is created twice
+        # with two ceilings; the ceiling tells the two apart.
+        if "reader-model" in model:
+            step: dict[str, Any] = {"card": card}
+        elif int(kwargs["max_tokens"]) == artifact.taxonomy.max_tokens:
+            step = {"taxonomy": taxonomy}
+        else:
+            step = {"semantics": semantics}
         lm = ScriptedLM([step], model=model)
         created.append((model, int(kwargs["max_tokens"]), lm))
         return lm
@@ -678,21 +688,25 @@ def test_dedicated_reader_endpoint_produces_exact_two_model_trace() -> None:
 
     judgment = asyncio.run(judge.judge(context))
 
-    assert judgment.usage.physical_call_count == 2
+    assert judgment.usage.physical_call_count == 3
     assert [(call.predictor, call.model) for call in judgment.trace.calls] == [
         ("event_semantics", "openai/triage-model"),
+        ("taxonomy", "openai/triage-model"),
         ("reader_card", "openai/reader-model"),
     ]
     slots = composition.secret_free_slot_identities()
     event_identity = slots["event_semantics.primary"]
+    taxonomy_identity = slots["taxonomy.primary"]
     reader_identity = slots["reader_card.primary"]
-    assert event_identity is not None and reader_identity is not None
+    assert event_identity is not None and taxonomy_identity is not None and reader_identity is not None
     assert [call.runtime_binding_sha256 for call in judgment.trace.calls] == [
         event_identity["binding_sha256"],
+        taxonomy_identity["binding_sha256"],
         reader_identity["binding_sha256"],
     ]
     assert [(model, cap) for model, cap, _adapter in created] == [
         ("openai/triage-model", artifact.event_semantics.max_tokens),
+        ("openai/triage-model", artifact.taxonomy.max_tokens),
         ("openai/reader-model", artifact.reader_card.max_tokens),
     ]
     assert (
@@ -873,7 +887,7 @@ def _program_candidate_document() -> CandidateManifest:
     )
     receipt = ProposalReceipt.issue(
         development_dataset_sha="f" * 64,
-        failure_cluster_ids=("cluster-1",),
+        optimizer_cluster_ids=("cluster-1",),
         generator_kind="human",
         registered_at_ms=1,
         declared_target_dimensions=("why_support",),

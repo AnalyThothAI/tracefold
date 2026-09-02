@@ -17,8 +17,8 @@ independent connected-fact clusters are scored, the result is
 - Codebook SHA: `6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac`.
 - Source-authority classifier: `news_source_authority_v2`, registry SHA
   `bf092263462f93c58f58adfb7e6fa02037dbdd83326fdc516690501773b55af8`.
-- Production Program: `news_semantic_program_v8`, Program SHA
-  `63e5b438f7419e02621e419f3a3ad9860dfcc54bf2eea86c0896bcc04ebb4c64`.
+- Production Program: `news_semantic_program_v9`, Program SHA
+  `4fd8b3ef66ecac8caa6644acb1b13c1eb661480e7a39f876c3891194268f917e`.
 - Review contract: `news_review_v6`.
 - The model emits `subject_codes`, `event_family`, `change_state`, and
   `assertion_status`. Code derives `source_authority` only from the structured
@@ -40,67 +40,26 @@ codes, more than three codes, and selecting the broad
 Subjects answer “what domain is this about”; they do not replace the event
 family. Empty is an honest abstention.
 
-`event_family` answers “what happened”:
+The three label axes have one codebook, and it is code (#501 D3):
+`EVENT_FAMILY_DEFINITIONS`, `CHANGE_STATE_DEFINITIONS`,
+`ASSERTION_STATUS_DEFINITIONS` and `TAXONOMY_PRECEDENCE_RULES` in
+`tracefold/news/taxonomy.py`. `render_taxonomy_seed_instruction()` renders the
+taxonomy Predictor's seed text from those constants byte for byte, the GEPA
+metric quotes the same definitions and precedence rules in its feedback, and
+the blind Gold drafters run the same Signature and seed. This document does not
+restate the definitions: a second prose copy is a second editable truth, and
+the 2026-09-02 post-mortem of #456 found reviewer batches diverging on
+`announced`/`effective`/`reported` and `confirmed`/`claimed` precisely where the
+seed and the reviewer prose had drifted apart. Repairing a confused boundary
+means editing the constant, which moves the seed, the Program identity and the
+metric feedback together.
 
-| Value | Plain-language boundary | Positive example | Exclude |
-| --- | --- | --- | --- |
-| `financial_results` | Realized accounting or operating results | quarterly revenue reported | guidance about a future quarter |
-| `guidance_outlook` | Forward company outlook or guidance | company raises FY revenue range | already realized earnings |
-| `product_service_change` | A product, protocol, service, or capability changes state | product becomes generally available | partnership recap or brand campaign |
-| `corporate_transaction` | Ownership or corporate-structure transaction | merger, acquisition, spin-off, JV | ordinary commercial contract |
-| `financing_capital_allocation` | Funding, debt/equity issuance, dividends, buybacks, or capex allocation | board authorizes a buyback | acquisition consideration itself |
-| `leadership_governance` | Executive, board, governance, or control change | CFO resigns; directors elected | broad legal enforcement action |
-| `regulatory_legal` | Rule, approval, filing action, lawsuit, or enforcement | regulator approves an application | a filing that merely contains earnings |
-| `security_operational_incident` | Security breach, outage, exploit, or material operational failure | exchange halts after a breach | planned maintenance |
-| `market_access` | Listing, delisting, venue, or eligibility access changes | ETF starts trading; token delisted | ordinary price or flow movement |
-| `market_flow_price` | Material price, positioning, fund-flow, or market-liquidity fact | ETF inflow; abrupt price dislocation | structured OI/liquidation lanes |
-| `macro_policy_data` | Economic data, central-bank policy, fiscal policy, trade policy | CPI reported; central bank cuts rates | company guidance |
-| `geopolitical_conflict` | Conflict, sanctions, diplomatic or cross-border security development | ceasefire announced; sanctions imposed | domestic corporate regulation |
-| `other` | Evidence is in scope but no supported family is defensible | bounded fact outside this codebook | noise, weak value, or a forced guess |
-
-A filing is a source container, never automatically an event family. Preserve
-SEC form, item, accession, CIK and XBRL facts as structured evidence, and label
-the underlying financial, product, corporate, or regulatory event.
-
-`change_state` is orthogonal to family:
-
-- `announced`: an actor publicly announces a change; it is not yet in force.
-- `scheduled`: a specific future time is fixed.
-- `effective`: the change is live or legally in force.
-- `reported`: a measurement or completed-period result is published.
-- `updated`: a previously known fact receives a material detail without moving
-  to another state.
-- `delayed`, `cancelled`, `recalled`: the named lifecycle reversal occurred.
-- `unknown`: evidence cannot support one state.
-
-`assertion_status` describes evidence, not event type:
-
-- `confirmed`: bounded evidence directly establishes the fact.
-- `claimed`: one identified party asserts it without independent confirmation.
-- `rumor`: the source presents it as unverified market talk or speculation.
-- `conflicted`: material sources disagree.
-- `unknown`: the bounded evidence does not support a stronger value.
-
-Reviewer calibration uses these precedence rules:
-
-- `reported` is narrow: use it for a published measurement or completed-period
-  result (price, yield, index, flow, inventory, PMI, or financial result), not
-  merely because an outlet reported an event. A non-measurement change that is
-  explicitly live, completed, or in force is `effective`.
-- Use `scheduled` only when the evidence fixes a future time. Otherwise a
-  declared change that is not yet live is `announced`. Use `updated` only for a
-  material new term, correction, denial, or status of an already-known fact;
-  “newly reported” by itself is not `updated`.
-- `confirmed` does not require a recognized `source_authority`. Use it when the
-  bounded evidence directly states an observable datum or live state without
-  attribution-dependent or speculative wording. Use `claimed` when truth
-  depends on an identified actor's assertion, denial, intention, or an
-  attributed report such as “according to” or “says”. Use `rumor` for anonymous
-  or explicitly speculative sourcing. Unknown source authority alone never
-  changes an otherwise direct observation from `confirmed` to `claimed`.
-- When a single evidence bundle materially contradicts itself, use
-  `conflicted`; when the fragment cannot distinguish any stronger state, use
-  `unknown` rather than guessing.
+`event_family` answers "what happened"; a filing is a source container, never
+automatically an event family. `change_state` is orthogonal to family.
+`assertion_status` describes evidence, not event type. The label sets travel in
+the typed `ModelTaxonomyV1` schema, which the JSON adapter hands the provider
+as a grammar; the seed text carries only what a schema cannot: definitions,
+precedence rules, the qcode glossary and the boundary examples.
 
 `source_authority` is code-owned:
 
@@ -138,27 +97,45 @@ fabricate model taxonomy or enter the generic Review v6 queue.
 
 One explicitly accepted `news_review_v6` taxonomy is Gold. Gold is an
 acceptance state, not a claim that an independent human supplied the label. An
-identified teacher model may draft it; an owner-authorized AI adjudicator may
-accept an explicitly reviewed subset and is recorded as AI, never as human.
+owner-authorized AI adjudicator may accept an explicitly reviewed subset and is
+recorded as AI, never as human.
+
+Gold is drafted blind, twice (#501 D8). `news learning draft-reviews
+--rubric-model M --taxonomy-models A,B` runs two drafters of different families,
+neither the Stable task model, each over the Program's own bounded taxonomy
+input — evidence and Gate facts, no card, no Stable label, no told ledger, no
+review — through the taxonomy Predictor's Signature and seed. Agreement is the
+draft; on disagreement the draft takes A, the batch marks
+`taxonomy_disagreement`, and the accepting reviewer decides through the
+existing `accept-drafts` edit. The accepted review's `taxonomy_review.drafts`
+keeps both labels under their model names, and a development freeze reports
+Cohen's κ over every dual-labelled cluster beside the corpus; κ is reported,
+never a gate. The #456 post-mortem is the reason: the rubric drafter labelled
+taxonomy while reading Stable's own label in `card_json`, so Stable-drafted
+batches agreed with Stable at 0.95–1.00 and Codex-drafted batches at 0.03–0.17,
+and the metric measured who drafted the label.
 
 The existing development Dataset projects four model-owned axes into each
 episode: `subject_codes`, `event_family`, `change_state`, and
-`assertion_status`. `source_authority` is derived from evidence by code and is
-not model Gold. No taxonomy table, Dataset kind, migration or parallel corpus
-exists.
+`assertion_status`, plus the review's `taxonomy_review` provenance verbatim.
+`source_authority` is derived from evidence by code and is not model Gold. No
+taxonomy table, Dataset kind, migration or parallel corpus exists.
 
 `taxonomy_metric.py` is a pure comparison helper. Per case it computes
 subject-code set F1 (both empty is 1; exactly one empty is 0) and exact matches
 for the other three axes, then averages the four values. The score and feedback
-come from that one comparison; feedback lists missing/extra subjects and wrong
-axes, never source authority. Metric v8 folds this result into the existing
-`semantics_novelty` component without adding a top-level weight.
+come from that one comparison; feedback quotes the codebook definition of the
+expected and predicted label and any precedence rule written for that
+confusion, never source authority.
 
-A mismatch is an Objective target only when recorded Stable taxonomy exists,
-accepted Gold is valid, the values differ, the policy projection replays, and
-`first_bad_owner_explicit` is exactly `taxonomy`. That target binds only
-`event_semantics`. Derived ownership and `taxonomy_*` dimension labels are
-audit metadata and grant no optimization authority.
+Every case with valid accepted Gold and a replayable Stable answer is an
+optimizer sample (#501 D9); the plan calls it `included`, records whether
+Stable already matched (`stable_exact`), and reports `stable_exact_n` /
+`stable_mismatch_n` as readiness diagnostics. Owner columns and `taxonomy_*`
+dimension labels are audit metadata and grant no optimization authority. The
+GEPA student is the single `taxonomy` Predict; the admitted candidate is GEPA's
+own `best_idx` when its selection score is strictly above the seed's, otherwise
+the run is `NO_OP`.
 
 The public chain is the existing `news learning readiness` followed by one
 `news learning run`; Dataset forms of `baseline` and standalone `optimize` do
@@ -167,9 +144,12 @@ not exist. The Candidate still passes the existing evaluator and release path.
 ## Non-authority and rollback
 
 Changing taxonomy alone must not change `decide()`, Gate, ReaderCard, Delivery,
-or Trading. The common successful production route remains exactly two serial
-physical model calls; taxonomy is part of the existing EventSemantics output,
-not a third Predictor.
+or Trading. Since #501 taxonomy is the second of three serial Predictors
+(`event_semantics -> taxonomy -> reader_card`); the common successful production
+route is exactly three physical model calls, and the taxonomy call reads no
+told ledger. #117's "not a third Predictor" decision is withdrawn by #501: the
+independent Predictor is what lets GEPA optimize the classification text alone
+while EventSemantics and ReaderCard stay byte-identical.
 
 Migration `20260829_0328` trips open canaries and records the identity and prior
 evidence disposition. Review v5 and older Program evidence remains append-only

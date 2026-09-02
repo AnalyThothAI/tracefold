@@ -119,7 +119,8 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
             task_lm=task_lm,
             reflection_lm=reflection_lm,
             budget=OptimizationBudget(
-                max_metric_calls=int(args.max_metric_calls),
+                auto=getattr(args, "auto", None),
+                max_metric_calls=(None if args.max_metric_calls is None else int(args.max_metric_calls)),
                 max_task_model_calls=int(args.max_task_model_calls),
                 max_reflection_model_calls=int(args.max_reflection_model_calls),
                 max_cost_microusd=int(args.max_cost_microusd),

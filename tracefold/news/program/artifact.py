@@ -1,7 +1,7 @@
 """The content-addressed `ProgramStrategyArtifactV1`, its codec and its registry.
 
-An artifact is one complete instruction per Predictor. `program_sha256` is the canonical hash of those two
-texts and the schema version, and nothing else, which is why two compiles that arrive at the same two
+An artifact is one complete instruction per Predictor. `program_sha256` is the canonical hash of those three
+texts and the schema version, and nothing else, which is why two compiles that arrive at the same three
 instructions are the same running Program however much they cost, whoever launched them, and whatever
 trajectory they took.
 
@@ -39,6 +39,7 @@ from .runtime import (
     _UNTRUSTED_EVENT_CLOSE,
     _UNTRUSTED_EVENT_OPEN,
     _VISIBLE_INPUT,
+    PREDICTOR_NAMES,
     PROGRAM_INSTRUCTION_MAX_BYTES,
     PROGRAM_INSTRUCTION_MAX_ESTIMATED_TOKENS,
     PROGRAM_PREDICTOR_MAX_TOKENS,
@@ -98,7 +99,7 @@ class PredictorModelBindings(_ExactModel):
 class PredictorState(_ExactModel):
     """The derived, ready-to-execute state of one Predictor. Never stored; always rendered."""
 
-    name: Literal["event_semantics", "reader_card"]
+    name: PredictorName
     instruction: str = Field(min_length=1, max_length=PROGRAM_INSTRUCTION_MAX_BYTES)
     model_bindings: PredictorModelBindings
     max_tokens: int = Field(ge=64, le=4096)
@@ -113,30 +114,39 @@ class PredictorState(_ExactModel):
 class ProgramStrategyArtifactV1(_ExactModel):
     """The complete write-set, and the whole of the *learnable* part of Program identity.
 
-    Two texts, and since #306 Phase 2 each one is the whole prompt for its Predictor rather than an
-    addendum to a rendered stack. #314 removed the third value: a `factory_id` literal naming the code
-    around them. Code identity is computed from the code (`identity.EXECUTION_ENVELOPE_SHA256`), so
-    carrying a declaration of it here only meant an artifact could claim a factory it was not running
-    under. What is left is exactly what a human or an optimizer can write.
+    Three texts (#501 added taxonomy), and since #306 Phase 2 each one is the whole prompt for its Predictor
+    rather than an addendum to a rendered stack. #314 removed the other value: a `factory_id` literal
+    naming the code around them. Code identity is computed from the code
+    (`identity.EXECUTION_ENVELOPE_SHA256`), so carrying a declaration of it here only meant an artifact
+    could claim a factory it was not running under. What is left is exactly what a human or an optimizer
+    can write.
     """
 
     schema_version: Literal["news_program_strategy_artifact_v1"] = "news_program_strategy_artifact_v1"
     event_semantics_instruction: str
+    taxonomy_instruction: str
     reader_card_instruction: str
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @classmethod
-    def issue(cls, *, event_semantics_instruction: str, reader_card_instruction: str) -> ProgramStrategyArtifactV1:
+    def issue(
+        cls,
+        *,
+        event_semantics_instruction: str,
+        taxonomy_instruction: str,
+        reader_card_instruction: str,
+    ) -> ProgramStrategyArtifactV1:
         payload = {
             "schema_version": PROGRAM_SCHEMA_VERSION,
             "event_semantics_instruction": event_semantics_instruction,
+            "taxonomy_instruction": taxonomy_instruction,
             "reader_card_instruction": reader_card_instruction,
         }
         return cls(**payload, program_sha256=canonical_sha(payload))
 
     @model_validator(mode="after")
     def _instructions_are_safe_and_identity_is_exact(self) -> ProgramStrategyArtifactV1:
-        for predictor in ("event_semantics", "reader_card"):
+        for predictor in PREDICTOR_NAMES:
             validate_program_instruction(self.instruction_for(predictor))
         if self.program_sha256 != self.computed_sha256():
             raise ValueError("news_program_artifact_hash_mismatch")
@@ -146,7 +156,7 @@ class ProgramStrategyArtifactV1(_ExactModel):
         return canonical_sha(self.model_dump(mode="json", exclude={"program_sha256"}))
 
     def instruction_for(self, predictor: PredictorName) -> str:
-        return self.event_semantics_instruction if predictor == "event_semantics" else self.reader_card_instruction
+        return str(getattr(self, f"{predictor}_instruction"))
 
     def predictor_state(self, predictor: PredictorName) -> PredictorState:
         return build_predictor_state(predictor, self.instruction_for(predictor))
@@ -154,6 +164,10 @@ class ProgramStrategyArtifactV1(_ExactModel):
     @property
     def event_semantics(self) -> PredictorState:
         return self.predictor_state("event_semantics")
+
+    @property
+    def taxonomy(self) -> PredictorState:
+        return self.predictor_state("taxonomy")
 
     @property
     def reader_card(self) -> PredictorState:
@@ -166,6 +180,7 @@ class ProgramStrategyPatchV1(_ExactModel):
     schema_version: Literal["news_program_strategy_patch_v1"] = "news_program_strategy_patch_v1"
     parent_program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     event_semantics_instruction: str
+    taxonomy_instruction: str
     reader_card_instruction: str
 
     @classmethod
@@ -174,22 +189,24 @@ class ProgramStrategyPatchV1(_ExactModel):
         *,
         parent: ProgramStrategyArtifactV1,
         event_semantics_instruction: str,
+        taxonomy_instruction: str,
         reader_card_instruction: str,
     ) -> ProgramStrategyPatchV1:
         return cls(
             parent_program_sha256=parent.program_sha256,
             event_semantics_instruction=event_semantics_instruction,
+            taxonomy_instruction=taxonomy_instruction,
             reader_card_instruction=reader_card_instruction,
         )
 
     @model_validator(mode="after")
     def _write_set_is_safe(self) -> ProgramStrategyPatchV1:
-        for predictor in ("event_semantics", "reader_card"):
+        for predictor in PREDICTOR_NAMES:
             validate_program_instruction(self.instruction_for(predictor))
         return self
 
     def instruction_for(self, predictor: PredictorName) -> str:
-        return self.event_semantics_instruction if predictor == "event_semantics" else self.reader_card_instruction
+        return str(getattr(self, f"{predictor}_instruction"))
 
 
 def build_predictor_state(predictor: PredictorName, instruction: str) -> PredictorState:
@@ -227,6 +244,7 @@ def build_code_owned_program_artifact() -> ProgramStrategyArtifactV1:
 
     return ProgramStrategyArtifactV1.issue(
         event_semantics_instruction=seed_instruction("event_semantics"),
+        taxonomy_instruction=seed_instruction("taxonomy"),
         reader_card_instruction=seed_instruction("reader_card"),
     )
 
@@ -244,6 +262,7 @@ def apply_program_patch(
         raise ValueError("news_program_patch_parent_identity_mismatch")
     return ProgramStrategyArtifactV1.issue(
         event_semantics_instruction=patch.event_semantics_instruction,
+        taxonomy_instruction=patch.taxonomy_instruction,
         reader_card_instruction=patch.reader_card_instruction,
     )
 

@@ -1,4 +1,4 @@
-"""Small unit contracts around the taxonomy-only GEPA seam."""
+"""Small unit contracts around the taxonomy-only GEPA seam (#501)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import dspy  # type: ignore[import-untyped]
 import pytest
 from pydantic import BaseModel
 
-from tests.support.news_judgment import trade_relevance
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.contracts import (
     REFLECTION_MAX_TOKENS,
@@ -17,19 +16,19 @@ from tracefold.news.learning.contracts import (
     OptimizationBudget,
 )
 from tracefold.news.learning.optimizer import (
-    InstructionGrowthBudget,
     OptimizationBudgetExceeded,
     OptimizationRunTerminated,
     _BudgetMeter,
     _DspyTaxonomyMetric,
-    _LearningEventSemantics,
+    _LearningTaxonomy,
     _MeteredLearningLM,
     gepa_metric_call_ceiling,
     optimizer_config_receipt,
     optimizer_constructor,
+    resolve_auto_metric_calls,
 )
 from tracefold.news.program.lm import LMOutputTruncatedError
-from tracefold.news.program.signatures import EventSemantics
+from tracefold.news.taxonomy import EVENT_FAMILY_DEFINITIONS, ModelTaxonomyV1
 
 
 class _RoleLM(dspy.BaseLM):  # type: ignore[misc]
@@ -71,6 +70,15 @@ class _UnrelatedValidationPredictor(dspy.Module):  # type: ignore[misc]
         raise AssertionError("validation must fail")
 
 
+class _TaxonomyInvalidPredictor(dspy.Module):  # type: ignore[misc]
+    def forward(self, *, evidence_json: str) -> dspy.Prediction:
+        del evidence_json
+        ModelTaxonomyV1.model_validate(
+            {"event_family": "whale", "change_state": "unknown", "assertion_status": "unknown"}
+        )
+        raise AssertionError("validation must fail")
+
+
 def _taxonomy(**overrides: Any) -> dict[str, Any]:
     values: dict[str, Any] = {
         "subject_codes": ["medtop:20000205"],
@@ -82,28 +90,27 @@ def _taxonomy(**overrides: Any) -> dict[str, Any]:
     return values
 
 
-def _semantics(taxonomy: dict[str, Any]) -> EventSemantics:
-    return EventSemantics.model_validate(
-        {
-            "novelty": "new_fact",
-            "restates": -1,
-            "assets": [{"symbol": "TSLA", "role": "primary"}],
-            "direction": "bullish",
-            "scope": "single_name",
-            "magnitude": 2,
-            "confidence": 0.9,
-            "audience": "us_equity",
-            "taxonomy": taxonomy,
-            "relevance": trade_relevance().model_dump(mode="json"),
-        }
-    )
+def _budget(**overrides: Any) -> OptimizationBudget:
+    values: dict[str, Any] = {
+        "max_metric_calls": 10,
+        "max_task_model_calls": 1,
+        "max_reflection_model_calls": 1,
+        "max_cost_microusd": 10,
+        "max_call_cost_microusd": 10,
+        "max_wall_clock_seconds": 60,
+        "seed": 456,
+    }
+    values.update(overrides)
+    return OptimizationBudget(**values)
 
 
 def test_direct_metric_is_the_mean_of_the_four_taxonomy_axes() -> None:
     gold = dspy.Example(gold_taxonomy=_taxonomy())
-    prediction = dspy.Prediction(semantics=_semantics(_taxonomy(event_family="other", assertion_status="rumor")))
+    prediction = dspy.Prediction(
+        taxonomy=ModelTaxonomyV1.model_validate(_taxonomy(event_family="other", assertion_status="rumor"))
+    )
 
-    result = _DspyTaxonomyMetric(task_output_failure_score=-9.0)(gold, prediction)
+    result = _DspyTaxonomyMetric()(gold, prediction)
 
     assert result.score == 0.5
     assert result.objective_scores == {
@@ -115,30 +122,56 @@ def test_direct_metric_is_the_mean_of_the_four_taxonomy_axes() -> None:
     }
 
 
-def test_optimizer_receipt_exposes_native_format_feedback_and_no_hidden_selector() -> None:
+def test_metric_feedback_quotes_the_codebook_definitions_and_the_matching_precedence_rule() -> None:
+    gold = dspy.Example(gold_taxonomy=_taxonomy(change_state="effective", assertion_status="confirmed"))
+    prediction = dspy.Prediction(taxonomy=_taxonomy(change_state="reported", assertion_status="claimed"))
+
+    feedback = _DspyTaxonomyMetric()(gold, prediction).feedback
+
+    assert "change_state: expected=effective (the change is live, completed or legally in force)" in feedback
+    assert "predicted=reported (a published measurement" in feedback
+    assert "rule (change_state): reported is narrow" in feedback
+    assert "rule (assertion_status): confirmed does not require a recognized source_authority" in feedback
+    assert "source_authority=" not in feedback
+
+
+def test_metric_feedback_names_missing_and_extra_subjects_with_their_glossary_labels() -> None:
+    gold = dspy.Example(gold_taxonomy=_taxonomy(subject_codes=["medtop:20000178"]))
+    prediction = dspy.Prediction(taxonomy=_taxonomy(subject_codes=["medtop:20001279"], event_family="other"))
+
+    feedback = _DspyTaxonomyMetric()(gold, prediction).feedback
+
+    assert "missing subjects: medtop:20000178 (corporate earnings)" in feedback
+    assert "extra subjects: medtop:20001279 (cryptocurrency)" in feedback
+    assert f"predicted=other ({EVENT_FAMILY_DEFINITIONS['other']})" in feedback
+
+
+def test_optimizer_receipt_records_native_budget_and_disabled_format_feedback() -> None:
     task = _RoleLM("task")
     reflection = _RoleLM("reflection")
     constructor = optimizer_constructor(max_metric_calls=40, seed=456, train_count=8)
 
     assert constructor["reflection_minibatch_size"] == 6
+    assert constructor["max_metric_calls"] == 40 and "auto" not in constructor
     receipt = optimizer_config_receipt(
         constructor=constructor,
+        resolved_metric_calls=40,
         task_lm=task,
         reflection_lm=reflection,
-        growth_budget=InstructionGrowthBudget.from_seeds({"event_semantics": "seed"}),
         metric_sha256=canonical_sha({"metric": "taxonomy"}),
         example_count=12,
         train_count=8,
         val_count=4,
     )
 
-    assert receipt["schema"] == "tracefold.news.compile_optimizer_config_receipt.v7"
-    assert receipt["optimizer"]["evaluator"] == (
-        "LearningEventSemantics(NativeNewsProgram.event_semantics) on one explicit task LM"
-    )
-    assert receipt["optimizer"]["add_format_failure_as_feedback"] is True
+    assert receipt["schema"] == "tracefold.news.compile_optimizer_config_receipt.v8"
+    assert receipt["optimizer"]["evaluator"] == "LearningTaxonomy(NativeNewsProgram.taxonomy) on one explicit task LM"
+    assert receipt["optimizer"]["add_format_failure_as_feedback"] is False
     assert receipt["instruction_proposer"] is None
-    assert "component_selector" not in receipt
+    assert receipt["admission"] == "gepa_best_idx_strictly_above_seed"
+    assert "instruction_growth_budget" not in receipt
+    assert receipt["constructor_scalar_arguments"]["auto"] is None
+    assert receipt["constructor_scalar_arguments"]["max_metric_calls"] == 40
     assert set(receipt["model_identities"]) == {"task", "reflection"}
     assert (
         gepa_metric_call_ceiling(
@@ -150,29 +183,45 @@ def test_optimizer_receipt_exposes_native_format_feedback_and_no_hidden_selector
     )
 
 
-def test_shared_instruction_growth_budget_cannot_ratchet() -> None:
-    budget = InstructionGrowthBudget.from_seeds({"event_semantics": "seed"}, max_growth_tokens=1)
+def test_auto_light_passes_through_and_resolves_to_dspys_own_budget() -> None:
+    constructor = optimizer_constructor(auto="light", seed=456, train_count=8)
+    resolved = resolve_auto_metric_calls("light", val_count=4)
 
-    assert budget.over({"event_semantics": "seed"}) is None
-    refusal = budget.over({"event_semantics": "x" * 100})
-    assert refusal is not None
-    assert refusal[0] == "news_program_instruction_growth_budget"
-    assert "seed" in refusal[1]
+    assert constructor["auto"] == "light" and "max_metric_calls" not in constructor
+    assert resolved == dspy.GEPA.auto_budget(None, num_preds=1, num_candidates=6, valset_size=4)
+    receipt = optimizer_config_receipt(
+        constructor=constructor,
+        resolved_metric_calls=resolved,
+        task_lm=_RoleLM("task"),
+        reflection_lm=_RoleLM("reflection"),
+        metric_sha256=canonical_sha({"metric": "taxonomy"}),
+        example_count=12,
+        train_count=8,
+        val_count=4,
+    )
+    assert receipt["constructor_scalar_arguments"]["auto"] == "light"
+    assert receipt["constructor_scalar_arguments"]["max_metric_calls"] == resolved
+    assert gepa_metric_call_ceiling(max_metric_calls=resolved, optimizer_config=receipt, expected_example_count=12) == (
+        resolved + 4 + 6
+    )
+
+
+def test_budget_forms_are_exactly_one_of_auto_or_max_metric_calls() -> None:
+    with pytest.raises(ValueError, match="exactly_one_of_auto_or_max_metric_calls"):
+        optimizer_constructor(seed=456, train_count=8)
+    with pytest.raises(ValueError, match="exactly_one_of_auto_or_max_metric_calls"):
+        optimizer_constructor(auto="light", max_metric_calls=40, seed=456, train_count=8)
+    with pytest.raises(ValueError, match="news_program_compile_auto_budget_unknown"):
+        resolve_auto_metric_calls("extreme", val_count=4)
+    with pytest.raises(ValueError, match="exactly_one_of_auto_or_max_metric_calls"):
+        _budget(max_metric_calls=None)
+    with pytest.raises(ValueError, match="exactly_one_of_auto_or_max_metric_calls"):
+        _budget(auto="light")
+    assert _budget(auto="medium", max_metric_calls=None).auto == "medium"
 
 
 def test_budget_meter_reserves_before_a_physical_call() -> None:
-    meter = _BudgetMeter(
-        OptimizationBudget(
-            max_metric_calls=10,
-            max_task_model_calls=1,
-            max_reflection_model_calls=1,
-            max_cost_microusd=10,
-            max_call_cost_microusd=10,
-            max_wall_clock_seconds=60,
-            seed=456,
-        ),
-        imputed_call_cost_microusd=10,
-    )
+    meter = _BudgetMeter(_budget(), imputed_call_cost_microusd=10)
 
     meter.before("task")
     meter.after(
@@ -192,18 +241,7 @@ def test_budget_meter_reserves_before_a_physical_call() -> None:
 
 
 def test_budget_meter_records_an_answer_before_rejecting_its_reported_cost() -> None:
-    meter = _BudgetMeter(
-        OptimizationBudget(
-            max_metric_calls=10,
-            max_task_model_calls=1,
-            max_reflection_model_calls=1,
-            max_cost_microusd=10,
-            max_call_cost_microusd=2,
-            max_wall_clock_seconds=60,
-            seed=456,
-        ),
-        imputed_call_cost_microusd=2,
-    )
+    meter = _BudgetMeter(_budget(max_call_cost_microusd=2), imputed_call_cost_microusd=2)
     response = dspy.LMResponse.from_text(
         "{}",
         model="openai/task",
@@ -222,18 +260,7 @@ def test_budget_meter_records_an_answer_before_rejecting_its_reported_cost() -> 
 
 
 def test_budget_meter_refuses_every_call_after_a_terminal_error() -> None:
-    meter = _BudgetMeter(
-        OptimizationBudget(
-            max_metric_calls=10,
-            max_task_model_calls=1,
-            max_reflection_model_calls=1,
-            max_cost_microusd=10,
-            max_call_cost_microusd=10,
-            max_wall_clock_seconds=60,
-            seed=456,
-        ),
-        imputed_call_cost_microusd=10,
-    )
+    meter = _BudgetMeter(_budget(), imputed_call_cost_microusd=10)
     meter.remember_terminal(OptimizationRunTerminated("news_program_compile_task_provider_unavailable"))
 
     with pytest.raises(OptimizationRunTerminated, match="news_program_compile_task_provider_unavailable"):
@@ -244,18 +271,7 @@ def test_budget_meter_refuses_every_call_after_a_terminal_error() -> None:
 
 def test_unreceipted_task_truncation_remains_a_run_termination() -> None:
     task = _TruncatedRoleLM("task")
-    meter = _BudgetMeter(
-        OptimizationBudget(
-            max_metric_calls=10,
-            max_task_model_calls=1,
-            max_reflection_model_calls=1,
-            max_cost_microusd=10,
-            max_call_cost_microusd=10,
-            max_wall_clock_seconds=60,
-            seed=456,
-        ),
-        imputed_call_cost_microusd=10,
-    )
+    meter = _BudgetMeter(_budget(), imputed_call_cost_microusd=10)
     metered = _MeteredLearningLM(task, meter=meter, role="task")
 
     with pytest.raises(OptimizationRunTerminated, match="news_program_compile_task_model_output_truncated"):
@@ -269,20 +285,30 @@ def test_unreceipted_task_truncation_remains_a_run_termination() -> None:
     assert metered.transport_failures == 0
 
 
-def test_task_output_failure_score_makes_one_incomplete_output_lose_to_a_complete_candidate() -> None:
-    constructor = optimizer_constructor(max_metric_calls=40, seed=456, train_count=8)
-    failure_score = -9.0
-    metric = _DspyTaxonomyMetric(task_output_failure_score=failure_score)
+def test_truncated_and_invalid_task_output_score_the_native_failure_score() -> None:
+    """#501 D5: no sentinel below the real scale; a failure is `failure_score`, which is 0.0."""
 
-    result = metric(
+    constructor = optimizer_constructor(max_metric_calls=40, seed=456, train_count=8)
+    metric = _DspyTaxonomyMetric()
+
+    truncated = metric(
         dspy.Example(gold_taxonomy=_taxonomy()),
         dspy.Prediction(task_output_failure="news_program_compile_task_model_output_truncated"),
     )
+    invalid = metric(
+        dspy.Example(gold_taxonomy=_taxonomy()),
+        dspy.Prediction(
+            task_output_failure="news_program_compile_task_model_output_invalid",
+            task_output_feedback="Typed ModelTaxonomyV1 is invalid: event_family",
+        ),
+    )
 
     assert constructor["failure_score"] == 0.0
-    assert result.score == failure_score
-    assert failure_score + 7 < 0
-    assert set(result.objective_scores.values()) == {failure_score}
+    assert truncated.score == 0.0 and "output truncated" in truncated.feedback
+    assert set(truncated.objective_scores.values()) == {0.0}
+    assert invalid.score == 0.0
+    assert invalid.feedback == "Typed ModelTaxonomyV1 is invalid: event_family"
+    assert set(invalid.objective_scores.values()) == {0.0}
 
 
 def test_reflection_minibatch_never_exceeds_the_trainset() -> None:
@@ -291,22 +317,17 @@ def test_reflection_minibatch_never_exceeds_the_trainset() -> None:
     assert constructor["reflection_minibatch_size"] == 4
 
 
-def test_typed_invalid_task_output_keeps_the_existing_zero_score() -> None:
-    result = _DspyTaxonomyMetric(task_output_failure_score=-9.0)(
-        dspy.Example(gold_taxonomy=_taxonomy()),
-        dspy.Prediction(
-            task_output_failure="news_program_compile_task_model_output_invalid",
-            task_output_feedback="Typed EventSemantics is invalid: scope",
-        ),
-    )
+def test_learning_wrapper_converts_only_its_own_typed_failure() -> None:
+    wrapper = _LearningTaxonomy(cast(dspy.Predict, _TaxonomyInvalidPredictor()))
 
-    assert result.score == 0.0
-    assert result.feedback == "Typed EventSemantics is invalid: scope"
-    assert set(result.objective_scores.values()) == {0.0}
+    prediction = wrapper(evidence_json="evidence")
+
+    assert prediction.task_output_failure == "news_program_compile_task_model_output_invalid"
+    assert "ModelTaxonomyV1" in prediction.task_output_feedback
 
 
 def test_learning_wrapper_propagates_unrelated_pydantic_validation() -> None:
-    wrapper = _LearningEventSemantics(cast(dspy.Predict, _UnrelatedValidationPredictor()))
+    wrapper = _LearningTaxonomy(cast(dspy.Predict, _UnrelatedValidationPredictor()))
 
     with pytest.raises(ValueError, match="OtherConfig"):
         wrapper(evidence_json="evidence")

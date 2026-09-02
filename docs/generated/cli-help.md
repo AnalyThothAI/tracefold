@@ -453,20 +453,26 @@ options:
 
 ```
 usage: tracefold news learning draft-reviews [-h] [--hours HOURS]
-                                             --model MODEL [--limit LIMIT]
+                                             --rubric-model RUBRIC_MODEL
+                                             --taxonomy-models TAXONOMY_MODELS
+                                             [--limit LIMIT]
                                              [--stratum STRATUM]
                                              [--include-reviewed] --out OUT
 
 options:
-  -h, --help          show this help message and exit
-  --hours HOURS       look back this many hours from now (max 720)
-  --model MODEL       direct drafting model, e.g. deepseek-v4-pro or
-                      qwen3.8-27b:thinking
+  -h, --help            show this help message and exit
+  --hours HOURS         look back this many hours from now (max 720)
+  --rubric-model RUBRIC_MODEL
+                        rubric drafting model, e.g. deepseek-v4-pro or
+                        qwen3.8-27b:thinking
+  --taxonomy-models TAXONOMY_MODELS
+                        two comma-separated blind taxonomy drafting models,
+                        A,B; the draft takes A on disagreement
   --limit LIMIT
-  --stratum STRATUM   restrict the existing ReviewDesk sampler stratum
-  --include-reviewed  also draft Events that already carry an accepted review
-                      (default: only unjudged ones)
-  --out OUT           write the draft batch JSON for authorized review
+  --stratum STRATUM     restrict the existing ReviewDesk sampler stratum
+  --include-reviewed    also draft Events that already carry an accepted
+                        review (default: only unjudged ones)
+  --out OUT             write the draft batch JSON for authorized review
 
 ```
 
@@ -474,7 +480,8 @@ options:
 
 ```
 usage: tracefold news learning run [-h] --development DEVELOPMENT --out OUT
-                                   --max-metric-calls MAX_METRIC_CALLS
+                                   (--auto {light,medium,heavy} |
+                                   --max-metric-calls MAX_METRIC_CALLS)
                                    --max-task-model-calls MAX_TASK_MODEL_CALLS
                                    --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
                                    --max-cost-microusd MAX_COST_MICROUSD
@@ -487,6 +494,7 @@ options:
   --development DEVELOPMENT
                         development dataset artifact SHA
   --out OUT             run directory for every artifact this run writes
+  --auto {light,medium,heavy}
   --max-metric-calls MAX_METRIC_CALLS
   --max-task-model-calls MAX_TASK_MODEL_CALLS
   --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
@@ -502,9 +510,7 @@ options:
 ```
 usage: tracefold news learning freeze [-h] --role {development,validation}
                                       --from-ms FROM_MS --to-ms TO_MS
-                                      [--candidate CANDIDATE]
-                                      [--calibration-request CALIBRATION_REQUEST]
-                                      --out OUT
+                                      [--candidate CANDIDATE] --out OUT
 
 options:
   -h, --help            show this help message and exit
@@ -513,9 +519,6 @@ options:
   --to-ms TO_MS
   --candidate CANDIDATE
                         candidate manifest; required for validation
-  --calibration-request CALIBRATION_REQUEST
-                        one-time source-only task/projection request;
-                        development freeze only
   --out OUT             write the dataset manifest
 
 ```

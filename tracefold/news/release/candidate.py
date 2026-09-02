@@ -155,10 +155,10 @@ class CandidateRegistry:
             plan=plan,
         )
         # The Objective Plan, rebuilt from the same frozen corpus. A candidate that declares clusters the
-        # plan does not call targets was optimized against something else.
-        if set(receipt.failure_cluster_ids) != set(plan.target_failure_cluster_ids):
-            unknown = ",".join(sorted(set(receipt.failure_cluster_ids) ^ set(plan.target_failure_cluster_ids)))
-            raise ValueError(f"news_learning_proposal_failure_cluster_unverified:{unknown}")
+        # plan does not include was optimized against something else.
+        if set(receipt.optimizer_cluster_ids) != set(plan.optimizer_cluster_ids):
+            unknown = ",".join(sorted(set(receipt.optimizer_cluster_ids) ^ set(plan.optimizer_cluster_ids)))
+            raise ValueError(f"news_learning_proposal_optimizer_cluster_unverified:{unknown}")
         if tuple(candidate.target_dimensions) != plan.target_dimensions:
             raise ValueError("news_learning_proposal_target_dimensions_unverified")
         if candidate.development_dataset_sha != candidate.proposal_receipt.development_dataset_sha:

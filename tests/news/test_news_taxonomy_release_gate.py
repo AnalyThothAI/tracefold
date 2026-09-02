@@ -44,21 +44,21 @@ def _observation(
     }
 
 
-def test_release_taxonomy_evidence_blocks_any_axis_and_stable_control_regression() -> None:
+def test_release_taxonomy_evidence_blocks_on_any_per_axis_regression() -> None:
     gold = _taxonomy()
     evidence = _taxonomy_release_evidence(
         [_observation(1, stable=gold, candidate=_taxonomy(event_family="other"))],
         {"review-1": {"payload": {"taxonomy": gold, "first_bad_owner": None}}},
     )
 
+    assert evidence["schema"] == "tracefold.news.taxonomy_release_evidence.v2"
     assert evidence["regressed_axes"] == ["event_family_accuracy", "four_axis_exact_accuracy"]
-    assert evidence["stable_correct_control_cluster_n"] == 1
-    assert evidence["stable_correct_control_regression_n"] == 1
-    assert evidence["stable_correct_control_regression_cluster_ids"] == ["cluster-1"]
     assert evidence["delta"]["event_family_accuracy"] == -1.0
 
 
-def test_release_taxonomy_evidence_allows_target_improvement_without_control_regression() -> None:
+def test_release_taxonomy_evidence_allows_improvement_and_carries_no_control_verdict() -> None:
+    """#501: the absolute per-cluster control rule is gone; the per-axis delta is the whole gate."""
+
     gold = _taxonomy()
     observations = [
         _observation(1, stable=_taxonomy(event_family="other"), candidate=gold),
@@ -73,18 +73,22 @@ def test_release_taxonomy_evidence_allows_target_improvement_without_control_reg
     )
 
     assert evidence["regressed_axes"] == []
-    assert evidence["stable_correct_control_cluster_n"] == 1
-    assert evidence["stable_correct_control_regression_n"] == 0
     assert evidence["candidate"]["four_axis_exact_accuracy"] == 1.0
     assert evidence["candidate"]["taxonomy_overall"] > evidence["stable"]["taxonomy_overall"]
+    assert set(evidence) == {"schema", "stable", "candidate", "delta", "regressed_axes"}
 
 
-def test_explicitly_owned_exact_case_is_not_misreported_as_a_control() -> None:
+def test_a_net_improving_candidate_that_flips_one_stable_exact_cluster_is_judged_by_the_axis_delta() -> None:
     gold = _taxonomy()
+    observations = [
+        _observation(1, stable=_taxonomy(event_family="other"), candidate=gold),
+        _observation(2, stable=_taxonomy(event_family="other"), candidate=gold),
+        _observation(3, stable=gold, candidate=_taxonomy(change_state="effective")),
+    ]
     evidence = _taxonomy_release_evidence(
-        [_observation(1, stable=gold, candidate=_taxonomy(event_family="other"))],
-        {"review-1": {"payload": {"taxonomy": gold, "first_bad_owner": "taxonomy"}}},
+        observations,
+        {f"review-{index}": {"payload": {"taxonomy": gold, "first_bad_owner": None}} for index in (1, 2, 3)},
     )
 
-    assert evidence["stable_correct_control_cluster_n"] == 0
-    assert evidence["stable_correct_control_regression_n"] == 0
+    assert evidence["delta"]["event_family_accuracy"] > 0
+    assert evidence["regressed_axes"] == ["change_state_accuracy"]

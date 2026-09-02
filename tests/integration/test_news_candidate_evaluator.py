@@ -305,6 +305,20 @@ def _relevance() -> TradeRelevanceV1:
     )
 
 
+_OUTPUT_FIELD = {"event_semantics": "semantics", "taxonomy": "taxonomy", "reader_card": "card"}
+
+
+def _model_taxonomy(editorial: EditorialEnvelope) -> dict[str, object]:
+    """The four model-owned axes the taxonomy Predictor answers, as its recorded output."""
+
+    return ModelTaxonomyV1.model_validate(
+        editorial.taxonomy.model_dump(mode="json", include=set(ModelTaxonomyV1.model_fields))
+    ).model_dump(mode="json")
+
+
+_STABLE_TAXONOMY_INSTRUCTION = load_stable_program_artifact().taxonomy_instruction
+
+
 def _editorial() -> EditorialEnvelope:
     return EditorialEnvelope.issue(
         relevance=_relevance(),
@@ -345,7 +359,8 @@ def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object])
         }
     )
     calls: list[ProgramCallTrace] = []
-    for predictor, output in (("event_semantics", semantics), ("reader_card", card)):
+    taxonomy = _model_taxonomy(editorial)
+    for predictor, output in (("event_semantics", semantics), ("taxonomy", taxonomy), ("reader_card", card)):
         request = {
             "schema": "tracefold.news.lm_request.v1",
             "model": "fixture-model",
@@ -365,7 +380,7 @@ def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object])
             "model_binding": "news_triage_primary",
         }
         request_sha = _sha({**request_identity, "request": request})
-        output_field = "semantics" if predictor == "event_semantics" else "card"
+        output_field = _OUTPUT_FIELD[predictor]
         recording = {
             "schema": "tracefold.news.recorded_lm.v1",
             "request_sha256": request_sha,
@@ -399,7 +414,7 @@ def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object])
                 runtime_model="fixture-model",
                 runtime_model_sha256=runtime_model_sha,
                 runtime_binding_sha256=runtime_binding_sha,
-                upstream_sha256=None if predictor == "event_semantics" else _sha(semantics),
+                upstream_sha256=_sha(semantics) if predictor == "reader_card" else None,
                 output_sha256=_sha(output),
                 validated_output=output,
                 provider="fixture-provider",
@@ -430,6 +445,7 @@ def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object])
         context_sha256=context_sha,
         envelope_sha256=EXECUTION_ENVELOPE_SHA256,
         event_semantics_sha256=_sha(semantics),
+        taxonomy_sha256=_sha(taxonomy),
         reader_card_sha256=_sha(card),
         verdict_sha256=_sha(verdict),
         editorial_sha256=editorial.editorial_sha256,
@@ -461,13 +477,13 @@ class _StaticJudge:
             trace=trace,
             usage=ProgramUsage(
                 wall_latency_ms=900,
-                call_count=2,
-                physical_call_count=2,
-                input_tokens=500,
-                output_tokens=90,
-                cached_tokens=40,
-                total_tokens=590,
-                provider_cost_microusd=200,
+                call_count=3,
+                physical_call_count=3,
+                input_tokens=750,
+                output_tokens=135,
+                cached_tokens=60,
+                total_tokens=885,
+                provider_cost_microusd=300,
             ),
             answering_model="fixture-model",
         )
@@ -487,13 +503,13 @@ class _NondeterministicJudge(_StaticJudge):
             trace=_trace(self.arm, context, verdict),
             usage=ProgramUsage(
                 wall_latency_ms=900,
-                call_count=2,
-                physical_call_count=2,
-                input_tokens=500,
-                output_tokens=90,
-                cached_tokens=40,
-                total_tokens=590,
-                provider_cost_microusd=200,
+                call_count=3,
+                physical_call_count=3,
+                input_tokens=750,
+                output_tokens=135,
+                cached_tokens=60,
+                total_tokens=885,
+                provider_cost_microusd=300,
             ),
             answering_model="fixture-model",
         )
@@ -545,8 +561,8 @@ class _FirstCaseMissingProviderCostJudge(_StaticJudge):
 class _MixedCallPricingJudge(_StaticJudge):
     async def judge(self, context: TriageContext) -> SemanticJudgment:
         judgment = await super().judge(context)
-        first, second = judgment.trace.calls
-        calls = (first.model_copy(update={"provider_cost_microusd": None}), second)
+        first, *rest = judgment.trace.calls
+        calls = (first.model_copy(update={"provider_cost_microusd": None}), *rest)
         return judgment.model_copy(
             update={
                 "trace": judgment.trace.model_copy(update={"calls": calls}),
@@ -558,7 +574,7 @@ class _MixedCallPricingJudge(_StaticJudge):
 class _SyntheticFallbackJudge(_StaticJudge):
     async def judge(self, context: TriageContext) -> SemanticJudgment:
         judgment = await super().judge(context)
-        first, second = judgment.trace.calls
+        first, *rest = judgment.trace.calls
         synthetic = first.model_copy(
             update={
                 "physical_provider_call": False,
@@ -587,7 +603,7 @@ class _SyntheticFallbackJudge(_StaticJudge):
         calls = (
             synthetic,
             first.model_copy(update={"route": "fallback"}),
-            second.model_copy(update={"route": "fallback"}),
+            *(call.model_copy(update={"route": "fallback"}) for call in rest),
         )
         return judgment.model_copy(
             update={
@@ -598,7 +614,7 @@ class _SyntheticFallbackJudge(_StaticJudge):
                         "calls": calls,
                     }
                 ),
-                "usage": judgment.usage.model_copy(update={"call_count": 3}),
+                "usage": judgment.usage.model_copy(update={"call_count": 4}),
                 "fallback_from": "news_program_model_binding_unresolved",
             }
         )
@@ -661,7 +677,7 @@ def _prompt_candidate(
             if objective_summary is not None
             else objective_plan_summary(plan, episode_projection_root_sha256=exported.episode_projection_root_sha256)
         ),
-        "optimizer": {"schema": "tracefold.news.compile_optimizer_config_receipt.v7"},
+        "optimizer": {"schema": "tracefold.news.compile_optimizer_config_receipt.v8"},
         "model_identities": {"task": {"role": "task"}, "reflection": {"role": "reflection"}},
         "budget": {"max_metric_calls": 12},
         "usage": {"metric_calls": 12},
@@ -685,7 +701,7 @@ def _program_candidate(
     generator_kind: str = "model",
     program_version: str | None = None,
     program_sha256: str | None = None,
-    failure_cluster_ids: tuple[str, ...] | None = None,
+    optimizer_cluster_ids: tuple[str, ...] | None = None,
     target_dimensions: tuple[str, ...] | None = None,
     projection_root: str | None = None,
     variant: str = "",
@@ -699,6 +715,7 @@ def _program_candidate(
         # Programs — and two different registration receipts, which the ledger addresses uniquely.
         patch=PromptPatchV1(
             event_semantics_instruction=f"A bounded fixture advisory for {cluster_id}{variant}.",
+            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
             reader_card_instruction="Keep reader language direct and evidence-bound.",
         ),
     )
@@ -728,9 +745,9 @@ def _program_candidate(
     receipt_values = {
         "development_dataset_sha": development_sha,
         "development_episode_projection_root_sha256": projection_root or exported.episode_projection_root_sha256,
-        # The plan's verified Prompt targets, not one cluster the caller happened to name. #199 made this
-        # an equality: a candidate that declares anything else was optimized against a different corpus.
-        "failure_cluster_ids": failure_cluster_ids or plan.target_failure_cluster_ids or (cluster_id,),
+        # The plan's included clusters, not one cluster the caller happened to name. #199 made this an
+        # equality: a candidate that declares anything else was optimized against a different corpus.
+        "optimizer_cluster_ids": optimizer_cluster_ids or plan.optimizer_cluster_ids or (cluster_id,),
         "generator_kind": generator_kind,
         "registered_at_ms": NOW,
         "declared_target_dimensions": target_dimensions or plan.target_dimensions or ("why_support",),
@@ -781,7 +798,7 @@ def _insert_validation_dataset(conn, *, development, candidate: CandidateManifes
     payload = {
         "dataset_version": "news_learning_dataset_v3",
         "role": "validation",
-        "profile_id": "news_learning_release_v3",
+        "profile_id": "news_learning_release_v4",
         "learning_epoch": epoch_id_for_bundle(_arm().bundle_sha),
         "learning_epoch_started_at_ms": development.learning_epoch_started_at_ms,
         "window": {"from_ms": NOW - 6 * 3_600_000, "to_ms": NOW},
@@ -930,7 +947,9 @@ def _open_event(
         )
 
         def program_call(predictor: str, marker: str) -> dict[str, object]:
-            output = semantics if predictor == "event_semantics" else card
+            output = {"event_semantics": semantics, "taxonomy": _model_taxonomy(editorial), "reader_card": card}[
+                predictor
+            ]
             return {
                 "predictor": predictor,
                 "route": "primary",
@@ -950,7 +969,7 @@ def _open_event(
                 "runtime_model": "fixture-model",
                 "runtime_model_sha256": runtime_model_sha,
                 "runtime_binding_sha256": runtime_binding_sha,
-                "upstream_sha256": None if predictor == "event_semantics" else _sha(semantics),
+                "upstream_sha256": _sha(semantics) if predictor == "reader_card" else None,
                 "output_sha256": _sha(output),
                 "validated_output": output,
                 "provider": "fixture-provider",
@@ -966,13 +985,14 @@ def _open_event(
             }
 
         def program_trace(context: dict[str, object], marker: str) -> dict[str, object]:
-            calls = [program_call(predictor, marker) for predictor in ("event_semantics", "reader_card")]
+            calls = [program_call(predictor, marker) for predictor in ("event_semantics", "taxonomy", "reader_card")]
             return {
                 "program_version": effective_program_version,
                 "program_sha256": effective_program_sha,
                 "context_sha256": _sha(context),
                 "envelope_sha256": EXECUTION_ENVELOPE_SHA256,
                 "event_semantics_sha256": _sha(semantics),
+                "taxonomy_sha256": _sha(_model_taxonomy(editorial)),
                 "reader_card_sha256": _sha(card),
                 "verdict_sha256": _sha(verdict),
                 "editorial_sha256": editorial.editorial_sha256,
@@ -996,13 +1016,13 @@ def _open_event(
         )
         execution_usage = {
             "wall_latency_ms": 900,
-            "call_count": 2,
-            "physical_call_count": 2,
-            "input_tokens": 500,
-            "output_tokens": 90,
-            "cached_tokens": 40,
-            "total_tokens": 590,
-            "provider_cost_microusd": 200,
+            "call_count": 3,
+            "physical_call_count": 3,
+            "input_tokens": 750,
+            "output_tokens": 135,
+            "cached_tokens": 60,
+            "total_tokens": 885,
+            "provider_cost_microusd": 300,
         }
         initial_trace = program_trace(initial_context, "initial")
         selected_trace = program_trace(selected_context, "reask" if stale_reask else "initial")
@@ -1015,7 +1035,7 @@ def _open_event(
                 "context": initial_context,
                 "trace": initial_trace,
                 "usage": execution_usage,
-                "recording_call_indices": [0, 1],
+                "recording_call_indices": [0, 1, 2],
             }
         ]
         if stale_reask:
@@ -1028,12 +1048,12 @@ def _open_event(
                     "context": selected_context,
                     "trace": selected_trace,
                     "usage": execution_usage,
-                    "recording_call_indices": [2, 3],
+                    "recording_call_indices": [3, 4, 5],
                 }
             )
         else:
             selected_trace = initial_trace
-        model_attempts = 4 if stale_reask else 2
+        model_attempts = 6 if stale_reask else 3
         assert repos.news.insert_verdict(
             event_id=opened.event_id,
             stage="triage",
@@ -1676,6 +1696,7 @@ def test_the_ledger_stores_a_prompt_candidate_under_the_identity_its_receipt_nam
         stable=stable,
         patch=PromptPatchV1(
             event_semantics_instruction="Written through the repository.",
+            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
             reader_card_instruction="Keep the mechanism concrete.",
         ),
     )
@@ -1702,7 +1723,7 @@ def test_the_ledger_stores_a_prompt_candidate_under_the_identity_its_receipt_nam
             development_episode_projection_root_sha256=evaluator._datasets.development_compile_export(
                 development.artifact_sha
             ).episode_projection_root_sha256,
-            failure_cluster_ids=("cluster-0",),
+            optimizer_cluster_ids=("cluster-0",),
             generator_kind="model",
             registered_at_ms=NOW,
             declared_target_dimensions=("why_support",),
@@ -1805,6 +1826,7 @@ def test_a_candidate_is_only_as_good_as_the_write_set_it_names(conn) -> None:
             stable=stable,
             patch=PromptPatchV1(
                 event_semantics_instruction="An operator wrote this advisory by hand.",
+                taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
                 reader_card_instruction="Keep the mechanism concrete.",
             ),
             # No optimizer receipt and no objective summary: an external proposal claims nothing about how
@@ -1887,6 +1909,7 @@ def test_a_candidate_requires_the_exact_persisted_write_set(
         stable=stable,
         patch=PromptPatchV1(
             event_semantics_instruction=f"A bounded fixture advisory for {mode}.",
+            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
             reader_card_instruction="Keep the mechanism concrete.",
         ),
     )
@@ -1936,7 +1959,13 @@ def test_a_candidate_requires_the_exact_persisted_write_set(
     assert _judge_call_count(judges) == 0
 
 
-def test_successful_critical_case_cannot_authorize_a_failure_cluster(conn) -> None:
+def test_a_receipt_naming_a_cluster_outside_the_plan_is_refused(conn) -> None:
+    """#501: every Gold-bearing cluster is included, so the receipt must name exactly the plan's clusters.
+
+    Until #501 a fully passing corpus had no targets and any declared cluster was refused; now the corpus
+    *is* the population, and the refusal is for a receipt that names something the plan never included.
+    """
+
     _accepted_compilable_event(conn, why="pass")
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
@@ -1953,6 +1982,7 @@ def test_successful_critical_case_cannot_authorize_a_failure_cluster(conn) -> No
         stable=stable,
         development_sha=development.artifact_sha,
         cluster_id=development.cases[0].cluster_id,
+        optimizer_cluster_ids=(development.cases[0].cluster_id,),
     )
     evaluator = CandidateEvaluator(
         conn,
@@ -1961,7 +1991,7 @@ def test_successful_critical_case_cannot_authorize_a_failure_cluster(conn) -> No
         candidate_catalog=(candidate,),
     )
 
-    with pytest.raises(ValueError, match="news_learning_proposal_failure_cluster_unverified"):
+    with pytest.raises(ValueError, match="news_learning_proposal_optimizer_cluster_unverified"):
         asyncio.run(
             evaluator.evaluate(
                 EvaluationRequest(
@@ -2031,13 +2061,13 @@ def test_a_dataset_bound_baseline_scores_the_objective_corpus_and_republishes_it
                 trace=_trace(stable, context, verdict),
                 usage=ProgramUsage(
                     wall_latency_ms=900,
-                    call_count=2,
-                    physical_call_count=2,
-                    input_tokens=500,
-                    output_tokens=90,
-                    cached_tokens=40,
-                    total_tokens=590,
-                    provider_cost_microusd=200,
+                    call_count=3,
+                    physical_call_count=3,
+                    input_tokens=750,
+                    output_tokens=135,
+                    cached_tokens=60,
+                    total_tokens=885,
+                    provider_cost_microusd=300,
                 ),
                 answering_model="fixture-model",
             )
@@ -2060,7 +2090,7 @@ def test_a_dataset_bound_baseline_scores_the_objective_corpus_and_republishes_it
     # Only target + control reached a denominator; the excluded diagnostics are counted, never scored.
     assert report.population["requested_n"] == len(optimizer)
     assert report.objective["excluded_case_n"] == len(plan.excluded_case_ids)
-    assert report.objective["target_failure_cluster_ids"] == list(plan.target_failure_cluster_ids)
+    assert report.objective["optimizer_cluster_ids"] == list(plan.optimizer_cluster_ids)
     # Three numbers, not one: the selection half is the formal before value.
     assert report.subsets["train"]["case_n"] == len(plan.train_episodes)
     assert report.subsets["development_selection"]["case_n"] == len(plan.development_selection_episodes)
@@ -2078,6 +2108,7 @@ def test_a_dataset_bound_baseline_scores_the_objective_corpus_and_republishes_it
         stable=stable,
         patch=PromptPatchV1(
             event_semantics_instruction="Dataset baseline parity.",
+            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
             reader_card_instruction="Keep the mechanism concrete.",
         ),
     )
@@ -2124,6 +2155,7 @@ def test_release_register_rejects_a_stale_optimizer_population_before_any_artifa
         stable=stable,
         patch=PromptPatchV1(
             event_semantics_instruction="A stale population must never be registered.",
+            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
             reader_card_instruction="Keep the mechanism concrete.",
         ),
     )
@@ -2192,7 +2224,7 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
         )
     )
     plan = _objective_plan(conn, stable=stable, development_sha=development.artifact_sha)
-    assert plan.split is not None and len(plan.target_failure_cluster_ids) == 2
+    assert plan.split is not None and len(plan.optimizer_cluster_ids) == len(_COMPILABLE_CORPUS)
 
     honest_summary = dict(
         _prompt_candidate(
@@ -2201,6 +2233,7 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
             stable=stable,
             patch=PromptPatchV1(
                 event_semantics_instruction="Objective tamper baseline.",
+                taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
                 reader_card_instruction="Keep the mechanism concrete.",
             ),
         ).objective_summary
@@ -2211,6 +2244,7 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
         stable=stable,
         patch=PromptPatchV1(
             event_semantics_instruction="A split this corpus never produced.",
+            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
             reader_card_instruction="Keep the mechanism concrete.",
         ),
         objective_summary={
@@ -2226,6 +2260,7 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
         stable=stable,
         patch=PromptPatchV1(
             event_semantics_instruction="A legacy objective identity cannot be re-armed.",
+            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
             reader_card_instruction="Keep the mechanism concrete.",
         ),
         objective_summary=legacy_summary,
@@ -2236,6 +2271,7 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
         stable=stable,
         patch=PromptPatchV1(
             event_semantics_instruction="A representative root this corpus never produced.",
+            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
             reader_card_instruction="Keep the mechanism concrete.",
         ),
         objective_summary={**honest_summary, "optimizer_case_root_sha256": "0" * 64},
@@ -2243,8 +2279,8 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
 
     cases: list[tuple[str, dict[str, Any]]] = [
         (
-            "news_learning_proposal_failure_cluster_unverified",
-            {"failure_cluster_ids": (plan.control_cluster_ids[0],)},
+            "news_learning_proposal_optimizer_cluster_unverified",
+            {"optimizer_cluster_ids": (plan.optimizer_cluster_ids[0],)},
         ),
         (
             "news_learning_proposal_target_dimensions_unverified",
@@ -2343,14 +2379,15 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
     assert [item["pass_k"] for item in candidate_stability] == [count == 3 for count in pass_counts]
     assert {len(item["trial_results"]) for item in candidate_stability} == {3}
     assert _judge_call_count(judges) == 6 * len(development.cases)
-    assert report.evidence["stable_mean_total_tokens"] == 590
-    assert report.evidence["candidate_mean_total_tokens"] == 590
-    assert report.evidence["stable_mean_call_count"] == 2
-    assert report.evidence["candidate_mean_call_count"] == 2
-    assert report.evidence["stable_mean_provider_cost_microusd"] == 200
-    assert report.evidence["candidate_mean_provider_cost_microusd"] == 200
+    assert report.evidence["stable_mean_total_tokens"] == 885
+    assert report.evidence["candidate_mean_total_tokens"] == 885
+    assert report.evidence["stable_mean_call_count"] == 3
+    assert report.evidence["candidate_mean_call_count"] == 3
+    assert report.evidence["stable_mean_provider_cost_microusd"] == 300
+    assert report.evidence["candidate_mean_provider_cost_microusd"] == 300
     assert set(report.evidence["program_cost_by_predictor"]["candidate"]) == {
         "event_semantics:primary",
+        "taxonomy:primary",
         "reader_card:primary",
     }
     recordings = conn.execute(
@@ -2359,9 +2396,9 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
         "FROM news_model_recordings WHERE run_sha = %s ORDER BY arm, trial, call_index",
         (report.run_sha,),
     ).fetchall()
-    assert len(recordings) == 12 * len(development.cases)
-    assert {row["predictor_name"] for row in recordings} == {"event_semantics", "reader_card"}
-    assert {row["call_index"] for row in recordings} == {0, 1}
+    assert len(recordings) == 18 * len(development.cases)
+    assert {row["predictor_name"] for row in recordings} == {"event_semantics", "taxonomy", "reader_card"}
+    assert {row["call_index"] for row in recordings} == {0, 1, 2}
     assert {row["attempt"] for row in recordings} == {1}
     assert {row["route"] for row in recordings} == {"primary"}
     assert {row["provider"] for row in recordings} == {"fixture-provider"}
@@ -2437,8 +2474,8 @@ def test_model_recording_conflict_rejects_nondeterministic_response(conn) -> Non
         "SELECT predictor_name, response FROM news_model_recordings WHERE run_sha = %s ORDER BY call_index",
         (invocation["run_sha"],),
     ).fetchall()
-    assert [row["predictor_name"] for row in recordings] == ["event_semantics", "reader_card"]
-    replayed_card = json.loads(recordings[1]["response"]["response"]["text"])["card"]
+    assert [row["predictor_name"] for row in recordings] == ["event_semantics", "taxonomy", "reader_card"]
+    replayed_card = json.loads(recordings[2]["response"]["response"]["text"])["card"]
     assert replayed_card["headline_zh"] == "DRAM 合约价续涨"
     assert conn.execute("SELECT count(*) AS n FROM news_learning_cases").fetchone()["n"] == 0
 
@@ -2561,10 +2598,10 @@ def test_synthetic_trace_entry_is_audited_but_not_recorded_or_charged(conn) -> N
         )
     )
 
-    assert observation["usage"]["call_count"] == 3
-    assert observation["usage"]["physical_call_count"] == 2
-    assert observation["usage"]["provider_cost_microusd"] == 200
-    assert [call["physical_provider_call"] for call in observation["calls"]] == [False, True, True]
+    assert observation["usage"]["call_count"] == 4
+    assert observation["usage"]["physical_call_count"] == 3
+    assert observation["usage"]["provider_cost_microusd"] == 300
+    assert [call["physical_provider_call"] for call in observation["calls"]] == [False, True, True, True]
     recordings = conn.execute(
         "SELECT call_index, route, provider_cost_microusd FROM news_model_recordings "
         "WHERE run_sha = %s ORDER BY call_index",
@@ -2573,6 +2610,7 @@ def test_synthetic_trace_entry_is_audited_but_not_recorded_or_charged(conn) -> N
     assert [(row["call_index"], row["route"], row["provider_cost_microusd"]) for row in recordings] == [
         (1, "fallback", 100),
         (2, "fallback", 100),
+        (3, "fallback", 100),
     ]
 
 
@@ -3406,28 +3444,22 @@ def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -
     execution_context_shas = [execution["context_sha256"] for execution in observed_program["executions"]]
     assert execution_context_shas == [_sha(execution["context"]) for execution in observed_program["executions"]]
     assert observed_program["trace"]["context_sha256"] == execution_context_shas[1]
-    assert [call["execution_index"] for call in observed_program["calls"]] == [0, 0, 1, 1]
+    assert [call["execution_index"] for call in observed_program["calls"]] == [0, 0, 0, 1, 1, 1]
     assert [call["execution_phase"] for call in observed_program["calls"]] == [
-        "initial",
-        "initial",
-        "stale_reask",
-        "stale_reask",
+        *["initial"] * 3,
+        *["stale_reask"] * 3,
     ]
     assert [call["execution_status"] for call in observed_program["calls"]] == [
-        "superseded_stale_ledger",
-        "superseded_stale_ledger",
-        "accepted",
-        "accepted",
+        *["superseded_stale_ledger"] * 3,
+        *["accepted"] * 3,
     ]
-    assert [call["recording_call_index"] for call in observed_program["calls"]] == [0, 1, 2, 3]
+    assert [call["recording_call_index"] for call in observed_program["calls"]] == [0, 1, 2, 3, 4, 5]
     assert [call["execution_context_sha256"] for call in observed_program["calls"]] == [
-        execution_context_shas[0],
-        execution_context_shas[0],
-        execution_context_shas[1],
-        execution_context_shas[1],
+        *[execution_context_shas[0]] * 3,
+        *[execution_context_shas[1]] * 3,
     ]
-    assert observed_program["usage"]["call_count"] == 4
-    assert observed_program["usage"]["physical_call_count"] == 4
+    assert observed_program["usage"]["call_count"] == 6
+    assert observed_program["usage"]["physical_call_count"] == 6
     assert [execution["status"] for execution in observed_program["executions"]] == [
         "superseded_stale_ledger",
         "accepted",
@@ -3436,13 +3468,14 @@ def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -
         "SELECT arm, predictor_name FROM news_model_recordings WHERE run_sha = %s ORDER BY call_index",
         (report.run_sha,),
     ).fetchall()
-    # One candidate call per Predictor per case, the two Predictors in graph order. Only the candidate is
+    # One candidate call per Predictor per case, the three Predictors in graph order. Only the candidate is
     # re-run: the stable arm's calls are what production already recorded.
     assert [(row["arm"], row["predictor_name"]) for row in recordings] == [
         *[("candidate", "event_semantics")] * len(_COMPILABLE_CORPUS),
+        *[("candidate", "taxonomy")] * len(_COMPILABLE_CORPUS),
         *[("candidate", "reader_card")] * len(_COMPILABLE_CORPUS),
     ]
-    assert Counter(row["arm"] for row in recordings) == Counter({"candidate": 2 * len(_COMPILABLE_CORPUS)})
+    assert Counter(row["arm"] for row in recordings) == Counter({"candidate": 3 * len(_COMPILABLE_CORPUS)})
     manifest = conn.execute(
         "SELECT payload FROM news_learning_artifacts WHERE artifact_sha = %s",
         (report.evidence["observation_manifest_sha"],),

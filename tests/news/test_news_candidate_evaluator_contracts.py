@@ -322,22 +322,8 @@ _ONE_DAY_SUFFICIENT = {
     "negative_cluster_n": 55,
     "safety_cluster_n": 9,
     "stratum_n": 4,
-    "train_taxonomy_target_cluster_n": 60,
-    "train_taxonomy_control_cluster_n": 60,
-    "development_selection_taxonomy_target_cluster_n": 30,
-    "development_selection_taxonomy_control_cluster_n": 30,
     "train_stratum_n": 3,
     "development_selection_stratum_n": 3,
-    "calibration": {
-        "cluster_n": 50,
-        "disagreement_unadjudicated_n": 0,
-        "kappa": {
-            "event_family": 0.8,
-            "change_state": 0.8,
-            "assertion_status": 0.8,
-        },
-        "subject_mean_set_f1": 0.9,
-    },
     "eligible_event_n": 733,
     "natural_day_n": 1,
     "window_duration_hours": 21.0,
@@ -449,13 +435,6 @@ def test_the_development_profile_admits_no_temporal_gate_at_all() -> None:
         "negative_clusters_min",
         "strata_min",
         "safety_required",
-        "train_taxonomy_target_clusters_min",
-        "train_taxonomy_control_clusters_min",
-        "selection_taxonomy_target_clusters_min",
-        "selection_taxonomy_control_clusters_min",
-        "calibration_clusters_min",
-        "calibration_kappa_min",
-        "calibration_subject_set_f1_min",
     }
     assert not any(
         word in key for key in development for word in ("day", "age", "hour", "duration", "window", "natural")

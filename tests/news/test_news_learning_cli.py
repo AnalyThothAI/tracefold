@@ -73,6 +73,9 @@ def test_the_retired_compile_and_propose_commands_are_gone_without_an_alias() ->
             "r.json",
         ],
         ["news", "learning", "draft-reviews", "--model", "m", "--out", "d.json", "--events-from", "runs/a"],
+        # #501: one rubric model and exactly two blind taxonomy models; the old single `--model` is gone.
+        ["news", "learning", "draft-reviews", "--model", "m", "--out", "d.json"],
+        ["news", "learning", "draft-reviews", "--rubric-model", "m", "--out", "d.json"],
     ):
         with pytest.raises(SystemExit):
             build_parser().parse_args(retired)
@@ -116,7 +119,7 @@ def test_draft_reviews_routes_the_qwen_thinking_alias_through_the_primary_cli_en
             }
 
         def evidence(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
-            return {"agent": {"verdict": {"headline_zh": "一条待复核新闻"}}}
+            return {"agent": {"verdict": {"headline_zh": "一条待复核新闻"}, "taxonomy": None}}
 
     class _Context:
         evidence = SimpleNamespace(source="")
@@ -125,19 +128,28 @@ def test_draft_reviews_routes_the_qwen_thinking_alias_through_the_primary_cli_en
         def event_semantics_payload() -> dict[str, Any]:
             return {}
 
+        @staticmethod
+        def taxonomy_payload() -> dict[str, Any]:
+            return {}
+
     @contextmanager
     def fake_postgres_connection(_settings: Any, *, application_name: str = "tracefold_cli"):
         assert application_name == "tracefold_cli"
         yield object()
 
+    built: list[dict[str, Any]] = []
+
     def fake_build_drafter_lm(**kwargs: Any) -> object:
-        captured.update(kwargs)
-        return object()
+        built.append(kwargs)
+        if kwargs["model_name"] == "openai/qwen3.8-27b:thinking":
+            captured.update(kwargs)
+        return SimpleNamespace(model=kwargs["model_name"])
 
     fake_batch = SimpleNamespace(
-        model_dump=lambda mode="json": {"schema_id": "draft", "drafter": {}, "drafts": []},
+        model_dump=lambda mode="json": {"schema_id": "draft", "drafter": {}, "taxonomy_drafters": {}, "drafts": []},
         batch_sha256="b" * 64,
         drafter={},
+        taxonomy_drafters={"models": ["openai/deepseek-v4-pro", "openai/MiniMax-M3"], "disagreement_task_ids": []},
         drafts=(),
     )
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: settings)
@@ -148,15 +160,18 @@ def test_draft_reviews_routes_the_qwen_thinking_alias_through_the_primary_cli_en
     monkeypatch.setattr("tracefold.news.program.artifact.render_model_evidence_json", lambda *_args, **_kwargs: "{}")
     monkeypatch.setattr(review_drafter, "build_drafter_lm", fake_build_drafter_lm)
     monkeypatch.setattr(review_drafter, "ReviewDrafter", lambda lm: lm)
-    monkeypatch.setattr(review_drafter, "build_draft_batch", lambda _drafter, _tasks: fake_batch)
+    monkeypatch.setattr(review_drafter, "TaxonomyBlindDrafter", lambda lm: lm)
+    monkeypatch.setattr(review_drafter, "build_draft_batch", lambda _drafter, _tasks, **_kwargs: fake_batch)
 
     args = build_parser().parse_args(
         [
             "news",
             "learning",
             "draft-reviews",
-            "--model",
+            "--rubric-model",
             "qwen3.8-27b:thinking",
+            "--taxonomy-models",
+            "deepseek-v4-pro,MiniMax-M3",
             "--limit",
             "1",
             "--out",
@@ -166,6 +181,15 @@ def test_draft_reviews_routes_the_qwen_thinking_alias_through_the_primary_cli_en
     code, payload = _handle_learning(args)
 
     assert code == 0 and payload["data"]["tasks"] == 1
+    assert payload["data"]["taxonomy_disagreement"] == 0
+    # Three endpoints resolved: the rubric model on the primary box, both blind drafters through the
+    # reflection endpoint, and neither blind model is the Stable task model.
+    assert [entry["model_name"] for entry in built] == [
+        "openai/qwen3.8-27b:thinking",
+        "openai/deepseek-v4-pro",
+        "openai/MiniMax-M3",
+    ]
+    assert {entry["api_base"] for entry in built[1:]} == {"https://reflection.test/v1"}
     assert captured["api_base"] == "https://primary.test/v1"
     assert captured["api_key"] == "primary-key"
     assert captured["model_name"] == "openai/qwen3.8-27b:thinking"
@@ -458,7 +482,6 @@ def test_readiness_reports_a_cohort_mismatch_in_the_same_shape_as_a_real_report(
     for section in (
         "coverage",
         "corpus",
-        "owner_distribution",
         "objective",
         "development_profile",
         "taxonomy_gold",
@@ -470,7 +493,8 @@ def test_readiness_reports_a_cohort_mismatch_in_the_same_shape_as_a_real_report(
         "case_dispositions_written_to",
     ):
         assert section in data, section
-    assert data["objective"]["target_case_n"] == 0
+    assert data["objective"]["optimizer_case_n"] == 0
+    assert "owner_distribution" not in data
     assert data["identity"]["model_targets"]["compiler_reflection_configured"] is True
     # `null`, not `0`: a corpus that could not be projected has unknown coverage, and reporting zeros
     # would read as a measured corpus of nothing.
@@ -528,7 +552,7 @@ def test_readiness_republishes_the_frozen_datasets_own_coverage_counts(monkeypat
     assert coverage["independent_cluster_n"] == 141
     assert coverage["eligible_event_n"] == 733
     assert "strata" not in coverage and "eligibility" not in coverage
-    assert payload["data"]["schema"] == "tracefold.news.gepa_readiness_report.v3"
+    assert payload["data"]["schema"] == "tracefold.news.gepa_readiness_report.v4"
 
 
 def test_readiness_lets_a_wrong_dataset_argument_stay_an_error(monkeypatch: Any) -> None:

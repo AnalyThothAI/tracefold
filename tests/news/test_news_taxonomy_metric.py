@@ -67,10 +67,27 @@ def test_four_axis_score_and_feedback_come_from_one_comparison() -> None:
     assert comparison.missing_subjects == ("medtop:20000178",)
     assert comparison.extra_subjects == ("medtop:20001164",)
     assert comparison.wrong_axes == ("event_family", "assertion_status")
-    assert "missing subjects: medtop:20000178" in comparison.feedback
-    assert "extra subjects: medtop:20001164" in comparison.feedback
-    assert "event_family" in comparison.feedback and "assertion_status" in comparison.feedback
-    assert "source_authority" not in comparison.feedback
+    assert "missing subjects: medtop:20000178 (corporate earnings)" in comparison.feedback
+    assert "extra subjects: medtop:20001164 (payment service)" in comparison.feedback
+    # #501 D3: the feedback quotes the codebook — both definitions and the precedence rule for the pair.
+    assert "event_family: expected=financial_results (realized earnings" in comparison.feedback
+    assert "predicted=market_access (listing, delisting" in comparison.feedback
+    assert "assertion_status: expected=confirmed (" in comparison.feedback
+    assert "rule (assertion_status): confirmed does not require a recognized source_authority" in comparison.feedback
+    assert "rule (event_family)" not in comparison.feedback
+    assert "source_authority=" not in comparison.feedback
+
+
+def test_a_confusion_the_codebook_does_not_rule_on_carries_definitions_only() -> None:
+    comparison = compare_taxonomy(
+        _gold(change_state="delayed"),
+        _prediction(change_state="recalled"),
+    )
+
+    assert comparison.feedback == (
+        "change_state: expected=delayed (a previously declared change is postponed); "
+        "predicted=recalled (a shipped product or service is recalled)"
+    )
 
 
 def test_source_authority_never_changes_the_model_score_or_feedback() -> None:

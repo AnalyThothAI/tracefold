@@ -148,7 +148,7 @@ def _seed(conn: Any) -> None:
         )
         SELECT 'e-' || g, 'triage', 'news_triage_policy_v11', 'news_judgment_v2', 'degraded',
                'push', final_decision, 'capacity_fixture', verdict, NULL,
-               judgment_sha, repeat('b', 64), NULL, 'news_semantic_program_v8', repeat('a', 64),
+               judgment_sha, repeat('b', 64), NULL, 'news_semantic_program_v9', repeat('a', 64),
                true, 'capacity_fixture',
                jsonb_build_object(
                  'judgment_contract_version', 'news_judgment_v2',
@@ -159,7 +159,7 @@ def _seed(conn: Any) -> None:
                  'evidence_version', 1,
                  'evidence_sha256', evidence.evidence_sha256,
                  'focus_fact_id', 'fact:' || g,
-                 'program_version', 'news_semantic_program_v8',
+                 'program_version', 'news_semantic_program_v9',
                  'program_sha256', repeat('a', 64),
                  'told', '[]'::jsonb,
                  'told_count', 0,

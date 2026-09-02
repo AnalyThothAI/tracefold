@@ -1,4 +1,4 @@
-"""The two native DSPy Signatures and their exact News output contracts."""
+"""The three native DSPy Signatures and their exact News output contracts."""
 
 from __future__ import annotations
 
@@ -32,7 +32,6 @@ class EventSemantics(_ExactModel):
     magnitude: int = Field(ge=0, le=3)
     confidence: float = Field(ge=0.0, le=1.0)
     audience: Literal["crypto", "us_equity", "macro", "none"] = "none"
-    taxonomy: ModelTaxonomyV1
     relevance: TradeRelevanceV1
 
     @model_validator(mode="wrap")
@@ -72,6 +71,15 @@ class EventSemanticsSignature(dspy.Signature):  # type: ignore[misc]
         desc="Canonical bounded Event, gate, and event_status JSON inside Tracefold's untrusted-data delimiters."
     )
     semantics: EventSemantics = dspy.OutputField(desc="The exact typed semantic interpretation of this Event.")
+
+
+class EventTaxonomySignature(dspy.Signature):  # type: ignore[misc]
+    """Classify one bounded Event under news_taxonomy_v1 from its evidence alone."""
+
+    evidence_json: str = dspy.InputField(
+        desc="Canonical bounded Event and gate JSON inside Tracefold's untrusted-data delimiters; no told ledger."
+    )
+    taxonomy: ModelTaxonomyV1 = dspy.OutputField(desc="The exact typed four-axis taxonomy of this Event.")
 
 
 class ReaderCardSignature(dspy.Signature):  # type: ignore[misc]

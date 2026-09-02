@@ -424,21 +424,16 @@ def _objective_receipt(plan: GepaObjectivePlan) -> dict[str, Any]:
 
     return {
         "schema": plan.schema_version,
-        "target_case_n": len(plan.target_case_ids),
-        "target_cluster_n": len(plan.target_failure_cluster_ids),
-        "target_failure_cluster_ids": list(plan.target_failure_cluster_ids),
+        "optimizer_cluster_ids": list(plan.optimizer_cluster_ids),
         "target_dimensions": list(plan.target_dimensions),
         "target_predictors": list(plan.target_predictors),
-        "control_case_n": len(plan.control_case_ids),
-        "control_cluster_n": len(plan.control_cluster_ids),
+        "stable_exact_n": plan.stable_exact_n,
+        "stable_mismatch_n": plan.stable_mismatch_n,
         **optimizer_population_identity(plan),
         # Counted and named, never scored: an excluded diagnostic that entered the denominator would be
-        # the owner-blind corpus back under a different heading.
+        # a different corpus under the same heading.
         "excluded_case_n": len(plan.excluded_case_ids),
         "exclusion_reasons": dict(plan.exclusion_reasons),
-        "owner_distribution": dict(plan.owner_distribution),
-        "exact_gold_coverage": dict(plan.exact_gold_coverage),
-        "observed_failure_cluster_n": len(plan.observed_failure_cluster_ids),
         "split": plan.split,
         "blocking_reasons": list(plan.blocking_reasons),
     }

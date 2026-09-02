@@ -211,6 +211,7 @@ def test_wheel_ships_the_packaged_resources_the_runtime_reads(built_distribution
         f"{alembic}versions/20260902_0348_trading_runtime_control_state.py",
         f"{alembic}versions/20260902_0349_trading_account_projection.py",
         f"{alembic}versions/20260902_0350_news_reader_history_title_similarity.py",
+        f"{alembic}versions/20260902_0351_news_program_v9_judgment_check.py",
     ]
     assert f"{DISTRIBUTION_NAME}/news/program/resources/registry.json" in members
 
@@ -252,7 +253,7 @@ def test_installed_distribution_reads_its_own_program_artifact(isolated_probe: d
 def test_installed_distribution_carries_the_alembic_tree(isolated_probe: dict[str, object]) -> None:
     assert isolated_probe["alembic_env_py"] is True
     assert isolated_probe["alembic_baseline_sql"] is True
-    assert isolated_probe["alembic_revisions"] == 11
+    assert isolated_probe["alembic_revisions"] == 12
 
 
 @pytest.mark.parametrize("entrypoint", ["console-script", "python-m"])

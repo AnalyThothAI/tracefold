@@ -24,8 +24,9 @@ from tracefold.news.program.runtime import (
     PROGRAM_INSTRUCTION_MAX_ESTIMATED_TOKENS,
 )
 from tracefold.news.program.seed import SEED_INSTRUCTIONS, seed_instruction
+from tracefold.news.taxonomy import EVENT_FAMILIES, render_taxonomy_seed_instruction
 
-_PREDICTORS = ("event_semantics", "reader_card")
+_PREDICTORS = ("event_semantics", "taxonomy", "reader_card")
 
 
 def test_the_shipped_stable_artifact_is_the_seed_text_itself() -> None:
@@ -48,7 +49,11 @@ def test_the_code_owned_baseline_root_is_the_shipped_stable_root() -> None:
 @pytest.mark.parametrize("predictor", _PREDICTORS)
 def test_each_seed_states_its_output_contract_and_its_untrusted_input_boundary(predictor: str) -> None:
     text = seed_instruction(predictor)
-    expected_output = "EventSemantics" if predictor == "event_semantics" else "ReaderCard"
+    expected_output = {
+        "event_semantics": "EventSemantics",
+        "taxonomy": "ModelTaxonomyV1",
+        "reader_card": "ReaderCard",
+    }[predictor]
 
     assert text.startswith("# TRACEFOLD NEWS")
     assert f"Return exactly {expected_output}" in text
@@ -63,12 +68,18 @@ def test_the_seed_carries_the_reviewed_knowledge_rather_than_regenerating_it() -
     """GEPA evolves a seed; it does not invent one. Losing these calibrations is what the brief forbids."""
 
     semantics = seed_instruction("event_semantics")
+    taxonomy = seed_instruction("taxonomy")
     card = seed_instruction("reader_card")
 
     for marker in (
-        "## news_taxonomy_v1",
-        "Code adds source_authority only from the exact structured",
+        "## subject_codes",
+        "## Precedence rules",
+        "Code adds source_authority from the exact structured",
         "strategy/provenance routing IDs confer no authority",
+        "An SEC 10-Q reporting revenue -> financial_results / reported / confirmed, not filing.",
+    ):
+        assert marker in taxonomy, marker
+    for marker in (
         "2: clearly tradable",
         "A product state change is magnitude 2, not a milestone",
         "a. The text says a level was crossed",
@@ -104,8 +115,31 @@ def test_a_seed_is_inside_the_one_instruction_budget_and_carries_no_identity_has
     assert "why_zh" in seed_instruction("reader_card")
 
 
-def test_the_seed_registry_covers_exactly_the_two_predictors() -> None:
+def test_the_seed_registry_covers_exactly_the_three_predictors() -> None:
     assert set(SEED_INSTRUCTIONS) == set(_PREDICTORS)
+
+
+def test_the_taxonomy_seed_is_rendered_byte_for_byte_from_the_codebook_constants() -> None:
+    """One codebook (#501 D3): the seed, the metric's feedback and the blind drafters read the same text."""
+
+    assert seed_instruction("taxonomy") == render_taxonomy_seed_instruction()
+    assert load_stable_program_artifact().taxonomy_instruction == render_taxonomy_seed_instruction()
+
+
+def test_the_event_semantics_seed_no_longer_carries_any_taxonomy_label() -> None:
+    """Taxonomy left EventSemantics for its own Predictor; the old text must not keep teaching it."""
+
+    semantics = seed_instruction("event_semantics")
+
+    for family in EVENT_FAMILIES:
+        if family != "other":  # "other" is an ordinary word; the family labels are distinctive tokens.
+            assert family not in semantics, family
+    assert "## news_taxonomy_v1" not in semantics
+    assert "source_authority" not in semantics
+    # The example segments used to spell `family / state / assertion` before the asset line. `scheduled` is
+    # excluded here because the relevance calibrations legitimately use it as a development_delta value.
+    assert re.search(r"\b(announced|effective|reported|updated|delayed|cancelled|recalled) /", semantics) is None
+    assert re.search(r"/ (confirmed|claimed|rumor|conflicted) ", semantics) is None
 
 
 def test_the_bounds_no_longer_refuse_ordinary_editorial_prose() -> None:

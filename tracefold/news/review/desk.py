@@ -42,6 +42,7 @@ from ..taxonomy import (
     IPTC_MEDIA_TOPICS_VERSION,
     IPTC_SUBJECT_CODEBOOK,
     TAXONOMY_VERSION,
+    ModelTaxonomyV1,
     NewsTaxonomyV1,
     source_authority_from_evidence,
 )
@@ -363,12 +364,17 @@ class TaxonomyReviewProvenanceV1(BaseModel):
     review_role: Literal["primary", "adjudication"] = "primary"
     adjudicates_review_id: str = Field(default="", max_length=64)
     draft_taxonomy: NewsTaxonomyV1 | None = None
+    # The blind drafts under their model names (#501 D8). Present only for a model-drafted label; a
+    # freeze reads them to report inter-drafter agreement.
+    drafts: dict[str, ModelTaxonomyV1] | None = None
 
     @model_validator(mode="after")
     def identities_match_role(self) -> TaxonomyReviewProvenanceV1:
         if self.label_source == "model_draft" and not self.draft_author.strip():
             raise ValueError("news_review_taxonomy_draft_author_required")
-        if self.label_source == "human" and (self.draft_author.strip() or self.draft_taxonomy is not None):
+        if self.label_source == "human" and (
+            self.draft_author.strip() or self.draft_taxonomy is not None or self.drafts is not None
+        ):
             raise ValueError("news_review_taxonomy_human_draft_forbidden")
         if self.review_role == "adjudication" and not self.adjudicates_review_id:
             raise ValueError("news_review_taxonomy_adjudicated_review_required")
@@ -1078,7 +1084,7 @@ class ReviewDesk:
                     "target_dimensions_zh": [
                         _DIMENSION_ZH.get(str(value), "未识别维度") for value in manifest.get("target_dimensions", [])
                     ],
-                    "failure_cluster_ids": receipt.get("failure_cluster_ids", []),
+                    "optimizer_cluster_ids": receipt.get("optimizer_cluster_ids", []),
                     "guardrails": receipt.get("guardrails", []),
                     "development_dataset_sha": manifest.get("development_dataset_sha"),
                     "learning_epoch": learning_epoch,

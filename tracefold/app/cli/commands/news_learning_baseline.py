@@ -341,8 +341,16 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
     from tracefold.news import source_authority_from_evidence
     from tracefold.news.program.artifact import render_model_evidence_json
     from tracefold.news.review.desk import DeskQuery, Principal, ReviewDesk, TaskRef
-    from tracefold.news.review.drafter import ReviewDrafter, build_draft_batch, build_drafter_lm
+    from tracefold.news.review.drafter import (
+        ReviewDrafter,
+        TaxonomyBlindDrafter,
+        build_draft_batch,
+        build_drafter_lm,
+    )
 
+    taxonomy_models = tuple(part.strip() for part in str(args.taxonomy_models).split(",") if part.strip())
+    if len(taxonomy_models) != 2 or taxonomy_models[0] == taxonomy_models[1]:
+        raise ValueError("news_review_drafter_requires_two_distinct_taxonomy_models")
     principal = Principal(subject="operator")
     hours = int(args.hours)
     tasks: list[dict[str, Any]] = []
@@ -395,12 +403,18 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
                     "evidence_json": render_model_evidence_json(
                         context.event_semantics_payload(), predictor="event_semantics"
                     ),
+                    # The blind drafters read exactly what the taxonomy Predictor reads: event and Gate,
+                    # no card, no Stable label, no told ledger (#501 D8).
+                    "taxonomy_evidence_json": render_model_evidence_json(
+                        context.taxonomy_payload(), predictor="taxonomy"
+                    ),
+                    # Stable's own label never reaches a model; code compares it with the blind draft.
+                    "stable_taxonomy": agent.get("taxonomy"),
                     "card_json": canonical_json(
                         {
                             "verdict": verdict,
                             "final_decision": agent.get("final_decision"),
                             "override_rule": agent.get("override_rule"),
-                            "taxonomy": agent.get("taxonomy"),
                         }
                     ),
                     # The ledger the model was shown when it judged, so the drafter can check novelty against
@@ -413,20 +427,25 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
         return 2, {"ok": False, "error": {"code": "news_review_drafter_nothing_to_draft"}}
 
     # Same endpoint plumbing as the judge: a drafting model is a metric-side tool, not a Program route.
-    endpoint = _drafting_endpoint(settings, str(args.model))
+    def lm_for(model_name: str) -> Any:
+        endpoint = _drafting_endpoint(settings, model_name)
+        return build_drafter_lm(
+            model_name=endpoint.model_name,
+            api_key=endpoint.api_key,
+            api_base=endpoint.api_base,
+            model_kwargs=endpoint.model_kwargs,
+            structured_output=endpoint.structured_output,
+            temperature=endpoint.temperature,
+            max_tokens=4_096,
+        )
+
     batch = build_draft_batch(
-        ReviewDrafter(
-            build_drafter_lm(
-                model_name=endpoint.model_name,
-                api_key=endpoint.api_key,
-                api_base=endpoint.api_base,
-                model_kwargs=endpoint.model_kwargs,
-                structured_output=endpoint.structured_output,
-                temperature=endpoint.temperature,
-                max_tokens=4_096,
-            )
-        ),
+        ReviewDrafter(lm_for(str(args.rubric_model))),
         tasks,
+        taxonomy_drafters=(
+            TaxonomyBlindDrafter(lm_for(taxonomy_models[0])),
+            TaxonomyBlindDrafter(lm_for(taxonomy_models[1])),
+        ),
     )
     payload = batch.model_dump(mode="json")
     payload["batch_sha256"] = batch.batch_sha256
@@ -439,12 +458,14 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
             "drafts_written_to": str(args.out),
             "batch_sha256": batch.batch_sha256,
             "drafter": batch.drafter,
+            "taxonomy_drafters": batch.taxonomy_drafters,
             "tasks": len(tasks),
             "lookback_hours": hours,
             "stratum": str(args.stratum or ""),
             "drafted": len(drafted),
             "unique_tasks": len({entry.task_id for entry in batch.drafts}),
             "with_gold": len(with_gold),
+            "taxonomy_disagreement": len(batch.taxonomy_drafters["disagreement_task_ids"]),
             "failed": len(batch.drafts) - len(drafted),
             "note": "proposals only - an owner-authorized reviewer accepts through `tracefold news review submit`",
         },
