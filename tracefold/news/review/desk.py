@@ -1504,11 +1504,10 @@ class ReviewDesk:
             }
         )
         accepted_id = _sha({"kind": "acceptance", "review_id": review_id})
-        release_eligible = (
-            bool(task.row.get("evidence_release_eligible"))
-            and str(task.selection.get("stratum")) != "high_reaction"
-            and self._event_matches_current_release(task)
-        )
+        # The sampling reason never decides acceptance eligibility (#504 D7): a `high_reaction` task was chosen
+        # because of a post-event price move, but the reviewer labels `should_push` from the evidence alone, so
+        # its accepted review is corpus truth like any other stratum's.
+        release_eligible = bool(task.row.get("evidence_release_eligible")) and self._event_matches_current_release(task)
         self._conn.execute(
             """
             INSERT INTO news_reviews (

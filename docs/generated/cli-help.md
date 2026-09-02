@@ -717,20 +717,15 @@ options:
 ## `news replay`
 
 ```
-usage: tracefold news replay [-h] [--gate-policy {config,open,strict}]
-                             [--no-instruments]
-                             path
+usage: tracefold news replay [-h] [--no-instruments] path
 
 positional arguments:
-  path                  JSON file: {strategy_id: [hit, ...]} or [hit, ...]
+  path              JSON file: {strategy_id: [hit, ...]} or [hit, ...]
 
 options:
-  -h, --help            show this help message and exit
-  --gate-policy {config,open,strict}
-                        Gate low-signal switch: config =
-                        news.gate.suppress_low_signal, open = off, strict = on
-  --no-instruments      replay without the instrument universe (offline); the
-                        Gate then guesses asset_class from XYZ- tags
+  -h, --help        show this help message and exit
+  --no-instruments  replay without the instrument universe (offline); the Gate
+                    then guesses asset_class from XYZ- tags
 
 ```
 

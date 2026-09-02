@@ -161,7 +161,6 @@ def _prepare_frame(
     observed_at_ms: int,
     watchlist_symbols: frozenset[str],
     text_override: str | None,
-    suppress_low_signal: bool,
     instrument_classes: Mapping[str, str] | None,
     fact_units: tuple[FactUnit, ...] | None = None,
     source_contracts: tuple[SourceContract, ...] | None = None,
@@ -216,7 +215,6 @@ def _prepare_frame(
                     ingest_mode=ingest_mode,
                     watchlist_symbols=watchlist_symbols,
                     raw_first_line=gate_context,
-                    suppress_low_signal=suppress_low_signal,
                     instrument_classes=instrument_classes,
                 )
             )
@@ -298,7 +296,6 @@ def admit_frame(
     watchlist_symbols: frozenset[str],
     now_ms: int,
     text_override: str | None = None,
-    suppress_low_signal: bool = False,
     instrument_classes: Mapping[str, str] | None = None,
     append_evidence: bool = True,
     _prepared_frame: _PreparedFrame | None = None,
@@ -311,7 +308,6 @@ def admit_frame(
         observed_at_ms=observed_at_ms,
         watchlist_symbols=watchlist_symbols,
         text_override=text_override,
-        suppress_low_signal=suppress_low_signal,
         instrument_classes=instrument_classes,
     )
     results = tuple(
@@ -324,7 +320,6 @@ def admit_frame(
             watchlist_symbols=watchlist_symbols,
             now_ms=now_ms,
             text_override=text_override,
-            suppress_low_signal=suppress_low_signal,
             instrument_classes=instrument_classes,
             append_evidence=append_evidence,
             _prepared=prepared,
@@ -406,7 +401,6 @@ def admit_item(
     watchlist_symbols: frozenset[str],
     now_ms: int,
     text_override: str | None = None,
-    suppress_low_signal: bool = False,
     instrument_classes: Mapping[str, str] | None = None,
     append_evidence: bool = True,
     _fact_unit: FactUnit | None = None,
@@ -429,7 +423,6 @@ def admit_item(
             observed_at_ms=observed_at_ms,
             watchlist_symbols=watchlist_symbols,
             text_override=text_override,
-            suppress_low_signal=suppress_low_signal,
             instrument_classes=instrument_classes,
             fact_units=None if _fact_unit is None else (_fact_unit,),
             source_contracts=(
@@ -840,12 +833,10 @@ class DeduperConsumer:
         bus: Any,
         db: NewsDatabasePort,
         watchlist_symbols: frozenset[str],
-        suppress_low_signal: bool = False,
     ) -> None:
         self.bus = bus
         self.db = db
         self.watchlist_symbols = watchlist_symbols
-        self.suppress_low_signal = bool(suppress_low_signal)
         # #89: symbol -> instrument_class, which is how the Gate tells a stock headline from a coin headline. The
         # universe changes about once a day, so it is cached per consumer.
         self._classes: Mapping[str, str] | None = None
@@ -886,7 +877,6 @@ class DeduperConsumer:
             observed_at_ms=observed,
             watchlist_symbols=self.watchlist_symbols,
             text_override=None,
-            suppress_low_signal=self.suppress_low_signal,
             instrument_classes=instrument_classes,
         )
         admitted: list[AdmitResult] = []
@@ -918,7 +908,6 @@ class DeduperConsumer:
                     trace_id=message.trace_id,
                     watchlist_symbols=self.watchlist_symbols,
                     now_ms=stamp,
-                    suppress_low_signal=self.suppress_low_signal,
                     instrument_classes=instrument_classes,
                     append_evidence=False,
                     _prepared=admission,

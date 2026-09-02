@@ -28,7 +28,6 @@ def replay_hits(
     hits: Sequence[Mapping[str, Any]],
     *,
     watchlist_symbols: frozenset[str],
-    suppress_low_signal: bool = False,
     instrument_classes: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """``instrument_classes`` is what the live Gate reads to tell a stock headline from a coin one (#89). Leave it
@@ -91,7 +90,6 @@ def replay_hits(
                 ingest_mode="live",
                 watchlist_symbols=watchlist_symbols,
                 raw_first_line=extracted.first_line,
-                suppress_low_signal=suppress_low_signal,
                 instrument_classes=instrument_classes,
             )
         )
@@ -156,7 +154,6 @@ def replay_hits(
     candidates = [e for e in events if e["admission"] == "candidate"]
     return {
         "gate": {
-            "suppress_low_signal": bool(suppress_low_signal),
             "instrument_classes": len(instrument_classes or {}),
         },
         "counts": dict(counts),

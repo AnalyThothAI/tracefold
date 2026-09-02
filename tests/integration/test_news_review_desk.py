@@ -635,7 +635,11 @@ def test_market_view_defaults_to_latest_homogeneous_cohort_and_hides_sparse_fami
         ReviewDesk(conn, now_ms=NOW).open(DeskQuery(view="market", hours=720), principal=PRINCIPAL)
 
 
-def test_high_reaction_held_case_is_discovery_only_and_not_release_truth(conn) -> None:
+def test_high_reaction_accepted_review_is_release_eligible_like_any_other_stratum(conn) -> None:
+    """#504 D7: the sampler pulls a held case into the queue because of a post-event price move, but the reviewer
+    labels `should_push` from the evidence alone, so the accepted review counts toward the freeze like every other
+    stratum's. The stratum is still named as discovery-only in the task itself."""
+
     event_id = _open_event(conn, delivered=False)
     repos = repositories_for_connection(conn)
     with repos.transaction():
@@ -668,9 +672,11 @@ def test_high_reaction_held_case_is_discovery_only_and_not_release_truth(conn) -
         (event_id,),
     ).fetchall()
     assert {row["review_kind"]: row["release_eligible"] for row in rows} == {
-        "judgment": False,
-        "acceptance": False,
+        "judgment": True,
+        "acceptance": True,
     }
+    coverage = desk.open(DeskQuery(view="coverage"), principal=PRINCIPAL)
+    assert coverage["funnel"]["accepted"] == 1
 
 
 def test_task_version_conflicts_when_delivery_truth_changes(conn) -> None:

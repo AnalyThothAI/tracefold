@@ -355,15 +355,12 @@ def test_gate_admission_rules() -> None:
         )
     )
     assert eu.admission == "candidate"
-    # The optional low-signal switch only affects ungrounded, non-macro social posts under 70.
+    # #504 D7 deleted the Gate low-signal switch (never on, zero admissions in the whole retained history): a
+    # low-score ungrounded social post is a candidate like any other; the model, not a score, decides relevance.
     low = evaluate_gate(
-        GateInput(
-            title="Imagine being this guy",
-            engine_type="meme",
-            **{**base, "provider_score": 60.0, "suppress_low_signal": True},
-        )
+        GateInput(title="Imagine being this guy", engine_type="meme", **{**base, "provider_score": 60.0})
     )
-    assert low.admission == "suppressed_low_signal" and "ungrounded_social_below_min_score" in low.reasons
+    assert low.admission == "candidate" and "ungrounded_social_below_min_score" not in low.reasons
     macro = evaluate_gate(
         GateInput(title="U.S. 30-Year Treasury Yield Climbs to 5.32%, Highest Since 2007", engine_type="news", **base)
     )

@@ -1528,7 +1528,7 @@ stage has a sealed PASS; a tool or optimizer may propose but cannot accept,
 deploy or promote. Canary selector `news_canary_selector_v2` includes queue-high Events, excludes
 recovery/listing/OI-telemetry/liquidation lanes, and validates selector, eligibility profile,
 rolling profile and runtime-manifest identity at startup, resume and assignment;
-drift trips the activation. `news replay <hits.json> [--gate-policy config|open|strict]` runs
+drift trips the activation. `news replay <hits.json>` runs
 Deduper+Gate over saved provider hits without broker or model and lists every
 Event with admission, grounded assets, and preliminary storyline. `news why
 <event_id>` prints the Event's chain (item, gate, triage, decide, delivery)

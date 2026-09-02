@@ -275,8 +275,6 @@ news:
   retention:
     raw_days: 30                # an Item nobody judged is storage
     judged_days: 365            # an Item behind a verdict or accepted review is retained as learning evidence
-  gate:
-    suppress_low_signal: false  # true = drop ungrounded, non-macro social posts under score 70 before Program execution
   venues:                       # instrument-universe snapshot; public catalogues, no credentials
     enabled: true
     binance: true
@@ -307,12 +305,13 @@ cannot reuse the same evidence cohort. A directly callable `qwen*:thinking` alia
 is sent unchanged without the ordinary Qwen disable override and uses
 `prompt_json`; no operator-side thinking flag is required.
 
-`news.gate` controls admission and `news.policy` exposes only four duplicate/
-safety knobs; trade-relevance action eligibility is code-owned. The
-Gate admits nearly every Item (only recovery replays, law-firm templates,
-and — behind `suppress_low_signal` — low-score ungrounded social posts skip
-Program execution; exchange listing/delisting frames are admitted and judged like any
-candidate), Triage is the semantic filter, and
+Gate admission is code-owned with no `news.gate` section (the
+low-signal switch was deleted in #504) and `news.policy` exposes the
+duplicate/safety/budget knobs; trade-relevance action eligibility is code-owned.
+The Gate admits nearly every Item (only recovery replays, law-firm templates
+and unscored or under-80 market frames skip Program execution; exchange
+listing/delisting frames are admitted and judged like any candidate), Triage is
+the semantic filter, and
 `decide()` applies policy v12 to one `ScoredJudgment`. Semantic generation is
 the code-owned `EventSemantics.v2 -> deterministic SemanticNormalizer ->
 ReaderCard.v2 -> deterministic assembler` Program; `TradeRelevanceV1` is nested

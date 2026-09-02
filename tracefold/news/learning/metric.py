@@ -19,9 +19,9 @@ import inspect
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Final, Literal
+from typing import Any, Final
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel
 
 from ..artifact_identity import canonical_sha
 from ..events.storyline import final_storyline_key
@@ -38,7 +38,6 @@ from .objective import (
     _RELEVANCE_DIMENSIONS,
     _SEMANTICS_DIMENSIONS,
     DevelopmentEpisode,
-    _expected_delivery,
     _gold_value,
     _labelled,
     production_decision,
@@ -158,63 +157,6 @@ class MetricOutcome:
     component_diagnostics: dict[str, dict[str, Any]] = dataclasses.field(default_factory=dict)
     effective_weight_mass: float = 0.0
     dimension_outcomes: tuple[tuple[str, str], ...] = ()
-
-
-ProductionRegressionGateName = Literal["production_action", "asset_grounding", "novelty", "trade_relevance"]
-PRODUCTION_REGRESSION_GATES: Final[tuple[ProductionRegressionGateName, ...]] = (
-    "production_action",
-    "asset_grounding",
-    "novelty",
-    "trade_relevance",
-)
-
-
-@dataclass(frozen=True, slots=True)
-class ProductionRegressionMeasurement:
-    denominator_n: int = 0
-    stable_failure_n: int = 0
-    candidate_failure_n: int = 0
-    candidate_only_regression_n: int = 0
-
-
-class ProductionRegressionGateEvidenceV1(BaseModel):
-    """One independently measured hard gate inside a release evaluation report."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    schema_id: Literal["tracefold.news.production_regression_gate.v1"] = "tracefold.news.production_regression_gate.v1"
-    gate: ProductionRegressionGateName
-    metric_id: Literal["tracefold.news.production_action_trade_relevance_v8"] = (
-        "tracefold.news.production_action_trade_relevance_v8"
-    )
-    metric_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    denominator_n: int = Field(ge=0)
-    stable_failure_n: int = Field(ge=0)
-    candidate_failure_n: int = Field(ge=0)
-    candidate_only_regression_n: int = Field(ge=0)
-    candidate_only_case_ids: tuple[str, ...]
-    outcome: Literal["pass", "fail", "unknown"]
-
-    @model_validator(mode="after")
-    def counts_and_outcome_agree(self) -> ProductionRegressionGateEvidenceV1:
-        if (
-            self.stable_failure_n > self.denominator_n
-            or self.candidate_failure_n > self.denominator_n
-            or self.candidate_only_regression_n > self.candidate_failure_n
-            or self.candidate_only_regression_n > self.denominator_n - self.stable_failure_n
-            or len(set(self.candidate_only_case_ids)) != len(self.candidate_only_case_ids)
-            or (self.candidate_only_regression_n == 0 and self.candidate_only_case_ids)
-            or len(self.candidate_only_case_ids) > self.candidate_only_regression_n
-        ):
-            raise ValueError("news_production_regression_gate_counts_invalid")
-        expected = "unknown" if self.denominator_n == 0 else "fail" if self.candidate_only_regression_n else "pass"
-        if self.outcome != expected:
-            raise ValueError("news_production_regression_gate_outcome_mismatch")
-        return self
-
-    @property
-    def evidence_sha256(self) -> str:
-        return canonical_sha(self.model_dump(mode="json"))
 
 
 def _reader_card_owns_action_feedback(decision: DecisionResult, projection: Mapping[str, Any]) -> bool:
@@ -417,79 +359,6 @@ def _component(
             outcomes.append((name, "retention_hit" if kept else "retention_miss"))
             continue
     return (hits / scored_n if scored_n else None, gold_scored, scored_n, len(anchors))
-
-
-def _regression_projection(output: Mapping[str, Any]) -> dict[str, Any]:
-    verdict = dict(output.get("verdict") or {})
-    editorial = dict(output.get("editorial") or {})
-    relevance = dict(editorial.get("relevance") or {})
-    return {**verdict, **relevance}
-
-
-def production_regression_measurements(
-    review: Mapping[str, Any],
-    stable_output: Mapping[str, Any],
-    candidate_output: Mapping[str, Any],
-) -> dict[ProductionRegressionGateName, ProductionRegressionMeasurement]:
-    """Measure the four production gates independently over one paired case."""
-
-    empty = {name: ProductionRegressionMeasurement() for name in PRODUCTION_REGRESSION_GATES}
-    if candidate_output.get("not_assigned"):
-        return empty
-
-    stable_valid = isinstance(stable_output.get("scored_judgment"), Mapping) and not stable_output.get("error_code")
-    candidate_valid = isinstance(candidate_output.get("scored_judgment"), Mapping) and not candidate_output.get(
-        "error_code"
-    )
-    stable = _regression_projection(stable_output) if stable_valid else {}
-    candidate = _regression_projection(candidate_output) if candidate_valid else {}
-    dimensions = dict(review.get("dimensions") or {})
-    expected = dict(dict(review.get("payload") or {}).get("expected") or {})
-
-    def dimension_gate(names: Sequence[str]) -> ProductionRegressionMeasurement:
-        denominator_n = stable_failure_n = candidate_failure_n = candidate_only_n = 0
-        for name in names:
-            stable_score = _component(dimensions, (name,), stable, stable, expected)
-            if stable_score is None or not stable_score[2]:
-                continue
-            candidate_score = _component(dimensions, (name,), candidate, stable, expected)
-            stable_failed = not stable_valid or stable_score[0] != 1.0
-            candidate_failed = not candidate_valid or candidate_score is None or candidate_score[0] != 1.0
-            denominator_n += 1
-            stable_failure_n += int(stable_failed)
-            candidate_failure_n += int(candidate_failed)
-            candidate_only_n += int(not stable_failed and candidate_failed)
-        return ProductionRegressionMeasurement(
-            denominator_n=denominator_n,
-            stable_failure_n=stable_failure_n,
-            candidate_failure_n=candidate_failure_n,
-            candidate_only_regression_n=candidate_only_n,
-        )
-
-    action_expected = _expected_delivery(str(review.get("should_push") or "uncertain"))
-    action_denominator = int(action_expected is not None)
-    stable_action_failed = bool(action_denominator and bool(stable_output.get("delivered")) != action_expected)
-    candidate_action_failed = bool(action_denominator and bool(candidate_output.get("delivered")) != action_expected)
-    novelty_expected = str(dict(review.get("novelty") or {}).get("judgment") or "uncertain")
-    novelty_denominator = int(novelty_expected != "uncertain")
-    stable_novelty_failed = bool(novelty_denominator and str(stable.get("novelty") or "") != novelty_expected)
-    candidate_novelty_failed = bool(novelty_denominator and str(candidate.get("novelty") or "") != novelty_expected)
-    return {
-        "production_action": ProductionRegressionMeasurement(
-            denominator_n=action_denominator,
-            stable_failure_n=int(stable_action_failed),
-            candidate_failure_n=int(candidate_action_failed),
-            candidate_only_regression_n=int(not stable_action_failed and candidate_action_failed),
-        ),
-        "asset_grounding": dimension_gate(("asset_grounding",)),
-        "novelty": ProductionRegressionMeasurement(
-            denominator_n=novelty_denominator,
-            stable_failure_n=int(stable_novelty_failed),
-            candidate_failure_n=int(candidate_novelty_failed),
-            candidate_only_regression_n=int(not stable_novelty_failed and candidate_novelty_failed),
-        ),
-        "trade_relevance": dimension_gate(_RELEVANCE_DIMENSIONS),
-    }
 
 
 def _parse_prediction(
@@ -1125,18 +994,14 @@ __all__ = [
     "COMPONENT_FIELDS",
     "LABEL_GROUP",
     "METRIC_ID",
-    "PRODUCTION_REGRESSION_GATES",
     "UNGROUPED_LABEL",
     "CandidatePrediction",
     "CompileExample",
     "MetricOutcome",
-    "ProductionRegressionGateEvidenceV1",
-    "ProductionRegressionMeasurement",
     "accepted_review_metric",
     "bind_metric",
     "build_compile_example",
     "metric_contract_sha256",
     "metric_receipt",
-    "production_regression_measurements",
     "told_rows",
 ]

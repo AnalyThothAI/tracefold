@@ -355,8 +355,6 @@ news:
   retention:
     raw_days: 30
     judged_days: 365
-  gate:
-    suppress_low_signal: false
   venues:
     enabled: true
     binance: true

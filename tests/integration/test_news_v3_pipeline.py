@@ -1684,11 +1684,12 @@ def test_delivery_timing_uses_original_tweet_time_and_first_local_observation(co
 
 
 def test_a_stronger_member_regates_a_suppressed_event_and_publishes_it_once(conn) -> None:
-    """A low-score ungrounded post opens a suppressed Event (low-signal switch on); the same headline arriving from a
-    news source with score 85 and a grade-A tag re-gates the Event to candidate and reports it as publishable once."""
+    """An ungrounded post wearing a weak law-firm template phrase opens a suppressed Event; the same headline arriving
+    from a news source with score 85 and a grade-A tag re-gates the Event to candidate and reports it as publishable
+    once. (Until #504 D7 the suppressed seed was the Gate low-signal switch, which no longer exists.)"""
 
     repos = repositories_for_connection(conn)
-    text = "SafePal discloses a security breach exposing personal data of nearly 40,000 customers"
+    text = "SafePal faces a class action over a security breach exposing personal data of nearly 40,000 customers"
     first = parse_opennews_message(
         {
             "method": "strategy.triggered",
@@ -1728,9 +1729,8 @@ def test_a_stronger_member_regates_a_suppressed_event_and_publishes_it_once(conn
             trace_id="t",
             watchlist_symbols=frozenset(),
             now_ms=now_ms,
-            suppress_low_signal=True,
         )
-        assert opened.event_created and opened.admission == "suppressed_low_signal"
+        assert opened.event_created and opened.admission == "suppressed_pr_template"
         first_evidence = repos.news.latest_evidence_snapshot(opened.event_id)
         assert first_evidence is not None and int(first_evidence["evidence_version"]) == 1
         joined = admit_item(
@@ -1741,7 +1741,6 @@ def test_a_stronger_member_regates_a_suppressed_event_and_publishes_it_once(conn
             trace_id="t",
             watchlist_symbols=frozenset(),
             now_ms=now_ms,
-            suppress_low_signal=True,
         )
         assert joined.event_id == opened.event_id and joined.match_kind == "exact"
         assert joined.admission == "candidate" and joined.event_created is True  # publish once, like a new candidate
@@ -1753,7 +1752,6 @@ def test_a_stronger_member_regates_a_suppressed_event_and_publishes_it_once(conn
             trace_id="t",
             watchlist_symbols=frozenset(),
             now_ms=now_ms,
-            suppress_low_signal=True,
         )
         assert again.event_created is False and again.admission == "candidate"  # idempotent replay
         latest_evidence = repos.news.latest_evidence_snapshot(opened.event_id)

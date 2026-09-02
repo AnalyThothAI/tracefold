@@ -2363,10 +2363,10 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
         )
     )
 
-    regression_gates = report.evidence["regression_gates"]
-    assert set(regression_gates) == {"production_action", "asset_grounding", "novelty", "trade_relevance"}
-    assert {gate["gate"] for gate in regression_gates.values()} == set(regression_gates)
-    assert {gate["metric_sha256"] for gate in regression_gates.values()} == {report.evidence["metric_sha256"]}
+    # #504 D7: the four write-only production regression gates are gone; `must_push_regression` and
+    # `stable_hard_gate` remain the release failures that read Gold.
+    assert "regression_gates" not in report.evidence
+    assert report.evidence["evaluator_version"] == "news_candidate_evaluator_v5"
 
     candidate_stability = report.evidence["stability"]["candidate"]
     assert len(candidate_stability) == len(development.cases) == len(_COMPILABLE_CORPUS)

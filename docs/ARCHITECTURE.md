@@ -975,9 +975,10 @@ always describes it. The tier is excluded from `asset_refs`, from the console's
 `instrument_classes()` reads it.
 The Gate does not decide relevance: every ordinary-news Item is a `candidate`
 unless it is a recovery replay, a law-firm template notice (strong template
-phrases always; weak ones only without a grounded asset), an under-80 scored
-market frame, or — behind `news.gate.suppress_low_signal`, default off — an ungrounded,
-non-macro social post under 70. A `listing` frame takes the
+phrases always; weak ones only without a grounded asset), or an unscored or
+under-80 market frame (#126). The `news.gate` low-signal switch was
+deleted in #504: it defaulted off, was never turned on, and produced zero
+admissions in the whole retained history. A `listing` frame takes the
 `listing_deterministic` admission, which is admitted and judged like a
 candidate (#72). A member that
 joins a suppressed Event with stronger evidence (score >= 80, an A/A+ grounded
@@ -1874,7 +1875,7 @@ Coverage may span 30 days, while the operator discovery queue is explicitly
 bounded to the most recent seven days; the market view rejects a larger window,
 while the separate evidence-coverage view retains 30 days.
 
-`tracefold news replay <hits.json> [--gate-policy]` remains the deterministic
+`tracefold news replay <hits.json>` remains the deterministic
 provider-hits Deduper+Gate regression; `tracefold news why <event_id>` prints a
 single production chain. The retired single-label evaluator, policy-only
 corpus gate, label-copy UI and `news_event_labels` table no longer exist.
