@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from tracefold.news.models import TriageVerdict
+from tracefold.news.models import TriageAsset, TriageVerdict
 from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
 from tracefold.news.taxonomy import (
     IPTC_CODEBOOK_SHA256,
@@ -41,7 +41,9 @@ def _judgment(taxonomy: NewsTaxonomyV1) -> ScoredJudgment:
         verdict=TriageVerdict(
             novelty="new_fact",
             restates=-1,
-            assets=(),
+            # A named primary: policy v12 drops a single-name realtime verdict that names no instrument (#504),
+            # which is a verdict fact and not a taxonomy one.
+            assets=(TriageAsset(symbol="OKB", role="primary"),),
             direction="neutral",
             scope="single_name",
             magnitude=2,
@@ -102,6 +104,9 @@ def test_strategy_routing_ids_cannot_claim_source_authority() -> None:
 
 
 def test_taxonomy_has_no_delivery_authority() -> None:
+    """The four model-owned axes never enter `decide()`. The code-owned `source_authority` does since #504 D3, and
+    only as the corroboration fact for an eligible `escalate`; a realtime push is blind to it."""
+
     facts = GateFacts(grounded_assets=(), watchlist_symbols=frozenset(), admission="semantic")
     access = decide(_judgment(_taxonomy()), facts, None)
     rumor = decide(

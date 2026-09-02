@@ -346,6 +346,8 @@ class CliTests(unittest.TestCase):
                 "restatement_drop": True,
                 "similarity_max": 0.25,
                 "stale_source_max_age_s": 43_200,
+                "storyline_budget_max": 2,
+                "storyline_budget_window_s": 3600,
             },
         )
         self.assertIs(news["policy"]["restatement_drop"], True)

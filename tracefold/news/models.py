@@ -14,7 +14,7 @@ GATE_POLICY_VERSION = "news_gate_v5"
 STORYLINE_POLICY_VERSION = "news_storyline_v3"
 # v10 (#160) removes queue/provider hints from editorial authority and chooses
 # reader actions from the typed trade-relevance contract plus objective guards.
-TRIAGE_POLICY_VERSION = "news_triage_policy_v11"
+TRIAGE_POLICY_VERSION = "news_triage_policy_v12"
 DELIVERY_CARD_VERSION = "news_delivery_card_v11"
 
 Admission = Literal[

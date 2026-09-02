@@ -41,7 +41,7 @@ def _row(**overrides: Any) -> OiCandidateRow:
         "learning_epoch": EPOCH,
         "program_version": "news_oi_signal_v3",
         "program_sha256": DIGEST,
-        "policy_version": "news_triage_policy_v11",
+        "policy_version": "news_triage_policy_v12",
         "judgment_contract_version": "news_judgment_v2",
         "judgment_origin": "oi",
         "judgment_sha256": DIGEST,

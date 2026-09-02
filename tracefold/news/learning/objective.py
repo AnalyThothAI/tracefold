@@ -113,7 +113,13 @@ def verify_policy_projection(projection: Mapping[str, Any]) -> None:
     _frozen_policy(projection)
 
 
-def production_decision(judgment: ScoredJudgment, projection: Mapping[str, Any]) -> DecisionResult:
+def production_decision(
+    judgment: ScoredJudgment,
+    projection: Mapping[str, Any],
+    *,
+    member_count: int = 1,
+    now_ms: int | None = None,
+) -> DecisionResult:
     """The complete action the reader saw under the exact frozen production policy.
 
     ``decide()`` has no operational input to exclude any more: #137 removed the pause/mute plane outright, so
@@ -123,6 +129,10 @@ def production_decision(judgment: ScoredJudgment, projection: Mapping[str, Any])
 
     Recorded mode carries the persisted `DecisionResult` fields; live modes run the same current `decide()`
     function production uses. No caller may replace that action authority with model-owned relevance.
+
+    ``member_count`` and ``now_ms`` come from the frozen ``TriageContext`` the episode already carries
+    (`evidence.member_count`, `now_ms`), so the policy-v12 corroboration and storyline budget replay without a
+    new projection root (#504).
     """
 
     recorded = projection.get("recorded_decision_result")
@@ -171,9 +181,11 @@ def production_decision(judgment: ScoredJudgment, projection: Mapping[str, Any])
             # #154: `news learning baseline` scores the production action, so this metric has to be able to
             # reach `stale_source_artifact` too.
             source_age_s=gate.get("source_age_s"),
+            member_count=max(1, int(member_count)),
         ),
         storyline_status(key, told=told, seen=seen),
         policy=policy,
+        now_ms=now_ms,
     )
 
 

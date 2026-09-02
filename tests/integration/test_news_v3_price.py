@@ -186,7 +186,7 @@ def _event(
     repos.news.insert_verdict(
         event_id=event_id,
         stage="triage",
-        policy_version="news_triage_policy_v11",
+        policy_version="news_triage_policy_v12",
         judgment_contract_version=judgment.judgment_contract_version,
         judgment_origin=origin,
         rule_baseline_decision=decision_result.rule_baseline,

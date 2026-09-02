@@ -17,6 +17,13 @@ _NO_OBJECTIVE_GUARD = GateFacts(
     watchlist_symbols=frozenset(),
     admission="candidate",
 )
+# #504 D3: an escalate from a source of unknown authority is corroborated by a second independent arrival.
+_CORROBORATED = GateFacts(
+    grounded_assets=(),
+    watchlist_symbols=frozenset(),
+    admission="candidate",
+    member_count=2,
+)
 
 
 def _verdict(**overrides: Any) -> TriageVerdict:
@@ -168,6 +175,17 @@ def test_unexpected_fed_cut_with_rates_and_liquidity_escalates() -> None:
             throttled_by=None,
             rule_baseline="drop",
         ),
+        facts=_CORROBORATED,
+    )
+    # The same judgment from one Item of unknown authority is a push, not a wake-up (#504 D3).
+    _exact_decision(
+        judgment,
+        DecisionResult(
+            final="push",
+            override_rule="trade_relevance_escalate_uncorroborated",
+            throttled_by=None,
+            rule_baseline="drop",
+        ),
     )
 
 
@@ -197,6 +215,7 @@ def test_official_hormuz_closure_with_energy_and_risk_escalates() -> None:
             throttled_by=None,
             rule_baseline="drop",
         ),
+        facts=_CORROBORATED,
     )
 
 

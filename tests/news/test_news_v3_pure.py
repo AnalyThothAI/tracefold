@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from tests.support.news_judgment import scored_judgment, trade_relevance
+from tests.support.news_judgment import news_taxonomy, scored_judgment, trade_relevance
 from tracefold.news.bus import BusDecodeError, BusMessage, decode_body
 from tracefold.news.delivery import (
     _CHANGE_BASIS_LABEL,
@@ -26,6 +26,8 @@ from tracefold.news.events.facts import FactUnit, extract_fact_units
 from tracefold.news.events.gate import GateInput, evaluate_gate, grounded_assets
 from tracefold.news.events.minhash import BANDS, band_keys, estimate_jaccard, minhash_signature
 from tracefold.news.events.storyline import (
+    STORYLINE_LEXICON_VERSION,
+    THEMES,
     _symbol_in_text,
     final_storyline_key,
     preliminary_storyline_key,
@@ -478,7 +480,7 @@ def test_storyline_keys() -> None:
             grounded_assets=[],
             dedupe_family="general",
         )
-        == "theme:rates"
+        == "theme:cb_fed"
     )
     assert (
         preliminary_storyline_key(
@@ -489,6 +491,61 @@ def test_storyline_keys() -> None:
         )
         == "theme:us_macro_data"
     )
+
+
+def _theme(title: str) -> str:
+    return preliminary_storyline_key(title=title, grounded_assets=(), asset_class="macro", dedupe_family="general")
+
+
+def test_storyline_lexicon_v3_keys_the_buckets_that_shared_one_budget() -> None:
+    """#504 D1: 62% of a live day's pushes sat in two keys (`macro:general`, `theme:mideast_energy`) because the
+    lexicon had eight themes and no non-Latin terms. The order is part of the lexicon: first match wins."""
+
+    assert STORYLINE_LEXICON_VERSION == "news_storyline_lexicon_v3"
+    assert [name for name, _ in THEMES] == [
+        "crypto_treasury",
+        "mideast_energy",
+        "ru_ua",
+        "cb_fed",
+        "cb_boj",
+        "cb_ecb",
+        "cb_boe",
+        "cb_boc",
+        "cb_rba",
+        "cb_rbnz",
+        "cb_pboc",
+        "rates",
+        "trade",
+        "china_macro",
+        "metals",
+        "us_equity_macro",
+        "us_macro_data",
+        "venezuela",
+    ]
+    # A TASS defence-ministry daily in Russian, and the same war in English.
+    assert _theme("Минобороны России: ВСУ потеряли за сутки до 1200 военнослужащих") == "theme:ru_ua"
+    assert _theme("Poland scrambles jets in response to Russian strikes on Ukraine") == "theme:ru_ua"
+    # RBNZ's decision is its own storyline, not `rates` (33 frames, 11 pushes on one decision day) and not
+    # `china_macro` (the bare `央行` term that put it there is gone).
+    assert _theme("RBNZ Sets Official Cash Rate at 3.25%, Signals Further Easing") == "theme:cb_rbnz"
+    assert _theme("新西兰央行维持利率不变，暗示进一步宽松") == "theme:cb_rbnz"
+    # Central banks sit above `rates`: the person or the institution, not the instrument, is the storyline.
+    assert _theme("Fed's Powell says the committee is in no hurry to cut") == "theme:cb_fed"
+    assert _theme("日本央行维持利率不变") == "theme:cb_boj"
+    assert _theme("Bank of Canada holds policy rate at 2.75%") == "theme:cb_boc"  # not `trade` via `canada`
+    assert _theme("中国央行开展 3000 亿元 MLF 操作") == "theme:cb_pboc"  # not `china_macro`
+    assert _theme("US 30-year yield hits 5.32%") == "theme:rates"
+    # Persian and Hebrew channel headlines land in the Middle East storyline instead of `macro:general`.
+    assert _theme("ایران: حمله به پایگاه آمریکا در قطر") == "theme:mideast_energy"
+    assert _theme("ישראל תקפה מטרות בתימן") == "theme:mideast_energy"
+    assert _theme("Иран нанёс удар по базе США") == "theme:mideast_energy"
+    # `gulf` alone was matching the wrong hemisphere.
+    assert _theme("Hurricane shuts Gulf of Mexico platforms") == "macro:general"
+    assert _theme("Tanker traffic in the Persian Gulf halts") == "theme:mideast_energy"
+    assert _theme("Chevron restarts Venezuela joint venture output") == "theme:venezuela"
+    # Cardinal English words that are also central-bank shorthand stay anchored on word boundaries.
+    assert _theme("Fedex raises guidance") == "macro:general"
+    assert _theme("Canada's tariff retaliation takes effect") == "theme:trade"
 
 
 # ---------------------------------------------------------------- triage rules
@@ -521,11 +578,12 @@ def decide(
     *,
     policy: DecidePolicy = DEFAULT_POLICY,
     relevance: dict[str, Any] | None = None,
+    now_ms: int | None = None,
 ) -> Any:
     """Exercise the current model-only seam without repeating envelope construction in every pure assertion."""
 
     judgment = scored_judgment(verdict, relevance=trade_relevance(**(relevance or {})))
-    return production_decide(judgment, facts, status, policy=policy)
+    return production_decide(judgment, facts, status, policy=policy, now_ms=now_ms)
 
 
 def test_source_artifact_identity_survives_the_provider_url_spellings() -> None:
@@ -574,10 +632,11 @@ def test_stale_source_artifact_is_withheld_but_never_an_escalation() -> None:
     assert throttled_by_zh(STALE_SOURCE_KEY) == "旧闻：这条推文在 provider 推送时就已过时"
     assert OVERRIDE_RULE_ZH["stale_source_artifact"] == "来源推文本身已过时，按旧闻扣下"
 
+    # (#504 D3: a corroborated escalate — two independent arrivals — is the one that keeps its exemption.)
     assert (
         decide(
             _verdict(magnitude=3),
-            replace(stale, watchlist_symbols=frozenset()),
+            replace(stale, watchlist_symbols=frozenset(), member_count=2),
             status,
             relevance={"reader_value": "escalate"},
         ).final
@@ -590,13 +649,17 @@ def test_stale_source_artifact_is_withheld_but_never_an_escalation() -> None:
     assert decide(_verdict(magnitude=2), stale, status, policy=off).final == "push"
 
 
-def test_policy_v10_has_only_four_safety_and_duplicate_knobs() -> None:
+def test_policy_v12_has_six_safety_duplicate_and_budget_knobs() -> None:
     assert {item.name for item in fields(DecidePolicy)} == {
         "restatement_drop",
         "similarity_max",
         "stale_source_max_age_s",
         "listing_exempt_from_duplicate",
+        "storyline_budget_window_s",
+        "storyline_budget_max",
     }
+    assert DEFAULT_POLICY.storyline_budget_window_s == 3600 and DEFAULT_POLICY.storyline_budget_max == 2
+    assert len(DEFAULT_POLICY.as_dict()) == 6
 
 
 def test_trade_relevance_is_the_only_model_owned_action_input() -> None:
@@ -604,6 +667,7 @@ def test_trade_relevance_is_the_only_model_owned_action_input() -> None:
         grounded_assets=("SPY",),
         watchlist_symbols=frozenset(),
         admission="candidate",
+        member_count=2,  # #504 D3: an escalate from an `unknown` source needs a second arrival
     )
     verdict = _verdict(
         magnitude=2,
@@ -754,8 +818,153 @@ def _busy(**seen: object) -> StorylineStatus:
     )
 
 
-def test_decide_uses_content_duplicate_evidence_without_a_count_quota() -> None:
-    """Prior volume never blocks a card; only evidence that the reader already got this fact can."""
+_NOW = 1_800_000_000_000
+_NO_WATCHLIST = replace(_FACTS, watchlist_symbols=frozenset())
+
+
+def _sent(
+    key: str, *directions: str, minutes_ago: int = 30, headline: str = "已推送过的另一件事"
+) -> list[dict[str, Any]]:
+    """Newest-first sent-ledger rows on one storyline key, as ``recent_seen_rows`` projects them."""
+
+    return [
+        {
+            "event_id": f"{key}-{index}",
+            "at_ms": _NOW - (minutes_ago + index) * 60_000,
+            "storyline_key": key,
+            "direction": direction,
+            "headline_zh": f"{headline}{index}",
+        }
+        for index, direction in enumerate(directions)
+    ]
+
+
+def test_decide_withholds_the_third_card_on_a_storyline_inside_the_budget_window() -> None:
+    """#504 D2. Prior *volume on the reader* never blocks a card, but prior delivered cards *on this storyline*
+    do once the budget is spent: the third same-key card inside an hour is `storyline:<key>:budget`."""
+
+    key = "theme:mideast_energy"
+    third = _verdict(scope="macro", assets=[], direction="bearish", headline_zh="伊朗宣布封锁霍尔木兹海峡")
+    spent = storyline_status(key, seen=_sent(key, "bearish", "bearish"))
+
+    withheld = decide(third, _NO_WATCHLIST, spent, now_ms=_NOW)
+    assert withheld.final == "throttled" and withheld.throttled_by == f"storyline:{key}:budget"
+    assert withheld.override_rule == "trade_relevance_realtime"  # the rule that would have pushed it
+    assert withheld.seen_scope == "all" and withheld.seen_similarity is not None  # similarity still measured
+    assert throttled_by_zh(withheld.throttled_by).startswith("同线索预算")
+
+    # One delivered card is under budget; so are two delivered cards older than the window.
+    assert decide(third, _NO_WATCHLIST, storyline_status(key, seen=_sent(key, "bearish")), now_ms=_NOW).final == "push"
+    aged = storyline_status(key, seen=_sent(key, "bearish", "bearish", minutes_ago=90))
+    assert decide(third, _NO_WATCHLIST, aged, now_ms=_NOW).final == "push"
+    # Cards on other keys do not count against this one, however many.
+    other = storyline_status(key, seen=_sent("theme:ru_ua", "bearish", "bearish", "bearish"))
+    assert decide(third, _NO_WATCHLIST, other, now_ms=_NOW).final == "push"
+
+    # Exemption: a direction reversal against the newest delivered card on the key is new information.
+    flip = decide(third.model_copy(update={"direction": "bullish"}), _NO_WATCHLIST, spent, now_ms=_NOW)
+    assert flip.final == "push" and flip.throttled_by is None
+    # ... but only against the *newest* one: newest bullish, older bearish, candidate bullish is not a flip.
+    mixed = storyline_status(key, seen=_sent(key, "bullish", "bearish"))
+    assert (
+        decide(third.model_copy(update={"direction": "bullish"}), _NO_WATCHLIST, mixed, now_ms=_NOW).final
+        == "throttled"
+    )
+    # Neutral on either side is not a reversal.
+    assert (
+        decide(third.model_copy(update={"direction": "neutral"}), _NO_WATCHLIST, spent, now_ms=_NOW).final
+        == "throttled"
+    )
+
+    # Exemption: the `macro:<dedupe_family>` fallback bucket is not a storyline and is never budgeted.
+    fallback = storyline_status("macro:general", seen=_sent("macro:general", "bearish", "bearish", "bearish"))
+    assert decide(third, _NO_WATCHLIST, fallback, now_ms=_NOW).final == "push"
+
+    # Either knob at 0 switches the budget off; a caller without a clock has nothing to measure.
+    for policy in (DecidePolicy(storyline_budget_max=0), DecidePolicy(storyline_budget_window_s=0)):
+        assert decide(third, _NO_WATCHLIST, spent, policy=policy, now_ms=_NOW).final == "push"
+    assert decide(third, _NO_WATCHLIST, spent).final == "push"
+    # `max=3` is the replay's other candidate (#504 §9.1): the third card passes, the fourth does not.
+    three = DecidePolicy(storyline_budget_max=3)
+    assert decide(third, _NO_WATCHLIST, spent, policy=three, now_ms=_NOW).final == "push"
+    fourth = storyline_status(key, seen=_sent(key, "bearish", "bearish", "bearish"))
+    assert decide(third, _NO_WATCHLIST, fourth, policy=three, now_ms=_NOW).throttled_by == f"storyline:{key}:budget"
+
+    # A watchlist push is still a push: the budget is the last throttle whatever rule selected the action.
+    guarded = decide(
+        _verdict(headline_zh="英伟达宣布回购"),
+        _FACTS,
+        storyline_status("asset:NVDA", seen=_sent("asset:NVDA", "bullish", "bullish")),
+        now_ms=_NOW,
+    )
+    assert guarded.final == "throttled" and guarded.override_rule == "watchlist_objective_guard"
+
+
+def test_decide_escalate_needs_corroboration_and_a_corroborated_escalate_ignores_the_budget() -> None:
+    """#504 D3. 92 of 126 escalates on 2026-09-02 were a single Item from a source of unknown authority."""
+
+    big = _verdict(magnitude=3, scope="macro", assets=[], direction="bearish", headline_zh="伊朗议员称将报复美军")
+    escalate = trade_relevance(reader_value="escalate")
+    lone = replace(_NO_WATCHLIST, member_count=1)
+
+    claim = production_decide(scored_judgment(big, relevance=escalate), lone, None)
+    assert claim.final == "push" and claim.override_rule == "trade_relevance_escalate_uncorroborated"
+    assert OVERRIDE_RULE_ZH["trade_relevance_escalate_uncorroborated"]
+    # Either corroboration keeps the escalate: a source of known authority, or a second independent arrival.
+    wire = scored_judgment(big, relevance=escalate, taxonomy=news_taxonomy(source_authority="reputable_secondary"))
+    assert production_decide(wire, lone, None).final == "escalate"
+    merged = production_decide(scored_judgment(big, relevance=escalate), replace(lone, member_count=2), None)
+    assert merged.final == "escalate" and merged.override_rule == "trade_relevance_escalate"
+    # A grounded asset is not corroboration: a provider tag says which instrument, not that anyone confirmed it.
+    tagged = replace(lone, grounded_assets=("CL", "XYZ-CL"))
+    assert production_decide(scored_judgment(big, relevance=escalate), tagged, None).final == "push"
+
+    # The downgraded card is an ordinary push from here on: the budget and similarity apply to it.
+    key = "theme:mideast_energy"
+    spent = storyline_status(key, seen=_sent(key, "bearish", "bearish"))
+    budgeted = production_decide(scored_judgment(big, relevance=escalate), lone, spent, now_ms=_NOW)
+    assert budgeted.final == "throttled" and budgeted.throttled_by == f"storyline:{key}:budget"
+    assert budgeted.override_rule == "trade_relevance_escalate_uncorroborated"
+    # A corroborated escalate is the card the budget makes room for.
+    assert production_decide(wire, lone, spent, now_ms=_NOW).final == "escalate"
+
+
+def test_decide_drops_a_single_name_fact_that_names_no_instrument() -> None:
+    """#504 PR-A: 197 single-name pushes a day named no primary at all. The check is only "is there a primary";
+    the instrument universe is never consulted, so a Hong Kong ticker the universe cannot list still passes."""
+
+    nameless = _verdict(assets=[], headline_zh="某初创公司完成种子轮融资")
+    dropped = decide(nameless, _NO_WATCHLIST, None)
+    assert dropped.final == "drop" and dropped.override_rule == "single_name_without_instrument"
+    assert OVERRIDE_RULE_ZH["single_name_without_instrument"]
+    # Any primary passes, grounded or not, on a venue or not.
+    for symbol in ("GPRO", "02015.HK"):
+        named = decide(
+            nameless.model_copy(update={"assets": [TriageAsset(symbol=symbol, role="primary")]}), _NO_WATCHLIST, None
+        )
+        assert named.final == "push" and named.override_rule == "trade_relevance_realtime", symbol
+    # A merely mentioned asset is not a primary.
+    affected = decide(
+        nameless.model_copy(update={"assets": [TriageAsset(symbol="SPY", role="mentioned")]}), _NO_WATCHLIST, None
+    )
+    assert affected.final == "drop" and affected.override_rule == "single_name_without_instrument"
+    # Only a realtime single-name verdict: macro/sector scope, a corroborated escalate, a watchlist or listing
+    # guard are untouched.
+    assert decide(nameless.model_copy(update={"scope": "macro"}), _NO_WATCHLIST, None).final == "push"
+    assert decide(nameless.model_copy(update={"scope": "sector"}), _NO_WATCHLIST, None).final == "push"
+    corroborated = scored_judgment(
+        nameless.model_copy(update={"magnitude": 3}),
+        relevance=trade_relevance(reader_value="escalate"),
+        taxonomy=news_taxonomy(source_authority="reputable_secondary"),
+    )
+    assert production_decide(corroborated, _NO_WATCHLIST, None).final == "escalate"
+    assert decide(nameless, _FACTS, None).override_rule == "watchlist_objective_guard"
+    assert decide(nameless, replace(_NO_WATCHLIST, admission="listing_deterministic"), None).final == "push"
+
+
+def test_decide_uses_content_duplicate_evidence_without_a_reader_quota() -> None:
+    """Prior volume on the *reader* never blocks a card; only evidence that the reader already got this fact
+    (or, since v12, this storyline's budget) can."""
 
     # Nothing in the window to compare against: the reader received nothing, so nothing can be a repeat.
     empty = decide(_verdict(), _FACTS, _busy())
@@ -790,7 +999,8 @@ def test_decide_uses_content_duplicate_evidence_without_a_count_quota() -> None:
 
 
 def test_storyline_status_carries_only_content_evidence() -> None:
-    """A count-based capacity field cannot quietly return to the decision interface."""
+    """Every field is receipt evidence about delivered cards. `seen_at_ms`/`seen_keys` (#504) are when and under
+    which storyline key each delivered card settled — the budget ledger — never a count or capacity field."""
 
     assert {item.name for item in fields(StorylineStatus)} == {
         "key",
@@ -800,7 +1010,11 @@ def test_storyline_status_carries_only_content_evidence() -> None:
         "seen_event_ids",
         "seen_directions",
         "seen_assets",
+        "seen_at_ms",
+        "seen_keys",
     }
+    status = storyline_status("asset:BTC", seen=[_told_row("a", 5, storyline_key="theme:rates"), _told_row("b", 3)])
+    assert status.seen_at_ms == (5, 3) and status.seen_keys == ("theme:rates", "asset:BTC")
 
 
 def _told_row(event_id: str, at_ms: int, **overrides: Any) -> dict[str, Any]:
@@ -1684,7 +1898,7 @@ def test_final_storyline_key_prefers_the_named_subject_over_an_arbitrary_tag() -
     # The model named nothing and the tag is not what the text is about: the family bucket, not `asset:BTC`.
     assert (
         final_storyline_key(
-            title="Poland scrambles jets in response to Russian strikes on Ukraine",
+            title="Poland scrambles jets after unidentified drones cross its border",
             headline_zh="波兰启动预防性军机行动",
             scope="macro",
             verdict_primaries=[],
@@ -1785,7 +1999,7 @@ def test_decide_never_withholds_an_escalate_as_a_similarity_match() -> None:
 
     told = ("特朗普称其政府已结束对加密的战争",)
     big = _verdict(magnitude=3, headline_zh="特朗普称美国正考虑购买大量比特币及其他加密资产")
-    facts = replace(_FACTS, watchlist_symbols=frozenset())
+    facts = replace(_FACTS, watchlist_symbols=frozenset(), member_count=2)  # corroborated (#504 D3)
     on_fresh = decide(
         big,
         facts,

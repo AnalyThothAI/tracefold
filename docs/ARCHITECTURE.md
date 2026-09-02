@@ -986,8 +986,12 @@ tag, or a different source) re-gates it in place and it publishes once.
 listing frames, or rate/yield macro. It is a broker scheduling hint only: it may
 be persisted and measured, but cannot enter a Predictor, `decide()`, ReaderCard
 or reader-facing importance UI. The preliminary storyline key (status bar only)
-is theme-first (`crypto_treasury`, `mideast_energy`, `rates`, `trade`,
-`china_macro`, `metals`, `us_equity_macro`, `us_macro_data`), then the first
+is theme-first over the ordered lexicon `news_storyline_lexicon_v3`
+(`crypto_treasury`, `mideast_energy`, `ru_ua`, `cb_fed`, `cb_boj`, `cb_ecb`,
+`cb_boe`, `cb_boc`, `cb_rba`, `cb_rbnz`, `cb_pboc`, `rates`, `trade`,
+`china_macro`, `metals`, `us_equity_macro`, `us_macro_data`, `venezuela`;
+first match wins, central banks sit above `rates`, and `mideast_energy` and
+`ru_ua` carry Russian, Persian and Hebrew terms, #504), then the first
 A/A+ or cashtag asset; the final key is computed after Triage from the
 verdict's grounded primaries and scope, written back to `news_events`, and
 used by duplicate comparison, operator grouping, and advisory locking.
@@ -1289,15 +1293,32 @@ cannot select or rescue an action. A Gate-admitted `listing_deterministic` frame
 (`listing_exempt_from_duplicate`) skips the restatement drop and similarity
 throttle only when the matched card names none of its instruments, compared as
 symbol sets rather than headline text; a re-issued notice for the same
-instrument is still withheld. `news.policy` exposes only four v11 knobs:
-`restatement_drop`, `similarity_max`, `stale_source_max_age_s`, and
-`listing_exempt_from_duplicate`.
+instrument is still withheld. `news.policy` exposes six v12 knobs:
+`restatement_drop`, `similarity_max`, `stale_source_max_age_s`,
+`listing_exempt_from_duplicate`, `storyline_budget_window_s` and
+`storyline_budget_max`.
 
-Policy v7 deliberately
-has **no hourly, two-hour, or four-hour reader quota**. Historical push counts
-remain observable metrics, but they are not included in the model input and
-cannot change `push`/`escalate` into `throttled`. Once the semantic conditions
-pass, the delivery harness executes the decision; it only enforces explicit
+Policy v12 has **no reader-global quota** (no hourly, two-hour or four-hour
+cap on what the reader receives, and no operator mute) but it does have a
+**per-storyline content budget** (#504, which withdraws policy v7's "no
+storyline quota" decision): an ordinary `push` whose final storyline key
+already has `storyline_budget_max` (2) delivered cards inside
+`storyline_budget_window_s` (3600 s) is withheld as
+`storyline:<key>:budget`. The ledger is the same `recent_seen_rows` the
+similarity check reads (sent first deliveries, newest first, `settled_at_ms`
+and the card's final key). Three exemptions, all content: an `escalate` that
+survived corroboration; a bullish/bearish reversal against the newest
+delivered card on that key; and any `macro:<dedupe_family>` fallback key,
+which is not a storyline and is neither counted nor budgeted. Either knob at
+0 disables the budget. Two more v12 rules run before it: an eligible
+`escalate` whose code-owned `editorial.taxonomy.source_authority` is
+`unknown` and whose Event has a single member is downgraded to `push` as
+`trade_relevance_escalate_uncorroborated` (grounded assets are not
+corroboration); and an eligible realtime `single_name` verdict that names no
+primary asset drops as `single_name_without_instrument` (it checks only that a
+primary exists, never the instrument universe, so a Hong Kong ticker passes).
+Once the semantic conditions pass and no content rule withholds the card, the
+delivery harness executes the decision; it only enforces explicit
 idempotency, provider pacing, and real delivery receipts.
 
 Duplicate protection is content evidence rather than a quota: each ordinary
@@ -1537,9 +1558,10 @@ interrupted rows are terminalized at startup. Recovery items, suppressed
 events never deliver. There is no operator pause or mute: `news_control_state`
 was removed after never withholding a single card in the whole retained history,
 and an unread singleton that two hot-path consumers still SELECT is how a second
-decision plane grows beside `decide()`. Policy v11 has
-no hourly, two-hour, or four-hour reader quota: a push/escalate decision reaches
-the Deliverer regardless of how many earlier cards were sent.
+decision plane grows beside `decide()`. Policy v12 has
+no reader-global quota; its only volume rule is the per-storyline content
+budget (`storyline:<key>:budget`, #504) with the escalate, reversal and
+`macro:*` exemptions and the `throttled_by_key` observation described above.
 
 Incidents and recovery: WSS transport/auth/protocol/idle failures, broker
 backpressure/unavailability, and Triage circuit opens are rows in
@@ -1976,10 +1998,13 @@ outlive its provider's message id and carry a four-hour result; and destructive
 triggers, defaults and CHECKs called; `20260902_0348` hard-cuts Runtime
 readiness and adds the profile-keyed current control projection; and additive
 `20260902_0349` adds the bounded Runtime-owned current account read
-projection; and additive `20260902_0350`, the current single head, pins the
+projection; additive `20260902_0350` pins the
 `pg_trgm` extension and admits the `title_similarity` retrieval reason into the
 `news_verdicts` told trace CHECK for the reader-history title-similarity band
-(#491).
+(#491); additive `20260902_0351` opens the judgment CHECK to program v9 and
+admits blind review drafts (#501); and additive `20260903_0352`, the current
+single head, opens the same CHECK's model, OI and degraded branches to
+`news_triage_policy_v12` (#504).
 
 Every new schema change is again a normal linear, immutable, forward-only
 revision after the baseline. Exact-image replacement requires source, image,
