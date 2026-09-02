@@ -1182,11 +1182,25 @@ Diagnose News in this order:
    `throttled_24h`. For one Event, `tracefold news why <event_id>` prints
    raw first line -> normalized title -> gate facts -> triage verdict ->
    decide rule / throttle key -> storyline status snapshots -> delivery.
+   The trace also carries `storyline_registry_sha256`, the identity of the
+   `storyline_registry.json` bytes that produced this card's keys (#509). It is
+   an audit field: it is not part of `policy_sha256`, it opens no learning
+   epoch, and a registry edit is a data change rather than a policy change, so
+   two cards with different registry SHAs are still the same Program and
+   policy. A storyline key reads `asset:<SYM>`, `conflict:<id>`, `actor:<id>`,
+   `geo:<id>`, `topic:<id>` or `none`; `tracefold news why` renders the
+   registry's `label_zh` for it.
    A `storyline:<key>:budget` throttle key is the policy-v12 per-storyline
    budget (#504): the reader already received `storyline_budget_max` cards on
    that final storyline key inside `storyline_budget_window_s`, and this one
-   was neither a corroborated escalate nor a direction reversal. `macro:*`
-   keys never appear there. Every budget-withheld card is a `throttled`
+   was neither a corroborated escalate nor a direction reversal. The `none`
+   key never appears there.
+   After a deploy that changes the key format, the budget reads a 4 h ledger
+   whose older rows still carry the previous format, so for that one window
+   those rows match no new key and are not counted. The effect is bounded, one
+   directional (it releases rather than withholds) and needs no backfill: do
+   not recompute historical `storyline_key` values, and read the first hour of
+   `throttled_by_key` after such a deploy as a floor, not as a regression. Every budget-withheld card is a `throttled`
    verdict, so the ReviewDesk sampler queues it at probability 1.0; a
    `must_push` label on one is a reason to revisit the exemptions, not to
    raise `storyline_budget_max`. The day's receipt is the two D5 SQL numbers

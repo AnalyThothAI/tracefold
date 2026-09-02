@@ -3712,12 +3712,12 @@ def test_triage_does_not_reask_when_an_unrelated_card_lands_but_the_selection_is
     """
 
     ledger_calls = {"n": 0}
-    unrelated = _ledger_row("ev-unrelated", NOW_MS - 1_000, key="theme:trade", headline="完全无关的新卡片")
+    unrelated = _ledger_row("ev-unrelated", NOW_MS - 1_000, key="topic:trade", headline="完全无关的新卡片")
 
     def reader_history(*, now_ms: int, **_: Any) -> ReaderHistorySnapshot:
         ledger_calls["n"] += 1
         related = [_ledger_row(f"ev-{i}", NOW_MS - (10 + i) * 1_000) for i in range(4)]
-        filler = [_ledger_row(f"bg-{i}", NOW_MS - (30 + i) * 1_000, key="theme:trade") for i in range(6)]
+        filler = [_ledger_row(f"bg-{i}", NOW_MS - (30 + i) * 1_000, key="topic:trade") for i in range(6)]
         rows = [unrelated, *related, *filler] if ledger_calls["n"] > 1 else [*related, *filler]
         return _recent_history(*rows, now_ms=now_ms)
 
@@ -3956,7 +3956,7 @@ def test_triage_rebuilds_gate_facts_when_evidence_changes_before_the_reask() -> 
         grounded_assets=[],
         provider_score_max=10.0,
         queue_priority="normal",
-        storyline_key="macro:general",
+        storyline_key="none",
     )
     cards = iter((initial, refreshed))
     verdict = _model_verdict(magnitude=1)
@@ -3981,7 +3981,7 @@ def test_triage_rebuilds_gate_facts_when_evidence_changes_before_the_reask() -> 
     assert judge.inputs[1].gate.grounded_assets == ()
     assert inserted["rule_baseline_decision"] == "drop"
     assert inserted["final_decision"] == "drop"
-    assert inserted["trace"]["storyline_key_preliminary"] == "macro:general"
+    assert inserted["trace"]["storyline_key_preliminary"] == "none"
     assert inserted["trace"]["first_storyline_key_preliminary"] == "asset:NVDA"
     assert inserted["trace"]["reask_reason"] == "evidence"
     assert inserted["trace"]["reasked_after_evidence_change"] is True
@@ -4000,7 +4000,7 @@ def test_triage_evidence_reask_failure_degrades_against_the_refreshed_evidence()
         watchlist_hits=[],
         provider_score_max=10.0,
         queue_priority="normal",
-        storyline_key="macro:general",
+        storyline_key="none",
     )
     cards = iter((initial, refreshed))
     first_verdict = _model_verdict(magnitude=3, direction="bearish", scope="macro")

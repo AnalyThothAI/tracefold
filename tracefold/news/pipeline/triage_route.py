@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, assert_never
 
+from ..events.storyline import STORYLINE_REGISTRY_SHA256
 from ..liquidations import LiquidationJudgment
 from ..models import GATE_POLICY_VERSION, TriageVerdict
 from ..oi_signals import OiJudgment
@@ -283,6 +284,10 @@ def _initial_trace(
         # verdict has to be replayable against the thresholds it actually ran under (#81).
         "policy": arm.policy.as_dict(),
         "gate_policy_version": GATE_POLICY_VERSION,
+        # The identity of the alias registry that produced the storyline keys. It is an audit field,
+        # deliberately outside `policy_sha256` and opening no learning epoch: maintaining the registry
+        # is data maintenance, not a policy change (#509 D5).
+        "storyline_registry_sha256": STORYLINE_REGISTRY_SHA256,
         "evidence_version": int(card.get("evidence_version") or 0),
         "evidence_sha256": str(card.get("evidence_sha256") or ""),
         "focus_fact_id": str(card.get("focus_fact_id") or ""),

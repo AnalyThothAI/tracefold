@@ -11,7 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 NEWS_BUS_SCHEMA_VERSION = "news_bus_v1"
 EVENT_IDENTITY_VERSION = "news_event_identity_v6"
 GATE_POLICY_VERSION = "news_gate_v5"
-STORYLINE_POLICY_VERSION = "news_storyline_v3"
 # v10 (#160) removes queue/provider hints from editorial authority and chooses
 # reader actions from the typed trade-relevance contract plus objective guards.
 TRIAGE_POLICY_VERSION = "news_triage_policy_v12"
@@ -254,7 +253,6 @@ __all__ = [
     "GATE_POLICY_VERSION",
     "NEWS_BUS_SCHEMA_VERSION",
     "OUTBOX_MAX_AGE_MS",
-    "STORYLINE_POLICY_VERSION",
     "TRIAGE_POLICY_VERSION",
     "Admission",
     "AssetClass",

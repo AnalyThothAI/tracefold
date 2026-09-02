@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
+from .events.storyline import NO_STORYLINE_KEY, storyline_entry
 from .models import ADMITTED_ADMISSIONS, OUTBOX_MAX_AGE_MS
 from .triage_rules import STALE_SOURCE_KEY
 
@@ -126,27 +127,6 @@ DELIVERY_ERROR_ZH: Final[dict[str, str]] = {
     "news_delivery_settlement_unavailable": "发送后未能记录结果",
 }
 
-THEME_ZH: Final[dict[str, str]] = {
-    "crypto_treasury": "加密财库",
-    "mideast_energy": "中东与能源",
-    "ru_ua": "俄乌",
-    "cb_fed": "美联储",
-    "cb_boj": "日本央行",
-    "cb_ecb": "欧洲央行",
-    "cb_boe": "英国央行",
-    "cb_boc": "加拿大央行",
-    "cb_rba": "澳洲联储",
-    "cb_rbnz": "新西兰联储",
-    "cb_pboc": "中国央行",
-    "rates": "利率与通胀数据",
-    "trade": "贸易与关税",
-    "china_macro": "中国宏观",
-    "metals": "金属",
-    "us_equity_macro": "美股大盘",
-    "us_macro_data": "美国宏观数据",
-    "venezuela": "委内瑞拉",
-}
-
 DEDUPE_FAMILY_ZH: Final[dict[str, str]] = {
     "general": "综合",
     "filing": "公告/申报",
@@ -214,15 +194,22 @@ def delivery_error_zh(code: str | None) -> str:
 
 
 def storyline_key_zh(key: str | None) -> str:
+    """The storyline registry owns every label but the symbol (#509 D4).
+
+    There is no second table of storyline names here any more: `conflict:`/`actor:`/`geo:`/`topic:` read
+    `label_zh` off the registry row, so a new storyline is one JSON row rather than a row plus a translation
+    someone has to remember. A historical key whose entry has since been renamed away renders as itself."""
+
     text = str(key or "")
     if text.startswith("asset:"):
         return text.removeprefix("asset:")
-    if text.startswith("theme:"):
-        theme = text.removeprefix("theme:")
-        return THEME_ZH.get(theme, theme)
-    if text.startswith("macro:"):
-        dedupe_family = text.removeprefix("macro:")
-        return DEDUPE_FAMILY_ZH.get(dedupe_family, dedupe_family)
+    if text == NO_STORYLINE_KEY:
+        return "无线索"
+    prefix, separator, entry_id = text.partition(":")
+    if separator and prefix in {"conflict", "actor", "geo", "topic"}:
+        entry = storyline_entry(entry_id)
+        if entry is not None:
+            return entry.label_zh
     return text
 
 
@@ -387,7 +374,6 @@ __all__ = [
     "OVERRIDE_RULE_ZH",
     "PRIORITY_ZH",
     "SCOPE_ZH",
-    "THEME_ZH",
     "Outcome",
     "OutcomeKind",
     "admission_zh",

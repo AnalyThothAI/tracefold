@@ -13,7 +13,7 @@ from tracefold.integrations.venues.errors import VenueExpectedError
 from tracefold.integrations.venues.okx import fetch_okx_instruments
 from tracefold.integrations.venues.us_reference import fetch_us_reference_instruments
 from tracefold.news.events.gate import GateInput, asset_class_of, evaluate_gate, grounded_assets
-from tracefold.news.events.storyline import final_storyline_key, storyline_key
+from tracefold.news.events.storyline import final_storyline_key
 from tracefold.news.market_review.instruments import (
     ALIAS_SEEDS,
     classify,
@@ -121,11 +121,12 @@ def test_alias_seeds_point_at_symbols_a_venue_actually_lists() -> None:
 
 def test_storyline_key_buckets_one_issuer_together() -> None:
     def key(symbol: str) -> str:
-        return storyline_key(
+        return final_storyline_key(
             title="SK Hynix approves buyback",
             headline_zh="SK海力士回购",
             scope="single_name",
-            primary_assets=[symbol],
+            verdict_primaries=[symbol],
+            grounded_assets=[symbol],
             dedupe_family="general",
         )
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import random
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import fields, replace
 from pathlib import Path
@@ -26,19 +28,23 @@ from tracefold.news.events.facts import FactUnit, extract_fact_units
 from tracefold.news.events.gate import GateInput, evaluate_gate, grounded_assets
 from tracefold.news.events.minhash import BANDS, band_keys, estimate_jaccard, minhash_signature
 from tracefold.news.events.storyline import (
-    STORYLINE_LEXICON_VERSION,
-    THEMES,
+    NO_STORYLINE_KEY,
+    STORYLINE_REGISTRY_SHA256,
+    STORYLINE_REGISTRY_VERSION,
+    StorylineRegistry,
     _symbol_in_text,
     final_storyline_key,
+    load_storyline_registry,
+    match_storyline,
     preliminary_storyline_key,
-    storyline_key,
+    registry_storyline_key,
 )
 from tracefold.news.events.titles import extract_title
 from tracefold.news.events.tokens import comparison_tokens, jaccard
 from tracefold.news.market_review.pricing import CHANGE_BASIS_ZH
 from tracefold.news.models import ReaderMarketMovement, ReaderReceipt, ReaderTradeTarget, TriageAsset, TriageVerdict
 from tracefold.news.opennews import source_artifact_identity
-from tracefold.news.outcome import OVERRIDE_RULE_ZH, throttled_by_zh
+from tracefold.news.outcome import OVERRIDE_RULE_ZH, storyline_key_zh, throttled_by_zh
 from tracefold.news.pipeline.admission import _event_identity
 from tracefold.news.similarity import similarity
 from tracefold.news.triage_rules import (
@@ -405,55 +411,159 @@ def test_gate_admission_rules() -> None:
 
 
 # ---------------------------------------------------------------- storyline
-def test_storyline_keys() -> None:
+def _prelim(title: str) -> str:
+    return preliminary_storyline_key(title=title, grounded_assets=(), asset_class="macro", dedupe_family="general")
+
+
+def test_storyline_registry_is_literal_data_with_one_owner_per_alias() -> None:
+    """#509 D1/五: the registry is data, so the three things that make it data are asserted, not reviewed.
+
+    An alias belongs to exactly one entry (there is no priority rule to get wrong), carries no regex syntax (a
+    row cannot smuggle in `.*`), and is already NFKC-case-folded (matching normalizes the *text*, so an alias
+    that is not in that form would silently never match). `members` name entries that exist."""
+
+    registry = load_storyline_registry()
+    assert registry.version == STORYLINE_REGISTRY_VERSION == "news_storyline_registry_v1"
+    assert len(STORYLINE_REGISTRY_SHA256) == 64 and set(STORYLINE_REGISTRY_SHA256) <= set("0123456789abcdef")
+
+    owner: dict[str, str] = {}
+    ids = {entry.id for entry in registry.entries}
+    for entry in registry.entries:
+        assert entry.label_zh.strip()
+        for _script, alias in entry.aliases.all():
+            assert alias not in owner, f"{alias!r} is claimed by both {owner[alias]} and {entry.id}"
+            owner[alias] = entry.id
+            assert not set(alias) & set(".^$*+?{}[]()|\\"), alias
+            assert unicodedata.normalize("NFKC", alias).casefold() == alias, alias
+        assert set(entry.members) <= ids
+        assert entry.kind == "conflict" or not (entry.members or entry.active)
+    assert {entry.id for entry in registry.entries if entry.kind == "conflict" and entry.active} == {
+        "mideast_2026",
+        "ru_ua",
+    }
+    # The single-word traps the v3 regexes fell into: none of them may become an alias again.
+    for trap in ("联储", "央行", "gulf", "strait", "期货", "mexico"):
+        assert trap not in owner
+
+
+def test_storyline_registry_rejects_a_row_that_is_not_data() -> None:
+    """Structure is enforced at load, not by review: a shared alias, a pattern, or a dangling member fails."""
+
+    base = {
+        "version": "news_storyline_registry_v1",
+        "entries": [
+            {"id": "iran", "kind": "geo", "label_zh": "伊朗", "aliases": {"latin": ["iran"]}},
+            {"id": "war", "kind": "conflict", "label_zh": "战争", "active": True, "members": ["iran"]},
+        ],
+    }
+    assert StorylineRegistry.model_validate(base).entries[0].id == "iran"
+    for broken in (
+        {"entries": [base["entries"][0], {**base["entries"][1], "members": ["nowhere"]}]},
+        {"entries": [base["entries"][0], {**base["entries"][0], "id": "iran2"}]},
+        {"entries": [{**base["entries"][0], "aliases": {"latin": ["ira.*"]}}]},
+        {"entries": [{**base["entries"][0], "aliases": {"latin": ["Iran"]}}]},
+        {"entries": [{**base["entries"][0], "kind": "topic", "members": ["iran"]}]},
+        {"entries": [{**base["entries"][0], "surprise": 1}]},
+    ):
+        with pytest.raises(ValueError):
+            StorylineRegistry.model_validate(base | broken)
+
+
+def test_storyline_key_is_composed_by_rank_not_by_the_order_of_the_file() -> None:
+    """#509 D2. The v3 lexicon decided 96 of 1036 pushed cards by which regex sat higher in a tuple. The rank
+    is now fixed — asset, conflict, actor, geo, topic — and the tie-break inside a rank is the earliest
+    mention, so the storyline is a property of the headline instead of a property of the file."""
+
+    # A conflict collects its participants: on a war day the product wants one line for the war.
+    assert _prelim("Iran attacks Kuwait") == "conflict:mideast_2026"
+    assert _prelim("Iran attacked another ship outside the Strait of Hormuz") == "conflict:mideast_2026"
+    # Two active conflicts in one headline: the one named first wins, whatever order the file is in.
+    assert _prelim("Russia helps Iran build missiles") == "conflict:ru_ua"
+    assert _prelim("Iran receives Russian missile parts") == "conflict:mideast_2026"
+    # An institution outranks the country it sits in, and the instrument it sets.
+    assert _prelim("Bank of Canada holds policy rate at 2.75%") == "actor:boc"
+    assert _prelim("Fed's Powell says the committee is in no hurry to cut") == "actor:fed"
+    assert _prelim("RBNZ Sets Official Cash Rate at 3.25%, Signals Further Easing") == "actor:rbnz"
+    assert _prelim("新西兰联储加息") == "actor:rbnz"  # a bare `联储` is not the Fed
+    assert _prelim("澳洲联储主席布洛克：不排除再次加息") == "actor:rba"
+    assert _prelim("中国央行开展 3000 亿元 MLF 操作") == "actor:pboc"  # not `geo:china`
+    # A place outranks a subject (#509 D2 step 4 before step 5), and a subject is the last resort.
+    assert _prelim("Canada's tariff retaliation takes effect") == "geo:canada"
+    assert _prelim("US 30-year yield hits 5.32%") == "topic:rates"
+    assert _prelim("Chevron restarts Venezuela joint venture output") == "geo:venezuela"
+    # The v3 false positives are gone: `\bstrait\b` took the Taiwan Strait to the Middle East, a bare `gulf`
+    # took the Gulf of Mexico there, and `期货` filed Chinese methanol futures under US equities.
+    assert _prelim("Taiwan Strait transit draws PLA response") == "geo:taiwan"
+    assert _prelim("Hurricane shuts Gulf of Mexico platforms") == NO_STORYLINE_KEY
+    assert _prelim("【期货热点追踪】甲醇涨停") == NO_STORYLINE_KEY
+    assert _prelim("Fedex raises guidance") == NO_STORYLINE_KEY  # word boundaries, not substrings
+    assert _prelim("Tanker traffic in the Persian Gulf halts") == "topic:energy"
+
+
+def test_storyline_key_reads_the_scripts_the_desk_actually_receives() -> None:
+    """#509 D1. TASS, Fars and Israeli channels contributed 109 pushes a day that all fell to one fallback
+    bucket. Non-Latin aliases match as substrings, so an inflected form still lands on its entry."""
+
+    assert _prelim("Минобороны России: ВСУ потеряли за сутки до 1200 военнослужащих") == "conflict:ru_ua"
+    assert _prelim("Poland scrambles jets in response to Russian strikes on Ukraine") == "conflict:ru_ua"
+    assert _prelim("ایران: حمله به پایگاه آمریکا در قطر") == "conflict:mideast_2026"
+    assert _prelim("ישראל תקפה מטרות בתימן") == "conflict:mideast_2026"
+    assert _prelim("Иран нанёс удар по базе США") == "conflict:mideast_2026"
+    # The longest alias at a position wins, so the central bank is not read as the state at war.
+    assert _prelim("ТАСС: ЦБ РФ повысил ключевую ставку") == "actor:cbr"
+    assert _prelim("日本央行维持利率不变") == "actor:boj"
+
+
+def test_storyline_key_does_not_depend_on_the_order_of_the_registry_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#509 五: shuffling the file must not move a key. Composition is the only thing that reads the registry,
+    so re-deriving every key above against eight shuffles is the whole order-independence proof."""
+
+    from tracefold.news.events import storyline as module
+
+    registry = load_storyline_registry()
+    cases: dict[str, str | None] = {
+        "Iran attacks Kuwait": "conflict:mideast_2026",
+        "Russia helps Iran build missiles": "conflict:ru_ua",
+        "Bank of Canada holds policy rate at 2.75%": "actor:boc",
+        "Canada's tariff retaliation takes effect": "geo:canada",
+        "US 30-year yield hits 5.32%": "topic:rates",
+        "ТАСС: ЦБ РФ повысил ключевую ставку": "actor:cbr",
+        "Hurricane shuts Gulf of Mexico platforms": None,
+    }
+    assert {title: registry_storyline_key(title) for title in cases} == cases
+
+    try:
+        for seed in range(8):
+            shuffled = list(registry.entries)
+            random.Random(seed).shuffle(shuffled)
+            reordered = StorylineRegistry.model_validate(
+                {"version": registry.version, "entries": [entry.model_dump(mode="json") for entry in shuffled]}
+            )
+            monkeypatch.setattr(module, "load_storyline_registry", lambda bound=reordered: bound)
+            module._matchers.cache_clear()
+            module._entry_index.cache_clear()
+            assert {title: registry_storyline_key(title) for title in cases} == cases
+    finally:
+        monkeypatch.undo()
+        module._matchers.cache_clear()
+        module._entry_index.cache_clear()
+    assert {title: registry_storyline_key(title) for title in cases} == cases
+
+
+def test_storyline_keys_follow_the_verdict_before_the_registry() -> None:
+    """#509 D2 steps 1, 6, 7 and 8: a grounded primary is the storyline, then the registry, then the model's
+    own symbol-shaped primary (#100), then a grounded tag the text actually names, then `none`."""
+
     assert (
-        storyline_key(
-            title="Trump threatens to bomb Oman",
-            headline_zh="",
-            scope="macro",
-            primary_assets=["CL"],
-            dedupe_family="general",
-        )
-        == "theme:mideast_energy"
-    )
-    assert (
-        storyline_key(
+        final_storyline_key(
             title="Nvidia to invest $100bn",
             headline_zh="",
             scope="single_name",
-            primary_assets=["NVDA"],
+            verdict_primaries=["NVDA"],
+            grounded_assets=["NVDA"],
             dedupe_family="general",
         )
         == "asset:NVDA"
-    )
-    assert (
-        preliminary_storyline_key(
-            title="US 30-year yield hits 5.32%", grounded_assets=(), asset_class="macro", dedupe_family="general"
-        )
-        == "theme:rates"
-    )
-    # Bitcoin treasury companies are a crypto storyline, not a rates one; the final key follows the verdict.
-    assert (
-        final_storyline_key(
-            title="Metaplanet to Invest 2,100 Bitcoin to Launch U.S. Bitcoin Treasury Platform",
-            headline_zh="",
-            scope="single_name",
-            verdict_primaries=["BTC"],
-            grounded_assets=["BTC"],
-            dedupe_family="general",
-        )
-        == "asset:BTC"
-    )
-    assert (
-        final_storyline_key(
-            title="Hyperscale Data Bitcoin Treasury at 276 Bitcoin",
-            headline_zh="",
-            scope="macro",
-            verdict_primaries=[],
-            grounded_assets=[],
-            dedupe_family="general",
-        )
-        == "theme:crypto_treasury"
     )
     # A BTC market wrap that mentions oil is BTC's storyline once Triage names BTC as primary.
     assert (
@@ -477,75 +587,72 @@ def test_storyline_keys() -> None:
             grounded_assets=[],
             dedupe_family="general",
         )
-        == "theme:cb_fed"
+        == "actor:fed"
     )
+    # Bitcoin treasury companies are their own subject; the composed key still follows the verdict first.
     assert (
-        preliminary_storyline_key(
-            title="TABLE-U.S. July housing starts fall 12.4%",
-            grounded_assets=(),
-            asset_class="macro",
+        final_storyline_key(
+            title="Hyperscale Data Bitcoin Treasury at 276 Bitcoin",
+            headline_zh="",
+            scope="macro",
+            verdict_primaries=[],
+            grounded_assets=[],
             dedupe_family="general",
         )
-        == "theme:us_macro_data"
+        == "topic:crypto_treasury"
+    )
+    # #509 P4: an exchange-qualified primary is exactly as groupable as `NVDA`. It used to fail the symbol
+    # shape and send every Hong Kong and German single name to the fallback bucket.
+    for symbol in ("02015.HK", "DTE.DE"):
+        assert (
+            final_storyline_key(
+                title="Company reports half-year results",
+                headline_zh="",
+                scope="single_name",
+                verdict_primaries=[symbol],
+                grounded_assets=[],
+                dedupe_family="general",
+            )
+            == f"asset:{symbol}"
+        )
+    # Nothing anywhere: the key is `none`, and the dedupe family stays a column instead of becoming a bucket.
+    assert (
+        final_storyline_key(
+            title="Local official visits a factory",
+            headline_zh="",
+            scope="macro",
+            verdict_primaries=[],
+            grounded_assets=[],
+            dedupe_family="general",
+        )
+        == NO_STORYLINE_KEY
     )
 
 
-def _theme(title: str) -> str:
-    return preliminary_storyline_key(title=title, grounded_assets=(), asset_class="macro", dedupe_family="general")
+def test_storyline_labels_come_from_the_registry() -> None:
+    """#509 D4: one table of Chinese storyline names, and it is the registry."""
+
+    assert storyline_key_zh("conflict:mideast_2026") == "美伊冲突"
+    assert storyline_key_zh("actor:rbnz") == "新西兰联储" and storyline_key_zh("topic:rates") == "利率与通胀数据"
+    assert storyline_key_zh(NO_STORYLINE_KEY) == "无线索"
+    assert storyline_key_zh("asset:02015.HK") == "02015.HK"
+    # A key whose entry the registry no longer has renders as itself rather than as a wrong label.
+    assert storyline_key_zh("geo:atlantis") == "geo:atlantis"
 
 
-def test_storyline_lexicon_v3_keys_the_buckets_that_shared_one_budget() -> None:
-    """#504 D1: 62% of a live day's pushes sat in two keys (`macro:general`, `theme:mideast_energy`) because the
-    lexicon had eight themes and no non-Latin terms. The order is part of the lexicon: first match wins."""
+def test_match_storyline_reports_every_hit_with_its_position() -> None:
+    """The composition above is the only consumer, but the hits are the auditable primitive underneath it."""
 
-    assert STORYLINE_LEXICON_VERSION == "news_storyline_lexicon_v3"
-    assert [name for name, _ in THEMES] == [
-        "crypto_treasury",
-        "mideast_energy",
-        "ru_ua",
-        "cb_fed",
-        "cb_boj",
-        "cb_ecb",
-        "cb_boe",
-        "cb_boc",
-        "cb_rba",
-        "cb_rbnz",
-        "cb_pboc",
-        "rates",
-        "trade",
-        "china_macro",
-        "metals",
-        "us_equity_macro",
-        "us_macro_data",
-        "venezuela",
+    hits = match_storyline("Fed's Powell on oil: Iran and Kuwait")
+    assert [(hit.entry_id, hit.kind) for hit in hits] == [
+        ("fed", "actor"),
+        ("fed", "actor"),
+        ("energy", "topic"),
+        ("iran", "geo"),
+        ("kuwait", "geo"),
     ]
-    # A TASS defence-ministry daily in Russian, and the same war in English.
-    assert _theme("Минобороны России: ВСУ потеряли за сутки до 1200 военнослужащих") == "theme:ru_ua"
-    assert _theme("Poland scrambles jets in response to Russian strikes on Ukraine") == "theme:ru_ua"
-    # RBNZ's decision is its own storyline, not `rates` (33 frames, 11 pushes on one decision day) and not
-    # `china_macro` (the bare `央行` term that put it there is gone).
-    assert _theme("RBNZ Sets Official Cash Rate at 3.25%, Signals Further Easing") == "theme:cb_rbnz"
-    assert _theme("新西兰央行维持利率不变，暗示进一步宽松") == "theme:cb_rbnz"
-    # Central banks sit above `rates`: the person or the institution, not the instrument, is the storyline.
-    assert _theme("Fed's Powell says the committee is in no hurry to cut") == "theme:cb_fed"
-    assert _theme("日本央行维持利率不变") == "theme:cb_boj"
-    # A bare `联储` is not the Fed: the Chinese names of the other reserve banks contain it too.
-    assert _theme("新西兰联储：通胀回落速度快于预期") == "theme:cb_rbnz"
-    assert _theme("澳洲联储主席布洛克：不排除再次加息") == "theme:cb_rba"
-    assert _theme("Bank of Canada holds policy rate at 2.75%") == "theme:cb_boc"  # not `trade` via `canada`
-    assert _theme("中国央行开展 3000 亿元 MLF 操作") == "theme:cb_pboc"  # not `china_macro`
-    assert _theme("US 30-year yield hits 5.32%") == "theme:rates"
-    # Persian and Hebrew channel headlines land in the Middle East storyline instead of `macro:general`.
-    assert _theme("ایران: حمله به پایگاه آمریکا در قطر") == "theme:mideast_energy"
-    assert _theme("ישראל תקפה מטרות בתימן") == "theme:mideast_energy"
-    assert _theme("Иран нанёс удар по базе США") == "theme:mideast_energy"
-    # `gulf` alone was matching the wrong hemisphere.
-    assert _theme("Hurricane shuts Gulf of Mexico platforms") == "macro:general"
-    assert _theme("Tanker traffic in the Persian Gulf halts") == "theme:mideast_energy"
-    assert _theme("Chevron restarts Venezuela joint venture output") == "theme:venezuela"
-    # Cardinal English words that are also central-bank shorthand stay anchored on word boundaries.
-    assert _theme("Fedex raises guidance") == "macro:general"
-    assert _theme("Canada's tariff retaliation takes effect") == "theme:trade"
+    assert [hit.start for hit in hits] == sorted(hit.start for hit in hits)
+    assert match_storyline("") == ()
 
 
 # ---------------------------------------------------------------- triage rules
@@ -778,7 +885,7 @@ def test_decide_rules_and_throttle() -> None:
         == "trade_relevance_inconsistent"
     )
 
-    busy = StorylineStatus(key="theme:mideast_energy")
+    busy = StorylineStatus(key="conflict:mideast_2026")
     unbounded = decide(_verdict(magnitude=2, scope="sector"), _FACTS, busy)
     assert unbounded.final == "push" and unbounded.throttled_by is None
 
@@ -843,7 +950,7 @@ def test_decide_withholds_the_third_card_on_a_storyline_inside_the_budget_window
     """#504 D2. Prior *volume on the reader* never blocks a card, but prior delivered cards *on this storyline*
     do once the budget is spent: the third same-key card inside an hour is `storyline:<key>:budget`."""
 
-    key = "theme:mideast_energy"
+    key = "conflict:mideast_2026"
     third = _verdict(scope="macro", assets=[], direction="bearish", headline_zh="伊朗宣布封锁霍尔木兹海峡")
     spent = storyline_status(key, seen=_sent(key, "bearish", "bearish"))
 
@@ -858,7 +965,7 @@ def test_decide_withholds_the_third_card_on_a_storyline_inside_the_budget_window
     aged = storyline_status(key, seen=_sent(key, "bearish", "bearish", minutes_ago=90))
     assert decide(third, _NO_WATCHLIST, aged, now_ms=_NOW).final == "push"
     # Cards on other keys do not count against this one, however many.
-    other = storyline_status(key, seen=_sent("theme:ru_ua", "bearish", "bearish", "bearish"))
+    other = storyline_status(key, seen=_sent("conflict:ru_ua", "bearish", "bearish", "bearish"))
     assert decide(third, _NO_WATCHLIST, other, now_ms=_NOW).final == "push"
 
     # Exemption: a direction reversal against the newest delivered card on the key is new information.
@@ -876,8 +983,8 @@ def test_decide_withholds_the_third_card_on_a_storyline_inside_the_budget_window
         == "throttled"
     )
 
-    # Exemption: the `macro:<dedupe_family>` fallback bucket is not a storyline and is never budgeted.
-    fallback = storyline_status("macro:general", seen=_sent("macro:general", "bearish", "bearish", "bearish"))
+    # Exemption: the `none` key is not a storyline (the registry matched nothing) and is never budgeted.
+    fallback = storyline_status(NO_STORYLINE_KEY, seen=_sent(NO_STORYLINE_KEY, "bearish", "bearish", "bearish"))
     assert decide(third, _NO_WATCHLIST, fallback, now_ms=_NOW).final == "push"
 
     # Either knob at 0 switches the budget off; a caller without a clock has nothing to measure.
@@ -920,7 +1027,7 @@ def test_decide_escalate_needs_corroboration_and_a_corroborated_escalate_ignores
     assert production_decide(scored_judgment(big, relevance=escalate), tagged, None).final == "push"
 
     # The downgraded card is an ordinary push from here on: the budget and similarity apply to it.
-    key = "theme:mideast_energy"
+    key = "conflict:mideast_2026"
     spent = storyline_status(key, seen=_sent(key, "bearish", "bearish"))
     budgeted = production_decide(scored_judgment(big, relevance=escalate), lone, spent, now_ms=_NOW)
     assert budgeted.final == "throttled" and budgeted.throttled_by == f"storyline:{key}:budget"
@@ -1013,8 +1120,8 @@ def test_storyline_status_carries_only_content_evidence() -> None:
         "seen_at_ms",
         "seen_keys",
     }
-    status = storyline_status("asset:BTC", seen=[_told_row("a", 5, storyline_key="theme:rates"), _told_row("b", 3)])
-    assert status.seen_at_ms == (5, 3) and status.seen_keys == ("theme:rates", "asset:BTC")
+    status = storyline_status("asset:BTC", seen=[_told_row("a", 5, storyline_key="topic:rates"), _told_row("b", 3)])
+    assert status.seen_at_ms == (5, 3) and status.seen_keys == ("topic:rates", "asset:BTC")
 
 
 def _told_row(event_id: str, at_ms: int, **overrides: Any) -> dict[str, Any]:
@@ -1041,7 +1148,7 @@ def _select(rows: Sequence[Mapping[str, Any]], **overrides: Any) -> Any:
 
     kwargs: dict[str, Any] = {
         "now_ms": _NOW,
-        "storyline_key": "theme:rates",
+        "storyline_key": "topic:rates",
         "symbols": (),
         "comparison_title": "",
         "exclude_event_id": "self",
@@ -1090,8 +1197,8 @@ def test_told_selector_ranks_the_candidates_own_storyline_above_every_unrelated_
 
     from tracefold.news.told_context import TOLD_MAX, TOLD_STORYLINE_TIER_MAX
 
-    same = [_told_row(f"s{i}", _NOW - (30 + i) * 60_000, storyline_key="theme:rates") for i in range(10)]
-    unrelated = [_told_row(f"o{i}", _NOW - i * 60_000, storyline_key="macro:general") for i in range(10)]
+    same = [_told_row(f"s{i}", _NOW - (30 + i) * 60_000, storyline_key="topic:rates") for i in range(10)]
+    unrelated = [_told_row(f"o{i}", _NOW - i * 60_000, storyline_key=NO_STORYLINE_KEY) for i in range(10)]
 
     entries = _select(unrelated + same).entries
     assert len(entries) == TOLD_MAX
@@ -1115,12 +1222,12 @@ def test_recency_filler_never_displaces_evidence_the_model_needs() -> None:
 
     from tracefold.news.told_context import TOLD_MAX
 
-    dense = [_told_row(f"s{i}", _NOW - (30 + i) * 60_000, storyline_key="theme:rates") for i in range(TOLD_MAX + 4)]
-    filler = [_told_row(f"o{i}", _NOW - i * 60_000, storyline_key="macro:general") for i in range(3)]
+    dense = [_told_row(f"s{i}", _NOW - (30 + i) * 60_000, storyline_key="topic:rates") for i in range(TOLD_MAX + 4)]
+    filler = [_told_row(f"o{i}", _NOW - i * 60_000, storyline_key=NO_STORYLINE_KEY) for i in range(3)]
     entries = _select(filler + dense).entries
     assert [entry.tier for entry in entries] == ["storyline"] * TOLD_MAX
     # Adding one more unrelated card changes nothing the model sees.
-    grew = _select([_told_row("new", _NOW, storyline_key="macro:general"), *filler, *dense]).entries
+    grew = _select([_told_row("new", _NOW, storyline_key=NO_STORYLINE_KEY), *filler, *dense]).entries
     assert [entry.event_id for entry in grew] == [entry.event_id for entry in entries]
 
 
@@ -1129,7 +1236,7 @@ def test_told_selector_overflow_from_a_capped_tier_still_fills_leftover_slots() 
 
     from tracefold.news.told_context import TOLD_MAX, TOLD_STORYLINE_TIER_MAX
 
-    same = [_told_row(f"s{i}", _NOW - i * 60_000, storyline_key="theme:rates") for i in range(TOLD_MAX + 4)]
+    same = [_told_row(f"s{i}", _NOW - i * 60_000, storyline_key="topic:rates") for i in range(TOLD_MAX + 4)]
     entries = _select(same).entries
     assert len(entries) == TOLD_MAX
     assert [entry.event_id for entry in entries] == [f"s{i}" for i in range(TOLD_MAX)]
@@ -1142,11 +1249,11 @@ def test_told_selector_finds_the_same_instrument_under_a_different_storyline_key
     with, and a prior card about the same instrument can sit under any of them. Symbol sets answer that;
     storyline keys alone do not."""
 
-    rows = [_told_row(f"noise{i}", _NOW - i * 60_000, storyline_key="theme:trade") for i in range(11)] + [
-        _told_row("oil", _NOW - 60 * 60_000, storyline_key="theme:mideast_energy", grounded_assets=["CL"])
+    rows = [_told_row(f"noise{i}", _NOW - i * 60_000, storyline_key="topic:trade") for i in range(11)] + [
+        _told_row("oil", _NOW - 60 * 60_000, storyline_key="conflict:mideast_2026", grounded_assets=["CL"])
     ]
 
-    entries = _select(rows, storyline_key="macro:general", symbols=("CL", "XYZ-CL")).entries
+    entries = _select(rows, storyline_key=NO_STORYLINE_KEY, symbols=("CL", "XYZ-CL")).entries
     matched = next(entry for entry in entries if entry.event_id == "oil")
     assert matched.tier == "asset_overlap"
     # An hour-old card about this instrument outranks every fresher unrelated one.
@@ -1155,7 +1262,7 @@ def test_told_selector_finds_the_same_instrument_under_a_different_storyline_key
 
 
 def test_told_selector_uses_normalized_comparison_titles_not_reader_headlines() -> None:
-    rows = [_told_row(f"noise{i}", _NOW - i * 60_000, storyline_key="theme:trade") for i in range(12)] + [
+    rows = [_told_row(f"noise{i}", _NOW - i * 60_000, storyline_key="topic:trade") for i in range(12)] + [
         _told_row(
             "same-fact",
             _NOW - 90 * 60_000,
@@ -1166,13 +1273,13 @@ def test_told_selector_uses_normalized_comparison_titles_not_reader_headlines() 
     ]
     entries = _select(
         rows,
-        storyline_key="macro:general",
+        storyline_key=NO_STORYLINE_KEY,
         comparison_title="nvidia to invest usd_100000000000 in openai data centre",
     ).entries
     assert entries[0].event_id == "same-fact" and entries[0].tier == "fact_similarity"
     assert entries[0].similarity == 1.0
     # Below the retrieval threshold nothing is promoted out of the recency tail.
-    weak = _select(rows, storyline_key="macro:general", comparison_title="an entirely unrelated sentence").entries
+    weak = _select(rows, storyline_key=NO_STORYLINE_KEY, comparison_title="an entirely unrelated sentence").entries
     assert all(entry.tier == "recency" for entry in weak)
 
 
@@ -1199,7 +1306,7 @@ def test_told_selector_trusts_bounded_history_and_prioritizes_targeted_exact_fac
         history_scope="targeted",
         retrieval_reason="exact_fingerprint",
     )
-    recent = _told_row("recent", _NOW - 60_000, storyline_key="theme:rates")
+    recent = _told_row("recent", _NOW - 60_000, storyline_key="topic:rates")
 
     snapshot = _select([recent, targeted])
 
@@ -1226,7 +1333,7 @@ def test_told_selector_trusts_bounded_history_and_prioritizes_targeted_exact_fac
             "focus_fact_id": "fact",
             "leader_title": "current",
             "opened_at_ms": _NOW,
-            "storyline_key": "theme:rates",
+            "storyline_key": "topic:rates",
             "dedupe_family": "general",
         },
         watchlist=(),
@@ -1251,13 +1358,13 @@ def test_told_source_contract_rejects_unowned_taxonomy() -> None:
         "focus_fact_id": "fact",
         "leader_title": "current",
         "opened_at_ms": _NOW,
-        "storyline_key": "theme:rates",
+        "storyline_key": "topic:rates",
         "dedupe_family": "general",
     }
     prior = _told_row(
         "prior",
         _NOW - 60_000,
-        storyline_key="theme:rates",
+        storyline_key="topic:rates",
     )
 
     with pytest.raises(ValueError, match="news_told_context_fields_unexpected:taxonomy"):
@@ -1281,7 +1388,7 @@ def test_told_selector_keeps_a_targeted_canonical_alias_inside_a_dense_pool() ->
         retrieval_reason="canonical_asset_overlap",
     )
     recent = [
-        _told_row(f"recent-{index:02d}", _NOW - index * 60_000, storyline_key="theme:unrelated") for index in range(16)
+        _told_row(f"recent-{index:02d}", _NOW - index * 60_000, storyline_key="topic:unrelated") for index in range(16)
     ]
 
     entries = _select([*recent, alias_target], storyline_key="asset:BABA", symbols=("BABA",)).entries
@@ -1357,7 +1464,7 @@ def test_mideast_storyline_requires_real_strait_or_mideast_context() -> None:
             asset_class="equity_or_commodity",
             dedupe_family="general",
         )
-        == "theme:mideast_energy"
+        == "conflict:mideast_2026"
     )
 
 
@@ -1905,7 +2012,7 @@ def test_final_storyline_key_prefers_the_named_subject_over_an_arbitrary_tag() -
             grounded_assets=["BTC"],
             dedupe_family="general",
         )
-        == "macro:general"
+        == NO_STORYLINE_KEY
     )
     # The model named nothing but the text names the tag as its own token: still that asset's storyline.
     assert (
@@ -1929,7 +2036,7 @@ def test_final_storyline_key_prefers_the_named_subject_over_an_arbitrary_tag() -
             grounded_assets=["MU"],
             dedupe_family="general",
         )
-        == "macro:general"
+        == NO_STORYLINE_KEY
     )
     # A degraded verdict has no `assets` by construction, so "named nothing" says nothing: keep the old fallback.
     assert (
@@ -1944,7 +2051,7 @@ def test_final_storyline_key_prefers_the_named_subject_over_an_arbitrary_tag() -
         )
         == "asset:NVDA"
     )
-    # A grounded primary still wins outright, and a theme still beats both fallbacks.
+    # A grounded primary still wins outright, and a registry hit still beats both fallbacks.
     assert (
         final_storyline_key(
             title="Iran halts oil exports",
@@ -1954,7 +2061,7 @@ def test_final_storyline_key_prefers_the_named_subject_over_an_arbitrary_tag() -
             grounded_assets=["XOM"],
             dedupe_family="general",
         )
-        == "theme:mideast_energy"
+        == "conflict:mideast_2026"
     )
 
 
@@ -2075,9 +2182,11 @@ def test_final_storyline_key_only_accepts_symbol_shaped_primaries() -> None:
         )
 
     assert key(["TSLA"]) == "asset:TSLA"
-    # An exchange-qualified identifier we cannot group falls through instead of minting one.
-    assert key(["0001.HK"]) == "macro:general"
-    assert key(["a" * 11]) == "macro:general"
+    # #509 P4: an exchange-qualified identifier is groupable and now mints its own key. Anything else the
+    # shape rejects still falls through rather than becoming an advisory-lock key.
+    assert key(["0001.HK"]) == "asset:0001.HK"
+    assert key(["0001.NASDAQ"]) == NO_STORYLINE_KEY
+    assert key(["a" * 11]) == NO_STORYLINE_KEY
 
 
 def test_symbol_in_text_does_not_match_ordinary_english_words() -> None:
@@ -2098,7 +2207,7 @@ def test_symbol_in_text_does_not_match_ordinary_english_words() -> None:
             grounded_assets=["NOT"],
             dedupe_family="general",
         )
-        == "macro:general"
+        == NO_STORYLINE_KEY
     )
 
 

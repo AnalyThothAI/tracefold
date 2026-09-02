@@ -167,7 +167,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                    AND v.judgment_contract_version = 'news_judgment_v2'
                    AND e.storyline_key = %s AND v.created_at_ms >= %s
             """,
-            params=("theme:rates", day_ago),
+            params=("topic:rates", day_ago),
             max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(

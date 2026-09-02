@@ -69,7 +69,7 @@ def _context(*, provider_score: int = 0, queue_priority: str = "normal") -> Tria
             "asset_class": "macro",
             "macro_lexicon": True,
             "grounded_assets": [],
-            "storyline_key": "theme:local_official",
+            "storyline_key": "none",
         },
         watchlist=("BTC",),
         told_rows=(),
