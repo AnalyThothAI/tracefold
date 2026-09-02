@@ -65,6 +65,7 @@ def _restatement_reason(restated: Mapping[str, Any]) -> str:
         "recent": "4 小时近期记录",
         "exact_fingerprint": "精确事实定向召回",
         "canonical_asset_overlap": "同一标的定向召回",
+        "title_similarity": "标题相似定向召回",
     }.get(str(restated["retrieval_reason"]))
     return reason + (f" · {retrieval_zh}" if retrieval_zh else "")
 

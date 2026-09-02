@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import gzip
+import json
+from pathlib import Path
+
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
@@ -11,8 +15,11 @@ from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
 from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
 from tracefold.news.reader_history import build_reader_history
+from tracefold.news.similarity import trigram_similarity
 
 pytestmark = pytest.mark.integration
+
+CALIBRATION = Path(__file__).resolve().parents[1] / "fixtures" / "news_dedup_calibration_v1.json.gz"
 
 
 @pytest.fixture
@@ -375,3 +382,100 @@ def test_targeted_history_is_not_displaced_by_more_than_128_recent_cards(conn) -
     assert prior not in {row.event_id for row in history.recent_seen_rows}
     assert [(row.event_id, row.reason) for row in history.targeted_told_rows] == [(prior, "canonical_asset_overlap")]
     conn.commit()
+
+
+def test_title_similarity_band_recalls_a_same_story_card_the_recent_cap_and_targeted_bands_cannot(conn) -> None:
+    """#491: a different wire, a different instrument tag, no fingerprint match, 12 h old, under a bucket that
+    received more than 128 cards since. Only the title band can bring it back, and it comes back ranked by the
+    same pg_trgm number the pure builder recomputes."""
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        current = _admit(
+            repos,
+            hit_id=491000,
+            text="This deal secures stable low cost oil for Americans and will drive Venezuela's economic recovery",
+            symbol="CL",
+            ts="2026-09-01T20:00:00+08:00",
+        )
+        current_row = conn.execute("SELECT opened_at_ms FROM news_events WHERE event_id=%s", (current,)).fetchone()
+        assert current_row is not None
+        now_ms = int(current_row["opened_at_ms"])
+        prior = _admit(
+            repos,
+            hit_id=491001,
+            text="Fact sheet: President Donald J. Trump announces historic oil agreement to secure American energy",
+            symbol="XOM",
+            ts="2026-09-01T07:00:00+08:00",
+        )
+        _persist_sent_triage_card(repos, event_id=prior, at_ms=now_ms - 12 * 3_600_000, symbol="XOM")
+        unrelated_old = _admit(
+            repos,
+            hit_id=491002,
+            text="Bank of Japan keeps its policy rate unchanged at the September meeting",
+            symbol="JPY",
+            ts="2026-09-01T07:30:00+08:00",
+        )
+        _persist_sent_triage_card(repos, event_id=unrelated_old, at_ms=now_ms - 11 * 3_600_000, symbol="JPY")
+        for index in range(129):
+            symbol = f"RH{index:03d}"
+            event_id = _admit(
+                repos,
+                hit_id=491100 + index,
+                text=f"Issuer {symbol} announces distinct operational milestone {symbol}",
+                symbol=symbol,
+                ts="2026-09-01T19:00:00+08:00",
+            )
+            _persist_sent_triage_card(repos, event_id=event_id, at_ms=now_ms - index * 1_000, symbol=symbol)
+
+    history = repos.news.reader_history(event_id=current, now_ms=now_ms)
+
+    assert len(history.recent_seen_rows) == 128
+    assert prior not in {row.event_id for row in history.recent_seen_rows}
+    assert history.targeted_told_rows == ()
+    similar = [(row.event_id, row.scope, row.reason) for row in history.similar_told_rows]
+    assert similar[0] == (prior, "targeted", "title_similarity")
+    # The band admits any shared trigram (English function words share a few), so the unrelated card may be in
+    # it; what matters is that it ranks below the same-story card and that the selector's tiers see the score.
+    ranked = [row.event_id for row in history.similar_told_rows]
+    assert unrelated_old not in ranked or ranked.index(unrelated_old) > ranked.index(prior)
+    # The band never spends a slot on a row the recent ledger already carries.
+    assert not {row.event_id for row in history.similar_told_rows} & {row.event_id for row in history.recent_seen_rows}
+    told = [row.as_told_row() for row in history.told_source_rows]
+    assert told[0]["event_id"] == prior and len(told) == len(history.recent_seen_rows) + len(similar)
+
+    # The pure twin agrees with PostgreSQL on the number it ranked by.
+    titles = conn.execute(
+        "SELECT event_id, comparison_title FROM news_events WHERE event_id IN (%s, %s)", (current, prior)
+    ).fetchall()
+    by_id = {str(row["event_id"]): str(row["comparison_title"]) for row in titles}
+    pg_score = conn.execute("SELECT similarity(%s, %s) AS s", (by_id[current], by_id[prior])).fetchone()
+    assert pg_score is not None
+    assert abs(float(pg_score["s"]) - trigram_similarity(by_id[current], by_id[prior])) < 1e-6
+    assert float(pg_score["s"]) > 0.1
+    conn.commit()
+
+
+def test_trigram_similarity_is_pg_trgm_similarity_on_the_calibration_titles(conn) -> None:
+    """`assemble_reader_history` re-ranks the SQL band in Python. Equality of the two numbers, on every title pair
+    of the 2026-09-01 calibration set that shares a trigram, is what lets the evaluator replay production."""
+
+    with gzip.open(CALIBRATION, "rt", encoding="utf-8") as handle:
+        doc = json.load(handle)
+    cards = {card["event_id"]: card["comparison_title"] for card in doc["cards"]}
+    pairs = [(cards[pair["earlier"]], cards[pair["later"]]) for pair in doc["duplicate_pairs"]]
+    titles = sorted(cards.values())
+    pairs.extend((titles[index], titles[(index * 7 + 3) % len(titles)]) for index in range(0, len(titles), 3))
+
+    rows = conn.execute(
+        "SELECT a, b, similarity(a, b) AS s FROM unnest(%s::text[], %s::text[]) AS pair(a, b)",
+        ([pair[0] for pair in pairs], [pair[1] for pair in pairs]),
+    ).fetchall()
+    assert len(rows) == len(pairs) >= 400
+    mismatched = [
+        (row["a"], row["b"], float(row["s"]), trigram_similarity(row["a"], row["b"]))
+        for row in rows
+        if abs(float(row["s"]) - trigram_similarity(row["a"], row["b"])) > 1e-6
+    ]
+    assert mismatched == []
+    assert sum(1 for row in rows if float(row["s"]) > 0) >= 143

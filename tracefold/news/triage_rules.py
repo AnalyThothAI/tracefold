@@ -86,7 +86,7 @@ class StorylineStatus:
     # Same order as ``told_directions``: the instruments each shown ledger entry was about, so a
     # restatement claim can be checked against the asset it cites rather than its rendered prose.
     told_assets: tuple[frozenset[str], ...] = ()
-    # Every card the reader actually received in the comparison window, newest first — not the <= 12 entries the
+    # Every card the reader actually received in the comparison window, newest first — not the <= 16 entries the
     # status bar showed the model. The two differ by design: the model gets a readable ledger, ``decide()`` gets
     # the whole window, and the wider set measurably catches more repeats (#81).
     seen_headlines: tuple[str, ...] = ()
@@ -116,8 +116,8 @@ class DecisionResult:
     # ``status.seen_*`` it came closest to (-1 = nothing to compare against).
     seen_similarity: float | None = None
     seen_against: int = -1
-    # ``all`` means the ordinary push path was compared with the sent ledger;
-    # empty means no comparison was made.
+    # ``all`` means the push or escalate path was compared with the sent ledger (only a push can be withheld by
+    # it); empty means no comparison was made.
     seen_scope: str = ""
 
 
@@ -311,11 +311,15 @@ def decide(
     seen_similarity: float | None = None
     seen_against = -1
     seen_scope = ""
-    if final == "push" and status is not None and policy.similarity_max > 0.0:
+    if final in {"push", "escalate"} and status is not None and policy.similarity_max > 0.0:
         seen_scope = "all"
         seen_similarity, seen_against = max_similarity(verdict.headline_zh, status.seen_headlines)
+        # An `escalate` is measured but never withheld: a false-positive match is least affordable on the
+        # loudest cards. Measuring it is what makes the exemption observable — the 2026-09-01 audit found 11
+        # duplicates a day leaving through it with `seen_similarity` unrecorded, so nobody could count them (#491).
         if (
-            seen_against >= 0
+            final == "push"
+            and seen_against >= 0
             and seen_similarity >= policy.similarity_max
             and not _seen_flip(verdict.direction, status.seen_directions, seen_against)
             and not _names_another_instrument(template_fact, primaries | grounded, status.seen_assets, seen_against)

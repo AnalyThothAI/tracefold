@@ -92,6 +92,7 @@ class EvaluationReaderHistory:
             dedupe_family=str(event.get("dedupe_family") or "general"),
             comparison_fingerprint=str(event.get("comparison_fingerprint") or ""),
             canonical_assets=self.canonical_assets(grounded),
+            comparison_title=str(event.get("comparison_title") or ""),
         )
 
     def seed_receipts(

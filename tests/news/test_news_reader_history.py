@@ -24,7 +24,7 @@ from tracefold.news.told_context import TOLD_SELECTOR_SHA256
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
 NOW_MS = 2_000_000_000_000
-FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_reader_history_v2.json"
+FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_reader_history_v3.json"
 DISCOVERY = (
     Path(__file__).resolve().parents[2] / "docs" / "research" / "news-reader-history-48h-snapshot-2026-08-24.json"
 )

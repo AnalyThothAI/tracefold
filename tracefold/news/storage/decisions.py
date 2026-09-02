@@ -11,6 +11,8 @@ from ..models import TelegramDeliveryReceipt
 from ..reader_history import (
     RECENT_HISTORY_MAX,
     RECENT_HISTORY_WINDOW_MS,
+    SIMILAR_HISTORY_WINDOW_MS,
+    SIMILAR_TITLE_MAX,
     TARGETED_ASSET_MAX,
     TARGETED_EXACT_MAX,
     TARGETED_HISTORY_WINDOW_MS,
@@ -148,7 +150,7 @@ class DecisionStorage:
         return (int(row["row_count"]), int(row["newest_at_ms"]), str(row["greatest_event_id"]))
 
     def reader_history(self, *, event_id: str, now_ms: int, include_targeted: bool = True) -> ReaderHistorySnapshot:
-        """Reader receipt truth split into the 4 h policy ledger and bounded 48 h semantic candidates."""
+        """Reader receipt truth split into the 4 h policy ledger and the bounded semantic candidate bands."""
 
         revision = self.reader_history_revision(now_ms=now_ms)
         recent = self.conn.execute(
@@ -162,6 +164,10 @@ class DecisionStorage:
         ).fetchall()
         if not include_targeted:
             return replace(assemble_reader_history(recent_rows=recent, now_ms=now_ms), ledger_revision=revision)
+        current = self.conn.execute(
+            "SELECT comparison_title FROM news_events WHERE event_id = %s", (event_id,)
+        ).fetchone()
+        comparison_title = str(current["comparison_title"] or "") if current is not None else ""
 
         exact = self.conn.execute(
             "WITH current_event AS ("  # noqa: S608
@@ -233,8 +239,65 @@ class DecisionStorage:
                 TARGETED_ASSET_MAX,
             ),
         ).fetchall()
+        # The title-similarity band (#491): the delivered cards of the last 24 h whose normalized title is
+        # closest to this candidate's, by pg_trgm. Bounded by K rather than by delivery volume, which is what
+        # the 4 h / 128 recent ledger stopped being at 38 cards an hour. Rows the recent and targeted bands
+        # already selected are excluded here so every one of the K slots brings evidence those bands could not.
+        # `assemble_reader_history` re-ranks the band with the Python twin of pg_trgm, so the ORDER BY is a
+        # bound on what is fetched, not the ordering the Program sees.
+        #
+        # Shape: the 24 h delivered set is materialized first, `similarity()` is evaluated only on those rows,
+        # and the wide projection (with its per-Event verdict lookup) runs for the K survivors alone. Written as
+        # one join the planner evaluates `similarity()` over every `news_events` row instead — 6k today, growing
+        # 2.5k a day — and then pays the verdict lookup for every 24 h row; measured 450 ms against 59 ms.
+        spent = sorted(
+            {str(row["event_id"]) for row in (*recent, *exact, *asset)} | {str(event_id)},
+        )
+        similar = (
+            self.conn.execute(
+                """
+            WITH delivered AS MATERIALIZED (
+              SELECT d.event_id, d.settled_at_ms
+                FROM news_deliveries d
+               WHERE d.kind = 'first' AND d.state = 'sent'
+                 AND d.delete_state IS DISTINCT FROM 'deleted'
+                 AND d.settled_at_ms >= %s
+                 AND d.event_id <> ALL(%s)
+            ), delivered_titles AS MATERIALIZED (
+              SELECT e.event_id, e.comparison_title, w.settled_at_ms
+                FROM delivered w
+                JOIN news_events e ON e.event_id = w.event_id
+               WHERE e.admission NOT IN ('telemetry_deterministic', 'liquidation_deterministic')
+            ), band AS MATERIALIZED (
+              SELECT event_id
+                FROM delivered_titles
+               WHERE similarity(comparison_title, %s) > 0
+               ORDER BY similarity(comparison_title, %s) DESC, settled_at_ms DESC, event_id
+               LIMIT %s
+            )
+                """  # noqa: S608
+                + _READER_HISTORY_PROJECTION
+                + " JOIN band ON band.event_id = e.event_id",
+                (
+                    int(now_ms) - SIMILAR_HISTORY_WINDOW_MS,
+                    spent,
+                    comparison_title,
+                    comparison_title,
+                    SIMILAR_TITLE_MAX,
+                ),
+            ).fetchall()
+            if comparison_title
+            else []
+        )
         return replace(
-            assemble_reader_history(recent_rows=recent, exact_rows=exact, asset_rows=asset, now_ms=now_ms),
+            assemble_reader_history(
+                recent_rows=recent,
+                exact_rows=exact,
+                asset_rows=asset,
+                similar_rows=similar,
+                comparison_title=comparison_title,
+                now_ms=now_ms,
+            ),
             ledger_revision=revision,
         )
 

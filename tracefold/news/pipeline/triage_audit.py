@@ -33,6 +33,7 @@ def _reader_history_trace(history: ReaderHistorySnapshot, told: Sequence[Mapping
     return {
         "recent_count": len(history.recent_seen_rows),
         "targeted_count": len(history.targeted_told_rows),
+        "similar_count": len(history.similar_told_rows),
         "source_count": len(history.told_source_rows),
         "selected_count": len(told),
         "selected_reasons": [str(row.get("retrieval_reason") or "recent") for row in told],

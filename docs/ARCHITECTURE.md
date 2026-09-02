@@ -1049,7 +1049,7 @@ stack, with the code-owned seed text in `tracefold/news/program/seed.py`. Issue
 holds `schema_version` `news_program_strategy_artifact_v1` and one instruction
 per Predictor, and `program_sha256` is the canonical hash of exactly those
 three values. The stable root is
-`404ad791ba68b0898f6fa07ad7e919b33cd5031a2bee27383f3a6030607aaefc`.
+`63e5b438f7419e02621e419f3a3ad9860dfcc54bf2eea86c0896bcc04ebb4c64`.
 Issue #117 changes the EventSemantics instruction and typed output while
 preserving the same two-Predictor graph and exact two-call common-success path.
 
@@ -1174,27 +1174,39 @@ compatibility fallback; Prompt-era columns/rows are read-only audit history.
 The Module never retrieves from a network; it ranks bounded local reader
 history. `repository.reader_history` reads only first deliveries durably settled
 `sent` for a Triage `push`/`escalate`, excluding the current Event. It returns
-two disjoint projections from that one material truth:
+three disjoint projections from that one material truth:
 
 - `recent_seen_rows`: every receipt aged at most 4 h, newest first, cap 128;
 - `targeted_told_rows`: receipts older than 4 h and at most 48 h, with up to 8
   exact `(family, comparison_fingerprint)` matches followed by up to 24
-  canonical-asset overlaps. Exact matches win when one Event qualifies twice.
+  canonical-asset overlaps. Exact matches win when one Event qualifies twice;
+- `similar_told_rows`: up to 32 receipts aged at most 24 h whose normalized
+  `comparison_title` is closest to the current Event's by pg_trgm
+  `similarity()`, excluding rows the two bands above already selected. The band
+  is bounded by that K, not by delivery volume: at 38 sent cards an hour the
+  128-row recent ledger covers under 4 h on 79% of judgments, while the median
+  same-event repeat arrives 211 min after its first card (#491).
 
 Only the recent projection reaches deterministic `decide().seen`; the targeted
-projection is semantic evidence for the Program and cannot extend a policy
-throttle. Telemetry requests `include_targeted=False`. Production initial load
-and stale refresh, plus CandidateEvaluator seed and in-run receipt replay, use
-the same pure `build_reader_history` boundary/cap/dedup rules.
+and similar projections are semantic evidence for the Program and cannot extend
+a policy throttle. Telemetry requests `include_targeted=False`. Production
+initial load and stale refresh, plus CandidateEvaluator seed and in-run receipt
+replay, use the same pure `build_reader_history` boundary/cap/dedup rules; the
+similarity band is re-ranked in Python with `trigram_similarity`, the twin of
+pg_trgm's algorithm, so SQL and replay agree on the order.
 
 `ToldLedgerSnapshot.select` is a pure, deterministic, candidate-conditioned
 selector — not a Retriever service, Protocol or Adapter — that ranks the union
 against *this* Event and shows the Program at most 16 rows. Its tiers are
 targeted exact fact, exact storyline, shared instrument (canonical symbol
-sets), positive same-fact similarity over the Deduper's normalized
-`comparison_title`, then recency. Inside a tier the order is similarity desc,
-sent time newest-first, then the stable Event identity, so the same history
-always produces the same selection whatever order the database returned it in.
+sets), same-fact title similarity at or above 0.15 over the Deduper's
+normalized `comparison_title`, then the rest. Inside every tier the order is
+the raw trigram similarity desc, sent time newest-first, then the stable Event
+identity, so the same history always produces the same selection whatever
+order the database returned it in. Character bigrams remain the primitive for
+`decide()`'s Chinese headline comparison; they are not used for
+`comparison_title`, where 4.6% of random English pairs cross 0.25 on bigrams
+and 0.10% on word trigrams.
 The storyline tier is capped at 8 of the 16 rows and its overflow yields to the
 tiers below before filling what is left, because ranking storyline first with no
 cap starves everything under it: a dense storyline puts 14-17 same-key cards in
@@ -1937,8 +1949,11 @@ outlive its provider's message id and carry a four-hour result; and destructive
 `0341` had made read-only, together with the thirteen functions only their
 triggers, defaults and CHECKs called; `20260902_0348` hard-cuts Runtime
 readiness and adds the profile-keyed current control projection; and additive
-`20260902_0349`, the current single head, adds the bounded Runtime-owned current
-account read projection.
+`20260902_0349` adds the bounded Runtime-owned current account read
+projection; and additive `20260902_0350`, the current single head, pins the
+`pg_trgm` extension and admits the `title_similarity` retrieval reason into the
+`news_verdicts` told trace CHECK for the reader-history title-similarity band
+(#491).
 
 Every new schema change is again a normal linear, immutable, forward-only
 revision after the baseline. Exact-image replacement requires source, image,

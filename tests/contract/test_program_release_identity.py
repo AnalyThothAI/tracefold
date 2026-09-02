@@ -25,9 +25,9 @@ NEWS_EXECUTION_ENVELOPE_SHA256 = "2a3d7306a902b4f687c177bbb491dae6c60fb7ee67b188
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
-NEWS_PREDICTOR_INSTRUCTION_SHA256 = "2ef4c11bc55f2a425956ea40c2368fd6affa6f70be0810b469ebd5b06a1b3b71"
+NEWS_PREDICTOR_INSTRUCTION_SHA256 = "360340899edeb66c079ba0f7b6294fed623d4eda37629c636c54902e235d5997"
 
-NEWS_STABLE_PROGRAM_SHA256 = "404ad791ba68b0898f6fa07ad7e919b33cd5031a2bee27383f3a6030607aaefc"
+NEWS_STABLE_PROGRAM_SHA256 = "63e5b438f7419e02621e419f3a3ad9860dfcc54bf2eea86c0896bcc04ebb4c64"
 
 # #437 changes Gold projection. It remains release evidence after #453 moves taxonomy Gold into the one
 # development Objective and Metric: a behavior edit must visibly re-pin this name.

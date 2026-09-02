@@ -1792,7 +1792,9 @@ def test_decide_never_withholds_an_escalate_as_a_similarity_match() -> None:
         _fresh(seen_headlines=told, seen_event_ids=("a",)),
         relevance={"reader_value": "escalate"},
     )
-    assert on_fresh.final == "escalate" and on_fresh.throttled_by is None and on_fresh.seen_scope == ""
+    assert on_fresh.final == "escalate" and on_fresh.throttled_by is None
+    # #491: the comparison is still made and recorded, so the exemption is observable in the trace.
+    assert on_fresh.seen_scope == "all" and on_fresh.seen_similarity is not None and on_fresh.seen_against == 0
 
     # Even identical text cannot make the content heuristic veto an escalation.
     hot = StorylineStatus(
@@ -1801,7 +1803,7 @@ def test_decide_never_withholds_an_escalate_as_a_similarity_match() -> None:
         seen_event_ids=("a",),
     )
     repeat = decide(big, facts, hot, relevance={"reader_value": "escalate"})
-    assert repeat.final == "escalate" and repeat.seen_scope == ""
+    assert repeat.final == "escalate" and repeat.seen_scope == "all" and repeat.seen_similarity == 1.0
     assert repeat.throttled_by is None
 
 

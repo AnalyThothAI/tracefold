@@ -3683,6 +3683,7 @@ def test_triage_shows_targeted_history_to_the_model_but_never_to_recent_seen_pol
     assert inserted["trace"]["reader_history"] == {
         "recent_count": 0,
         "targeted_count": 1,
+        "similar_count": 0,
         "source_count": 1,
         "selected_count": 1,
         "selected_reasons": ["exact_fingerprint"],
