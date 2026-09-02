@@ -10,22 +10,14 @@
   redacted config-path and configured-status diagnostics. Do not paste or copy
   provider keys from `~/.tracefold/config.yaml` into chat, docs, tests,
   shell history, or source files.
-- Frozen ReviewDesk datasets, Program artifacts, candidate manifests, model recordings, shadow
-  observations, evaluation reports, and deployment receipts carry no
-  credentials, but may carry provider news content, prompts and reader-facing
-  copy. Treat exported copies as business data: keep them outside the
-  repository and do not commit them. One narrow exception, and only on these
-  terms: a *structure-only* derivative may be committed as a test fixture when
-  every string outside an explicit structural allowlist — rubric labels, verdict
-  enums, symbols, content hashes, opaque identifiers, stable keys — has been
-  replaced by a content hash, and a test scans the committed bytes for the shape
-  of human language rather than for a list of key names. The allowlist direction
-  is the requirement, not a preference. Anything richer than that — raw evidence,
-  prompts, cards, reviewer prose — stays out of the repository. The database
-  copies are content-addressed audit evidence and append-only. Program artifact exports are canonical JSON
-  but carry proprietary optimizer-written instructions, so “no credentials”
-  does not make them public. Automated
-  proposal/optimizer paths may never
+- Credential-free ReviewDesk datasets, Program artifacts, candidate manifests,
+  model recordings, shadow observations, evaluation reports, and deployment
+  receipts are ordinary repository content. The operator may store, commit, or
+  publish them, including evidence, prompts, cards, model outputs, and reviewer
+  prose. Publication creates no alternate business truth and grants no runtime,
+  promotion, release, holdout, or capital authority; PostgreSQL facts and durable
+  ledgers, exact identities, and their gates remain authoritative.
+- Automated proposal/optimizer paths may never
   write accepted reviews, holdout membership, reader contracts, release
   thresholds, stable pointers, or canary assignments.
 
