@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -51,15 +50,6 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if "tests/e2e/" in str(item.path):
             item.add_marker(pytest.mark.e2e)
-
-
-def _docker_available() -> bool:
-    if shutil.which("docker") is None:
-        return False
-    try:
-        return subprocess.run(["docker", "info"], capture_output=True, timeout=10, check=False).returncode == 0
-    except (subprocess.TimeoutExpired, OSError):
-        return False
 
 
 @pytest.fixture(scope="session")
@@ -97,14 +87,6 @@ def e2e_frontend_dist() -> Path:
 @pytest.fixture(scope="session")
 def e2e_postgres() -> Iterator[str]:
     """Yield a Postgres DSN backed by testcontainers; alembic-migrated."""
-    if not _docker_available():
-        pytest.fail(
-            "e2e tests require docker but `docker info` failed. Fix options:\n"
-            "  1. Start Docker Desktop / colima / OrbStack and rerun.\n"
-            "  2. Do not bypass this lane with an environment skip; an unavailable dependency is a failed gate.",
-            pytrace=False,
-        )
-
     from testcontainers.postgres import PostgresContainer
 
     from tests.postgres_test_utils import upgrade_test_head
