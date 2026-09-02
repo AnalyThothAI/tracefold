@@ -118,9 +118,11 @@ or historical file inventories into permanent architecture contracts.
 
 **Program identity.** Program identity has two halves and two authors, and both
 are release evidence rather than implementation detail. `program_sha256` covers
-the two Predictor instructions — what a human editing
-`tracefold/news/program/seed.py` may write. The taxonomy GEPA path may replace
-only EventSemantics and must copy ReaderCard byte-identically.
+the three Predictor instructions — what a human editing
+`tracefold/news/program/seed.py` may write; the taxonomy seed is rendered from
+the codebook constants in `tracefold/news/taxonomy.py`, so its human author
+edits those. The taxonomy GEPA path may replace only the taxonomy instruction
+and must copy EventSemantics and ReaderCard byte-identically.
 `envelope_sha256` (`compute_execution_identity()` in
 `tracefold/news/program/identity.py`) covers what the code decides about a
 model call: the golden render of each Predictor's chat request in all three
@@ -530,26 +532,29 @@ uv run tracefold news learning baseline --from-ms START --to-ms END \
 # Draft the cases nobody has judged over the ReviewDesk look-back window. The
 # owner authorizes an explicit reviewed subset before it becomes truth; any AI
 # adjudicator is named honestly and is never described as human review.
-uv run tracefold news learning draft-reviews --model deepseek-v4-pro \
-  --hours 24 --out /tmp/drafts.json
+# Taxonomy Gold is drafted blind by two models of different families (#501);
+# the rubric model never sees or labels taxonomy. Disagreements are flagged for
+# the reviewer's edit before acceptance.
+uv run tracefold news learning draft-reviews --rubric-model deepseek-v4-pro \
+  --taxonomy-models deepseek-v4-pro,MiniMax-M3 --hours 24 --limit 100 \
+  --out /tmp/drafts.json
 uv run tracefold news review accept-drafts --file /tmp/drafts.json --dry-run
 uv run tracefold news review accept-drafts --file /tmp/drafts.json \
-  --only EVENT_OR_TASK_PREFIX[,PREFIX...] --reviewer owner_authorized_codex \
-  --first-bad-owner taxonomy
+  --only EVENT_OR_TASK_PREFIX[,PREFIX...] --reviewer owner_authorized_codex
 
-# The one candidate path (#453). Freeze once, inspect zero-call readiness, then
-# run stock GEPA exactly once. A complete candidate zero is the only quality
-# baseline; all Stable-correct controls must remain exactly Gold-correct.
+# The one candidate path (#453, #501). Freeze once (κ over dual-labelled
+# clusters is reported in counts.calibration), inspect zero-call readiness, then
+# run stock GEPA exactly once under DSPy's own `auto` budget. The admitted
+# candidate is GEPA's best_idx when strictly above the seed; NO_OP otherwise.
 # Exit 0 means ADVANCE; 1 means NO_OP or REJECTED.
 uv run tracefold news learning freeze --role development \
-  --from-ms START --to-ms END --calibration-request /tmp/calibration-50.json \
-  --out artifacts/run-1/development.json
+  --from-ms START --to-ms END --out artifacts/run-1/development.json
 uv run tracefold news learning readiness --development DATASET_SHA \
   --out /tmp/readiness.json   # 0 model calls, 0 writes
 uv run tracefold news learning run --development DATASET_SHA \
   --out artifacts/run-1 \
-  --max-metric-calls 100 --max-task-model-calls 150 \
-  --max-reflection-model-calls 40 \
+  --auto light --max-task-model-calls 3000 \
+  --max-reflection-model-calls 60 \
   --max-cost-microusd 500000 --max-call-cost-microusd 5000 --seed 112
 
 # Only after `optimization_report.json` says outcome=ADVANCE, and only because a human
@@ -614,16 +619,18 @@ primary reviewers per task, and an independent adjudicator for every disagreemen
 only an explicit append-only review submission and acceptance receipt becomes
 truth.
 
-`learning run` (#453, #456) is the only candidate-generating GEPA path. It writes the zero-call readiness
+`learning run` (#453, #501) is the only candidate-generating GEPA path. It writes the zero-call readiness
 report and refuses before endpoint construction unless both `objective.compilable` and
 `development_profile.ready` are true. It then invokes one stock `dspy.GEPA.compile()` on the single native
-`NativeNewsProgram.event_semantics` Predict. The direct scalar is the mean of subject-code set F1 and exact
-event-family, change-state and assertion-status scores. ReaderCard, the composite case metric, a semantic
-judge and a component selector do not participate. A complete candidate zero in that same GEPA run is the
-only optimization baseline; its task-output-failure sentinel rejects the run instead of becoming a quality
-anchor. Tracefold scans the public candidates for the highest aggregate score that strictly improves on
-candidate zero and remains exactly correct against accepted Gold on every Stable-correct control. There is
-no provider-backed Dataset baseline or paired rerun.
+`NativeNewsProgram.taxonomy` Predict under DSPy's own budget (`--auto` or `--max-metric-calls`, exactly
+one). The direct scalar is the mean of subject-code set F1 and exact event-family, change-state and
+assertion-status scores; feedback quotes the codebook definitions and precedence rules. EventSemantics,
+ReaderCard, the composite case metric, a semantic judge and a component selector do not participate.
+Candidate zero in that same GEPA run is the only optimization baseline; a truncated or typed-invalid answer
+scores the native `failure_score` of `0`. Admission is GEPA's own `best_idx`, strictly above candidate zero
+with a valid instruction; otherwise `NO_OP`. There is no per-control replay, per-objective check or growth
+budget at selection — the offline and holdout gates own those — and no provider-backed Dataset baseline or
+paired rerun.
 
 The future test baseline remains separate: Stable is evaluated on accepted
 examples that did not exist when the candidate was made (`release evaluate
@@ -639,7 +646,7 @@ keeping physical task/reflection usage exact; it does not invent a count from pr
 
 **When a corpus is big enough (#259).** Coverage decides it: independent
 connected fact clusters by role, at least one safety case, the required strata
-on both sides of the split, verified Prompt targets and Stable-correct controls.
+on both sides of the split, and Gold-bearing clusters to optimize on.
 A day count never did. `natural_days_min` is gone from the release profile; it
 counted how many distinct UTC dates the accepted cases opened on, so two cases
 two minutes apart across midnight were two and a hundred cases spread over 23 h
@@ -656,7 +663,8 @@ Out-of-time generalization stays entirely with the Future Holdout:
 a ValidationDataset frozen strictly after candidate registration, ≥ 24 h, with
 its own eligible-Event and reviewed-cluster floors. The profile change is a hard
 cut — it moves `TRUSTED_ROOT_SHA`, and the profile is named
-`news_learning_release_v3` — so datasets and candidates frozen under older profiles stay as
+`news_learning_release_v4` since #501 (v3 carried the taxonomy target/control floors and the calibration
+gate that #501 deleted) — so datasets and candidates frozen under older profiles stay as
 audit history and a new experiment re-freezes.
 
 The optimization leg of `learning run` is a cold, operator-invoked GEPA
@@ -696,25 +704,29 @@ truth.
 Two facts about the optimizer are worth stating plainly:
 
 - **The student is one Predict.** Public `dspy.GEPA` receives only
-  `NativeNewsProgram.event_semantics`; `run_gepa` reads that one winning instruction, refuses demos or an
-  unexpected result type, and copies the parent ReaderCard instruction byte-for-byte. There is no demo bank.
+  `NativeNewsProgram.taxonomy`; `run_gepa` reads that one winning instruction, refuses demos or an
+  unexpected result type, and copies the parent EventSemantics and ReaderCard instructions byte-for-byte.
+  There is no demo bank.
 - **A rejected instruction spends no task-model call.** `NativeNewsProgram`
-  validates the candidate artifact and shared growth budget at the start of
+  validates the candidate artifact's instruction bounds at the start of
   both sync and async entry points. That guard therefore covers proposal,
-  mutation and merge before either Predictor; the bounded refusal becomes
+  mutation and merge before any Predictor; the bounded refusal becomes
   metric feedback rather than a candidate or an `ADVANCE` terminal.
 
 The reflection endpoint is configured separately from the task endpoint
 (`llm.news_compiler_reflection`) with its own 32k-token, 300 s, temperature-1.0
-budget. Passing one endpoint for both made the local student its own teacher,
-capped a proposed instruction at the task route's 1,200 tokens — far below what
-the instruction bound accepts (8,192 estimated tokens since #306; 2,048 in the
-advisory era this incident dates from) — and pointed a multi-hour run at the same
-single-slot GPU that serves production Triage. The code-owned
-`InstructionProposer` (named `RulePackAwareProposer` until #306 retired the
-RulePack layering) puts the candidate's complete current instruction in front
-of the reflection model; before it, `<curr_param>` was one space and the model
-was rewriting 8.5 KB of rules it could not see.
+budget, and #501 makes it an operating requirement that it be a strong model
+with at least a 128K context: the #456 run's 32K-context local teacher wrote
+minibatch titles into rules verbatim. Passing one endpoint for both made the
+local student its own teacher, capped a proposed instruction at the task route's
+1,200 tokens — far below what the instruction bound accepts (8,192 estimated
+tokens since #306; 2,048 in the advisory era this incident dates from) — and
+pointed a multi-hour run at the same single-slot GPU that serves production
+Triage. There is no Tracefold instruction proposer: `instruction_proposer=None`
+hands DSPy's own reflective proposer the candidate's complete current
+instruction, and `add_format_failure_as_feedback=False` because dspy 3.3.1
+renders that feedback with a hard-coded ChatAdapter this JSONAdapter program
+never sends.
 
 The optimization has two typed roles, not copied adjacent scalars: task and reflection, each one
 `ModelExecutionIdentity`. Secret-free
@@ -806,12 +818,12 @@ weight. Representatives are split into disjoint halves by connected fact
 cluster: ordered by Event time then stable cluster id, the earlier 70% to GEPA's
 `trainset` and the later 30% to its `valset` — no shuffle, no seed. The
 predecessor passed the same list object to both and said so in its own receipt
-(`same_object_as_trainset`), which proves nothing about generalization. Both halves must carry taxonomy
-targets and Stable-exact controls. The development profile additionally requires at least 60/60
-target/control clusters in train and 30/30 in selection. Objective Plan v3 and split receipt v3 record
-counts, representative policy, cluster roots and an explicit disjointness proof.
+(`same_object_as_trainset`), which proves nothing about generalization. Every Gold-bearing cluster with a
+replayable Stable answer is a sample (#501 D9); there is no target/control split and no floor on either
+half beyond the strata coverage. Objective Plan v4 and split receipt v3 record counts, representative
+policy, cluster roots and an explicit disjointness proof.
 
-`optimization_objective_summary.v3` also carries the Objective Plan schema and
+`optimization_objective_summary.v4` also carries the Objective Plan schema and
 the representative case ids/count/root. Registration re-derives and compares
 that population and rejects a candidate that
 declares split roots under an older or missing plan identity; historical

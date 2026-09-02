@@ -1,4 +1,4 @@
-"""The native DSPy News Program: two Predictors with deterministic business rules between them."""
+"""The native DSPy News Program: three Predictors with deterministic business rules between them."""
 
 from __future__ import annotations
 
@@ -11,14 +11,22 @@ from pydantic import BaseModel
 
 from ..artifact_identity import canonical_json
 from ..models import TriageVerdict
-from ..taxonomy import NewsTaxonomyV1, source_authority_from_evidence
+from ..taxonomy import ModelTaxonomyV1, NewsTaxonomyV1, source_authority_from_evidence
 from .artifact import ProgramStrategyArtifactV1, render_model_evidence_json, validate_program_instruction
 from .assembly import normalize_restates, restatement_index_error
 from .contracts import EditorialEnvelope, ProgramNormalizationTrace, ReaderCardSemanticView, TriageContext
 from .lm import mark_active_domain_failure, program_json_adapter
-from .signatures import EventSemantics, EventSemanticsSignature, ReaderCard, ReaderCardSignature
+from .runtime import PREDICTOR_NAMES
+from .signatures import (
+    EventSemantics,
+    EventSemanticsSignature,
+    EventTaxonomySignature,
+    ReaderCard,
+    ReaderCardSignature,
+)
 
-type CandidateGuard = Callable[[str, str], str | None]
+# (event_semantics_instruction, taxonomy_instruction, reader_card_instruction) -> rejection code or None.
+type CandidateGuard = Callable[[str, str, str], str | None]
 
 
 class ProgramOutputError(ValueError):
@@ -34,6 +42,7 @@ class NativeProgramResult(dspy.Prediction):  # type: ignore[misc]
 
     instruction_rejected: str | None
     semantics: EventSemantics | None
+    taxonomy: ModelTaxonomyV1 | None
     card: ReaderCard | None
     verdict: TriageVerdict | None
     editorial: EditorialEnvelope | None
@@ -44,6 +53,7 @@ class NativeProgramResult(dspy.Prediction):  # type: ignore[misc]
 class _PreparedRun:
     context: TriageContext
     semantics_evidence_json: str
+    taxonomy_evidence_json: str
     card_evidence_json: str
 
 
@@ -54,6 +64,7 @@ def _prepare(context: TriageContext | Mapping[str, Any]) -> _PreparedRun:
         semantics_evidence_json=render_model_evidence_json(
             typed.event_semantics_payload(), predictor="event_semantics"
         ),
+        taxonomy_evidence_json=render_model_evidence_json(typed.taxonomy_payload(), predictor="taxonomy"),
         card_evidence_json=render_model_evidence_json(typed.reader_card_payload(), predictor="reader_card"),
     )
 
@@ -138,6 +149,7 @@ def _normalize_and_validate_semantics(
 
 def _assemble(
     semantics: EventSemantics,
+    raw_taxonomy: Any,
     raw_card: Any,
     *,
     context: TriageContext,
@@ -145,6 +157,7 @@ def _assemble(
     normalizations: tuple[ProgramNormalizationTrace, ...],
 ) -> NativeProgramResult:
     try:
+        taxonomy = ModelTaxonomyV1.model_validate(raw_taxonomy)
         card = ReaderCard.model_validate(raw_card)
         error = restatement_index_error(
             novelty=semantics.novelty,
@@ -167,16 +180,17 @@ def _assemble(
                 "why_zh": card.why_zh.strip(),
             }
         )
-        taxonomy = NewsTaxonomyV1.issue(
-            semantics.taxonomy,
+        issued = NewsTaxonomyV1.issue(
+            taxonomy,
             source_authority=source_authority_from_evidence(context.evidence),
         )
         return NativeProgramResult(
             instruction_rejected=None,
             semantics=semantics,
+            taxonomy=taxonomy,
             card=card,
             verdict=verdict,
-            editorial=EditorialEnvelope.issue(relevance=semantics.relevance, taxonomy=taxonomy),
+            editorial=EditorialEnvelope.issue(relevance=semantics.relevance, taxonomy=issued),
             normalizations=normalizations,
         )
     except ValueError as exc:
@@ -189,6 +203,7 @@ def _rejected(code: str) -> NativeProgramResult:
     return NativeProgramResult(
         instruction_rejected=code,
         semantics=None,
+        taxonomy=None,
         card=None,
         verdict=None,
         editorial=None,
@@ -197,7 +212,7 @@ def _rejected(code: str) -> NativeProgramResult:
 
 
 class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
-    """Exactly two named Predictors, usable by async production and synchronous GEPA evaluation."""
+    """Exactly three named Predictors in fixed order, usable by async production and synchronous GEPA."""
 
     def __init__(
         self,
@@ -210,9 +225,14 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
             raise ValueError("news_program_artifact_hash_mismatch")
         self.artifact = artifact
         self.candidate_guard = candidate_guard
+        # Attribute order is `named_predictors()` order, which is also execution order.
         self.event_semantics = dspy.Predict(
             EventSemanticsSignature.with_instructions(artifact.event_semantics_instruction),
             max_tokens=artifact.event_semantics.max_tokens,
+        )
+        self.taxonomy = dspy.Predict(
+            EventTaxonomySignature.with_instructions(artifact.taxonomy_instruction),
+            max_tokens=artifact.taxonomy.max_tokens,
         )
         self.reader_card = dspy.Predict(
             ReaderCardSignature.with_instructions(artifact.reader_card_instruction),
@@ -220,16 +240,15 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
         )
 
     def _candidate_rejection(self) -> str | None:
-        event_instruction = self.event_semantics.signature.instructions
-        card_instruction = self.reader_card.signature.instructions
+        instructions = tuple(str(getattr(self, name).signature.instructions) for name in PREDICTOR_NAMES)
         try:
-            validate_program_instruction(event_instruction)
-            validate_program_instruction(card_instruction)
+            for instruction in instructions:
+                validate_program_instruction(instruction)
         except ValueError as exc:
             return str(exc)
         if self.candidate_guard is None:
             return None
-        code = self.candidate_guard(event_instruction, card_instruction)
+        code = self.candidate_guard(*instructions)
         if code is not None and (not isinstance(code, str) or not code.strip()):
             raise ValueError("news_program_candidate_guard_result_invalid")
         return code
@@ -252,10 +271,12 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
         *,
         prepared: _PreparedRun,
         semantics: EventSemantics,
+        taxonomy_prediction: dspy.Prediction,
         normalizations: tuple[ProgramNormalizationTrace, ...],
     ) -> NativeProgramResult:
         return _assemble(
             semantics,
+            taxonomy_prediction.taxonomy,
             prediction.card,
             context=prepared.context,
             told_count=len(prepared.context.told.entries),
@@ -267,6 +288,7 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
         context: TriageContext | Mapping[str, Any],
         *,
         event_lm: dspy.BaseLM | None = None,
+        taxonomy_lm: dspy.BaseLM | None = None,
         card_lm: dspy.BaseLM | None = None,
     ) -> NativeProgramResult:
         rejection = self._candidate_rejection()
@@ -278,7 +300,13 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
                 evidence_json=prepared.semantics_evidence_json,
                 lm=event_lm,
             )
+            # Validate semantics before the next physical call: the ledger marks a domain failure on the
+            # latest receipt, so a taxonomy call in between would be blamed for EventSemantics' failure.
             semantics, normalizations, semantics_json = self._semantics(semantics_prediction, prepared)
+            taxonomy_prediction = self.taxonomy(
+                evidence_json=prepared.taxonomy_evidence_json,
+                lm=taxonomy_lm,
+            )
             card_prediction = self.reader_card(
                 evidence_json=prepared.card_evidence_json,
                 semantics_json=semantics_json,
@@ -288,6 +316,7 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
             card_prediction,
             prepared=prepared,
             semantics=semantics,
+            taxonomy_prediction=taxonomy_prediction,
             normalizations=normalizations,
         )
 
@@ -296,6 +325,7 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
         context: TriageContext | Mapping[str, Any],
         *,
         event_lm: dspy.BaseLM | None = None,
+        taxonomy_lm: dspy.BaseLM | None = None,
         card_lm: dspy.BaseLM | None = None,
     ) -> NativeProgramResult:
         rejection = self._candidate_rejection()
@@ -307,7 +337,13 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
                 evidence_json=prepared.semantics_evidence_json,
                 lm=event_lm,
             )
+            # Validate semantics before the next physical call: the ledger marks a domain failure on the
+            # latest receipt, so a taxonomy call in between would be blamed for EventSemantics' failure.
             semantics, normalizations, semantics_json = self._semantics(semantics_prediction, prepared)
+            taxonomy_prediction = await self.taxonomy.acall(
+                evidence_json=prepared.taxonomy_evidence_json,
+                lm=taxonomy_lm,
+            )
             card_prediction = await self.reader_card.acall(
                 evidence_json=prepared.card_evidence_json,
                 semantics_json=semantics_json,
@@ -317,6 +353,7 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
             card_prediction,
             prepared=prepared,
             semantics=semantics,
+            taxonomy_prediction=taxonomy_prediction,
             normalizations=normalizations,
         )
 

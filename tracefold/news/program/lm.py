@@ -164,7 +164,7 @@ class LMCallReceipt:
     def to_program_call_trace(self) -> Any:
         """Convert a Program predictor receipt to its persistence contract."""
 
-        if self.predictor not in {"event_semantics", "reader_card"}:
+        if self.predictor not in {"event_semantics", "taxonomy", "reader_card"}:
             raise ValueError("news_program_lm_receipt_predictor_not_traceable")
         if self.route not in {"primary", "fallback"}:
             raise ValueError("news_program_lm_receipt_route_not_traceable")

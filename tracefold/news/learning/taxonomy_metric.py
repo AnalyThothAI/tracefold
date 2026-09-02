@@ -12,8 +12,11 @@ from ..taxonomy import (
     CHANGE_STATES,
     EVENT_FAMILIES,
     IPTC_SUBJECT_CODES,
+    IPTC_SUBJECT_LABELS_EN,
     ModelTaxonomyV1,
     NewsTaxonomyV1,
+    precedence_rules_for,
+    taxonomy_definition,
 )
 
 TAXONOMY_AXES: Final = ("subject_codes", "event_family", "change_state", "assertion_status")
@@ -70,17 +73,25 @@ def compare_taxonomy(
     extra = tuple(sorted(predicted_subjects - gold_subjects))
     wrong_axes = tuple(axis for axis, match in axis_matches.items() if not match)
     score = round((subject_f1 + sum(axis_matches.values())) / 4, 6)
+    # Feedback quotes the codebook (#501 D3): the definition of what was expected and of what was
+    # predicted, and any precedence rule written for exactly that confusion, so the reflection model
+    # reads the rule the seed already states instead of inventing one from the minibatch's titles.
     feedback: list[str] = []
     if missing:
-        feedback.append("missing subjects: " + ", ".join(missing))
-    if extra:
-        feedback.append("extra subjects: " + ", ".join(extra))
-    if wrong_axes:
         feedback.append(
-            "wrong axes: "
-            + ", ".join(
-                f"{axis} expected={getattr(accepted, axis)} predicted={getattr(observed, axis)}" for axis in wrong_axes
-            )
+            "missing subjects: " + ", ".join(f"{code} ({IPTC_SUBJECT_LABELS_EN[code]})" for code in missing)
+        )
+    if extra:
+        feedback.append("extra subjects: " + ", ".join(f"{code} ({IPTC_SUBJECT_LABELS_EN[code]})" for code in extra))
+    for axis in wrong_axes:
+        expected_label = str(getattr(accepted, axis))
+        predicted_label = str(getattr(observed, axis))
+        feedback.append(
+            f"{axis}: expected={expected_label} ({taxonomy_definition(axis, expected_label)}); "
+            f"predicted={predicted_label} ({taxonomy_definition(axis, predicted_label)})"
+        )
+        feedback.extend(
+            f"rule ({axis}): {rule}" for rule in precedence_rules_for(axis, expected_label, predicted_label)
         )
     return TaxonomyComparison(
         score=score,
@@ -175,7 +186,11 @@ def _cohen_kappa(left: Sequence[str], right: Sequence[str]) -> float:
 
 
 def calibrate_taxonomy(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Inter-reviewer agreement for one source-only, one-cluster-one-vote calibration set."""
+    """Inter-drafter agreement for one source-only, one-cluster-one-vote dual-labelled set.
+
+    Reported, never gated (#501 D8): the freeze publishes it beside the corpus so an operator can decide
+    to repair the codebook before spending a run, and the holdout remains the gate.
+    """
 
     representatives: dict[str, tuple[str, ModelTaxonomyV1, ModelTaxonomyV1]] = {}
     for row in rows:

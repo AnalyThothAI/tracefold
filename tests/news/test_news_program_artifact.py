@@ -18,25 +18,35 @@ from tracefold.news.program.artifact import (
 )
 
 
-def _candidate(*, event_suffix: str = "\nCandidate event rule.", card_suffix: str = "") -> ProgramStrategyArtifactV1:
+def _candidate(
+    *,
+    event_suffix: str = "\nCandidate event rule.",
+    taxonomy_suffix: str = "",
+    card_suffix: str = "",
+) -> ProgramStrategyArtifactV1:
     stable = load_stable_program_artifact()
     return ProgramStrategyArtifactV1.issue(
         event_semantics_instruction=stable.event_semantics_instruction + event_suffix,
+        taxonomy_instruction=stable.taxonomy_instruction + taxonomy_suffix,
         reader_card_instruction=stable.reader_card_instruction + card_suffix,
     )
 
 
-def test_program_identity_is_exactly_schema_and_two_instructions() -> None:
+def test_program_identity_is_exactly_schema_and_three_instructions() -> None:
     stable = load_stable_program_artifact()
 
     assert set(stable.model_dump()) == {
         "schema_version",
         "event_semantics_instruction",
+        "taxonomy_instruction",
         "reader_card_instruction",
         "program_sha256",
     }
     assert stable.program_sha256 == stable.computed_sha256()
     assert _candidate().program_sha256 != stable.program_sha256
+    assert _candidate(event_suffix="", taxonomy_suffix="\nCandidate taxonomy rule.").program_sha256 != (
+        stable.program_sha256
+    )
     assert _candidate(event_suffix="", card_suffix="\nCandidate card rule.").program_sha256 != stable.program_sha256
 
 
@@ -73,17 +83,19 @@ def test_artifact_codec_rejects_nonfinite_json() -> None:
         ProgramStrategyArtifactCodec.decode(json.dumps(raw))
 
 
-def test_patch_application_has_only_two_instruction_writes() -> None:
+def test_patch_application_has_only_three_instruction_writes() -> None:
     stable = load_stable_program_artifact()
     patch = ProgramStrategyPatchV1.issue(
         parent=stable,
         event_semantics_instruction=stable.event_semantics_instruction + "\nCandidate event rule.",
+        taxonomy_instruction=stable.taxonomy_instruction + "\nCandidate taxonomy rule.",
         reader_card_instruction=stable.reader_card_instruction + "\nCandidate card rule.",
     )
 
     applied = apply_program_patch(stable, patch)
 
     assert applied.event_semantics_instruction == patch.event_semantics_instruction
+    assert applied.taxonomy_instruction == patch.taxonomy_instruction
     assert applied.reader_card_instruction == patch.reader_card_instruction
     assert applied.program_sha256 == applied.computed_sha256()
 
@@ -94,6 +106,7 @@ def test_patch_parent_mismatch_is_rejected() -> None:
     patch = ProgramStrategyPatchV1.issue(
         parent=other,
         event_semantics_instruction=other.event_semantics_instruction,
+        taxonomy_instruction=other.taxonomy_instruction,
         reader_card_instruction=other.reader_card_instruction,
     )
 

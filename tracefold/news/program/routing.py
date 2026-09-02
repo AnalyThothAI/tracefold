@@ -12,7 +12,7 @@ import math
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import dspy  # type: ignore[import-untyped]
 
@@ -45,9 +45,10 @@ RouteName = Literal["primary", "fallback"]
 
 @dataclass(frozen=True, slots=True)
 class RouteLMs:
-    """The two explicit model slots used by one complete Program route."""
+    """The three explicit model slots used by one complete Program route."""
 
     event_semantics: dspy.BaseLM
+    taxonomy: dspy.BaseLM
     reader_card: dspy.BaseLM
 
 
@@ -111,6 +112,7 @@ class RoutedSemanticJudge:
     def _validate_route(self, lms: RouteLMs, route: RouteName) -> None:
         for predictor, lm in (
             ("event_semantics", lms.event_semantics),
+            ("taxonomy", lms.taxonomy),
             ("reader_card", lms.reader_card),
         ):
             if not isinstance(lm, AuditedConfiguredLM):
@@ -228,6 +230,7 @@ class RoutedSemanticJudge:
                     result = await self.program.acall(
                         context=context,
                         event_lm=lms.event_semantics,
+                        taxonomy_lm=lms.taxonomy,
                         card_lm=lms.reader_card,
                     )
                     if result.instruction_rejected is not None:
@@ -279,34 +282,36 @@ class RoutedSemanticJudge:
             )
         self._require_complete(result)
         semantics = result.semantics
+        taxonomy = result.taxonomy
         card = result.card
-        if semantics is None or card is None:  # pragma: no cover - checked by _require_complete
+        if semantics is None or taxonomy is None or card is None:  # pragma: no cover - _require_complete
             raise RuntimeError("news_program_native_result_incomplete")
         semantics_state = semantics.model_dump(mode="json")
+        taxonomy_state = taxonomy.model_dump(mode="json")
         card_state = card.model_dump(mode="json")
         semantics_sha = canonical_sha(semantics_state)
-        for index in range(len(successful_calls) - 1, -1, -1):
-            call = successful_calls[index]
-            if call.predictor == "reader_card" and call.terminal_disposition == "provider_success":
-                successful_calls[index] = call.model_copy(
-                    update={
-                        "upstream_sha256": semantics_sha,
-                        "output_sha256": canonical_sha(card_state),
-                        "validated_output": card_state,
-                    }
-                )
-                break
-        for index in range(len(successful_calls) - 1, -1, -1):
-            call = successful_calls[index]
-            if call.predictor == "event_semantics" and call.terminal_disposition == "provider_success":
-                successful_calls[index] = call.model_copy(
-                    update={
-                        "output_sha256": semantics_sha,
-                        "validated_output": semantics_state,
-                        "normalizations": result.normalizations,
-                    }
-                )
-                break
+        validated: dict[str, dict[str, Any]] = {
+            "event_semantics": {
+                "output_sha256": semantics_sha,
+                "validated_output": semantics_state,
+                "normalizations": result.normalizations,
+            },
+            "taxonomy": {
+                "output_sha256": canonical_sha(taxonomy_state),
+                "validated_output": taxonomy_state,
+            },
+            "reader_card": {
+                "upstream_sha256": semantics_sha,
+                "output_sha256": canonical_sha(card_state),
+                "validated_output": card_state,
+            },
+        }
+        for predictor, update in validated.items():
+            for index in range(len(successful_calls) - 1, -1, -1):
+                call = successful_calls[index]
+                if call.predictor == predictor and call.terminal_disposition == "provider_success":
+                    successful_calls[index] = call.model_copy(update=update)
+                    break
         return _RouteAnswer(result=result, calls=tuple(successful_calls))
 
     @staticmethod
@@ -366,6 +371,7 @@ class RoutedSemanticJudge:
         if (
             result.instruction_rejected is not None
             or result.semantics is None
+            or result.taxonomy is None
             or result.card is None
             or result.verdict is None
             or result.editorial is None
@@ -390,10 +396,13 @@ class RoutedSemanticJudge:
     ) -> SemanticJudgment:
         self._require_complete(result)
         semantics = result.semantics
+        taxonomy = result.taxonomy
         card = result.card
         verdict = result.verdict
         editorial = result.editorial
-        if semantics is None or card is None or verdict is None or editorial is None:  # pragma: no cover
+        if (
+            semantics is None or taxonomy is None or card is None or verdict is None or editorial is None
+        ):  # pragma: no cover
             raise RuntimeError("news_program_native_result_incomplete")
         answering_model = next(
             (
@@ -411,6 +420,7 @@ class RoutedSemanticJudge:
             context_sha256=context_sha,
             envelope_sha256=EXECUTION_ENVELOPE_SHA256,
             event_semantics_sha256=canonical_sha(semantics.model_dump(mode="json")),
+            taxonomy_sha256=canonical_sha(taxonomy.model_dump(mode="json")),
             reader_card_sha256=canonical_sha(card.model_dump(mode="json")),
             verdict_sha256=canonical_sha(verdict.model_dump(mode="json")),
             editorial_sha256=editorial.editorial_sha256,

@@ -1043,25 +1043,29 @@ deterministic assembler`. The normalizer changes a stray non-negative
 `restates` value on `new_fact`/`progression` to `-1`, records both values on the
 EventSemantics trace, canonicalizes the nested `TradeRelevanceV1` sets, and
 spends no provider call. ReaderCard.v2 produces only `headline_zh` and
-`why_zh`; the assembled Verdict has no second title or action projection. Both
-Predictor payloads exclude queue priority,
-provider score, Gate macro lexicon, queue lag and watchlist; ReaderCard receives
+`why_zh`; the assembled Verdict has no second title or action projection. Every
+Predictor payload excludes queue priority,
+provider score, Gate macro lexicon, queue lag and watchlist; the taxonomy
+Predictor receives evidence and Gate facts only, and ReaderCard receives
 only its reduced semantic view and never ToldContext or delivery intent. A
-successful primary route makes exactly two serial provider calls. JSONAdapter
-may make one format fallback per Predictor, so one route makes at most four
+successful primary route makes exactly three serial provider calls
+(EventSemantics, taxonomy, ReaderCard since #501). JSONAdapter
+may make one format fallback per Predictor, so one route makes at most six
 calls; provider errors and truncation do not spend a format fallback. The
 code-owned 20-second deadline covers the whole route. If primary fails, a
 configured `llm.news_triage_fallback` restarts the full Program with its own
-deadline budget. Its ReaderCard slot explicitly aliases the same
-endpoint unless a complete `llm.news_reader_card_fallback` endpoint is present;
+deadline budget. Its taxonomy slot always aliases the same endpoint and its
+ReaderCard slot explicitly aliases it
+unless a complete `llm.news_reader_card_fallback` endpoint is present;
 one missing or invalid fallback slot disables fallback instead of mixing
-routes. One Program execution's maximum is eight. The typed LM seam makes one
+routes. One Program execution's maximum is twelve. The typed LM seam makes one
 stock DSPy/LiteLLM call per physical invocation with no client cache or provider
 retry, so every billable attempt is visible. There is still one persisted final semantic judgment and one card,
 not a restored Analyst stage. Capacity planning must account for the normal
-1 -> 2 call increase and serial latency. A stale-ledger re-ask is a second full
+three serial calls per Event (about 6k input and 80 output tokens for the
+taxonomy call) and serial latency. A stale-ledger re-ask is a second full
 Program execution:
-normally four calls total for that Event, with the same per-execution eight-call
+normally six calls total for that Event, with the same per-execution twelve-call
 ceiling and all superseded/failed work included in telemetry.
 
 By default both Predictors use the Triage endpoint, but each has its own
@@ -1200,9 +1204,9 @@ Diagnose News in this order:
    `--mode runtime_live` is the configured production Program route and is the
    only mode whose failure rate resembles the reader's — it spends real provider
    calls on the same single-slot GPU that serves Triage, so both live modes
-   require an explicit `--max-model-cases N`; expect exactly two physical calls
-   on common success, at most four on one route and at most eight across a full
-   primary/fallback judgment. Read both
+   require an explicit `--max-model-cases N`; expect exactly three physical
+   calls on common success, at most six on one route and at most twelve across
+   a full primary/fallback judgment. Read both
    `scores.case_macro_answered` and `scores.case_macro_failure_as_zero`: the
    first is quality given an answer, the second counts every unanswered case as
    zero, and the gap between them is the availability of the route rather than
@@ -1237,12 +1241,11 @@ Diagnose News in this order:
    `ADVANCE`; only `ADVANCE` writes `prompt_candidate.json`, and all three write
    a complete `optimization_report.json`. Task and reflection are separate
    `ModelExecutionIdentity` values, and calls/cost/tokens/failures are accounted separately
-   before they are summed. The taxonomy optimizer has no judge. A complete candidate zero inside that GEPA
-   run is the only optimization baseline; a candidate-zero truncation rejects the run. Tracefold admits the
-   highest-scoring public candidate that strictly improves on that baseline and scores exactly `1.0` against
-   accepted Gold on every Stable-correct control. A task answer that reaches `max_tokens` is receipted once and
-   scores that candidate example below any complete answer; it does not retry or abort later candidates.
-   A typed-invalid `EventSemantics` answer similarly remains one aligned example at score zero, rather than
+   before they are summed. The taxonomy optimizer has no judge. Candidate zero inside that GEPA
+   run is the only optimization baseline. GEPA's own `best_idx` is admitted when it is strictly above
+   candidate zero with a valid instruction; otherwise `NO_OP`. A task answer that reaches `max_tokens` is
+   receipted once and scores that example `0`; it does not retry or abort later candidates.
+   A typed-invalid `ModelTaxonomyV1` answer similarly remains one aligned example at score zero, rather than
    shortening GEPA's batch.
    Reflection uses six examples per proposal: the previous ten-example prompt consumed 22,782 input tokens
    and left a 32K-context thinking teacher only 9,985 output tokens before service truncation.
@@ -1261,7 +1264,7 @@ Diagnose News in this order:
    breach. Selector `news_canary_selector_v2` includes queue-high Events, excludes recovery/listing/
    telemetry, and trips on selector, eligibility-profile, rolling-profile or
    runtime-manifest drift. One Event belongs to one arm and runs one assigned Program (normally
-   two serial Predictor calls, plus only the traced retry/fallback budget). A
+   three serial Predictor calls, plus only the traced retry/fallback budget). A
    canary is not an excuse to skip the earlier evidence stages: the evaluator rejects a
    holdout/shadow/canary request before any Program call unless the preceding
    stage has a sealed PASS. Validation fixes at most 50 independent cluster
@@ -1289,28 +1292,45 @@ epoch, bound to that exact bundle, enter metric v8, GEPA or release evidence. Ev
 baseline remains readable audit history but cannot enter a dataset or release
 stage. Do not
 interpret a successful migration, a valid Program artifact, or the new
-two-Predictor trace as proof of higher quality. Issue #117 deliberately lands
+three-Predictor trace as proof of higher quality. Issue #117 deliberately lands
 the production persistence/read/UI seam before taxonomy denominators exist;
-issue #456 uses them through the existing Review v6, Dataset, Objective, direct taxonomy GEPA metric and
+issue #501 uses them through the existing Review v6, Dataset, Objective, direct taxonomy GEPA metric and
 release path only.
 
-For the taxonomy Gold → Candidate workflow:
+For the taxonomy Gold → Candidate workflow (#501 PR-D):
 
-1. Draft current unjudged ReviewDesk tasks with an identified teacher model,
-   for example `news learning draft-reviews --model qwen3.8-27b:thinking`.
-   Inspect the evidence and each draft. Preview with `news review accept-drafts
+1. Draft current unjudged ReviewDesk tasks in batches of at most 100 with one
+   rubric model and two blind taxonomy drafters of different families, neither
+   the Stable task model, for example `news learning draft-reviews
+   --rubric-model deepseek-v4-pro --taxonomy-models deepseek-v4-pro,MiniMax-M3`.
+   Read the batch receipt's `taxonomy_drafters.agreement_rate` and per-model
+   `stable_agreement_rate`; a family that tracks Stable far more closely than
+   the other is the bias to watch. Inspect each `taxonomy_disagreement` task and
+   edit it before accepting. Preview with `news review accept-drafts
    --file FILE --dry-run`; every write requires an explicit non-empty `--only`
-   list and an honestly named reviewer, including an AI adjudicator.
+   list and an honestly named reviewer, including an AI adjudicator. A visibly
+   low κ on one axis is repaired in the codebook constants first, never diluted
+   with more samples; that is an operating judgment, not a code gate.
 2. Freeze only current-contract accepted reviews with `news learning freeze
    --role development ...`. Do not reuse or migrate an older Dataset. Accepted
    four-axis taxonomy is part of each existing episode and its projection root.
 3. Run `news learning readiness --development DATASET_SHA --out FILE`. This is
-   a zero-provider-call check. Both split halves must contain taxonomy targets
-   and Stable-correct controls, and connected-fact cluster overlap must be zero.
-4. Only after an operator declares all existing budget flags, run `news
-   learning run --development DATASET_SHA --out NEW_EMPTY_DIR ...`. It invokes
-   stock GEPA once. Record the optimization outcome, usage and Candidate SHA (if
-   any) on issue #453. It never registers, releases or promotes the Candidate.
+   a zero-provider-call check. Every Gold-bearing cluster with a replayable
+   Stable answer is `included`; read `taxonomy_gold.stable_exact_n` and
+   `stable_mismatch_n`, the freeze's `counts.calibration` κ, and confirm the
+   connected-fact cluster overlap between halves is zero.
+4. Run `news learning run --development DATASET_SHA --out NEW_EMPTY_DIR --auto
+   light --seed 112 ...` with the remaining budget flags. The reflection model
+   (`llm.news_compiler_reflection`) must be a strong model with at least a 128K
+   context; that is an operating requirement the run receipt records, not a
+   code check. It invokes stock GEPA once; `NO_OP` and `ADVANCE` are both legal
+   terminal states. Record on the issue: Dataset SHA, κ, A/B agreement, each
+   drafter's Stable agreement, the public `DspyGEPAResult` fields, candidate 0
+   and best five-objective scores with the delta, instruction growth, physical
+   calls, tokens, cost, wall clock and the outcome. An `ADVANCE` continues
+   through `release register`, offline and holdout, where an instruction that
+   only fit the selection set is refused. The run never registers, releases or
+   promotes the Candidate.
 
 Taxonomy scoring is subject-code set F1 plus exact event family, change state
 and assertion status, folded into the existing semantics/novelty component.

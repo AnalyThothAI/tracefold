@@ -293,6 +293,17 @@ class ModelVisibleCardInput(_ExactContractModel):
     gate: _ModelVisibleGate
 
 
+class ModelVisibleTaxonomyInput(_ExactContractModel):
+    """Exact bounded JSON shape visible to the taxonomy Predictor: evidence and Gate facts, no told ledger.
+
+    Taxonomy answers "what happened" from the Event alone (#501 D1). Reader history is novelty evidence,
+    and a classifier that could read it could be taught to label by what was already sent.
+    """
+
+    event: _ModelVisibleEvent
+    gate: _ModelVisibleGate
+
+
 class TriageContext(_ExactContractModel):
     """One immutable question at the semantic-judgment Seam."""
 
@@ -408,6 +419,11 @@ class TriageContext(_ExactContractModel):
             ),
         ).model_dump(mode="json")
 
+    def taxonomy_payload(self) -> dict[str, Any]:
+        """Bounded evidence only. Taxonomy classifies what this Event says, never what was already told."""
+
+        return ModelVisibleTaxonomyInput(event=self._visible_event(), gate=self._visible_gate()).model_dump(mode="json")
+
     def reader_card_payload(self) -> dict[str, Any]:
         """Bounded evidence only. The card is written from what this Event says, not from what was told."""
 
@@ -475,7 +491,7 @@ class ProgramNormalizationTrace(_ExactContractModel):
 
 
 class ProgramCallTrace(_ExactContractModel):
-    predictor: Literal["event_semantics", "reader_card"]
+    predictor: Literal["event_semantics", "taxonomy", "reader_card"]
     route: Literal["primary", "fallback"]
     attempt: int
     request_sha256: str
@@ -552,7 +568,7 @@ class ProgramCallTrace(_ExactContractModel):
 
 
 class ProgramTrace(_ExactContractModel):
-    program_version: Literal["news_semantic_program_v8"]
+    program_version: Literal["news_semantic_program_v9"]
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     context_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     # The computed identity of everything the code decided about this call — request envelope, output
@@ -561,6 +577,7 @@ class ProgramTrace(_ExactContractModel):
     # names, so a deployment cannot move what the model sees while leaving this field still.
     envelope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     event_semantics_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    taxonomy_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     reader_card_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     verdict_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     editorial_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -587,8 +604,8 @@ class ProgramTrace(_ExactContractModel):
 
 class ProgramUsage(_ExactContractModel):
     wall_latency_ms: int = Field(ge=0)
-    call_count: int = Field(ge=0, le=8)
-    physical_call_count: int = Field(default=0, ge=0, le=8)
+    call_count: int = Field(ge=0, le=12)
+    physical_call_count: int = Field(default=0, ge=0, le=12)
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     cached_tokens: int = Field(ge=0)
@@ -674,6 +691,7 @@ class SemanticJudgment(_ExactContractModel):
             or self.trace.answering_route is None
             or self.trace.answering_route != ("fallback" if self.fallback_from else "primary")
             or self.trace.event_semantics_sha256 is None
+            or self.trace.taxonomy_sha256 is None
             or self.trace.reader_card_sha256 is None
             or self.trace.verdict_sha256 != canonical_sha(self.verdict.model_dump(mode="json"))
             or self.trace.editorial_sha256 != self.editorial.editorial_sha256
@@ -729,6 +747,7 @@ __all__ = [
     "FrozenEventEvidence",
     "ModelVisibleCardInput",
     "ModelVisibleSemanticsInput",
+    "ModelVisibleTaxonomyInput",
     "ProgramCallTrace",
     "ProgramNormalizationTrace",
     "ProgramTrace",

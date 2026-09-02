@@ -679,7 +679,7 @@ def test_current_verdict_schema_rejects_raw_and_cross_origin_payloads() -> None:
         "verdict": verdict,
         "model_editorial": model_editorial,
         "model": "model-v1",
-        "program_version": "news_semantic_program_v8",
+        "program_version": "news_semantic_program_v9",
         "program_sha256": "d" * 64,
         "rule_baseline_decision": "push",
         "final_decision": "push",

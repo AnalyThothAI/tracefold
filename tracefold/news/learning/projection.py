@@ -62,7 +62,7 @@ def _program_call_identity_complete(raw_call: Mapping[str, Any]) -> bool:
     call = dict(raw_call)
     if (
         call.get("physical_provider_call") is not True
-        or call.get("predictor") not in {"event_semantics", "reader_card"}
+        or call.get("predictor") not in {"event_semantics", "taxonomy", "reader_card"}
         or call.get("route") not in {"primary", "fallback"}
         or type(call.get("attempt")) is not int
         or not 1 <= int(call["attempt"]) <= 2

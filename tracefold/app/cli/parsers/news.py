@@ -177,7 +177,14 @@ def add_news_commands(
         "--hours", type=_positive_int, default=24, help="look back this many hours from now (max 720)"
     )
     learning_draft.add_argument(
-        "--model", required=True, help="direct drafting model, e.g. deepseek-v4-pro or qwen3.8-27b:thinking"
+        "--rubric-model", required=True, help="rubric drafting model, e.g. deepseek-v4-pro or qwen3.8-27b:thinking"
+    )
+    # #501 D8: two blind taxonomy drafters of different families, neither the Stable task model. That is an
+    # operating rule recorded in the batch receipt, not a code check.
+    learning_draft.add_argument(
+        "--taxonomy-models",
+        required=True,
+        help="two comma-separated blind taxonomy drafting models, A,B; the draft takes A on disagreement",
     )
     learning_draft.add_argument("--limit", type=_positive_int, default=50)
     learning_draft.add_argument("--stratum", default="", help="restrict the existing ReviewDesk sampler stratum")
@@ -195,7 +202,11 @@ def add_news_commands(
     )
     learning_run.add_argument("--development", required=True, help="development dataset artifact SHA")
     learning_run.add_argument("--out", required=True, help="run directory for every artifact this run writes")
-    learning_run.add_argument("--max-metric-calls", type=_positive_int, required=True)
+    # Exactly one budget form, mirroring `dspy.GEPA` (#501 D6): DSPy's own `auto` preset or an explicit
+    # metric-call count. Neither is floored or pre-checked here.
+    learning_budget = learning_run.add_mutually_exclusive_group(required=True)
+    learning_budget.add_argument("--auto", choices=("light", "medium", "heavy"), default=None)
+    learning_budget.add_argument("--max-metric-calls", type=_positive_int, default=None)
     learning_run.add_argument("--max-task-model-calls", type=_positive_int, required=True)
     learning_run.add_argument("--max-reflection-model-calls", type=_positive_int, required=True)
     learning_run.add_argument("--max-cost-microusd", type=_positive_int, required=True)
@@ -230,11 +241,6 @@ def add_news_commands(
     learning_freeze.add_argument("--from-ms", type=_nonnegative_int, required=True)
     learning_freeze.add_argument("--to-ms", type=_positive_int, required=True)
     learning_freeze.add_argument("--candidate", default="", help="candidate manifest; required for validation")
-    learning_freeze.add_argument(
-        "--calibration-request",
-        default="",
-        help="one-time source-only task/projection request; development freeze only",
-    )
     learning_freeze.add_argument("--out", required=True, help="write the dataset manifest")
     for action, stage in (("evaluate", None), ("shadow", "shadow")):
         learning_eval = release_subcommands.add_parser(action, help=f"run the {action} release-evidence gate")

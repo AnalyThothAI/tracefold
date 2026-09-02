@@ -18,7 +18,7 @@ _DATASET = "d" * 64
 
 def _readiness(**updates: Any) -> dict[str, Any]:
     report: dict[str, Any] = {
-        "schema": "tracefold.news.gepa_readiness_report.v3",
+        "schema": "tracefold.news.gepa_readiness_report.v4",
         "objective": {"compilable": True, "blockers": []},
         "development_profile": {"ready": True, "blockers": []},
     }
@@ -41,6 +41,7 @@ def _run_args(tmp_path: Path, **updates: Any) -> Namespace:
     values: dict[str, Any] = {
         "development": _DATASET,
         "out": str(tmp_path / "run-1"),
+        "auto": None,
         "max_metric_calls": 120,
         "max_task_model_calls": 400,
         "max_reflection_model_calls": 40,
@@ -102,9 +103,42 @@ def test_run_parser_is_the_only_candidate_route_and_keeps_explicit_budgets() -> 
 
     assert args.learning_command == "run"
     assert args.seed == 129
+    assert args.auto is None and args.max_metric_calls == 120
     assert not hasattr(args, "max_metric_judge_model_calls")
     for absent in ("semantic_judge", "dataset", "mode", "max_baseline_model_cases"):
         assert not hasattr(args, absent), absent
+
+
+def test_run_parser_accepts_dspys_auto_budget_as_the_one_alternative_to_an_explicit_count() -> None:
+    """#501 D6: `--auto` xor `--max-metric-calls`, mirroring `dspy.GEPA`; nothing floors either."""
+
+    common = [
+        "news", "learning", "run",
+        "--development", _DATASET,
+        "--out", "artifacts/run-1",
+        "--max-task-model-calls", "400",
+        "--max-reflection-model-calls", "40",
+        "--max-cost-microusd", "800000",
+        "--max-call-cost-microusd", "5000",
+    ]  # fmt: skip
+
+    args = build_parser().parse_args([*common, "--auto", "light"])
+    assert args.auto == "light" and args.max_metric_calls is None
+    for budget in ([], ["--auto", "light", "--max-metric-calls", "120"], ["--auto", "extreme"]):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args([*common, *budget])
+
+
+def test_run_passes_the_auto_budget_through_to_the_optimizer_leg(monkeypatch: Any, tmp_path: Path) -> None:
+    legs = _Legs(readiness=_readiness(), optimization=_optimization())
+    _install(monkeypatch, legs)
+
+    run_commands._handle_learning_run(
+        _run_args(tmp_path, auto="light", max_metric_calls=None), SimpleNamespace(), SimpleNamespace()
+    )
+
+    optimize_args = next(args for name, args in legs.calls if name == "optimize")
+    assert optimize_args.auto == "light" and optimize_args.max_metric_calls is None
 
 
 def test_readiness_then_one_optimization_write_the_only_run_artifacts(monkeypatch: Any, tmp_path: Path) -> None:
@@ -124,13 +158,15 @@ def test_insufficient_readiness_refuses_before_the_optimizer_leg(monkeypatch: An
     legs = _Legs(
         readiness=_readiness(
             objective={"compilable": True, "blockers": []},
-            development_profile={"ready": False, "blockers": ["development_calibration_missing"]},
+            development_profile={"ready": False, "blockers": ["development_boundary_cluster_n_insufficient"]},
         ),
-        optimization=_optimization(outcome="REJECTED", reasons=["train_target_missing"]),
+        optimization=_optimization(outcome="REJECTED", reasons=["split_requires_two_clusters"]),
     )
     _install(monkeypatch, legs)
 
-    with pytest.raises(ValueError, match="news_learning_run_readiness_blocked:development_calibration_missing"):
+    with pytest.raises(
+        ValueError, match="news_learning_run_readiness_blocked:development_boundary_cluster_n_insufficient"
+    ):
         run_commands._handle_learning_run(_run_args(tmp_path), SimpleNamespace(), SimpleNamespace())
 
     assert [name for name, _args in legs.calls] == ["readiness"]

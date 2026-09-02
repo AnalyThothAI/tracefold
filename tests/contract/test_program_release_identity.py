@@ -21,17 +21,19 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "2a3d7306a902b4f687c177bbb491dae6c60fb7ee67b188a7d597f84d805b228f"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "f89fe0c8628f240956813608a324094c88fadf4a7b2ee23aeed5a0ddb33a0dcb"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
-NEWS_PREDICTOR_INSTRUCTION_SHA256 = "360340899edeb66c079ba0f7b6294fed623d4eda37629c636c54902e235d5997"
+# #501 re-pins it over three instructions: taxonomy left EventSemantics for its own Predictor.
+NEWS_PREDICTOR_INSTRUCTION_SHA256 = "ed59e96a5abebddfe795e1d00fa1b579be7a61d9b376d458db998b4f9e0e0215"
 
-NEWS_STABLE_PROGRAM_SHA256 = "63e5b438f7419e02621e419f3a3ad9860dfcc54bf2eea86c0896bcc04ebb4c64"
+NEWS_STABLE_PROGRAM_SHA256 = "4fd8b3ef66ecac8caa6644acb1b13c1eb661480e7a39f876c3891194268f917e"
 
 # #437 changes Gold projection. It remains release evidence after #453 moves taxonomy Gold into the one
-# development Objective and Metric: a behavior edit must visibly re-pin this name.
-NEWS_COMPILE_EPISODE_PROJECTION_SCHEMA = "tracefold.news.development_compile_episode.v6"
+# development Objective and Metric: a behavior edit must visibly re-pin this name. v7 (#501) carries the
+# review's taxonomy provenance, including the blind drafts.
+NEWS_COMPILE_EPISODE_PROJECTION_SCHEMA = "tracefold.news.development_compile_episode.v7"
 
 
 def test_execution_envelope_identity_is_pinned() -> None:
@@ -66,7 +68,7 @@ def test_current_news_release_identity_is_byte_exact() -> None:
         "metric_id": METRIC_ID,
         "program_sha256": load_stable_program_artifact().program_sha256,
     } == {
-        "program_version": "news_semantic_program_v8",
+        "program_version": "news_semantic_program_v9",
         "policy_version": "news_triage_policy_v11",
         "review_rubric_version": "news_review_v6",
         "metric_id": "tracefold.news.production_action_trade_relevance_v8",
@@ -78,12 +80,14 @@ def test_current_predictor_bytes_keep_the_reviewed_instruction_identity() -> Non
     """The prompt the provider is sent, pinned.
 
     #117 intentionally moves the EventSemantics instruction because taxonomy is now a required production
-    output. This separate pin proves later identity-only edits cannot silently move either instruction.
+    output; #501 moves it again by carving taxonomy out into its own instruction. This separate pin proves
+    later identity-only edits cannot silently move any of the three.
     """
 
     artifact = load_stable_program_artifact()
     bound = {
-        predictor: artifact.predictor_state(predictor).instruction for predictor in ("event_semantics", "reader_card")
+        predictor: artifact.predictor_state(predictor).instruction
+        for predictor in ("event_semantics", "taxonomy", "reader_card")
     }
 
     assert canonical_sha(bound) == NEWS_PREDICTOR_INSTRUCTION_SHA256
@@ -123,8 +127,9 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "public_api_only": True,
         "adapter": "dspy.JSONAdapter(use_native_function_calling=False)",
     }
-    assert set(envelope["requests"]) == set(envelope["model_visible_input"]) == {"event_semantics", "reader_card"}
-    assert set(envelope["signatures"]) == {"event_semantics", "reader_card"}
+    predictors = {"event_semantics", "taxonomy", "reader_card"}
+    assert set(envelope["requests"]) == set(envelope["model_visible_input"]) == predictors
+    assert set(envelope["signatures"]) == predictors
     assert set(envelope["implementation_ast_sha256"]) == {
         "artifact.render_model_evidence_json",
         "assembly.normalize_restates",
@@ -178,9 +183,15 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "module._relevance_normalizations",
         "routing.__module__",
         "signatures.EventSemantics",
+        "signatures.EventTaxonomySignature",
         "signatures.ReaderCard",
+        "taxonomy.ASSERTION_STATUS_DEFINITIONS",
+        "taxonomy.CHANGE_STATE_DEFINITIONS",
+        "taxonomy.EVENT_FAMILY_DEFINITIONS",
         "taxonomy.ModelTaxonomyV1",
         "taxonomy.NewsTaxonomyV1",
+        "taxonomy.TAXONOMY_PRECEDENCE_RULES",
+        "taxonomy.render_taxonomy_seed_instruction",
         "taxonomy.source_authority",
         "taxonomy.source_authority_from_evidence",
     }

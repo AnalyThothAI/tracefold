@@ -93,7 +93,7 @@ def _recorded_program_slots(rows: Any, *, arm: Any) -> dict[tuple[str, str], dic
             continue
         predictor = str(row.get("predictor_name") or "")
         route = str(row.get("route") or "")
-        if predictor not in {"event_semantics", "reader_card"} or route not in {"primary", "fallback"}:
+        if predictor not in {"event_semantics", "taxonomy", "reader_card"} or route not in {"primary", "fallback"}:
             continue
         terminal = dict(row.get("response") or {})
         if terminal.get("schema") != "tracefold.news.recorded_lm.v1":
@@ -178,7 +178,11 @@ def _recorded_route(slots: Mapping[tuple[str, str], dict[str, Any]], *, artifact
             model_binding=binding,
         )
 
-    return RouteLMs(event_semantics=lm_for("event_semantics"), reader_card=lm_for("reader_card"))
+    return RouteLMs(
+        event_semantics=lm_for("event_semantics"),
+        taxonomy=lm_for("taxonomy"),
+        reader_card=lm_for("reader_card"),
+    )
 
 
 def _learning_program_arm_artifacts(

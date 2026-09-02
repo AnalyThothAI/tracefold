@@ -49,7 +49,7 @@ def test_evaluator_and_production_contexts_share_targeted_history_while_policy_s
     evaluator = CandidateEvaluator(
         _Connection(),
         stable=ArmManifest(
-            program_version="news_semantic_program_v8",
+            program_version="news_semantic_program_v9",
             program_sha256="a" * 64,
             envelope_sha256=EXECUTION_ENVELOPE_SHA256,
             runtime_model_bindings_sha256="b" * 64,

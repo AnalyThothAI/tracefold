@@ -125,8 +125,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 episode_projection_root_sha256=export.episode_projection_root_sha256,
                 plan=plan,
             )
-            if not plan.target_failure_cluster_ids:
-                raise ValueError("news_program_compile_no_verified_failure_clusters")
+            if not plan.optimizer_cluster_ids:
+                raise ValueError("news_program_compile_no_taxonomy_gold_clusters")
             arm_payload = stable.model_dump(mode="json")
             arm_payload.update(program_sha256=candidate_artifact.program_sha256)
             candidate_arm = type(stable).model_validate(arm_payload)
@@ -152,7 +152,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     development_dataset_sha=str(args.development),
                     # The registrar's own projection, not the generator's claim.
                     development_episode_projection_root_sha256=export.episode_projection_root_sha256,
-                    failure_cluster_ids=plan.target_failure_cluster_ids,
+                    optimizer_cluster_ids=plan.optimizer_cluster_ids,
                     generator_kind="model" if prompt.optimizer else "human",
                     registered_at_ms=registered_at_ms,
                     declared_target_dimensions=plan.target_dimensions,
@@ -244,9 +244,6 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                         stable=stable,
                         catalog={item.candidate_sha: item for item in catalog},
                     ).admit_for_validation(candidate.candidate_sha)
-                calibration_request = (
-                    _read_json_or_yaml(str(args.calibration_request)) if str(args.calibration_request or "") else None
-                )
                 manifest = asyncio.run(
                     datasets.freeze_dataset(
                         DatasetSpec(
@@ -255,7 +252,6 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                             observation_ref=candidate.candidate_sha if candidate is not None else None,
                         ),
                         admitted=admitted,
-                        calibration_request=calibration_request,
                     )
                 )
                 payload = manifest.model_dump(mode="json")

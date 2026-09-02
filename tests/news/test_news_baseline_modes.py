@@ -44,17 +44,17 @@ _SEMANTICS: dict[str, Any] = {
     "scope": "single_name",
     "confidence": 0.9,
     "relevance": trade_relevance().model_dump(mode="json"),
-    "taxonomy": {
-        "subject_codes": ["medtop:20000205"],
-        "event_family": "product_service_change",
-        "change_state": "announced",
-        "assertion_status": "confirmed",
-    },
+}
+_TAXONOMY: dict[str, Any] = {
+    "subject_codes": ["medtop:20000205"],
+    "event_family": "product_service_change",
+    "change_state": "announced",
+    "assertion_status": "confirmed",
 }
 _CARD: dict[str, Any] = {"headline_zh": "特斯拉承诺新增产线", "why_zh": "新增产能改变该名字的交付预期"}
 
 _VERDICT: dict[str, Any] = {
-    **{key: value for key, value in _SEMANTICS.items() if key not in {"relevance", "taxonomy"}},
+    **{key: value for key, value in _SEMANTICS.items() if key != "relevance"},
     **_CARD,
 }
 
@@ -110,12 +110,12 @@ def _case(index: int, *, title: str | None = None) -> BaselineCase:
             "should_push": "should_push",
             "dimensions": {"factual_fidelity": "pass", "headline_fidelity": "pass", "magnitude": "pass"},
             "novelty": {"judgment": "new_fact", "duplicate_of": ""},
-            "taxonomy": dict(_SEMANTICS["taxonomy"]),
+            "taxonomy": dict(_TAXONOMY),
         },
         production_judgment=scored_judgment(
             _VERDICT,
             relevance=trade_relevance(),
-            taxonomy=news_taxonomy(**_SEMANTICS["taxonomy"]),
+            taxonomy=news_taxonomy(**_TAXONOMY),
         ),
         policy_metric={
             "gate": {"grounded_assets": ["TSLA"], "admission": "candidate"},
@@ -161,6 +161,7 @@ def _route(
     route: str,
     semantics: list[Any],
     cards: list[Any],
+    taxonomies: list[Any] | None = None,
     semantics_model: str | None = None,
     card_model: str | None = None,
 ) -> tuple[RouteLMs, ScriptedLM, ScriptedLM]:
@@ -170,24 +171,34 @@ def _route(
         route=route,
         model=semantics_model,
     )
+    # The taxonomy Predictor (#501) runs between the two; a plain scripted label answers every call unless a
+    # test scripts its own usage/cost.
+    taxonomy_lm, _taxonomy_delegate = _audited_lm(
+        taxonomies if taxonomies is not None else [{"taxonomy": _TAXONOMY}] * 16,
+        predictor="taxonomy",
+        route=route,
+    )
     card_lm, card_delegate = _audited_lm(
         cards,
         predictor="reader_card",
         route=route,
         model=card_model,
     )
-    return RouteLMs(event_semantics=event_lm, reader_card=card_lm), event_delegate, card_delegate
+    return RouteLMs(event_semantics=event_lm, taxonomy=taxonomy_lm, reader_card=card_lm), event_delegate, card_delegate
 
 
 def _judge(
     *,
     semantics: list[Any],
     cards: list[Any],
+    taxonomies: list[Any] | None = None,
     fallback_semantics: list[Any] | None = None,
     fallback_cards: list[Any] | None = None,
 ) -> tuple[RoutedSemanticJudge, ScriptedLM, ScriptedLM, ScriptedLM | None, ScriptedLM | None]:
     artifact = load_stable_program_artifact()
-    primary, primary_event, primary_card = _route(route="primary", semantics=semantics, cards=cards)
+    primary, primary_event, primary_card = _route(
+        route="primary", semantics=semantics, cards=cards, taxonomies=taxonomies
+    )
     fallback: RouteLMs | None = None
     fallback_event: ScriptedLM | None = None
     fallback_card: ScriptedLM | None = None
@@ -317,27 +328,29 @@ def test_runtime_live_consults_the_dedicated_reader_card_endpoint() -> None:
 
     assert len(semantics_lm.requests) == len(reader_lm.requests) == 1
     assert route.event_semantics.model_binding == "event_semantics.primary"
+    assert route.taxonomy.model_binding == "taxonomy.primary"
     assert route.reader_card.model_binding == "reader_card.primary"
     # The scored card is the one the reader endpoint wrote.
     assert report.cases[0].score > 0
-    assert report.route["physical_call_count"] == 2
+    assert report.route["physical_call_count"] == 3
 
 
-def test_a_normal_runtime_case_is_exactly_two_physical_calls() -> None:
+def test_a_normal_runtime_case_is_exactly_three_physical_calls() -> None:
     program, *_ = _judge(
         semantics=[_response({"semantics": _SEMANTICS}, input_tokens=10, output_tokens=5, cost_microusd=17)],
+        taxonomies=[_response({"taxonomy": _TAXONOMY}, input_tokens=4, output_tokens=2, cost_microusd=3)],
         cards=[_response({"card": _CARD}, input_tokens=12, output_tokens=6, cost_microusd=19)],
     )
     report = _runtime([_case(1)], program)
 
-    assert report.route["call_count"] == report.route["physical_call_count"] == 2
-    assert report.route["total_tokens"] == 33
-    assert report.route["provider_cost_microusd_known"] == 36
+    assert report.route["call_count"] == report.route["physical_call_count"] == 3
+    assert report.route["total_tokens"] == 39
+    assert report.route["provider_cost_microusd_known"] == 39
     assert report.route["cost_unknown_n"] == 0
-    assert report.cases[0].physical_calls == 2
+    assert report.cases[0].physical_calls == 3
 
 
-def test_json_adapter_fallback_stays_inside_the_four_call_route_ceiling() -> None:
+def test_json_adapter_fallback_stays_inside_the_six_call_route_ceiling() -> None:
     """A parse failure can spend one public JSONAdapter format fallback for that Predictor.
 
     The ceiling is code owned by the factory now, not a number copied into the Artifact and hashed there, so
@@ -351,13 +364,14 @@ def test_json_adapter_fallback_stays_inside_the_four_call_route_ceiling() -> Non
     report = _runtime([_case(1)], program)
 
     assert report.route["answered_by"] == {"primary": 1}
-    assert report.route["physical_call_count"] == 3
+    assert report.route["physical_call_count"] == 4
     assert len(card.requests) == 2
 
 
 def test_an_exhausted_chain_is_published_as_a_failure_not_as_a_low_score() -> None:
-    """Eight physical calls is the whole chain budget. A case that spends it answered nothing, and a baseline
-    that scored it 0 would be indistinguishable from a card the reader disliked."""
+    """Ten physical calls here: both routes spend the EventSemantics format fallback, one taxonomy call and
+    both ReaderCard attempts. A case that spends them answered nothing, and a baseline that scored it 0 would
+    be indistinguishable from a card the reader disliked."""
 
     program, primary_event, primary_card, fallback_event, fallback_card = _judge(
         semantics=["not-json", {"semantics": _SEMANTICS}],
@@ -374,9 +388,9 @@ def test_an_exhausted_chain_is_published_as_a_failure_not_as_a_low_score() -> No
     delegates = (primary_event, primary_card, fallback_event, fallback_card)
     assert all(delegate is not None for delegate in delegates)
     assert sum(len(delegate.requests) for delegate in delegates if delegate is not None) == 8
-    # Every one of those eight calls is published, not silently dropped with the case.
-    assert report.route["physical_call_count"] == 8
-    assert report.cases[0].physical_calls == 8
+    # Every one of those calls, plus one taxonomy call per route, is published, not silently dropped.
+    assert report.route["physical_call_count"] == 10
+    assert report.cases[0].physical_calls == 10
 
 
 def test_runtime_failures_keep_their_own_error_code_beside_a_real_score() -> None:
@@ -639,7 +653,7 @@ def test_the_route_publishes_its_retries_and_both_latency_populations() -> None:
     )
     report = _runtime([_case(1)], retried)
     assert report.route["retry_count"] == 1
-    assert report.route["physical_call_count"] == 3
+    assert report.route["physical_call_count"] == 4
 
     clean, *_ = _judge(semantics=[{"semantics": _SEMANTICS}], cards=[{"card": _CARD}])
     quiet = _runtime([_case(2)], clean)

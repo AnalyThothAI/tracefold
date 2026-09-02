@@ -1,12 +1,14 @@
 """The framework-neutral taxonomy Objective Plan and shared evaluation vocabulary.
 
-Issue #456 makes the optimizer population exact: targets are recorded Stable taxonomy mismatches with an
-explicit ``first_bad_owner=taxonomy``; controls are recorded Stable answers that exactly match accepted
-taxonomy Gold and have no explicit owner; every other case is excluded. Readiness, GEPA, candidate
-registration and release evaluation re-derive that same plan from the same frozen episodes.
+Issue #501 makes the optimizer population the whole of blind Gold: every case with valid accepted taxonomy
+Gold and a replayable Stable answer is ``included``, whatever its reviewer wrote in an owner column; every
+other case is ``excluded`` with a reason. The #456 rule — targets are explicit-owner mismatches, controls
+are Stable-exact cases without an owner — measured which batch drafted the label rather than the Program,
+and made ADVANCE unreachable before a run started. Readiness, GEPA, candidate registration and release
+evaluation re-derive this same plan from the same frozen episodes.
 
 The older composite case metric still imports its dimension and policy helpers from this module for release
-evaluation. Those helpers do not participate in target selection or GEPA scoring.
+evaluation. Those helpers do not participate in population selection or GEPA scoring.
 """
 
 from __future__ import annotations
@@ -46,7 +48,7 @@ class DevelopmentEpisode(_ExactModel):
     policy_metric: dict[str, Any] = Field(default_factory=dict)
 
 
-# Shared by the diagnostic composite metric and release evaluator. They do not define the #456 GEPA
+# Shared by the diagnostic composite metric and release evaluator. They do not define the GEPA
 # population, which is taxonomy-only below.
 _RELEVANCE_DIMENSIONS = (
     "trade_impact_breadth",
@@ -272,13 +274,7 @@ def _honest_split(
             "share": _TRAIN_SHARE,
             "unit": "connected_fact_cluster_representative",
             "representative_n_per_cluster": 1,
-            "representative_order": [
-                "target_before_control",
-                "target_dimension_n_desc",
-                "safety_strength_desc",
-                "event_time_desc",
-                "case_id",
-            ],
+            "representative_order": ["safety_strength_desc", "event_time_desc", "case_id"],
             "split_order": ["event_time", "cluster_id"],
         },
         "train": {
@@ -339,12 +335,12 @@ def _retrieval_receipt(episodes: Sequence[DevelopmentEpisode]) -> dict[str, Any]
 # The Objective Plan: what GEPA is allowed to see, and why
 # ---------------------------------------------------------------------------
 
-OBJECTIVE_PLAN_SCHEMA: Literal["tracefold.news.gepa_objective_plan.v3"] = "tracefold.news.gepa_objective_plan.v3"
-TAXONOMY_OWNER: Final = "taxonomy"
+OBJECTIVE_PLAN_SCHEMA: Literal["tracefold.news.gepa_objective_plan.v4"] = "tracefold.news.gepa_objective_plan.v4"
+TAXONOMY_PREDICTOR: Final = "taxonomy"
 _PUSH_ACTIONS: Final = frozenset({"push", "escalate"})
 _OBJECTIVE_GUARD_ADMISSIONS: Final = frozenset({"listing_deterministic", "telemetry_deterministic"})
 
-Disposition = Literal["target", "control", "excluded"]
+Disposition = Literal["included", "excluded"]
 
 
 class ObjectiveCase(_ExactModel):
@@ -353,6 +349,9 @@ class ObjectiveCase(_ExactModel):
     Deliberately IDs and strings rather than a hash family (#199 §3.5): the plan is re-derived from the
     frozen dataset by every reader that needs it, so a digest of it would address nothing that is not
     already addressed by the episode projection root and the split roots.
+
+    `owner` and `owner_source` are audit metadata (#501 D9): they say what a reviewer wrote and grant no
+    optimization authority. `stable_exact` says whether the recorded Stable answer already matched Gold.
     """
 
     case_id: str = Field(min_length=1)
@@ -361,6 +360,7 @@ class ObjectiveCase(_ExactModel):
     disposition: Disposition
     owner: str = ""
     owner_source: Literal["explicit", "derived", "absent"] = "absent"
+    stable_exact: bool | None = None
     predictors: tuple[str, ...] = ()
     dimensions: tuple[str, ...] = ()
     reason: str = ""
@@ -374,30 +374,19 @@ class GepaObjectivePlan(_ExactModel):
     and by the split's case roots below. Everything a receipt needs to state is a bounded id or a count.
     """
 
-    schema_version: Literal["tracefold.news.gepa_objective_plan.v3"] = OBJECTIVE_PLAN_SCHEMA
+    schema_version: Literal["tracefold.news.gepa_objective_plan.v4"] = OBJECTIVE_PLAN_SCHEMA
     case_n: int = Field(default=0, ge=0)
     cluster_n: int = Field(default=0, ge=0)
     cases: tuple[ObjectiveCase, ...] = ()
-    target_case_ids: tuple[str, ...] = ()
-    target_failure_cluster_ids: tuple[str, ...] = ()
-    control_case_ids: tuple[str, ...] = ()
-    control_cluster_ids: tuple[str, ...] = ()
     excluded_case_ids: tuple[str, ...] = ()
     optimizer_case_ids: tuple[str, ...] = ()
+    optimizer_cluster_ids: tuple[str, ...] = ()
     target_predictors: tuple[str, ...] = ()
     target_dimensions: tuple[str, ...] = ()
-    # The owner-blind superset: every cluster an accepted review says is wrong, whoever owns it. It is not
-    # what GEPA optimizes — it is what a *policy* candidate may declare, and what readiness reports as the
-    # gap between "errors we have" and "errors a Prompt may be asked to fix".
-    observed_failure_cluster_ids: tuple[str, ...] = ()
-    observed_failure_dimensions: tuple[str, ...] = ()
-    owner_distribution: dict[str, Any] = Field(default_factory=dict)
+    # Readiness diagnostics, not authority: how many included cases Stable already answered exactly.
+    stable_exact_n: int = Field(default=0, ge=0)
+    stable_mismatch_n: int = Field(default=0, ge=0)
     exclusion_reasons: dict[str, int] = Field(default_factory=dict)
-    exact_gold_coverage: dict[str, Any] = Field(default_factory=dict)
-    # ReaderCard targets are free text: only the sealed equivalence judge can say whether a rewrite kept
-    # what the reviewer accepted. The plan records the requirement rather than reclassifying on it, because
-    # a disposition that moved with a runtime flag would make two readers of the same corpus disagree.
-    reader_card_targets_require_semantic_judge: bool = False
     split: dict[str, Any] | None = None
     # The exact code `_honest_split` refused with, so `run_gepa` can fail closed with the identical error
     # rather than a translation of it.
@@ -518,34 +507,26 @@ def _owner_identity(review: Mapping[str, Any]) -> tuple[str, str]:
     return (derived, "derived") if derived else ("", "absent")
 
 
-def _taxonomy_classify(episode: DevelopmentEpisode) -> tuple[ObjectiveCase, dict[str, Any]]:
-    """Classify the only objective #456 authorizes: accepted taxonomy Gold."""
+def _taxonomy_classify(episode: DevelopmentEpisode) -> ObjectiveCase:
+    """Include every case with valid accepted taxonomy Gold and a replayable Stable answer (#501 D9)."""
 
     review = dict(episode.accepted_review or {})
     owner, owner_source = _owner_identity(review)
-    taxonomy_mismatch = False
 
-    def result(disposition: Disposition, reason: str) -> tuple[ObjectiveCase, dict[str, Any]]:
-        target = disposition == "target"
-        case = ObjectiveCase(
+    def result(disposition: Disposition, reason: str, *, stable_exact: bool | None = None) -> ObjectiveCase:
+        included = disposition == "included"
+        return ObjectiveCase(
             case_id=episode.case_id,
             cluster_id=episode.cluster_id,
             stratum=episode.stratum,
             disposition=disposition,
             owner=owner,
             owner_source=owner_source,
-            predictors=("event_semantics",) if target else (),
-            dimensions=TAXONOMY_TARGET_DIMENSIONS if target else (),
+            stable_exact=stable_exact,
+            predictors=(TAXONOMY_PREDICTOR,) if included else (),
+            dimensions=TAXONOMY_TARGET_DIMENSIONS if included else (),
             reason=reason,
         )
-        return case, {
-            "disposition": disposition,
-            "reason": reason,
-            "failed": TAXONOMY_TARGET_DIMENSIONS if target else (),
-            "failed_with_exact_gold": TAXONOMY_TARGET_DIMENSIONS if target else (),
-            "observed_failure": taxonomy_mismatch,
-            "observed_dimensions": TAXONOMY_TARGET_DIMENSIONS if taxonomy_mismatch else (),
-        }
 
     if episode.production_judgment is None:
         return result("excluded", "stable_output_absent")
@@ -556,20 +537,8 @@ def _taxonomy_classify(episode: DevelopmentEpisode) -> tuple[ObjectiveCase, dict
     predicted = episode.production_judgment.editorial.taxonomy
     if predicted is None:
         return result("excluded", "recorded_stable_taxonomy_absent")
-
     exact = compare_taxonomy(gold, predicted).exact
-    taxonomy_mismatch = not exact
-    if not exact:
-        if owner_source == "explicit" and owner == TAXONOMY_OWNER:
-            return result("target", "explicit_taxonomy_owner_with_exact_mismatch")
-        if owner_source == "explicit":
-            return result("excluded", f"non_taxonomy_owner:{owner}")
-        if owner_source == "derived":
-            return result("excluded", f"owner_derived_only:{owner}")
-        return result("excluded", "taxonomy_mismatch_without_explicit_owner")
-    if owner_source == "explicit":
-        return result("excluded", "explicit_owner_on_taxonomy_control")
-    return result("control", "stable_taxonomy_exact_under_accepted_gold")
+    return result("included", "accepted_taxonomy_gold_with_replayable_stable", stable_exact=exact)
 
 
 def _split_blockers(split_error: str) -> tuple[str, ...]:
@@ -577,10 +546,6 @@ def _split_blockers(split_error: str) -> tuple[str, ...]:
 
     if split_error.startswith("news_program_compile_split_requires_two_clusters"):
         return ("split_requires_two_clusters",)
-    marker = "news_program_compile_split_coverage_incomplete:"
-    if split_error.startswith(marker):
-        half, _, missing = split_error[len(marker) :].partition(":")
-        return tuple(f"{half}_{stratum}_missing" for stratum in missing.split(",") if stratum)
     return ("optimizer_split_unavailable",) if split_error else ()
 
 
@@ -588,29 +553,22 @@ def _representative_order(case: ObjectiveCase, episode: DevelopmentEpisode) -> t
     """Stable preference for the one optimizer example a connected fact cluster may contribute."""
 
     strata = _episode_strata(episode)
-    target = case.disposition == "target"
-    return (
-        0 if target else 1,
-        -len(case.dimensions) if target else 0,
-        -int("safety" in strata),
-        -episode.context.now_ms,
-        case.case_id,
-    )
+    return (-int("safety" in strata), -episode.context.now_ms, case.case_id)
 
 
 def _elect_cluster_representatives(
-    classified: Sequence[tuple[ObjectiveCase, dict[str, Any]]],
+    classified: Sequence[ObjectiveCase],
     episodes: Sequence[DevelopmentEpisode],
-) -> list[tuple[ObjectiveCase, dict[str, Any]]]:
-    """Keep one target/control per connected fact cluster; retain every other case as audit evidence."""
+) -> list[ObjectiveCase]:
+    """Keep one included case per connected fact cluster; retain every other case as audit evidence."""
 
     eligible: dict[str, list[int]] = {}
-    for index, ((case, _facts), _episode) in enumerate(zip(classified, episodes, strict=True)):
-        if case.disposition in {"target", "control"}:
+    for index, (case, _episode) in enumerate(zip(classified, episodes, strict=True)):
+        if case.disposition == "included":
             eligible.setdefault(case.cluster_id, []).append(index)
 
     elected = {
-        min(indexes, key=lambda index: _representative_order(classified[index][0], episodes[index]))
+        min(indexes, key=lambda index: _representative_order(classified[index], episodes[index]))
         for indexes in eligible.values()
     }
     result = list(classified)
@@ -618,76 +576,35 @@ def _elect_cluster_representatives(
         for index in indexes:
             if index in elected:
                 continue
-            case, facts = result[index]
-            reason = f"cluster_representative_shadowed:{case.disposition}"
-            result[index] = (
-                case.model_copy(update={"disposition": "excluded", "reason": reason}),
-                {**facts, "disposition": "excluded", "reason": reason},
+            case = result[index]
+            result[index] = case.model_copy(
+                update={"disposition": "excluded", "reason": "cluster_representative_shadowed"}
             )
     return result
 
 
 def build_gepa_objective_plan(episodes: Sequence[DevelopmentEpisode]) -> GepaObjectivePlan:
-    """Decide, once, which episodes GEPA may train and select on — and why every other one is out.
+    """Decide, once, which episodes GEPA may train and select on — and why every other one is out."""
 
-    The predecessor asked "does an accepted review say anything is wrong here", took the answer as the
-    optimization target, and then handed GEPA *every* episode to split. Both halves were wrong in the same
-    direction: a retrieval miss or a Gate suppression became a failure cluster an instruction was told to
-    repair, and a case nobody had blamed on anything still reached the reflective minibatch as a low score.
-    """
-
-    classified = _elect_cluster_representatives([_taxonomy_classify(episode) for episode in episodes], episodes)
-    cases = tuple(case for case, _facts in classified)
-
-    targets = tuple(case for case in cases if case.disposition == "target")
-    controls = tuple(case for case in cases if case.disposition == "control")
+    cases = tuple(_elect_cluster_representatives([_taxonomy_classify(episode) for episode in episodes], episodes))
+    included = tuple(case for case in cases if case.disposition == "included")
     excluded = tuple(case for case in cases if case.disposition == "excluded")
-    optimizer_ids = {case.case_id for case in (*targets, *controls)}
+    optimizer_ids = {case.case_id for case in included}
     optimizer_episodes = tuple(
         sorted(
             (episode for episode in episodes if episode.case_id in optimizer_ids),
             key=lambda episode: (episode.context.now_ms, episode.cluster_id, episode.case_id),
         )
     )
-
-    observed_clusters: set[str] = set()
-    observed_dimensions: set[str] = set()
     exclusion_reasons: dict[str, int] = {}
-    owner_distribution: dict[str, dict[str, int]] = {"explicit": {}, "derived": {}, "absent": {}}
-    gold_failed: dict[str, int] = {}
-    gold_with_value: dict[str, int] = {}
-    novelty_unverifiable = 0
-    non_replayable_target = 0
-    for case, facts in classified:
-        bucket = owner_distribution[case.owner_source]
-        key = case.owner or "none"
-        bucket[key] = bucket.get(key, 0) + 1
-        if facts.get("observed_failure"):
-            observed_clusters.add(case.cluster_id)
-            observed_dimensions.update(facts.get("observed_dimensions") or ())
-        for name in facts["failed"]:
-            gold_failed[name] = gold_failed.get(name, 0) + 1
-        for name in facts["failed_with_exact_gold"]:
-            gold_with_value[name] = gold_with_value.get(name, 0) + 1
-        if case.disposition == "excluded":
-            exclusion_reasons[case.reason] = exclusion_reasons.get(case.reason, 0) + 1
-            if case.reason == "non_replayable_target":
-                non_replayable_target += 1
-            if case.reason.startswith("accepted_novelty_target_not_verifiable") or case.reason.startswith(
-                "novelty_prior_"
-            ):
-                novelty_unverifiable += 1
-
-    target_clusters = tuple(sorted({case.cluster_id for case in targets}))
-    control_clusters = tuple(sorted({case.cluster_id for case in controls}))
-    target_dimensions = tuple(sorted({name for case in targets for name in case.dimensions}))
-    target_predictors = tuple(sorted({name for case in targets for name in case.predictors}))
+    for case in excluded:
+        exclusion_reasons[case.reason] = exclusion_reasons.get(case.reason, 0) + 1
 
     split: dict[str, Any] | None = None
     split_error = ""
     train: tuple[DevelopmentEpisode, ...] = ()
     selection: tuple[DevelopmentEpisode, ...] = ()
-    if targets and controls:
+    if included:
         try:
             train_list, selection_list, receipt = _honest_split(optimizer_episodes)
         except ValueError as exc:
@@ -696,54 +613,22 @@ def build_gepa_objective_plan(episodes: Sequence[DevelopmentEpisode]) -> GepaObj
             train, selection, split = tuple(train_list), tuple(selection_list), receipt
 
     blocking: list[str] = []
-    if not target_clusters:
-        blocking.append("no_verified_prompt_target_clusters")
-    if not control_clusters:
-        blocking.append("no_correct_control_clusters")
+    if not included:
+        blocking.append("no_taxonomy_gold_clusters")
     blocking.extend(_split_blockers(split_error))
-    if split is not None:
-        target_case_ids = {case.case_id for case in targets}
-        control_case_ids = {case.case_id for case in controls}
-        if not any(episode.case_id in target_case_ids for episode in train):
-            blocking.append("train_target_missing")
-        if not any(episode.case_id in target_case_ids for episode in selection):
-            blocking.append("development_selection_target_missing")
-        if not any(episode.case_id in control_case_ids for episode in train):
-            blocking.append("train_control_missing")
-        if not any(episode.case_id in control_case_ids for episode in selection):
-            blocking.append("development_selection_control_missing")
-    if non_replayable_target:
-        blocking.append("non_replayable_target")
-    if not target_clusters and novelty_unverifiable:
-        blocking.append("accepted_novelty_target_not_verifiable")
 
     return GepaObjectivePlan(
         case_n=len(cases),
         cluster_n=len({case.cluster_id for case in cases}),
         cases=cases,
-        target_case_ids=tuple(case.case_id for case in targets),
-        target_failure_cluster_ids=target_clusters,
-        control_case_ids=tuple(case.case_id for case in controls),
-        control_cluster_ids=control_clusters,
         excluded_case_ids=tuple(case.case_id for case in excluded),
         optimizer_case_ids=tuple(episode.case_id for episode in optimizer_episodes),
-        target_predictors=target_predictors,
-        target_dimensions=target_dimensions,
-        observed_failure_cluster_ids=tuple(sorted(observed_clusters)),
-        observed_failure_dimensions=tuple(sorted(observed_dimensions)),
-        owner_distribution={
-            "explicit": dict(sorted(owner_distribution["explicit"].items())),
-            "derived": dict(sorted(owner_distribution["derived"].items())),
-            "absent": int(sum(owner_distribution["absent"].values())),
-            "explicit_taxonomy_owner_n": int(owner_distribution["explicit"].get(TAXONOMY_OWNER, 0)),
-        },
+        optimizer_cluster_ids=tuple(sorted({case.cluster_id for case in included})),
+        target_predictors=(TAXONOMY_PREDICTOR,) if included else (),
+        target_dimensions=TAXONOMY_TARGET_DIMENSIONS if included else (),
+        stable_exact_n=sum(1 for case in included if case.stable_exact),
+        stable_mismatch_n=sum(1 for case in included if case.stable_exact is False),
         exclusion_reasons=dict(sorted(exclusion_reasons.items())),
-        exact_gold_coverage={
-            "failed_by_dimension": dict(sorted(gold_failed.items())),
-            "failed_with_exact_gold_by_dimension": dict(sorted(gold_with_value.items())),
-            "target_dimension_gold_n": sum(gold_with_value.get(name, 0) for name in TAXONOMY_TARGET_DIMENSIONS),
-        },
-        reader_card_targets_require_semantic_judge=False,
         split=split,
         split_error=split_error,
         blocking_reasons=tuple(blocking),
@@ -770,7 +655,9 @@ def _expected_delivery(should_push: str) -> bool | None:
 # v2 (#259): the report carries the frozen dataset's own `coverage` counts beside the plan, so one
 # document answers both "may this corpus be optimized" and "how much separable evidence is in it".
 # A v1 report cannot answer the second question and must not be read as if it could.
-READINESS_SCHEMA: Literal["tracefold.news.gepa_readiness_report.v3"] = "tracefold.news.gepa_readiness_report.v3"
+# v4 (#501): `included`/`excluded` population; `taxonomy_gold` reports `stable_exact_n` and
+# `stable_mismatch_n` as diagnostics; no owner distribution, no target/control halves.
+READINESS_SCHEMA: Literal["tracefold.news.gepa_readiness_report.v4"] = "tracefold.news.gepa_readiness_report.v4"
 # One Predictor evaluation may use JSONAdapter's single format fallback. This is a physical-call ceiling,
 # not the usual successful-path count, so the readiness receipt must reserve both attempts.
 _TASK_CALLS_PER_METRIC_CALL: Final = 2
@@ -785,26 +672,12 @@ def _strata_coverage(episodes: Sequence[DevelopmentEpisode]) -> dict[str, int]:
 
 
 def _half_counts(plan: GepaObjectivePlan, half: Sequence[DevelopmentEpisode]) -> dict[str, Any]:
-    targets = set(plan.target_case_ids)
-    controls = set(plan.control_case_ids)
-    taxonomy_targets = {
-        case.case_id
-        for case in plan.cases
-        if case.disposition == "target" and set(case.dimensions) & set(TAXONOMY_TARGET_DIMENSIONS)
-    }
+    exact = {case.case_id for case in plan.cases if case.disposition == "included" and case.stable_exact}
     return {
         "case_n": len(half),
         "cluster_n": len({episode.cluster_id for episode in half}),
-        "target_case_n": sum(1 for episode in half if episode.case_id in targets),
-        "target_cluster_n": len({episode.cluster_id for episode in half if episode.case_id in targets}),
-        "taxonomy_target_case_n": sum(1 for episode in half if episode.case_id in taxonomy_targets),
-        "taxonomy_target_cluster_n": len(
-            {episode.cluster_id for episode in half if episode.case_id in taxonomy_targets}
-        ),
-        "control_case_n": sum(1 for episode in half if episode.case_id in controls),
-        "control_cluster_n": len({episode.cluster_id for episode in half if episode.case_id in controls}),
-        "taxonomy_control_case_n": sum(1 for episode in half if episode.case_id in controls),
-        "taxonomy_control_cluster_n": len({episode.cluster_id for episode in half if episode.case_id in controls}),
+        "stable_exact_n": sum(1 for episode in half if episode.case_id in exact),
+        "stable_mismatch_n": sum(1 for episode in half if episode.case_id not in exact),
         "strata": _strata_coverage(half),
     }
 
@@ -841,14 +714,7 @@ def build_readiness_report(
 
     train = _half_counts(plan, plan.train_episodes)
     selection = _half_counts(plan, plan.development_selection_episodes)
-    profile_counts = {
-        **dict(coverage),
-        **development_split_profile_counts(plan),
-        "train_taxonomy_target_cluster_n": train["taxonomy_target_cluster_n"],
-        "train_taxonomy_control_cluster_n": train["taxonomy_control_cluster_n"],
-        "development_selection_taxonomy_target_cluster_n": selection["taxonomy_target_cluster_n"],
-        "development_selection_taxonomy_control_cluster_n": selection["taxonomy_control_cluster_n"],
-    }
+    profile_counts = {**dict(coverage), **development_split_profile_counts(plan)}
     profile_blockers = development_coverage_blockers(profile_counts)
     gold_rows: list[dict[str, Any]] = []
     for episode in episodes:
@@ -878,26 +744,18 @@ def build_readiness_report(
         "corpus": {
             "case_n": plan.case_n,
             "cluster_n": plan.cluster_n,
-            "observed_failure_cluster_n": len(plan.observed_failure_cluster_ids),
-            "observed_failure_dimensions": list(plan.observed_failure_dimensions),
             "strata": _strata_coverage(episodes),
         },
-        "owner_distribution": dict(plan.owner_distribution),
         "objective": {
             "schema": plan.schema_version,
             "compilable": plan.optimizer_ready,
             "blockers": list(plan.blocking_reasons),
-            "target_case_n": len(plan.target_case_ids),
-            "target_cluster_n": len(plan.target_failure_cluster_ids),
-            "control_case_n": len(plan.control_case_ids),
-            "control_cluster_n": len(plan.control_cluster_ids),
             "excluded_case_n": len(plan.excluded_case_ids),
             **optimizer_population_identity(plan),
+            "optimizer_cluster_ids": list(plan.optimizer_cluster_ids),
             "target_predictors": list(plan.target_predictors),
             "target_dimensions": list(plan.target_dimensions),
-            "target_failure_cluster_ids": list(plan.target_failure_cluster_ids),
             "exclusion_reasons": dict(plan.exclusion_reasons),
-            "reader_card_targets_require_semantic_judge": plan.reader_card_targets_require_semantic_judge,
         },
         "development_profile": {
             "ready": not profile_blockers,
@@ -906,10 +764,11 @@ def build_readiness_report(
         },
         "taxonomy_gold": {
             "cluster_n": gold_summary["cluster_n"],
+            "stable_exact_n": plan.stable_exact_n,
+            "stable_mismatch_n": plan.stable_mismatch_n,
             "support": gold_summary["support"],
             "zero_support": gold_summary["zero_support"],
         },
-        "exact_gold_coverage": dict(plan.exact_gold_coverage),
         "split": plan.split,
         "split_error": plan.split_error,
         "train": train,
@@ -935,7 +794,7 @@ def build_readiness_report(
 __all__ = [
     "OBJECTIVE_PLAN_SCHEMA",
     "READINESS_SCHEMA",
-    "TAXONOMY_OWNER",
+    "TAXONOMY_PREDICTOR",
     "DevelopmentEpisode",
     "Disposition",
     "GepaObjectivePlan",

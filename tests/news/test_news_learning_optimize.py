@@ -51,16 +51,18 @@ def _dataset() -> FrozenDevelopmentDataset:
     )
 
 
-def _budget(*, max_call_cost_microusd: int = 1_000) -> OptimizationBudget:
-    return OptimizationBudget(
-        max_metric_calls=40,
-        max_task_model_calls=100,
-        max_reflection_model_calls=10,
-        max_cost_microusd=100_000,
-        max_call_cost_microusd=max_call_cost_microusd,
-        max_wall_clock_seconds=3_600,
-        seed=456,
-    )
+def _budget(**overrides: Any) -> OptimizationBudget:
+    values: dict[str, Any] = {
+        "max_metric_calls": 40,
+        "max_task_model_calls": 100,
+        "max_reflection_model_calls": 10,
+        "max_cost_microusd": 100_000,
+        "max_call_cost_microusd": 1_000,
+        "max_wall_clock_seconds": 3_600,
+        "seed": 456,
+    }
+    values.update(overrides)
+    return OptimizationBudget(**values)
 
 
 def _ready_dataset() -> FrozenDevelopmentDataset:
@@ -80,12 +82,6 @@ def _ready_dataset() -> FrozenDevelopmentDataset:
             "negative_cluster_n": 50,
             "safety_cluster_n": 1,
             "stratum_n": 3,
-            "calibration": {
-                "cluster_n": 50,
-                "disagreement_unadjudicated_n": 0,
-                "kappa": {"event_family": 0.8, "change_state": 0.8, "assertion_status": 0.8},
-                "subject_mean_set_f1": 0.8,
-            },
         },
     }
     return FrozenDevelopmentDataset.bind(
@@ -226,16 +222,14 @@ def test_report_keeps_spend_that_exceeds_the_per_call_reservation(monkeypatch: p
     assert result.report.usage["transport_failures"] == 0
 
 
-def test_incomplete_candidate_zero_is_an_explicit_rejection_with_public_receipts() -> None:
+def _synthetic_result(aggregate_scores: tuple[float, float]) -> Any:
     dataset = _ready_dataset()
     plan = build_gepa_objective_plan(dataset.episodes)
-    stable = dataset.parent_program.event_semantics_instruction
+    stable = dataset.parent_program.taxonomy_instruction
     val_count = len(plan.development_selection_episodes)
-    rows = [dict.fromkeys(range(val_count), 1.0) for _ in range(2)]
-    rows[0][0] = float(-(len(plan.train_episodes) + 1))
+    rows = tuple(dict.fromkeys(range(val_count), score) for score in aggregate_scores)
     task, reflection, _ledger = _learning_models(role="reflection")
-
-    result = optimize(
+    return optimize(
         dataset,
         OptimizationConfig(
             task_lm=task,
@@ -243,24 +237,76 @@ def test_incomplete_candidate_zero_is_an_explicit_rejection_with_public_receipts
             budget=_budget(),
             compile_fn=_synthetic_compile(
                 instructions=(stable, stable + "\n\nCandidate one."),
-                aggregate_scores=(0.2, 0.8),
-                validation_subscores=tuple(rows),
+                aggregate_scores=aggregate_scores,
+                validation_subscores=rows,
             ),
             now_ms=lambda: 1_800_000_000_000,
         ),
     )
 
-    assert result.outcome == "REJECTED"
+
+def test_a_seed_that_stays_gepa_best_is_a_no_op_with_public_receipts() -> None:
+    result = _synthetic_result((0.8, 0.5))
+
+    assert result.outcome == "NO_OP"
     assert result.report.schema_version == "news_optimization_run_report_v4"
-    assert result.report.reasons == ("news_program_compile_candidate_zero_incomplete",)
+    assert result.report.reasons == ("news_program_compile_no_program_change",)
     assert result.report.metric is not None
     selection = result.report.metric["taxonomy_selection_score"]
-    assert selection["candidate_zero_complete"] is False
-    assert selection["candidate_zero_task_output_failure_n"] == 1
-    assert selection["delta"] is None
+    assert selection["gepa_best_index"] == 0
+    assert selection["admitted"] is False
+    assert selection["delta"]["taxonomy_overall"] == 0.0
     assert result.report.gepa_public_result is not None
-    assert result.report.gepa_public_result["tracefold_admitted_index"] is None
+    assert result.report.gepa_public_result["admitted"] is False
     assert result.candidate is None
+    assert result.report.objective["schema"] == "tracefold.news.optimization_objective_summary.v4"
+    assert "owner_distribution" not in result.report.objective
+    assert result.report.objective["target_predictors"] == ["taxonomy"]
+
+
+def test_a_strictly_better_gepa_best_advances_with_only_the_taxonomy_instruction_changed() -> None:
+    result = _synthetic_result((0.5, 0.8))
+
+    assert result.outcome == "ADVANCE"
+    assert result.candidate is not None
+    stable = load_stable_program_artifact()
+    assert result.candidate.patch.taxonomy_instruction != stable.taxonomy_instruction
+    assert result.candidate.patch.event_semantics_instruction == stable.event_semantics_instruction
+    assert result.candidate.patch.reader_card_instruction == stable.reader_card_instruction
+    assert result.candidate.budget["auto"] is None
+    assert result.candidate.budget["max_metric_calls"] == 40
+
+
+def test_auto_budget_is_carried_into_the_candidate_and_the_optimizer_receipt() -> None:
+    dataset = _ready_dataset()
+    plan = build_gepa_objective_plan(dataset.episodes)
+    stable = dataset.parent_program.taxonomy_instruction
+    val_count = len(plan.development_selection_episodes)
+    task, reflection, _ledger = _learning_models(role="reflection")
+
+    result = optimize(
+        dataset,
+        OptimizationConfig(
+            task_lm=task,
+            reflection_lm=reflection,
+            budget=_budget(auto="light", max_metric_calls=None),
+            compile_fn=_synthetic_compile(
+                instructions=(stable, stable + "\n\nCandidate one."),
+                aggregate_scores=(0.5, 0.8),
+                validation_subscores=tuple(dict.fromkeys(range(val_count), score) for score in (0.5, 0.8)),
+            ),
+            now_ms=lambda: 1_800_000_000_000,
+        ),
+    )
+
+    assert result.outcome == "ADVANCE"
+    assert result.report.optimizer is not None
+    scalars = result.report.optimizer["constructor_scalar_arguments"]
+    assert scalars["auto"] == "light"
+    assert scalars["max_metric_calls"] == dspy.GEPA.auto_budget(
+        None, num_preds=1, num_candidates=6, valset_size=val_count
+    )
+    assert result.report.budget["auto"] == "light" and result.report.budget["max_metric_calls"] is None
 
 
 def test_unready_development_profile_is_a_zero_provider_call_terminal_report() -> None:
@@ -286,7 +332,8 @@ def test_unready_development_profile_is_a_zero_provider_call_terminal_report() -
     assert touched is False
     assert result.report.objective["compilable"] is True
     assert result.report.objective["development_profile"]["ready"] is False
-    assert "development_calibration_missing" in result.report.reasons
+    assert "development_boundary_cluster_n_insufficient" in result.report.reasons
+    assert not any("calibration" in reason for reason in result.report.reasons)
     assert result.report.model_identities == {}
     assert result.report.usage["schema"] == "tracefold.news.optimization_usage.v3"
     assert result.report.usage["task_model_calls"] == 0
@@ -310,14 +357,18 @@ def test_dataset_ref_cannot_name_a_different_episode_projection() -> None:
         )
 
 
-def test_prompt_patch_write_set_remains_exactly_two_instructions() -> None:
+def test_prompt_patch_write_set_remains_exactly_three_instructions() -> None:
     stable = load_stable_program_artifact()
+    instructions = {
+        "event_semantics_instruction": stable.event_semantics_instruction,
+        "taxonomy_instruction": stable.taxonomy_instruction,
+        "reader_card_instruction": stable.reader_card_instruction,
+    }
 
+    assert PromptPatchV1.model_validate(instructions).changes(stable) is False
+    with pytest.raises(ValidationError):
+        PromptPatchV1.model_validate({**instructions, "policy": {"similarity_max": 0.5}})
     with pytest.raises(ValidationError):
         PromptPatchV1.model_validate(
-            {
-                "event_semantics_instruction": stable.event_semantics_instruction,
-                "reader_card_instruction": stable.reader_card_instruction,
-                "policy": {"similarity_max": 0.5},
-            }
+            {key: value for key, value in instructions.items() if key != "taxonomy_instruction"}
         )

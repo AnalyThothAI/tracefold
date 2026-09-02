@@ -108,7 +108,7 @@ def _seed_production_sized_trace_corpus(*, now_ms: int) -> None:
                      'evidence_version', 1,
                      'evidence_sha256', evidence.evidence_sha256,
                      'focus_fact_id', 'fact:' || g,
-                     'program_version', 'news_semantic_program_v8',
+                     'program_version', 'news_semantic_program_v9',
                      'program_sha256', repeat('b', 64),
                      'told', '[]'::jsonb,
                      'told_count', 0,
@@ -121,7 +121,7 @@ def _seed_production_sized_trace_corpus(*, now_ms: int) -> None:
                          FROM generate_series(1, %s) AS chunk
                      )
                    ),
-                   judgment_sha256, repeat('a', 64), 'news_semantic_program_v8',
+                   judgment_sha256, repeat('a', 64), 'news_semantic_program_v9',
                    repeat('b', 64), 1, evidence.evidence_sha256, 'fact:' || g, %s
               FROM hashed
               JOIN news_event_evidence_snapshots evidence

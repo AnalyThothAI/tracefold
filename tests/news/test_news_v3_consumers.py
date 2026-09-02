@@ -753,7 +753,7 @@ def test_triage_without_model_does_not_treat_provider_score_or_queue_priority_as
 
 def _program_call(
     *,
-    predictor: Literal["event_semantics", "reader_card"],
+    predictor: Literal["event_semantics", "taxonomy", "reader_card"],
     marker: str,
     input_tokens: int,
     output_tokens: int,
@@ -799,6 +799,7 @@ def _program_trace(
         context_sha256=context_sha256,
         envelope_sha256="0" * 64,
         event_semantics_sha256="5" * 64,
+        taxonomy_sha256="4" * 64,
         reader_card_sha256="6" * 64,
         verdict_sha256=verdict_sha256,
         answering_route="fallback" if fallback_from else "primary",
@@ -833,6 +834,14 @@ def _judgment(
         _program_call(
             predictor="event_semantics",
             marker="8",
+            input_tokens=1,
+            output_tokens=1,
+            cached_tokens=0,
+            provider_cost_microusd=None,
+        ),
+        _program_call(
+            predictor="taxonomy",
+            marker="7",
             input_tokens=1,
             output_tokens=1,
             cached_tokens=0,
@@ -1244,7 +1253,7 @@ def test_triage_records_the_answering_model_and_the_fallback_reason() -> None:
     assert inserted["model"] == "deepseek-chat" and inserted["degraded"] is False
     assert inserted["trace"]["verdict_sha256"] == canonical_sha(inserted["verdict"])
     assert inserted["trace"]["model_fallback_from"] == "news_program_timeout"
-    assert inserted["trace"]["model_attempts"] == 2
+    assert inserted["trace"]["model_attempts"] == 3
 
 
 def test_triage_replays_an_existing_unpublished_decision_without_reinserting() -> None:

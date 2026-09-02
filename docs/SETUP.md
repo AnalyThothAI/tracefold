@@ -315,8 +315,9 @@ candidate), Triage is the semantic filter, and
 the code-owned `EventSemantics.v2 -> deterministic SemanticNormalizer ->
 ReaderCard.v2 -> deterministic assembler` Program; `TradeRelevanceV1` is nested
 inside EventSemantics.v2. It remains behind
-`SemanticJudge.judge(TriageContext)`. A normal judgment makes two serial
-provider calls; the Program factory owns the route deadline and retry/call
+`SemanticJudge.judge(TriageContext)`. A normal judgment makes three serial
+provider calls (EventSemantics, taxonomy, ReaderCard since #501); the Program
+factory owns the route deadline and retry/call
 budget in code, so `deadline_seconds` is not an operator setting.
 The model-visible projection excludes queue priority, provider score, Gate
 macro lexicon, queue lag and watchlist; ReaderCard receives only its reduced
@@ -348,7 +349,8 @@ factory/executable v5 after the Program/Learning package split. Every earlier
 cohort remains audit-only, and quality evidence restarts from zero at the
 `program_v7` deployment. The hard cut itself does not prove a cross-generation
 quality uplift; v7 evidence starts from zero
-and the normal graph remains exactly two serial Predictor calls.
+and the normal graph was exactly two serial Predictor calls until #501 added
+the taxonomy Predictor.
 Migration `0304` carries the #193 strategy-artifact cut: it trips every open
 canary activation and receipts itself, but does not re-open the epoch, so
 accepted `news_review_v4` evidence stays eligible. Migration `0305` carries the
@@ -363,7 +365,7 @@ prior-factory judgments are audit-only under exact current-bundle eligibility,
 so the factory-v7 cohort starts at zero.
 The production image has one loader only: the content-addressed
 `news_program_strategy_artifact_v1` document executed as
-`news_semantic_program_v8` under `news_triage_policy_v11`. Prior roots remain
+`news_semantic_program_v9` under `news_triage_policy_v11`. Prior roots remain
 immutable audit history and are not executable by the current image. Rollback
 uses the recorded previous same-schema runtime image, never an alternate
 registry entry or runtime switch.

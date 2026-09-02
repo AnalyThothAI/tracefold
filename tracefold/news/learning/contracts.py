@@ -19,13 +19,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_json, canonical_sha, reject_nonfinite_json
 from ..program.artifact import ProgramStrategyArtifactV1, ProgramStrategyPatchV1, validate_program_instruction
+from ..program.runtime import PREDICTOR_NAMES
 from ..triage_rules import DecidePolicy
 
-# v3 (#456): the development gate adds taxonomy target/control split floors and an independently reviewed
-# 50-cluster calibration receipt. The profile is inside `TRUSTED_ROOT_SHA`; this readable name prevents an
-# older corpus from being mistaken for one that met those gates.
-LEARNING_PROFILE_ID: Literal["news_learning_release_v3"] = "news_learning_release_v3"
-LEARNING_PROGRAM_VERSION = "news_semantic_program_v8"
+# v4 (#501): the taxonomy target/control split floors and the 50-cluster calibration gate of v3 are gone;
+# every valid Gold case is an optimizer sample and κ is reported, not gated. The profile is inside
+# `TRUSTED_ROOT_SHA`; this readable name prevents a v3 corpus from being mistaken for one frozen here.
+LEARNING_PROFILE_ID: Literal["news_learning_release_v4"] = "news_learning_release_v4"
+LEARNING_PROGRAM_VERSION = "news_semantic_program_v9"
 PROMPT_CANDIDATE_SCHEMA: Literal["news_prompt_candidate_v2"] = "news_prompt_candidate_v2"
 MODEL_EXECUTION_IDENTITY_SCHEMA: Literal["tracefold.news.model_execution_identity.v1"] = (
     "tracefold.news.model_execution_identity.v1"
@@ -42,8 +43,11 @@ MODEL_EXECUTION_IDENTITY_SCHEMA: Literal["tracefold.news.model_execution_identit
 # v5 (#437): accepted Review v6 taxonomy contributes its four model-owned axes to the projection root.
 # v6 (#456): explicit taxonomy ownership is the sole optimization authority and therefore part of the
 # frozen episode identity consumed by the direct taxonomy Objective.
-COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_episode.v6"] = (
-    "tracefold.news.development_compile_episode.v6"
+# v7 (#501): `accepted_review.taxonomy_review` carries the review's provenance verbatim — label source,
+# drafter and the blind drafts — so freeze-time agreement can be computed from the sealed corpus alone.
+# Owner columns remain audit metadata; they no longer decide the optimizer population.
+COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_episode.v7"] = (
+    "tracefold.news.development_compile_episode.v7"
 )
 OptimizerRole = Literal["task", "reflection"]
 ModelExecutionRole = Literal["task", "reflection", "metric_judge"]
@@ -282,7 +286,9 @@ class ProposalReceipt(BaseModel):
     # still be edited, so without this a corpus that changed between generation and evaluation would keep
     # the same dataset SHA and the same case count while being a different corpus.
     development_episode_projection_root_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    failure_cluster_ids: tuple[str, ...] = Field(min_length=1)
+    # The connected fact clusters the optimizer population was drawn from (#501 D9): every cluster with
+    # valid Gold and a replayable Stable answer, not a list of Stable's mistakes.
+    optimizer_cluster_ids: tuple[str, ...] = Field(min_length=1)
     # Audit only, and deliberately not a permission (#202 §5). Until then a Program candidate had to
     # declare `model`, and "produced by the trusted compiler" was what made it registrable at all — so an
     # instruction a person wrote could not be evaluated without a container reproducing it first.
@@ -383,7 +389,11 @@ class OptimizationBudget(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    max_metric_calls: int = Field(gt=0)
+    # Exactly one of the two, mirroring `dspy.GEPA` (#501 D6): `auto` is DSPy's own budget contract and
+    # resolves to a metric-call count from the corpus size at compile time; `max_metric_calls` is an explicit
+    # count. The resolved count is recorded in the optimizer receipt either way.
+    auto: Literal["light", "medium", "heavy"] | None = None
+    max_metric_calls: int | None = Field(default=None, gt=0)
     max_task_model_calls: int = Field(gt=0)
     max_reflection_model_calls: int = Field(gt=0)
     max_cost_microusd: int = Field(gt=0)
@@ -395,35 +405,39 @@ class OptimizationBudget(BaseModel):
     def _reservation_can_admit_one_call(self) -> OptimizationBudget:
         if self.max_call_cost_microusd > self.max_cost_microusd:
             raise ValueError("news_learning_optimize_call_cost_reservation_invalid")
+        if (self.auto is None) == (self.max_metric_calls is None):
+            raise ValueError("news_learning_optimize_budget_requires_exactly_one_of_auto_or_max_metric_calls")
         return self
 
 
 class PromptPatchV1(BaseModel):
-    """The complete two-instruction candidate payload accepted by News release.
+    """The complete three-instruction candidate payload accepted by News release.
 
-    `ProgramStrategyPatchV1` says the same two things bound to a parent, because applying a patch to a
+    `ProgramStrategyPatchV1` says the same three things bound to a parent, because applying a patch to a
     Program is the Program package's business and needs the parent to refuse a mismatch. The taxonomy
-    optimizer may change only EventSemantics and copies ReaderCard byte-identically; retaining both here
-    makes that equality independently verifiable at registration. The safety bounds are not restated:
-    `validate_program_instruction` is the one implementation, so a candidate cannot be admitted under
-    looser rules than the artifact it becomes.
+    optimizer may change only the taxonomy instruction and copies EventSemantics and ReaderCard
+    byte-identically; retaining all three here makes that equality independently verifiable at
+    registration. The safety bounds are not restated: `validate_program_instruction` is the one
+    implementation, so a candidate cannot be admitted under looser rules than the artifact it becomes.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     event_semantics_instruction: str
+    taxonomy_instruction: str
     reader_card_instruction: str
 
     @model_validator(mode="after")
     def _write_set_is_safe(self) -> PromptPatchV1:
-        validate_program_instruction(self.event_semantics_instruction)
-        validate_program_instruction(self.reader_card_instruction)
+        for predictor in PREDICTOR_NAMES:
+            validate_program_instruction(self.instruction_for(predictor))
         return self
 
     @classmethod
     def of(cls, patch: ProgramStrategyPatchV1) -> PromptPatchV1:
         return cls(
             event_semantics_instruction=patch.event_semantics_instruction,
+            taxonomy_instruction=patch.taxonomy_instruction,
             reader_card_instruction=patch.reader_card_instruction,
         )
 
@@ -433,16 +447,16 @@ class PromptPatchV1(BaseModel):
         return ProgramStrategyPatchV1.issue(
             parent=parent,
             event_semantics_instruction=self.event_semantics_instruction,
+            taxonomy_instruction=self.taxonomy_instruction,
             reader_card_instruction=self.reader_card_instruction,
         )
 
     def instruction_for(self, predictor: str) -> str:
-        return self.event_semantics_instruction if predictor == "event_semantics" else self.reader_card_instruction
+        return str(getattr(self, f"{predictor}_instruction"))
 
     def changes(self, parent: ProgramStrategyArtifactV1) -> bool:
-        return (
-            self.event_semantics_instruction != parent.event_semantics_instruction
-            or self.reader_card_instruction != parent.reader_card_instruction
+        return any(
+            self.instruction_for(predictor) != parent.instruction_for(predictor) for predictor in PREDICTOR_NAMES
         )
 
 

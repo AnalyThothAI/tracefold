@@ -41,18 +41,32 @@ class NewsProgramRuntimeComposition:
     reader_card_primary_alias: bool
     reader_card_fallback_alias: bool
 
+    # The taxonomy Predictor (#501) has no operator setting of its own: it always runs on the Triage
+    # endpoint of its route, so both of its slots are declared aliases of the EventSemantics slots.
+    @property
+    def taxonomy_primary(self) -> ConfiguredLMEndpoint:
+        return self.event_semantics_primary
+
+    @property
+    def taxonomy_fallback(self) -> ConfiguredLMEndpoint | None:
+        return self.event_semantics_fallback
+
     def secret_free_slot_identities(self) -> dict[str, dict[str, str] | None]:
         if not self.program_configured:
             return {
                 "event_semantics.primary": None,
+                "taxonomy.primary": None,
                 "reader_card.primary": None,
                 "event_semantics.fallback": None,
+                "taxonomy.fallback": None,
                 "reader_card.fallback": None,
             }
         return {
             "event_semantics.primary": _optional_endpoint_identity(self.event_semantics_primary),
+            "taxonomy.primary": _optional_endpoint_identity(self.taxonomy_primary),
             "reader_card.primary": _optional_endpoint_identity(self.reader_card_primary),
             "event_semantics.fallback": _optional_endpoint_identity(self.event_semantics_fallback),
+            "taxonomy.fallback": _optional_endpoint_identity(self.taxonomy_fallback),
             "reader_card.fallback": _optional_endpoint_identity(self.reader_card_fallback),
         }
 
@@ -61,9 +75,11 @@ class NewsProgramRuntimeComposition:
 
         if not self.program_configured:
             return {}
-        aliases: dict[str, str] = {}
+        aliases: dict[str, str] = {"taxonomy.primary": "event_semantics.primary"}
         if self.reader_card_primary_alias:
             aliases["reader_card.primary"] = "event_semantics.primary"
+        if self.event_semantics_fallback is not None:
+            aliases["taxonomy.fallback"] = "event_semantics.fallback"
         if self.reader_card_fallback_alias:
             aliases["reader_card.fallback"] = "event_semantics.fallback"
         return aliases
@@ -84,7 +100,7 @@ class NewsProgramRuntimeComposition:
         *,
         lm_type: Any = dspy.LM,
     ) -> SemanticJudge | None:
-        """Bind four configured endpoints to the native DSPy Program."""
+        """Bind the six configured slots to the native DSPy Program."""
 
         if not self.program_configured:
             return None
@@ -98,6 +114,15 @@ class NewsProgramRuntimeComposition:
                 predictor="event_semantics",
                 route="primary",
                 model_binding=artifact.event_semantics.model_bindings.primary,
+                lm_type=lm_type,
+            ),
+            taxonomy=_configured_program_lm(
+                self.taxonomy_primary,
+                max_tokens=artifact.taxonomy.max_tokens,
+                timeout=timeout,
+                predictor="taxonomy",
+                route="primary",
+                model_binding=artifact.taxonomy.model_bindings.primary,
                 lm_type=lm_type,
             ),
             reader_card=_configured_program_lm(
@@ -122,6 +147,15 @@ class NewsProgramRuntimeComposition:
                     model_binding=artifact.event_semantics.model_bindings.fallback,
                     lm_type=lm_type,
                 ),
+                taxonomy=_configured_program_lm(
+                    self.event_semantics_fallback,
+                    max_tokens=artifact.taxonomy.max_tokens,
+                    timeout=timeout,
+                    predictor="taxonomy",
+                    route="fallback",
+                    model_binding=artifact.taxonomy.model_bindings.fallback,
+                    lm_type=lm_type,
+                ),
                 reader_card=_configured_program_lm(
                     self.reader_card_fallback,
                     max_tokens=artifact.reader_card.max_tokens,
@@ -144,7 +178,7 @@ class NewsProgramRuntimeComposition:
         *,
         lm_type: Any = dspy.LM,
     ) -> SemanticJudge | None:
-        """Bind both Predictors to the one task endpoint used by offline GEPA.
+        """Bind all three Predictors to the one task endpoint used by offline GEPA.
 
         This keeps the production native Module and audited task endpoint but
         disables the whole-route deadline and cross-case breaker that GEPA does
@@ -164,6 +198,15 @@ class NewsProgramRuntimeComposition:
                 predictor="event_semantics",
                 route="primary",
                 model_binding=artifact.event_semantics.model_bindings.primary,
+                lm_type=lm_type,
+            ),
+            taxonomy=_configured_program_lm(
+                endpoint,
+                max_tokens=artifact.taxonomy.max_tokens,
+                timeout=timeout,
+                predictor="taxonomy",
+                route="primary",
+                model_binding=artifact.taxonomy.model_bindings.primary,
                 lm_type=lm_type,
             ),
             reader_card=_configured_program_lm(
@@ -206,7 +249,7 @@ class NewsProgramRuntimeComposition:
 
 
 def compose_news_program_runtime(settings: Any) -> NewsProgramRuntimeComposition:
-    """Resolve operator settings once into the four secret-free Program slot identities and endpoints."""
+    """Resolve operator settings once into the secret-free Program slot identities and endpoints."""
 
     availability = news_model_availability(settings)
     primary_model = str(availability.triage_model or settings.llm.news_triage_model or "unconfigured")

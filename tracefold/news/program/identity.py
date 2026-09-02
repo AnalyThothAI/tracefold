@@ -1,6 +1,6 @@
 """Computed identity of the native DSPy News execution envelope.
 
-``program_sha256`` still names only the two reviewed instruction texts. This
+``program_sha256`` still names only the three reviewed instruction texts. This
 module addresses everything code-owned around those texts: exact framework
 versions, public Signature state, the JSONAdapter requests it actually renders,
 capability mapping, route order and budgets, failure transitions, and the pure
@@ -52,9 +52,10 @@ from .runtime import (
     PROGRAM_ROUTE_MAX_CALLS,
     PredictorName,
 )
-from .signatures import EventSemantics, EventSemanticsSignature, ReaderCardSignature
+from .signatures import EventSemantics, EventSemanticsSignature, EventTaxonomySignature, ReaderCardSignature
 
-EXECUTION_IDENTITY_SCHEMA: Final[str] = "tracefold.news.program.execution_envelope.v4"
+# v5 (#501): a third Predictor, `taxonomy`, between EventSemantics and ReaderCard.
+EXECUTION_IDENTITY_SCHEMA: Final[str] = "tracefold.news.program.execution_envelope.v5"
 
 _GOLDEN_MODEL: Final[str] = "openai/tracefold-execution-identity"
 _GOLDEN_INSTRUCTION: Final[str] = "<golden-instruction>"
@@ -65,6 +66,7 @@ _STRUCTURED_OUTPUT_MODES: Final[tuple[StructuredOutputMode, ...]] = (
 )
 _SIGNATURES: Final[dict[PredictorName, Any]] = {
     "event_semantics": EventSemanticsSignature,
+    "taxonomy": EventTaxonomySignature,
     "reader_card": ReaderCardSignature,
 }
 _GOLDEN_OUTPUTS: Final[dict[PredictorName, dict[str, Any]]] = {
@@ -78,12 +80,6 @@ _GOLDEN_OUTPUTS: Final[dict[PredictorName, dict[str, Any]]] = {
             "magnitude": 0,
             "confidence": 1.0,
             "audience": "none",
-            "taxonomy": {
-                "subject_codes": [],
-                "event_family": "other",
-                "change_state": "unknown",
-                "assertion_status": "unknown",
-            },
             "relevance": {
                 "impact_breadth": "none",
                 "tradability": "none",
@@ -93,6 +89,14 @@ _GOLDEN_OUTPUTS: Final[dict[PredictorName, dict[str, Any]]] = {
                 "affected_markets": [],
                 "reader_value": "none",
             },
+        }
+    },
+    "taxonomy": {
+        "taxonomy": {
+            "subject_codes": [],
+            "event_family": "other",
+            "change_state": "unknown",
+            "assertion_status": "unknown",
         }
     },
     "reader_card": {"card": {"headline_zh": "示例", "why_zh": ""}},
@@ -153,10 +157,15 @@ _MATERIAL_IMPLEMENTATION_SYMBOLS: Final[dict[str, tuple[str, ...]]] = {
         "_rejected",
         "_relevance_normalizations",
     ),
-    "signatures.py": ("EventSemantics", "ReaderCard"),
+    "signatures.py": ("EventSemantics", "EventTaxonomySignature", "ReaderCard"),
     "taxonomy.py": (
+        "ASSERTION_STATUS_DEFINITIONS",
+        "CHANGE_STATE_DEFINITIONS",
+        "EVENT_FAMILY_DEFINITIONS",
         "ModelTaxonomyV1",
         "NewsTaxonomyV1",
+        "TAXONOMY_PRECEDENCE_RULES",
+        "render_taxonomy_seed_instruction",
         "source_authority",
         "source_authority_from_evidence",
     ),
@@ -193,6 +202,8 @@ def _golden_inputs(predictor: PredictorName) -> dict[str, str]:
     prepared = _prepare(context)
     if predictor == "event_semantics":
         return {"evidence_json": prepared.semantics_evidence_json}
+    if predictor == "taxonomy":
+        return {"evidence_json": prepared.taxonomy_evidence_json}
     semantics = EventSemantics.model_validate(_GOLDEN_OUTPUTS["event_semantics"]["semantics"])
     return {
         "evidence_json": prepared.card_evidence_json,
@@ -336,14 +347,22 @@ def _material_module_ast_sha(source: str, *, module: str) -> str:
     )
 
 
+def _symbol_name(node: ast.stmt) -> str | None:
+    """The name a top-level statement defines: a class, a function, or one module constant (#501)."""
+
+    if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+        return node.name
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        return node.target.id
+    if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+        return node.targets[0].id
+    return None
+
+
 def _material_symbol_ast_sha(source: str, *, module: str, symbol: str) -> str:
     tree = ast.parse(source)
     node = next(
-        (
-            child
-            for child in tree.body
-            if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and child.name == symbol
-        ),
+        (child for child in tree.body if _symbol_name(child) == symbol),
         None,
     )
     if node is None:
@@ -416,7 +435,7 @@ def execution_envelope() -> dict[str, Any]:
         "route": {
             "model_binding_slots": sorted(_MODEL_BINDING_SLOTS),
             "order": ["primary", "fallback"],
-            "route_graph": ["event_semantics", "normalize_validate", "reader_card", "assemble"],
+            "route_graph": ["event_semantics", "normalize_validate", "taxonomy", "reader_card", "assemble"],
             "fallback_restart": "event_semantics",
             "deadline_seconds": PROGRAM_ROUTE_DEADLINE_SECONDS,
             "primary_breaker": {

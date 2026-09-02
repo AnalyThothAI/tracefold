@@ -717,7 +717,7 @@ the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `triage` is the only current stage. Current versions are
 `news_title_norm_v2`, `news_gate_v5`, `news_storyline_v3`,
 `news_event_evidence_v3`, `news_judgment_v2`,
-`news_semantic_program_v8` (or `news_oi_signal_v3` /
+`news_semantic_program_v9` (or `news_oi_signal_v3` /
 `news_liquidation_fact_v2` for deterministic structured lanes),
 `news_triage_policy_v11`, `news_delivery_card_v11`, artifact schema
 `news_program_strategy_artifact_v1`, and source classifier
@@ -739,16 +739,17 @@ Its current `complete=false` is a material fact.
 
 `ProgramStrategyArtifactV1` is the only executable semantic configuration, and
 it is one canonical JSON document — `schema_version`, the
-`event_semantics_instruction` and `reader_card_instruction` texts, and the
-`program_sha256` over exactly those three values — carried in the application
+`event_semantics_instruction`, `taxonomy_instruction` and
+`reader_card_instruction` texts, and the
+`program_sha256` over exactly those four values — carried in the application
 image as `<program_sha256>.json` and selected by the code-owned registry. Since
 #306 Phase 2 each instruction is the complete prompt for its Predictor rather
 than an advisory appended to a rendered stack, and the reviewed seed text lives
 in `tracefold/news/program/seed.py`; #314 removed the `factory_id` field, since
 code identity is computed rather than declared. The stable root is
-`2857303530b684323ded02df055a83575261eb0c46e5a44671e8d2ee1a18ac71`.
+`4fd8b3ef66ecac8caa6644acb1b13c1eb661480e7a39f876c3891194268f917e`.
 That SHA is behavior identity only: it holds no parent lineage, optimization
-cost, trajectory or teacher endpoint, so two runs that reach the same two
+cost, trajectory or teacher endpoint, so two runs that reach the same three
 instructions produce the same Program. Lineage belongs to the candidate's
 `ProposalReceipt`, and since #202 it is *derived* at registration by re-applying
 the patch to the running stable rather than declared by the candidate.
@@ -760,7 +761,7 @@ second editable truth, and they contain no identity hash and no demo section.
 Loading fails closed on an unknown hash or schema version, non-canonical or
 duplicate-keyed JSON, a non-finite number, a path or symlink violation, a file
 name that is not its own root, or unsafe or secret-bearing state.
-The optimizer can emit only a typed patch carrying the two Predictor
+The optimizer can emit only a typed patch carrying the three Predictor
 instructions; there is no DemoBank to write to. The trusted side reconstructs
 the final Artifact from the exact active stable root. Pickle, cloudpickle,
 dynamic Python/classes, endpoints and credentials are not artifact formats.
@@ -770,16 +771,18 @@ format call per Predictor, and every physical invocation appears in the trace.
 There is no legacy Prompt runtime, dual stack, compatibility Adapter or
 production operator-selected artifact path. Nullable Prompt-era fields remain
 audit-only.
-The current execution contract is `EventSemantics.v2 -> deterministic
-SemanticNormalizer -> ReaderCard.v2 -> deterministic assembler`: normally two
-serial calls because the normalizer and assembler make no provider request;
-JSONAdapter may make one format fallback per Predictor, so at most four calls
-per route; fallback restarts the full Program, so primary plus fallback is at
-most eight. The code-owned 20-second
+The current execution contract is `EventSemantics.v2 -> deterministic SemanticNormalizer -> Taxonomy ->
+ReaderCard.v2 -> deterministic assembler`:
+normally three serial calls because the normalizer and assembler make no
+provider request; JSONAdapter may make one format fallback per Predictor, so at
+most six calls per route; fallback restarts the full Program, so primary plus
+fallback is at most twelve. The taxonomy Predictor reads evidence and Gate
+facts only and answers the typed `ModelTaxonomyV1` schema, whose four enum axes
+reach the provider inside `response_format`. The code-owned 20-second
 deadline covers one whole route. One Event still persists one final
 SemanticJudgment and one card; this is not a restored Analyst stage. A stale-
 ledger re-ask is a separate execution with the same ceiling (normally another
-two calls), and both executions remain in the verdict audit.
+three calls), and both executions remain in the verdict audit.
 The `EventSemantics.v2` model-visible projection excludes queue priority,
 provider score, Gate macro lexicon, queue lag and watchlist. ReaderCard receives
 only the explicit `ReaderCardSemanticView`; it cannot read ToldContext,
@@ -1201,7 +1204,7 @@ Both live modes verify every example's frozen policy *before the first provider
 call* and refuse the whole run with
 `news_program_baseline_policy_unusable:<case>:<reason>` — a corpus that cannot
 verify its own policy is a pure function of the input, and discovering it after
-two Predictor calls per case turns it into "the route did not answer".
+three Predictor calls per case turns it into "the route did not answer".
 
 Every mode is current-cohort only. The moving-window repository requires the
 exact current judgment contract and active epoch; there is no flag that widens
@@ -1363,28 +1366,27 @@ and `--reviewer` identity. An AI adjudicator is recorded as AI, never as human.
 standalone `news learning optimize` route and `news learning baseline
 --dataset`; there is one candidate-generating entry:
 
-`news learning run --development SHA --out NEW_EMPTY_DIR --max-metric-calls N
+`news learning run --development SHA --out NEW_EMPTY_DIR (--auto light|medium|heavy | --max-metric-calls N)
 --max-task-model-calls N --max-reflection-model-calls N
 --max-cost-microusd N
 --max-call-cost-microusd N [--max-wall-clock-seconds N] [--seed N]`.
 
 `run` writes zero-call readiness, requires both `objective.compilable` and
 `development_profile.ready`, then invokes exactly one `dspy.GEPA.compile(trainset, valset)` over the single
-native `NativeNewsProgram.event_semantics` Predict in a learning-only wrapper. That wrapper converts a
-receipted task-output truncation or typed `EventSemantics` validation failure into an aligned failed Prediction;
-the direct metric gives truncation
-`task_output_failure_score = -(train_count + 1)`, which makes any incomplete candidate lose to a complete one without a
-retry or a second evaluator, while typed-invalid output keeps the existing invalid-prediction score `0`.
+native `NativeNewsProgram.taxonomy` Predict in a learning-only wrapper. Exactly one of `--auto` and
+`--max-metric-calls` is passed through to `dspy.GEPA` unchanged; the receipt records the metric-call count
+DSPy resolves for `auto`. That wrapper converts a receipted task-output truncation or typed
+`ModelTaxonomyV1` validation failure into an aligned failed Prediction scored at the native `failure_score`
+`0`, without a retry or a second evaluator.
 Reflection truncation, provider/transport failure and budget refusal terminate
-the run. Production keeps its existing fail-closed truncation contract. The compile uses `instruction_proposer=None` and
-`add_format_failure_as_feedback=True` and a code-owned six-example reflection minibatch. The latter uses
-GEPA's public knob and leaves the 32K-context thinking teacher output headroom without adding retries or a
-custom proposer. There is no component selector, ReaderCard execution, composite case
-metric or judge. A complete candidate zero in that same compile is the sole optimization baseline. If its
-validation subscores contain the task-output-failure sentinel, the run is `REJECTED` because it has no valid
-quality anchor. Otherwise Tracefold scans every public candidate by aggregate score and admits the highest
-one that strictly improves on candidate zero, passes the instruction bounds, and scores exactly `1.0`
-against accepted Gold on every Stable-correct control. No qualifying candidate returns `NO_OP`.
+the run. Production keeps its existing fail-closed truncation contract. The compile uses `instruction_proposer=None`,
+`add_format_failure_as_feedback=False` and a code-owned six-example reflection minibatch. The latter uses
+GEPA's public knob without adding retries or a custom proposer. There is no component selector,
+EventSemantics or ReaderCard execution, composite case metric or judge. Candidate zero in that same compile
+is the sole optimization baseline. The admitted candidate is GEPA's own `best_idx` when its aggregate is
+strictly above candidate zero's, its instruction differs from the seed and passes the instruction bounds;
+otherwise the run is `NO_OP`. Selection performs no per-control replay, per-objective check or growth
+budget: offline and holdout evaluation own those.
 
 The command reads the frozen development corpus once through the shared
 application login and then holds task/reflection model endpoints and the existing typed
@@ -1394,7 +1396,7 @@ authority. Every terminal state writes
 
 | Outcome | Meaning | Candidate | Exit |
 | --- | --- | --- | --- |
-| `NO_OP` | no public candidate met every admission condition | none | 1 |
+| `NO_OP` | GEPA's best candidate is the seed or not strictly above it | none | 1 |
 | `REJECTED` | Objective, quality, safety or budget refusal | none | 1 |
 | `ADVANCE` | one bounded Prompt patch with no production authority | `optimization/prompt_candidate.json` | 0 |
 
@@ -1402,10 +1404,10 @@ authority. Every terminal state writes
 before readiness or provider work. The directory contains `readiness.json`,
 official GEPA log/state under `optimization/gepa/`, the optimization report,
 and an optional PromptCandidate. The report records native public GEPA candidate parents, aggregate scores,
-per-example subscores, per-objective aggregate scores, GEPA best index, Tracefold admitted index and total
-metric calls without inventing a private checkpoint state. Selection receipt v2 records candidate-zero
-completeness and task-output-failure count plus control total, Gold-exact count and non-exact count for
-Candidate zero, GEPA best and the Tracefold-admitted candidate. `ADVANCE` still enters the existing `release register`
+per-example subscores, per-objective aggregate scores, GEPA best index, whether it was admitted and total
+metric calls without inventing a private checkpoint state. Selection receipt v3 records candidate zero's
+five objectives and overall, `gepa_best_index`, GEPA best's objectives, whether its instruction is valid,
+`admitted` and the delta. `ADVANCE` still enters the existing `release register`
 and evaluator/release gates; this command never performs those actions.
 
 Usage schema `tracefold.news.optimization_usage.v3` keeps task/reflection physical calls, tokens and costs
@@ -1413,9 +1415,17 @@ exact in every terminal state. `metric_calls` is the public `DspyGEPAResult.tota
 returns that result, `0` for a zero-call preflight refusal, and `null` when an interrupted compile cannot
 publish an exact count. It never guesses from model calls or parses private GEPA state.
 
-`news learning draft-reviews --model MODEL --out FILE [--hours N] [--limit N]
-[--include-reviewed]` proposes `news_review_v6` rubrics for an owner-authorized
-reviewer to accept and writes a file, never a review. It drafts from the
+`news learning draft-reviews --rubric-model MODEL --taxonomy-models A,B --out FILE
+[--hours N] [--limit N] [--include-reviewed]` proposes `news_review_v6` rubrics
+for an owner-authorized reviewer to accept and writes a file, never a review.
+The two taxonomy models label each Event blind — from the Program's own
+bounded taxonomy input through the taxonomy Predictor's Signature and seed,
+never from the card, Stable's label, the told ledger or a review — and the
+rubric model never labels taxonomy. Agreement is the draft; on disagreement the
+draft takes A and the entry is marked `taxonomy_disagreement`. The batch
+(`review_draft_batch.v5`) names both blind drafters, their agreement rate, each
+one's agreement with Stable and the disagreeing task ids; each accepted review's
+`taxonomy_review.drafts` keeps both labels. It drafts from the
 ReviewDesk queue over the `--hours` look-back window — the `--events-from` form
 that drafted the Events a #193 experiment run had frozen went with that loop in
 #343. A batch refuses duplicate task identities before its first model call
@@ -1423,20 +1433,19 @@ and reports `tasks` beside `unique_tasks`; one ReviewDesk task can therefore
 consume at most one drafting call.
 
 `news learning readiness --development SHA [--out FILE]` explains one frozen
-development dataset before any provider call. It re-projects the sealed corpus and builds Objective Plan v3.
-A **target** is only an exact four-axis Stable taxonomy mismatch whose operator explicitly accepted
-`first_bad_owner=taxonomy`; a **control** has no explicit owner and matches all four axes. One deterministic
-representative per connected fact cluster enters the time-ordered, cluster-disjoint train/selection split;
-every other member remains an excluded diagnostic.
+development dataset before any provider call. It re-projects the sealed corpus and builds Objective Plan v4.
+Every case with valid accepted taxonomy Gold and a replayable Stable answer is **included**; owner columns
+are audit metadata and grant no authority. One deterministic representative per connected fact cluster
+enters the time-ordered, cluster-disjoint train/selection split; every other member remains an excluded
+diagnostic.
 
-The v3 readiness report has no top-level outcome. `objective.compilable` and its blockers describe whether
-the target/control population can be optimized; `development_profile.ready` and its blockers independently
-describe whether the sealed evidence meets release-profile v3. The profile requires 60 target and 60 control
-clusters in train, 30 and 30 in development-selection, plus the existing boundary/retention/negative/strata
-and safety floors. It also requires exactly source-only calibration evidence from 50 independent clusters:
-two distinct primary reviewers per task, independent adjudication for every disagreement, Cohen's kappa
-≥ 0.75 on family/state/assertion, and mean subject-code set-F1 ≥ 0.80. Source-only projections contain no
-Agent answer, accepted Gold, duplicate hint or outcome.
+The v4 readiness report has no top-level outcome. `objective.compilable` and its blockers describe whether
+the included population can be optimized; `development_profile.ready` and its blockers independently
+describe whether the sealed evidence meets release-profile v4: the existing boundary/retention/negative/
+strata and safety floors, and nothing about taxonomy targets, controls or calibration. `taxonomy_gold`
+reports `stable_exact_n` and `stable_mismatch_n` as diagnostics, and the frozen dataset's
+`counts.calibration` (`dataset_calibration_receipt.v2`) reports Cohen's κ on family/state/assertion and
+mean subject set-F1 over every cluster whose accepted review carries two blind drafts; none of it gates.
 
 Readiness makes no task/reflection/judge call and writes nothing except the operator-requested report file.
 Its call envelope names the ceiling of two physical EventSemantics task calls per metric call — the primary
