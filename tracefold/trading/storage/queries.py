@@ -129,35 +129,74 @@ def console_execution_observations_statement(
 
 
 def console_executions_statement(*, since_ns: int, limit: int) -> tuple[str, dict[str, Any]]:
-    """`GET /api/trading/executions`: one row per Signal, its whole venue outcome folded in.
+    """`GET /api/trading/executions`: one row per entry identity, its whole venue outcome folded in.
 
-    The console had no such read. `GET /api/trading/execution/observations` returns the raw stream and
-    the page correlated it in the browser by `command_id`, which a flatten close -- carried under the
-    entry Signal's own `signal_id` -- never matches (#528 C). Correlating where the rows are is also
-    the only way one Signal is one row: the fold is by `signal_id`, which is exactly what every
-    `order`, `fill`, `protection` and `position` observation of an entry carries.
+    An entry identity is what the Runtime correlates its `order`, `fill`, `protection` and `position`
+    observations under (`oi_runtime/observations.py:correlation`): a Signal's `signal_id`, or the
+    `command_id` of a `manual_entry` Command. Folding only by `signal_id` (#528 PR-1) meant the one
+    ingress an operator can prove the chain with had no row at all -- the CLI manual entry showed up
+    in `commands[]` as an instruction and its fills, stop, exit and realized result were nowhere on
+    the desk (#528 PR-3). Both windows are the same 24 hours and both fold the same way; `source`
+    says which identity a row is, and `entry_id` is that identity.
 
-    The entry leg is what the columns describe. An exit order and its fill share the Signal's
-    identity, so both are filtered out of `order_status` and the fill aggregate; the position's own
-    closed fact is where the exit shows up, with the price, the realized result and the reason.
+    The entry leg is what the columns describe. An exit order and its fill share the entry identity,
+    so both are filtered out of `order_status` and the fill aggregate; the position's own closed fact
+    is where the exit shows up, with the price, the realized result and the reason.
+
+    A Signal's entry verdict is a `signal_disposition` whose summary carries the one reason word; a
+    manual entry's is the `control_disposition` the same Runtime path writes, where that word is
+    `reason` beside the `accepted` / `rejected` split. One column, and `signal_disposition()` derives
+    the split for both from it, because `dispose_command` computes the stored word from exactly the
+    frozenset that function reads.
     """
 
     sql = """
-        WITH signal_window AS (
-          SELECT signal_id, case_id, market_key, direction, observed_at_ns
+        WITH signal_entry AS (
+          SELECT 'signal'::text AS source,
+                 signal_id AS entry_id,
+                 case_id,
+                 market_key,
+                 direction,
+                 observed_at_ns
             FROM trading_trade_signals
            WHERE observed_at_ns >= %(since)s
            ORDER BY observed_at_ns DESC, signal_id DESC
            LIMIT %(limit)s
         ),
+        manual_entry AS (
+          SELECT 'manual'::text AS source,
+                 command_id AS entry_id,
+                 NULL::text AS case_id,
+                 market_key,
+                 direction,
+                 requested_at_ns AS observed_at_ns
+            FROM trading_operator_intents
+           WHERE action = 'manual_entry'
+             AND requested_at_ns >= %(since)s
+           ORDER BY requested_at_ns DESC, command_id DESC
+           LIMIT %(limit)s
+        ),
+        entry_window AS (
+          SELECT source, entry_id, case_id, market_key, direction, observed_at_ns
+            FROM signal_entry
+          UNION ALL
+          SELECT source, entry_id, case_id, market_key, direction, observed_at_ns
+            FROM manual_entry
+        ),
         folded AS (
-          SELECT signal.signal_id,
-                 signal.case_id,
-                 signal.market_key,
-                 signal.direction,
-                 signal.observed_at_ns,
-                 (array_agg(observation.summary ->> 'disposition' ORDER BY observation.seq DESC)
-                    FILTER (WHERE observation.normalized_kind = 'signal_disposition'))[1]
+          SELECT entry.source,
+                 entry.entry_id,
+                 entry.case_id,
+                 entry.market_key,
+                 entry.direction,
+                 entry.observed_at_ns,
+                 (array_agg(
+                    CASE WHEN observation.normalized_kind = 'control_disposition'
+                         THEN observation.summary ->> 'reason'
+                         ELSE observation.summary ->> 'disposition' END
+                    ORDER BY observation.seq DESC)
+                    FILTER (WHERE observation.normalized_kind
+                                  IN ('signal_disposition', 'control_disposition')))[1]
                    AS disposition_reason,
                  (array_agg(observation.summary ->> 'status' ORDER BY observation.seq DESC)
                     FILTER (WHERE observation.normalized_kind = 'order'
@@ -180,15 +219,16 @@ def console_executions_statement(*, since_ns: int, limit: int) -> tuple[str, dic
                     FILTER (WHERE observation.normalized_kind = 'position'))[1]
                    AS position_summary,
                  max(observation.observed_at_ns) AS last_observation_at_ns
-            FROM signal_window signal
+            FROM entry_window entry
             LEFT JOIN trading_execution_observations observation
-                   ON observation.signal_id = signal.signal_id
+                   ON coalesce(observation.signal_id, observation.command_id) = entry.entry_id
                   AND observation.normalized_kind
-                      IN ('signal_disposition', 'order', 'fill', 'protection', 'position')
-           GROUP BY signal.signal_id, signal.case_id, signal.market_key, signal.direction,
-                    signal.observed_at_ns
+                      IN ('signal_disposition', 'control_disposition',
+                          'order', 'fill', 'protection', 'position')
+           GROUP BY entry.source, entry.entry_id, entry.case_id, entry.market_key, entry.direction,
+                    entry.observed_at_ns
         )
-        SELECT signal_id, case_id, market_key, direction, observed_at_ns,
+        SELECT source, entry_id, case_id, market_key, direction, observed_at_ns,
                disposition_reason,
                order_status,
                trim_scale(fill_quantity)::text AS fill_quantity,
@@ -200,7 +240,7 @@ def console_executions_statement(*, since_ns: int, limit: int) -> tuple[str, dic
                position_summary ->> 'exit_reason' AS exit_reason,
                greatest(observed_at_ns, coalesce(last_observation_at_ns, 0)) AS last_observed_at_ns
           FROM folded
-         ORDER BY observed_at_ns DESC, signal_id DESC
+         ORDER BY observed_at_ns DESC, entry_id DESC
     """
     return sql, {"since": int(since_ns), "limit": int(limit)}
 

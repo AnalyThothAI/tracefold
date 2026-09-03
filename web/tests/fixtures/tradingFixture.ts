@@ -226,11 +226,11 @@ export function tradingSignalsForMarket(market: string | null): TradingSignals {
 }
 
 /**
- * One Signal that ran to the end: entered, protected, and flattened out with a realized number on it.
+ * One entry that ran to the end: entered, protected, and flattened out with a realized number on it.
  *
  * The shape is `console_executions_statement`'s own — a `closed` position carries the quantity it held
  * before the close, the exit price and PnL Nautilus reported on `PositionClosed`, and the `exit_reason`
- * the coordinator that closed it stamped.
+ * the coordinator that closed it stamped. `source` says which entry identity `entry_id` is.
  */
 export function tradingExecutionRowFixture(
   overrides: Partial<TradingExecutionRow> = {},
@@ -240,6 +240,7 @@ export function tradingExecutionRowFixture(
     direction: "long",
     disposition: "accepted",
     disposition_reason: "accepted",
+    entry_id: "1".repeat(64),
     exit_price: "9699.0",
     exit_reason: "flatten",
     fill_avg_price: "10000",
@@ -250,7 +251,7 @@ export function tradingExecutionRowFixture(
     order_status: "submitted",
     position_status: "closed",
     realized_pnl_usd: "-14.92274518",
-    signal_id: "1".repeat(64),
+    source: "signal",
     stage: "closed",
     stop_trigger_price: "9800",
     ...overrides,
@@ -283,6 +284,7 @@ export function tradingExecutionsFixture(
         direction: "long",
         disposition: "rejected",
         disposition_reason: "instrument_unmapped",
+        entry_id: "2".repeat(64),
         exit_price: null,
         exit_reason: null,
         fill_avg_price: null,
@@ -293,7 +295,6 @@ export function tradingExecutionsFixture(
         order_status: null,
         position_status: null,
         realized_pnl_usd: null,
-        signal_id: "2".repeat(64),
         stage: "rejected",
         stop_trigger_price: null,
       }),
@@ -302,6 +303,7 @@ export function tradingExecutionsFixture(
         case_id: "case-sol",
         disposition: "rejected",
         disposition_reason: "expired",
+        entry_id: "3".repeat(64),
         exit_price: null,
         exit_reason: null,
         fill_avg_price: null,
@@ -312,9 +314,26 @@ export function tradingExecutionsFixture(
         order_status: null,
         position_status: null,
         realized_pnl_usd: null,
-        signal_id: "3".repeat(64),
         stage: "expired",
         stop_trigger_price: null,
+      }),
+      /*
+       * The CLI manual entry from the same window: the operator's own `/long`, keyed on the Command
+       * that opened it, with no Case behind it (#528 PR-3).
+       */
+      tradingExecutionRowFixture({
+        case_id: null,
+        direction: "short",
+        entry_id: "e".repeat(64),
+        exit_price: "81100.0",
+        fill_avg_price: "81126.9",
+        fill_quantity: "0.0122",
+        last_observed_at_ns: (TRADING_NOW_MS - 20_000) * 1_000_000,
+        market_key: "crypto:perp:ETH:USDT",
+        observed_at_ns: (TRADING_NOW_MS - 90_000) * 1_000_000,
+        realized_pnl_usd: "-1.11984726",
+        source: "manual",
+        stop_trigger_price: "80315.6",
       }),
     ],
     measured_at_ms: TRADING_NOW_MS,

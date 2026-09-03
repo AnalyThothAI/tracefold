@@ -303,10 +303,16 @@ class TradingOperatorIntentsData(ExactApiSchema):
 
 
 class TradingExecutionRowData(ExactApiSchema):
-    """One Signal's whole execution, folded from its own observations (#528 PR-1)."""
+    """One entry identity's whole execution, folded from its own observations (#528 PR-1, PR-3).
 
-    signal_id: str
-    case_id: str
+    `entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,
+    or the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so
+    `case_id` is absent on those rows rather than invented.
+    """
+
+    source: Literal["signal", "manual"]
+    entry_id: str
+    case_id: str | None = None
     market_key: str
     direction: Literal["long", "short"]
     observed_at_ns: int

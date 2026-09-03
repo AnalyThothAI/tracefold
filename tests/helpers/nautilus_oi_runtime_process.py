@@ -150,6 +150,21 @@ def _seed_cold_cache(
     engine.cache.update_order(stop)
 
 
+def _manual_entries_only(reader: Callable[[str, str, int], Any]) -> Callable[[str, str, int], Any]:
+    """The first Command poll of a manual-entry run sees the entry and not the exit.
+
+    An operator issues `/flatten` after watching the position open, so the flatten Command is polled
+    from `on_position_opened` -- the same shape `flatten_owned` runs for a Signal, with the entry
+    itself now arriving as a Command too.
+    """
+
+    def read(account_slot: str, execution_strategy: str, limit: int) -> list[Any]:
+        values = reader(account_slot, execution_strategy, limit)
+        return [value for value in values if value.action == "manual_entry"]
+
+    return read
+
+
 def main() -> None:
     dsn = sys.argv[1]
     mode = sys.argv[2] if len(sys.argv) > 2 else "signal"
@@ -162,6 +177,7 @@ def main() -> None:
         "rolling_restart",
         "stop_filled",
         "flatten_owned",
+        "manual_entry_flatten",
     }:
         raise ValueError("nautilus_process_fixture_mode_invalid")
     conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
@@ -188,11 +204,12 @@ def main() -> None:
         replay_admitted = (
             signals.poll_once(partial(load_unresolved_trade_signals, repos)) if mode == "signal_replay" else None
         )
-        admitted_commands = (
-            signals.poll_commands_once(partial(load_unresolved_operator_intents, repos))
-            if mode in {"command", "cold_unclaimed"}
-            else 0
-        )
+        unresolved_commands = partial(load_unresolved_operator_intents, repos)
+        admitted_commands = 0
+        if mode in {"command", "cold_unclaimed"}:
+            admitted_commands = signals.poll_commands_once(unresolved_commands)
+        elif mode == "manual_entry_flatten":
+            admitted_commands = signals.poll_commands_once(_manual_entries_only(unresolved_commands))
         profile = oi_profile()
         control_state = RuntimeControlSnapshot(False, False, ())
         if mode == "rolling_restart":
@@ -204,9 +221,9 @@ def main() -> None:
         factory = ObservationFactory(profile.account_slot, profile.runtime_release, "oi_nautilus_v1")
         audit = AuditSink(factory=factory)
         readiness = RuntimeReadiness(reconciliation_stale_after_ns=profile.risk.reconciliation_stale_after_ns)
-        poll_commands = partial(signals.poll_commands_once, partial(load_unresolved_operator_intents, repos))
+        poll_commands = partial(signals.poll_commands_once, unresolved_commands)
         strategy = _CountingOiStrategy(
-            on_position_opened_hook=poll_commands if mode == "flatten_owned" else None,
+            on_position_opened_hook=(poll_commands if mode in {"flatten_owned", "manual_entry_flatten"} else None),
             profile=profile,
             signals=signals,
             audit=audit,
@@ -272,7 +289,7 @@ def main() -> None:
                     ts_init=NOW_NS + 400_000_000,
                 )
             )
-        if mode == "flatten_owned":
+        if mode in {"flatten_owned", "manual_entry_flatten"}:
             tape.append(
                 TestDataStubs.quote_tick(
                     instrument=instrument,

@@ -71,12 +71,14 @@ export const useTradingSignalsWithToken = (token: string, market?: string) =>
   });
 
 /**
- * The desk's execution read model (#528): one row per Signal, one row per Command, both already folded.
+ * The desk's execution read model (#528): one row per entry, one row per Command, both already folded.
  *
- * It replaces the raw Observation stream this page used to correlate in the browser. The correlation was
- * wrong for a flatten — the exit orders carry the *entry* Signal's `signal_id`, not the Command's — and
- * `stage` is now the server's word from `tracefold/trading/stages.py`, so the CLI and the console cannot
- * disagree about how far one Signal got.
+ * An entry is a Signal or the manual entry an operator typed, and `source` is what tells the two apart;
+ * the server folds each under the identity its own venue observations carry (#528 PR-3). This replaces
+ * the raw Observation stream this page used to correlate in the browser. That correlation was wrong for
+ * a flatten — the exit orders carry the *entry's* id, not the flatten Command's — and `stage` is now the
+ * server's word from `tracefold/trading/stages.py`, so the CLI and the console cannot disagree about how
+ * far one entry got.
  */
 export const useTradingExecutionsWithToken = (token: string) =>
   useQuery({

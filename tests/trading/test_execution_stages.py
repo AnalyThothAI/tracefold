@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from tracefold.trading import command_stage, execution_stage, signal_disposition
+from tracefold.trading import (
+    ACCEPTED_ENTRY_DISPOSITIONS,
+    command_stage,
+    execution_stage,
+    signal_disposition,
+)
 
 _NOW_NS = 1_900_000_000_000_000_000
 
@@ -49,6 +54,31 @@ def test_a_disposition_alone_decides_between_ordered_expired_and_rejected(reason
 )
 def test_the_two_word_verdict_splits_the_one_word_the_runtime_stores(reason: str, verdict: str) -> None:
     assert signal_disposition(reason) == verdict
+
+
+@pytest.mark.parametrize(
+    ("reason", "verdict", "expected"),
+    [
+        ("accepted", "accepted", "ordered"),
+        ("account_slot_mismatch", "rejected", "rejected"),
+        ("expired", "rejected", "expired"),
+    ],
+)
+def test_a_manual_entry_reason_derives_the_same_verdict_the_runtime_stored_beside_it(
+    reason: str,
+    verdict: str,
+    expected: str,
+) -> None:
+    """#528 PR-3. A manual entry's `control_disposition` carries both the reason and the split word.
+
+    The read model returns the reason column alone for either entry identity, so the split has to be
+    the one the Runtime already wrote -- `dispose_command` computes it from `ACCEPTED_ENTRY_DISPOSITIONS`,
+    which is the frozenset `signal_disposition` reads.
+    """
+
+    assert ("accepted" if reason in ACCEPTED_ENTRY_DISPOSITIONS else "rejected") == verdict
+    assert signal_disposition(reason) == verdict
+    assert _stage(disposition_reason=reason) == expected
 
 
 def test_the_newest_venue_fact_wins_over_every_earlier_one() -> None:

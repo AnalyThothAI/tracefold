@@ -2488,15 +2488,20 @@ response as alternate truth. Each console page's statement has one owner in
 builder's own output — unfiltered and filtered — rather than a copy of it.
 
 `GET /api/trading/executions` is the desk table, and it is a fold rather than a
-correlation: one row per `TradeSignalV1` in a 24-hour window, built by joining
-that Signal's own `signal_disposition`, `order`, `fill`, `protection` and
-`position` observations on `signal_id` and deriving one `stage` word from the
-result. The console used to rebuild this in the browser keyed on `command_id`,
-which a flatten close — carried under the entry Signal's identity, because that
-is whose exposure it closes — could never match, so the flatten progress never
-advanced (#528 C). Command rows travel in the same response and read their
-`control_disposition` alone; nothing attaches a venue observation to a Command,
-since a flatten converges the whole account slot rather than one intent.
+correlation: one row per entry identity in a 24-hour window, built by joining
+that entry's own disposition, `order`, `fill`, `protection` and `position`
+observations and deriving one `stage` word from the result. An entry identity is
+whatever `oi_runtime/observations.py:correlation` stamps on those facts — a
+Signal's `signal_id`, or the `command_id` of a `manual_entry` Command — so the
+two windows are one `UNION ALL` and `source` says which a row is. Folding by
+`signal_id` alone left the CLI manual entry, the one ingress that can prove the
+whole chain, with no row at all (#528 PR-3). The console used to rebuild this in
+the browser keyed on `command_id`, which a flatten close — carried under the
+entry's identity, because that is whose exposure it closes — could never match,
+so the flatten progress never advanced (#528 C). Command rows travel in the same
+response and read their `control_disposition` alone; nothing attaches a venue
+observation to a Command row, since a flatten converges the whole account slot
+rather than one intent.
 
 A `position` observation carries the whole outcome: quantity as it stood before
 the close, the average entry, and on `closed` the venue's own `avg_px_close`,

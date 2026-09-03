@@ -1117,22 +1117,27 @@ Runtime facts, and status carries readiness plus bounded totals.
   appends nothing (#510). Flatness is proven only by `account_flat` on the
   current `GET /api/trading/status` execution projection, inside its
   `reconciliation_age_ms` freshness budget.
-- `GET /api/trading/executions` — the desk table (#528 PR-1). One row per
-  `TradeSignalV1` in a bounded 24-hour window, folded from that Signal's own
-  `signal_disposition`, `order`, `fill`, `protection` and `position`
-  observations: `signal_id`, `case_id`, `market_key`, `direction`,
-  `observed_at_ns`, `disposition` (`accepted | rejected`) and its raw
+- `GET /api/trading/executions` — the desk table (#528 PR-1, PR-3). One row per
+  entry identity in a bounded 24-hour window: a `TradeSignalV1`, or a
+  `manual_entry` Command, which is the identity the Runtime correlates that
+  entry's facts under. Each row folds its own `signal_disposition` or
+  `control_disposition`, `order`, `fill`, `protection` and `position`
+  observations: `source ∈ {signal, manual}`, `entry_id` (the `signal_id` or the
+  `command_id`), `case_id` (absent on a manual entry, which has no Case),
+  `market_key`, `direction`, `observed_at_ns` (the Signal's, or the Command's
+  `requested_at_ns`), `disposition` (`accepted | rejected`) and its raw
   `disposition_reason`, entry `order_status`, `fill_quantity`, `fill_avg_price`,
   `stop_trigger_price`, `position_status`, `exit_price`, `realized_pnl_usd`,
   `exit_reason`, `last_observed_at_ns`, and a backend-derived
   `stage ∈ {pending, rejected, expired, ordered, filled, protected, closed}`.
   The same response carries `commands[]`, one row per operator Command in the
-  same window with `stage ∈ {recorded, accepted, rejected, completed, expired}`
-  read from its `control_disposition` alone — `completed` only on a flatten
-  whose disposition reason is `binance_account_flat`. No venue observation is
-  attached to a Command: a flatten converges the whole account slot, so the
-  orders it produces belong to the exposure, not to the Command. Bounded to 100
-  Signal rows with a `complete` flag and no cursor.
+  same window — a manual entry appears there too, as the instruction record —
+  with `stage ∈ {recorded, accepted, rejected, completed, expired}` read from
+  its `control_disposition` alone — `completed` only on a flatten whose
+  disposition reason is `binance_account_flat`. No venue observation is attached
+  to a Command row: a flatten converges the whole account slot, so the orders it
+  produces belong to the exposure, not to the Command. Bounded to 100 entry rows
+  with a `complete` flag and no cursor.
 - `GET /api/trading/execution/commands?profile={profile}&action={action}` —
   authenticated `OperatorIntentV1` facts, expiry, confirmation presence, and
   any final disposition, newest first with opaque pagination. It never returns

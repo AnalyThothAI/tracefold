@@ -6277,11 +6277,18 @@
       },
       "TradingExecutionRowData": {
         "additionalProperties": false,
-        "description": "One Signal's whole execution, folded from its own observations (#528 PR-1).",
+        "description": "One entry identity's whole execution, folded from its own observations (#528 PR-1, PR-3).\n\n`entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,\nor the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so\n`case_id` is absent on those rows rather than invented.",
         "properties": {
           "case_id": {
-            "title": "Case Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Id"
           },
           "direction": {
             "enum": [
@@ -6316,6 +6323,10 @@
               }
             ],
             "title": "Disposition Reason"
+          },
+          "entry_id": {
+            "title": "Entry Id",
+            "type": "string"
           },
           "exit_price": {
             "anyOf": [
@@ -6411,8 +6422,12 @@
             ],
             "title": "Realized Pnl Usd"
           },
-          "signal_id": {
-            "title": "Signal Id",
+          "source": {
+            "enum": [
+              "signal",
+              "manual"
+            ],
+            "title": "Source",
             "type": "string"
           },
           "stage": {
@@ -6441,8 +6456,8 @@
           }
         },
         "required": [
-          "signal_id",
-          "case_id",
+          "source",
+          "entry_id",
           "market_key",
           "direction",
           "observed_at_ns",
@@ -8215,7 +8230,7 @@
     },
     "/api/trading/executions": {
       "get": {
-        "description": "Today's desk table: one row per Signal, plus one row per operator Command (#528 PR-1).",
+        "description": "Today's desk table: one row per entry identity, plus one per operator Command (#528 PR-3).",
         "operationId": "get_trading_executions_api_trading_executions_get",
         "responses": {
           "200": {

@@ -93,7 +93,8 @@ class _Trading:
         self.calls.append(("console_executions", kwargs))
         return [
             {
-                "signal_id": "c" * 64,
+                "source": "signal",
+                "entry_id": "c" * 64,
                 "case_id": "case-sol",
                 "market_key": "crypto:perp:SOL:USDT",
                 "direction": "long",
@@ -110,7 +111,8 @@ class _Trading:
                 "last_observed_at_ns": (NOW + 60_000) * 1_000_000,
             },
             {
-                "signal_id": "d" * 64,
+                "source": "signal",
+                "entry_id": "d" * 64,
                 "case_id": "case-btc",
                 "market_key": "crypto:perp:BTC:USDT",
                 "direction": "long",
@@ -125,6 +127,26 @@ class _Trading:
                 "realized_pnl_usd": None,
                 "exit_reason": None,
                 "last_observed_at_ns": NOW * 1_000_000,
+            },
+            # #528 PR-3. A manual entry is the same fold under the Command's own id, and it has no
+            # Case: the desk renders the row without a Case identity rather than inventing one.
+            {
+                "source": "manual",
+                "entry_id": "e" * 64,
+                "case_id": None,
+                "market_key": "crypto:perp:BTC:USDT",
+                "direction": "short",
+                "observed_at_ns": NOW * 1_000_000,
+                "disposition_reason": "accepted",
+                "order_status": "filled",
+                "fill_quantity": "0.011",
+                "fill_avg_price": "81126.9",
+                "stop_trigger_price": "81938.2",
+                "position_status": "closed",
+                "exit_price": "81100.0",
+                "realized_pnl_usd": "-1.11984726",
+                "exit_reason": "flatten",
+                "last_observed_at_ns": (NOW + 90_000) * 1_000_000,
             },
         ]
 
@@ -442,15 +464,18 @@ def test_filters_and_cursors_fail_closed(client: tuple[TestClient, _Trading]) ->
     assert api.get("/api/trading/signals", params={"token": TOKEN, "cursor": "broken"}).status_code == 400
 
 
-def test_executions_is_one_row_per_signal_with_a_backend_derived_stage(
+def test_executions_is_one_row_per_entry_identity_with_a_backend_derived_stage(
     client: tuple[TestClient, _Trading],
 ) -> None:
-    """#528 PR-1. The desk table reads a stage word, never a correlation the browser has to rebuild."""
+    """#528 PR-1/PR-3. The desk table reads a stage word, never a correlation the browser rebuilds."""
 
     api, trading = client
     data = api.get("/api/trading/executions", params={"token": TOKEN}).json()["data"]
 
-    closed, refused = data["executions"]
+    closed, refused, manual = data["executions"]
+    assert closed["source"] == "signal"
+    assert closed["entry_id"] == "c" * 64
+    assert closed["case_id"] == "case-sol"
     assert closed["stage"] == "closed"
     assert closed["disposition"] == "accepted"
     assert closed["disposition_reason"] == "accepted"
@@ -462,6 +487,15 @@ def test_executions_is_one_row_per_signal_with_a_backend_derived_stage(
     assert refused["disposition"] == "rejected"
     assert refused["disposition_reason"] == "entries_paused"
     assert refused["realized_pnl_usd"] is None
+
+    # A manual entry is its own row, keyed on the Command that opened it and holding no Case.
+    assert manual["source"] == "manual"
+    assert manual["entry_id"] == "e" * 64
+    assert manual["case_id"] is None
+    assert manual["stage"] == "closed"
+    assert manual["disposition"] == "accepted"
+    assert manual["exit_reason"] == "flatten"
+    assert manual["realized_pnl_usd"] == "-1.11984726"
 
     # The Command rows come from the same window, and their stage reads the disposition alone.
     assert data["commands"] == [
