@@ -69,8 +69,8 @@ def oi_profile(mode: RuntimeMode = "paper") -> OiRuntimeProfile:
             max_leverage=2,
             max_daily_loss_usd=Decimal("50"),
             market_stale_after_ns=10_000_000_000,
-            account_stale_after_ns=10_000_000_000,
-            reconciliation_stale_after_ns=10_000_000_000,
+            # account_stale_after_ns == 10s, reconciliation_stale_after_ns == 15s.
+            reconciliation_interval_ns=5_000_000_000,
         ),
     )
 
@@ -229,6 +229,10 @@ def registered_oi_strategy(
         signals=selected_signals,
         audit=selected_audit,
         readiness=readiness,
+        # `TestClock` fires timers on the calling thread, so the harness is the callback thread.
+        # The real cross-thread hand-off is proven against a live `TradingNode` in
+        # `tests/integration/test_nautilus_live_clock_threads.py` (#510 F).
+        dispatch_pump=lambda pump: pump(),
         singleton_ready=lambda: singleton_state[0],
         control_plane_ready=lambda: True,
         day_start=DayStartBaseline(

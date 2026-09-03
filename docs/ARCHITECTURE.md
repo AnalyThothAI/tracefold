@@ -186,7 +186,7 @@ does not apply.
 | US reference instruments | 6 h; 15 m retry if no venue answers | latest directory | reference family | one directory snapshot | one family fetch | venue families serial | 20 s provider | no / yes / yes | failed reference source is omitted; it cannot remove crypto venue rows |
 | Event Reaction | 60 s; 1 h/4 h horizons; at most 20 chained turns | complete before candle history expires | instrument + merged time range | 100 due rows/turn | 32 merged requests/turn | 4 provider calls | no outer deadline / 8 s provider | yes / yes / no | transient no-answer stays due; terminal gap/expiry is persisted explicitly |
 | Trading Signal lane | App-owned poll, 2 s | source age <= configured admission window; Signal TTL = min(180 s, admission window) | underlying / durable source key | 1 Case freeze and 4 decisions/turn | source-native public bar calls serial | one | adapter-owned provider / 10 s PostgreSQL boundaries | bounded overlap / durable source idempotency / no | missing or uncertain evidence creates no Signal; Case+Signal commit atomically |
-| Nautilus OI Runtime | active only for `paper|live`; 0.5 s current heartbeat; complete private proof every 5 s and immediately on ambiguity/flatten; Nautilus native in-flight/open/position checks at 2/5/5 s | command/Signal TTL; complete reconciliation <10 s; public heartbeat stale after 5 s | account slot / immutable activation fence | Commands and Signals share one count-and-byte bound; Commands admit and execute first | one Binance USD-M account | one account-slot writer | Runtime-owned | bounded anti-join replay / deterministic client IDs / fail closed | disabled starts no node; new profiles require complete flat proof and explicit resume; unowned exposure or lost singleton halts |
+| Nautilus OI Runtime | active only for `paper|live`; 0.5 s current heartbeat; complete private proof every 5 s and immediately on ambiguity/flatten; Nautilus native in-flight/open/position checks at 2/5/5 s | command/Signal TTL; account clock <10 s and complete reconciliation <15 s, both derived from the one 5 s period; public heartbeat stale after 5 s | account slot / immutable activation fence | Commands and Signals share one count-and-byte bound; Commands admit and execute first | one Binance USD-M account | one account-slot writer | Runtime-owned | bounded anti-join replay / deterministic client IDs / fail closed | disabled starts no node; new profiles require complete flat proof and explicit resume; unowned exposure or lost singleton halts |
 
 Workers exposes one bounded Prometheus vocabulary at the existing telemetry
 seam. The concrete metric names carry the project prefix:
@@ -2376,6 +2376,34 @@ order. Ownership constrains only new exposure. `complete_from_reconciliation`
 still requires the later Binance private flat proof, and
 `oi_runtime_cold_transition_requires_binance_flat` still gates a new profile.
 
+#510 PR-2 closes the two ways a Signal could be spent without ever reaching an
+order. The route catalogue is discovered once per start and now travels with the
+projection, so the Signal lane refuses an unlistable market before a Case exists
+rather than after the Runtime answers `instrument_unmapped`. And the entry path
+distinguishes a verdict from a clock: `account_stale`, `market_stale`,
+`day_start_baseline_missing` and the two account-not-yet-loaded refusals write no
+`signal_disposition` at all. They release the in-process claim, the existing
+unresolved anti-join redelivers the Signal on the next poll, and only
+`expires_at_ns` closes it with a terminal `expired`. Every deterministic refusal —
+unmapped, busy, below minimum, any risk `deny` — stays terminal and single-shot.
+One number now owns account freshness: `OiRiskLimits.reconciliation_interval_ns`
+is the private-reconciliation period, and `account_stale_after_ns` and
+`reconciliation_stale_after_ns` are two and three times it. Production ran the
+account budget at exactly one period, so the clock was expired for the tail of
+every cycle by construction. `market_stale_after_ns` stays independent because
+the quote stream, not the private scan, decides it. Day-start equity and intraday
+equity are one function, `account_equity_usd`: USDT balance plus unrealized PnL
+at current marks, so `daily_loss_limit` no longer subtracts two definitions.
+
+Timer callbacks are not on the event loop. Measured against a real `TradingNode`
+on the pinned `nautilus-trader` 1.231.0 in
+`tests/integration/test_nautilus_live_clock_threads.py`: `on_start` and every
+order/position callback run on the asyncio event-loop thread, while a `LiveClock`
+timer callback runs on one Rust-owned thread that `threading.enumerate()` does
+not list. `RuntimeExecutionState` is unlocked, so `OiNautilusStrategy.on_timer`
+does nothing but hand its pump to the event loop and every coordinator keeps
+mutating that aggregate from a single thread.
+
 **Trigger and context are different types.** A trigger is the one persisted
 fact that starts an evaluation and fixes its cutoff. Context may enrich that
 evaluation only when it existed no later than the cutoff. Notification `sent` is
@@ -2557,13 +2585,22 @@ sole authority until it protects or closes the position.
 ### Research, admission, and durable data
 
 Admission owns source contract, supported source venue, freshness, the
-liquidity floor, market context, same-underlying Case identity, and the per-turn
-freeze bound. Source venue chooses only the public bars used as evidence; it
-does not select an execution route, and it is also the whole of the evidence for
-Hyperliquid's `hl.xyz` builder DEX now that the provider title token is no longer
-projected (#510). Nothing in Admission reads an upstream judge, Program, policy
-or learning cohort: `trading_admission_v7` dropped `source_generation_mismatch`
-with the News identity fields the rule needed. (A rank
+liquidity floor, market context, same-underlying Case identity, executable-market
+presence, and the per-turn freeze bound. Source venue chooses only the public
+bars used as evidence; it does not select an execution route, and it is also the
+whole of the evidence for Hyperliquid's `hl.xyz` builder DEX now that the
+provider title token is no longer projected (#510). Admission still selects no
+venue, instrument, account or route, but since `trading_admission_v8` it does
+read one Runtime fact: the `market_key` catalogue each configured Runtime
+publishes on `trading_execution_runtime_state.routes`. A market absent from every
+published catalogue is `REJECTED/instrument_unmapped` at the eligibility stage,
+because the lane freezes one Case per turn and spending it on a market no
+Runtime can reach both wastes the turn and defers a market that can. When no
+catalogue is published at all — execution disabled, or no Runtime started yet —
+there is nothing to read and admission behaves exactly as it did before. Nothing
+in Admission reads an upstream judge, Program, policy or learning cohort:
+`trading_admission_v7` dropped `source_generation_mismatch` with the News
+identity fields the rule needed. (A rank
 ceiling and a per-symbol cooldown were on that list until #348 retired both:
 selectivity belongs to the policy, and a re-entry delay is what a lane needs
 when several positions can be open at once.) It

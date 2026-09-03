@@ -56,6 +56,7 @@ from tracefold.integrations.nautilus.oi_runtime.nautilus_1231_binance_compat imp
     load_complete_binance_account_reports,
     single_binance_execution_client,
 )
+from tracefold.integrations.nautilus.oi_runtime.risk import account_equity_usd
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.integrations.nautilus.oi_runtime.state import (
@@ -83,7 +84,6 @@ _STOP_TIMEOUT_SECONDS = 20.0
 _START_TIMEOUT_SECONDS = 90.0
 _HEARTBEAT_INTERVAL_SECONDS = 0.5
 _HEARTBEAT_INTERVAL_NS = int(_HEARTBEAT_INTERVAL_SECONDS * 1_000_000_000)
-_RECONCILIATION_FRESHNESS_DIVISOR = 2
 # Recovery reads the durable entry-order facts that can still hold Binance exposure. Seven days
 # is the widest gap this single-host deployment can be down and still find its own position on
 # the venue; older entries cannot be open because a Signal's TTL and this account slot's
@@ -290,11 +290,18 @@ async def _run_active_runtime_with_state(
     runtime_wake = asyncio.Event()
     reconciliation_requests = _PrivateReconciliationRequests(loop=loop, wake=runtime_wake)
     bridge: OiRuntimeDatabaseBridge | None = None
+
+    def dispatch_pump_on_loop(pump: Callable[[], None]) -> None:
+        """The timer's only job: hand its pump to the thread that owns Runtime state (#510 F)."""
+
+        loop.call_soon_threadsafe(pump)
+
     strategy = OiNautilusStrategy(
         profile=profile,
         signals=signals,
         audit=audit,
         readiness=readiness,
+        dispatch_pump=dispatch_pump_on_loop,
         singleton_ready=lambda: singleton.acquired,
         control_plane_ready=lambda: bridge is not None and bridge.connected and bridge.inputs_ready,
         day_start=None,
@@ -307,6 +314,7 @@ async def _run_active_runtime_with_state(
         strategy=strategy,
         loop=loop,
     )
+    route_instrument_ids = frozenset(route.instrument_id for route in profile.routes)
     probe = _ProbeState.starting(profile, credential_fingerprint)
     server = _probe_server(probe.readiness)
     stop = asyncio.Event()
@@ -393,10 +401,14 @@ async def _run_active_runtime_with_state(
             started_at_ns=started_at_ns,
             updated_at_ns=started_at_ns,
             account_snapshot=strategy.account_snapshot(projected_at_ns=started_at_ns),
+            # The catalogue this generation discovered, published where the Signal lane can read it.
+            # `_discover_routes` runs once per start, so a catalogue change is a new Runtime start and
+            # a new insert; the steady heartbeat never rewrites it.
+            routes=tuple(sorted(route.market_key for route in profile.routes)),
         )
         _observe_runtime_start(audit=audit, state=state)
         projector.start(state)
-        reconciliation_interval = _private_reconciliation_interval_seconds(profile.risk.reconciliation_stale_after_ns)
+        reconciliation_interval = profile.risk.reconciliation_interval_seconds
         next_reconciliation = loop.time() + reconciliation_interval
         while not stop.is_set():
             runtime_wake.clear()
@@ -411,9 +423,21 @@ async def _run_active_runtime_with_state(
             if not singleton.check():
                 raise RuntimeError("oi_runtime_account_slot_lost")
             now_ns = time.time_ns()
-            equity = _account_equity(node, profile)
-            if equity is not None:
-                bridge.set_equity(equity, now_ns)
+            # The same function the entry path's `NautilusRiskFacts` uses, so the day-start baseline
+            # and every intraday comparison against it are one definition of equity (#510 B). A
+            # missing account or an unpriced owned position simply defers the baseline; entries stay
+            # blocked on `day_start_baseline_missing` until it can be written, which is the safe way
+            # to be unsure.
+            with suppress(RuntimeError):
+                bridge.set_equity(
+                    account_equity_usd(
+                        cache=node.cache,
+                        portfolio=node.portfolio,
+                        account_id=profile.account_id,
+                        routes=route_instrument_ids,
+                    ),
+                    now_ns,
+                )
             reconciliation_triggers = set(reconciliation_requests.drain())
             if loop.time() >= next_reconciliation:
                 reconciliation_triggers.add("steady")
@@ -608,6 +632,8 @@ def _build_active_node(
 
 
 def _risk_limits() -> OiRiskLimits:
+    """One private-reconciliation period; `OiRiskLimits` derives both account clocks from it."""
+
     return OiRiskLimits(
         risk_fraction_per_trade=Decimal("0.01"),
         max_risk_per_trade_usd=Decimal("10"),
@@ -616,8 +642,7 @@ def _risk_limits() -> OiRiskLimits:
         max_leverage=1,
         max_daily_loss_usd=Decimal("25"),
         market_stale_after_ns=5_000_000_000,
-        account_stale_after_ns=5_000_000_000,
-        reconciliation_stale_after_ns=10_000_000_000,
+        reconciliation_interval_ns=5_000_000_000,
     )
 
 
@@ -738,12 +763,6 @@ def _load_recovery_inputs(
     ):
         raise RuntimeError("oi_runtime_recovery_history_overflow")
     return materialize_trade_signals(signal_rows), materialize_operator_intents(command_rows)
-
-
-def _private_reconciliation_interval_seconds(reconciliation_stale_after_ns: int) -> float:
-    if reconciliation_stale_after_ns <= 0:
-        raise ValueError("oi_runtime_reconciliation_staleness_invalid")
-    return reconciliation_stale_after_ns / 1_000_000_000 / _RECONCILIATION_FRESHNESS_DIVISOR
 
 
 async def _reconcile_account(
@@ -914,17 +933,6 @@ async def _await_node_started(*, node: TradingNode, node_task: asyncio.Task[None
         if asyncio.get_running_loop().time() >= deadline:
             raise RuntimeError("oi_runtime_start_timeout")
         await asyncio.sleep(0.05)
-
-
-def _account_equity(node: TradingNode, profile: OiRuntimeProfile) -> Decimal | None:
-    account = node.cache.account(profile.account_id)
-    if account is None:
-        return None
-    total = account.balance_total(USDT)
-    if total is None:
-        return None
-    method = getattr(total, "as_decimal", None)
-    return Decimal(str(total)) if method is None else Decimal(method())
 
 
 def _entry_block_reason(

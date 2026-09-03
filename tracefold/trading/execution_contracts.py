@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _IDENTITY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,127}$"
-_MARKET_KEY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$"
+MARKET_KEY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$"
 _METADATA_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _MAX_METADATA_ENTRIES = 16
 _MAX_METADATA_BYTES = 2_048
@@ -92,7 +92,7 @@ class TradeSignalV1(_FrozenContract):
     signal_id: str = Field(pattern=_SHA256_PATTERN)
     case_id: str = Field(min_length=1, max_length=128)
     alpha_contract_sha256: str = Field(pattern=_SHA256_PATTERN)
-    market_key: str = Field(pattern=_MARKET_KEY_PATTERN)
+    market_key: str = Field(pattern=MARKET_KEY_PATTERN)
     direction: Literal["long", "short"]
     observed_at_ns: int = Field(gt=0)
     expires_at_ns: int = Field(gt=0)
@@ -133,7 +133,7 @@ class OperatorIntentV1(_FrozenContract):
     requested_at_ns: int = Field(gt=0)
     expires_at_ns: int = Field(gt=0)
     confirmation_identity: str | None = Field(default=None, pattern=_SHA256_PATTERN)
-    market_key: str | None = Field(default=None, pattern=_MARKET_KEY_PATTERN)
+    market_key: str | None = Field(default=None, pattern=MARKET_KEY_PATTERN)
     direction: Literal["long", "short"] | None = None
 
     @field_validator("scope", "reason", "operator_identity", "authentication_identity")
@@ -220,4 +220,4 @@ class ExecutionObservationV1(_FrozenContract):
         return self
 
 
-__all__ = ["ExecutionObservationV1", "OperatorIntentV1", "TradeSignalV1"]
+__all__ = ["MARKET_KEY_PATTERN", "ExecutionObservationV1", "OperatorIntentV1", "TradeSignalV1"]

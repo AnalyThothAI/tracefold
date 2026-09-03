@@ -4,13 +4,34 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from decimal import Decimal
-from typing import Any
+from typing import Any, Final
 
 from tracefold.trading import OperatorIntentV1, TradeSignalV1
 
 from .audit_sink import AuditSink
 from .signal_client import ExecutionSignalClient
 from .state import ExecutionState, RuntimeEntryRequest, RuntimeExecutionState, RuntimeReconciliationSnapshot
+
+# Refusals that state the Runtime's clock, not the request. Every one of them is answered by the next
+# private reconciliation, the next quote, or the next UTC day's baseline write - all of which happen
+# inside a Signal's TTL. Writing a `signal_disposition` for one of them is what turned five of
+# 2026-09-02's six Signals into single-delivery deaths: `account_stale` fires at the tail of every
+# reconciliation period, and the anti-join in `UNRESOLVED_TRADE_SIGNALS_SQL` never offered the Signal
+# again (#510 B). The Signal keeps its in-process claim released instead, so the next poll redelivers
+# it and `expires_at_ns` still closes it with a terminal `expired`.
+#
+# Everything not listed here stays terminal, including the deterministic refusals
+# (`instrument_unmapped`, `instrument_busy`, `notional_below_minimum`, every risk `deny`) and every
+# readiness gate that a redelivery could only re-answer the same way.
+RETRYABLE_ENTRY_REASONS: Final[frozenset[str]] = frozenset(
+    {
+        "account_stale",
+        "market_stale",
+        "day_start_baseline_missing",
+        "oi_runtime_account_missing",
+        "oi_runtime_account_balance_missing",
+    }
+)
 
 
 class AuditBackpressure(RuntimeError):
@@ -86,6 +107,9 @@ class RuntimeObservationWriter:
         self._state.disposed_signal_ids.add(signal.signal_id)
 
     def dispose_entry(self, request: RuntimeEntryRequest, reason: str) -> None:
+        if reason in RETRYABLE_ENTRY_REASONS:
+            self._release_entry(request)
+            return
         if request.signal is not None:
             self.dispose_signal(request.signal, reason)
             return
@@ -96,6 +120,21 @@ class RuntimeObservationWriter:
             "accepted" if reason in {"accepted", "replayed_query_first", "unknown_query_first"} else "rejected"
         )
         self.dispose_command(command, disposition, reason)
+
+    def _release_entry(self, request: RuntimeEntryRequest) -> None:
+        """Drop the in-process claim without a durable verdict, so the next poll redelivers it.
+
+        Deliberately not `disposed_signal_ids` / `disposed_command_ids`: those are the set the entry
+        path checks before doing any work, and a retryable refusal has to be reconsidered.
+        """
+
+        if request.signal is not None:
+            self._signals.release(request.signal.signal_id)
+            return
+        command = request.command
+        if command is None:
+            raise RuntimeError("oi_runtime_entry_source_invalid")
+        self._signals.release_command(command.command_id)
 
     def order(self, state: ExecutionState, order: Any, leg: str, status: str) -> None:
         occurred_at_ns = int(order.ts_init)
@@ -285,4 +324,4 @@ class RuntimeObservationWriter:
         )
 
 
-__all__ = ["AuditBackpressure", "RuntimeObservationWriter"]
+__all__ = ["RETRYABLE_ENTRY_REASONS", "AuditBackpressure", "RuntimeObservationWriter"]

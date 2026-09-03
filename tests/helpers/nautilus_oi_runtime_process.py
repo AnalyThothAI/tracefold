@@ -147,6 +147,9 @@ def main() -> None:
             signals=signals,
             audit=audit,
             readiness=readiness,
+            # One `BacktestEngine` thread, no event loop: the timer callback already is the
+            # callback thread, and marshalling would have nowhere to marshal to.
+            dispatch_pump=lambda pump: pump(),
             singleton_ready=lambda: True,
             control_plane_ready=lambda: True,
             day_start=DayStartBaseline("2030-03-17", Decimal("1000"), NOW_NS - 1, "4" * 64),

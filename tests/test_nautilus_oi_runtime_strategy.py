@@ -7,9 +7,14 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from nautilus_trader.model.enums import OmsType, OrderSide, OrderType, PositionSide, TriggerType
+from nautilus_trader.accounting.factory import AccountFactory
+from nautilus_trader.cache.cache import Cache
+from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.model.currencies import BTC
+from nautilus_trader.model.enums import AccountType, OmsType, OrderSide, OrderType, PositionSide, TriggerType
+from nautilus_trader.model.events import AccountState
 from nautilus_trader.model.identifiers import ClientId, ClientOrderId, PositionId, VenueOrderId
-from nautilus_trader.model.objects import Money
+from nautilus_trader.model.objects import AccountBalance, Money
 from nautilus_trader.model.position import Position
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
@@ -25,6 +30,7 @@ from tests.nautilus_oi_runtime_fixtures import (
 )
 from tracefold.app.nautilus.reconciliation import build_runtime_reconciliation_snapshot
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
+from tracefold.integrations.nautilus.oi_runtime.observations import RETRYABLE_ENTRY_REASONS
 from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.state import (
@@ -1504,3 +1510,132 @@ def test_flatten_account_completes_once_the_private_reports_prove_flat() -> None
     context.audit.flush_once(written.extend)
     completed = [value for value in written if value.normalized_kind == "control_disposition"]
     assert [value.summary for value in completed] == [{"disposition": "completed", "reason": "binance_account_flat"}]
+
+
+def _account_without_usdt_balance() -> object:
+    state = AccountState(
+        account_id=ACCOUNT_ID,
+        account_type=AccountType.MARGIN,
+        base_currency=None,
+        reported=True,
+        balances=[AccountBalance(total=Money(1, BTC), locked=Money(0, BTC), free=Money(1, BTC))],
+        margins=[],
+        info={},
+        event_id=UUID4(),
+        ts_event=NOW_NS,
+        ts_init=NOW_NS,
+    )
+    return AccountFactory.create(state)
+
+
+def _dispositions(context: SimpleNamespace) -> list[object]:
+    return [
+        value
+        for value in context.audit.flush_once(lambda _values: None)
+        if value.normalized_kind == "signal_disposition"
+    ]
+
+
+def test_a_stale_account_clock_returns_the_signal_to_the_ledger_and_the_ttl_still_closes_it() -> None:
+    """#510 B. `account_stale` is the Runtime's clock, not a verdict about the Signal.
+
+    Production wrote a terminal `signal_disposition` for it, and the anti-join in
+    `UNRESOLVED_TRADE_SIGNALS_SQL` never offered the Signal again: five of 2026-09-02's six Signals
+    died on their first delivery, inside a TTL with 30 more reconciliation periods left in it.
+    """
+
+    signal = trade_signal()
+    context = registered_oi_strategy(values=(signal,))
+    context.readiness.reconciled(
+        account_observed_at_ns=NOW_NS - context.profile.risk.account_stale_after_ns - 1,
+        reconciliation_observed_at_ns=NOW_NS,
+    )
+
+    context.strategy.on_timer(None)
+
+    assert context.strategy.submitted == []
+    assert _dispositions(context) == []
+    # The claim is released, not marked durable: nothing about this Signal is in the ledger.
+    assert context.signals.pending_ids == frozenset()
+
+    assert context.signals.poll_once(SignalRows(signal)) == 1
+    context.readiness.reconciled(account_observed_at_ns=NOW_NS, reconciliation_observed_at_ns=NOW_NS)
+    context.strategy.on_timer(None)
+
+    assert len(context.strategy.submitted) == 1
+    accepted = _dispositions(context)
+    assert [value.summary["disposition"] for value in accepted] == ["accepted"]
+
+
+def test_a_retried_signal_that_never_recovers_still_ends_as_expired() -> None:
+    """The TTL, not a transient clock, is what closes a Signal the Runtime could not act on."""
+
+    signal = trade_signal()
+    context = registered_oi_strategy(values=(signal,))
+    context.readiness.reconciled(
+        account_observed_at_ns=NOW_NS - context.profile.risk.account_stale_after_ns - 1,
+        reconciliation_observed_at_ns=NOW_NS,
+    )
+
+    for _ in range(3):
+        context.strategy.on_timer(None)
+        assert context.signals.pending_ids == frozenset()
+        assert context.signals.poll_once(SignalRows(signal)) == 1
+
+    context.clock.set_time(signal.expires_at_ns + 1)
+    context.strategy.on_timer(None)
+
+    assert context.strategy.submitted == []
+    expired = _dispositions(context)
+    assert [value.summary["disposition"] for value in expired] == ["expired"]
+    assert signal.signal_id in context.signals.pending_ids
+
+
+@pytest.mark.parametrize(
+    ("reason", "prepare"),
+    [
+        ("market_stale", "market"),
+        ("day_start_baseline_missing", "day_start"),
+        ("oi_runtime_account_balance_missing", "balance"),
+    ],
+)
+def test_every_transient_entry_refusal_returns_the_signal_instead_of_burying_it(reason: str, prepare: str) -> None:
+    signal = trade_signal()
+    cache = None
+    if prepare == "balance":
+        # A real reconciled account whose USDT balance has not arrived yet - the first second after
+        # a restart, before the first `AccountState` for the settlement currency.
+        cache = Cache()
+        cache.add_account(_account_without_usdt_balance())
+    context = registered_oi_strategy(values=(signal,), cache=cache)
+    if prepare == "market":
+        context.clock.set_time(NOW_NS + context.profile.risk.market_stale_after_ns + 1)
+    elif prepare == "day_start":
+        context.strategy.update_day_start(
+            DayStartBaseline(
+                utc_day="2030-03-18",
+                equity_usd=Decimal("1000"),
+                recorded_at_ns=NOW_NS,
+                event_id="8" * 64,
+            )
+        )
+
+    context.strategy.on_timer(None)
+
+    assert reason in RETRYABLE_ENTRY_REASONS
+    assert context.strategy.submitted == []
+    assert _dispositions(context) == []
+    assert context.signals.pending_ids == frozenset()
+
+
+def test_a_deterministic_refusal_is_still_written_once_and_never_redelivered() -> None:
+    """Only the clocks are retryable. An unmapped market cannot answer differently next poll."""
+
+    signal = trade_signal().model_copy(update={"market_key": "crypto:perp:DELL:USDT"})
+    context = registered_oi_strategy(values=(signal,))
+
+    context.strategy.on_timer(None)
+
+    assert context.strategy.submitted == []
+    assert [value.summary["disposition"] for value in _dispositions(context)] == ["instrument_unmapped"]
+    assert context.signals.pending_ids == {signal.signal_id}

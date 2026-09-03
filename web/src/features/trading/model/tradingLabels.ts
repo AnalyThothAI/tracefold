@@ -79,6 +79,8 @@ export function policyLabel(policyId: string): string {
 export const GATE_REASON_ZH: Record<string, string> = {
   "capability:capability_absent": "当前能力快照没有这个标的",
   "eligibility:already_consumed": "同一来源已成案",
+  // #510 PR-2: no configured Runtime lists this market, so a Case would only ever be refused later.
+  "eligibility:instrument_unmapped": "运行时目录里没有这个市场",
   "eligibility:blacklisted": "标的在拒绝名单",
   "eligibility:lane_capacity_exhausted": "本轮成案预算已满",
   "eligibility:oi_value_below_floor": "持仓额低于流动性地板",

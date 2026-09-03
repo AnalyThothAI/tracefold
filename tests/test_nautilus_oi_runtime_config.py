@@ -122,6 +122,7 @@ def test_canonical_root_builds_one_real_binance_execution_client() -> None:
             )
         ),
         readiness=RuntimeReadiness(),
+        dispatch_pump=lambda pump: pump(),
         singleton_ready=lambda: True,
         control_plane_ready=lambda: True,
         day_start=DayStartBaseline(

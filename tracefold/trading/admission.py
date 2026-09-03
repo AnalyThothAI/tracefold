@@ -10,11 +10,18 @@ venue identity for source-native public market context. Unknown venues fail befo
 This provenance never chooses an execution route. Editorial News frames are not admitted at all:
 they are not a Source of this lane and no code path offers one.
 
+**Routability is read, not chosen.** `instrument_unmapped` refuses a market that is absent from every
+catalogue the configured Runtimes have published on their own projection. Admission still selects no
+venue, no instrument and no route: it declines to spend the turn's one Case freeze on a market whose
+only possible answer is that the Runtime cannot reach it. When no Runtime has published a catalogue —
+execution disabled, or none started yet — there is nothing to read and the rule does not fire.
+
 **What this module owns** is whether a Source may become a *trigger* now:
 
     source          the row is a usable, live OI fact at all
     venue           the frame's own venue is supported for source-native public context
-    eligibility     liquidity floor, blacklist, freshness, idempotency, one undecided Case per underlying
+    eligibility     liquidity floor, freshness, idempotency, one undecided Case per underlying,
+                    and the market being present in a published Runtime catalogue
     market_context  there is a candle at the cutoff to freeze a mark and a pre-move from
     freeze          the immutable Case was written
 
@@ -47,7 +54,9 @@ from .sources import SourceRejected, normalize_source_venue
 # v7 is #510 PR-4: the upstream-generation rule is gone with the News identity fields it read, and the
 # builder DEX is decided by the provider's venue rather than by a title token. Every rule below is now
 # a statement about the measured frame.
-ADMISSION_VERSION: Final = "trading_admission_v7"
+# v8 is #510 PR-2: `instrument_unmapped` refuses a market no configured Runtime lists. It is still not
+# a route choice — the catalogue is the Runtime's own published fact and admission only reads it.
+ADMISSION_VERSION: Final = "trading_admission_v8"
 
 AdmissionStatus = Literal["DEFERRED", "REJECTED", "CASE_CREATED", "EXPIRED"]
 AdmissionStage = Literal["source", "venue", "eligibility", "catalog", "market_context", "freeze"]
@@ -73,6 +82,9 @@ ADMISSION_REASONS: Final[frozenset[str]] = frozenset(
         "market_data_invalid",
         "already_consumed",
         "superseded_by_newer_trigger",
+        # No configured Runtime lists this market. Three of 2026-09-02's six Signals were spent on
+        # markets Binance USD-M does not have, and each had already consumed the turn's one freeze.
+        "instrument_unmapped",
         # The per-turn Case budget refuses a Source that passed every rule about itself; calling that
         # `underlying_busy` would blame the frame's own issuer for a different name being ahead of it.
         "lane_capacity_exhausted",

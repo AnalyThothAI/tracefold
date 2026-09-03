@@ -259,7 +259,7 @@ def test_day_loss_baseline_survives_policy_restart_and_fails_closed() -> None:
         ({"market_observed_at_ns": NOW_NS - 10_000_000_001}, 2, "market_stale"),
         ({"account_observed_at_ns": NOW_NS - 10_000_000_001}, 2, "account_stale"),
         (
-            {"reconciliation_observed_at_ns": NOW_NS - 10_000_000_001},
+            {"reconciliation_observed_at_ns": NOW_NS - 15_000_000_001},
             2,
             "reconciliation_stale",
         ),

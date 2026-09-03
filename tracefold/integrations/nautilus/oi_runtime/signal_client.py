@@ -165,6 +165,27 @@ class ExecutionSignalClient:
                 raise RuntimeError("oi_runtime_command_not_pending")
             self._pending_command_ids.remove(command_id)
 
+    def release(self, signal_id: str) -> None:
+        """Give up the in-process claim on a Signal whose refusal was not a verdict.
+
+        `mark_durable` says "a disposition for this Signal is in the ledger"; this says "no disposition
+        exists and none is coming from this attempt". The Signal stays unresolved, so the next indexed
+        poll offers it again.
+        """
+
+        with self._lock:
+            if signal_id not in self._pending_ids:
+                raise RuntimeError("oi_runtime_signal_not_pending")
+            self._pending_ids.remove(signal_id)
+
+    def release_command(self, command_id: str) -> None:
+        """The Command half of `release`; the manual-entry path refuses on the same clocks."""
+
+        with self._lock:
+            if command_id not in self._pending_command_ids:
+                raise RuntimeError("oi_runtime_command_not_pending")
+            self._pending_command_ids.remove(command_id)
+
     def retry(self, value: TradeSignalV1) -> None:
         """Return a popped Signal when its final audit fact could not be buffered."""
 
