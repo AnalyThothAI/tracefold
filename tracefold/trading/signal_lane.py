@@ -29,7 +29,6 @@ from .admission import (
     source_rejected,
 )
 from .contracts import (
-    TRADING_MANIFEST_VERSION,
     Bar,
     CaseState,
     FrozenMarketContext,
@@ -135,7 +134,6 @@ class SignalLane:
         config: SignalLaneConfig,
         bars: BarFetcher,
         oi_projection: OiProjectionReader,
-        news_generation: str,
         release_revision: str,
         clock: Callable[[], int] = now_ms,
         telemetry: TradingExternalDataTelemetryPort | None = None,
@@ -144,7 +142,6 @@ class SignalLane:
         self._config = config
         self._bars = bars
         self._oi_projection = oi_projection
-        self._news_generation = news_generation
         self._release_revision = release_revision
         self._clock = clock
         self._telemetry = telemetry
@@ -259,7 +256,7 @@ class SignalLane:
                 results[_source_key(row, self._config.oi_metric_version)] = source_rejected(
                     normalized,
                     source_key=_source_key(row, self._config.oi_metric_version),
-                    observed_at_ms=int(row.get("observed_at_ms") or row.get("verdict_created_at_ms") or 0),
+                    observed_at_ms=int(row.get("observed_at_ms") or row.get("available_at_ms") or 0),
                 )
                 continue
             venue_result = admit_venue(normalized)
@@ -326,7 +323,7 @@ class SignalLane:
             primary_trigger=OiMarketTrigger(
                 source_key=candidate.source_key,
                 observed_at_ms=candidate.observed_at_ms,
-                persisted_at_ms=candidate.verdict_created_at_ms,
+                persisted_at_ms=candidate.available_at_ms,
                 venue=candidate.venue,
             ),
             contexts=FrozenPolicyContext(
@@ -395,12 +392,11 @@ class SignalLane:
         if claimed is None:
             return None
         case_id = str(claimed["case_id"])
-        raw = claimed.get("manifest")
-        if not _uses_current_news_generation(raw, news_generation=self._news_generation):
-            return await self._block(case_id, "source_generation_retired", now)
         try:
-            manifest = TradingCaseManifest.model_validate(raw)
+            manifest = TradingCaseManifest.model_validate(claimed.get("manifest"))
         except ValidationError:
+            # Includes a Case frozen under an earlier manifest version: the pinned `manifest_version`
+            # refuses it here rather than re-deciding a layout this policy never ran against.
             return await self._block(case_id, "manifest_invalid", now)
         policy = self._config.policy
         if manifest.policy_id != policy.policy_id or manifest.policy_version != policy.policy_version:
@@ -522,23 +518,6 @@ def _trading(repos: TradingRepositories) -> TradingRepository:
 
 def _source_key(row: OiCandidateRow, metric_version: str) -> str:
     return oi_source_key(row.get("event_id"), row.get("metric_version") or metric_version)
-
-
-def _uses_current_news_generation(raw: object, *, news_generation: str) -> bool:
-    if not isinstance(raw, dict) or raw.get("manifest_version") != TRADING_MANIFEST_VERSION:
-        return False
-    contexts = raw.get("contexts")
-    if not isinstance(contexts, dict):
-        return False
-    source = contexts.get("oi")
-    return (
-        isinstance(source, dict)
-        and str(source.get("learning_epoch") or "") == news_generation
-        and source.get("policy_version") == "news_triage_policy_v12"
-        and source.get("program_version") == "news_oi_signal_v3"
-        and source.get("judgment_contract_version") == "news_judgment_v2"
-        and source.get("judgment_origin") == "oi"
-    )
 
 
 __all__ = [

@@ -23,30 +23,13 @@ from tracefold.trading.storage.execution_stream import PreparedTradeSignal
 from tracefold.trading.storage.lane import SignalLaneSnapshot
 
 NOW = 1_787_000_000_000
-DIGEST = "a" * 64
-EPOCH = "epoch-1"
 
 
 def _row(**overrides: Any) -> OiCandidateRow:
     values: dict[str, Any] = {
         "event_id": "evt-1",
-        "source_item_id": "source-1",
-        "verdict_created_at_ms": NOW - 30_000,
-        "final_decision": "push",
-        "source_rule": "oi_whale_ratio",
-        "source_strategy_id": "opennews_oi_v1",
-        "source_contract_version": "oi_source_contract_v1",
-        "measurement_window_ms": 300_000,
-        "provider_symbol": "BTC",
-        "learning_epoch": EPOCH,
-        "program_version": "news_oi_signal_v3",
-        "program_sha256": DIGEST,
-        "policy_version": "news_triage_policy_v12",
-        "judgment_contract_version": "news_judgment_v2",
-        "judgment_origin": "oi",
-        "judgment_sha256": DIGEST,
-        "runtime_manifest_sha": DIGEST,
         "metric_version": "oi_signal_v1",
+        "source_item_id": "source-1",
         "symbol": "BTC",
         "direction": "rise",
         "oi_change_bps": 900,
@@ -54,8 +37,11 @@ def _row(**overrides: Any) -> OiCandidateRow:
         "whale_long_profit_bps": 3_000,
         "whale_oi_ratio_bps": 6_000,
         "observed_at_ms": NOW - 60_000,
-        "source_available_at_ms": NOW - 30_000,
+        "available_at_ms": NOW - 30_000,
         "ingest_mode": "live",
+        "source_strategy_id": "opennews_oi_v1",
+        "source_contract_version": "oi_source_contract_v1",
+        "measurement_window_ms": 300_000,
         "venue": "binance",
     }
     values.update(overrides)
@@ -172,7 +158,6 @@ def _lane(
         config=SignalLaneConfig(admission=AdmissionConfig(), policy=ALPHA_POLICY),
         bars=bars,
         oi_projection=projection,
-        news_generation=EPOCH,
         release_revision="test-release",
         clock=lambda: NOW,
     )
@@ -305,7 +290,9 @@ def test_hyperliquid_builder_source_uses_provider_native_market_key(monkeypatch:
         return ()
 
     monkeypatch.setattr(trading_wiring, "fetch_hyperliquid_candles", fetch)
-    candidate = normalize_oi_source(_row(symbol="UNITREE", provider_symbol="XYZ-UNITREE", venue="hyperliquid"))
+    # The provider's own venue text is the whole of the builder-DEX evidence (#510): the ledger's
+    # `symbol` is already canonicalised, so an `XYZ-` title token no longer exists to infer it from.
+    candidate = normalize_oi_source(_row(symbol="UNITREE", venue="hl.xyz"))
 
     assert not isinstance(candidate, SourceRejected)
     asyncio.run(trading_wiring._source_native_bars(candidate, NOW - 300_000, NOW))
@@ -343,7 +330,7 @@ def test_pre_move_and_four_hour_reads_measure_the_same_book(monkeypatch: pytest.
         )
 
     monkeypatch.setattr(trading_wiring, "fetch_binance_candles", fetch)
-    candidate = normalize_oi_source(_row(symbol="SOL", provider_symbol="SOL", venue="binance"))
+    candidate = normalize_oi_source(_row(symbol="SOL", venue="binance"))
     assert not isinstance(candidate, SourceRejected)
 
     pre_move = asyncio.run(trading_wiring._source_native_bars(candidate, NOW - 300_000, NOW))
@@ -357,18 +344,77 @@ def test_pre_move_and_four_hour_reads_measure_the_same_book(monkeypatch: pytest.
     assert [str(bar.close) for bar in pre_move] == ["100.5", "101.5"]
 
 
-def test_provider_symbol_mismatch_fails_closed_before_market_data() -> None:
-    trading = FakeTrading((_row(provider_symbol="XYZ-OTHER"),))
+def test_a_source_without_its_durable_clock_is_rejected_before_market_data() -> None:
+    trading = FakeTrading((_row(available_at_ms=None),))
 
     asyncio.run(_lane(trading).advance())
 
     assert trading.cases == {}
     assert trading.admission[0]["reason"] == "source_contract_invalid"
-    assert trading.admission[0]["evidence"] == {"rule": "provider_symbol_mismatch"}
+    assert trading.admission[0]["evidence"] == {"rule": "available_at_missing"}
+
+
+def test_the_frozen_case_carries_no_upstream_judgment_program_or_cohort_identity() -> None:
+    """#510 PR-4. A News policy or Program bump changes nothing a frozen Case names."""
+
+    trading = FakeTrading((_row(),))
+
+    asyncio.run(_lane(trading).advance())
+
+    manifest = next(iter(trading.cases.values()))["manifest"]
+    assert manifest.manifest_version == "trading_manifest_v11"
+    source = manifest.contexts.oi
+    assert set(source.model_dump()) == {
+        "event_id",
+        "metric_version",
+        "source_item_id",
+        "observed_at_ms",
+        "available_at_ms",
+        "base_symbol",
+        "venue",
+        "oi_direction",
+        "oi_change_bps",
+        "oi_value_usd",
+        "whale_long_profit_bps",
+        "whale_oi_ratio_bps",
+        "source_strategy_id",
+        "source_contract_version",
+        "measurement_window_ms",
+    }
+    assert manifest.primary_trigger.persisted_at_ms == NOW - 30_000
+
+
+class _RetiredManifest:
+    """A Case frozen under `trading_manifest_v10`, as the claim read returns it."""
+
+    def __init__(self, manifest: TradingCaseManifest) -> None:
+        self.primary_trigger = manifest.primary_trigger
+        self._raw = manifest.model_dump(mode="json") | {"manifest_version": "trading_manifest_v10"}
+
+    def model_dump(self, **_: Any) -> dict[str, Any]:
+        return dict(self._raw)
+
+
+def test_a_case_frozen_under_a_retired_manifest_version_is_blocked_not_re_decided() -> None:
+    """#510 PR-4: a pending v10 Case is refused by the pinned version, with no migration."""
+
+    trading = FakeTrading((_row(),))
+    lane = _lane(trading)
+    asyncio.run(lane.advance())
+    case_id, value = next(iter(trading.cases.items()))
+    trading.cases[case_id] = {**value, "manifest": _RetiredManifest(value["manifest"]), "state": CaseState.PENDING}
+    trading.claimable.append(case_id)
+    trading.signals.clear()
+
+    turn = asyncio.run(lane.advance())
+
+    assert turn.blocked == 1
+    assert trading.cases[case_id]["policy_reason"] == "manifest_invalid"
+    assert trading.signals == []
 
 
 def test_invalid_market_key_is_durably_rejected_without_faulting_workers() -> None:
-    trading = FakeTrading((_row(symbol="@107", provider_symbol="@107", venue="hyperliquid"),))
+    trading = FakeTrading((_row(symbol="@107", venue="hyperliquid"),))
 
     turn = asyncio.run(_lane(trading, expected_symbol="@107").advance())
 

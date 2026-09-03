@@ -37,9 +37,12 @@ from typing import Any, Final, Literal, TypedDict
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Bumped whenever the manifest layout or pure policy changes shape: a Case frozen under one version is
-# not comparable with a Case frozen under another. v10 is #433-C's engine-neutral hard cut: it keeps
-# source provenance and a venue-neutral market key, with no execution binding or capital fields.
-TRADING_MANIFEST_VERSION: Final = "trading_manifest_v10"
+# not comparable with a Case frozen under another. v10 was #433-C's engine-neutral hard cut. v11 is
+# #510 PR-4: the frozen Source is the provider's measured fact and its own two clocks, with none of
+# News's judgment, epoch, Program or policy identity on it. A pending v10 Case cannot validate against
+# this layout and is `BLOCKED / manifest_invalid` on its next claim, which is what the five-minute Case
+# decision TTL already does to anything older than one deploy.
+TRADING_MANIFEST_VERSION: Final = "trading_manifest_v11"
 # The `execution_strategy` every execution-stream row is keyed on. It lived as three separate literals
 # until #460 — the runtime's own `oi_nautilus_v1`, and `oi-nautilus-v1` in both the query-plan audit and
 # the restore drill. The hyphenated spelling matches no row: production holds 782 observations under
@@ -61,10 +64,11 @@ class DecisionRuntimeV1:
     updated_at_ms: int
 
 
-# No `NewsLearningEpoch` literal (#314). Trading pins the two upstream contracts it actually reasons
-# about — `program_version` and `policy_version` — and a News epoch label is neither: it names *when* a
-# cohort opened, which News owns and re-derives per deployment. Pinning it here made every News identity
-# move edit this file to restate a fact the two version pins already carried.
+# No News identity of any kind (#510). Trading used to pin `program_version`, `policy_version`,
+# `judgment_contract_version` and the learning epoch, which meant a News policy bump — v11 to v12 in
+# #504 — could only ship by editing this file. None of the four ever decided anything a Trading rule
+# reads: the measurements, the two clocks and the venue are the fact, and every admission rule is about
+# those. What upstream calls its judge is upstream's business.
 
 # ---------------------------------------------------------------------------- upstream input rows
 # What the composition root must hand this context to produce candidates. Trading owns these because
@@ -72,7 +76,7 @@ class DecisionRuntimeV1:
 # second projection without this file moving, and the App-side mapper is where the two meet.
 #
 # They are `TypedDict`s rather than validating models on purpose. Source normalization fails closed on
-# a named rejection for every value it cannot use — an unparseable rank, an unknown direction — and a
+# a named rejection for every value it cannot use — a missing clock, an unknown direction — and a
 # model that raised on the same row would turn a counted admission answer into an exception nothing
 # durable sees. Deliberately loose where the source is loose: `venue` is provider text that may be
 # absent.
@@ -90,30 +94,16 @@ def oi_source_key(event_id: object, metric_version: object) -> str:
 
 
 class OiCandidateRow(TypedDict):
-    """One parsed deterministic OI telemetry fact offered to the Signal lane."""
+    """One parsed deterministic OI telemetry fact offered to the Signal lane.
+
+    Sixteen keys, all of them a property of the measured frame: what moved, by how much, on which
+    venue, when it was observed, when it became durable, and what the provider proves about the
+    interval it measured. Nothing here names a judge, a Program, a policy, a cohort or a decision.
+    """
 
     event_id: str
-    source_item_id: str
-    verdict_created_at_ms: int
-    # The reader's own judgment of this frame, and the named rule behind it. Audit, not admission: since
-    # #264 the Gate decides whether the fact may trigger, and a reader policy change must not silently
-    # admit or reject a Source for the Signal lane.
-    final_decision: str
-    source_rule: str
-    # What the provider proves about the measurement (#265). Nullable together; `None` means unproven.
-    source_strategy_id: str | None
-    source_contract_version: str | None
-    measurement_window_ms: int | None
-    provider_symbol: str
-    learning_epoch: str
-    program_version: str
-    program_sha256: str
-    policy_version: str
-    judgment_contract_version: str
-    judgment_origin: str
-    judgment_sha256: str
-    runtime_manifest_sha: str
     metric_version: str
+    source_item_id: str
     symbol: str
     direction: str
     oi_change_bps: int
@@ -121,8 +111,14 @@ class OiCandidateRow(TypedDict):
     whale_long_profit_bps: int
     whale_oi_ratio_bps: int
     observed_at_ms: int
-    source_available_at_ms: int
+    # When the upstream fact became durable, and therefore the earliest instant this lane could have
+    # read it. It is the Case's `persisted_at_ms`.
+    available_at_ms: int
     ingest_mode: str
+    # What the provider proves about the measurement (#265). Nullable together; `None` means unproven.
+    source_strategy_id: str | None
+    source_contract_version: str | None
+    measurement_window_ms: int | None
     venue: str | None
 
 
@@ -158,7 +154,6 @@ DecisionBlockReason = Literal[
     "case_stale",
     "manifest_invalid",
     "policy_identity_retired",
-    "source_generation_retired",
     "source_stale",
 ]
 
@@ -211,13 +206,16 @@ class Bar(_Frozen):
 
 
 class OiTradeCandidate(_Frozen):
-    """The public projection of one deterministic telemetry verdict plus its rank-ledger row."""
+    """The public projection of one deterministic OI telemetry fact, frozen into a Case."""
 
     event_id: str
+    metric_version: str
+    # The Item the parser read. Provenance the operator can follow upstream, and never a rule.
+    source_item_id: str
     observed_at_ms: int
-    # When the deterministic verdict became durable, as opposed to when the frame was observed. The
-    # two are separate stages and the gap between them is the one latency Trading does not own (#211).
-    verdict_created_at_ms: int
+    # When the upstream fact became durable, as opposed to when the frame was observed. The two are
+    # separate stages and the gap between them is the one latency Trading does not own (#211).
+    available_at_ms: int
     base_symbol: str
     venue: str
 
@@ -227,27 +225,12 @@ class OiTradeCandidate(_Frozen):
     whale_long_profit_bps: int
     whale_oi_ratio_bps: int
 
-    # The reader's verdict on the same frame, frozen into the manifest so an Alpha decision can be read
-    # beside the judgment that accompanied it. Deliberately `str` rather than a `Literal`: it is no longer
-    # an admission rule, and pinning the reader's decision vocabulary here would turn a News policy change
-    # into a Trading validation failure — the exact coupling #264 removes.
-    final_decision: str
-    source_rule: str = Field(min_length=1)
-    metric_version: str
     # The provider's own measurement contract, frozen into the manifest so a Case is a claim about a
     # *specific* interval rather than about "OI rose". `None` means the interval could not be proven —
     # the frame is still a usable fact, and the policy refuses it by name (#265).
     source_strategy_id: str | None = None
     source_contract_version: str | None = None
     measurement_window_ms: int | None = None
-    learning_epoch: str = Field(min_length=1, max_length=64)
-    program_version: Literal["news_oi_signal_v3"]
-    program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    policy_version: Literal["news_triage_policy_v12"]
-    judgment_contract_version: Literal["news_judgment_v2"]
-    judgment_origin: Literal["oi"]
-    judgment_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    runtime_manifest_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @property
     def source_key(self) -> str:
@@ -312,9 +295,13 @@ class AlphaDecision(_Frozen):
 
 
 class OiMarketTrigger(_Frozen):
+    """One frozen trigger identity: which fact, when it happened, when it could first be read."""
+
     kind: Literal["oi"] = "oi"
     source_key: str
     observed_at_ms: int
+    # The source's own `available_at_ms`. It used to be the triage verdict's insert stamp, which made a
+    # Case's second clock a property of the editorial pipeline rather than of the fact (#510).
     persisted_at_ms: int
     venue: str
 
@@ -338,7 +325,7 @@ class FrozenPolicyContext(_Frozen):
 class TradingCaseManifest(_Frozen):
     """The frozen, content-addressed input to one decision. Nothing later than `cutoff_ms` may enter."""
 
-    manifest_version: Literal["trading_manifest_v10"] = TRADING_MANIFEST_VERSION
+    manifest_version: Literal["trading_manifest_v11"] = TRADING_MANIFEST_VERSION
     primary_trigger: OiMarketTrigger
     contexts: FrozenPolicyContext
     policy_id: str

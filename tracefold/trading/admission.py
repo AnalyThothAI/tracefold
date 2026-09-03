@@ -12,7 +12,7 @@ they are not a Source of this lane and no code path offers one.
 
 **What this module owns** is whether a Source may become a *trigger* now:
 
-    source          the row is a usable, current-generation, live OI fact at all
+    source          the row is a usable, live OI fact at all
     venue           the frame's own venue is supported for source-native public context
     eligibility     liquidity floor, blacklist, freshness, idempotency, one undecided Case per underlying
     market_context  there is a candle at the cutoff to freeze a mark and a pre-move from
@@ -44,7 +44,10 @@ from .sources import SourceRejected, normalize_source_venue
 # v5 is #433-C: source venue is evidence provenance, not an execution binding or catalogue lookup.
 # v6 keeps Hyperliquid's `xyz` builder DEX distinct so source-native candles cannot silently fall
 # back to the main perpetual book.
-ADMISSION_VERSION: Final = "trading_admission_v6"
+# v7 is #510 PR-4: the upstream-generation rule is gone with the News identity fields it read, and the
+# builder DEX is decided by the provider's venue rather than by a title token. Every rule below is now
+# a statement about the measured frame.
+ADMISSION_VERSION: Final = "trading_admission_v7"
 
 AdmissionStatus = Literal["DEFERRED", "REJECTED", "CASE_CREATED", "EXPIRED"]
 AdmissionStage = Literal["source", "venue", "eligibility", "catalog", "market_context", "freeze"]
@@ -57,7 +60,6 @@ AdmissionStage = Literal["source", "venue", "eligibility", "catalog", "market_co
 ADMISSION_REASONS: Final[frozenset[str]] = frozenset(
     {
         "source_contract_invalid",
-        "source_generation_mismatch",
         "source_not_live",
         # An unknown source venue has no supported public context adapter. Terminal and explicit;
         # borrowing another venue would silently change the fact being evaluated.
@@ -84,11 +86,9 @@ _SOURCE_REASONS: Final[Mapping[str, str]] = {
     "symbol_not_canonicalisable": "source_contract_invalid",
     "market_key_invalid": "source_contract_invalid",
     "observed_at_missing": "source_contract_invalid",
-    "verdict_time_missing": "source_contract_invalid",
-    "rank_missing": "source_contract_invalid",
+    "available_at_missing": "source_contract_invalid",
     "oi_direction_unknown": "source_contract_invalid",
     "not_live_ingest": "source_not_live",
-    "generation_invalid": "source_generation_mismatch",
 }
 
 
@@ -194,8 +194,7 @@ def _result(
     """One admitted-source answer, carrying the frame's own measurements.
 
     The four numbers ride on every result past the source stage so a threshold argument can be settled
-    from this row alone. Re-deriving them means joining `news_oi_signals` back through the verdict, and
-    the whole point of the ledger is that the answer survives without that join.
+    from this row alone, without going back upstream for the frame that produced it.
     """
 
     return AdmissionResult(
@@ -213,8 +212,6 @@ def _result(
             "oi_value_usd": candidate.oi_value_usd,
             "whale_oi_ratio_bps": candidate.whale_oi_ratio_bps,
             "whale_long_profit_bps": candidate.whale_long_profit_bps,
-            "source_decision": candidate.final_decision,
-            "source_rule": candidate.source_rule,
             **dict(evidence or {}),
         },
         case_id=case_id,

@@ -123,7 +123,10 @@ def conn(postgres_module_clone_dsn: str):
 
 @pytest.fixture
 def clean(conn: Any):
-    conn.execute("TRUNCATE news_items, news_event_evidence_snapshots RESTART IDENTITY CASCADE")
+    conn.execute(
+        "TRUNCATE news_items, news_event_evidence_snapshots, trading_cases, trading_trade_signals, "
+        "trading_candidate_gate_decisions RESTART IDENTITY CASCADE"
+    )
     conn.commit()
     return conn
 
@@ -176,16 +179,6 @@ def _judge_frame(conn: Any) -> str:
     return str(events[0].payload["event_id"])
 
 
-def _running_generation(conn: Any) -> str:
-    rows = repositories_for_connection(conn).news.trade_candidate_oi_rows(
-        metric_version=OI_METRIC_VERSION,
-        after_created_at_ms=0,
-        until_created_at_ms=now_ms() + 60_000,
-    )
-    assert rows
-    return str(rows[0]["learning_epoch"])
-
-
 def test_news_frame_mapper_and_signal_lane_commit_one_current_pair(clean: Any) -> None:
     conn = clean
     event_id = _judge_frame(conn)
@@ -196,7 +189,7 @@ def test_news_frame_mapper_and_signal_lane_commit_one_current_pair(clean: Any) -
         until_created_at_ms=now_ms() + 60_000,
     )
     assert [row["event_id"] for row in rows] == [event_id]
-    assert [row["provider_symbol"] for row in rows] == [OI_SYMBOL]
+    assert [row["symbol"] for row in rows] == [OI_SYMBOL]
     evidence_rows = repos.news.trade_evidence_oi_rows(
         metric_version=OI_METRIC_VERSION,
         start_observed_at_ms=rows[0]["observed_at_ms"],
@@ -204,7 +197,8 @@ def test_news_frame_mapper_and_signal_lane_commit_one_current_pair(clean: Any) -
         known_at_or_before_ms=now_ms() + 60_000,
         available_at_or_before_ms=now_ms() + 60_000,
     )
-    assert [row["provider_symbol"] for row in evidence_rows] == [OI_SYMBOL]
+    # The live read and the evidence read answer the same ledger through the same sixteen keys (#510).
+    assert [dict(row) for row in evidence_rows] == [dict(rows[0])]
     assert dict(to_oi_candidate_row(rows[0])) == dict(rows[0])
     assert MAPPED_NEWS_PROJECTION_VERSION == NEWS_TRADE_PROJECTION_VERSION
 
@@ -220,7 +214,6 @@ def test_news_frame_mapper_and_signal_lane_commit_one_current_pair(clean: Any) -
         config=SignalLaneConfig(),
         bars=bars,
         oi_projection=_news_projection(NewsDatabase(conn)),
-        news_generation=_running_generation(conn),
         release_revision="test-release",
         clock=now_ms,
     )
@@ -239,3 +232,134 @@ def test_news_frame_mapper_and_signal_lane_commit_one_current_pair(clean: Any) -
     # The lane emitting no Intent and no order used to be two `count(*) = 0` reads. `20260901_0347`
     # dropped both tables, so the claim is now made by the schema rather than measured here — see
     # `test_trading_signal_hard_cut.py::test_0347_drops_every_retired_execution_table_and_only_its_own_functions`.
+
+
+def _numeric_oi_fact(conn: Any, *, event_id: str, item_id: str, observed_at_ms: int) -> None:
+    """One News OI ledger row and the Item it was parsed from, and nothing else.
+
+    No verdict, no editorial pipeline output, no learning epoch and no active-arm row: the
+    deterministic numbers and their source Item are the whole of what Trading reads.
+    """
+
+    repos = repositories_for_connection(conn)
+    news = repos.news
+    with repos.transaction():
+        news.upsert_item(
+            item_id=item_id,
+            source_id="opennews",
+            source_item_key=item_id,
+            title=OI_TITLE,
+            raw_first_line="",
+            description="",
+            canonical_url=None,
+            reporting_origin="OpenNews",
+            published_at_ms=observed_at_ms,
+            observed_at_ms=observed_at_ms,
+            provider_metadata_json='{"source": "binance"}',
+            strategy_ids_json='["1019"]',
+            ingest_mode="live",
+            trace_id="trace",
+            now_ms=observed_at_ms,
+        )
+        news.insert_event(
+            event_id=event_id,
+            leader_item_id=item_id,
+            dedupe_family="market",
+            event_kind="oi",
+            comparison_fingerprint=event_id,
+            comparison_title=OI_TITLE,
+            leader_title=OI_TITLE,
+            focus_fact_id=f"fact:{event_id}",
+            focus_fact_text=OI_TITLE,
+            focus_fact_context="",
+            focus_fact_method="whole_item",
+            focus_span_start=0,
+            focus_span_end=len(OI_TITLE),
+            opened_at_ms=observed_at_ms,
+            expires_at_ms=observed_at_ms + 3_600_000,
+            admission="candidate",
+            queue_priority="normal",
+            provider_score=90,
+            engine_type="market",
+            asset_class="crypto",
+            grounded_assets=(),
+            grounded_assets_json="[]",
+            watchlist_hits=(),
+            watchlist_hits_json="[]",
+            macro_lexicon=False,
+            storyline_key=f"story:{event_id}",
+            context_line="",
+            ingest_mode="live",
+            trace_id="trace",
+            band_keys=(event_id,),
+            now_ms=observed_at_ms,
+        )
+        news.insert_oi_signal(
+            event_id=event_id,
+            metric_version=OI_METRIC_VERSION,
+            symbol=OI_SYMBOL,
+            direction="rise",
+            oi_change_bps=720,
+            oi_value_usd=32_170_000,
+            whale_long_profit_bps=8_021,
+            whale_oi_ratio_bps=10_071,
+            observed_at_ms=observed_at_ms,
+            now_ms=observed_at_ms,
+            source_strategy_id="1019",
+            source_contract_version="opennews_oi_source_v1",
+            measurement_window_ms=300_000,
+            source_item_id=item_id,
+            source_venue="binance",
+        )
+
+
+def test_numeric_oi_ledger_alone_freezes_a_case_and_emits_a_signal(clean: Any) -> None:
+    """#510 PR-4. The deterministic ledger row is the whole seam.
+
+    No triage verdict, no learning epoch and no active arm exist for this frame, so before the cut the
+    projection returned nothing at all and the Case was never frozen. A News policy or Program bump
+    changes exactly this much of Trading: nothing.
+    """
+
+    conn = clean
+    observed = now_ms() - 30_000
+    _numeric_oi_fact(conn, event_id="numeric-evt", item_id="numeric-item", observed_at_ms=observed)
+    assert conn.execute("SELECT count(*) AS n FROM news_verdicts").fetchone()["n"] == 0
+
+    repos = repositories_for_connection(conn)
+    rows = repos.news.trade_candidate_oi_rows(
+        metric_version=OI_METRIC_VERSION,
+        after_created_at_ms=0,
+        until_created_at_ms=now_ms() + 60_000,
+    )
+    assert [row["event_id"] for row in rows] == ["numeric-evt"]
+    assert rows[0]["symbol"] == OI_SYMBOL
+    assert rows[0]["venue"] == "binance"
+    assert rows[0]["ingest_mode"] == "live"
+    assert rows[0]["available_at_ms"] == observed
+
+    async def bars(_candidate: Any, start: int, end: int) -> list[Bar]:
+        aligned = (start // BAR_INTERVAL_MS) * BAR_INTERVAL_MS
+        return [
+            Bar(open_at_ms=opened, close_at_ms=opened + BAR_INTERVAL_MS, close=Decimal("150.00"))
+            for opened in range(aligned, end + BAR_INTERVAL_MS, BAR_INTERVAL_MS)
+        ]
+
+    lane = SignalLane(
+        db=TradingDatabase(conn),
+        config=SignalLaneConfig(),
+        bars=bars,
+        oi_projection=_news_projection(NewsDatabase(conn)),
+        release_revision="test-release",
+        clock=now_ms,
+    )
+    turn = asyncio.run(lane.advance())
+
+    cases = [dict(row) for row in conn.execute("SELECT * FROM trading_cases").fetchall()]
+    signals = [dict(row) for row in conn.execute("SELECT * FROM trading_trade_signals").fetchall()]
+    assert (turn.sources, turn.cases_created, turn.signals_emitted) == (1, 1, 1)
+    assert len(cases) == len(signals) == 1
+    assert CaseState(cases[0]["state"]) is CaseState.SIGNAL_EMITTED
+    assert cases[0]["manifest"]["manifest_version"] == "trading_manifest_v11"
+    assert cases[0]["manifest"]["primary_trigger"]["persisted_at_ms"] == observed
+    assert signals[0]["market_key"] == f"crypto:perp:{OI_SYMBOL}:USDT"

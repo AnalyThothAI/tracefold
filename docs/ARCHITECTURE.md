@@ -463,16 +463,20 @@ port it needs from the process — `NewsDatabasePort`, `QuoteDatabasePort`,
 the lane, the deadline default and the error vocabulary. A business module never
 names `worker_session`, `run_news` or `heavy_business`: no import edge was never
 the same thing as no dependency. The handoff itself is two independent frozen
-row contracts, News's `news_trade_projection_v13` and Trading's own candidate
+row contracts, News's `news_trade_projection_v14` and Trading's own candidate
 input rows, translated field by field in `news_to_trading.py`, so a rename on
-either side fails at the seam rather than inside a runner. Version 13 publishes
-the deterministic OI judgment, frozen source-availability clock, provider-native
-market token, and a bounded bulk
-point-in-time instrument catalogue, and the complete fixed-window OI source
-universe used by Trading. That universe reuses the production Gate's exact
-current-Event and live-ingest eligibility, so recovery or archived rows cannot
-manufacture a missing Gate disposition; editorial News and liquidation have no
-Signal-lane projection.
+either side fails at the seam rather than inside a runner. Version 14 publishes
+the deterministic OI ledger and nothing else: sixteen keys read from
+`news_oi_signals` joined to the source Item for its `first_ingest_mode`, plus a
+bounded bulk point-in-time instrument catalogue and the complete fixed-window OI
+source universe. The triage verdict, the learning epoch, the six `jsonb`
+equalities that re-proved the ledger against the verdict's copy of it and the
+four News version literals are gone (#510): a frame reaches Trading without
+passing through the editorial pipeline or the active learning arm, so a News
+policy or Program identity move is no longer a Trading contract change. Ingest
+provenance is published and never filtered here — the Signal lane refuses a
+recovery frame by name; editorial News and liquidation have no Signal-lane
+projection.
 The live OI handoff reads that projection through the News cold adapter, closes
 the News transaction, and then lets the Trading adapter open its own bounded
 transactions. No callback receives both repositories and there is no
@@ -776,7 +780,8 @@ deterministic parser records the verified primary in `news_event_assets` in the
 same transaction as the Verdict (#267). That row is the shared Event-market
 identity consumed by Reaction planning, symbol filters, Feed/detail projection,
 reader history and delivery; `news_oi_signals(event_id, oi_signal_v1)` remains
-the separate rank ledger. The Quote planner unions recent live OI symbols into
+the separate frame ledger, and since #510 it is the whole of what the Trading
+Signal lane reads. The Quote planner unions recent live OI symbols into
 its existing bounded working set.
 The price remains display-only: it cannot change OI judgment, policy, rank, or
 delivery eligibility, and a stale or unavailable quote silently removes the
@@ -2287,13 +2292,18 @@ endpoint; the operator chose that channel and dropped the earlier one-card-per-
 symbol-per-day ceiling with it. The notification channel is assembled from
 `trading.notifications` and no longer from the Telegram control ingress, which is
 why it had never run: being told what the lane decided used to require standing up
-an authenticated command channel first. The `trading_manifest_v10` manifest names
+an authenticated command channel first. The `trading_manifest_v11` manifest names
 exactly one `primary_trigger`, one `policy_id` / `policy_version` / exact typed
 `policy_config` / `policy_config_digest`, a venue-neutral `market_key`, and a
 point-in-time `contexts` object. `contexts.market` is
-the sole market truth. A restart re-runs the exact policy identity the Case
+the sole market truth and `contexts.oi` is the provider's measured frame — the
+four numbers, its two clocks, its venue, its source Item and the provider's own
+measurement contract — with no upstream judgment, Program, policy or cohort
+identity on it (#510). A restart re-runs the exact policy identity the Case
 froze rather than comparing the Case with today's thresholds; a Case naming a
-retired identity is `BLOCKED / policy_identity_retired` and never re-decided.
+retired identity is `BLOCKED / policy_identity_retired` and never re-decided,
+and a Case frozen under an earlier manifest version is `BLOCKED /
+manifest_invalid` on its next claim.
 
 ### Failure semantics
 
@@ -2443,7 +2453,11 @@ sole authority until it protects or closes the position.
 Admission owns source contract, supported source venue, freshness, the
 liquidity floor, market context, same-underlying Case identity, and the per-turn
 freeze bound. Source venue chooses only the public bars used as evidence; it
-does not select an execution route. (A rank
+does not select an execution route, and it is also the whole of the evidence for
+Hyperliquid's `hl.xyz` builder DEX now that the provider title token is no longer
+projected (#510). Nothing in Admission reads an upstream judge, Program, policy
+or learning cohort: `trading_admission_v7` dropped `source_generation_mismatch`
+with the News identity fields the rule needed. (A rank
 ceiling and a per-symbol cooldown were on that list until #348 retired both:
 selectivity belongs to the policy, and a re-entry delay is what a lane needs
 when several positions can be open at once.) It
@@ -2541,7 +2555,8 @@ counted now.
 
 `news_oi_signals` is the frame ledger and nothing more: a derived read model with
 one writer, idempotent by `event_id`, rebuildable by re-parsing the Item, and
-cascade-deleted with it. `rank_in_window` was dropped from it in migration
+cascade-deleted with it. It is also the entire News surface the Trading Signal
+lane consumes (#510), joined only to the source Item for its ingest mode. `rank_in_window` was dropped from it in migration
 `20260901_0344` with the rule that computed it. The following `20260901_0345`
 is the current head. Two consequences of judging
 these frames rather than suppressing them are deliberate and worth stating:
