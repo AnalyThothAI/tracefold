@@ -66,13 +66,10 @@ def test_paper_and_live_change_only_cold_identity_and_binance_environment(
 
 def test_disabled_helper_constructs_no_node_and_rejects_active_profiles() -> None:
     profile = oi_profile("disabled")
-    readiness = run_nautilus(profile)
 
-    assert readiness.mode == "disabled"
-    assert readiness.alive is False
-    assert readiness.execution_safe is False
-    assert readiness.entries_armed is False
-    assert readiness.entry_block_reason == "disabled"
+    # #510 E. A disabled Runtime reports nothing: it opens no session, projects no row and answers
+    # no probe. The readiness value this returned had one caller, which discarded it.
+    assert run_nautilus(profile) is None
     with pytest.raises(ValueError, match="oi_runtime_disabled_has_no_node"):
         build_oi_node_config(profile, BinanceRuntimeCredentials(api_key="x", api_secret="y"))
     with pytest.raises(RuntimeError, match="oi_runtime_active_profile_requires_composition_root"):
@@ -94,14 +91,13 @@ def test_credentials_never_expose_secrets_in_repr() -> None:
     assert "visible-secret" not in repr(node)
 
 
-def test_paper_and_live_have_disjoint_profile_cache_credential_and_client_namespaces() -> None:
+def test_paper_and_live_have_disjoint_profile_cache_and_client_namespaces() -> None:
     paper = oi_profile("paper")
     live = oi_profile("live")
     paper_node = build_oi_node_config(paper, BinanceRuntimeCredentials("paper-key", "paper-secret"))
     live_node = build_oi_node_config(live, BinanceRuntimeCredentials("live-key", "live-secret"))
 
     assert paper.profile_id != live.profile_id
-    assert paper.credential_namespace != live.credential_namespace
     assert paper.cache_namespace != live.cache_namespace
     assert paper.client_order_namespace != live.client_order_namespace
     assert paper_node.trader_id != live_node.trader_id

@@ -11,14 +11,20 @@ from decimal import Decimal
 from threading import Lock
 from typing import Any
 
-from tracefold.trading import ExecutionObservationV1
+from tracefold.trading import (
+    MAX_OBSERVATION_APPEND_BATCH,
+    MAX_OBSERVATION_APPEND_BYTES,
+    ExecutionObservationV1,
+)
 
 from .risk import DayStartBaseline
 
 _DEFAULT_MAX_COUNT = 1_024
 _DEFAULT_MAX_BYTES = 4 * 1_048_576
-_FLUSH_COUNT = 128
-_FLUSH_BYTES = 1_048_576
+# One flush is one durable append, so the buffer stops at exactly what the durable writer accepts;
+# the two numbers used to be re-typed on both sides of the seam (#510 E).
+_FLUSH_COUNT = MAX_OBSERVATION_APPEND_BATCH
+_FLUSH_BYTES = MAX_OBSERVATION_APPEND_BYTES
 _ENTRY_RESERVE_COUNT = 8
 _ENTRY_RESERVE_BYTES = 64 * 1_024
 _EQUITY_SCALE = Decimal(1_000_000)

@@ -271,6 +271,13 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
 
     assert trading.__all__ == [
         "EXECUTION_STRATEGY_ID",
+        # The identity shapes and the durable append bounds every Trading fact is checked against.
+        # The Runtime reads them from here instead of re-typing its own copies (#510 E).
+        "IDENTITY_PATTERN",
+        "MARKET_KEY_PATTERN",
+        "MAX_OBSERVATION_APPEND_BATCH",
+        "MAX_OBSERVATION_APPEND_BYTES",
+        "SHA256_PATTERN",
         "AlphaDecision",
         "Bar",
         "BinanceDemoReceipt",
@@ -291,6 +298,7 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
         "TradingCaseManifest",
         "canonical_sha256",
         "parse_operator_command",
+        "postgres_text_valid",
         "prepare_execution_observations",
         "prepare_parsed_operator_intent",
         "verify_binance_demo_receipt",

@@ -12,10 +12,10 @@ from nautilus_trader.model.identifiers import ClientId, ClientOrderId
 from .config import OiRuntimeProfile
 from .exit import ExitCoordinator
 from .observations import RuntimeObservationWriter
+from .quotes import QuoteStreamCoordinator
 from .state import (
     ExecutionState,
     PrivateReconciliationReason,
-    RecoveredProtectionSeed,
     RuntimeExecutionState,
     RuntimeReadiness,
     deterministic_client_order_id,
@@ -35,6 +35,7 @@ class ProtectionCoordinator:
         readiness: RuntimeReadiness,
         observations: RuntimeObservationWriter,
         exits: ExitCoordinator,
+        quotes: QuoteStreamCoordinator,
         request_reconciliation: Callable[[PrivateReconciliationReason], None],
     ) -> None:
         self._engine = engine
@@ -43,6 +44,7 @@ class ProtectionCoordinator:
         self._readiness = readiness
         self._observations = observations
         self._exits = exits
+        self._quotes = quotes
         self._request_reconciliation = request_reconciliation
 
     def status(
@@ -121,6 +123,9 @@ class ProtectionCoordinator:
                 self._engine.cancel_order(retiring, client_id=ClientId("BINANCE"))
         state.exit_retry_required = False
         self._observations.position(state, "closed", int(event.ts_closed))
+        # Nothing on this instrument needs a mark any more, so the Runtime stops paying for its
+        # quotes; the next admitted entry re-opens the stream (#510 E).
+        self._quotes.release(state.route.instrument_id)
         if self._state.pending_flatten:
             self._request_reconciliation("flatten_pending")
 
@@ -139,11 +144,13 @@ class ProtectionCoordinator:
         if instrument is None:
             self._readiness.halt_for_unexpected_exposure()
             return
-        distance = Decimal(state.route.stop_distance_bps) / Decimal(10_000)
-        trigger = avg_price * (Decimal(1) - distance if state.entry.direction == "long" else Decimal(1) + distance)
+        desired = self.desired_trigger_price(state, avg_price)
+        if desired is None:
+            self._readiness.halt_for_unexpected_exposure()
+            return
         side = OrderSide.SELL if state.entry.direction == "long" else OrderSide.BUY
         quantity_value = instrument.make_qty(quantity)
-        trigger_price = instrument.make_price(trigger)
+        trigger_price = instrument.make_price(desired)
         state.protection_generation += 1
         leg = protection_leg(state.protection_generation, quantity_value.as_decimal())
         client_order_id = deterministic_client_order_id(
@@ -201,15 +208,15 @@ class ProtectionCoordinator:
         avg_price: Decimal,
         trigger_price: Decimal,
     ) -> None:
-        recovered = RecoveredProtectionSeed(
-            role="pending",
-            client_order_id=client_order_id,
-            quantity=quantity,
-            trigger_price=trigger_price,
-            generation=state.protection_generation,
-        )
         self._state.orders[client_order_id] = (state.entry.entry_id, "protection")
-        if not self.recovered_valid(state=state, seed=recovered, protection=existing):
+        if not self.stop_valid(
+            state=state,
+            protection=existing,
+            quantity=quantity,
+            expected_trigger=trigger_price,
+            expected_leg=protection_leg(state.protection_generation, quantity),
+            require_open=False,
+        ):
             self._request_reconciliation("protection_ambiguity")
             if not existing.is_closed:
                 self._engine.query_order(existing, client_id=ClientId("BINANCE"))
@@ -263,84 +270,75 @@ class ProtectionCoordinator:
             self._request_reconciliation("protection_ambiguity")
             self._exits.flatten(state.position_id)
 
-    def recovered_valid(
-        self,
-        *,
-        state: ExecutionState,
-        seed: RecoveredProtectionSeed,
-        protection: Any,
-    ) -> bool:
-        instrument = self._engine.cache.instrument(state.route.instrument_id)
-        if instrument is None or state.position_id is None or state.avg_entry_price is None:
-            return False
-        expected_id = deterministic_client_order_id(
-            namespace=self._profile.client_order_namespace,
-            profile_id=self._profile.profile_id,
-            entry_id=state.entry.entry_id,
-            leg=protection_leg(seed.generation, seed.quantity),
-        )
-        expected_side = OrderSide.SELL if state.entry.direction == "long" else OrderSide.BUY
-        # A stop reclaimed from the Binance open-order report is added to Cache without any
-        # position index (`LiveExecutionEngine._reconcile_order_report`), so an unbound stop is
-        # normal after a restart. The deterministic client order id is what proves it is ours.
-        bound_position = (
-            None if protection is None else self._engine.cache.position_for_order(protection.client_order_id)
-        )
-        return bool(
-            seed.generation > 0
-            and seed.quantity > 0
-            and seed.client_order_id == expected_id
-            and protection is not None
-            and not protection.is_closed
-            and protection.strategy_id == self._engine.id
-            and protection.account_id == self._profile.account_id
-            and (bound_position is None or bound_position.id == state.position_id)
-            and protection.instrument_id == state.route.instrument_id
-            and protection.side == expected_side
-            and protection.order_type == OrderType.STOP_MARKET
-            and protection.trigger_type == TriggerType.LAST_PRICE
-            and seed.trigger_price > 0
-            and protection.trigger_price == instrument.make_price(seed.trigger_price)
-            and protection.is_reduce_only
-            and protection.quantity.as_decimal() == seed.quantity
-        )
+    def desired_trigger_price(self, state: ExecutionState, avg_price: Decimal) -> Decimal | None:
+        """The one stop trigger this execution's route, direction and entry price imply."""
 
-    def current_valid(
+        instrument = self._engine.cache.instrument(state.route.instrument_id)
+        if instrument is None:
+            return None
+        distance = Decimal(state.route.stop_distance_bps) / Decimal(10_000)
+        factor = Decimal(1) - distance if state.entry.direction == "long" else Decimal(1) + distance
+        return instrument.make_price(avg_price * factor).as_decimal()
+
+    def stop_valid(
         self,
         *,
         state: ExecutionState,
         protection: Any,
         quantity: Decimal,
-        avg_price: Decimal | None,
+        expected_trigger: Decimal | None,
+        expected_leg: str | None,
         require_open: bool,
     ) -> bool:
+        """The one shape a reduce-only stop must have to count as this execution's protection.
+
+        There were two of these: a recovery check that proved the deterministic client order id and
+        the Cache position binding, and a steady check that proved the trigger against the current
+        average entry price. Neither was a superset of the other, so the same order could satisfy one
+        and be refused by the other, and a tightening applied to one silently left the other alone
+        (#510 E). `require_open` is the one real difference and it is a pair: a stop that must be live
+        at the venue has to be open in Cache and carry this account, while a stop that has been
+        submitted and not yet accepted carries no account id at all.
+        """
+
         instrument = self._engine.cache.instrument(state.route.instrument_id)
-        if instrument is None or protection is None or quantity <= 0:
+        if instrument is None or protection is None or quantity <= 0 or state.position_id is None:
             return False
-        current = self._engine.cache.order(protection.client_order_id)
-        expected_side = OrderSide.SELL if state.entry.direction == "long" else OrderSide.BUY
-        distance = Decimal(state.route.stop_distance_bps) / Decimal(10_000)
-        expected_trigger = (
-            None
-            if avg_price is None
-            else instrument.make_price(
-                avg_price * (Decimal(1) - distance if state.entry.direction == "long" else Decimal(1) + distance)
+        if expected_leg is not None:
+            expected_id = deterministic_client_order_id(
+                namespace=self._profile.client_order_namespace,
+                profile_id=self._profile.profile_id,
+                entry_id=state.entry.entry_id,
+                leg=expected_leg,
             )
-        )
+            if protection.client_order_id != expected_id:
+                return False
+        if require_open:
+            current = self._engine.cache.order(protection.client_order_id)
+            if current is None or not current.is_open:
+                return False
+        # A stop reclaimed from the Binance open-order report is added to Cache without any position
+        # index (`LiveExecutionEngine._reconcile_order_report`), so an unbound stop is normal after a
+        # restart. A stop bound to some other position is not this execution's.
+        bound_position = self._engine.cache.position_for_order(protection.client_order_id)
+        expected_side = OrderSide.SELL if state.entry.direction == "long" else OrderSide.BUY
         return bool(
             not protection.is_closed
-            and (not require_open or (current is not None and current.is_open))
             and protection.strategy_id == self._engine.id
             and (
                 protection.account_id == self._profile.account_id
                 if require_open
                 else protection.account_id in {None, self._profile.account_id}
             )
+            and (bound_position is None or bound_position.id == state.position_id)
             and protection.instrument_id == state.route.instrument_id
             and protection.side == expected_side
             and protection.order_type == OrderType.STOP_MARKET
             and protection.trigger_type == TriggerType.LAST_PRICE
-            and (expected_trigger is None or protection.trigger_price == expected_trigger)
+            and (
+                expected_trigger is None
+                or (expected_trigger > 0 and protection.trigger_price == instrument.make_price(expected_trigger))
+            )
             and protection.is_reduce_only
             and protection.quantity.as_decimal() == quantity
         )

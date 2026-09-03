@@ -12,6 +12,7 @@ from nautilus_trader.model.identifiers import ClientId, ClientOrderId, PositionI
 from .config import OiRuntimeProfile
 from .exit import ExitCoordinator
 from .protection import ProtectionCoordinator
+from .quotes import QuoteStreamCoordinator
 from .state import (
     ExecutionState,
     PrivateReconciliationReason,
@@ -22,6 +23,8 @@ from .state import (
     entry_order_valid,
     exit_leg,
     exit_order_valid,
+    protection_leg,
+    unowned_cache_exposure,
 )
 
 
@@ -37,6 +40,7 @@ class RecoveryCoordinator:
         readiness: RuntimeReadiness,
         protection: ProtectionCoordinator,
         exits: ExitCoordinator,
+        quotes: QuoteStreamCoordinator,
         request_reconciliation: Callable[[PrivateReconciliationReason], None],
     ) -> None:
         self._engine = engine
@@ -45,6 +49,7 @@ class RecoveryCoordinator:
         self._readiness = readiness
         self._protection = protection
         self._exits = exits
+        self._quotes = quotes
         self._request_reconciliation = request_reconciliation
         self._routes = {route.market_key: route for route in profile.routes}
 
@@ -162,10 +167,13 @@ class RecoveryCoordinator:
                 else:
                     state.exit_order = exit_order
                     orders[seed.exit_client_order_id] = (request.entry_id, "exit")
-        owned = self._all_cache_exposure_is_owned(orders=orders, positions=positions)
-        self._state.executions = executions
-        self._state.orders = orders
-        self._state.positions = positions
+        owned = not any(self._unowned_exposure(orders=orders, positions=positions))
+        self._commit(
+            executions=executions,
+            orders=orders,
+            positions=positions,
+            observed_at_ns=snapshot.reconciliation_observed_at_ns,
+        )
         self._resume_ambiguous_actions(executions)
         # Commit the rebuilt ownership even when exposure is left over: the operator has to see
         # which instrument, side and quantity is unclaimed before `/flatten account` can act, and
@@ -195,29 +203,27 @@ class RecoveryCoordinator:
         pending = tuple(value for value in seed_protections if value.role == "pending")
         if instrument is None or len(active) != 1 or len(pending) > 1:
             return self._fail_and_flatten(state, executions, orders, positions)
-        distance = Decimal(state.route.stop_distance_bps) / Decimal(10_000)
         avg_entry_price = state.avg_entry_price
         if avg_entry_price is None:
             return self._fail_and_flatten(state, executions, orders, positions)
-        desired_trigger = instrument.make_price(
-            avg_entry_price * (Decimal(1) - distance if state.entry.direction == "long" else Decimal(1) + distance)
-        ).as_decimal()
+        desired_trigger = self._protection.desired_trigger_price(state, avg_entry_price)
         target = pending[0] if pending else active[0]
         if target.quantity != state.position_quantity or target.trigger_price != desired_trigger:
             return self._fail_and_flatten(state, executions, orders, positions)
         for protection_seed in seed_protections:
             protection = self._engine.cache.order(protection_seed.client_order_id)
-            if not self._protection.recovered_valid(
+            if not self._protection.stop_valid(
                 state=state,
-                seed=protection_seed,
                 protection=protection,
+                quantity=protection_seed.quantity,
+                expected_trigger=protection_seed.trigger_price,
+                expected_leg=protection_leg(protection_seed.generation, protection_seed.quantity),
+                require_open=protection_seed.role == "active",
             ):
                 return self._fail_and_flatten(state, executions, orders, positions)
             orders[protection_seed.client_order_id] = (state.entry.entry_id, "protection")
             state.protection_generation = max(state.protection_generation, protection_seed.generation)
             if protection_seed.role == "active":
-                if not protection.is_open:
-                    return self._fail_and_flatten(state, executions, orders, positions)
                 state.stop_order = protection
                 state.stop_quantity = protection_seed.quantity
                 state.stop_avg_price = None if pending else state.avg_entry_price
@@ -239,37 +245,50 @@ class RecoveryCoordinator:
         positions: dict[PositionId, str],
     ) -> bool:
         self._readiness.halt_for_unexpected_exposure()
-        self._state.executions = executions
-        self._state.orders = orders
-        self._state.positions = positions
+        self._commit(
+            executions=executions,
+            orders=orders,
+            positions=positions,
+            observed_at_ns=int(self._engine.clock.timestamp_ns()),
+        )
         if state.position_id is not None:
             self._exits.flatten(state.position_id)
         return False
 
-    def _all_cache_exposure_is_owned(
+    def _commit(
+        self,
+        *,
+        executions: dict[str, ExecutionState],
+        orders: dict[ClientOrderId, tuple[str, str]],
+        positions: dict[PositionId, str],
+        observed_at_ns: int,
+    ) -> None:
+        """Adopt the rebuilt ownership and open a quote stream for every position it reclaimed.
+
+        A recovered position still has to be marked - for the operator projection, for the daily
+        drawdown, and for the risk facts of any later entry - and `on_start` no longer subscribes
+        anything (#510 E).
+        """
+
+        self._state.executions = executions
+        self._state.orders = orders
+        self._state.positions = positions
+        for state in executions.values():
+            if state.active or state.position_quantity > 0:
+                self._quotes.ensure(state.route.instrument_id, observed_at_ns)
+
+    def _unowned_exposure(
         self,
         *,
         orders: dict[ClientOrderId, tuple[str, str]],
         positions: dict[PositionId, str],
-    ) -> bool:
-        owned_order_ids = frozenset(orders)
-        owned_position_ids = frozenset(positions)
-        open_orders = tuple(self._engine.cache.orders_open(account_id=self._profile.account_id))
-        inflight_orders = tuple(self._engine.cache.orders_inflight(account_id=self._profile.account_id))
-        open_positions = tuple(self._engine.cache.positions_open(account_id=self._profile.account_id))
-        return not (
-            any(
-                order.client_order_id not in owned_order_ids or order.strategy_id != self._engine.id
-                for order in open_orders
-            )
-            or any(
-                order.client_order_id not in owned_order_ids or order.strategy_id != self._engine.id
-                for order in inflight_orders
-            )
-            or any(
-                position.id not in owned_position_ids or position.strategy_id != self._engine.id
-                for position in open_positions
-            )
+    ) -> tuple[frozenset[ClientOrderId], frozenset[PositionId]]:
+        return unowned_cache_exposure(
+            cache=self._engine.cache,
+            account_id=self._profile.account_id,
+            strategy_id=self._engine.id,
+            owned_order_ids=frozenset(orders),
+            owned_position_ids=frozenset(positions),
         )
 
     def _resume_ambiguous_actions(self, executions: dict[str, ExecutionState]) -> None:
@@ -283,19 +302,28 @@ class RecoveryCoordinator:
             if state.exit_order is not None and state.exit_order.is_inflight:
                 self._engine.query_order(state.exit_order, client_id=ClientId("BINANCE"))
 
+    def _stop_valid(
+        self,
+        *,
+        state: ExecutionState,
+        protection: Any,
+        quantity: Decimal,
+        avg_price: Decimal | None,
+        require_open: bool,
+    ) -> bool:
+        """The steady-state call into the one stop validator; `None` avg price means "not yet priced"."""
+
+        return self._protection.stop_valid(
+            state=state,
+            protection=protection,
+            quantity=quantity,
+            expected_trigger=None if avg_price is None else self._protection.desired_trigger_price(state, avg_price),
+            expected_leg=None,
+            require_open=require_open,
+        )
+
     def verify_owned_exposure(self) -> bool:
-        owned_orders = frozenset(self._state.orders)
-        owned_positions = frozenset(self._state.positions)
-        if any(
-            order.client_order_id not in owned_orders or order.strategy_id != self._engine.id
-            for order in (
-                *self._engine.cache.orders_open(account_id=self._profile.account_id),
-                *self._engine.cache.orders_inflight(account_id=self._profile.account_id),
-            )
-        ) or any(
-            position.id not in owned_positions or position.strategy_id != self._engine.id
-            for position in self._engine.cache.positions_open(account_id=self._profile.account_id)
-        ):
+        if any(self._unowned_exposure(orders=self._state.orders, positions=self._state.positions)):
             self._readiness.halt_for_unexpected_exposure()
             if not self._state.unexpected_exposure_reconciliation_requested:
                 self._state.unexpected_exposure_reconciliation_requested = True
@@ -305,7 +333,7 @@ class RecoveryCoordinator:
         for state in self._state.executions.values():
             if state.position_id is None or state.position_quantity <= 0:
                 continue
-            active_valid = self._protection.current_valid(
+            active_valid = self._stop_valid(
                 state=state,
                 protection=state.stop_order,
                 quantity=state.stop_quantity,
@@ -319,7 +347,7 @@ class RecoveryCoordinator:
             )
             if fully_protected:
                 continue
-            pending_valid = self._protection.current_valid(
+            pending_valid = self._stop_valid(
                 state=state,
                 protection=state.pending_stop_order,
                 quantity=state.pending_stop_quantity,

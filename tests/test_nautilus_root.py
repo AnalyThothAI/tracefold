@@ -3,15 +3,18 @@ from __future__ import annotations
 import asyncio
 from contextlib import nullcontext
 from dataclasses import replace
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
 import pytest
 from nautilus_trader.model.identifiers import InstrumentId
+from pydantic import ValidationError
 
 from tests.nautilus_oi_runtime_fixtures import oi_profile
 from tracefold.app.nautilus import root as nautilus_root
+from tracefold.app.nautilus.oi_runtime import RuntimeStateProjector
 from tracefold.app.nautilus.root import (
     _activate_profile,
     _discover_routes,
@@ -23,12 +26,12 @@ from tracefold.app.nautilus.root import (
     _probe_payload,
     _reconcile_account,
     _risk_limits,
-    _RuntimeStateProjector,
 )
 from tracefold.app.workers.trading_notifications import trading_notification_text
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.config import BinanceRuntimeCredentials
 from tracefold.integrations.nautilus.oi_runtime.nautilus_1231_binance_compat import CompleteBinanceAccountReports
+from tracefold.platform.config.models import Settings
 from tracefold.trading.notification_policy import is_notifiable
 from tracefold.trading.storage.execution_stream import ExecutionProfileActivation, ExecutionRuntimeState
 
@@ -156,6 +159,7 @@ def test_route_discovery_uses_real_clock_and_skips_unaddressable_provider_symbol
         _discover_routes(
             "paper",
             BinanceRuntimeCredentials(api_key="demo-key", api_secret="demo-secret"),
+            stop_distance_bps=Settings().trading.execution.risk.stop_distance_bps,
         )
     )
 
@@ -163,6 +167,7 @@ def test_route_discovery_uses_real_clock_and_skips_unaddressable_provider_symbol
     assert captured["client"]["environment"] == nautilus_root.BinanceEnvironment.DEMO
     assert type(captured["client"]["clock"]).__name__ == "LiveClock"
     assert [route.market_key for route in routes] == ["crypto:perp:BTC:USDT"]
+    assert [route.stop_distance_bps for route in routes] == [100]
 
 
 def test_new_profile_activation_requires_authoritative_binance_flat() -> None:
@@ -233,7 +238,7 @@ def test_one_reconciliation_period_owns_both_account_freshness_budgets() -> None
     """
 
     risk = oi_profile().risk
-    production = _risk_limits()
+    production = _risk_limits(Settings())
 
     assert risk.reconciliation_interval_seconds == 5.0
     assert risk.account_stale_after_ns == 2 * risk.reconciliation_interval_ns
@@ -326,23 +331,43 @@ def test_private_report_failure_does_not_project_cache_or_mint_a_fresh_reconcili
     assert clock_reads == []
 
 
+class _ProjectionTrading:
+    def __init__(self, *, latest: ExecutionProfileActivation | None = None) -> None:
+        self.puts: list[ExecutionRuntimeState] = []
+        self.updates: list[ExecutionRuntimeState] = []
+        self.latest = latest
+
+    def put_execution_runtime_state(self, state: ExecutionRuntimeState) -> None:
+        self.puts.append(state)
+
+    def update_execution_runtime_state(self, state: ExecutionRuntimeState) -> bool:
+        self.updates.append(state)
+        return True
+
+    def latest_execution_profile_activation(self, _account_slot: str) -> ExecutionProfileActivation | None:
+        return self.latest
+
+
+def _projector(
+    starting: ExecutionRuntimeState,
+    *,
+    activation: ExecutionProfileActivation | None = None,
+) -> RuntimeStateProjector:
+    return RuntimeStateProjector(
+        initial=starting,
+        activation=activation or _activation(),
+        recovery_inputs=((), ()),
+    )
+
+
 def test_runtime_state_projector_writes_changes_immediately_and_unchanged_state_only_on_heartbeat() -> None:
-    class _ProjectionTrading:
-        def __init__(self) -> None:
-            self.puts: list[ExecutionRuntimeState] = []
-            self.updates: list[ExecutionRuntimeState] = []
-
-        def put_execution_runtime_state(self, state: ExecutionRuntimeState) -> None:
-            self.puts.append(state)
-
-        def update_execution_runtime_state(self, state: ExecutionRuntimeState) -> bool:
-            self.updates.append(state)
-            return True
+    """#510 PR-5b. The loop offers; only the bridge thread's connection writes."""
 
     trading = _ProjectionTrading()
-    projector = _RuntimeStateProjector(_repos(trading))
+    repos = _repos(trading)
     starting = _runtime_state()
-    projector.start(starting)
+    projector = _projector(starting)
+    projector.start(repos)
 
     changed = replace(
         starting,
@@ -351,23 +376,49 @@ def test_runtime_state_projector_writes_changes_immediately_and_unchanged_state_
         entry_block_reason="portfolio_unavailable",
         updated_at_ns=starting.updated_at_ns + 1,
     )
-    assert projector.publish(changed) == changed
+    projector.offer(changed)
+    projector.write_once(repos)
+    assert projector.current == changed
 
     before_heartbeat = replace(
         changed,
         heartbeat_at_ns=changed.heartbeat_at_ns + 100_000_000,
         updated_at_ns=changed.updated_at_ns + 100_000_000,
     )
-    assert projector.publish(before_heartbeat) == changed
+    projector.offer(before_heartbeat)
+    projector.write_once(repos)
+    assert projector.current == changed
 
     heartbeat = replace(
         changed,
         heartbeat_at_ns=changed.heartbeat_at_ns + 500_000_000,
         updated_at_ns=changed.updated_at_ns + 500_000_000,
     )
-    assert projector.publish(heartbeat) == heartbeat
+    projector.offer(heartbeat)
+    projector.write_once(repos)
+    assert projector.current == heartbeat
+
+    # Nothing offered since the last write is nothing to write.
+    projector.write_once(repos)
+
     assert trading.puts == [starting]
     assert trading.updates == [changed, heartbeat]
+
+
+def test_projector_reads_activation_currency_for_a_loop_that_no_longer_holds_a_connection() -> None:
+    activation = _activation()
+    trading = _ProjectionTrading(latest=activation)
+    repos = _repos(trading)
+    projector = _projector(_runtime_state(), activation=activation)
+
+    assert projector.activation_current is True
+
+    projector.refresh_activation(repos)
+    assert projector.activation_current is True
+
+    trading.latest = _activation("next-profile")
+    projector.refresh_activation(repos)
+    assert projector.activation_current is False
 
 
 def test_probe_readiness_requires_execution_safety_but_not_entry_arming() -> None:
@@ -585,3 +636,99 @@ def test_the_notification_predicate_reads_the_summaries_these_writers_actually_p
     for observation in (unflat, started):
         row = {"normalized_kind": observation.normalized_kind, "summary": observation.summary}
         assert trading_notification_text(row) is not None, f"{observation.normalized_kind} renders no stage"
+
+
+def _settings_with_risk(**overrides: Any) -> Settings:
+    return Settings(trading={"execution": {"mode": "paper", "risk": overrides}})
+
+
+def test_risk_limits_come_from_the_operator_config_and_carry_the_route_stop_distance() -> None:
+    """#510 E. Every one of these was a literal in `root.py`, invisible to `tracefold config`."""
+
+    default = _risk_limits(Settings())
+
+    assert default.risk_fraction_per_trade == Decimal("0.01")
+    assert default.max_risk_per_trade_usd == Decimal("10")
+    assert default.max_total_risk_usd == Decimal("25")
+    assert (default.max_positions, default.max_leverage) == (1, 1)
+    assert default.max_daily_loss_usd == Decimal("25")
+    assert default.market_stale_after_ns == 5_000_000_000
+    assert default.reconciliation_interval_ns == 5_000_000_000
+    assert Settings().trading.execution.risk.stop_distance_bps == 100
+
+    edited = _risk_limits(_settings_with_risk(max_positions=3, reconciliation_interval_seconds=8.0))
+
+    assert edited.max_positions == 3
+    assert edited.reconciliation_interval_ns == 8_000_000_000
+    # The two derived account clocks follow the one operator input, as #510 PR-2 established.
+    assert edited.account_stale_after_ns == 16_000_000_000
+    assert edited.reconciliation_stale_after_ns == 24_000_000_000
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"risk_fraction_per_trade": "0.02"},
+        {"max_risk_per_trade_usd": "9"},
+        {"max_total_risk_usd": "30"},
+        {"max_positions": 2},
+        {"max_leverage": 2},
+        {"max_daily_loss_usd": "40"},
+        {"stop_distance_bps": 120},
+        {"reconciliation_interval_seconds": 6.0},
+        {"market_stale_after_seconds": 7.0},
+    ],
+)
+def test_every_risk_value_is_inside_the_config_digest_the_activation_fence_reads(override: dict[str, Any]) -> None:
+    """#510 E. Risk lived outside `config_sha256`, so the fence could not see an operator edit.
+
+    The fence is `_preflight_profile`: a profile id whose recorded `config_sha256` no longer matches
+    the one this process computed cannot be reused, so a risk change now needs a new profile and a
+    fresh activation, exactly like a mode or account-slot change.
+    """
+
+    routes = oi_profile().routes
+    baseline = nautilus_root._active_profile(Settings(trading={"execution": {"mode": "paper"}}), routes)
+    edited = nautilus_root._active_profile(_settings_with_risk(**override), routes)
+
+    assert edited.config_sha256 != baseline.config_sha256
+    assert edited.profile_id == baseline.profile_id
+
+    recorded = replace(
+        _activation(baseline.profile_id),
+        account_slot=baseline.account_slot,
+        runtime_release=baseline.runtime_release,
+        config_sha256=baseline.config_sha256,
+    )
+    trading = _Trading(recorded)
+
+    with pytest.raises(RuntimeError, match="oi_runtime_profile_identity_changed"):
+        _preflight_profile(_repos(trading), edited)
+
+
+@pytest.mark.parametrize(
+    ("override", "reason"),
+    [
+        ({"risk_fraction_per_trade": "0"}, "trading_execution_risk_fraction_invalid"),
+        ({"risk_fraction_per_trade": "0.2"}, "trading_execution_risk_fraction_invalid"),
+        ({"max_risk_per_trade_usd": "0.5"}, "trading_execution_risk_limit_invalid"),
+        ({"max_risk_per_trade_usd": "50"}, "trading_execution_risk_limit_invalid"),
+        ({"max_total_risk_usd": "20000"}, "trading_execution_risk_limit_invalid"),
+        ({"max_positions": 0}, "trading_execution_max_positions_invalid"),
+        ({"max_positions": 11}, "trading_execution_max_positions_invalid"),
+        ({"max_leverage": 0}, "trading_execution_max_leverage_invalid"),
+        ({"max_leverage": 125}, "trading_execution_max_leverage_invalid"),
+        ({"max_daily_loss_usd": "5"}, "trading_execution_daily_loss_invalid"),
+        ({"stop_distance_bps": 0}, "trading_execution_stop_distance_invalid"),
+        ({"stop_distance_bps": 6_000}, "trading_execution_stop_distance_invalid"),
+        ({"reconciliation_interval_seconds": 0.5}, "trading_execution_reconciliation_interval_invalid"),
+        ({"reconciliation_interval_seconds": 120.0}, "trading_execution_reconciliation_interval_invalid"),
+        ({"market_stale_after_seconds": 0.5}, "trading_execution_market_stale_invalid"),
+    ],
+)
+def test_risk_bounds_refuse_the_values_that_would_make_a_limit_stop_being_one(
+    override: dict[str, Any],
+    reason: str,
+) -> None:
+    with pytest.raises(ValidationError, match=reason):
+        _settings_with_risk(**override)

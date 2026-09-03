@@ -20,6 +20,7 @@ from threading import Condition, Event
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -39,14 +40,17 @@ from tests.postgres_test_utils import connect_postgres_test, postgres_settings_s
 from tracefold.app.http.app import create_app
 from tracefold.app.nautilus.oi_runtime import (
     OiRuntimeDatabaseBridge,
+    RuntimeStateProjector,
     flush_audit_once,
 )
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
+from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.platform.config.models import Settings
 from tracefold.trading.storage.execution_stream import (
     ExecutionProfileActivation,
+    ExecutionRuntimeState,
     prepare_operator_intent,
     prepare_trade_signal,
 )
@@ -89,11 +93,11 @@ _OWNER_MATRIX = (
     },
     {
         "fact": "current_runtime_status",
-        "owner": "_RuntimeStateProjector",
+        "owner": "RuntimeStateProjector",
         "authority": "generation-fenced trading_execution_runtime_state projection",
-        "repair": "semantic change immediately on root wake plus 500 ms heartbeat before the public stale budget",
-        "source": "tracefold/app/nautilus/root.py",
-        "symbol": "_RuntimeStateProjector",
+        "repair": "semantic change on the next bridge cycle plus 500 ms heartbeat before the public stale budget",
+        "source": "tracefold/app/nautilus/oi_runtime.py",
+        "symbol": "RuntimeStateProjector",
     },
     {
         "fact": "durable_audit",
@@ -289,18 +293,78 @@ def _runtime_bridge(
         oi_profile(),
         profile_id=profile_id,
         account_slot=account_slot,
-        credential_namespace=f"{profile_id}-credentials",
         cache_namespace=f"{profile_id}-cache",
         client_order_namespace=f"{profile_id}-orders",
     )
     audit = AuditSink(factory=ObservationFactory(profile_id, profile.runtime_release, "oi_nautilus_v1"))
+    singleton = AccountSlotSingleton(
+        account_slot=account_slot,
+        try_acquire=lambda _slot: True,
+        release=lambda _slot: True,
+        heartbeat=lambda: True,
+    )
+    assert singleton.acquire() is True
+    activation = ExecutionProfileActivation(
+        runtime_profile_id=profile_id,
+        account_slot=account_slot,
+        activated_after_signal_seq=0,
+        activated_after_command_seq=0,
+        mode="paper",
+        runtime_release=profile.runtime_release,
+        config_sha256="a" * 64,
+        created_at_ns=NOW_NS,
+    )
     return _MeasuredRuntimeBridge(
         settings=settings,
         profile=profile,
         signals=signals,
         audit=audit,
         update_day_start=lambda _baseline: None,
+        singleton=singleton,
+        # Nothing is ever offered here, so the projection step is the no-op this diagnostic wants:
+        # it measures the input path, not the current-state path.
+        projector=RuntimeStateProjector(
+            initial=_runtime_state(profile_id=profile_id, account_slot=account_slot),
+            activation=activation,
+            recovery_inputs=((), ()),
+        ),
         poll_seconds=_REPAIR_SECONDS,
+    )
+
+
+def _runtime_state(*, profile_id: str, account_slot: str) -> ExecutionRuntimeState:
+    return ExecutionRuntimeState(
+        account_slot=account_slot,
+        runtime_profile_id=profile_id,
+        mode="paper",
+        runtime_release="nautilus-1.231.0+oi-v1",
+        config_sha256="a" * 64,
+        runtime_id=uuid4(),
+        runtime_revision="b" * 40,
+        image_digest="unversioned",
+        credential_fingerprint="d" * 64,
+        lifecycle_state="starting",
+        alive=True,
+        execution_safe=False,
+        entries_armed=False,
+        control_plane_ready=False,
+        singleton_ready=True,
+        credential_ready=True,
+        activation_ready=True,
+        startup_reconciled=False,
+        portfolio_ready=False,
+        audit_ready=False,
+        day_start_ready=False,
+        unexpected_exposure=False,
+        account_flat=True,
+        positions_count=0,
+        open_orders_count=0,
+        protection_status="not_applicable",
+        reconciliation_observed_at_ns=NOW_NS,
+        heartbeat_at_ns=NOW_NS,
+        entry_block_reason="runtime_starting",
+        started_at_ns=NOW_NS,
+        updated_at_ns=NOW_NS,
     )
 
 

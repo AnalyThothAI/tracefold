@@ -12,22 +12,20 @@ from .audit_sink import AuditSink
 from .signal_client import ExecutionSignalClient
 from .state import ExecutionState, RuntimeEntryRequest, RuntimeExecutionState, RuntimeReconciliationSnapshot
 
-# Refusals that state the Runtime's clock, not the request. Every one of them is answered by the next
-# private reconciliation, the next quote, or the next UTC day's baseline write - all of which happen
-# inside a Signal's TTL. Writing a `signal_disposition` for one of them is what turned five of
-# 2026-09-02's six Signals into single-delivery deaths: `account_stale` fires at the tail of every
-# reconciliation period, and the anti-join in `UNRESOLVED_TRADE_SIGNALS_SQL` never offered the Signal
-# again (#510 B). The Signal keeps its in-process claim released instead, so the next poll redelivers
-# it and `expires_at_ns` still closes it with a terminal `expired`.
-#
-# Everything not listed here stays terminal, including the deterministic refusals
-# (`instrument_unmapped`, `instrument_busy`, `notional_below_minimum`, every risk `deny`) and every
-# readiness gate that a redelivery could only re-answer the same way.
+# Refusals that state the Runtime's own clock, not a verdict on the request. Each is answered by the
+# next private reconciliation, the next quote, or that day's baseline write, all of which happen
+# inside a Signal's TTL, so the Signal keeps no durable disposition and the next indexed poll offers
+# it again; `expires_at_ns` still closes it with a terminal `expired`. Everything not listed here is
+# terminal, including every deterministic refusal and every readiness gate a redelivery could only
+# re-answer the same way. Writing a disposition for these is what made five of 2026-09-02's six
+# Signals single-delivery deaths (#510 B); `market_subscription_pending` is the same shape for the
+# quote stream an admission just opened, and it stops being retryable after `QUOTE_WARMUP_NS`.
 RETRYABLE_ENTRY_REASONS: Final[frozenset[str]] = frozenset(
     {
         "account_stale",
         "market_stale",
         "day_start_baseline_missing",
+        "market_subscription_pending",
         "oi_runtime_account_missing",
         "oi_runtime_account_balance_missing",
     }
@@ -124,8 +122,8 @@ class RuntimeObservationWriter:
     def _release_entry(self, request: RuntimeEntryRequest) -> None:
         """Drop the in-process claim without a durable verdict, so the next poll redelivers it.
 
-        Deliberately not `disposed_signal_ids` / `disposed_command_ids`: those are the set the entry
-        path checks before doing any work, and a retryable refusal has to be reconsidered.
+        Never `disposed_signal_ids` / `disposed_command_ids`: the entry path checks those before doing
+        any work, and a retryable refusal has to be reconsidered.
         """
 
         if request.signal is not None:

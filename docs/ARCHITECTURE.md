@@ -2292,13 +2292,10 @@ in-flight, missing-open-order, and position consistency loops as
 ExecutionEngine mechanics, not as complete-flat authority. The unused Strategy
 startup/continuous reconciliation callbacks are deleted.
 
-One persistent autocommit `tracefold_nautilus_state` repository session now owns
-profile preflight, activation/recovery reads, the generation-fenced current row,
-and the stopped transition. `_RuntimeStateProjector` writes a semantic change on
-the next root wake and otherwise writes only the code-owned 500 ms heartbeat,
-well before the public 5-second stale boundary; no transaction spans Binance
-I/O. Quote subscription behavior is unchanged because PR-0 recorded provider
-inbound-rate and event-loop evidence as unobserved until the Demo receipt.
+`RuntimeStateProjector` owns the generation-fenced current row: a semantic
+change is written on the next bridge cycle and an unchanged row only on the
+code-owned 500 ms heartbeat, well before the public 5-second stale boundary, and
+no transaction spans Binance I/O.
 
 #475 PR-C hard-cuts readiness into three independent facts. `alive` means the
 process, TradingNode, and event loop are alive; `execution_safe` means fresh
@@ -2404,6 +2401,43 @@ every cycle by construction. `market_stale_after_ns` stays independent because
 the quote stream, not the private scan, decides it. Day-start equity and intraday
 equity are one function, `account_equity_usd`: USDT balance plus unrealized PnL
 at current marks, so `daily_loss_limit` no longer subtracts two definitions.
+
+#510 PR-5b puts the Runtime's risk numbers in the operator's hands and its
+PostgreSQL work on one thread. `trading.execution.risk` carries
+`risk_fraction_per_trade`, the per-trade, total and daily loss caps, the position
+and leverage caps, the stop distance, the reconciliation period and the market
+staleness budget; every one of them was a literal in the composition root, so
+`tracefold config` could not show them and the `config_sha256` activation fence
+could not see an edit. They are inside the profile digest now, which means
+changing one requires a new profile id and a fresh activation, exactly like
+changing the mode or the account slot. The stop distance stays a Runtime number:
+the Nautilus Strategy places and replaces the stop, and neither the Case nor the
+Signal carries it.
+
+The process holds two PostgreSQL connections, not three. The singleton session
+holds the account-slot advisory lock and is read during the sequential startup
+sequence; from `bridge.start()` the bridge thread is the only PostgreSQL caller
+the process has, and it owns the singleton heartbeat, the activation currency
+read, the durable recovery identities and the projection write in addition to the
+inputs, the audit flush and the day-start baseline. Its session carries a
+five-second `statement_timeout`, because reading Commands on it is how an
+operator flattens and a statement that has not finished in one reconciliation
+period is broken rather than slow. The trading event loop keeps Binance, Nautilus
+and the in-memory picture; it offers the row it computed and reads everything
+else from memory. A failing current-state step logs its cause once and lets the
+`alive` heartbeat go stale, which is already how every reader decides a Runtime
+is gone; it is not a new gate.
+
+Quote streams are opened per admitted entry. `on_start` subscribes nothing:
+subscribing all ~500 routed USDT perpetuals is what made Binance close the
+market-data WebSocket with 1008 `Too many requests`, and every illiquid route it
+opened fed `market_stale` refusals to a Runtime that holds at most one position.
+`QuoteStreamCoordinator` opens one stream when an admission needs a mark, and the
+entry waits for the first tick as redeliveries of an unresolved Signal — bounded
+by `QUOTE_WARMUP_NS`, inside every Signal TTL, never as a blocked event loop.
+Recovery opens a stream for each position it reclaims, a closed position gives
+its stream back, and a refused admission's stream is closed by the pump once the
+warm-up window is spent.
 
 Timer callbacks are not on the event loop. Measured against a real `TradingNode`
 on the pinned `nautilus-trader` 1.231.0 in

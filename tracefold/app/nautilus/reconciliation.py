@@ -29,10 +29,6 @@ def reconcile_reports_into_cache(*, engine: Any, reports: CompleteBinanceAccount
         raise RuntimeError("oi_runtime_execution_report_reconciliation_failed")
 
 
-def account_reports_are_flat(reports: CompleteBinanceAccountReports) -> bool:
-    return reports.account_flat
-
-
 def build_runtime_reconciliation_snapshot(
     *,
     profile: OiRuntimeProfile,
@@ -44,11 +40,11 @@ def build_runtime_reconciliation_snapshot(
 ) -> RuntimeReconciliationSnapshot:
     """Rebuild ownership from durable entry identities and the reconciled Binance reports.
 
-    Nautilus Cache is process memory and the Binance private proof only carries open orders and
-    position risk, so a restart while in a position has no filled entry market order to key off.
-    Ownership is therefore proven by the durable entry identity: the deterministic client order ids
-    it generates claim the resting stop/exit orders, and an open position on that identity's routed
-    instrument with the same direction is the position it opened. Anything left over stays unowned.
+    Cache is process memory and the Binance proof carries only open orders and position risk, so a
+    restart in a position has no filled entry order to key off. Ownership is proven by the durable
+    entry identity instead: its deterministic client order ids claim the resting stop and exit, and an
+    open position on that identity's routed instrument and direction is the one it opened. Anything
+    left over stays unowned (#510 C).
     """
 
     orders = tuple(cache.orders(account_id=profile.account_id))
@@ -182,7 +178,6 @@ def _recovered_exit(
 
 
 __all__ = [
-    "account_reports_are_flat",
     "build_runtime_reconciliation_snapshot",
     "reconcile_reports_into_cache",
 ]

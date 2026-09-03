@@ -23,11 +23,11 @@ from psycopg.rows import dict_row
 from tests.nautilus_oi_runtime_fixtures import ACCOUNT_ID, NOW_NS, oi_profile
 from tracefold.app.nautilus.oi_runtime import (
     flush_audit_once,
+    load_recovery_inputs,
     load_unresolved_operator_intents,
     load_unresolved_trade_signals,
 )
 from tracefold.app.nautilus.reconciliation import build_runtime_reconciliation_snapshot
-from tracefold.app.nautilus.root import _load_recovery_inputs
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.config import OiRuntimeProfile
@@ -44,6 +44,28 @@ from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrate
 
 _COLD_QUANTITY = Decimal("0.049")
 _COLD_ENTRY_PRICE = Decimal(10_000)
+
+
+class _CountingOiStrategy(OiNautilusStrategy):
+    """Count what the Runtime asks the venue to stream, before and after #510 PR-5b."""
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self.quote_subscribe_calls = 0
+        self.quote_unsubscribe_calls = 0
+        self.peak_quote_subscriptions = 0
+
+    def subscribe_quote_ticks(self, instrument_id: object, *args: object, **kwargs: object) -> None:
+        self.quote_subscribe_calls += 1
+        self.peak_quote_subscriptions = max(
+            self.peak_quote_subscriptions,
+            self.quote_subscribe_calls - self.quote_unsubscribe_calls,
+        )
+        super().subscribe_quote_ticks(instrument_id, *args, **kwargs)  # type: ignore[arg-type]
+
+    def unsubscribe_quote_ticks(self, instrument_id: object, *args: object, **kwargs: object) -> None:
+        self.quote_unsubscribe_calls += 1
+        super().unsubscribe_quote_ticks(instrument_id, *args, **kwargs)  # type: ignore[arg-type]
 
 
 def _seed_cold_cache(
@@ -142,7 +164,7 @@ def main() -> None:
         audit = AuditSink(factory=factory)
         readiness = RuntimeReadiness()
         readiness.activate()
-        strategy = OiNautilusStrategy(
+        strategy = _CountingOiStrategy(
             profile=profile,
             signals=signals,
             audit=audit,
@@ -192,7 +214,7 @@ def main() -> None:
         )
         engine.add_strategy(strategy)
         if mode in {"cold_recovery", "cold_unclaimed"}:
-            recovery_signals, recovery_manual_entries = _load_recovery_inputs(repos, profile.profile_id, NOW_NS)
+            recovery_signals, recovery_manual_entries = load_recovery_inputs(repos, profile.profile_id, NOW_NS)
             _seed_cold_cache(
                 engine=engine,
                 strategy=strategy,
@@ -231,6 +253,10 @@ def main() -> None:
                 {
                     "admitted": admitted,
                     "recovered": recovered,
+                    "quote_subscribe_calls": strategy.quote_subscribe_calls,
+                    "quote_unsubscribe_calls": strategy.quote_unsubscribe_calls,
+                    "quote_subscriptions": strategy.peak_quote_subscriptions,
+                    "route_catalogue": len(profile.routes),
                     "recovered_seeds": len(snapshot.executions),
                     "recovery_signals": len(recovery_signals),
                     "execution_safe": readiness_snapshot.execution_safe,

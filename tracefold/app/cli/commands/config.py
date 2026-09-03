@@ -158,6 +158,9 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                             "api_key_file": None if binance_key_file is None else str(binance_key_file),
                             "api_secret_file": None if binance_secret_file is None else str(binance_secret_file),
                         },
+                        # None of these is a secret, and every one of them is now inside the profile
+                        # `config_sha256` the activation fence checks (#510 E).
+                        "risk": settings.trading.execution.risk.model_dump(),
                     },
                 },
             },

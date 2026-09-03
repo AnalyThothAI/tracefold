@@ -10,16 +10,11 @@ from nautilus_trader.model.currencies import USDT
 from tracefold.trading import ExecutionAccountOrder, ExecutionAccountPosition, ExecutionAccountSnapshot
 
 from .config import OiRuntimeProfile
-from .risk import DayStartBaseline
-from .state import RuntimeExecutionState
+from .risk import DayStartBaseline, decimal_value
+from .state import RuntimeExecutionState, unowned_cache_exposure
 
 _MAX_POSITION_ROWS = 100
 _MAX_ORDER_ROWS = 200
-
-
-def _decimal(value: Any) -> Decimal:
-    method = getattr(value, "as_decimal", None)
-    return Decimal(method()) if method is not None else Decimal(str(value))
 
 
 def _text(value: Decimal) -> str:
@@ -51,6 +46,15 @@ class RuntimeAccountProjector:
             for order in cache.orders_inflight(account_id=self._profile.account_id)
             if order.client_order_id not in open_ids
         )
+        # The same scan the risk facts and both recovery paths use, so the operator page cannot
+        # disagree with the halt decision about which exposure is unclaimed (#510 E).
+        unowned_orders, unowned_positions = unowned_cache_exposure(
+            cache=cache,
+            account_id=self._profile.account_id,
+            strategy_id=self._engine.id,
+            owned_order_ids=frozenset(self._state.orders),
+            owned_position_ids=frozenset(self._state.positions),
+        )
         complete = account is not None
         account_balance: Decimal | None = None
         if account is not None:
@@ -58,7 +62,7 @@ class RuntimeAccountProjector:
             if total is None:
                 complete = False
             else:
-                account_balance = _decimal(total)
+                account_balance = decimal_value(total)
 
         marks: dict[Any, tuple[Decimal, int]] = {}
         market_clocks: list[int] = []
@@ -81,8 +85,8 @@ class RuntimeAccountProjector:
             if quote_age_ns < 0 or quote_age_ns > self._profile.risk.market_stale_after_ns:
                 complete = False
                 continue
-            bid = _decimal(quote.bid_price)
-            ask = _decimal(quote.ask_price)
+            bid = decimal_value(quote.bid_price)
+            ask = decimal_value(quote.ask_price)
             if bid <= 0 or ask <= 0 or ask < bid:
                 complete = False
                 continue
@@ -105,7 +109,7 @@ class RuntimeAccountProjector:
                 else:
                     pnl = position.unrealized_pnl(instrument.make_price(mark))
                     if pnl is not None:
-                        unrealized = _decimal(pnl)
+                        unrealized = decimal_value(pnl)
                         unrealized_total += unrealized
                     else:
                         complete = False
@@ -116,18 +120,18 @@ class RuntimeAccountProjector:
             if mark is None or stop_bps is None:
                 complete = False
             else:
-                aggregate_risk += abs(_decimal(position.quantity)) * mark * Decimal(stop_bps) / Decimal(10_000)
+                aggregate_risk += abs(decimal_value(position.quantity)) * mark * Decimal(stop_bps) / Decimal(10_000)
             protection = self._position_protection(position)
             position_rows.append(
                 ExecutionAccountPosition(
                     position_id=position.id.value,
                     instrument_id=position.instrument_id.value,
                     side="long" if position.is_long else "short",
-                    quantity=_text(abs(_decimal(position.quantity))),
+                    quantity=_text(abs(decimal_value(position.quantity))),
                     entry_price=_text(Decimal(str(position.avg_px_open))),
                     mark_price=None if mark is None else _text(mark),
                     unrealized_pnl_usd=None if unrealized is None else _text(unrealized),
-                    owned=position.id in self._state.positions and position.strategy_id == self._engine.id,
+                    owned=position.id not in unowned_positions,
                     **protection,
                 )
             )
@@ -138,8 +142,11 @@ class RuntimeAccountProjector:
         for order_state, orders in (("open", raw_open_orders), ("inflight", raw_inflight_orders)):
             for order in sorted(orders, key=lambda item: item.client_order_id.value):
                 route = self._state.orders.get(order.client_order_id)
-                owned = (route is not None or order.client_order_id in flatten_ids) and (
-                    order.strategy_id == self._engine.id
+                # A reduce-only close of exposure no entry identity claims is still this Runtime's
+                # order; it has no entry to hang off, so the scan calls it unowned and the page does
+                # not.
+                owned = order.client_order_id not in unowned_orders or (
+                    order.client_order_id in flatten_ids and order.strategy_id == self._engine.id
                 )
                 if not owned:
                     unknown_ids.add(order.client_order_id.value)
@@ -150,7 +157,7 @@ class RuntimeAccountProjector:
                 leg = leg_root if leg_root in {"entry", "exit", "protection"} else "unknown"
                 if leg == "unknown":
                     unknown_ids.add(order.client_order_id.value)
-                quantity = _decimal(getattr(order, "leaves_qty", order.quantity))
+                quantity = decimal_value(getattr(order, "leaves_qty", order.quantity))
                 trigger = getattr(order, "trigger_price", None)
                 order_rows.append(
                     ExecutionAccountOrder(
@@ -160,7 +167,7 @@ class RuntimeAccountProjector:
                         leg=leg,
                         quantity=_text(abs(quantity)),
                         reduce_only=bool(order.is_reduce_only),
-                        trigger_price=None if trigger is None else _text(_decimal(trigger)),
+                        trigger_price=None if trigger is None else _text(decimal_value(trigger)),
                         owned=owned,
                     )
                 )
@@ -218,7 +225,7 @@ class RuntimeAccountProjector:
         active_stop = stop if stop is not None and not stop.is_closed else None
         trigger = None if active_stop is None else getattr(active_stop, "trigger_price", None)
         quantity = execution.stop_quantity if active_stop is not None else None
-        full_coverage = quantity is not None and quantity == abs(_decimal(position.quantity))
+        full_coverage = quantity is not None and quantity == abs(decimal_value(position.quantity))
         if active_stop is not None and full_coverage:
             status = "protected"
         elif execution.pending_stop_order is not None or execution.desired_stop is not None:
@@ -228,7 +235,7 @@ class RuntimeAccountProjector:
         return {
             "protection_status": status,
             "protection_quantity": None if quantity is None else _text(quantity),
-            "protection_trigger_price": None if trigger is None else _text(_decimal(trigger)),
+            "protection_trigger_price": None if trigger is None else _text(decimal_value(trigger)),
             "protection_full_coverage": full_coverage,
         }
 
