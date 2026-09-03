@@ -862,20 +862,25 @@
         "latin": [
           "dollar index",
           "dxy",
-          "dollar",
           "greenback",
-          "usd",
-          "yen",
-          "euro",
-          "yuan",
-          "renminbi"
+          "usd/jpy",
+          "eur/usd",
+          "usd/cnh",
+          "usd/cny",
+          "yen carry",
+          "carry trade",
+          "fx intervention",
+          "currency intervention",
+          "forex"
         ],
         "zh": [
           "美元指数",
-          "美元",
-          "日元",
-          "欧元",
-          "人民币汇率"
+          "美元汇率",
+          "日元汇率",
+          "人民币汇率",
+          "汇率干预",
+          "外汇干预",
+          "套息交易"
         ]
       },
       "gate": {
