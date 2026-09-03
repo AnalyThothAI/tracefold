@@ -87,6 +87,12 @@ class StorylineEntry(BaseModel):
     label_zh: str
     aliases: StorylineAliases = StorylineAliases()
     gate: StorylineGate | None = None
+    # False means "match this entry, but never make it the key on its own". `us` is the case that needs it: a
+    # US dateline is not a storyline for this reader, and letting `美国` / `washington` / `u.s.` open their own
+    # bucket put CPI, jobless claims and housing starts into one hourly budget — the coarse-bucket problem of
+    # #509 P3 wearing a new name. The hit still counts for a conflict's `members` intersection, and the entry
+    # still owns its aliases so nothing else can claim them.
+    standalone: bool = True
     # Conflicts only. `active` is maintained by hand — a war does not expire on a timer (#509 risk 2) — and
     # `members` are the geo/actor entries whose appearance means "this is that war".
     active: bool = False
@@ -240,8 +246,11 @@ def registry_storyline_key(text: str) -> str | None:
             conflicts.append((min(positions), entry.id))
     if conflicts:
         return f"conflict:{min(conflicts)[1]}"
+    index = _entry_index()
     for kind in ("actor", "geo", "topic"):
-        ranked = sorted((hit.start, hit.entry_id) for hit in hits if hit.kind == kind)
+        ranked = sorted(
+            (hit.start, hit.entry_id) for hit in hits if hit.kind == kind and index[hit.entry_id].standalone
+        )
         if ranked:
             return f"{kind}:{ranked[0][1]}"
     return None

@@ -284,6 +284,7 @@
       "id": "us",
       "kind": "geo",
       "label_zh": "美国",
+      "standalone": false,
       "aliases": {
         "latin": [
           "united states",

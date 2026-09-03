@@ -441,6 +441,8 @@ def test_storyline_registry_is_literal_data_with_one_owner_per_alias() -> None:
         "mideast_2026",
         "ru_ua",
     }
+    # `standalone` is opt-out and rare enough to name: an entry that may never be a key on its own.
+    assert {entry.id for entry in registry.entries if not entry.standalone} == {"us"}
     # The single-word traps the v3 regexes fell into: none of them may become an alias again.
     for trap in ("联储", "央行", "gulf", "strait", "期货", "mexico"):
         assert trap not in owner
@@ -498,6 +500,27 @@ def test_storyline_key_is_composed_by_rank_not_by_the_order_of_the_file() -> Non
     assert _prelim("【期货热点追踪】甲醇涨停") == NO_STORYLINE_KEY
     assert _prelim("Fedex raises guidance") == NO_STORYLINE_KEY  # word boundaries, not substrings
     assert _prelim("Tanker traffic in the Persian Gulf halts") == "topic:energy"
+
+
+def test_a_us_dateline_is_matched_but_never_becomes_the_key_on_its_own() -> None:
+    """#509: `standalone: false`. "The United States" is not a storyline for this reader.
+
+    Giving `美国` / `washington` / `u.s.` their own key put CPI, jobless claims and housing starts — unrelated
+    prints that merely share a dateline — into one hourly budget, which is the coarse bucket of #509 P3 under a
+    new name. The entry still matches, so it still owns its aliases and still counts toward a conflict's members;
+    it just cannot be the answer by itself."""
+
+    # The subject wins over the dateline, whichever surface form the dateline takes.
+    assert _prelim("US housing starts fall 12.4%") == "topic:us_macro_data"
+    assert _prelim("U.S. housing starts fall 12.4%") == "topic:us_macro_data"
+    assert _prelim("美国7月营建许可总数 144.3万户") == "topic:us_macro_data"
+    assert _prelim("U.S. crude production hits a record") == "topic:energy"
+    assert _prelim("White House announces new tariffs on Brazil") == "geo:brazil"
+    # A headline whose only registry hit is the dateline has no storyline.
+    assert _prelim("Washington shutdown enters day 3") == NO_STORYLINE_KEY
+    assert [hit.entry_id for hit in match_storyline("Washington shutdown enters day 3")] == ["us"]
+    # ... but the hit is still evidence for a conflict that names the country, and a war still wins.
+    assert _prelim("US strikes Iran nuclear site") == "conflict:mideast_2026"
 
 
 def test_preliminary_key_does_not_let_an_unverified_provider_tag_take_a_geopolitical_headline() -> None:

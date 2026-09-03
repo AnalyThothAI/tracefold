@@ -1001,8 +1001,15 @@ aliases match on word boundaries and every other script matches as a substring,
 both over NFKC-normalized, case-folded text, and the longest alias at a position
 wins. An alias belongs to exactly one entry, so matching yields a *set* of
 positioned hits with no priority rule of its own. Structure is enforced at load:
-unique aliases, no regex syntax, already-normalized surface forms, and `members`
-that name entries which exist. The key is then composed by one fixed rank —
+unique aliases, no structural regex syntax (a literal `.` is fine and escaped —
+`u.s.` needs it), already-normalized surface forms, and `members` that name
+entries which exist. An entry may set `standalone: false`, which means "match
+me, but never be the key on your own": the hit still counts toward a conflict's
+`members` and the entry still owns its aliases, but it is skipped when the
+`actor`/`geo`/`topic` steps pick a winner. `us` is the case that needs it — a US
+dateline is not a storyline for this reader, and letting `美国` / `washington` /
+`u.s.` open a bucket put CPI, jobless claims and housing starts into one hourly
+budget. The key is then composed by one fixed rank —
 1. `asset:<SYM>` (a verdict primary the Gate grounded, scope not macro),
 2. `conflict:<id>` (an active conflict whose own aliases or `members` the text
 names), 3. `actor:<id>`, 4. `geo:<id>`, 5. `topic:<id>`, 6. the model's own
