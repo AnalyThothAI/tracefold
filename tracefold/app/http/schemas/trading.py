@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from tracefold.trading import CommandStage, ExecutionStage
+
 from .common import ExactApiSchema
 
 # The admission ledger's two closed vocabularies, exactly as `trading_candidate_gate_status_check` and
@@ -92,29 +94,21 @@ class TradingExecutionReadinessData(ExactApiSchema):
     positions_count: int = Field(default=0, ge=0)
     open_orders_count: int = Field(default=0, ge=0)
     protection_status: Literal["not_applicable", "protected", "pending", "unprotected", "unknown"] = "unknown"
+    routes_count: int = Field(default=0, ge=0)
+    # The instant this projection stops being current: the earlier of the heartbeat and private
+    # reconciliation freshness budgets. `None` when there is no Runtime row to age.
+    facts_expire_at_ms: int | None = None
     current_account: TradingExecutionAccountData | None = None
 
 
 class TradingRuntimeCountsData(ExactApiSchema):
     cases_24h: int = 0
     signals_24h: int = 0
-    no_trade_24h: int = 0
-    blocked_24h: int = 0
-    cases_open: int = 0
-    signals_unexpired: int = 0
-
-
-class TradingAlphaIdentityData(ExactApiSchema):
-    policy_id: str
-    policy_version: str
-    config_digest: str
-    config: dict[str, str] = Field(default_factory=dict)
 
 
 class TradingStatusData(ExactApiSchema):
     decision: TradingDecisionRuntimeData
     execution: TradingExecutionReadinessData
-    alpha: TradingAlphaIdentityData
     counts: TradingRuntimeCountsData
     window_hours: int
     measured_at_ms: int
@@ -304,6 +298,47 @@ class TradingOperatorIntentsData(ExactApiSchema):
     commands: list[TradingOperatorIntentData] = Field(default_factory=list)
     complete: bool
     next_cursor: str | None = None
+    window_hours: int
+    measured_at_ms: int
+
+
+class TradingExecutionRowData(ExactApiSchema):
+    """One Signal's whole execution, folded from its own observations (#528 PR-1)."""
+
+    signal_id: str
+    case_id: str
+    market_key: str
+    direction: Literal["long", "short"]
+    observed_at_ns: int
+    disposition: Literal["accepted", "rejected"] | None = None
+    disposition_reason: str | None = None
+    order_status: str | None = None
+    fill_quantity: str | None = None
+    fill_avg_price: str | None = None
+    stop_trigger_price: str | None = None
+    position_status: str | None = None
+    exit_price: str | None = None
+    realized_pnl_usd: str | None = None
+    exit_reason: Literal["stop_filled", "flatten", "unclaimed_flatten"] | None = None
+    stage: ExecutionStage
+    last_observed_at_ns: int
+
+
+class TradingExecutionCommandRowData(ExactApiSchema):
+    """One operator Command's progress, read from its `control_disposition` alone."""
+
+    command_id: str
+    action: Literal["pause_entries", "resume_entries", "emergency_halt", "flatten", "manual_entry"]
+    reason: str
+    requested_at_ns: int
+    operator_identity: str
+    stage: CommandStage
+
+
+class TradingExecutionsData(ExactApiSchema):
+    executions: list[TradingExecutionRowData] = Field(default_factory=list)
+    commands: list[TradingExecutionCommandRowData] = Field(default_factory=list)
+    complete: bool
     window_hours: int
     measured_at_ms: int
 

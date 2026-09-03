@@ -9,7 +9,6 @@ export type TradingStatus = TradingSchemas["TradingStatusData"];
 export type TradingDecisionRuntime = TradingSchemas["TradingDecisionRuntimeData"];
 export type TradingExecutionReadiness = TradingSchemas["TradingExecutionReadinessData"];
 export type TradingRuntimeCounts = TradingSchemas["TradingRuntimeCountsData"];
-export type TradingAlphaIdentity = TradingSchemas["TradingAlphaIdentityData"];
 export type TradingCases = TradingSchemas["TradingCasesData"];
 export type TradingCase = TradingSchemas["TradingCaseData"];
 export type TradingPolicyCheck = TradingSchemas["TradingPolicyCheckData"];

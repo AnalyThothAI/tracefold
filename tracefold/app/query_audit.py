@@ -18,6 +18,7 @@ from tracefold.trading.storage.queries import (
     TRADING_STATUS_SIGNAL_COUNTS_SQL,
     console_cases_statement,
     console_execution_observations_statement,
+    console_executions_statement,
     console_operator_intents_statement,
     console_signals_statement,
 )
@@ -84,6 +85,12 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     "/api/trading/execution/commands": (
         "trading_console_commands",
         "trading_console_commands_filtered",
+    ),
+    # #528 PR-1. The desk table plans two statements: its own per-Signal fold, and the unfiltered
+    # first page of the Command read it renders beside it -- the same builder the Command route runs.
+    "/api/trading/executions": (
+        "trading_console_executions",
+        "trading_console_commands",
     ),
     "/api/trading/gate/{event_id}": ("trading_gate_decision_for_source_key",),
     # #269. The same admission ledger the event endpoint reads one row of, for a whole window — bounded
@@ -171,6 +178,7 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
 
     since_ms = int(now_ms) - 24 * 3_600_000
     since_ns = since_ms * 1_000_000
+    executions_sql, executions_params = console_executions_statement(since_ns=since_ns, limit=101)
     return (
         ReadQuerySpec(
             name="trading_status_case_counts",
@@ -182,7 +190,7 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="trading_status_signal_counts",
             sql=TRADING_STATUS_SIGNAL_COUNTS_SQL,
-            params={"since": since_ms * 1_000_000, "now": int(now_ms) * 1_000_000},
+            params={"since": since_ms * 1_000_000},
             amplification_basis="aggregate_input",
             max_read_return_amplification=20.0,
         ),
@@ -250,6 +258,15 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                 before=(since_ns + 1, "z" * 64),
                 limit=101,
             ),
+        ),
+        ReadQuerySpec(
+            # #528 PR-1. One plan, not two: the desk table takes no filter. The fold reads every
+            # observation of the Signals in its own window, so its input is the join rather than the
+            # row per Signal it returns.
+            name="trading_console_executions",
+            sql=executions_sql,
+            params=executions_params,
+            max_read_return_amplification=20.0,
         ),
         *_console_specs(
             name="trading_console_commands",

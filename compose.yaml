@@ -196,7 +196,6 @@ services:
       - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
       - ${HOME}/.tracefold/postgres_database_password:/root/.tracefold/postgres_database_password:ro
       - ${HOME}/.tracefold/telegram_bot_token:/root/.tracefold/telegram_bot_token:ro
-      - ${HOME}/.tracefold/telegram_webhook_secret:/root/.tracefold/telegram_webhook_secret:ro
       - ${HOME}/.tracefold/cache:/root/.tracefold/cache
       - ${HOME}/.tracefold/logs:/root/.tracefold/logs
     command: ["tracefold", "workers"]

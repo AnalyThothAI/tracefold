@@ -13,6 +13,7 @@ from .config import OiRuntimeProfile
 from .exit import ExitCoordinator
 from .observations import RuntimeObservationWriter
 from .quotes import QuoteStreamCoordinator
+from .risk import decimal_value
 from .state import (
     ExecutionState,
     PrivateReconciliationReason,
@@ -21,6 +22,12 @@ from .state import (
     deterministic_client_order_id,
     protection_leg,
 )
+
+
+def _closed_decimal(value: Any) -> Decimal | None:
+    """A `PositionClosed` price or money that Nautilus may not have; never a fabricated zero."""
+
+    return None if value is None else decimal_value(value)
 
 
 class ProtectionCoordinator:
@@ -109,9 +116,11 @@ class ProtectionCoordinator:
     def position_closed(self, event: Any) -> None:
         entry_id = self._state.positions.pop(event.position_id, None)
         if entry_id is None:
+            self._close_unclaimed_position(event)
             self._readiness.halt_for_unexpected_exposure()
             return
         state = self._state.executions[entry_id]
+        closed_quantity = state.position_quantity
         state.position_quantity = Decimal(0)
         state.active = False
         if state.stop_order is not None and not state.stop_order.is_closed:
@@ -122,12 +131,40 @@ class ProtectionCoordinator:
             if not retiring.is_closed:
                 self._engine.cancel_order(retiring, client_id=ClientId("BINANCE"))
         state.exit_retry_required = False
-        self._observations.position(state, "closed", int(event.ts_closed))
+        self._observations.position(
+            state,
+            "closed",
+            int(event.ts_closed),
+            quantity=closed_quantity,
+            exit_price=_closed_decimal(event.avg_px_close),
+            realized_pnl_usd=_closed_decimal(event.realized_pnl),
+            # Only `ExitCoordinator.flatten` annotates a reason; anything else that takes this
+            # position off the venue is the reduce-only stop this coordinator placed.
+            exit_reason=state.exit_reason or "stop_filled",
+        )
+        state.exit_reason = None
         # Nothing on this instrument needs a mark any more, so the Runtime stops paying for its
         # quotes; the next admitted entry re-opens the stream (#510 E).
         self._quotes.release(state.route.instrument_id)
         if self._state.pending_flatten:
             self._request_reconciliation("flatten_pending")
+
+    def _close_unclaimed_position(self, event: Any) -> None:
+        """Record the close of exposure this Runtime flattened without owning it (#528 A)."""
+
+        if event.position_id not in self._state.unclaimed_flatten_orders:
+            return
+        command_id = min(self._state.pending_flatten, default=None)
+        if command_id is None:
+            return
+        self._observations.unclaimed_position_closed(
+            command_id=command_id,
+            position_id=event.position_id,
+            quantity=abs(Decimal(str(event.peak_qty))),
+            occurred_at_ns=int(event.ts_closed),
+            exit_price=_closed_decimal(event.avg_px_close),
+            realized_pnl_usd=_closed_decimal(event.realized_pnl),
+        )
 
     def request_stop(self, state: ExecutionState, quantity: Decimal, avg_price: Decimal) -> None:
         if quantity <= 0:

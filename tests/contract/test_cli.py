@@ -478,14 +478,6 @@ class CliTests(unittest.TestCase):
             payload["trading"],
             {
                 "enabled": False,
-                "control": {
-                    "enabled": False,
-                    "telegram_bot_token_file": "telegram_bot_token",
-                    "telegram_webhook_secret_file": "telegram_webhook_secret",
-                    "allowed_chat_ids": [],
-                    "allowed_user_ids": [],
-                    "notification_chat_id": None,
-                },
                 "execution": {
                     "mode": "disabled",
                     "account_slot": "binance_usdm_primary",
@@ -606,7 +598,6 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         assert directory.stat().st_mode & 0o777 == 0o700
     for name in (
         "telegram_bot_token",
-        "telegram_webhook_secret",
         "binance_usdm_api_key",
         "binance_usdm_api_secret",
         "postgres_password",
@@ -616,7 +607,6 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         assert path.is_file()
         assert path.stat().st_mode & 0o777 == 0o600
     assert (app_home / "telegram_bot_token").read_bytes() == b""
-    assert (app_home / "telegram_webhook_secret").read_bytes() == b""
     assert all((app_home / name).read_bytes() == b"" for name in ("binance_usdm_api_key", "binance_usdm_api_secret"))
 
 
@@ -630,7 +620,6 @@ def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeyp
     tracked_names = (
         "config.yaml",
         "telegram_bot_token",
-        "telegram_webhook_secret",
         "binance_usdm_api_key",
         "binance_usdm_api_secret",
         "postgres_password",

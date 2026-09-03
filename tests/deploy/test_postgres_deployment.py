@@ -176,7 +176,8 @@ def test_compose_preserves_non_postgres_secret_isolation() -> None:
     nautilus_volumes = services["nautilus"].get("volumes", [])
 
     assert "${HOME}/.tracefold/telegram_bot_token:/root/.tracefold/telegram_bot_token:ro" in worker_volumes
-    assert "${HOME}/.tracefold/telegram_webhook_secret:/root/.tracefold/telegram_webhook_secret:ro" in worker_volumes
+    # #528 deleted the Telegram control ingress, so nothing reads a webhook secret any more.
+    assert all("telegram_webhook_secret" not in volume for volume in worker_volumes)
     assert all("binance_usdm_api_" not in volume for volume in worker_volumes)
     assert all("hyperliquid_private_key" not in volume for volume in worker_volumes)
     assert all("telegram_bot_token" not in volume for volume in serve_volumes)

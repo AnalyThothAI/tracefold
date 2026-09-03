@@ -6,7 +6,7 @@ from collections.abc import Callable
 from decimal import Decimal
 from typing import Any, Final
 
-from tracefold.trading import OperatorIntentV1, TradeSignalV1
+from tracefold.trading import ACCEPTED_ENTRY_DISPOSITIONS, OperatorIntentV1, TradeSignalV1
 
 from .audit_sink import AuditSink
 from .signal_client import ExecutionSignalClient
@@ -113,10 +113,11 @@ class RuntimeObservationWriter:
         command = request.command
         if command is None:
             raise RuntimeError("oi_runtime_entry_source_invalid")
-        disposition = (
-            "accepted" if reason in {"accepted", "replayed_query_first", "unknown_query_first"} else "rejected"
+        self.dispose_command(
+            command,
+            "accepted" if reason in ACCEPTED_ENTRY_DISPOSITIONS else "rejected",
+            reason,
         )
-        self.dispose_command(command, disposition, reason)
 
     def _release_entry(self, request: RuntimeEntryRequest) -> None:
         """Drop the in-process claim without a durable verdict, so the next poll redelivers it.
@@ -215,7 +216,35 @@ class RuntimeObservationWriter:
             )
         )
 
-    def position(self, state: ExecutionState, status: str, occurred_at_ns: int) -> None:
+    def position(
+        self,
+        state: ExecutionState,
+        status: str,
+        occurred_at_ns: int,
+        *,
+        quantity: Decimal | None = None,
+        exit_price: Decimal | None = None,
+        realized_pnl_usd: Decimal | None = None,
+        exit_reason: str | None = None,
+    ) -> None:
+        """How much exposure, at what entry price, and on `closed` out at what price and why.
+
+        `closed` used to report `quantity` 0 -- the Runtime had already zeroed its own counter -- and
+        carried neither the exit price nor the realized result, so the one row an operator reads a
+        finished trade off had no outcome in it at all (#528 A). The caller passes the pre-close
+        quantity and the venue's own close facts; every value stays the string of its Decimal.
+        """
+
+        reported = state.position_quantity if quantity is None else quantity
+        summary: dict[str, str] = {"status": status, "quantity": str(reported)}
+        for key, value in (
+            ("avg_entry_price", state.avg_entry_price),
+            ("exit_price", exit_price),
+            ("realized_pnl_usd", realized_pnl_usd),
+            ("exit_reason", exit_reason),
+        ):
+            if value is not None:
+                summary[key] = str(value)
         references = () if state.position_id is None else (state.position_id.value,)
         self._audit.offer(
             self._factory.create(
@@ -224,9 +253,42 @@ class RuntimeObservationWriter:
                 occurred_at_ns=occurred_at_ns,
                 observed_at_ns=max(occurred_at_ns, self._timestamp_ns()),
                 native_identity_references=references,
-                summary={"status": status, "quantity": str(state.position_quantity)},
-                payload={"status": status, "quantity": str(state.position_quantity)},
-                event_identity=f"{status}:{state.position_quantity}:{occurred_at_ns}",
+                summary=summary,
+                payload=dict(summary),
+                event_identity=f"{status}:{reported}:{occurred_at_ns}",
+            )
+        )
+
+    def unclaimed_position_closed(
+        self,
+        *,
+        command_id: str,
+        position_id: Any,
+        quantity: Decimal,
+        occurred_at_ns: int,
+        exit_price: Decimal | None,
+        realized_pnl_usd: Decimal | None,
+    ) -> None:
+        """The close of exposure no durable entry identity claims, under the flatten that asked for it."""
+
+        summary: dict[str, str] = {
+            "status": "closed",
+            "quantity": str(quantity),
+            "exit_reason": "unclaimed_flatten",
+        }
+        for key, value in (("exit_price", exit_price), ("realized_pnl_usd", realized_pnl_usd)):
+            if value is not None:
+                summary[key] = str(value)
+        self._audit.offer(
+            self._factory.create(
+                normalized_kind="position",
+                command_id=command_id,
+                occurred_at_ns=occurred_at_ns,
+                observed_at_ns=max(occurred_at_ns, self._timestamp_ns()),
+                native_identity_references=(position_id.value,),
+                summary=summary,
+                payload=dict(summary),
+                event_identity=f"unclaimed_flatten:closed:{position_id.value}:{occurred_at_ns}",
             )
         )
 
@@ -247,7 +309,11 @@ class RuntimeObservationWriter:
                 occurred_at_ns=now_ns,
                 observed_at_ns=now_ns,
                 native_identity_references=(client_order_id.value,),
-                summary={"explicit_quantity": str(quantity), "reduce_only": True},
+                summary={
+                    "explicit_quantity": str(quantity),
+                    "trigger_price": str(trigger_price),
+                    "reduce_only": True,
+                },
                 payload={
                     "client_order_id": client_order_id.value,
                     "quantity": str(quantity),

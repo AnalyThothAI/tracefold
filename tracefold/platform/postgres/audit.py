@@ -100,7 +100,6 @@ TRADING_TABLES = (
     "trading_trade_signals",
     "trading_operator_intents",
     "trading_execution_observations",
-    "trading_execution_notification_deliveries",
     "trading_execution_runtime_control_state",
     "trading_execution_runtime_state",
 )

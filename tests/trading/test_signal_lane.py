@@ -295,14 +295,12 @@ def test_hyperliquid_builder_source_uses_provider_native_market_key(monkeypatch:
     assert requested == [("xyz:UNITREE", "hl.xyz")]
 
 
-def test_pre_move_and_four_hour_reads_measure_the_same_book(monkeypatch: pytest.MonkeyPatch) -> None:
-    """#460 M2: the two source-native reads translate one venue vocabulary through one function.
+def test_the_pre_move_read_asks_the_usdm_book_in_its_own_spelling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#460 M2: one function translates the provider's venue vocabulary into the price-plane key.
 
-    The pre-move read takes a live `OiTradeCandidate`; the four-hour result read takes a `market_key`
-    the Case froze hours earlier. They had a `binance.usdm` -> `binance.perp` ladder each, and the
-    failure that costs something is not a crash — it is the two quietly asking different books for
-    the same Signal, so a 4 h card reports an outcome the entry price was never measured against.
-    This drives both through a real Binance klines payload and asserts they come back identical.
+    There were two source-native reads here until #528 deleted the four-hour outcome card and with it
+    `_source_native_result_bars`; the pre-move read is the only caller left. The translation is still
+    what matters -- `binance.usdm` has to reach `fapi.binance.com` as `SOLUSDT`, never the spot book.
     """
 
     rows = [
@@ -329,13 +327,8 @@ def test_pre_move_and_four_hour_reads_measure_the_same_book(monkeypatch: pytest.
     assert not isinstance(candidate, SourceRejected)
 
     pre_move = asyncio.run(trading_wiring._source_native_bars(candidate, NOW - 300_000, NOW))
-    result = asyncio.run(
-        trading_wiring._source_native_result_bars("crypto:perp:SOL:USDT", candidate.venue, NOW - 300_000, NOW)
-    )
 
-    # One symbol spelling and one host across both reads: `SOLUSDT` on the USD-M book, never the spot one.
-    assert requested == [("SOLUSDT", "fapi.binance.com"), ("SOLUSDT", "fapi.binance.com")]
-    assert [(bar.open_at_ms, str(bar.close)) for bar in pre_move] == list(result)
+    assert requested == [("SOLUSDT", "fapi.binance.com")]
     assert [str(bar.close) for bar in pre_move] == ["100.5", "101.5"]
 
 

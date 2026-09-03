@@ -146,33 +146,17 @@ The kill -9 restart receipt is the `readiness` observations with
 `summary ->> 'lifecycle' = 'started'` for the slot: one before the entry and one
 after its fill is what proves the position survived a restart.
 
-### Trading operator control (#433-D)
+### Trading operator control
 
-Operator control is disabled by default and does not itself activate
-execution. Configure the one Workers-owned Telegram boundary:
-
-```yaml
-trading:
-  control:
-    enabled: true
-    telegram_bot_token_file: "telegram_bot_token"
-    telegram_webhook_secret_file: "telegram_webhook_secret"
-    allowed_chat_ids: [-1001234567890]
-    allowed_user_ids: [123456789]
-    notification_chat_id: -1001234567890
-```
-
-Populate both referenced files as regular mode-`0600` files. `tracefold
-config` reports only paths, allowlist counts, and configured booleans. Workers
-fails startup on an absent, empty, symlinked, oversized, or over-permissive
-file. Serve and Nautilus do not mount either Telegram file.
-
-Workers mounts `POST /telegram/control` only while this boundary is enabled.
-The listener remains host-loopback; use an operator-owned HTTPS reverse proxy
-that exposes only this path, then configure Telegram's webhook with the same
-secret-token header value. Do not put the secret in a URL, config comment,
-Issue, command transcript, or log. Both the message chat and sender user must
-be allowlisted.
+There are two operator ingresses and no `trading.control` configuration block.
+`tracefold trading issue` on the host is the manual one, authenticated by the
+local OS uid; `POST /api/trading/execution/commands` is the console one,
+authenticated by the bootstrap `ws_token`. #528 deleted the Telegram control
+webhook, its allowlists and its secret file, and both never-run Trading
+notification senders: none of them had ever been enabled in production, and the
+delivery ledger they wrote to held zero rows. A config that still carries a
+`trading.control` or `trading.notifications` block now fails to load — delete
+the block.
 
 The closed commands are `/status`, `/pause REASON`, `/resume REASON`,
 `/halt REASON`, `/flatten account TTL_SECONDS`, and optional
@@ -183,10 +167,9 @@ enters the same Runtime risk, sizing, deterministic client-ID, order,
 protection, reconciliation, and audit path as a Signal; it has no bypass.
 An accepted emergency halt is sticky for the Runtime lifetime: `/resume` is
 explicitly rejected as `emergency_halt_sticky` and cannot manufacture a resumed
-state. The same bot keeps command identity across token rotation; replacing the
-bot creates a new namespace because Telegram `update_id` values are bot-scoped.
+state.
 
-Telegram's “意图已记录” and CLI `ok` prove only the PostgreSQL intent. With no
+A CLI `ok` and a console receipt prove only the PostgreSQL intent. With no
 Runtime running, the intent remains `awaiting_runtime` until its TTL passes;
 ingress never fabricates a terminal Runtime Observation.
 Inspect `trading commands` or `/api/trading/execution/commands` for the command disposition and
@@ -209,12 +192,7 @@ The local fallback writer uses the identical parser and an OS UID identity:
 uv run tracefold trading issue "/pause maintenance" --request-id ops-20260901-1 --requested-at-ns <unix-nanoseconds>
 ```
 
-Preserve both request fields exactly on retries. The notification worker is
-asynchronous and at-least-once: it appends a target/observation delivery receipt only
-after a send, so a crash between send and receipt commit may duplicate a message.
-A Telegram outage or transient shared database-admission timeout leaves the
-observation unreceipted and retries; it never blocks Runtime protection, exits,
-reconciliation, or PostgreSQL audit.
+Preserve both request fields exactly on retries.
 
 The execution Runtime publishes three independent states. `alive` proves only
 the process/TradingNode/event loop; `execution_safe` proves existing exposure can
@@ -1236,15 +1214,17 @@ of pre-V3 history.
 `(source_key, gate_version, gate_config_digest)` and answers this without a
 replay. It is the only answer: there is no counter beside it that can disagree.
 
-Start from `uv run tracefold trading status`:
+Start from `GET /api/trading/gate`:
 
-- `candidate_counts_24h` / `candidate_counts_7d` — how many source frames the
-  lane saw and what happened to them, by `DEFERRED | REJECTED | CASE_CREATED |
-  EXPIRED` for current writers. Counted on the frame's own observation time, so a
+- `status_counts_24h` (`candidate_counts_24h` in the report it is built from) —
+  how many source frames the lane saw in the last 24 hours and what happened to
+  them, by `DEFERRED | REJECTED | CASE_CREATED |
+  EXPIRED` for current writers. One window: #528 deleted the seven-day aggregate
+  beside it, which no surface rendered. Counted on the frame's own observation time, so a
   runner restart that re-reads a backlog cannot move yesterday's frames into
   today. The four statuses are the whole vocabulary; `20260903_0355` narrowed the
   CHECK to exactly them.
-- `candidate_reasons_24h` — the same population by `stage:reason`. The stages run
+- `reason_counts_24h` (`candidate_reasons_24h`) — the same population by `stage:reason`. The stages run
   `source -> venue -> eligibility -> market_context -> freeze` and the reason
   vocabulary is closed; anything outside either set is a bug, not a new rule.
 - `latest_source_at_ms` and `latest_gate_eligible_at_ms` sit on either side of

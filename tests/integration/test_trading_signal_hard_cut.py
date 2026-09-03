@@ -525,14 +525,10 @@ def test_0341_enforces_the_atomic_case_signal_pair(
 
         with conn.transaction():
             _insert_case(conn, case_id="old-open-case", state="PENDING")
-        assert TradingRepository(conn).runtime_summary(since_ms=2, now_ms=2) == {
-            "cases_24h": 0,
-            "signals_24h": 0,
-            "no_trade_24h": 0,
-            "blocked_24h": 0,
-            "cases_open": 1,
-            "signals_unexpired": 1,
-        }
+        # #528: the status counts are the 24 h window and nothing else. An older still-open Case is
+        # outside the window, so it is outside the count -- the four exceptional counts that reached
+        # past the window for it had no reader.
+        assert TradingRepository(conn).runtime_summary(since_ms=2) == {"cases_24h": 0, "signals_24h": 0}
 
         for state in ("PENDING", "RUNNING", "NO_TRADE", "BLOCKED"):
             with (

@@ -32,6 +32,14 @@ from .operator_control import (
     parse_operator_command,
     prepare_parsed_operator_intent,
 )
+from .stages import (
+    ACCEPTED_ENTRY_DISPOSITIONS,
+    CommandStage,
+    ExecutionStage,
+    command_stage,
+    execution_stage,
+    signal_disposition,
+)
 from .storage.execution_stream import (
     ExecutionAccountOrder,
     ExecutionAccountPosition,
@@ -41,6 +49,7 @@ from .storage.execution_stream import (
 )
 
 __all__ = [
+    "ACCEPTED_ENTRY_DISPOSITIONS",
     "EXECUTION_STRATEGY_ID",
     "IDENTITY_PATTERN",
     "MARKET_KEY_PATTERN",
@@ -50,10 +59,12 @@ __all__ = [
     "AlphaDecision",
     "Bar",
     "CaseState",
+    "CommandStage",
     "ExecutionAccountOrder",
     "ExecutionAccountPosition",
     "ExecutionAccountSnapshot",
     "ExecutionObservationV1",
+    "ExecutionStage",
     "OiTradeCandidate",
     "OperatorCommandError",
     "OperatorIntentV1",
@@ -62,8 +73,11 @@ __all__ = [
     "TradeSignalV1",
     "TradingCaseManifest",
     "canonical_sha256",
+    "command_stage",
+    "execution_stage",
     "parse_operator_command",
     "postgres_text_valid",
     "prepare_execution_observations",
     "prepare_parsed_operator_intent",
+    "signal_disposition",
 ]

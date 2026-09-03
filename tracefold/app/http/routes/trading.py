@@ -18,8 +18,11 @@ from tracefold.app.trading_config import ADMISSION_VERSION, signal_lane_config
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from tracefold.trading import (
     OperatorCommandError,
+    command_stage,
+    execution_stage,
     parse_operator_command,
     prepare_parsed_operator_intent,
+    signal_disposition,
 )
 
 from ..dependencies import _authenticated_runtime, _authenticated_write_runtime, _validate_query_params
@@ -36,6 +39,7 @@ _CasesEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingCasesData]
 _SignalsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingSignalsData]
 _ObservationsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingExecutionObservationsData]
 _CommandsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingOperatorIntentsData]
+_ExecutionsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingExecutionsData]
 _CommandReceiptEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingOperatorCommandReceiptData]
 
 _WINDOW_MS: Final = 24 * 3_600_000
@@ -85,7 +89,7 @@ def get_trading_status(request: Request) -> Response:
     now_ms = int(time.time() * 1000)
     with runtime.repositories() as repos:
         last_case_at_ms = repos.trading.latest_case_created_at_ms()
-        counts = repos.trading.runtime_summary(since_ms=now_ms - _WINDOW_MS, now_ms=now_ms)
+        counts = repos.trading.runtime_summary(since_ms=now_ms - _WINDOW_MS)
         execution = runtime.settings.trading.execution
         execution_status = execution_readiness_projection(
             execution,
@@ -93,17 +97,10 @@ def get_trading_status(request: Request) -> Response:
             repos.trading.execution_runtime_control_state(execution.account_slot),
             now_ns=now_ms * 1_000_000,
         )
-    config = signal_lane_config(runtime.settings)
     return _etagged(
         {
             "decision": {"last_case_at_ms": last_case_at_ms},
             "execution": execution_status,
-            "alpha": {
-                "policy_id": config.policy.policy_id,
-                "policy_version": config.policy.policy_version,
-                "config_digest": config.policy.config_digest,
-                "config": {key: str(value) for key, value in sorted(config.policy.config_snapshot.items())},
-            },
             "counts": counts,
             "window_hours": _WINDOW_MS // 3_600_000,
             "measured_at_ms": now_ms,
@@ -307,6 +304,37 @@ def get_operator_intents(
         },
         request,
         envelope=_CommandsEnvelope,
+    )
+
+
+@router.get("/trading/executions", response_model=_ExecutionsEnvelope)
+def get_trading_executions(request: Request) -> Response:
+    """Today's desk table: one row per Signal, plus one row per operator Command (#528 PR-1)."""
+
+    _validate_query_params(request, supported={"token"})
+    runtime = _authenticated_runtime(request)
+    now_ms = int(time.time() * 1000)
+    now_ns = now_ms * 1_000_000
+    since_ns = (now_ms - _WINDOW_MS) * 1_000_000
+    with runtime.repositories() as repos:
+        rows = repos.trading.console_executions(since_ns=since_ns, limit=_ROW_LIMIT + 1)
+        commands = repos.trading.console_operator_intents(
+            since_ns=since_ns,
+            account_slot=None,
+            action=None,
+            before=None,
+            limit=_ROW_LIMIT,
+        )
+    return _etagged(
+        {
+            "executions": [_execution(row) for row in rows[:_ROW_LIMIT]],
+            "commands": [_execution_command(row, now_ns=now_ns) for row in commands],
+            "complete": len(rows) <= _ROW_LIMIT,
+            "window_hours": _WINDOW_MS // 3_600_000,
+            "measured_at_ms": now_ms,
+        },
+        request,
+        envelope=_ExecutionsEnvelope,
     )
 
 
@@ -520,6 +548,55 @@ def _command(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
         "direction": row.get("direction"),
         "disposition": row.get("disposition"),
         "disposition_reason": row.get("disposition_reason"),
+    }
+
+
+def _execution(row: dict[str, Any]) -> dict[str, Any]:
+    reason = _string_or_none(row.get("disposition_reason"))
+    order_status = _string_or_none(row.get("order_status"))
+    fill_quantity = _string_or_none(row.get("fill_quantity"))
+    stop_trigger_price = _string_or_none(row.get("stop_trigger_price"))
+    position_status = _string_or_none(row.get("position_status"))
+    return {
+        "signal_id": str(row["signal_id"]),
+        "case_id": str(row["case_id"]),
+        "market_key": str(row["market_key"]),
+        "direction": str(row["direction"]),
+        "observed_at_ns": int(row["observed_at_ns"]),
+        "disposition": signal_disposition(reason),
+        "disposition_reason": reason,
+        "order_status": order_status,
+        "fill_quantity": fill_quantity,
+        "fill_avg_price": _string_or_none(row.get("fill_avg_price")),
+        "stop_trigger_price": stop_trigger_price,
+        "position_status": position_status,
+        "exit_price": _string_or_none(row.get("exit_price")),
+        "realized_pnl_usd": _string_or_none(row.get("realized_pnl_usd")),
+        "exit_reason": _string_or_none(row.get("exit_reason")),
+        "stage": execution_stage(
+            disposition_reason=reason,
+            order_status=order_status,
+            fill_quantity=fill_quantity,
+            stop_trigger_price=stop_trigger_price,
+            position_status=position_status,
+        ),
+        "last_observed_at_ns": int(row["last_observed_at_ns"]),
+    }
+
+
+def _execution_command(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
+    return {
+        "command_id": str(row["command_id"]),
+        "action": str(row["action"]),
+        "reason": str(row["reason"]),
+        "requested_at_ns": int(row["requested_at_ns"]),
+        "operator_identity": str(row["operator_identity"]),
+        "stage": command_stage(
+            disposition=_string_or_none(row.get("disposition")),
+            disposition_reason=_string_or_none(row.get("disposition_reason")),
+            expires_at_ns=int(row["expires_at_ns"]),
+            now_ns=now_ns,
+        ),
     }
 
 

@@ -16,7 +16,6 @@ from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.operator_control import persist_operator_intent
 from tracefold.platform.postgres.audit import PostgresQueryAudit, QueryAuditCatalog
 from tracefold.trading.execution_contracts import ExecutionObservationV1
-from tracefold.trading.notification_policy import NOTIFICATION_THROTTLE_MS
 from tracefold.trading.storage.execution_stream import (
     ExecutionAccountOrder,
     ExecutionAccountPosition,
@@ -112,9 +111,6 @@ def _observation(
     }
     values.update(updates)
     return ExecutionObservationV1.model_validate(values)
-
-
-_UNTHROTTLED_NOW_NS = 9_000_000_000_000
 
 
 def _plan_index_names(value: object) -> set[str]:
@@ -232,115 +228,6 @@ def test_operator_ingress_leaves_the_slots_command_for_the_runtime() -> None:
                 limit=10,
             )
         assert materialize_operator_intents(unresolved) == (command.value.model_copy(update={"seq": 1}),)
-    finally:
-        conn.close()
-
-
-def test_a_webhook_receipt_carries_no_message_id_and_gains_its_four_hour_result() -> None:
-    """#458 PR-B on real PostgreSQL: the receipt outlives the absence of a provider message id.
-
-    A Feishu custom-bot webhook returns none, so `message_id` is nullable rather than faked, and the
-    four-hour outcome is recorded as a second delivery instant on the same row rather than as an edit
-    of a message this channel cannot address again.
-    """
-
-    observation = _observation(event="a", kind="audit_gap")
-    target = "9" * 64
-    conn = connect_postgres_test(read_only=False)
-    try:
-        repo = TradingRepository(conn)
-        with conn.transaction():
-            sequences = repo.append_execution_observations(prepare_execution_observations((observation,)))
-        with conn.transaction():
-            receipt = repo.append_execution_notification_delivery(
-                target_sha256=target,
-                observation_seq=sequences[0],
-                message_id=None,
-                delivered_at_ns=5_000,
-                selected_at_ns=5_000,
-            )
-        assert receipt["message_id"] is None
-        assert receipt["result_delivered_at_ns"] is None
-        # The watermark advances on the receipt, not on the message id: a webhook target still moves on.
-        assert repo.next_execution_notification(target, now_ns=_UNTHROTTLED_NOW_NS) is None
-
-        # An `audit_gap` has no Signal and therefore no outcome to report.
-        assert repo.next_execution_notification_result(target, due_at_or_before_ns=10_000_000) is None
-
-        with conn.transaction():
-            assert (
-                repo.mark_execution_notification_result(
-                    target_sha256=target, observation_seq=sequences[0], result_delivered_at_ns=6_000
-                )
-                is True
-            )
-        # Marking is once-only: a retry after the outcome went out must not move the recorded instant.
-        with conn.transaction():
-            assert (
-                repo.mark_execution_notification_result(
-                    target_sha256=target, observation_seq=sequences[0], result_delivered_at_ns=7_000
-                )
-                is False
-            )
-        stored = conn.execute(
-            "SELECT message_id, result_delivered_at_ns FROM trading_execution_notification_deliveries"
-        ).fetchone()
-        assert stored["message_id"] is None
-        assert stored["result_delivered_at_ns"] == 6_000
-    finally:
-        conn.close()
-
-
-def test_notification_delivery_is_append_only_and_anti_joined_without_mutating_observation_truth() -> None:
-    non_notifiable = _observation(event="6", kind="risk")
-    observation = _observation(event="7", kind="audit_gap")
-    target = "8" * 64
-    conn = connect_postgres_test(read_only=False)
-    try:
-        repo = TradingRepository(conn)
-        with conn.transaction():
-            sequences = repo.append_execution_observations(
-                prepare_execution_observations((non_notifiable, observation))
-            )
-        assert len(sequences) == 2
-        assert repo.next_execution_notification(target, now_ns=_UNTHROTTLED_NOW_NS)["event_id"] == observation.event_id
-        with pytest.raises(RuntimeError, match="append_execution_notification_delivery_requires_explicit_transaction"):
-            repo.append_execution_notification_delivery(
-                target_sha256=target,
-                observation_seq=sequences[1],
-                message_id=41,
-                delivered_at_ns=3_000,
-                selected_at_ns=3_000,
-            )
-        with conn.transaction(), pytest.raises(ValueError, match="execution_notification_delivery_out_of_order"):
-            repo.append_execution_notification_delivery(
-                target_sha256=target,
-                observation_seq=sequences[1] + 1,
-                message_id=40,
-                delivered_at_ns=2_999,
-                selected_at_ns=2_999,
-            )
-        with conn.transaction():
-            first = repo.append_execution_notification_delivery(
-                target_sha256=target,
-                observation_seq=sequences[1],
-                message_id=41,
-                delivered_at_ns=3_000,
-                selected_at_ns=3_000,
-            )
-        with conn.transaction():
-            retried = repo.append_execution_notification_delivery(
-                target_sha256=target,
-                observation_seq=sequences[1],
-                message_id=42,
-                delivered_at_ns=3_001,
-                selected_at_ns=3_001,
-            )
-        assert first == retried
-        assert first["message_id"] == 41
-        assert repo.next_execution_notification(target, now_ns=_UNTHROTTLED_NOW_NS) is None
-        assert conn.execute("SELECT count(*) AS n FROM trading_execution_notification_deliveries").fetchone()["n"] == 1
-        assert conn.execute("SELECT count(*) AS n FROM trading_execution_observations").fetchone()["n"] == 2
     finally:
         conn.close()
 
@@ -1268,7 +1155,6 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "ix_trading_execution_observations_slot",
         "ix_trading_execution_observations_signal_recovery",
         "ix_trading_execution_observations_command_recovery",
-        "trading_execution_notification_candidates_idx",
         "ux_trading_execution_signal_disposition",
         "ux_trading_execution_control_disposition",
         "trading_execution_runtime_control_state_pkey",
@@ -1413,126 +1299,3 @@ def test_unresolved_reads_use_the_production_query_specs_and_indexes() -> None:
         "ux_trading_execution_signal_disposition",
     }
     assert "ix_trading_operator_intents_pending" in plans["trading_unresolved_operator_intents"]
-
-
-def test_a_held_observation_survives_another_kinds_delivery_and_its_own_window_releases_it() -> None:
-    """#472: the throttle has to delay one kind without burying it under another kind's cursor.
-
-    A single `max(observation_seq)` watermark cannot express that. Hold a reconciliation inside its
-    window, send an unthrottled observation that arrived after it, and the reconciliation would fall
-    below that delivery's sequence and never be seen again — the bound would have destroyed the state
-    rather than delayed it. Watermarks are per kind, so the held observation is still there when its
-    own window expires.
-    """
-
-    first = _observation(event="a", kind="reconciliation", summary={"account_flat": False, "positions": 1, "orders": 0})
-    held = _observation(event="b", kind="reconciliation", summary={"account_flat": False, "positions": 2, "orders": 0})
-    other = _observation(event="c", kind="audit_gap", summary={"cause": "audit_identity_conflict", "conflict_count": 1})
-    target = "1" * 64
-    conn = connect_postgres_test(read_only=False)
-    try:
-        repo = TradingRepository(conn)
-        with conn.transaction():
-            sequences = repo.append_execution_observations(prepare_execution_observations((first,)))
-        sent_at_ns = _UNTHROTTLED_NOW_NS
-        with conn.transaction():
-            repo.append_execution_notification_delivery(
-                target_sha256=target,
-                observation_seq=sequences[0],
-                message_id=None,
-                delivered_at_ns=sent_at_ns,
-                selected_at_ns=sent_at_ns,
-            )
-        with conn.transaction():
-            later = repo.append_execution_observations(prepare_execution_observations((held, other)))
-
-        # The held reconciliation does not stand in front of the kind that is not throttled.
-        candidate = repo.next_execution_notification(target, now_ns=sent_at_ns + 1)
-        assert candidate is not None and candidate["event_id"] == other.event_id
-        with conn.transaction():
-            repo.append_execution_notification_delivery(
-                target_sha256=target,
-                observation_seq=later[1],
-                message_id=None,
-                delivered_at_ns=sent_at_ns + 1,
-                selected_at_ns=sent_at_ns + 1,
-            )
-
-        released = repo.next_execution_notification(target, now_ns=sent_at_ns + NOTIFICATION_THROTTLE_MS * 1_000_000)
-        assert released is not None and released["event_id"] == held.event_id
-        assert int(released["seq"]) < later[1]
-    finally:
-        conn.close()
-
-
-def test_reconciliation_notifies_on_exposure_and_never_on_the_flat_steady_state() -> None:
-    """#472: the predicate reads `account_flat`, which is the key the Runtime actually writes.
-
-    The shipped predicate asked for `summary ->> 'state' = 'flat'`; no observation has ever carried a
-    `state` key, so every reconciliation was unreachable while the account being *unflat* — the one
-    state worth waking an operator for — went unreported.
-    """
-
-    flat = _observation(event="c", kind="reconciliation", summary={"account_flat": True, "positions": 0, "orders": 0})
-    unflat = _observation(
-        event="d", kind="reconciliation", summary={"account_flat": False, "positions": 1, "orders": 2}
-    )
-    target = "2" * 64
-    conn = connect_postgres_test(read_only=False)
-    try:
-        repo = TradingRepository(conn)
-        with conn.transaction():
-            repo.append_execution_observations(prepare_execution_observations((flat,)))
-        assert repo.next_execution_notification(target, now_ns=_UNTHROTTLED_NOW_NS) is None
-        with conn.transaction():
-            repo.append_execution_observations(prepare_execution_observations((unflat,)))
-        candidate = repo.next_execution_notification(target, now_ns=_UNTHROTTLED_NOW_NS)
-        assert candidate is not None and candidate["event_id"] == unflat.event_id
-    finally:
-        conn.close()
-
-
-def test_a_timer_driven_kind_coalesces_to_its_newest_state_and_then_holds_for_the_window() -> None:
-    """#472: reconciliation arrives every ~30s, so the bound has to drop rather than defer.
-
-    Three unflat observations queue up; the card reports the newest, because a card that reported the
-    oldest would be describing a position size the account has already left. The two it passed over
-    are superseded, not queued — they never surface, then or after the window expires.
-    """
-
-    stale = _observation(event="e", kind="reconciliation", summary={"account_flat": False, "positions": 1, "orders": 0})
-    middle = _observation(
-        event="f", kind="reconciliation", summary={"account_flat": False, "positions": 2, "orders": 0}
-    )
-    newest = _observation(
-        event="0", kind="reconciliation", summary={"account_flat": False, "positions": 3, "orders": 0}
-    )
-    target = "3" * 64
-    conn = connect_postgres_test(read_only=False)
-    try:
-        repo = TradingRepository(conn)
-        with conn.transaction():
-            repo.append_execution_observations(prepare_execution_observations((stale, middle, newest)))
-        sent_at_ns = _UNTHROTTLED_NOW_NS
-        candidate = repo.next_execution_notification(target, now_ns=sent_at_ns)
-        assert candidate is not None and candidate["event_id"] == newest.event_id
-        with conn.transaction():
-            repo.append_execution_notification_delivery(
-                target_sha256=target,
-                observation_seq=int(candidate["seq"]),
-                message_id=None,
-                delivered_at_ns=sent_at_ns,
-                selected_at_ns=sent_at_ns,
-            )
-        # Inside the window a fresh observation of the same kind waits; the two older ones are gone.
-        later = _observation(
-            event="1", kind="reconciliation", summary={"account_flat": False, "positions": 4, "orders": 0}
-        )
-        with conn.transaction():
-            repo.append_execution_observations(prepare_execution_observations((later,)))
-        throttle_ns = NOTIFICATION_THROTTLE_MS * 1_000_000
-        assert repo.next_execution_notification(target, now_ns=sent_at_ns + throttle_ns - 1) is None
-        released = repo.next_execution_notification(target, now_ns=sent_at_ns + throttle_ns)
-        assert released is not None and released["event_id"] == later.event_id
-    finally:
-        conn.close()

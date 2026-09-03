@@ -43,6 +43,8 @@ def execution_readiness_projection(
         "positions_count": 0,
         "open_orders_count": 0,
         "protection_status": "unknown",
+        "routes_count": 0,
+        "facts_expire_at_ms": None,
         "current_account": None,
     }
     if execution.mode == "disabled" or state is None:
@@ -123,6 +125,16 @@ def execution_readiness_projection(
             "positions_count": state.positions_count,
             "open_orders_count": state.open_orders_count,
             "protection_status": state.protection_status,
+            "routes_count": len(state.routes),
+            # When this projection stops being current, so a reader can compare one instant against
+            # its own clock instead of running a timer per freshness rule (#528 PR-2 block 1).
+            # The earlier of the two budgets below is the whole answer: past it, `alive` or
+            # `account_flat_proven` is no longer what this response says it is.
+            "facts_expire_at_ms": min(
+                state.heartbeat_at_ns + _HEARTBEAT_STALE_AFTER_NS,
+                state.reconciliation_observed_at_ns + _PRIVATE_RECONCILIATION_STALE_AFTER_NS,
+            )
+            // 1_000_000,
             "current_account": (
                 asdict(state.account_snapshot)
                 if private_reconciliation_fresh and state.account_snapshot is not None

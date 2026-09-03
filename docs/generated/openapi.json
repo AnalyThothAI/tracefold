@@ -415,6 +415,52 @@
         "title": "ApiEnvelope[TradingExecutionObservationsData]",
         "type": "object"
       },
+      "ApiEnvelope_TradingExecutionsData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingExecutionsData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[TradingExecutionsData]",
+        "type": "object"
+      },
       "ApiEnvelope_TradingGateData_": {
         "additionalProperties": false,
         "properties": {
@@ -5215,37 +5261,6 @@
         "title": "StatusRuntimeData",
         "type": "object"
       },
-      "TradingAlphaIdentityData": {
-        "additionalProperties": false,
-        "properties": {
-          "config": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "title": "Config",
-            "type": "object"
-          },
-          "config_digest": {
-            "title": "Config Digest",
-            "type": "string"
-          },
-          "policy_id": {
-            "title": "Policy Id",
-            "type": "string"
-          },
-          "policy_version": {
-            "title": "Policy Version",
-            "type": "string"
-          }
-        },
-        "required": [
-          "policy_id",
-          "policy_version",
-          "config_digest"
-        ],
-        "title": "TradingAlphaIdentityData",
-        "type": "object"
-      },
       "TradingCaseData": {
         "additionalProperties": false,
         "properties": {
@@ -5676,6 +5691,60 @@
         "title": "TradingExecutionAccountData",
         "type": "object"
       },
+      "TradingExecutionCommandRowData": {
+        "additionalProperties": false,
+        "description": "One operator Command's progress, read from its `control_disposition` alone.",
+        "properties": {
+          "action": {
+            "enum": [
+              "pause_entries",
+              "resume_entries",
+              "emergency_halt",
+              "flatten",
+              "manual_entry"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "command_id": {
+            "title": "Command Id",
+            "type": "string"
+          },
+          "operator_identity": {
+            "title": "Operator Identity",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "requested_at_ns": {
+            "title": "Requested At Ns",
+            "type": "integer"
+          },
+          "stage": {
+            "enum": [
+              "recorded",
+              "accepted",
+              "rejected",
+              "completed",
+              "expired"
+            ],
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command_id",
+          "action",
+          "reason",
+          "requested_at_ns",
+          "operator_identity",
+          "stage"
+        ],
+        "title": "TradingExecutionCommandRowData",
+        "type": "object"
+      },
       "TradingExecutionObservationData": {
         "additionalProperties": false,
         "properties": {
@@ -6051,6 +6120,17 @@
             "title": "Execution Safe",
             "type": "boolean"
           },
+          "facts_expire_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Facts Expire At Ms"
+          },
           "heartbeat_at_ns": {
             "anyOf": [
               {
@@ -6146,6 +6226,12 @@
             ],
             "title": "Reconciliation Observed At Ns"
           },
+          "routes_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Routes Count",
+            "type": "integer"
+          },
           "runtime_release": {
             "anyOf": [
               {
@@ -6187,6 +6273,221 @@
           "entries_armed"
         ],
         "title": "TradingExecutionReadinessData",
+        "type": "object"
+      },
+      "TradingExecutionRowData": {
+        "additionalProperties": false,
+        "description": "One Signal's whole execution, folded from its own observations (#528 PR-1).",
+        "properties": {
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "direction": {
+            "enum": [
+              "long",
+              "short"
+            ],
+            "title": "Direction",
+            "type": "string"
+          },
+          "disposition": {
+            "anyOf": [
+              {
+                "enum": [
+                  "accepted",
+                  "rejected"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disposition"
+          },
+          "disposition_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disposition Reason"
+          },
+          "exit_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Price"
+          },
+          "exit_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "stop_filled",
+                  "flatten",
+                  "unclaimed_flatten"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Reason"
+          },
+          "fill_avg_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fill Avg Price"
+          },
+          "fill_quantity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fill Quantity"
+          },
+          "last_observed_at_ns": {
+            "title": "Last Observed At Ns",
+            "type": "integer"
+          },
+          "market_key": {
+            "title": "Market Key",
+            "type": "string"
+          },
+          "observed_at_ns": {
+            "title": "Observed At Ns",
+            "type": "integer"
+          },
+          "order_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Status"
+          },
+          "position_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position Status"
+          },
+          "realized_pnl_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realized Pnl Usd"
+          },
+          "signal_id": {
+            "title": "Signal Id",
+            "type": "string"
+          },
+          "stage": {
+            "enum": [
+              "pending",
+              "rejected",
+              "expired",
+              "ordered",
+              "filled",
+              "protected",
+              "closed"
+            ],
+            "title": "Stage",
+            "type": "string"
+          },
+          "stop_trigger_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Trigger Price"
+          }
+        },
+        "required": [
+          "signal_id",
+          "case_id",
+          "market_key",
+          "direction",
+          "observed_at_ns",
+          "stage",
+          "last_observed_at_ns"
+        ],
+        "title": "TradingExecutionRowData",
+        "type": "object"
+      },
+      "TradingExecutionsData": {
+        "additionalProperties": false,
+        "properties": {
+          "commands": {
+            "items": {
+              "$ref": "#/components/schemas/TradingExecutionCommandRowData"
+            },
+            "title": "Commands",
+            "type": "array"
+          },
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "executions": {
+            "items": {
+              "$ref": "#/components/schemas/TradingExecutionRowData"
+            },
+            "title": "Executions",
+            "type": "array"
+          },
+          "measured_at_ms": {
+            "title": "Measured At Ms",
+            "type": "integer"
+          },
+          "window_hours": {
+            "title": "Window Hours",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "complete",
+          "window_hours",
+          "measured_at_ms"
+        ],
+        "title": "TradingExecutionsData",
         "type": "object"
       },
       "TradingGateConfigData": {
@@ -6920,34 +7221,14 @@
       "TradingRuntimeCountsData": {
         "additionalProperties": false,
         "properties": {
-          "blocked_24h": {
-            "default": 0,
-            "title": "Blocked 24H",
-            "type": "integer"
-          },
           "cases_24h": {
             "default": 0,
             "title": "Cases 24H",
             "type": "integer"
           },
-          "cases_open": {
-            "default": 0,
-            "title": "Cases Open",
-            "type": "integer"
-          },
-          "no_trade_24h": {
-            "default": 0,
-            "title": "No Trade 24H",
-            "type": "integer"
-          },
           "signals_24h": {
             "default": 0,
             "title": "Signals 24H",
-            "type": "integer"
-          },
-          "signals_unexpired": {
-            "default": 0,
-            "title": "Signals Unexpired",
             "type": "integer"
           }
         },
@@ -7069,9 +7350,6 @@
       "TradingStatusData": {
         "additionalProperties": false,
         "properties": {
-          "alpha": {
-            "$ref": "#/components/schemas/TradingAlphaIdentityData"
-          },
           "counts": {
             "$ref": "#/components/schemas/TradingRuntimeCountsData"
           },
@@ -7093,7 +7371,6 @@
         "required": [
           "decision",
           "execution",
-          "alpha",
           "counts",
           "window_hours",
           "measured_at_ms"
@@ -7931,6 +8208,28 @@
           }
         },
         "summary": "Get Execution Observations",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/trading/executions": {
+      "get": {
+        "description": "Today's desk table: one row per Signal, plus one row per operator Command (#528 PR-1).",
+        "operationId": "get_trading_executions_api_trading_executions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_TradingExecutionsData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Trading Executions",
         "tags": [
           "api"
         ]
