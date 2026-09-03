@@ -6666,14 +6666,30 @@
             "title": "Gate Config Digest"
           },
           "gate_evidence": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TradingGateEvidenceData"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Gate Evidence",
+            "type": "object"
           },
           "gate_first_evaluated_at_ms": {
             "anyOf": [
@@ -6795,170 +6811,6 @@
           "source_observed_at_ms"
         ],
         "title": "TradingGateDecisionData",
-        "type": "object"
-      },
-      "TradingGateEvidenceData": {
-        "additionalProperties": false,
-        "properties": {
-          "age_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Age Ms"
-          },
-          "blacklist_reason": {
-            "default": "",
-            "title": "Blacklist Reason",
-            "type": "string"
-          },
-          "cooldown_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Cooldown Ms"
-          },
-          "enabled": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Enabled",
-            "type": "array"
-          },
-          "floor": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Floor"
-          },
-          "holds": {
-            "default": "",
-            "title": "Holds",
-            "type": "string"
-          },
-          "lane_full": {
-            "default": "",
-            "title": "Lane Full",
-            "type": "string"
-          },
-          "limit": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Limit"
-          },
-          "live_exchange_id": {
-            "default": "",
-            "title": "Live Exchange Id",
-            "type": "string"
-          },
-          "max_age_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max Age Ms"
-          },
-          "oi_change_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Oi Change Bps"
-          },
-          "oi_value_usd": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Oi Value Usd"
-          },
-          "rule": {
-            "default": "",
-            "title": "Rule",
-            "type": "string"
-          },
-          "since_close_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Since Close Ms"
-          },
-          "source_decision": {
-            "default": "",
-            "title": "Source Decision",
-            "type": "string"
-          },
-          "source_rule": {
-            "default": "",
-            "title": "Source Rule",
-            "type": "string"
-          },
-          "venue": {
-            "default": "",
-            "title": "Venue",
-            "type": "string"
-          },
-          "whale_long_profit_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Whale Long Profit Bps"
-          },
-          "whale_oi_ratio_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Whale Oi Ratio Bps"
-          }
-        },
-        "title": "TradingGateEvidenceData",
         "type": "object"
       },
       "TradingGateSourceData": {

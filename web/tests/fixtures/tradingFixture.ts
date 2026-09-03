@@ -359,18 +359,7 @@ export function tradingCommandRowFixture(
 export function gateEvidence(
   overrides: Partial<NonNullable<TradingGateDecision["gate_evidence"]>> = {},
 ): NonNullable<TradingGateDecision["gate_evidence"]> {
-  return {
-    blacklist_reason: "",
-    enabled: [],
-    holds: "",
-    lane_full: "",
-    live_exchange_id: "",
-    rule: "",
-    source_decision: "",
-    source_rule: "",
-    venue: "binance",
-    ...overrides,
-  };
+  return { venue: "binance", ...overrides };
 }
 
 export function tradingGateDecisionFixture(
@@ -382,7 +371,11 @@ export function tradingGateDecisionFixture(
     event_id: "evt-oi-storj",
     gate_attempt_count: 1,
     gate_config_digest: "c".repeat(64),
-    gate_evidence: gateEvidence({ floor: 5_000_000, oi_value_usd: 3_190_000 }),
+    gate_evidence: gateEvidence({
+      floor: 5_000_000,
+      market_key: "crypto:perp:STORJ:USDT",
+      oi_value_usd: 3_190_000,
+    }),
     gate_first_evaluated_at_ms: TRADING_NOW_MS - 119_000,
     gate_last_evaluated_at_ms: TRADING_NOW_MS - 60_000,
     gate_reason: "oi_value_below_floor",

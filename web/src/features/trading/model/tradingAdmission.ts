@@ -81,6 +81,20 @@ export function tradingAdmissionCellCopy(lookup: TradingAdmissionLookup): Tradin
   };
 }
 
+/**
+ * Chinese labels for the evidence keys a reader sees often. The map is a courtesy, not a contract: the
+ * ledger's `evidence` jsonb is whatever the deciding rule wrote, so an unmapped key renders under its own
+ * name rather than disappearing (#532).
+ */
+const GATE_EVIDENCE_ZH: Record<string, string> = {
+  age_ms: "帧龄 ms",
+  floor: "地板",
+  market_key: "市场",
+  max_age_ms: "上限 ms",
+  oi_value_usd: "持仓额",
+  venue: "场所",
+};
+
 /** The frame's admission row, field by field, for the expanded trace. */
 export function tradingAdmissionTraceEntries(
   lookup: TradingAdmissionLookup,
@@ -108,16 +122,14 @@ export function tradingAdmissionTraceEntries(
     ],
     ["案例", decision.case_id ?? "未开案"],
   ];
-  const evidence = decision.gate_evidence;
-  if (evidence) {
-    for (const [label, value] of [
-      ["场所", evidence.venue],
-      ["持仓额", evidence.oi_value_usd == null ? "" : String(evidence.oi_value_usd)],
-      ["地板", evidence.floor == null ? "" : String(evidence.floor)],
-      ["帧龄 ms", evidence.age_ms == null ? "" : String(evidence.age_ms)],
-    ] as const) {
-      if (value) entries.push([label, value]);
-    }
+  const evidence = decision.gate_evidence ?? {};
+  for (const evidenceKey of Object.keys(evidence).sort()) {
+    const value = evidence[evidenceKey];
+    if (value == null) continue;
+    entries.push([
+      GATE_EVIDENCE_ZH[evidenceKey] ?? evidenceKey,
+      Array.isArray(value) ? value.join(", ") : String(value),
+    ]);
   }
   return entries;
 }

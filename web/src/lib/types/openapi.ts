@@ -2725,7 +2725,10 @@ export interface components {
             gate_attempt_count?: number | null;
             /** Gate Config Digest */
             gate_config_digest?: string | null;
-            gate_evidence?: components["schemas"]["TradingGateEvidenceData"] | null;
+            /** Gate Evidence */
+            gate_evidence?: {
+                [key: string]: string | number | boolean | string[] | null;
+            };
             /** Gate First Evaluated At Ms */
             gate_first_evaluated_at_ms?: number | null;
             /** Gate Last Evaluated At Ms */
@@ -2748,71 +2751,6 @@ export interface components {
             trigger_kind: string;
             /** Underlying Key */
             underlying_key?: string | null;
-        };
-        /** TradingGateEvidenceData */
-        TradingGateEvidenceData: {
-            /** Age Ms */
-            age_ms?: number | null;
-            /**
-             * Blacklist Reason
-             * @default
-             */
-            blacklist_reason: string;
-            /** Cooldown Ms */
-            cooldown_ms?: number | null;
-            /** Enabled */
-            enabled?: string[];
-            /** Floor */
-            floor?: number | null;
-            /**
-             * Holds
-             * @default
-             */
-            holds: string;
-            /**
-             * Lane Full
-             * @default
-             */
-            lane_full: string;
-            /** Limit */
-            limit?: number | null;
-            /**
-             * Live Exchange Id
-             * @default
-             */
-            live_exchange_id: string;
-            /** Max Age Ms */
-            max_age_ms?: number | null;
-            /** Oi Change Bps */
-            oi_change_bps?: number | null;
-            /** Oi Value Usd */
-            oi_value_usd?: number | null;
-            /**
-             * Rule
-             * @default
-             */
-            rule: string;
-            /** Since Close Ms */
-            since_close_ms?: number | null;
-            /**
-             * Source Decision
-             * @default
-             */
-            source_decision: string;
-            /**
-             * Source Rule
-             * @default
-             */
-            source_rule: string;
-            /**
-             * Venue
-             * @default
-             */
-            venue: string;
-            /** Whale Long Profit Bps */
-            whale_long_profit_bps?: number | null;
-            /** Whale Oi Ratio Bps */
-            whale_oi_ratio_bps?: number | null;
         };
         /** TradingGateSourceData */
         TradingGateSourceData: {

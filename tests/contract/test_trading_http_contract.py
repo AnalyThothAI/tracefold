@@ -18,6 +18,28 @@ TOKEN = "trading-contract-token"
 NOW = 1_900_000_000_000
 
 
+# #532: one stored admission row whose `evidence` carries `market_key`, the key #510 PR-2 added to the
+# `instrument_unmapped` rejection. The ledger's jsonb is the truth; the read contract renders whatever a
+# writer stored under it rather than re-declaring its shape.
+_GATE_ROW: dict[str, Any] = {
+    "source_key": "oi:evt-oi-dell:oi_signal_v1",
+    "underlying_key": "crypto:DELL",
+    "trigger_kind": "oi",
+    "source_observed_at_ms": NOW - 120_000,
+    "case_id": None,
+    "status": "REJECTED",
+    "stage": "venue",
+    "reason": "instrument_unmapped",
+    "retryable": False,
+    "gate_version": "trading_admission_v6",
+    "gate_config_digest": "d" * 64,
+    "evidence": {"market_key": "crypto:perp:DELL:USDT", "venue": "binance.usdm"},
+    "first_evaluated_at_ms": NOW - 119_000,
+    "last_evaluated_at_ms": NOW - 60_000,
+    "attempt_count": 1,
+}
+
+
 class _Trading:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -175,7 +197,8 @@ class _Trading:
         ]
 
     def gate_decisions_since(self, **kwargs: Any) -> list[dict[str, Any]]:
-        return []
+        self.calls.append(("gate_decisions_since", kwargs))
+        return [_GATE_ROW]
 
     def candidate_admission_report(self, **kwargs: Any) -> dict[str, Any]:
         return {
@@ -185,8 +208,9 @@ class _Trading:
             "latest_gate_eligible_at_ms": None,
         }
 
-    def gate_decision_for_source_key(self, **kwargs: Any) -> None:
-        return None
+    def gate_decision_for_source_key(self, **kwargs: Any) -> dict[str, Any] | None:
+        self.calls.append(("gate_decision_for_source_key", kwargs))
+        return _GATE_ROW if kwargs.get("source_key") == _GATE_ROW["source_key"] else None
 
 
 class _Runtime:
@@ -257,6 +281,19 @@ def test_case_and_signal_are_separate_durable_aggregates(client: tuple[TestClien
     assert signal["case_id"] == case["case_id"]
     for forbidden in ("quantity", "notional", "leverage", "account", "route", "order"):
         assert forbidden not in signal
+
+
+def test_gate_renders_a_stored_evidence_key_no_schema_enumerates(client: tuple[TestClient, _Trading]) -> None:
+    """#532. `market_key` reached the ledger in #510 PR-2 and turned the whole read into a 500."""
+
+    api, _ = client
+    decisions = api.get("/api/trading/gate", params={"token": TOKEN}).json()["data"]["decisions"]
+    single = api.get("/api/trading/gate/evt-oi-dell", params={"token": TOKEN, "lane": "oi"}).json()["data"]
+
+    assert [decision["gate_evidence"] for decision in decisions] == [
+        {"market_key": "crypto:perp:DELL:USDT", "venue": "binance.usdm"}
+    ]
+    assert single["decision"]["gate_evidence"]["market_key"] == "crypto:perp:DELL:USDT"
 
 
 def test_observations_are_empty_while_runtime_is_disabled(client: tuple[TestClient, _Trading]) -> None:
