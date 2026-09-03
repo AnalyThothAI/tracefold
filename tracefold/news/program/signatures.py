@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Mapping
 from typing import Any, Literal, cast
 
@@ -53,14 +54,43 @@ class EventSemantics(_ExactModel):
         return self._raw_channels if field == "channels" else self._raw_affected_markets
 
 
+# #522 D4: the 9 h receipt after the #504 deploy shipped three cards whose `why_zh` was empty and one
+# whose whole value was ":", and two whose headline was the untranslated English original. `max_length`
+# and a non-empty headline were the only checks, so a card the reader cannot use passed the contract and
+# reached the push. These two predicates are the difference between "the field is present" and "the field
+# says something in Chinese"; a failure goes through the JSON adapter's existing one format retry.
+def _carries_substance(value: str) -> bool:
+    """True when something survives stripping whitespace, punctuation, symbols and control characters.
+
+    Category-based rather than a character list because the copy is Chinese: an ASCII colon and its
+    full-width form are both `Po`, and a hand-written blacklist would have to enumerate every full-width
+    variant to say the same thing.
+    """
+
+    return any(unicodedata.category(character)[0] not in {"C", "P", "S", "Z"} for character in value)
+
+
+def _carries_han(value: str) -> bool:
+    """True when at least one character is Han: the reader card is Chinese copy, not a passthrough."""
+
+    return any(
+        unicodedata.category(character) == "Lo" and unicodedata.name(character, "").startswith("CJK")
+        for character in value
+    )
+
+
 class ReaderCard(_ExactModel):
     headline_zh: str = Field(min_length=1, max_length=60)
-    why_zh: str = Field(default="", max_length=140)
+    why_zh: str = Field(default="", min_length=8, max_length=140)
 
     @model_validator(mode="after")
-    def _headline_has_content(self) -> ReaderCard:
+    def _reader_text_is_deliverable(self) -> ReaderCard:
         if not self.headline_zh.strip():
             raise ValueError("news_program_reader_headline_empty")
+        if not _carries_han(self.headline_zh):
+            raise ValueError("news_program_reader_headline_not_chinese")
+        if not _carries_substance(self.why_zh):
+            raise ValueError("news_program_reader_why_empty")
         return self
 
 

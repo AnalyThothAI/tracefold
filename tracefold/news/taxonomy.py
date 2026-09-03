@@ -279,7 +279,7 @@ CHANGE_STATE_DEFINITIONS: Final[dict[str, str]] = {
     "effective": "the change is live, completed or legally in force",
     "reported": (
         "a published measurement or completed-period result: price, yield, index, flow, inventory, PMI or a "
-        "financial result"
+        "financial result; never merely because an outlet reported the event"
     ),
     "updated": "an already-known fact receives a material new term, correction, denial or status without moving state",
     "delayed": "a previously declared change is postponed",
@@ -316,13 +316,15 @@ TAXONOMY_PRECEDENCE_RULES: Final[tuple[TaxonomyPrecedenceRule, ...]] = (
         frozenset({"reported", "effective"}),
         "reported is narrow: use it for a published measurement or completed-period result, not merely because "
         "an outlet reported an event. A non-measurement change that is explicitly live, completed or in force is "
-        "effective.",
+        "effective: an attack, outage, exploit or on-chain transfer that is under way is effective, whoever "
+        "reported it.",
     ),
     TaxonomyPrecedenceRule(
         "change_state",
         frozenset({"reported", "announced"}),
         "A declaration of a decision is announced even when an outlet reports it; reported is only for a "
-        "measurement or completed-period result.",
+        "measurement or completed-period result. A party's statement, accusation, threat or guidance is "
+        "announced.",
     ),
     TaxonomyPrecedenceRule(
         "change_state",
@@ -396,6 +398,12 @@ _TAXONOMY_BOUNDARY_EXAMPLES: Final[tuple[str, ...]] = (
     "An outlet says talks may occur based on unnamed sources -> geopolitical_conflict / unknown / rumor.",
     "An ETF net-flow figure -> market_flow_price, never whale. A price move is not listing/OI/liquidation, "
     "whose structured lanes bypass this Program.",
+    "A military says its air defenses are engaging incoming missiles right now -> geopolitical_conflict / "
+    "effective / claimed: the attack is under way, and only that party asserts it.",
+    "An exchange says its own network is currently degraded -> security_operational_incident / effective / "
+    "confirmed: the outage is live and the operator states it directly.",
+    "A company cuts its own full-year guidance and the report notes investor concern -> guidance_outlook / "
+    "announced / confirmed: a declaration is announced, and the concern is commentary, not a second state.",
 )
 
 
@@ -508,10 +516,50 @@ class NewsTaxonomyV1(ModelTaxonomyV1):
         return cls(**model.model_dump(mode="json"), source_authority=source_authority)
 
 
-SOURCE_AUTHORITY_CLASSIFIER_VERSION: Final = "news_source_authority_v2"
+# v3 (#522) widens coverage and changes one matching rule. The 9 h receipt after the #504 deploy found
+# 109 of 116 pushed cards at `unknown`: the issuer entries carried no hostnames at all, the secondary
+# hostnames were literal `www.` strings, and the two highest-volume real reporting origins (`jin10`,
+# `first squawk`) were absent. Unknown authority is not free — policy v12 D3 downgrades an uncorroborated
+# `escalate` — so a registry that cannot recognize Barron's or an issuer's own investor-relations host is
+# a delivery defect, not caution.
+#
+# Deliberately absent, because an allowlist entry grants corroboration weight that these cannot carry:
+# personal accounts (analysts, traders, journalists posting under their own name) are one person's word,
+# not an institution's; aggregators and relays (`opennews`, `zerohedge`) restate an origin they do not
+# own, so authority would be inherited from whoever they copied; and a belligerent's state media (TASS,
+# IRIB) is a party to the event it reports, which is exactly the `claimed` case D3 exists to catch.
+SOURCE_AUTHORITY_CLASSIFIER_VERSION: Final = "news_source_authority_v3"
 _REGULATORY_SOURCE_NAMES: Final = frozenset({"sec", "edgar", "securities and exchange commission"})
-_REGULATORY_HOSTNAMES: Final = frozenset({"sec.gov", "www.sec.gov", "edgar.sec.gov"})
+# Registered domains only: `_hostname_in` matches a registered domain and its subdomains, so
+# `edgar.sec.gov` and `www.sec.gov` resolve through `sec.gov` rather than needing their own entries.
+_REGULATORY_HOSTNAMES: Final = frozenset({"sec.gov"})
 _ISSUER_SOURCE_NAMES: Final = frozenset(
+    {
+        "aave",
+        "binance",
+        "binance alpha",
+        "binance futures",
+        "binance wallet",
+        "bybit",
+        "chainlink",
+        "coinbase",
+        "coinbase status",
+        "ethereum",
+        "hyperliquid",
+        "kraken",
+        "nasdaq",
+        "nyse",
+        "okx",
+        "solana",
+        "tesla",
+        "tron dao",
+        "upbit",
+    }
+)
+# The `@handle` form of the same identities. The product-line names above are reporting-origin strings,
+# not accounts, so they stay out of this set: a handle is matched exactly and inventing one would
+# recognize an account that may belong to someone else.
+_ISSUER_HANDLES: Final = frozenset(
     {
         "aave",
         "binance",
@@ -530,7 +578,39 @@ _ISSUER_SOURCE_NAMES: Final = frozenset(
         "upbit",
     }
 )
-_ISSUER_HANDLES: Final = _ISSUER_SOURCE_NAMES
+# Each issuer's own official registered domain, checked one by one against the name above; a name whose
+# official domain is ambiguous gets none. `circle.com` and `uber.com` are here without a matching name
+# because a bare `uber` or `circle` in a free-text source field is ambiguous while the company's own host
+# is not — `investor.uber.com` is the issuer publishing its own results.
+#
+# The three newswires distribute an issuer's own release verbatim under the issuer's byline, so a release
+# carried on one of them is first-party evidence of what the issuer said, not a secondary outlet's report
+# of it. They are the wire's own domains only: a story *about* an issuer syndicated elsewhere never
+# reaches this classifier, which reads the structured reporting source and nothing else.
+_ISSUER_HOSTNAMES: Final = frozenset(
+    {
+        "aave.com",
+        "binance.com",
+        "bybit.com",
+        "chain.link",
+        "circle.com",
+        "coinbase.com",
+        "ethereum.org",
+        "hyperliquid.xyz",
+        "kraken.com",
+        "nasdaq.com",
+        "nyse.com",
+        "okx.com",
+        "solana.com",
+        "tesla.com",
+        "tron.network",
+        "uber.com",
+        "upbit.com",
+        "businesswire.com",
+        "globenewswire.com",
+        "prnewswire.com",
+    }
+)
 _SECONDARY_SOURCE_NAMES: Final = frozenset(
     {
         "associated press",
@@ -538,7 +618,10 @@ _SECONDARY_SOURCE_NAMES: Final = frozenset(
         "bloomberg",
         "cnbc",
         "coindesk",
+        "deitaone",
         "financial times",
+        "first squawk",
+        "jin10",
         "reuters",
         "the block",
         "the wall street journal",
@@ -546,22 +629,25 @@ _SECONDARY_SOURCE_NAMES: Final = frozenset(
         "wsj",
     }
 )
+_SECONDARY_HANDLES: Final = frozenset({"deitaone", "firstsquawk"})
 _SECONDARY_HOSTNAMES: Final = frozenset(
     {
+        "apnews.com",
+        "axios.com",
+        "barrons.com",
         "bloomberg.com",
-        "www.bloomberg.com",
         "cnbc.com",
-        "www.cnbc.com",
+        "cnn.com",
         "coindesk.com",
-        "www.coindesk.com",
         "ft.com",
-        "www.ft.com",
+        "jin10.com",
+        "marketwatch.com",
+        "nytimes.com",
+        "politico.com",
         "reuters.com",
-        "www.reuters.com",
+        "techcrunch.com",
         "theblock.co",
-        "www.theblock.co",
         "wsj.com",
-        "www.wsj.com",
     }
 )
 _SOURCE_AUTHORITY_REGISTRY: Final = {
@@ -573,11 +659,11 @@ _SOURCE_AUTHORITY_REGISTRY: Final = {
     "issuer_first_party": {
         "names": sorted(_ISSUER_SOURCE_NAMES),
         "handles": sorted(_ISSUER_HANDLES),
-        "hostnames": [],
+        "hostnames": sorted(_ISSUER_HOSTNAMES),
     },
     "reputable_secondary": {
         "names": sorted(_SECONDARY_SOURCE_NAMES),
-        "handles": [],
+        "handles": sorted(_SECONDARY_HANDLES),
         "hostnames": sorted(_SECONDARY_HOSTNAMES),
     },
 }
@@ -613,13 +699,27 @@ def _source_identity(raw: str) -> tuple[str, str] | None:
     return "hostnames", parsed.hostname.casefold()
 
 
+def _hostname_in(host: str, registered: Sequence[str]) -> bool:
+    """A registered domain owns itself and every subdomain of it, and nothing else.
+
+    The boundary is the dot: `investor.uber.com` is Uber publishing, `notreuters.com` and
+    `reuters.com.evil.example` are not Reuters. Suffix matching without that dot, or without anchoring at
+    the end of the host, is how an allowlist becomes a substring search.
+    """
+
+    return any(host == entry or host.endswith(f".{entry}") for entry in registered)
+
+
 def source_authority(values: Sequence[str]) -> SourceAuthority:
     """Classify exact structured source identities; uncertainty stays unknown."""
 
     identities = {identity for value in values if (identity := _source_identity(value)) is not None}
     for authority in ("regulatory_filing", "issuer_first_party", "reputable_secondary"):
         registry = _SOURCE_AUTHORITY_REGISTRY[authority]
-        if any(value in registry[kind] for kind, value in identities):
+        if any(
+            _hostname_in(value, registry["hostnames"]) if kind == "hostnames" else value in registry[kind]
+            for kind, value in identities
+        ):
             return authority
     return "unknown"
 

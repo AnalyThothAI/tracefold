@@ -15,10 +15,10 @@ independent connected-fact clusters are scored, the result is
 - Taxonomy version: `news_taxonomy_v1`.
 - IPTC Media Topics snapshot: `2026-01-05`, 35 reviewed qcodes.
 - Codebook SHA: `6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac`.
-- Source-authority classifier: `news_source_authority_v2`, registry SHA
-  `bf092263462f93c58f58adfb7e6fa02037dbdd83326fdc516690501773b55af8`.
+- Source-authority classifier: `news_source_authority_v3`, registry SHA
+  `9aa960aa5ff29d08b4a0223c5a745ac767f9161f7862885818d2d0035917da50`.
 - Production Program: `news_semantic_program_v9`, Program SHA
-  `915ae1430eea2b822f50620ad149f0fb36d26b0c9f6955d28ca6005aa30cf083`.
+  `1ba5a6d9920f0c800c2258805619286d3be323cdd857497f3afc6c300d0e2e6d`.
 - Review contract: `news_review_v6`.
 - The model emits `subject_codes`, `event_family`, `change_state`, and
   `assertion_status`. Code derives `source_authority` only from the structured
@@ -65,17 +65,31 @@ precedence rules, the qcode glossary and the boundary examples.
 
 - `regulatory_filing`: exact recognized regulator/filing provenance.
 - `issuer_first_party`: exact recognized issuer or venue first-party identity.
+  A press-release wire (`prnewswire.com`, `globenewswire.com`,
+  `businesswire.com`) belongs here rather than under `reputable_secondary`: it
+  distributes the issuer's own release verbatim under the issuer's byline, so
+  the release is first-party evidence of what the issuer said.
 - `reputable_secondary`: exact recognized wire/publication identity.
 - `unknown`: no exact allowlist match. Fuzzy names and fan accounts never
   inherit authority from a substring.
 
 The classifier accepts only an exact normalized source name, an exact `@handle`,
 or the exact hostname returned by the standard HTTP(S) URL parser. It never
-splits arbitrary source text or consults strategy/provenance routing IDs. Values
-such as `fan:reuters`, `fake|sec`,
-`notreuters.com`, userinfo URLs, suffixes and unregistered subdomains therefore
-remain `unknown`. The classifier version and registry address are part of the
-Program execution envelope.
+splits arbitrary source text or consults strategy/provenance routing IDs. Names
+and handles match exactly; a hostname matches its registered domain and any
+subdomain of it, on a dot boundary anchored at the end of the host, so
+`investor.uber.com` and `wire.reuters.com` inherit their registered domain's
+authority. Values such as `fan:reuters`, `fake|sec`, `notreuters.com`,
+`reuters.com.evil.example` and userinfo URLs therefore remain `unknown`. The
+classifier version and registry address are part of the Program execution
+envelope.
+
+Membership is a judgment about corroboration weight, so three categories stay
+out on purpose: personal accounts (analysts, traders, journalists posting under
+their own name), aggregators and relays that restate an origin they do not own,
+and a belligerent's state media, which is a party to the event it reports.
+Policy v12 reads `source_authority` when it decides whether an `escalate` is
+corroborated, and none of those three can carry that weight.
 
 ## Persistence and readers
 
