@@ -106,6 +106,11 @@ class StorylineEntry(BaseModel):
             raise ValueError(f"news_storyline_registry_label_missing:{self.id}")
         if self.kind != "conflict" and (self.active or self.members):
             raise ValueError(f"news_storyline_registry_conflict_fields_on_non_conflict:{self.id}")
+        # A conflict is a grouping over its participants, never a matcher of its own. `hormuz`, `hezbollah` and
+        # `中东` are places; keeping them on the war row meant flipping `active` to false silently deleted their
+        # coverage instead of only stopping the merge. Every alias belongs to something that exists on its own.
+        if self.kind == "conflict" and self.aliases.all():
+            raise ValueError(f"news_storyline_registry_conflict_owns_aliases:{self.id}")
         for _script, alias in self.aliases.all():
             if not alias.strip():
                 raise ValueError(f"news_storyline_registry_alias_empty:{self.id}")
@@ -241,7 +246,7 @@ def registry_storyline_key(text: str) -> str | None:
     for entry in load_storyline_registry().entries:
         if entry.kind != "conflict" or not entry.active:
             continue
-        positions = [first_seen[name] for name in (entry.id, *entry.members) if name in first_seen]
+        positions = [first_seen[name] for name in entry.members if name in first_seen]
         if positions:
             conflicts.append((min(positions), entry.id))
     if conflicts:
@@ -327,7 +332,7 @@ def final_storyline_key(
     """Key computed after Triage, by the fixed #509 rank:
 
     1. ``asset:<SYM>`` — a verdict primary the Gate grounded, when the scope is not macro;
-    2. ``conflict:<id>`` — an active conflict whose own aliases or members the text names;
+    2. ``conflict:<id>`` — an active conflict whose members the text names;
     3. ``actor:<id>``, 4. ``geo:<id>``, 5. ``topic:<id>`` — earliest mention inside the kind;
     6. the model's own symbol-shaped primary, even when the provider did not tag it (#100);
     7. a grounded tag the text actually names (#100);

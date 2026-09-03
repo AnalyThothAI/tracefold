@@ -1002,8 +1002,8 @@ both over NFKC-normalized, case-folded text, and the longest alias at a position
 wins. An alias belongs to exactly one entry, so matching yields a *set* of
 positioned hits with no priority rule of its own. Structure is enforced at load:
 unique aliases, no structural regex syntax (a literal `.` is fine and escaped —
-`u.s.` needs it), already-normalized surface forms, and `members` that name
-entries which exist. An entry may set `standalone: false`, which means "match
+`u.s.` needs it), already-normalized surface forms, `members` that name entries
+which exist, and no aliases at all on a `conflict` row. An entry may set `standalone: false`, which means "match
 me, but never be the key on your own": the hit still counts toward a conflict's
 `members` and the entry still owns its aliases, but it is skipped when the
 `actor`/`geo`/`topic` steps pick a winner. `us` is the case that needs it — a US
@@ -1011,8 +1011,10 @@ dateline is not a storyline for this reader, and letting `美国` / `washington`
 `u.s.` open a bucket put CPI, jobless claims and housing starts into one hourly
 budget. The key is then composed by one fixed rank —
 1. `asset:<SYM>` (a verdict primary the Gate grounded, scope not macro),
-2. `conflict:<id>` (an active conflict whose own aliases or `members` the text
-names), 3. `actor:<id>`, 4. `geo:<id>`, 5. `topic:<id>`, 6. the model's own
+2. `conflict:<id>` (an active conflict whose `members` the text names — a
+conflict owns no aliases of its own, so `hormuz`, `lebanon` and `mideast` are
+`geo` rows that keep their coverage if the war is ever set inactive),
+3. `actor:<id>`, 4. `geo:<id>`, 5. `topic:<id>`, 6. the model's own
 symbol-shaped primary, 7. a grounded tag the text actually names (#100), 8.
 `none` — with earliest mention as the tie-break inside a rank. Shuffling the
 registry cannot move a key, and adding a storyline is one row plus one
@@ -1039,11 +1041,13 @@ maintaining the registry is data maintenance, not a policy change.
 Registry changes are a hard cut with no data migration. `news_events.storyline_key`
 keeps whatever string the row was written with, so historical rows stay their own
 audit truth; nothing reads or translates the retired `theme:` / `macro:` formats.
-The one visible consequence is bounded and one-directional: for the first
-`storyline_budget_window_s` (4 h of `recent_seen_rows`) after a deploy that
-changes key formats, an old-format delivered card is not equal to any new key, so
-the per-storyline budget does not count it and errs toward releasing a card
-rather than withholding one.
+The one visible consequence is bounded and one-directional: the budget counts
+only delivered cards inside `storyline_budget_window_s` (1 h), so for the first
+hour after a deploy that changes key formats those rows still carry the old
+format, match no new key, and are not counted. The `recent_seen_rows` ledger the
+similarity check reads is 4 h and is unaffected — it compares headlines, not
+keys. The budget therefore errs toward releasing a card rather than withholding
+one, for one hour, once.
 
 Triage is a deep semantic-judgment **Module**. Its only hot-path generation
 **Interface** is `SemanticJudge.judge(TriageContext) -> SemanticJudgment`; the

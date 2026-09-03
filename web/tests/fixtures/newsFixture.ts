@@ -436,7 +436,7 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       {
         count: 9,
         key: "storyline:conflict:mideast_2026:cap3",
-        label_zh: "「中东与能源」话题 4 小时内已推 3 条",
+        label_zh: "「美伊冲突」话题 4 小时内已推 3 条",
         stage: "throttle",
       },
       {

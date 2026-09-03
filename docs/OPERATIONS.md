@@ -1195,11 +1195,13 @@ Diagnose News in this order:
    that final storyline key inside `storyline_budget_window_s`, and this one
    was neither a corroborated escalate nor a direction reversal. The `none`
    key never appears there.
-   After a deploy that changes the key format, the budget reads a 4 h ledger
-   whose older rows still carry the previous format, so for that one window
-   those rows match no new key and are not counted. The effect is bounded, one
-   directional (it releases rather than withholds) and needs no backfill: do
-   not recompute historical `storyline_key` values, and read the first hour of
+   After a deploy that changes the key format, the budget counts only the cards
+   delivered inside `storyline_budget_window_s` (1 h), and for that first hour
+   those rows still carry the previous format, so they match no new key and are
+   not counted. The 4 h `recent_seen_rows` ledger is unaffected: the similarity
+   check compares headlines, not keys. The effect is bounded, one-directional
+   (it releases rather than withholds) and needs no backfill: do not recompute
+   historical `storyline_key` values, and read the first hour of
    `throttled_by_key` after such a deploy as a floor, not as a regression. Every budget-withheld card is a `throttled`
    verdict, so the ReviewDesk sampler queues it at probability 1.0; a
    `must_push` label on one is a reason to revisit the exemptions, not to

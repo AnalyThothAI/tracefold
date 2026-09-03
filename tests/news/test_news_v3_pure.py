@@ -443,9 +443,19 @@ def test_storyline_registry_is_literal_data_with_one_owner_per_alias() -> None:
     }
     # `standalone` is opt-out and rare enough to name: an entry that may never be a key on its own.
     assert {entry.id for entry in registry.entries if not entry.standalone} == {"us"}
+    # A conflict is a grouping over participants that exist on their own, never a matcher: `hormuz`,
+    # `lebanon` and `mideast` are `geo` rows, so setting a war inactive stops the merge without deleting
+    # the coverage underneath it.
+    assert not [entry.id for entry in registry.entries if entry.kind == "conflict" and entry.aliases.all()]
+    mideast = next(entry for entry in registry.entries if entry.id == "mideast_2026")
+    assert {"hormuz", "lebanon", "mideast", "iran", "yemen"} <= set(mideast.members)
     # The single-word traps the v3 regexes fell into: none of them may become an alias again.
     for trap in ("联储", "央行", "gulf", "strait", "期货", "mexico"):
         assert trap not in owner
+    # Two more substring traps the 09-01/09-02 titles found. A bare `国务院` read 美国国务院 (the US State
+    # Department) as China, and Russian `газ` matched Газета — a newspaper, not natural gas.
+    assert owner["中国国务院"] == "china" and "国务院" not in owner
+    assert {"газа", "газо", "газпром", "природного газа"} <= set(owner) and "газ" not in owner
 
 
 def test_storyline_registry_rejects_a_row_that_is_not_data() -> None:
@@ -511,9 +521,9 @@ def test_a_us_dateline_is_matched_but_never_becomes_the_key_on_its_own() -> None
     it just cannot be the answer by itself."""
 
     # The subject wins over the dateline, whichever surface form the dateline takes.
-    assert _prelim("US housing starts fall 12.4%") == "topic:us_macro_data"
-    assert _prelim("U.S. housing starts fall 12.4%") == "topic:us_macro_data"
-    assert _prelim("美国7月营建许可总数 144.3万户") == "topic:us_macro_data"
+    assert _prelim("US housing starts fall 12.4%") == "topic:macro_data"
+    assert _prelim("U.S. housing starts fall 12.4%") == "topic:macro_data"
+    assert _prelim("美国7月营建许可总数 144.3万户") == "topic:macro_data"
     assert _prelim("U.S. crude production hits a record") == "topic:energy"
     assert _prelim("White House announces new tariffs on Brazil") == "geo:brazil"
     # A headline whose only registry hit is the dateline has no storyline.
