@@ -87,7 +87,6 @@ def _prepare_command(*, suffix: str, **updates: object) -> PreparedOperatorInten
         "authentication_identity": "cli:local",
         "requested_at_ns": 1_000,
         "expires_at_ns": 10_000,
-        "confirmation_identity": None,
         "market_key": None,
         "direction": None,
     }

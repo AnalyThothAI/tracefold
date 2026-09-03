@@ -25,8 +25,6 @@ _DEFAULT_MAX_BYTES = 4 * 1_048_576
 # the two numbers used to be re-typed on both sides of the seam (#510 E).
 _FLUSH_COUNT = MAX_OBSERVATION_APPEND_BATCH
 _FLUSH_BYTES = MAX_OBSERVATION_APPEND_BYTES
-_ENTRY_RESERVE_COUNT = 8
-_ENTRY_RESERVE_BYTES = 64 * 1_024
 _EQUITY_SCALE = Decimal(1_000_000)
 
 
@@ -220,6 +218,14 @@ class AuditSink:
 
     @property
     def healthy(self) -> bool:
+        """Whether every observation offered so far is still on its way to PostgreSQL.
+
+        This is a status fact the operator page and the `audit_gap` observations report, not a gate.
+        Binance keeps the account's own order and fill history; refusing to open a position because
+        the local audit copy of it is unwritable spends the risk of *not* acting to protect a copy
+        (#520 PR-B).
+        """
+
         with self._lock:
             return self._healthy
 
@@ -237,14 +243,6 @@ class AuditSink:
     def queued_bytes(self) -> int:
         with self._lock:
             return self._bytes
-
-    def can_accept_exposure(self) -> bool:
-        with self._lock:
-            return (
-                self._healthy
-                and len(self._values) + _ENTRY_RESERVE_COUNT <= self._max_count
-                and self._bytes + _ENTRY_RESERVE_BYTES <= self._max_bytes
-            )
 
     def offer(self, value: ExecutionObservationV1) -> bool:
         size = len(value.model_dump_json().encode())

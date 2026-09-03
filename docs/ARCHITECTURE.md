@@ -2312,14 +2312,26 @@ loop. Recovery opens a stream for each position it reclaims, a closed position
 gives its stream back, and a refused admission's stream is closed by the pump
 once its warm-up window is spent.
 
-**Readiness is three independent facts.** `alive` means the process,
-TradingNode and event loop are alive. `execution_safe` means fresh private
-reconciliation and current Nautilus state can still protect, cancel, exit,
-flatten and recover existing exposure. `entries_armed` alone admits a new Signal
-or manual entry. Audit backpressure, a missing day-start baseline, paused
-entries, or a disconnected control plane blocks new exposure without disabling
-protection or `/readyz`. The probe is ready exactly when `alive &&
-execution_safe`.
+**Readiness is three facts, and only three.** `alive` means the process,
+TradingNode, event loop and database session are up; the composition root's loop
+owns it, because reaching the loop body is what proves all four. `execution_safe`
+means this Runtime's picture of the account is current and undisputed: startup
+reconciliation happened, the private scan behind it is still fresh, no exposure
+it does not own appeared, and it still holds the account slot. `entries_armed`
+adds only what an operator asked for. So the Runtime's own `entry_block_reason`
+is exactly one of `startup_reconciliation_unproven`, `reconciliation_stale`,
+`unexpected_exposure`, `singleton_lost`, `entries_paused` and `emergency_halted`,
+and the probe is ready exactly when `alive && execution_safe`.
+
+Everything an entry needs beyond that — equity, a quote, the day baseline, a
+writable audit — is answered on the entry path against that request's own facts,
+where a refusal names the request that failed rather than disarming the Runtime.
+#520 PR-B deleted the five booleans that sat between: `singleton_ready` and
+`portfolio_ready` were true whenever the process could run at all,
+`control_plane_ready` gated entries on the input plane that is the only source of
+entry requests, `audit_ready` refused exposure because the local copy of what
+Binance already stores was unwritable, and `day_start_ready` refused it because a
+baseline the Runtime can compute from current equity had not been written yet.
 
 **Restart recovery reads durable facts, not Cache.** Nautilus Cache is process
 memory and the Binance private proof carries only open orders and position risk,
@@ -2414,8 +2426,12 @@ batch at the head of the audit queue and retries it unchanged. An integrity
 refusal — CHECK, unique, foreign key, NOT NULL — is a verdict no retry can
 change, so the batch leaves the queue and one `audit_gap` observation with
 `cause=audit_append_rejected` records how many events were lost, the first
-`event_id`, and the count per `normalized_kind`. The sink stays unhealthy, and
-`entries_armed` stays false, until that gap is itself durable. A quarantined
+`event_id`, and the count per `normalized_kind`. The sink stays unhealthy until
+that gap is itself durable, and reports it as `audit_healthy=false` with
+`audit_failure_reason` on the account projection; it does not disarm entries.
+Binance holds the account's own order and fill history, so refusing to open a
+position because the local copy of it is unwritable spends the risk of not
+acting to protect a copy (#520 PR-B). A quarantined
 `signal_disposition` or `control_disposition` still resolves its Signal or
 Command, because the Runtime lost the audit fact, not the input. Only the
 App-side writer knows psycopg; it translates `psycopg.errors.IntegrityError`
@@ -2423,12 +2439,10 @@ into the sink's own `AuditAppendRejected`.
 
 The bridge cycle runs its Command read, Signal read and audit flush as three
 independent steps in that order, and only a lost connection aborts the cycle, so
-an unwritable ledger cannot stop an operator from flattening. While a Command or
-Signal read is failing the Runtime's own control-plane readiness goes false and
-`entries_armed` with it: a Runtime that has stopped consuming its inputs must
-not stay armed to open exposure it could then never be told to unwind. That is
-an entry gate, not a safety gate — `execution_safe` is unchanged and existing
-exposure keeps its protection — and the first successful read clears it.
+an unwritable ledger cannot stop an operator from flattening. A step that keeps
+failing logs its cause once rather than once per cycle, and the failure needs no
+readiness gate of its own: an entry request can only arrive through the Signal or
+Command read, so a Runtime whose input reads are failing has nothing to admit.
 
 Observation batches use one set-based insert inside a savepoint, so an identity
 or unique-disposition conflict rolls back the whole batch rather than leaving a

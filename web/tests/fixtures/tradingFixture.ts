@@ -76,6 +76,7 @@ export function tradingCurrentAccountFixture(
 ): NonNullable<TradingExecutionReadiness["current_account"]> {
   return {
     aggregate_risk_usd: "9.9995",
+    audit_healthy: true,
     complete: true,
     daily_drawdown_bps: 25,
     daily_drawdown_usd: "2.50",

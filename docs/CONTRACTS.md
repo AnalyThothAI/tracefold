@@ -248,8 +248,6 @@ delivery consumer settles `terminal/delivery_unavailable`.
   is also the namespace every deterministic client order id is derived from;
 - `execution.credentials.api_key_file` / `api_secret_file`, operator-owned
   Binance USD-M secret references;
-- `control.console_write_token_file`, default `trading_console_write_token`,
-  names the independent HTTP Command credential that bootstrap never returns;
 - `control.enabled`, default `false`; when true it requires secure
   `telegram_bot_token_file` and `telegram_webhook_secret_file` references,
   non-empty sorted unique `allowed_chat_ids` and `allowed_user_ids`, and a
@@ -294,7 +292,8 @@ execution identity columns to `account_slot`; `20260903_0357` dropped every
 JSON-shape CHECK on those tables, the four `trading_*` functions behind them,
 and the `payload_digest`, `alpha_contract_sha256`, `evidence_sha256` and
 `confirmation_identity` columns, leaving the Pydantic contract as the only
-validator of an execution fact's shape. One delivery row per `(target, observation)` carries `delivered_at_ns`
+validator of an execution fact's shape; #520 PR-B then dropped
+`confirmation_identity` from that contract with the `CONFIRM` token itself. One delivery row per `(target, observation)` carries `delivered_at_ns`
 and, for a Signal card, `result_delivered_at_ns`: the second message that reports
 the 1 h/4 h outcome. `message_id` is present only on a channel that can address a
 sent message again; the deployed Feishu webhook cannot, so it is `NULL` there. The
@@ -362,7 +361,7 @@ There is no WebSocket endpoint.
 
 - `/healthz` is process liveness.
 - `/readyz` combines a lightweight PostgreSQL liveness check with the cached startup schema/composition result. It does not inspect providers, queues, or business freshness.
-- `/api/bootstrap` returns `{ws_token}` so the served console can authenticate GET reads (`Authorization: Bearer <ws_token>`; read routes also accept a `token` query parameter). The one command POST rejects this bootstrap-disclosed token and requires the separate ASCII bearer value from `trading.control.console_write_token_file`. That value is never returned by an API. Serve rejects an equal read/write token at startup; a later equal or non-ASCII replacement fails closed as `401`, as does any missing, non-ASCII, or wrong write credential.
+- `/api/bootstrap` returns `{ws_token}` so the served console can authenticate every `/api/*` call (`Authorization: Bearer <ws_token>`; read routes also accept a `token` query parameter). The one command POST takes the same token but only as a bearer header: a query token, a missing token, a non-ASCII token, or a wrong one is `401`. The separate console write token went with #520 PR-B.
 - `/api/status` is exactly `{measured_at_ms, runtime}`. `runtime` combines the database probe (schema revision match) with the Workers heartbeat row and fails closed on stale heartbeats; there is no provider block.
 - Read endpoints do not call providers, execute models, or mutate facts. The one
   command POST only appends an authenticated `OperatorIntentV1`; it cannot call
@@ -1119,12 +1118,12 @@ Runtime facts, and status carries readiness plus bounded totals.
   authentication material. A row, HTTP 200, or `awaiting_runtime` is not an
   order, fill, or flat receipt.
 - `POST /api/trading/execution/commands` — the sole browser write. It requires
-  the non-bootstrap operator write token in `Authorization: Bearer` plus
-  `application/json`, rejects query-token and read-token auth,
+  the session `ws_token` in `Authorization: Bearer` plus
+  `application/json`, rejects query-token auth,
   bounds the body to 2 KiB, and accepts exactly lowercase UUID `request_id`,
   millisecond `requested_at_ms`, and the shared closed slash-command `text`.
-  The browser surface admits `/pause reason`, confirmed `/resume reason CONFIRM`,
-  and confirmed `/flatten account TTL CONFIRM`; `/halt`, `/long`, `/short`, and
+  The browser surface admits `/pause reason`, `/resume reason`,
+  and `/flatten account TTL`; `/halt`, `/long`, `/short`, and
   every capital/order parameter are rejected. Stable request ID and clock must
   be preserved on a retry. The append runs in one bounded short transaction
   outside Serve's seven-connection read-only pool. Success returns
@@ -1159,7 +1158,7 @@ Runtime facts, and status carries readiness plus bounded totals.
 - service/config: `serve`, `workers`, `nautilus run`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
 - News: `news bus-check|control|instruments|review|learning|replay|why|dlq`;
-- Trading: `trading status|cases|signals|observations|commands|issue|demo-receipt|oi-corpus|oi-replay`;
+- Trading: `trading status|cases|signals|observations|commands|issue|oi-corpus|oi-replay`;
 - maintenance: `ops validate-projections`.
 
 There is no `recent` or `search` command and no market rebuild/sync/reconcile
@@ -1573,8 +1572,7 @@ and their final disposition when present. `trading issue TEXT --request-id ID
 both sealed fields on retries, request identity is scoped by OS UID and hostname,
 it accepts only the shared closed slash grammar, and manual entry still flows
 through Runtime risk/OMS without fabricating Signal/Case/Alpha facts; success says
-`intent_recorded_not_order_or_fill`. `trading demo-receipt` is a strict
-read-only Demo closure verifier over durable native receipts. There is no blacklist,
+`intent_recorded_not_order_or_fill`. There is no blacklist,
 capability, replay, evidence, quantity, leverage, venue, or direct order command.
 
 Trading consumes one public News projection: the deterministic OI ledger joined

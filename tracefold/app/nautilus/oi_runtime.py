@@ -42,9 +42,6 @@ from tracefold.trading.storage.execution_stream import (
     prepare_execution_observations,
 )
 
-# The two `_cycle` steps that read the Runtime's inputs. While either is failing the Runtime is not
-# consuming Signals or Commands, which is exactly what `control_plane_ready` already means.
-_INPUT_STEPS = ("commands", "signals")
 # How often the current row is rewritten when nothing about it changed. It is well inside the public
 # five-second stale budget, so a Runtime that stops projecting reads as stale rather than as healthy.
 RUNTIME_HEARTBEAT_INTERVAL_NS = 500_000_000
@@ -215,19 +212,6 @@ class OiRuntimeDatabaseBridge:
     def fatal_error(self) -> BaseException | None:
         with self._lock:
             return self._fatal_error
-
-    @property
-    def inputs_ready(self) -> bool:
-        """False while a Command or Signal read keeps failing, so entries disarm instead of drifting.
-
-        A Runtime that is silently consuming nothing must not stay armed for exposure it could never
-        be told to unwind. This is what `control_plane_ready` already means, so it needs no gate of
-        its own: it blocks new entries and leaves `execution_safe` alone, because existing exposure is
-        still protected.
-        """
-
-        with self._lock:
-            return not any(name in self._step_failures for name in _INPUT_STEPS)
 
     def recovery_inputs(self) -> tuple[tuple[TradeSignalV1, ...], tuple[OperatorIntentV1, ...]]:
         """The durable entry identities the next reconciliation rebuilds ownership from."""

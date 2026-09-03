@@ -119,10 +119,9 @@ def test_canonical_root_builds_one_real_binance_execution_client() -> None:
                 execution_strategy="oi_nautilus_v1",
             )
         ),
-        readiness=RuntimeReadiness(),
+        readiness=RuntimeReadiness(reconciliation_stale_after_ns=profile.risk.reconciliation_stale_after_ns),
         dispatch_pump=lambda pump: pump(),
         singleton_ready=lambda: True,
-        control_plane_ready=lambda: True,
         day_start=DayStartBaseline(
             utc_day="2030-03-17",
             equity_usd=Decimal("1000"),

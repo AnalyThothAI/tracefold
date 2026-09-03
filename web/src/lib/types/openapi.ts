@@ -2337,6 +2337,13 @@ export interface components {
         TradingExecutionAccountData: {
             /** Aggregate Risk Usd */
             aggregate_risk_usd?: string | null;
+            /** Audit Failure Reason */
+            audit_failure_reason?: string | null;
+            /**
+             * Audit Healthy
+             * @default true
+             */
+            audit_healthy: boolean;
             /** Complete */
             complete: boolean;
             /** Daily Drawdown Bps */

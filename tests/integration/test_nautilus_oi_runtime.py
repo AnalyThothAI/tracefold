@@ -106,7 +106,6 @@ def _append_command(repo: TradingRepository, *, suffix: str, action: str) -> Pre
         authentication_identity="test:authenticated",
         requested_at_ns=NOW_NS,
         expires_at_ns=NOW_NS + 60_000_000_000,
-        confirmation_identity="6" * 64 if action in {"resume_entries", "emergency_halt", "flatten"} else None,
         market_key=None,
         direction=None,
     )
@@ -216,7 +215,6 @@ def _append_input_burst(repo: TradingRepository, *, size: int) -> None:
                     authentication_identity="test:authenticated",
                     requested_at_ns=NOW_NS,
                     expires_at_ns=NOW_NS + 60_000_000_000,
-                    confirmation_identity=None,
                     market_key=None,
                     direction=None,
                 )
@@ -401,7 +399,6 @@ def test_a_database_refused_batch_is_quarantined_and_leaves_a_durable_audit_gap(
                     authentication_identity="test:authenticated",
                     requested_at_ns=NOW_NS,
                     expires_at_ns=NOW_NS + 1_000_000_000,
-                    confirmation_identity=None,
                     market_key="crypto:perp:UNI:USDT",
                     direction="long",
                 )
@@ -726,7 +723,7 @@ def test_a_slot_with_no_commands_starts_armed_and_a_restart_reads_back_the_same_
     """#520 PR-A. Control belongs to the slot: only a Command pauses it, and nothing re-pauses it.
 
     Every new `profile_id` used to insert `entries_paused = TRUE`, so a deploy silently disarmed
-    entries and needed another authenticated `/resume … CONFIRM`. `mode: disabled` is the switch that
+    entries and needed another authenticated `/resume`. `mode: disabled` is the switch that
     means "do not trade"; a restart is not one.
     """
 

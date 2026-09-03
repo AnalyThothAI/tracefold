@@ -229,15 +229,13 @@
   }
 
   .trading-control-copy span,
-  .trading-control-reason span,
-  .trading-live-confirmation span {
+  .trading-control-reason span {
     color: var(--text-subtle);
     font-size: var(--font-size-mono-meta);
     line-height: 1.45;
   }
 
-  .trading-control-reason input,
-  .trading-live-confirmation input {
+  .trading-control-reason input {
     width: 100%;
     min-width: 0;
     min-height: 32px;
@@ -251,8 +249,7 @@
     font: var(--type-meta);
   }
 
-  .trading-control-reason input:focus,
-  .trading-live-confirmation input:focus {
+  .trading-control-reason input:focus {
     box-shadow: var(--ring-control), var(--focus-halo);
   }
 
@@ -309,11 +306,6 @@
   .trading-confirm-dialog p {
     color: var(--text-secondary);
     font: var(--type-body);
-  }
-
-  .trading-live-confirmation {
-    display: grid;
-    gap: 5px;
   }
 
   .trading-latest-progress-grid {

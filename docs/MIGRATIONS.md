@@ -149,6 +149,14 @@ same keys from every stored `payload`, because the contracts forbid unknown keys
 and a row that still carried one could not be read back.
 `trading_cases.manifest_sha256` stays: Case idempotency is still stated with it.
 
+**#520 PR-B carries no revision but one operator step.** Delete
+`trading.control.console_write_token_file` from `~/.tracefold/config.yaml` if it
+is present — strict settings validation refuses the retired key — and drop the
+`trading_console_write_token` file from the Serve mount. The one Command POST now
+authenticates with the bootstrap `ws_token` as a bearer header. The
+`~/.tracefold/trading_console_write_token` file itself can be deleted once no
+compose file references it.
+
 ```bash
 pg_dump --data-only --table=trading_execution_observations \
   --table=trading_trade_signals --table=trading_operator_intents \

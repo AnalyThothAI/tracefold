@@ -35,6 +35,8 @@ class RuntimeAccountProjector:
         *,
         baseline: DayStartBaseline | None,
         projected_at_ns: int,
+        audit_healthy: bool = True,
+        audit_failure_reason: str | None = None,
     ) -> ExecutionAccountSnapshot:
         cache = self._engine.cache
         account = cache.account(self._profile.account_id)
@@ -209,6 +211,8 @@ class RuntimeAccountProjector:
             unknown_orders_count=len(unknown_ids),
             complete=complete and not positions_truncated and not orders_truncated,
             truncated=positions_truncated or orders_truncated,
+            audit_healthy=audit_healthy,
+            audit_failure_reason=audit_failure_reason,
         )
 
     def _position_protection(self, position: Any) -> dict[str, Any]:

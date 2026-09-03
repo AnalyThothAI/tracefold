@@ -153,7 +153,6 @@ services:
     volumes:
       - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
       - ${HOME}/.tracefold/postgres_database_password:/root/.tracefold/postgres_database_password:ro
-      - ${HOME}/.tracefold/trading_console_write_token:/root/.tracefold/trading_console_write_token:ro
       - ${HOME}/.tracefold/cache:/root/.tracefold/cache:ro
       - ${HOME}/.tracefold/logs:/root/.tracefold/logs
     command: ["tracefold", "serve"]

@@ -24,7 +24,6 @@ RETRYABLE_ENTRY_REASONS: Final[frozenset[str]] = frozenset(
     {
         "account_stale",
         "market_stale",
-        "day_start_baseline_missing",
         "market_subscription_pending",
         "oi_runtime_account_missing",
         "oi_runtime_account_balance_missing",

@@ -63,7 +63,6 @@ def _seed_and_summarize(dsn: str) -> dict[str, Any]:
         authentication_identity="restore-drill",
         requested_at_ns=requested_at_ns,
         expires_at_ns=requested_at_ns + _COMMAND_TTL_NS,
-        confirmation_identity=None,
         market_key=None,
         direction=None,
     )

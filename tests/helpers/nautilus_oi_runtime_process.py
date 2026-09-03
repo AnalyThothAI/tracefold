@@ -170,7 +170,7 @@ def main() -> None:
             control_state = load_runtime_control_state(repos, profile.account_slot, now_ns=NOW_NS)
         factory = ObservationFactory(profile.account_slot, profile.runtime_release, "oi_nautilus_v1")
         audit = AuditSink(factory=factory)
-        readiness = RuntimeReadiness()
+        readiness = RuntimeReadiness(reconciliation_stale_after_ns=profile.risk.reconciliation_stale_after_ns)
         strategy = _CountingOiStrategy(
             profile=profile,
             signals=signals,
@@ -180,7 +180,6 @@ def main() -> None:
             # callback thread, and marshalling would have nowhere to marshal to.
             dispatch_pump=lambda pump: pump(),
             singleton_ready=lambda: True,
-            control_plane_ready=lambda: True,
             day_start=DayStartBaseline("2030-03-17", Decimal("1000"), NOW_NS - 1, "4" * 64),
             request_reconciliation=lambda _reason: None,
             initial_control_state=control_state,

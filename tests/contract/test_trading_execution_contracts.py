@@ -41,7 +41,6 @@ def _intent(**updates: object) -> OperatorIntentV1:
         "authentication_identity": "telegram:user:7",
         "requested_at_ns": 1_000,
         "expires_at_ns": 2_000,
-        "confirmation_identity": "e" * 64,
         "market_key": None,
         "direction": None,
     }
@@ -125,26 +124,30 @@ def test_contracts_reject_postgres_unrepresentable_text_before_storage(
 
 @pytest.mark.parametrize("action", ["resume_entries", "emergency_halt", "flatten"])
 def test_a_high_risk_action_is_a_plain_authenticated_command(action: str) -> None:
-    """#520 PR-C: the confirmation identity is not stored, so it cannot be a contract requirement.
+    """#520: authentication plus a reason is the whole authority.
 
-    It was one until the column and its CHECK went. `CONFIRM` is still demanded where a human types
-    it, at the command ingress, and #520 PR-B removes that too.
+    `confirmation_identity` was a stored second one until PR-C dropped the column and its CHECK;
+    PR-B then deleted the field and the `CONFIRM` token the ingress derived it from. Halt and
+    flatten reduce risk, so a typing ritual in front of them is a cost, not a control.
     """
 
-    assert _intent(action=action, confirmation_identity=None).action == action
+    intent = _intent(action=action)
+
+    assert intent.action == action
+    with pytest.raises(ValidationError):
+        _intent(action=action, confirmation_identity="e" * 64)
 
 
 def test_manual_entry_has_no_size_or_leverage_and_requires_market_direction() -> None:
     manual = _intent(
         action="manual_entry",
-        confirmation_identity=None,
         market_key="crypto:perp:ETH:USDT",
         direction="short",
     )
     assert manual.direction == "short"
 
     with pytest.raises(ValidationError, match="operator_manual_entry_market_required"):
-        _intent(action="manual_entry", confirmation_identity=None, market_key=None, direction=None)
+        _intent(action="manual_entry", market_key=None, direction=None)
     with pytest.raises(ValidationError):
         _intent(quantity="1")
 

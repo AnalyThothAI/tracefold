@@ -10,7 +10,7 @@ import pytest
 from nautilus_trader.accounting.factory import AccountFactory
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.core.uuid import UUID4
-from nautilus_trader.model.currencies import BTC
+from nautilus_trader.model.currencies import BTC, USDT
 from nautilus_trader.model.enums import AccountType, OmsType, OrderSide, OrderType, PositionSide, TriggerType
 from nautilus_trader.model.events import AccountState
 from nautilus_trader.model.identifiers import ClientId, ClientOrderId, PositionId, VenueOrderId
@@ -140,7 +140,7 @@ def test_expired_duplicate_and_entry_gate_rejections_never_submit() -> None:
     blocked = registered_oi_strategy(values=(trade_signal(signal_id="5" * 64),), singleton=singleton)
     blocked.strategy.on_timer(None)
     assert blocked.strategy.submitted == []
-    assert blocked.strategy.readiness().entry_block_reason == "singleton_unavailable"
+    assert blocked.strategy.readiness().entry_block_reason == "singleton_lost"
 
 
 def test_pause_resume_and_halt_are_distinct_and_never_bypass_entry_risk() -> None:
@@ -647,26 +647,45 @@ def test_app_owned_reconciliation_refreshes_clock_before_stale_entry_check() -> 
     assert len(context.strategy.submitted) == 1
 
 
-def test_utc_day_rollover_blocks_until_background_updates_durable_baseline() -> None:
+def test_utc_day_rollover_records_the_new_baseline_instead_of_blocking_entries() -> None:
+    """#520 PR-B: the day's first entry writes the baseline it needs rather than being held.
+
+    The durable `risk` observation is still the store of record - it is what keeps the day-loss limit
+    across a restart - and it carries the day's fixed event id, so this path and the background owner
+    converge on one row whichever writes first.
+    """
+
     context = registered_oi_strategy()
     rollover_ns = NOW_NS + 86_400_000_000_000
     context.clock.set_time(rollover_ns)
-
-    assert context.strategy.readiness().entry_block_reason == "day_start_baseline_missing"
-    assert context.strategy.readiness().execution_safe is True
-    assert context.strategy.readiness().entries_armed is False
-
+    context.readiness.reconciled(
+        account_observed_at_ns=rollover_ns,
+        reconciliation_observed_at_ns=rollover_ns,
+    )
     utc_day = datetime.fromtimestamp(rollover_ns // 1_000_000_000, tz=UTC).date().isoformat()
+
+    ready = context.strategy.readiness()
+    assert (ready.execution_safe, ready.entries_armed, ready.entry_block_reason) == (True, True, None)
+
+    baseline = context.strategy.day_start_baseline(equity_usd=Decimal("975"), now_ns=rollover_ns)
+
+    assert (baseline.utc_day, baseline.equity_usd) == (utc_day, Decimal("975"))
+    recorded = [value for value in context.audit.flush_once(lambda _values: None) if value.normalized_kind == "risk"]
+    assert len(recorded) == 1
+    assert recorded[0].event_id == context.audit.factory.day_start_event_id(utc_day)
+    assert recorded[0].summary["utc_day"] == utc_day
+
+    # The durable row the background owner loads still wins the moment it lands.
     context.strategy.update_day_start(
         DayStartBaseline(
             utc_day=utc_day,
-            equity_usd=Decimal("975"),
+            equity_usd=Decimal("980"),
             recorded_at_ns=rollover_ns,
-            event_id="5" * 64,
+            event_id=recorded[0].event_id,
         )
     )
 
-    assert context.strategy.readiness().entries_armed is True
+    assert context.strategy.day_start_baseline(equity_usd=Decimal("1"), now_ns=rollover_ns).equity_usd == Decimal("980")
 
 
 @pytest.mark.parametrize(
@@ -919,7 +938,9 @@ def test_submit_exception_queries_the_same_entry_and_wakes_immediate_private_rep
     assert context.reconciliation_requests == ["unknown_outcome"]
 
 
-def test_audit_failure_blocks_new_entries_but_not_protection_or_flatten() -> None:
+def test_audit_failure_is_a_reported_flag_and_stops_neither_entries_nor_protection() -> None:
+    """#520 PR-B: Binance keeps this account's order and fill history; the local copy is a copy."""
+
     context = registered_oi_strategy(values=(trade_signal(),))
     context.strategy.on_timer(None)
     _, position_id = _open_position(context)
@@ -932,7 +953,10 @@ def test_audit_failure_blocks_new_entries_but_not_protection_or_flatten() -> Non
         context.audit.flush_once(fail_writer)
     assert context.audit.healthy is False
     assert context.strategy.readiness().execution_safe is True
-    assert context.strategy.readiness().entries_armed is False
+    assert context.strategy.readiness().entries_armed is True
+    assert context.strategy.readiness().entry_block_reason is None
+    projected = context.strategy.account_snapshot(projected_at_ns=NOW_NS + 5)
+    assert (projected.audit_healthy, projected.audit_failure_reason) == (False, "audit_append_failed")
     context.strategy.on_order_accepted(_accepted(context, first_stop))
 
     context.strategy.on_position_changed(
@@ -1059,7 +1083,9 @@ def test_cached_exit_with_wrong_shape_is_never_reclaimed() -> None:
     assert context.strategy.readiness().unexpected_exposure is True
 
 
-def test_failed_audit_writer_rejects_later_signal_before_any_new_exposure() -> None:
+def test_failed_audit_writer_still_admits_the_next_signal_and_reports_the_gap() -> None:
+    """#520 PR-B: an unwritable local audit copy is a status flag, not an admission gate."""
+
     profile = registered_oi_strategy().profile
     factory = ObservationFactory(profile.account_slot, profile.runtime_release, "oi_nautilus_v1")
     audit = AuditSink(factory=factory)
@@ -1082,8 +1108,9 @@ def test_failed_audit_writer_rejects_later_signal_before_any_new_exposure() -> N
 
     context.strategy.on_timer(None)
 
-    assert context.strategy.submitted == []
+    assert len(context.strategy.submitted) == 1
     assert context.audit.failure_reason == "audit_append_failed"
+    assert context.strategy.account_snapshot(projected_at_ns=NOW_NS).audit_healthy is False
 
 
 def test_account_projection_reports_empty_account_without_claiming_private_flat_proof() -> None:
@@ -1503,6 +1530,45 @@ def test_flatten_account_completes_once_the_private_reports_prove_flat() -> None
     assert [value.summary for value in completed] == [{"disposition": "completed", "reason": "binance_account_flat"}]
 
 
+def test_an_equity_that_cannot_be_a_baseline_is_refused_terminally_not_raised() -> None:
+    """#520 PR-B: recording the day's baseline on the entry path must not throw at a callback."""
+
+    cache = Cache()
+    cache.add_account(_account_with_zero_usdt_balance())
+    context = registered_oi_strategy(values=(trade_signal(),), cache=cache)
+    context.strategy.update_day_start(
+        DayStartBaseline(
+            utc_day="2030-03-18",
+            equity_usd=Decimal("1000"),
+            recorded_at_ns=NOW_NS,
+            event_id="8" * 64,
+        )
+    )
+
+    context.strategy.on_timer(None)
+
+    assert context.strategy.submitted == []
+    assert [value.summary["disposition"] for value in _dispositions(context)] == [
+        "oi_runtime_day_start_equity_precision_invalid"
+    ]
+
+
+def _account_with_zero_usdt_balance() -> object:
+    state = AccountState(
+        account_id=ACCOUNT_ID,
+        account_type=AccountType.MARGIN,
+        base_currency=None,
+        reported=True,
+        balances=[AccountBalance(total=Money(0, USDT), locked=Money(0, USDT), free=Money(0, USDT))],
+        margins=[],
+        info={},
+        event_id=UUID4(),
+        ts_event=NOW_NS,
+        ts_init=NOW_NS,
+    )
+    return AccountFactory.create(state)
+
+
 def _account_without_usdt_balance() -> object:
     state = AccountState(
         account_id=ACCOUNT_ID,
@@ -1586,7 +1652,6 @@ def test_a_retried_signal_that_never_recovers_still_ends_as_expired() -> None:
     ("reason", "prepare"),
     [
         ("market_stale", "market"),
-        ("day_start_baseline_missing", "day_start"),
         ("oi_runtime_account_balance_missing", "balance"),
     ],
 )
@@ -1601,15 +1666,6 @@ def test_every_transient_entry_refusal_returns_the_signal_instead_of_burying_it(
     context = registered_oi_strategy(values=(signal,), cache=cache)
     if prepare == "market":
         context.clock.set_time(NOW_NS + context.profile.risk.market_stale_after_ns + 1)
-    elif prepare == "day_start":
-        context.strategy.update_day_start(
-            DayStartBaseline(
-                utc_day="2030-03-18",
-                equity_usd=Decimal("1000"),
-                recorded_at_ns=NOW_NS,
-                event_id="8" * 64,
-            )
-        )
 
     context.strategy.on_timer(None)
 

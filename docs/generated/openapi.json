@@ -5550,6 +5550,22 @@
             ],
             "title": "Aggregate Risk Usd"
           },
+          "audit_failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audit Failure Reason"
+          },
+          "audit_healthy": {
+            "default": true,
+            "title": "Audit Healthy",
+            "type": "boolean"
+          },
           "complete": {
             "title": "Complete",
             "type": "boolean"

@@ -198,6 +198,7 @@ export function TradingPage({ token }: { token: string }) {
             accountFlatProven={currentExecution.account_flat_proven}
             entriesPaused={status.execution.entries_paused}
             mode={status.execution.mode}
+            token={token}
           />
 
           <Card

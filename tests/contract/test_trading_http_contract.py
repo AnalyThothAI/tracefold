@@ -15,7 +15,6 @@ from tracefold.app.http.routes import trading as trading_routes
 from tracefold.platform.config.models import Settings
 
 TOKEN = "trading-contract-token"
-WRITE_TOKEN = "operator-write-" + "w" * 40
 NOW = 1_900_000_000_000
 
 
@@ -157,13 +156,7 @@ class _Runtime:
 
 @pytest.fixture
 def client(tmp_path: Path) -> tuple[TestClient, _Trading]:
-    token_path = tmp_path / "trading_console_write_token"
-    token_path.write_text(WRITE_TOKEN + "\n", encoding="utf-8")
-    token_path.chmod(0o600)
-    settings = Settings(
-        ws_token=TOKEN,
-        trading={"control": {"console_write_token_file": token_path.name}},
-    )
+    settings = Settings(ws_token=TOKEN)
     settings.set_config_dir(tmp_path)
     trading = _Trading()
     app = create_app(settings=settings)
@@ -234,11 +227,11 @@ def test_console_command_post_records_only_an_intent(
     monkeypatch.setattr(trading_routes.time, "time_ns", lambda: NOW * 1_000_000)
     response = api.post(
         "/api/trading/execution/commands",
-        headers={"Authorization": f"Bearer {WRITE_TOKEN}"},
+        headers={"Authorization": f"Bearer {TOKEN}"},
         json={
             "request_id": "11111111-1111-4111-8111-111111111111",
             "requested_at_ms": NOW,
-            "text": "/resume operator review complete CONFIRM",
+            "text": "/resume operator review complete",
         },
     )
 
@@ -257,7 +250,42 @@ def test_console_command_post_records_only_an_intent(
     assert persisted.reason == "operator review complete"
     assert persisted.account_slot == "binance_usdm_primary"
     assert persisted.authentication_identity == "http-operator-write-token:v1"
-    assert persisted.confirmation_identity is not None
+    assert not hasattr(persisted, "confirmation_identity")
+
+
+def test_console_command_post_authenticates_with_the_session_read_token(
+    client: tuple[TestClient, _Trading], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#520 PR-B: one bearer for reads and the one write; the separate 0600 file is gone."""
+
+    api, trading = client
+    monkeypatch.setattr(trading_routes.time, "time_ns", lambda: NOW * 1_000_000)
+
+    response = api.post(
+        "/api/trading/execution/commands",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+        json={
+            "request_id": "44444444-4444-4444-8444-444444444444",
+            "requested_at_ms": NOW,
+            "text": "/resume operator review complete",
+        },
+    )
+
+    assert response.status_code == 200
+    persisted = trading.persisted[0].value
+    assert persisted.action == "resume_entries"
+    assert persisted.reason == "operator review complete"
+    assert persisted.authentication_identity == "http-operator-write-token:v1"
+    # The query parameter every read route accepts is still not a write credential.
+    assert (
+        api.post(
+            f"/api/trading/execution/commands?token={TOKEN}",
+            content=b"{}",
+            headers={"Content-Type": "application/json"},
+        ).status_code
+        == 401
+    )
+    assert len(trading.persisted) == 1
 
 
 def test_console_command_post_offloads_the_synchronous_database_append(
@@ -275,7 +303,7 @@ def test_console_command_post_offloads_the_synchronous_database_append(
 
     response = api.post(
         "/api/trading/execution/commands",
-        headers={"Authorization": f"Bearer {WRITE_TOKEN}"},
+        headers={"Authorization": f"Bearer {TOKEN}"},
         json={
             "request_id": "33333333-3333-4333-8333-333333333333",
             "requested_at_ms": NOW,
@@ -299,7 +327,7 @@ def test_console_command_post_authenticates_before_body_and_rejects_query_tokens
         api.post(
             "/api/trading/execution/commands",
             content=b"{}",
-            headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
+            headers={"Authorization": "Bearer wrong-token", "Content-Type": "application/json"},
         ).status_code
         == 401
     )
@@ -307,7 +335,7 @@ def test_console_command_post_authenticates_before_body_and_rejects_query_tokens
         api.post(
             "/api/trading/execution/commands",
             content=b"{}",
-            headers={"Authorization": f"Bearer {WRITE_TOKEN}", "Content-Type": "text/plain"},
+            headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "text/plain"},
         ).json()["error"]
         == "content_type_json_required"
     )
@@ -319,29 +347,15 @@ def test_console_command_post_authenticates_before_body_and_rejects_query_tokens
         ).status_code
         == 401
     )
-    shared_token = "shared-bootstrap-write-token-" + "x" * 32
-    api.app.state.service.settings.ws_token = shared_token
-    token_path = api.app.state.service.settings.trading_console_write_token_file()
-    assert token_path is not None
-    token_path.write_text(shared_token + "\n", encoding="utf-8")
-    token_path.chmod(0o600)
-    assert (
-        api.post(
-            "/api/trading/execution/commands",
-            content=b"{}",
-            headers={"Authorization": f"Bearer {shared_token}", "Content-Type": "application/json"},
-        ).status_code
-        == 401
-    )
     assert trading.persisted == []
 
 
 @pytest.mark.parametrize(
     ("text", "error"),
     [
-        ("/halt incident CONFIRM", "operator_console_action_unsupported"),
+        ("/halt incident", "operator_console_action_unsupported"),
         ("/long crypto:perp:BTC:USDT 30", "operator_console_action_unsupported"),
-        ("/flatten account 30", "operator_command_invalid"),
+        ("/flatten account 30 CONFIRM", "operator_command_invalid"),
     ],
 )
 def test_console_command_post_keeps_the_closed_non_capital_grammar(
@@ -354,7 +368,7 @@ def test_console_command_post_keeps_the_closed_non_capital_grammar(
     monkeypatch.setattr(trading_routes.time, "time_ns", lambda: NOW * 1_000_000)
     response = api.post(
         "/api/trading/execution/commands",
-        headers={"Authorization": f"Bearer {WRITE_TOKEN}"},
+        headers={"Authorization": f"Bearer {TOKEN}"},
         json={
             "request_id": "22222222-2222-4222-8222-222222222222",
             "requested_at_ms": NOW,

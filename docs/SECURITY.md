@@ -27,16 +27,15 @@ The only Tracefold application configuration file is the operator-owned
 `~/.tracefold/config.yaml`. It owns application paths, the PostgreSQL DSN and
 password-file reference, the OpenNews token, the RabbitMQ URL, the
 Feishu webhook or Telegram target/token-file reference, the API bind address and bearer token, and model
-provider/name. `trading.control` contains only its enable switch, the console
-write-token reference, Telegram token/webhook-secret file references, chat/user allowlists, and notification
+provider/name. `trading.control` contains only its enable switch, the Telegram
+token/webhook-secret file references, chat/user allowlists, and notification
 target. `trading.execution.credentials` contains the closed file
 references for the one Binance USD-M Runtime profile. The Signal-only Workers
-process has no execution-secret mount or secret-reading path. Serve mounts only
-the console write token; it never mounts Binance or Telegram credentials.
+process has no execution-secret mount or secret-reading path. Serve mounts no
+Binance or Telegram credential.
 
-The complete secret inventory is: `ws_token` (bootstrap-disclosed HTTP read token),
-the file named by `trading.control.console_write_token_file` (HTTP command authority),
-`news.opennews_token`, `llm.api_key`, the optional
+The complete secret inventory is: `ws_token` (bootstrap-disclosed HTTP read and
+command token), `news.opennews_token`, `llm.api_key`, the optional
 `llm.news_reader_card.api_key` (dedicated ReaderCard endpoint), the optional
 `llm.news_triage_fallback.api_key` (second Triage endpoint, issue #65),
 the optional `llm.news_reader_card_fallback.api_key` (dedicated ReaderCard
@@ -62,8 +61,7 @@ Generated defaults contain no live provider, model, webhook, or bot credential
 and leave outbound News push disabled. They create empty mode-`0600`
 `telegram_bot_token`, `telegram_webhook_secret`, `binance_usdm_api_key`, and `binance_usdm_api_secret`
 placeholders; an empty file is `unconfigured`, never a credential. They do not
-create or populate an execution key. Init separately creates a random
-`trading_console_write_token`; reruns preserve it. A live
+create or populate an execution key. A live
 operator populates each required provider file as a regular,
 non-symlink file of at most 16 KiB with no group/other permission bits
 (normally mode `0600`);
@@ -71,8 +69,7 @@ diagnostics expose only configured/readable booleans and resolved paths, never
 contents.
 
 Compose mounts the generated Telegram token and webhook-secret filenames only
-into Workers, and mounts the console write token only into Serve. Serve never
-receives Telegram or Binance credentials. If outbound push is
+into Workers. Serve never receives Telegram or Binance credentials. If outbound push is
 explicitly enabled with an absent, empty, malformed, symlinked, or
 over-permissive token file, Workers fails startup with a stable sanitized reason
 instead of running without the requested delivery boundary.
@@ -293,16 +290,16 @@ not execute DDL, and Compose orders the one-shot migration before steady
 processes. `pg_stat_statements` is naturally visible for the complete
 application identity without a statistics-reader workaround.
 
-HTTP reads use one bearer token: `/api/bootstrap` hands `ws_token` to the
-served console and every other GET `/api/*` route requires it. Read routes also
-accept the legacy query-token transport. The sole Command POST requires a
-separate operator write token from the mode-`0600` file named by
-`trading.control.console_write_token_file`; bootstrap never returns it and the
-console keeps a pasted value only in page memory. Serve refuses to start when
-that token equals the bootstrap-disclosed read token, and every request rereads
-the file and fails closed if a later replacement reuses the read token or is
-not an ASCII token. Non-ASCII bearer values likewise fail as unauthorized. The route requires
-`Authorization: Bearer <operator-write-token>`, exact JSON content type, and a
+HTTP uses one bearer token: `/api/bootstrap` hands `ws_token` to the served
+console and every other `/api/*` route requires it. Read routes also accept the
+legacy query-token transport. The sole Command POST does not: it requires
+`Authorization: Bearer <ws_token>`, so a credential that lands in proxy logs and
+browser history can read but never write. The separate console write token went
+with #520 PR-B, which found it split nothing an attacker could reach separately
+- both values live on the same single-operator LAN host and are pasted into the
+same console - while reliably producing a console that could read but not
+flatten. Non-ASCII bearer values fail as unauthorized. The route requires
+exact JSON content type and a
 body no larger than 2 KiB, and authenticates before reading that body. `/healthz`,
 `/readyz`, and `/metrics` are
 unauthenticated liveness/telemetry surfaces (the compose stack publishes the

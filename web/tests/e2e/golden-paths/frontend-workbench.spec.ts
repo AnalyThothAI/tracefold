@@ -136,14 +136,13 @@ test("confirms an operator command without claiming Runtime or venue success", a
       request.method() === "POST" &&
       new URL(request.url()).pathname === "/api/trading/execution/commands",
   );
-  await page.getByLabel("Operator write token").fill("operator-write-token");
   await page.getByRole("button", { name: "Resume / Arm" }).click();
   await expect(page.getByRole("alertdialog")).toBeVisible();
   await page.getByRole("button", { name: "确认写入 Command" }).click();
   const request = await posted;
 
-  expect(request.headers().authorization).toBe("Bearer operator-write-token");
-  expect(request.postDataJSON()).toMatchObject({ text: "/resume operator console CONFIRM" });
+  expect(request.headers().authorization).toBe("Bearer secret");
+  expect(request.postDataJSON()).toMatchObject({ text: "/resume operator console" });
   await expect(page.getByText(/Command 已持久化/)).toContainText(
     "这不代表 Runtime 受理、订单或成交",
   );

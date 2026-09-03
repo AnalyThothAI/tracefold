@@ -258,7 +258,7 @@ def test_runtime_state_projector_writes_changes_immediately_and_unchanged_state_
         starting,
         lifecycle_state="running",
         heartbeat_at_ns=starting.heartbeat_at_ns + 1,
-        entry_block_reason="portfolio_unavailable",
+        entry_block_reason="reconciliation_stale",
         updated_at_ns=starting.updated_at_ns + 1,
     )
     projector.offer(changed)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from threading import Lock
 from typing import Any, Literal
 
@@ -70,7 +71,6 @@ class OiNautilusStrategy(Strategy):
         # `loop.call_soon_threadsafe`; a single-threaded `BacktestEngine` passes direct invocation.
         dispatch_pump: Callable[[Callable[[], None]], None],
         singleton_ready: Any,
-        control_plane_ready: Callable[[], bool],
         day_start: DayStartBaseline | None,
         request_reconciliation: Callable[[PrivateReconciliationReason], None],
         initial_control_state: RuntimeControlSnapshot | None = None,
@@ -89,7 +89,6 @@ class OiNautilusStrategy(Strategy):
         self._readiness = readiness
         self._dispatch_pump = dispatch_pump
         self._singleton_ready = singleton_ready
-        self._control_plane_ready = control_plane_ready
         self._day_start = day_start
         self._day_start_lock = Lock()
         self._request_reconciliation = request_reconciliation
@@ -144,7 +143,7 @@ class OiNautilusStrategy(Strategy):
             readiness=readiness,
             observations=self._observation_writer,
             quotes=self._quotes,
-            current_day_start=self._current_day_start,
+            day_start_baseline=self.day_start_baseline,
             readiness_snapshot=self.readiness,
             verify_owned_exposure=self._recovery.verify_owned_exposure,
             request_reconciliation=request_reconciliation,
@@ -208,11 +207,8 @@ class OiNautilusStrategy(Strategy):
 
     def readiness(self) -> RuntimeReadinessSnapshot:
         return self._readiness.snapshot(
+            now_ns=int(self.clock.timestamp_ns()),
             singleton_ready=bool(self._singleton_ready()),
-            portfolio_ready=bool(self.portfolio.initialized),
-            control_plane_ready=bool(self._control_plane_ready()),
-            audit_ready=self._audit.can_accept_exposure(),
-            day_start_ready=self._current_day_start() is not None,
             entries_paused=self._runtime.entries_paused,
             emergency_halted=self._runtime.emergency_halted,
         )
@@ -224,6 +220,8 @@ class OiNautilusStrategy(Strategy):
         return self._account_projector.snapshot(
             baseline=self._current_day_start(),
             projected_at_ns=projected_at_ns,
+            audit_healthy=self._audit.healthy,
+            audit_failure_reason=self._audit.failure_reason,
         )
 
     def protection_status(
@@ -245,11 +243,35 @@ class OiNautilusStrategy(Strategy):
                 raise ValueError("oi_runtime_day_start_baseline_stale")
             self._day_start = baseline
 
+    def day_start_baseline(self, *, equity_usd: Decimal, now_ns: int) -> DayStartBaseline:
+        """Today's baseline, recorded from current equity when none has arrived yet (#520 PR-B).
+
+        One durable `risk` row a day is still the store of record, so a restart keeps the day-loss
+        limit; it carries the day's fixed event id, so this path and the background owner converge
+        on one row whichever writes first. What is gone is the refusal.
+        """
+
+        current = self._current_day_start()
+        if current is not None:
+            return current
+        baseline, observation = self._audit.factory.day_start_baseline(
+            utc_day=self._utc_day(),
+            equity_usd=equity_usd,
+            recorded_at_ns=now_ns,
+        )
+        self._audit.offer(observation)
+        with self._day_start_lock:
+            self._day_start = baseline
+        return baseline
+
     def _current_day_start(self) -> DayStartBaseline | None:
-        utc_day = datetime.fromtimestamp(int(self.clock.timestamp_ns()) // 1_000_000_000, tz=UTC).date().isoformat()
+        utc_day = self._utc_day()
         with self._day_start_lock:
             baseline = self._day_start
         return baseline if baseline is not None and baseline.utc_day == utc_day else None
+
+    def _utc_day(self) -> str:
+        return datetime.fromtimestamp(int(self.clock.timestamp_ns()) // 1_000_000_000, tz=UTC).date().isoformat()
 
     def reconcile_runtime(self, snapshot: RuntimeReconciliationSnapshot) -> bool:
         return self._recovery.reconcile(snapshot)
