@@ -146,6 +146,17 @@ export const EXECUTION_STAGE_ZH: Record<string, string> = {
   closed: "已平仓",
 };
 
+/**
+ * Which entry identity a desk row is, as `executions[].source` names it (#528 PR-3).
+ *
+ * A manual entry is a Command the operator typed; a Signal came from the lane. Both fold the same venue
+ * facts, so the two words are the only thing that distinguishes their rows.
+ */
+export const EXECUTION_SOURCE_ZH: Record<string, string> = {
+  manual: "手工",
+  signal: "Signal",
+};
+
 /** The five stages `tracefold/trading/stages.py:command_stage` derives from `control_disposition` alone. */
 export const COMMAND_STAGE_ZH: Record<string, string> = {
   recorded: "已持久化",

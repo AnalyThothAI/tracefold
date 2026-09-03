@@ -1,4 +1,4 @@
-"""How far one Signal and one operator Command got, derived from durable facts alone.
+"""How far one entry and one operator Command got, derived from durable facts alone.
 
 The console renders a stage word, and the words are a closed vocabulary; deriving them here rather
 than in the browser is what makes them the same words in `/api/trading/executions`, the CLI and any
@@ -22,7 +22,12 @@ ACCEPTED_ENTRY_DISPOSITIONS: frozenset[str] = frozenset(
 
 
 def signal_disposition(reason: str | None) -> Literal["accepted", "rejected"] | None:
-    """`accepted` or `rejected` for one durable entry disposition reason; `None` while undisposed."""
+    """`accepted` or `rejected` for one durable entry disposition reason; `None` while undisposed.
+
+    One vocabulary for both entry identities: a Signal's `signal_disposition` and a manual entry's
+    `control_disposition` are written by the same Runtime path, which splits the word off exactly the
+    frozenset above (`oi_runtime/observations.py:dispose_entry`).
+    """
 
     if reason is None:
         return None
@@ -37,11 +42,12 @@ def execution_stage(
     stop_trigger_price: str | None,
     position_status: str | None,
 ) -> ExecutionStage:
-    """How far one Signal got, read off the facts its own observations carry and nothing else.
+    """How far one entry got, read off the facts its own observations carry and nothing else.
 
     The newest fact wins: a closed position is closed however it got there, and a protected position
-    is the one an operator wants told apart from a bare fill. A Signal the Runtime accepted always has
-    an entry order observation, so `ordered` accepts either witness rather than trusting one.
+    is the one an operator wants told apart from a bare fill. An entry the Runtime accepted always has
+    an entry order observation, so `ordered` accepts either witness rather than trusting one. A manual
+    entry reaches this the same way a Signal does; only where its facts are correlated differs.
     """
 
     if position_status == "closed":

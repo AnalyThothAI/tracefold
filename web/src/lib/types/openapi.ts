@@ -201,7 +201,7 @@ export interface paths {
         };
         /**
          * Get Trading Executions
-         * @description Today's desk table: one row per Signal, plus one row per operator Command (#528 PR-1).
+         * @description Today's desk table: one row per entry identity, plus one per operator Command (#528 PR-3).
          */
         get: operations["get_trading_executions_api_trading_executions_get"];
         put?: never;
@@ -2607,11 +2607,15 @@ export interface components {
         };
         /**
          * TradingExecutionRowData
-         * @description One Signal's whole execution, folded from its own observations (#528 PR-1).
+         * @description One entry identity's whole execution, folded from its own observations (#528 PR-1, PR-3).
+         *
+         *     `entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,
+         *     or the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so
+         *     `case_id` is absent on those rows rather than invented.
          */
         TradingExecutionRowData: {
             /** Case Id */
-            case_id: string;
+            case_id?: string | null;
             /**
              * Direction
              * @enum {string}
@@ -2621,6 +2625,8 @@ export interface components {
             disposition?: ("accepted" | "rejected") | null;
             /** Disposition Reason */
             disposition_reason?: string | null;
+            /** Entry Id */
+            entry_id: string;
             /** Exit Price */
             exit_price?: string | null;
             /** Exit Reason */
@@ -2641,8 +2647,11 @@ export interface components {
             position_status?: string | null;
             /** Realized Pnl Usd */
             realized_pnl_usd?: string | null;
-            /** Signal Id */
-            signal_id: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "signal" | "manual";
             /**
              * Stage
              * @enum {string}

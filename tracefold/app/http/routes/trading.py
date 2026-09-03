@@ -309,7 +309,7 @@ def get_operator_intents(
 
 @router.get("/trading/executions", response_model=_ExecutionsEnvelope)
 def get_trading_executions(request: Request) -> Response:
-    """Today's desk table: one row per Signal, plus one row per operator Command (#528 PR-1)."""
+    """Today's desk table: one row per entry identity, plus one per operator Command (#528 PR-3)."""
 
     _validate_query_params(request, supported={"token"})
     runtime = _authenticated_runtime(request)
@@ -558,8 +558,9 @@ def _execution(row: dict[str, Any]) -> dict[str, Any]:
     stop_trigger_price = _string_or_none(row.get("stop_trigger_price"))
     position_status = _string_or_none(row.get("position_status"))
     return {
-        "signal_id": str(row["signal_id"]),
-        "case_id": str(row["case_id"]),
+        "source": str(row["source"]),
+        "entry_id": str(row["entry_id"]),
+        "case_id": _string_or_none(row.get("case_id")),
         "market_key": str(row["market_key"]),
         "direction": str(row["direction"]),
         "observed_at_ns": int(row["observed_at_ns"]),

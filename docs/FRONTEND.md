@@ -2,7 +2,7 @@
 
 > **Scope.** Owns the `web/` architecture, layer responsibilities, component conventions, and the UI verification gate. Backend layer boundaries live in `ARCHITECTURE.md`; public HTTP contracts live in `CONTRACTS.md`; install and run commands live in `SETUP.md`.
 
-The React operator console is a News workbench plus one actionable Alpha/Execution desk. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/trading/status`, `/api/trading/cases`, `/api/trading/signals`, `/api/trading/executions`, `/api/trading/gate`, and `/api/trading/gate/{event_id}` over HTTP. `GET /api/trading/execution/observations` remains a server surface for the CLI; since #528 PR-2 no browser surface reads the raw Observation stream, because the folded per-Signal read model is what an operator actually reads. Every operation is a read except the exact authenticated `POST /api/trading/execution/commands`, which can append only pause, resume, or account-flatten intents in the existing closed grammar. It cannot submit an order or accept quantity, notional, leverage, venue, or direction. There is no WebSocket client, no separate Search route, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
+The React operator console is a News workbench plus one actionable Alpha/Execution desk. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/trading/status`, `/api/trading/cases`, `/api/trading/signals`, `/api/trading/executions`, `/api/trading/gate`, and `/api/trading/gate/{event_id}` over HTTP. `GET /api/trading/execution/observations` remains a server surface for the CLI; since #528 PR-2 no browser surface reads the raw Observation stream, because the folded per-entry read model is what an operator actually reads. Every operation is a read except the exact authenticated `POST /api/trading/execution/commands`, which can append only pause, resume, or account-flatten intents in the existing closed grammar. It cannot submit an order or accept quantity, notional, leverage, venue, or direction. There is no WebSocket client, no separate Search route, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
 
 ## Source Layer Map (`web/src/`)
 
@@ -334,13 +334,15 @@ the route components into the eager shell chunk.
      successful POST says only that the Command was persisted. Each Command row
      renders the server's `stage` — `recorded / accepted / rejected / completed
      / expired` — derived from `control_disposition` alone.
-  4. **Today's executions** — `/api/trading/executions`. One row per Signal:
-     time, market, direction, `disposition_reason` through
-     `SIGNAL_DISPOSITION_ZH`, `stage`, fill quantity and average price, stop
-     trigger, position status, exit price, realized PnL and exit reason. The
-     header totals Signals, filled Signals and the realized PnL sum, which is
-     the page's only arithmetic — #528 refuses an equity-curve table for a
-     number that is already one column.
+  4. **Today's executions** — `/api/trading/executions`. One row per entry:
+     time, `source` (Signal or the operator's own manual entry), market,
+     direction, `disposition_reason` through `SIGNAL_DISPOSITION_ZH`, `stage`,
+     fill quantity and average price, stop trigger, position status, exit price,
+     realized PnL and exit reason. A manual entry renders beside a Signal with
+     the same columns and no Case identity (#528 PR-3). The header totals
+     entries, splits them by source, and sums the realized PnL, which is the
+     page's only arithmetic — #528 refuses an equity-curve table for a number
+     that is already one column.
   5. **Funnel** — `/api/trading/gate` beside `/api/trading/cases`. Admission's
      `status_counts_24h` and `reason_counts_24h` with `latest_source_at_ms` and
      `latest_gate_eligible_at_ms`, the Case `state_counts_24h` and

@@ -340,12 +340,13 @@
   .trading-execution-row {
     display: grid;
     grid-template-columns:
-      minmax(86px, 0.7fr) minmax(150px, 1.3fr) minmax(52px, 0.4fr) minmax(120px, 1fr)
-      minmax(78px, 0.6fr) minmax(74px, 0.6fr) minmax(84px, 0.6fr) minmax(78px, 0.6fr)
-      minmax(70px, 0.5fr) minmax(78px, 0.6fr) minmax(84px, 0.6fr) minmax(94px, 0.7fr);
+      minmax(86px, 0.7fr) minmax(56px, 0.4fr) minmax(150px, 1.3fr) minmax(52px, 0.4fr)
+      minmax(120px, 1fr) minmax(78px, 0.6fr) minmax(74px, 0.6fr) minmax(84px, 0.6fr)
+      minmax(78px, 0.6fr) minmax(70px, 0.5fr) minmax(78px, 0.6fr) minmax(84px, 0.6fr)
+      minmax(94px, 0.7fr);
     gap: 4px 10px;
     align-items: baseline;
-    min-width: 1080px;
+    min-width: 1146px;
     padding: 7px 14px;
     border-bottom: 1px solid var(--border-faint);
     font-size: var(--font-size-mono-meta);

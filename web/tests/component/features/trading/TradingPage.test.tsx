@@ -168,11 +168,12 @@ describe("TradingPage", () => {
     );
   });
 
-  it("block 4 renders one row per Signal from the server's own fields and totals the realized PnL", async () => {
+  it("block 4 renders one row per entry from the server's own fields and totals the realized PnL", async () => {
     renderTrading();
 
     const closed = await screen.findByText("crypto:perp:BTC:USDT");
     const row = closed.closest(".trading-execution-row") as HTMLElement;
+    expect(within(row).getByText("Signal")).toBeVisible();
     expect(within(row).getByText("已平仓")).toBeVisible();
     expect(within(row).getByText("已受理")).toBeVisible();
     expect(within(row).getByText("0.049")).toBeVisible();
@@ -185,7 +186,23 @@ describe("TradingPage", () => {
     expect(within(unmapped as HTMLElement).getByText("运行时目录里没有这个市场")).toBeVisible();
     expect(within(unmapped as HTMLElement).getByText("已拒绝")).toBeVisible();
     expect(screen.getByText("Signal 已过期")).toBeVisible();
-    expect(screen.getByText(/Signal 3 · 执行 1 · 已实现 −\$14\.92/)).toBeVisible();
+
+    /*
+     * #528 PR-3. The CLI manual entry is a row of its own, keyed on its Command and holding the same
+     * venue facts — before this it existed only as `manual_entry accepted` in block 3, with the fills,
+     * the exit and the realized result it produced nowhere on the desk.
+     */
+    const manual = screen.getByText("crypto:perp:ETH:USDT").closest(".trading-execution-row")!;
+    expect(within(manual as HTMLElement).getByText("手工")).toBeVisible();
+    expect(within(manual as HTMLElement).getByText("已平仓")).toBeVisible();
+    expect(within(manual as HTMLElement).getByText("0.0122")).toBeVisible();
+    expect(within(manual as HTMLElement).getByText("81100.0")).toBeVisible();
+    expect(within(manual as HTMLElement).getByText("−$1.12")).toBeVisible();
+    expect(within(manual as HTMLElement).queryByRole("link")).toBeNull();
+
+    expect(
+      screen.getByText(/入场 4（Signal 3 · 手工 1）· 执行 2 · 已实现 −\$16\.04/),
+    ).toBeVisible();
   });
 
   it("block 5 shows both durable distributions and the admission configuration that filed them", async () => {
@@ -326,7 +343,7 @@ describe("TradingPage", () => {
     );
     renderTrading();
 
-    expect(await screen.findByText("当前 24 小时窗口没有 Signal。")).toBeVisible();
+    expect(await screen.findByText("当前 24 小时窗口没有入场。")).toBeVisible();
     expect(screen.getByText("当前 24 小时窗口没有 Command。")).toBeVisible();
     expect(screen.getByText("当前 24 小时窗口没有 Case。")).toBeVisible();
   });
@@ -345,9 +362,7 @@ describe("TradingPage", () => {
     );
     renderTrading();
 
-    expect(
-      await screen.findByText("本窗口已截断；未列出的 Signal 不能解释为没有发生。"),
-    ).toBeVisible();
+    expect(await screen.findByText("本窗口已截断；未列出的入场不能解释为没有发生。")).toBeVisible();
     expect(screen.getByText("crypto:perp:BTC:USDT")).toBeVisible();
   });
 
