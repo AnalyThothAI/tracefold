@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from tracefold.platform.observability import PROMETHEUS_CONTENT_TYPE
@@ -13,7 +13,6 @@ def _create_workers_probe_app(
     *,
     readiness: Callable[[], dict[str, Any]],
     render_metrics: Callable[[], str],
-    telegram_control: Callable[[Request], Awaitable[Response]] | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="Tracefold Workers Probe",
@@ -37,12 +36,6 @@ def _create_workers_probe_app(
             render_metrics(),
             media_type=PROMETHEUS_CONTENT_TYPE,
         )
-
-    if telegram_control is not None:
-
-        @app.post("/telegram/control", include_in_schema=False)
-        async def control(request: Request) -> Response:
-            return await telegram_control(request)
 
     return app
 

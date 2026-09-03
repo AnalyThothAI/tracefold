@@ -150,6 +150,9 @@ class ExitCoordinator:
         state = self._state.executions[entry_id]
         if state.position_quantity <= 0:
             return
+        # The one place a reduce-only exit is asked for on an owned position, so the one place that
+        # can say why the `PositionClosed` this produces is not the protective stop (#528 A).
+        state.exit_reason = "flatten"
         instrument = self._engine.cache.instrument(state.route.instrument_id)
         if instrument is None:
             raise RuntimeError("oi_runtime_instrument_missing")

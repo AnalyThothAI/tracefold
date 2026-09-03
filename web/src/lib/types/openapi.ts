@@ -192,6 +192,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/trading/executions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Trading Executions
+         * @description Today's desk table: one row per Signal, plus one row per operator Command (#528 PR-1).
+         */
+        get: operations["get_trading_executions_api_trading_executions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/trading/gate": {
         parameters: {
             query?: never;
@@ -398,6 +418,16 @@ export interface components {
         /** ApiEnvelope[TradingExecutionObservationsData] */
         ApiEnvelope_TradingExecutionObservationsData_: {
             data?: components["schemas"]["TradingExecutionObservationsData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[TradingExecutionsData] */
+        ApiEnvelope_TradingExecutionsData_: {
+            data?: components["schemas"]["TradingExecutionsData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -2233,19 +2263,6 @@ export interface components {
             serve_runtime: components["schemas"]["ServeRuntimeData"];
             workers_runtime: components["schemas"]["WorkersRuntimeData"];
         };
-        /** TradingAlphaIdentityData */
-        TradingAlphaIdentityData: {
-            /** Config */
-            config?: {
-                [key: string]: string;
-            };
-            /** Config Digest */
-            config_digest: string;
-            /** Policy Id */
-            policy_id: string;
-            /** Policy Version */
-            policy_version: string;
-        };
         /** TradingCaseData */
         TradingCaseData: {
             /** Base Symbol */
@@ -2373,6 +2390,30 @@ export interface components {
             truncated: boolean;
             /** Unknown Orders Count */
             unknown_orders_count: number;
+        };
+        /**
+         * TradingExecutionCommandRowData
+         * @description One operator Command's progress, read from its `control_disposition` alone.
+         */
+        TradingExecutionCommandRowData: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "pause_entries" | "resume_entries" | "emergency_halt" | "flatten" | "manual_entry";
+            /** Command Id */
+            command_id: string;
+            /** Operator Identity */
+            operator_identity: string;
+            /** Reason */
+            reason: string;
+            /** Requested At Ns */
+            requested_at_ns: number;
+            /**
+             * Stage
+             * @enum {string}
+             */
+            stage: "recorded" | "accepted" | "rejected" | "completed" | "expired";
         };
         /** TradingExecutionObservationData */
         TradingExecutionObservationData: {
@@ -2511,6 +2552,8 @@ export interface components {
             entry_block_reason?: string | null;
             /** Execution Safe */
             execution_safe: boolean;
+            /** Facts Expire At Ms */
+            facts_expire_at_ms?: number | null;
             /** Heartbeat At Ns */
             heartbeat_at_ns?: number | null;
             /** Image Digest */
@@ -2542,6 +2585,11 @@ export interface components {
             reconciliation_age_ms?: number | null;
             /** Reconciliation Observed At Ns */
             reconciliation_observed_at_ns?: number | null;
+            /**
+             * Routes Count
+             * @default 0
+             */
+            routes_count: number;
             /** Runtime Release */
             runtime_release?: string | null;
             /** Runtime Revision */
@@ -2556,6 +2604,65 @@ export interface components {
              * @default false
              */
             unexpected_exposure: boolean;
+        };
+        /**
+         * TradingExecutionRowData
+         * @description One Signal's whole execution, folded from its own observations (#528 PR-1).
+         */
+        TradingExecutionRowData: {
+            /** Case Id */
+            case_id: string;
+            /**
+             * Direction
+             * @enum {string}
+             */
+            direction: "long" | "short";
+            /** Disposition */
+            disposition?: ("accepted" | "rejected") | null;
+            /** Disposition Reason */
+            disposition_reason?: string | null;
+            /** Exit Price */
+            exit_price?: string | null;
+            /** Exit Reason */
+            exit_reason?: ("stop_filled" | "flatten" | "unclaimed_flatten") | null;
+            /** Fill Avg Price */
+            fill_avg_price?: string | null;
+            /** Fill Quantity */
+            fill_quantity?: string | null;
+            /** Last Observed At Ns */
+            last_observed_at_ns: number;
+            /** Market Key */
+            market_key: string;
+            /** Observed At Ns */
+            observed_at_ns: number;
+            /** Order Status */
+            order_status?: string | null;
+            /** Position Status */
+            position_status?: string | null;
+            /** Realized Pnl Usd */
+            realized_pnl_usd?: string | null;
+            /** Signal Id */
+            signal_id: string;
+            /**
+             * Stage
+             * @enum {string}
+             */
+            stage: "pending" | "rejected" | "expired" | "ordered" | "filled" | "protected" | "closed";
+            /** Stop Trigger Price */
+            stop_trigger_price?: string | null;
+        };
+        /** TradingExecutionsData */
+        TradingExecutionsData: {
+            /** Commands */
+            commands?: components["schemas"]["TradingExecutionCommandRowData"][];
+            /** Complete */
+            complete: boolean;
+            /** Executions */
+            executions?: components["schemas"]["TradingExecutionRowData"][];
+            /** Measured At Ms */
+            measured_at_ms: number;
+            /** Window Hours */
+            window_hours: number;
         };
         /** TradingGateConfigData */
         TradingGateConfigData: {
@@ -2790,35 +2897,15 @@ export interface components {
         /** TradingRuntimeCountsData */
         TradingRuntimeCountsData: {
             /**
-             * Blocked 24H
-             * @default 0
-             */
-            blocked_24h: number;
-            /**
              * Cases 24H
              * @default 0
              */
             cases_24h: number;
             /**
-             * Cases Open
-             * @default 0
-             */
-            cases_open: number;
-            /**
-             * No Trade 24H
-             * @default 0
-             */
-            no_trade_24h: number;
-            /**
              * Signals 24H
              * @default 0
              */
             signals_24h: number;
-            /**
-             * Signals Unexpired
-             * @default 0
-             */
-            signals_unexpired: number;
         };
         /** TradingSignalData */
         TradingSignalData: {
@@ -2861,7 +2948,6 @@ export interface components {
         };
         /** TradingStatusData */
         TradingStatusData: {
-            alpha: components["schemas"]["TradingAlphaIdentityData"];
             counts: components["schemas"]["TradingRuntimeCountsData"];
             decision: components["schemas"]["TradingDecisionRuntimeData"];
             execution: components["schemas"]["TradingExecutionReadinessData"];
@@ -3251,6 +3337,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_trading_executions_api_trading_executions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_TradingExecutionsData_"];
                 };
             };
         };

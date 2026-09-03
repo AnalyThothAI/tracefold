@@ -41,9 +41,8 @@ from tracefold.integrations.nautilus.oi_runtime.signal_client import (
 )
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.integrations.nautilus.oi_runtime.state import RuntimeControlSnapshot, deterministic_client_order_id
-from tracefold.integrations.telegram_control import TelegramControlWebhook
 from tracefold.platform.config.models import Settings
-from tracefold.trading import ExecutionObservationV1
+from tracefold.trading import ExecutionObservationV1, parse_operator_command, prepare_parsed_operator_intent
 from tracefold.trading.storage.execution_stream import (
     ExecutionRuntimeState,
     PreparedOperatorIntent,
@@ -916,39 +915,26 @@ def test_replayed_database_signal_reaches_one_economic_entry_in_pinned_nautilus_
     assert len(active_protections) == 1
 
 
-def test_authenticated_webhook_to_postgres_to_nautilus_command_observation_process_seam(
+def test_authenticated_cli_to_postgres_to_nautilus_command_observation_process_seam(
     postgres_clone_dsn: str,
 ) -> None:
-    webhook = TelegramControlWebhook(
-        webhook_secret="test-webhook-secret-433d",
-        bot_id=1234567,
-        allowed_chat_ids=frozenset({-433}),
-        allowed_user_ids=frozenset({433}),
+    """`tracefold trading issue` is the one manual ingress since #528 deleted the Telegram webhook."""
+
+    prepared = prepare_parsed_operator_intent(
+        parse_operator_command("/pause process-seam"),
+        source="cli:uid:0:host:process-seam",
+        source_command_id="00000000-0000-4000-8000-000000000433",
         account_slot=_ACCOUNT_SLOT,
+        operator_identity="local-cli:0",
+        authentication_identity="local-os-uid:0",
+        requested_at_ns=NOW_NS,
     )
-    parsed = webhook.parse(
-        headers={"X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret-433d"},
-        body=json.dumps(
-            {
-                "update_id": 433_004,
-                "message": {
-                    "message_id": 4,
-                    "date": NOW_NS // 1_000_000_000,
-                    "chat": {"id": -433},
-                    "from": {"id": 433},
-                    "text": "/pause process-seam",
-                },
-            }
-        ).encode(),
-        received_at_ns=NOW_NS,
-    )
-    assert parsed.intent is not None
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)
         _control_row(repo)
         with conn.transaction():
-            receipt = persist_operator_intent(repo, parsed.intent)
+            receipt = persist_operator_intent(repo, prepared)
         assert receipt.disposition == "awaiting_runtime"
     finally:
         conn.close()
@@ -994,7 +980,7 @@ def test_authenticated_webhook_to_postgres_to_nautilus_command_observation_proce
               FROM trading_execution_observations
              WHERE command_id = %s
             """,
-            (parsed.intent.value.command_id,),
+            (prepared.value.command_id,),
         ).fetchone()
         assert row == {
             "normalized_kind": "control_disposition",
@@ -1183,6 +1169,21 @@ def test_position_without_durable_entry_facts_halts_and_flatten_account_closes_i
         assert [row["summary"]["leg"] for row in rows] == ["unclaimed_flatten"]
         assert rows[0]["summary"]["side"] == "long"
         assert rows[0]["summary"]["quantity"] == "0.049"
+        # #528 A. The close of exposure this Runtime does not own is still a position fact, under the
+        # Command that asked for it; without it a `/flatten account` left no record of what it closed.
+        closed = verify.execute(
+            """
+            SELECT command_id, summary
+              FROM trading_execution_observations
+             WHERE account_slot = 'binance_usdm_primary'
+               AND normalized_kind = 'position'
+            """
+        ).fetchall()
+        assert [row["summary"]["exit_reason"] for row in closed] == ["unclaimed_flatten"]
+        assert closed[0]["summary"]["status"] == "closed"
+        assert closed[0]["summary"]["quantity"] == "0.049"
+        assert closed[0]["summary"]["exit_price"] is not None
+        assert closed[0]["command_id"] == "b" * 64
     finally:
         verify.close()
 

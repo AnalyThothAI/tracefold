@@ -148,21 +148,16 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
 
 
 def test_trading_status_aggregates_bound_input_before_filtering() -> None:
+    """#528 dropped the four unrendered counts, and with them the unbounded `OR` arm each needed."""
+
     queries = {query.name: query for query in query_audit_catalog(now_ms=123_456).queries}
     case_query = queries["trading_status_case_counts"]
     signal_query = queries["trading_status_signal_counts"]
 
-    assert re.search(
-        r"WHERE\s+created_at_ms\s*>=\s*%\(since\)s\s+OR\s+state\s+IN",
-        case_query.sql,
-        re.IGNORECASE,
-    )
-    assert re.search(
-        r"WHERE\s+observed_at_ns\s*>=\s*%\(since\)s\s+OR\s+expires_at_ns\s*>\s*%\(now\)s",
-        signal_query.sql,
-        re.IGNORECASE,
-    )
-    assert signal_query.params == {"since": -86_276_544_000_000, "now": 123_456_000_000}
+    assert re.search(r"WHERE\s+created_at_ms\s*>=\s*%\(since\)s\s*$", case_query.sql.strip(), re.IGNORECASE)
+    assert re.search(r"WHERE\s+observed_at_ns\s*>=\s*%\(since\)s\s*$", signal_query.sql.strip(), re.IGNORECASE)
+    assert case_query.params == {"since": -86_276_544}
+    assert signal_query.params == {"since": -86_276_544_000_000}
 
 
 def test_default_news_query_specs_cover_every_news_route_query():

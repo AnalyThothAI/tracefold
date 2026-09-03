@@ -6,10 +6,6 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from tracefold.app.workers.trading_notifications import (
-    TRADING_NOTIFICATION_TASK_NAME,
-    TradingNotificationWorker,
-)
 from tracefold.app.workers.wiring.trading import (
     SIGNAL_LANE_TASK_NAME,
     run_signal_lane,
@@ -29,7 +25,6 @@ def worker_business_runners(
     news_pipeline: NewsPipeline | None,
     signal_lane: SignalLane | None,
     telemetry: Any | None = None,
-    trading_notifications: TradingNotificationWorker | None = None,
 ) -> tuple[WorkerRunner, ...]:
     """Return the ordered task declarations consumed by the Workers root.
 
@@ -48,6 +43,4 @@ def worker_business_runners(
                 lambda stop: run_signal_lane(lane, stop_event=stop, telemetry=telemetry),
             )
         )
-    if trading_notifications is not None:
-        runners.append((TRADING_NOTIFICATION_TASK_NAME, trading_notifications.run))
     return tuple(runners)

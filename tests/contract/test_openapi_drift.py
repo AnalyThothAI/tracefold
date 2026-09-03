@@ -71,6 +71,9 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
         "/api/trading/signals",
         "/api/trading/execution/observations",
         "/api/trading/execution/commands",
+        # #528 PR-1: the desk table. One row per Signal folded from those same observations, plus the
+        # Command rows beside it; it appends nothing and adds no aggregate.
+        "/api/trading/executions",
         # The admission ledger for a window of frames at once, and one Source at a time.
         "/api/trading/gate",
         "/api/trading/gate/{event_id}",
@@ -82,6 +85,7 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
         "/api/trading/cases",
         "/api/trading/signals",
         "/api/trading/execution/observations",
+        "/api/trading/executions",
         "/api/trading/gate",
         "/api/trading/gate/{event_id}",
     ):

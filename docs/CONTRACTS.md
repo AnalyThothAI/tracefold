@@ -248,11 +248,11 @@ delivery consumer settles `terminal/delivery_unavailable`.
   is also the namespace every deterministic client order id is derived from;
 - `execution.credentials.api_key_file` / `api_secret_file`, operator-owned
   Binance USD-M secret references;
-- `control.enabled`, default `false`; when true it requires secure
-  `telegram_bot_token_file` and `telegram_webhook_secret_file` references,
-  non-empty sorted unique `allowed_chat_ids` and `allowed_user_ids`, and a
-  `notification_chat_id` present in the chat allowlist. Config diagnostics
-  publish only resolved paths, counts, and configured booleans.
+
+`trading` has no `control` or `notifications` block: #528 deleted the Telegram
+command ingress and both never-run notification senders, and a config that still
+carries either block now fails strict validation. Config diagnostics publish
+only resolved paths and configured booleans.
 
 Secret-file paths are resolved relative to the operator config directory
 unless absolute. Config and status may report only the resolved path or whether
@@ -284,31 +284,27 @@ creates no Signal. The Signal is venue-neutral and carries no execution
 authority. The retired binding, Capital, capability, catalog, Intent, order,
 replay and evidence-clock tables were dropped by `20260901_0347`; execution
 writes only `trading_operator_intents`, append-only
-`trading_execution_observations`, the `0342` append-only notification delivery
-ledger, the slot-keyed current control projection, and the generation-fenced
-`0343` current Runtime projection. `20260903_0356` dropped the profile
+`trading_execution_observations`, the slot-keyed current control projection, and
+the generation-fenced `0343` current Runtime projection. `20260903_0359` dropped
+the `0342` notification delivery ledger and the partial observation index that
+fed it: the channel was never assembled in production and the ledger held zero
+rows. `20260903_0356` dropped the profile
 activation ledger and the Decision Plane heartbeat with it, and renamed both
 execution identity columns to `account_slot`; `20260903_0357` dropped every
 JSON-shape CHECK on those tables, the four `trading_*` functions behind them,
 and the `payload_digest`, `alpha_contract_sha256`, `evidence_sha256` and
 `confirmation_identity` columns, leaving the Pydantic contract as the only
 validator of an execution fact's shape; #520 PR-B then dropped
-`confirmation_identity` from that contract with the `CONFIRM` token itself. One delivery row per `(target, observation)` carries `delivered_at_ns`
-and, for a Signal card, `result_delivered_at_ns`: the second message that reports
-the 1 h/4 h outcome. `message_id` is present only on a channel that can address a
-sent message again; the deployed Feishu webhook cannot, so it is `NULL` there. The
-notifiable predicate reads the summary keys the Runtime writes — `account_flat` for
-reconciliation, `lifecycle` or `control_stage` for readiness — after #472 found it
-asking `reconciliation` for a `state` key no writer has ever produced, which left the
-delivery ledger empty for the life of the feature.
+`confirmation_identity` from that contract with the `CONFIRM` token itself.
 
-`trading.notifications` has two keys: `enabled` (false) and `channel`
-(`feishu` | `telegram`, default `feishu`). It is deliberately separate from
-`trading.control` — until #458 the notifier was assembled only inside the Telegram
-command ingress, so being *told* what the Signal lane decided required standing up
-an authenticated *command* channel first. `feishu` reuses the `news.push` webhook
-target at the composition seam; the News sender and the Trading notifier never
-import each other and share only the HTTP transport.
+A `position` observation's summary is `{status, quantity, avg_entry_price,
+exit_price, realized_pnl_usd, exit_reason}`, every value the string of its
+Decimal and each key present only once the fact exists. On `closed`, `quantity`
+is what was open immediately before the close, `exit_price` and
+`realized_pnl_usd` are Nautilus `PositionClosed.avg_px_close` / `realized_pnl`,
+and `exit_reason` is `stop_filled | flatten | unclaimed_flatten` — which of the
+Runtime's three exits took the position off the venue. A `protection` summary
+carries `trigger_price` beside `explicit_quantity`.
 
 All database consumers use `storage.postgres.dsn` and `password_file`. Process
 identity is the connection's stable `application_name`; Serve's HTTP pool is
@@ -386,7 +382,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
 | News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, four-layer status, bounded quotes, and one symbol's identity |
-| Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/signals`, `/api/trading/execution/observations`, `/api/trading/execution/commands`, `/api/trading/gate`, `/api/trading/gate/{event_id}` | one owner per durable aggregate: Alpha and current execution/account readiness, frozen Case decisions, engine-neutral Signals, append-only Runtime Observations, authenticated operator intents, and the Source-admission ledger. GET reads all aggregates; the same commands path has the sole bounded POST append |
+| Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/signals`, `/api/trading/execution/observations`, `/api/trading/execution/commands`, `/api/trading/executions`, `/api/trading/gate`, `/api/trading/gate/{event_id}` | one owner per durable aggregate: Alpha and current execution/account readiness, frozen Case decisions, engine-neutral Signals, append-only Runtime Observations, authenticated operator intents, and the Source-admission ledger. GET reads all aggregates; the same commands path has the sole bounded POST append |
 
 The public API is exactly these routes plus `/healthz`, `/readyz`, and
 `/metrics`. The retired GMGN-lane routes (`/ws`, `/api/recent`,
@@ -994,7 +990,7 @@ A database on that retired chain must be restored with its exact pre-#449
 image/source, advanced to the old terminal head, and cut over before current
 source is used. A fresh database applies baseline `20260831_0340`, the
 `20260901_0341` Signal hard cut, and every revision after it up to current head
-`20260903_0355`; `0342` adds the Trading notification delivery ledger,
+`20260903_0359`; `0342` adds the Trading notification delivery ledger,
 `0343` adds the current execution Runtime projection and recovery indexes, and
 destructive `0344` restates the `news_verdicts` judgment CHECK for the News
 open-interest push cut, dropping `news_oi_signals.rank_in_window` and every
@@ -1023,7 +1019,9 @@ the Case state and admission status/stage CHECKs to the values a writer can
 reach, refusing to run while a stored row still holds a retired one; destructive
 `0356` makes `account_slot` the execution identity; and destructive `0357`
 deletes the JSON-shape CHECKs, their four functions, the unread digests and the
-five readiness booleans. The exact
+five readiness booleans; destructive `0359` drops the `0342` notification
+delivery ledger and the partial observation index that fed it, neither of which
+a production writer ever reached. The exact
 News base-table set plus four security-barrier review views is asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
 perform no provider, broker, model, or outbound call and have no compatibility
@@ -1078,9 +1076,11 @@ reader/writer.
 Alpha evidence, a Signal carries the engine-neutral handoff, Observations carry
 Runtime facts, and status carries readiness plus bounded totals.
 
-- `GET /api/trading/status` — `decision`, `alpha`, `execution`, and `counts`.
-  Decision exposes state/heartbeat/reason; Alpha exposes the current frozen
-  policy identity and content digest; execution exposes mode/profile/account,
+- `GET /api/trading/status` — `decision`, `execution`, and `counts`. #528
+  deleted the `alpha` block: the frozen policy identity, version, digest and
+  config are on every Case row that was decided under them, which is where a
+  reader can act on them. Decision exposes state/heartbeat/reason;
+  execution exposes mode/profile/account,
   exact Runtime/revision/image/config identity, independent `alive`,
   `execution_safe`, and `entries_armed` facts, `entry_block_reason`, control,
   audit/day-start gates, position/open-order counts, protection status, flatness,
@@ -1093,10 +1093,15 @@ Runtime facts, and status carries readiness plus bounded totals.
   reconciliation to remain inside its 10-second freshness budget; empty or
   partial `current_account` rows never prove flat. Nautilus `/readyz` means
   `alive && execution_safe`; it remains green when only new entries are paused
-  or otherwise blocked. Serve reads no secret file and constructs
-  no provider client. Counts are bounded durable
-  Case/Signal aggregations: input rows are the 24-hour window plus exceptional
-  older open Cases or unexpired Signals, backed by their time/state indexes.
+  or otherwise blocked. `routes_count` is how many `market_key`s this Runtime
+  generation can reach, and `facts_expire_at_ms` is the instant this projection
+  stops being current — the earlier of the heartbeat and private-reconciliation
+  freshness budgets — so a reader compares one instant against its own clock
+  instead of running a timer per rule. Serve reads no secret file and constructs
+  no provider client. `counts` is exactly `cases_24h` and `signals_24h`, each a
+  bounded 24-hour aggregation on its own time index; #528 deleted
+  `no_trade_24h`, `blocked_24h`, `cases_open` and `signals_unexpired`, which no
+  surface rendered and which each cost the read an unbounded `OR` arm.
 - `GET /api/trading/cases?underlying={base|crypto:BASE}&state={open|no_trade|blocked|emitted}`
   — the Case/Decision aggregate. Each Case carries its raw `state`, its terminal
   `policy_decision` / `policy_reason`, the frozen `policy_config` and
@@ -1112,6 +1117,22 @@ Runtime facts, and status carries readiness plus bounded totals.
   appends nothing (#510). Flatness is proven only by `account_flat` on the
   current `GET /api/trading/status` execution projection, inside its
   `reconciliation_age_ms` freshness budget.
+- `GET /api/trading/executions` — the desk table (#528 PR-1). One row per
+  `TradeSignalV1` in a bounded 24-hour window, folded from that Signal's own
+  `signal_disposition`, `order`, `fill`, `protection` and `position`
+  observations: `signal_id`, `case_id`, `market_key`, `direction`,
+  `observed_at_ns`, `disposition` (`accepted | rejected`) and its raw
+  `disposition_reason`, entry `order_status`, `fill_quantity`, `fill_avg_price`,
+  `stop_trigger_price`, `position_status`, `exit_price`, `realized_pnl_usd`,
+  `exit_reason`, `last_observed_at_ns`, and a backend-derived
+  `stage ∈ {pending, rejected, expired, ordered, filled, protected, closed}`.
+  The same response carries `commands[]`, one row per operator Command in the
+  same window with `stage ∈ {recorded, accepted, rejected, completed, expired}`
+  read from its `control_disposition` alone — `completed` only on a flatten
+  whose disposition reason is `binance_account_flat`. No venue observation is
+  attached to a Command: a flatten converges the whole account slot, so the
+  orders it produces belong to the exposure, not to the Command. Bounded to 100
+  Signal rows with a `complete` flag and no cursor.
 - `GET /api/trading/execution/commands?profile={profile}&action={action}` —
   authenticated `OperatorIntentV1` facts, expiry, confirmation presence, and
   any final disposition, newest first with opaque pagination. It never returns

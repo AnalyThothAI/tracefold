@@ -554,88 +554,6 @@ class TradingExecutionSettings(BaseModel):
         return value
 
 
-class TradingNotificationSettings(BaseModel):
-    """Where durable execution observations are read out to a human (#458 PR-B).
-
-    Separate from `trading.control` on purpose. Until #458 the notifier was assembled only inside the
-    Telegram *control* ingress, so an operator who wanted to be told what the Signal lane decided had
-    to stand up an authenticated command channel first -- and in production nobody had, which is why
-    the notification worker had never run at all.
-
-    `feishu` reuses the `news.push` webhook target rather than asking for a second one: the two
-    capabilities share the HTTP transport at the composition seam and nothing else. It cannot edit a
-    sent message, so a Signal's four-hour outcome arrives as a second message; `telegram` reuses
-    `trading.control`'s bot token and `notification_chat_id`.
-    """
-
-    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
-
-    enabled: bool = False
-    channel: Literal["feishu", "telegram"] = "feishu"
-
-
-class TradingControlSettings(BaseModel):
-    """Workers-owned authenticated operator ingress and observation notification target."""
-
-    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
-
-    enabled: bool = False
-    telegram_bot_token_file: str | None = "telegram_bot_token"
-    telegram_webhook_secret_file: str | None = "telegram_webhook_secret"
-    allowed_chat_ids: tuple[int, ...] = ()
-    allowed_user_ids: tuple[int, ...] = ()
-    notification_chat_id: int | None = None
-
-    @field_validator(
-        "telegram_bot_token_file",
-        "telegram_webhook_secret_file",
-        mode="before",
-    )
-    @classmethod
-    def parse_optional_secret_path(cls, value: Any) -> str | None:
-        if value is None:
-            return None
-        normalized = str(value).strip()
-        return normalized or None
-
-    @field_validator("allowed_chat_ids", "allowed_user_ids", mode="before")
-    @classmethod
-    def parse_allowlist(cls, value: Any) -> tuple[int, ...]:
-        if value is None:
-            return ()
-        if not isinstance(value, list | tuple):
-            raise ValueError("trading_control_allowlist_invalid")
-        parsed: list[int] = []
-        for item in value:
-            if isinstance(item, bool) or not isinstance(item, int) or item == 0:
-                raise ValueError("trading_control_allowlist_invalid")
-            parsed.append(item)
-        if len(parsed) != len(set(parsed)) or tuple(parsed) != tuple(sorted(parsed)):
-            raise ValueError("trading_control_allowlist_invalid")
-        return tuple(parsed)
-
-    @field_validator("notification_chat_id", mode="before")
-    @classmethod
-    def parse_notification_chat_id(cls, value: Any) -> int | None:
-        if value is None or value == "":
-            return None
-        if isinstance(value, bool) or not isinstance(value, int) or value == 0:
-            raise ValueError("trading_control_notification_chat_invalid")
-        return int(value)
-
-    @model_validator(mode="after")
-    def require_complete_enabled_boundary(self) -> TradingControlSettings:
-        if not self.enabled:
-            return self
-        if not self.telegram_bot_token_file or not self.telegram_webhook_secret_file:
-            raise ValueError("trading_control_secret_reference_missing")
-        if not self.allowed_chat_ids or not self.allowed_user_ids:
-            raise ValueError("trading_control_allowlist_empty")
-        if self.notification_chat_id is None or self.notification_chat_id not in self.allowed_chat_ids:
-            raise ValueError("trading_control_notification_chat_invalid")
-        return self
-
-
 class TradingSettings(BaseModel):
     """Alpha producer plus one cold Binance USD-M Runtime profile (#433)."""
 
@@ -644,8 +562,6 @@ class TradingSettings(BaseModel):
     enabled: bool = False
     candidates: TradingCandidateSettings = Field(default_factory=TradingCandidateSettings)
     execution: TradingExecutionSettings = Field(default_factory=TradingExecutionSettings)
-    control: TradingControlSettings = Field(default_factory=TradingControlSettings)
-    notifications: TradingNotificationSettings = Field(default_factory=TradingNotificationSettings)
 
 
 class Settings(BaseModel):
@@ -684,12 +600,6 @@ class Settings(BaseModel):
 
     def trading_binance_usdm_api_secret_file(self) -> Path | None:
         return self._configured_path(self.trading.execution.credentials.api_secret_file)
-
-    def trading_telegram_bot_token_file(self) -> Path | None:
-        return self._configured_path(self.trading.control.telegram_bot_token_file)
-
-    def trading_telegram_webhook_secret_file(self) -> Path | None:
-        return self._configured_path(self.trading.control.telegram_webhook_secret_file)
 
     def _configured_path(self, value: str | None) -> Path | None:
         if not value:

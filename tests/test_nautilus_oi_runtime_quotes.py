@@ -151,6 +151,9 @@ def test_a_closed_position_gives_the_quote_stream_back() -> None:
             strategy_id=context.strategy.id,
             position_id=position_id,
             quantity=context.instrument.make_qty(Decimal(0)),
+            avg_px_close=9_900.0,
+            realized_pnl=Decimal("-4.9"),
+            peak_qty=context.instrument.make_qty(Decimal("0.049")),
             ts_closed=NOW_NS + 3,
         )
     )

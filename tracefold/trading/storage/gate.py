@@ -300,15 +300,15 @@ class CandidateGateStorage:
         The counts a lane reports are otherwise keyed on a case existing, which is exactly what a lane
         that froze none has none of. This is the part that survives that, and a question about
         yesterday still has evidence.
+
+        One window. The seven-day aggregate beside it doubled the scan for two keys no surface has
+        ever rendered (#528).
         """
 
         window_24h = self.gate_decision_counts(since_ms=int(now_ms) - 86_400_000, trigger_kind=trigger_kind)
-        window_7d = self.gate_decision_counts(since_ms=int(now_ms) - 7 * 86_400_000, trigger_kind=trigger_kind)
         return {
             "candidate_counts_24h": window_24h["status"],
-            "candidate_counts_7d": window_7d["status"],
             "candidate_reasons_24h": window_24h["reasons"],
-            "candidate_reasons_7d": window_7d["reasons"],
             **self.latest_gate_milestones(trigger_kind=trigger_kind),
         }
 

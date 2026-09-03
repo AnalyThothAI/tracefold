@@ -18,26 +18,9 @@ export const ALPHA_POLICY_ID = "source_native_oi_smart_money_long_v4";
 
 export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): TradingStatus {
   return {
-    alpha: {
-      config: {
-        max_price_move_bps: "1000",
-        measurement_window_ms: "300000",
-        min_oi_change_bps: "500",
-        min_price_move_bps: "0",
-        min_whale_long_profit_bps: "0",
-        min_whale_oi_ratio_bps: "5000",
-      },
-      config_digest: "a".repeat(64),
-      policy_id: ALPHA_POLICY_ID,
-      policy_version: ALPHA_POLICY_ID,
-    },
     counts: {
-      blocked_24h: 1,
       cases_24h: 7,
-      cases_open: 0,
-      no_trade_24h: 5,
       signals_24h: 1,
-      signals_unexpired: 1,
     },
     decision: {
       last_case_at_ms: TRADING_NOW_MS - 1_000,
@@ -56,6 +39,7 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
       open_orders_count: 0,
       positions_count: 0,
       protection_status: "unknown",
+      routes_count: 0,
       startup_reconciled: false,
       unexpected_exposure: false,
     },

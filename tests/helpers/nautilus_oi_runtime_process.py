@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import replace
 from decimal import Decimal
 from functools import partial
+from typing import Any
 
 import psycopg
 from nautilus_trader.backtest.config import BacktestEngineConfig
@@ -51,11 +53,24 @@ _COLD_ENTRY_PRICE = Decimal(10_000)
 class _CountingOiStrategy(OiNautilusStrategy):
     """Count what the Runtime asks the venue to stream, before and after #510 PR-5b."""
 
-    def __init__(self, **kwargs: object) -> None:
+    def __init__(self, *, on_position_opened_hook: Callable[[], None] | None = None, **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self.quote_subscribe_calls = 0
         self.quote_unsubscribe_calls = 0
         self.peak_quote_subscriptions = 0
+        self._on_position_opened_hook = on_position_opened_hook
+
+    def on_position_opened(self, event: object) -> None:
+        """`flatten_owned` needs the Command to arrive *after* the entry, as an operator's does.
+
+        A flatten routed before the Signal pauses entries, so the position the exit is supposed to
+        close would never open. The hook polls the same durable Command read the bridge polls.
+        """
+
+        super().on_position_opened(event)
+        hook, self._on_position_opened_hook = self._on_position_opened_hook, None
+        if hook is not None:
+            hook()
 
     def subscribe_quote_ticks(self, instrument_id: object, *args: object, **kwargs: object) -> None:
         self.quote_subscribe_calls += 1
@@ -138,7 +153,16 @@ def _seed_cold_cache(
 def main() -> None:
     dsn = sys.argv[1]
     mode = sys.argv[2] if len(sys.argv) > 2 else "signal"
-    if mode not in {"command", "signal", "signal_replay", "cold_recovery", "cold_unclaimed", "rolling_restart"}:
+    if mode not in {
+        "command",
+        "signal",
+        "signal_replay",
+        "cold_recovery",
+        "cold_unclaimed",
+        "rolling_restart",
+        "stop_filled",
+        "flatten_owned",
+    }:
         raise ValueError("nautilus_process_fixture_mode_invalid")
     conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
     try:
@@ -149,7 +173,16 @@ def main() -> None:
         repos = repositories_for_connection(conn)
         admitted = (
             signals.poll_once(partial(load_unresolved_trade_signals, repos))
-            if mode in {"signal", "signal_replay", "cold_recovery", "cold_unclaimed", "rolling_restart"}
+            if mode
+            in {
+                "signal",
+                "signal_replay",
+                "cold_recovery",
+                "cold_unclaimed",
+                "rolling_restart",
+                "stop_filled",
+                "flatten_owned",
+            }
             else 0
         )
         replay_admitted = (
@@ -171,7 +204,9 @@ def main() -> None:
         factory = ObservationFactory(profile.account_slot, profile.runtime_release, "oi_nautilus_v1")
         audit = AuditSink(factory=factory)
         readiness = RuntimeReadiness(reconciliation_stale_after_ns=profile.risk.reconciliation_stale_after_ns)
+        poll_commands = partial(signals.poll_commands_once, partial(load_unresolved_operator_intents, repos))
         strategy = _CountingOiStrategy(
+            on_position_opened_hook=poll_commands if mode == "flatten_owned" else None,
             profile=profile,
             signals=signals,
             audit=audit,
@@ -200,24 +235,54 @@ def main() -> None:
             default_leverage=Decimal(2),
         )
         engine.add_instrument(instrument)
-        engine.add_data(
-            [
+        tape: list[Any] = [
+            TestDataStubs.quote_tick(
+                instrument=instrument,
+                bid_price=9_999,
+                ask_price=10_000,
+                ts_event=NOW_NS,
+                ts_init=NOW_NS,
+            ),
+            TestDataStubs.quote_tick(
+                instrument=instrument,
+                bid_price=9_999,
+                ask_price=10_000,
+                ts_event=NOW_NS + 200_000_000,
+                ts_init=NOW_NS + 200_000_000,
+            ),
+        ]
+        if mode == "stop_filled":
+            # The route's stop is 200 bps under a ~10 000 entry, so 9 700 is through it. `LAST_PRICE`
+            # is what the Runtime arms the stop with, and only a trade print carries a last price.
+            tape.append(
+                TestDataStubs.trade_tick(
+                    instrument=instrument,
+                    price=9_700,
+                    size=1,
+                    ts_event=NOW_NS + 300_000_000,
+                    ts_init=NOW_NS + 300_000_000,
+                )
+            )
+            tape.append(
+                TestDataStubs.quote_tick(
+                    instrument=instrument,
+                    bid_price=9_699,
+                    ask_price=9_700,
+                    ts_event=NOW_NS + 400_000_000,
+                    ts_init=NOW_NS + 400_000_000,
+                )
+            )
+        if mode == "flatten_owned":
+            tape.append(
                 TestDataStubs.quote_tick(
                     instrument=instrument,
                     bid_price=9_999,
                     ask_price=10_000,
-                    ts_event=NOW_NS,
-                    ts_init=NOW_NS,
-                ),
-                TestDataStubs.quote_tick(
-                    instrument=instrument,
-                    bid_price=9_999,
-                    ask_price=10_000,
-                    ts_event=NOW_NS + 200_000_000,
-                    ts_init=NOW_NS + 200_000_000,
-                ),
-            ]
-        )
+                    ts_event=NOW_NS + 400_000_000,
+                    ts_init=NOW_NS + 400_000_000,
+                )
+            )
+        engine.add_data(tape)
         engine.add_strategy(strategy)
         if mode in {"cold_recovery", "cold_unclaimed", "rolling_restart"}:
             recovery_signals, recovery_manual_entries = load_recovery_inputs(repos, profile.account_slot, NOW_NS)

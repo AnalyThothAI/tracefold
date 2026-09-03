@@ -34,7 +34,6 @@ def handle_init(args: Namespace) -> tuple[int, dict[str, Any]]:
     password_path = _ensure_postgres_password_file(path.parent)
     bootstrap_password_path = _ensure_bootstrap_postgres_password_file(path.parent)
     telegram_bot_token_path = _ensure_optional_secret_file(path.parent / "telegram_bot_token")
-    telegram_webhook_secret_path = _ensure_optional_secret_file(path.parent / "telegram_webhook_secret")
     trading_execution_secret_paths = {
         name: _ensure_optional_secret_file(path.parent / name)
         for name in ("binance_usdm_api_key", "binance_usdm_api_secret")
@@ -49,7 +48,6 @@ def handle_init(args: Namespace) -> tuple[int, dict[str, Any]]:
                 "postgres_database_password_file": str(password_path),
                 "postgres_bootstrap_password_file": str(bootstrap_password_path),
                 "telegram_bot_token_file": str(telegram_bot_token_path),
-                "telegram_webhook_secret_file": str(telegram_webhook_secret_path),
                 "trading_execution_secret_files": {
                     name: str(secret_path) for name, secret_path in trading_execution_secret_paths.items()
                 },
@@ -68,8 +66,6 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
     model_availability = news_model_availability(settings)
     binance_key_file = settings.trading_binance_usdm_api_key_file()
     binance_secret_file = settings.trading_binance_usdm_api_secret_file()
-    trading_bot_token_file = settings.trading_telegram_bot_token_file()
-    trading_webhook_secret_file = settings.trading_telegram_webhook_secret_file()
     return (
         0,
         {
@@ -130,18 +126,6 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                 },
                 "trading": {
                     "enabled": settings.trading.enabled,
-                    "control": {
-                        "enabled": settings.trading.control.enabled,
-                        "telegram_bot_token_file": (
-                            None if trading_bot_token_file is None else str(trading_bot_token_file)
-                        ),
-                        "telegram_webhook_secret_file": (
-                            None if trading_webhook_secret_file is None else str(trading_webhook_secret_file)
-                        ),
-                        "allowed_chat_count": len(settings.trading.control.allowed_chat_ids),
-                        "allowed_user_count": len(settings.trading.control.allowed_user_ids),
-                        "notification_chat_configured": settings.trading.control.notification_chat_id is not None,
-                    },
                     "execution": {
                         "mode": settings.trading.execution.mode,
                         "account_slot": settings.trading.execution.account_slot,

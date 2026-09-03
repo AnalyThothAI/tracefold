@@ -38,7 +38,7 @@ RESEARCH = {
 }
 EXECUTION_PATH = {
     "trading/execution_contracts.py",
-    "trading/notification_policy.py",
+    "trading/stages.py",
     "trading/operator_control.py",
     "trading/storage/execution_stream.py",
 }
@@ -51,8 +51,7 @@ WRITE_SQL_TABLE_RE = re.compile(r"\b(?:DELETE\s+FROM|INSERT\s+INTO|UPDATE)\s+(?P
 SQL_TABLE_RE = re.compile(r"\b(?:DELETE\s+FROM|INSERT\s+INTO|FROM|JOIN|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)", re.I)
 _SQL_KEYWORDS = {
     "batch",
-    "candidate",
-    "delivered",
+    "folded",
     "identity_guard",
     "inserted",
     "jsonb_array_elements",
@@ -62,6 +61,7 @@ _SQL_KEYWORDS = {
     "offered",
     "select",
     "set",
+    "signal_window",
     "skip",
     "unnest",
     "values",
@@ -263,6 +263,8 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
     from tracefold import trading
 
     assert trading.__all__ == [
+        # The read-model stage vocabulary #528 PR-1 derives once for `/api/trading/executions`.
+        "ACCEPTED_ENTRY_DISPOSITIONS",
         "EXECUTION_STRATEGY_ID",
         # The identity shapes and the durable append bounds every Trading fact is checked against.
         # The Runtime reads them from here instead of re-typing its own copies (#510 E).
@@ -274,10 +276,12 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
         "AlphaDecision",
         "Bar",
         "CaseState",
+        "CommandStage",
         "ExecutionAccountOrder",
         "ExecutionAccountPosition",
         "ExecutionAccountSnapshot",
         "ExecutionObservationV1",
+        "ExecutionStage",
         "OiTradeCandidate",
         "OperatorCommandError",
         "OperatorIntentV1",
@@ -286,10 +290,13 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
         "TradeSignalV1",
         "TradingCaseManifest",
         "canonical_sha256",
+        "command_stage",
+        "execution_stage",
         "parse_operator_command",
         "postgres_text_valid",
         "prepare_execution_observations",
         "prepare_parsed_operator_intent",
+        "signal_disposition",
     ]
     assert "TradingRepository" not in trading.__dict__
     assert "CapitalLane" not in trading.__dict__

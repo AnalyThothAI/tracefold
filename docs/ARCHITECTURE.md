@@ -154,7 +154,7 @@ evidence rather than executable configuration.
 | US reference instruments | News Market Review | `latest_state` | Nasdaq Trader symbol directories | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | reference rows in `news_market_instruments`; non-crypto classification only |
 | Event Reaction | News Market Review | `derived_work` | persisted Events plus venue candle history | PostgreSQL planner + REST | `news-reactions`; 60 s and bounded immediate catch-up | versioned `news_event_reactions`; review projections |
 | Trading Signal lane | Trading | `derived_work` | one public News OI projection and source-native closed bars | PostgreSQL planner + REST | `trading-signal-lane`; App-owned poll, 2 s when enabled | admission ledger, frozen `trading_cases`, and atomic `trading_trade_signals` |
-| Nautilus OI Runtime | Trading execution | `capital_truth` | `TradeSignalV1`, authenticated `OperatorIntentV1`, Nautilus Cache/Portfolio, Binance | bounded PostgreSQL transport; Workers Telegram/CLI ingress is durable before acknowledgement | profile-gated `tracefold nautilus`; optional Workers notification task | append-only `ExecutionObservationV1` plus one current durable Runtime generation; disabled by default |
+| Nautilus OI Runtime | Trading execution | `capital_truth` | `TradeSignalV1`, authenticated `OperatorIntentV1`, Nautilus Cache/Portfolio, Binance | bounded PostgreSQL transport; CLI and console ingress are durable before acknowledgement | profile-gated `tracefold nautilus` | append-only `ExecutionObservationV1` plus one current durable Runtime generation; disabled by default |
 
 The runtime limits behind that inventory are code-owned safety policy. `shared`
 means one turn-wide cap is divided among the named rows. `adapter-owned` names a
@@ -606,8 +606,7 @@ health/readiness/metrics), the News consumer tasks when News is enabled
 `news-deliverer`, `news-janitor`), the bounded polling loops
 (`news-instruments`, and with venues enabled `news-quotes`,
 `news-reactions`), the one Signal loop when Trading is enabled
-(`trading-signal-lane`), the optional `trading-observation-notifier` when
-`trading.notifications` is enabled, and `workers-control` (singleton
+(`trading-signal-lane`), and `workers-control` (singleton
 lock, heartbeat, runtime row). There is no acquisition clock, projection
 coordinator, model arbiter, stream ingester, identity backfill, or universe
 sync task. The polling loops read public catalogues and prices on code-owned
@@ -2062,7 +2061,9 @@ outlive its provider's message id and carry a four-hour result; and destructive
 triggers, defaults and CHECKs called; `20260902_0348` hard-cuts Runtime
 readiness and adds the profile-keyed current control projection; and additive
 `20260902_0349` adds the bounded Runtime-owned current account read
-projection; additive `20260902_0350` pins the
+projection; destructive `20260903_0359` drops the `0342` notification delivery
+ledger and the partial observation index that fed it, neither of which any
+production writer ever reached; additive `20260902_0350` pins the
 `pg_trgm` extension and admits the `title_similarity` retrieval reason into the
 `news_verdicts` told trace CHECK for the reader-history title-similarity band
 (#491); additive `20260902_0351` opens the judgment CHECK to program v9 and
@@ -2227,7 +2228,8 @@ earlier manifest version is `BLOCKED / manifest_invalid` on its next claim.
 fact that starts an evaluation and fixes its cutoff. Context may enrich that
 evaluation only when it existed no later than the cutoff. Notification `sent`
 is notification transport success, not a trigger; Alpha must not depend on a
-notification channel being reachable.
+notification channel being reachable. News push is the only such channel that
+exists; #528 deleted the Trading one, which had never been enabled.
 
 Production runs exactly one pure policy,
 `source_native_oi_smart_money_long_v4`: deterministic, long-only, code-owned
@@ -2354,13 +2356,15 @@ reduce-only market close bounded to three attempts for every unowned one, and a
 cancel for every remaining resting order. `complete_from_reconciliation` still
 requires the later Binance private flat proof.
 
-**One closed operator-control path.** Workers alone exposes
-`POST /telegram/control` on its loopback probe; the Telegram secret header and
-both configured chat/user allowlists must pass before parsing. `/status` is
-read-only. `/pause`, confirmed `/resume`, confirmed `/halt`, account-only
-confirmed `/flatten`, and optional short-lived `/long` / `/short` map to
-`OperatorIntentV1`; the grammar contains no quantity, notional, leverage, venue
-or order parameter. Workers appends the intent before replying and never
+**One closed operator-control grammar, two ingresses.** `tracefold trading
+issue` on the host carries the local OS uid; `POST
+/api/trading/execution/commands` carries the bootstrap `ws_token`. The Workers
+probe serves `/healthz`, `/readyz` and `/metrics` and nothing else — #528
+deleted `POST /telegram/control`, its secret header and its chat/user
+allowlists, which no production deployment had ever enabled. `/pause`,
+`/resume`, `/halt`, account-only `/flatten`, and short-lived `/long` / `/short`
+map to `OperatorIntentV1`; the grammar contains no quantity, notional, leverage,
+venue or order parameter. Each ingress appends the intent before replying and never
 manufactures a disposition — only the Runtime may
 append accepted, rejected or completed control Observations. Pause blocks only
 new entries; halt is sticky, rejects resume, and does not mean flatten; flatten
@@ -2456,7 +2460,6 @@ Current product reads are Source/Admission, Case/Alpha, TradeSignal,
 ExecutionObservation, and the current execution Runtime projection — one HTTP
 owner each. `trading_cases`, `trading_candidate_gate_decisions`, `trading_trade_signals`,
 `trading_operator_intents`, `trading_execution_observations`,
-`trading_execution_notification_deliveries`,
 `trading_execution_runtime_control_state` and
 `trading_execution_runtime_state` are the whole Trading schema.
 
@@ -2484,28 +2487,24 @@ response as alternate truth. Each console page's statement has one owner in
 `tracefold/trading/storage/queries.py`, and the query-plan audit EXPLAINs that
 builder's own output — unfiltered and filtered — rather than a copy of it.
 
-The optional Workers notifier advances through append-only target/observation
-delivery receipts and records one only after delivery; it has no mutable cursor
-or ACK state machine. Its watermark is per observation kind, so a kind held by
-its own rate bound is not buried under an unrelated delivery. Delivery is
-at-least-once across the send/receipt crash window, so a duplicate message is
-allowed. `tracefold.trading.notification_policy` states once which observation
-is notifiable and how often: `reconciliation` and `readiness` coalesce to the
-newest pending observation of that kind and send at most one per half hour,
-because a card reporting a position the account has already left is worse than
-no card; every other notifiable kind is delivered one for one.
+`GET /api/trading/executions` is the desk table, and it is a fold rather than a
+correlation: one row per `TradeSignalV1` in a 24-hour window, built by joining
+that Signal's own `signal_disposition`, `order`, `fill`, `protection` and
+`position` observations on `signal_id` and deriving one `stage` word from the
+result. The console used to rebuild this in the browser keyed on `command_id`,
+which a flatten close — carried under the entry Signal's identity, because that
+is whose exposure it closes — could never match, so the flatten progress never
+advanced (#528 C). Command rows travel in the same response and read their
+`control_disposition` alone; nothing attaches a venue observation to a Command,
+since a flatten converges the whole account slot rather than one intent.
 
-One `signal_disposition` Observation becomes one card stating what the lane
-decided *and the Case's own frozen `policy_checks`* — threshold, operator and
-measured value together — so a reader compares a decision against the numbers
-that made it. Every provider figure is labelled as the provider's caliber: the
-vendor's five-minute "OI change" is substantially price rather than position,
-and printing it unlabelled beside a venue price would invite the reading that
-measurement disproved. Four hours later a second message carries the 1 h/4 h
-outcome, entered at the first close on or after the Signal — the first price a
-taker could have had. It is a second message rather than an edit because the
-deployed Feishu custom-bot webhook returns no message id and has no edit
-endpoint. HTTP, CLI and React command and observation views are read
+A `position` observation carries the whole outcome: quantity as it stood before
+the close, the average entry, and on `closed` the venue's own `avg_px_close`,
+`realized_pnl` and which of the three Runtime exits took it —
+`stop_filled`, `flatten` or `unclaimed_flatten`. Before #528 a `closed` position
+said `quantity: 0` and nothing else, so no reader could state how a trade ended.
+
+HTTP, CLI and React command and observation views are read
 projections: recorded, Runtime accepted, order accepted, fill, and account flat
 are five distinct facts.
 

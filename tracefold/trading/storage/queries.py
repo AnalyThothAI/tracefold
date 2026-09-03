@@ -7,35 +7,24 @@ rather than a copy of it that an edit can leave behind (`docs/MIGRATIONS.md`, da
 
 from __future__ import annotations
 
-import re
 from typing import Any
-
-from tracefold.platform.postgres.client import require_transaction
-from tracefold.trading.notification_policy import (
-    COALESCED_KINDS,
-    NOTIFICATION_THROTTLE_MS,
-    notifiable_policy_rows,
-)
 
 # Keyed on `created_at_ms`: when the Case formed, which is what "the lane produced N cases today"
 # means. The admission ledger's own counts key on `source_observed_at_ms` instead, so a restarted
 # runner re-reading a backlog cannot move yesterday's frames into today's total; a Case is created
 # once and has no such backlog.
+#
+# Two numbers, both rendered. `no_trade_24h`, `blocked_24h`, `cases_open` and `signals_unexpired`
+# were four more counts on the same two tables that no surface ever printed (#528).
 TRADING_STATUS_CASE_COUNTS_SQL = """
-    SELECT
-      count(*) FILTER (WHERE created_at_ms >= %(since)s) AS cases_24h,
-      count(*) FILTER (WHERE created_at_ms >= %(since)s AND state = 'SIGNAL_EMITTED') AS signals_24h,
-      count(*) FILTER (WHERE created_at_ms >= %(since)s AND state = 'NO_TRADE') AS no_trade_24h,
-      count(*) FILTER (WHERE created_at_ms >= %(since)s AND state = 'BLOCKED') AS blocked_24h,
-      count(*) FILTER (WHERE state IN ('PENDING', 'RUNNING')) AS cases_open
-    FROM trading_cases
-    WHERE created_at_ms >= %(since)s OR state IN ('PENDING', 'RUNNING')
+    SELECT count(*) AS cases_24h
+      FROM trading_cases
+     WHERE created_at_ms >= %(since)s
 """
 TRADING_STATUS_SIGNAL_COUNTS_SQL = """
-    SELECT count(*) FILTER (WHERE observed_at_ns >= %(since)s) AS signals_24h,
-           count(*) FILTER (WHERE expires_at_ns > %(now)s) AS signals_unexpired
+    SELECT count(*) AS signals_24h
       FROM trading_trade_signals
-     WHERE observed_at_ns >= %(since)s OR expires_at_ns > %(now)s
+     WHERE observed_at_ns >= %(since)s
 """
 TRADING_CASE_COUNTS_SQL = "SELECT state, count(*) AS n FROM trading_cases WHERE created_at_ms >= %s GROUP BY state"
 TRADING_CASE_REASON_COUNTS_SQL = (
@@ -139,6 +128,83 @@ def console_execution_observations_statement(
     return sql, params
 
 
+def console_executions_statement(*, since_ns: int, limit: int) -> tuple[str, dict[str, Any]]:
+    """`GET /api/trading/executions`: one row per Signal, its whole venue outcome folded in.
+
+    The console had no such read. `GET /api/trading/execution/observations` returns the raw stream and
+    the page correlated it in the browser by `command_id`, which a flatten close -- carried under the
+    entry Signal's own `signal_id` -- never matches (#528 C). Correlating where the rows are is also
+    the only way one Signal is one row: the fold is by `signal_id`, which is exactly what every
+    `order`, `fill`, `protection` and `position` observation of an entry carries.
+
+    The entry leg is what the columns describe. An exit order and its fill share the Signal's
+    identity, so both are filtered out of `order_status` and the fill aggregate; the position's own
+    closed fact is where the exit shows up, with the price, the realized result and the reason.
+    """
+
+    sql = """
+        WITH signal_window AS (
+          SELECT signal_id, case_id, market_key, direction, observed_at_ns
+            FROM trading_trade_signals
+           WHERE observed_at_ns >= %(since)s
+           ORDER BY observed_at_ns DESC, signal_id DESC
+           LIMIT %(limit)s
+        ),
+        folded AS (
+          SELECT signal.signal_id,
+                 signal.case_id,
+                 signal.market_key,
+                 signal.direction,
+                 signal.observed_at_ns,
+                 (array_agg(observation.summary ->> 'disposition' ORDER BY observation.seq DESC)
+                    FILTER (WHERE observation.normalized_kind = 'signal_disposition'))[1]
+                   AS disposition_reason,
+                 (array_agg(observation.summary ->> 'status' ORDER BY observation.seq DESC)
+                    FILTER (WHERE observation.normalized_kind = 'order'
+                              AND observation.summary ->> 'leg' = 'entry'))[1]
+                   AS order_status,
+                 sum((observation.summary ->> 'last_quantity')::numeric)
+                    FILTER (WHERE observation.normalized_kind = 'fill'
+                              AND observation.summary ->> 'leg' = 'entry')
+                   AS fill_quantity,
+                 sum((observation.summary ->> 'last_quantity')::numeric
+                     * (observation.summary ->> 'last_price')::numeric)
+                    FILTER (WHERE observation.normalized_kind = 'fill'
+                              AND observation.summary ->> 'leg' = 'entry')
+                   AS fill_notional,
+                 (array_agg(observation.summary ->> 'trigger_price' ORDER BY observation.seq DESC)
+                    FILTER (WHERE observation.normalized_kind = 'protection'
+                              AND observation.summary ->> 'trigger_price' IS NOT NULL))[1]
+                   AS stop_trigger_price,
+                 (array_agg(observation.summary ORDER BY observation.seq DESC)
+                    FILTER (WHERE observation.normalized_kind = 'position'))[1]
+                   AS position_summary,
+                 max(observation.observed_at_ns) AS last_observation_at_ns
+            FROM signal_window signal
+            LEFT JOIN trading_execution_observations observation
+                   ON observation.signal_id = signal.signal_id
+                  AND observation.normalized_kind
+                      IN ('signal_disposition', 'order', 'fill', 'protection', 'position')
+           GROUP BY signal.signal_id, signal.case_id, signal.market_key, signal.direction,
+                    signal.observed_at_ns
+        )
+        SELECT signal_id, case_id, market_key, direction, observed_at_ns,
+               disposition_reason,
+               order_status,
+               trim_scale(fill_quantity)::text AS fill_quantity,
+               trim_scale(fill_notional / NULLIF(fill_quantity, 0))::text AS fill_avg_price,
+               stop_trigger_price,
+               position_summary ->> 'status' AS position_status,
+               position_summary ->> 'exit_price' AS exit_price,
+               position_summary ->> 'realized_pnl_usd' AS realized_pnl_usd,
+               position_summary ->> 'exit_reason' AS exit_reason,
+               greatest(observed_at_ns, coalesce(last_observation_at_ns, 0)) AS last_observed_at_ns
+          FROM folded
+         ORDER BY observed_at_ns DESC, signal_id DESC
+    """
+    return sql, {"since": int(since_ns), "limit": int(limit)}
+
+
 def console_operator_intents_statement(
     *,
     since_ns: int,
@@ -181,19 +247,16 @@ def console_operator_intents_statement(
 class QueryStorage:
     conn: Any
 
-    def runtime_summary(self, *, since_ms: int, now_ms: int) -> dict[str, Any]:
-        row = self.conn.execute(
-            TRADING_STATUS_CASE_COUNTS_SQL,
-            {"since": int(since_ms)},
-        ).fetchone()
+    def runtime_summary(self, *, since_ms: int) -> dict[str, int]:
+        case_row = self.conn.execute(TRADING_STATUS_CASE_COUNTS_SQL, {"since": int(since_ms)}).fetchone()
         signal_row = self.conn.execute(
             TRADING_STATUS_SIGNAL_COUNTS_SQL,
-            {"since": int(since_ms) * 1_000_000, "now": int(now_ms) * 1_000_000},
+            {"since": int(since_ms) * 1_000_000},
         ).fetchone()
-        values = dict(row or {})
-        values["signals_24h"] = int((signal_row or {}).get("signals_24h") or 0)
-        values["signals_unexpired"] = int((signal_row or {}).get("signals_unexpired") or 0)
-        return {key: int(value or 0) for key, value in values.items()}
+        return {
+            "cases_24h": int((case_row or {}).get("cases_24h") or 0),
+            "signals_24h": int((signal_row or {}).get("signals_24h") or 0),
+        }
 
     def case_counts(self, *, since_ms: int) -> dict[str, int]:
         rows = self.conn.execute(TRADING_CASE_COUNTS_SQL, (int(since_ms),)).fetchall()
@@ -273,220 +336,9 @@ class QueryStorage:
         )
         return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
 
-    def next_execution_notification(self, target_sha256: str, *, now_ns: int) -> dict[str, Any] | None:
-        """Read the next notifiable observation without creating a mutable delivery cursor.
-
-        The watermark is per kind: a single watermark over all kinds silently skips any observation
-        whose sequence falls below a later delivery, so one out-of-order turn drops events for good.
-        A kind can only ever skip its own past.
-
-        `tracefold.trading.notification_policy` owns both halves of the choice: which observation is
-        worth a card, and — for the kinds that arrive on a timer — that only the newest pending one
-        is a candidate and only once per throttle window. `now_ns` is a parameter rather than a clock
-        read here so the delivery guard can re-derive the same candidate the caller acted on.
-        """
-
-        if re.fullmatch(r"[0-9a-f]{64}", target_sha256) is None:
-            raise ValueError("execution_notification_target_invalid")
-        if now_ns <= 0:
-            raise ValueError("execution_notification_clock_invalid")
-        notify_kinds, notify_keys, notify_values = notifiable_policy_rows()
-        params = {
-            "target": target_sha256,
-            "notify_kinds": notify_kinds,
-            "notify_keys": notify_keys,
-            "notify_values": notify_values,
-            "coalesced": list(COALESCED_KINDS),
-            "throttle_ns": NOTIFICATION_THROTTLE_MS * 1_000_000,
-            "now_ns": now_ns,
-        }
-        row = self.conn.execute(
-            """
-            WITH delivered AS (
-              SELECT sent.normalized_kind AS kind,
-                     max(delivery.observation_seq) AS watermark,
-                     max(delivery.delivered_at_ns) AS last_delivered_at_ns
-                FROM trading_execution_notification_deliveries delivery
-                JOIN trading_execution_observations sent ON sent.seq = delivery.observation_seq
-               WHERE delivery.target_sha256 = %(target)s
-               GROUP BY 1
-            ),
-            candidate AS (
-              SELECT observation.seq, observation.event_id, observation.account_slot,
-                     observation.runtime_release, observation.execution_strategy,
-                     observation.signal_id, observation.command_id, observation.normalized_kind,
-                     observation.occurred_at_ns, observation.observed_at_ns,
-                     observation.native_identity_references, observation.summary,
-                     -- The Case a Signal card states its reasons from. Read here rather than in a
-                     -- second round trip so the rendered text is a pure function of one row, and
-                     -- LEFT so a non-Signal observation is still notifiable.
-                     signal.case_id, signal.market_key, signal.direction,
-                     signal.observed_at_ns AS signal_observed_at_ns,
-                     trading_case.policy_decision, trading_case.policy_reason,
-                     trading_case.policy_checks, trading_case.manifest,
-                     -- The newest pending observation of this kind, so a coalesced kind reports the
-                     -- state the account is in now rather than one it has already left.
-                     max(observation.seq) OVER (PARTITION BY observation.normalized_kind) AS newest_seq,
-                     COALESCE(delivered.last_delivered_at_ns, 0) AS last_delivered_at_ns
-                FROM trading_execution_observations observation
-                LEFT JOIN delivered ON delivered.kind = observation.normalized_kind
-                LEFT JOIN trading_trade_signals signal
-                       ON observation.normalized_kind = 'signal_disposition'
-                      AND signal.signal_id = observation.signal_id
-                LEFT JOIN trading_cases trading_case ON trading_case.case_id = signal.case_id
-               WHERE observation.seq > COALESCE(delivered.watermark, 0)
-                 AND EXISTS (
-                       SELECT 1
-                         FROM unnest(
-                                %(notify_kinds)s::text[],
-                                %(notify_keys)s::text[],
-                                %(notify_values)s::text[]
-                              ) AS policy(kind, summary_key, summary_value)
-                        WHERE policy.kind = observation.normalized_kind
-                          AND (
-                                policy.summary_key = ''
-                             OR observation.summary ->> policy.summary_key = policy.summary_value
-                              )
-                     )
-            )
-            SELECT seq, event_id, account_slot, runtime_release, execution_strategy,
-                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
-                   native_identity_references, summary,
-                   case_id, market_key, direction, signal_observed_at_ns,
-                   policy_decision, policy_reason, policy_checks, manifest
-              FROM candidate
-             WHERE NOT (normalized_kind = ANY(%(coalesced)s))
-                OR (seq = newest_seq AND last_delivered_at_ns + %(throttle_ns)s <= %(now_ns)s)
-             ORDER BY seq
-             LIMIT 1
-            """,
-            params,
-        ).fetchone()
-        return None if row is None else dict(row)
-
-    def append_execution_notification_delivery(
-        self,
-        *,
-        target_sha256: str,
-        observation_seq: int,
-        message_id: int | None,
-        delivered_at_ns: int,
-        selected_at_ns: int,
-    ) -> dict[str, Any]:
-        """Append one delivery receipt; retries never mutate an earlier receipt.
-
-        `message_id` is optional because a Feishu custom-bot webhook returns none. The receipt still
-        records that this observation reached this target at this instant, which is what
-        the watermark and the coverage measure read; only a channel that can address a sent message
-        again has an id worth storing.
-
-        `selected_at_ns` is the clock the caller chose this observation with, not the clock it was
-        delivered at. The two differ by however long the send took, and a throttle window that
-        expires in between would otherwise let the guard pick a different candidate than the one that
-        was actually sent.
-        """
-
-        require_transaction(self.conn, operation="append_execution_notification_delivery")
-        if re.fullmatch(r"[0-9a-f]{64}", target_sha256) is None:
-            raise ValueError("execution_notification_target_invalid")
-        if observation_seq <= 0:
-            raise ValueError("execution_notification_observation_invalid")
-        if message_id is not None and (isinstance(message_id, bool) or message_id <= 0):
-            raise ValueError("execution_notification_delivery_invalid")
-        if delivered_at_ns <= 0 or selected_at_ns <= 0:
-            raise ValueError("execution_notification_delivery_invalid")
-        existing = self.conn.execute(
-            """
-            SELECT target_sha256, observation_seq, message_id, delivered_at_ns, result_delivered_at_ns
-              FROM trading_execution_notification_deliveries
-             WHERE target_sha256 = %s AND observation_seq = %s
-            """,
-            (target_sha256, observation_seq),
-        ).fetchone()
-        if existing is not None:
-            return dict(existing)
-        expected = self.next_execution_notification(target_sha256, now_ns=selected_at_ns)
-        if expected is None or int(expected["seq"]) != observation_seq:
-            raise ValueError("execution_notification_delivery_out_of_order")
-        row = self.conn.execute(
-            """
-            INSERT INTO trading_execution_notification_deliveries (
-              target_sha256, observation_seq, message_id, delivered_at_ns
-            ) VALUES (%s, %s, %s, %s)
-            ON CONFLICT (target_sha256, observation_seq) DO NOTHING
-            RETURNING target_sha256, observation_seq, message_id, delivered_at_ns, result_delivered_at_ns
-            """,
-            (target_sha256, observation_seq, message_id, delivered_at_ns),
-        ).fetchone()
-        if row is None:
-            row = self.conn.execute(
-                """
-                SELECT target_sha256, observation_seq, message_id, delivered_at_ns, result_delivered_at_ns
-                  FROM trading_execution_notification_deliveries
-                 WHERE target_sha256 = %s AND observation_seq = %s
-                """,
-                (target_sha256, observation_seq),
-            ).fetchone()
-        if row is None:
-            raise RuntimeError("execution_notification_delivery_missing")
-        return dict(row)
-
-    def next_execution_notification_result(
-        self, target_sha256: str, *, due_at_or_before_ns: int
-    ) -> dict[str, Any] | None:
-        """The oldest delivered Signal card whose four-hour outcome is due and not yet sent.
-
-        Only `signal_disposition` receipts have an outcome to report: the other observation kinds are
-        stages, not positions. `due_at_or_before_ns` is the caller's clock minus the holding period
-        plus a settling margin, so the decision about *when* a result is due stays with the worker and
-        this read stays a pure function of the row and that instant.
-        """
-
-        if re.fullmatch(r"[0-9a-f]{64}", target_sha256) is None:
-            raise ValueError("execution_notification_target_invalid")
-        row = self.conn.execute(
-            """
-            SELECT delivery.observation_seq, delivery.delivered_at_ns,
-                   signal.signal_id, signal.case_id, signal.market_key, signal.direction,
-                   signal.observed_at_ns AS signal_observed_at_ns,
-                   trading_case.manifest
-              FROM trading_execution_notification_deliveries delivery
-              JOIN trading_execution_observations observation
-                ON observation.seq = delivery.observation_seq
-              JOIN trading_trade_signals signal ON signal.signal_id = observation.signal_id
-              JOIN trading_cases trading_case ON trading_case.case_id = signal.case_id
-             WHERE delivery.target_sha256 = %s
-               AND delivery.result_delivered_at_ns IS NULL
-               AND observation.normalized_kind = 'signal_disposition'
-               AND delivery.delivered_at_ns <= %s
-             ORDER BY delivery.observation_seq
-             LIMIT 1
-            """,
-            (target_sha256, int(due_at_or_before_ns)),
-        ).fetchone()
-        return None if row is None else dict(row)
-
-    def mark_execution_notification_result(
-        self, *, target_sha256: str, observation_seq: int, result_delivered_at_ns: int
-    ) -> bool:
-        """Record that the outcome message went out. Never overwrites an earlier one."""
-
-        require_transaction(self.conn, operation="mark_execution_notification_result")
-        if re.fullmatch(r"[0-9a-f]{64}", target_sha256) is None:
-            raise ValueError("execution_notification_target_invalid")
-        if observation_seq <= 0 or result_delivered_at_ns <= 0:
-            raise ValueError("execution_notification_result_invalid")
-        row = self.conn.execute(
-            """
-            UPDATE trading_execution_notification_deliveries
-               SET result_delivered_at_ns = %s
-             WHERE target_sha256 = %s AND observation_seq = %s
-               AND result_delivered_at_ns IS NULL
-             RETURNING observation_seq
-            """,
-            (int(result_delivered_at_ns), target_sha256, int(observation_seq)),
-        ).fetchone()
-        return row is not None
+    def console_executions(self, *, since_ns: int, limit: int) -> list[dict[str, Any]]:
+        sql, params = console_executions_statement(since_ns=since_ns, limit=limit)
+        return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
 
 
 __all__ = [
@@ -497,6 +349,7 @@ __all__ = [
     "QueryStorage",
     "console_cases_statement",
     "console_execution_observations_statement",
+    "console_executions_statement",
     "console_operator_intents_statement",
     "console_signals_statement",
 ]

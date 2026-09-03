@@ -12,7 +12,6 @@ from typing import Any
 from tracefold.app.execution_status import execution_readiness_projection
 from tracefold.app.operator_control import persist_operator_intent
 from tracefold.app.repository_session import repositories
-from tracefold.app.trading_config import signal_lane_config
 from tracefold.platform.config.loader import load_settings
 from tracefold.trading import (
     OperatorCommandError,
@@ -39,7 +38,6 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
         trading = repos.trading
         if command == "status":
             last_case_at_ms = trading.latest_case_created_at_ms()
-            config = signal_lane_config(settings)
             execution = settings.trading.execution
             execution_status = execution_readiness_projection(
                 execution,
@@ -51,13 +49,8 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                 "ok": True,
                 "data": {
                     "decision": {"last_case_at_ms": last_case_at_ms},
-                    "alpha": {
-                        "policy_id": config.policy.policy_id,
-                        "policy_version": config.policy.policy_version,
-                        "config_digest": config.policy.config_digest,
-                    },
                     "execution": execution_status,
-                    "counts": trading.runtime_summary(since_ms=now_ms - _WINDOW_MS, now_ms=now_ms),
+                    "counts": trading.runtime_summary(since_ms=now_ms - _WINDOW_MS),
                 },
             }
         if command == "cases":

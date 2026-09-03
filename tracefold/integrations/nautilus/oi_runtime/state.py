@@ -278,6 +278,9 @@ class ExecutionState:
     exit_generation: int = 0
     exit_retry_required: bool = False
     exit_retry_budget: int = 1
+    # Why this execution's exposure is being closed, written by whichever exit entry point asked for
+    # it. `None` means no reduce-only exit was requested, so a close is the protective stop filling.
+    exit_reason: Literal["flatten"] | None = None
     private_reconciliation_requested: bool = False
 
 
