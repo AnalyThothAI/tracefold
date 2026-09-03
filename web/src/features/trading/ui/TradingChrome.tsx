@@ -33,15 +33,6 @@ export function TradingSourceLine({ note, path }: { note?: ReactNode; path: stri
   );
 }
 
-export function TradingInvariantLine({ children }: { children: ReactNode }) {
-  return (
-    <p className="trading-source-line">
-      <span className="trading-source-line-label">不变量</span>
-      <span className="trading-source-line-note">{children}</span>
-    </p>
-  );
-}
-
 /** The sentence a table shows instead of rows. Never "加载失败" — an empty ledger is an answer. */
 export function TradingEmptyNote({ children }: { children: ReactNode }) {
   return <p className="trading-empty-note">{children}</p>;

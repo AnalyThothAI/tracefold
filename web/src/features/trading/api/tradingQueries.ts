@@ -6,18 +6,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 type TradingSchemas = components["schemas"];
 
 export type TradingStatus = TradingSchemas["TradingStatusData"];
-export type TradingDecisionRuntime = TradingSchemas["TradingDecisionRuntimeData"];
 export type TradingExecutionReadiness = TradingSchemas["TradingExecutionReadinessData"];
-export type TradingRuntimeCounts = TradingSchemas["TradingRuntimeCountsData"];
 export type TradingCases = TradingSchemas["TradingCasesData"];
 export type TradingCase = TradingSchemas["TradingCaseData"];
 export type TradingPolicyCheck = TradingSchemas["TradingPolicyCheckData"];
 export type TradingSignals = TradingSchemas["TradingSignalsData"];
 export type TradingSignal = TradingSchemas["TradingSignalData"];
-export type TradingExecutionObservations = TradingSchemas["TradingExecutionObservationsData"];
-export type TradingExecutionObservation = TradingSchemas["TradingExecutionObservationData"];
-export type TradingOperatorIntents = TradingSchemas["TradingOperatorIntentsData"];
-export type TradingOperatorIntent = TradingSchemas["TradingOperatorIntentData"];
+export type TradingExecutions = TradingSchemas["TradingExecutionsData"];
+export type TradingExecutionRow = TradingSchemas["TradingExecutionRowData"];
+export type TradingExecutionCommand = TradingSchemas["TradingExecutionCommandRowData"];
 export type TradingOperatorCommandReceipt = TradingSchemas["TradingOperatorCommandReceiptData"];
 export type TradingGate = TradingSchemas["TradingGateData"];
 export type TradingGateSource = TradingSchemas["TradingGateSourceData"];
@@ -73,29 +70,22 @@ export const useTradingSignalsWithToken = (token: string, market?: string) =>
     staleTime: 5_000,
   });
 
-export const useTradingObservationsWithToken = (token: string) =>
+/**
+ * The desk's execution read model (#528): one row per Signal, one row per Command, both already folded.
+ *
+ * It replaces the raw Observation stream this page used to correlate in the browser. The correlation was
+ * wrong for a flatten — the exit orders carry the *entry* Signal's `signal_id`, not the Command's — and
+ * `stage` is now the server's word from `tracefold/trading/stages.py`, so the CLI and the console cannot
+ * disagree about how far one Signal got.
+ */
+export const useTradingExecutionsWithToken = (token: string) =>
   useQuery({
     enabled: Boolean(token),
-    queryKey: queryKeys.tradingObservations(),
+    queryKey: queryKeys.tradingExecutions(),
     queryFn: async () =>
       (
-        await getApi<TradingExecutionObservations>("/api/trading/execution/observations", {
-          etagKey: "trading-execution-observations",
-          token,
-        })
-      ).data,
-    refetchInterval: TRADING_REFETCH_MS,
-    staleTime: 5_000,
-  });
-
-export const useTradingCommandsWithToken = (token: string) =>
-  useQuery({
-    enabled: Boolean(token),
-    queryKey: queryKeys.tradingCommands(),
-    queryFn: async () =>
-      (
-        await getApi<TradingOperatorIntents>("/api/trading/execution/commands", {
-          etagKey: "trading-execution-commands",
+        await getApi<TradingExecutions>("/api/trading/executions", {
+          etagKey: "trading-executions",
           token,
         })
       ).data,
@@ -120,8 +110,7 @@ export const useIssueTradingCommandWithToken = (token: string) => {
       ).data,
     onSuccess: async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.tradingCommands() }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.tradingObservations() }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.tradingExecutions() }),
         queryClient.invalidateQueries({ queryKey: queryKeys.tradingStatus() }),
       ]);
     },

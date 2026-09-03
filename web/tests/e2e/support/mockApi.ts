@@ -16,10 +16,9 @@ import {
 import {
   TRADING_NOW_MS,
   tradingCasesForUnderlying,
-  tradingCommandsFixture,
   tradingExecutionFixture,
+  tradingExecutionsFixture,
   tradingGateFixture,
-  tradingObservationsFixture,
   tradingSignalsForMarket,
   tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
@@ -32,9 +31,8 @@ export type MockApiOptions = {
   delayNonBootstrapMs?: number;
   emptyFeed?: boolean;
   failNonBootstrap?: boolean;
-  tradingCommands?: ReturnType<typeof tradingCommandsFixture>;
   tradingExecution?: ReturnType<typeof tradingExecutionFixture>;
-  tradingObservations?: ReturnType<typeof tradingObservationsFixture>;
+  tradingExecutions?: ReturnType<typeof tradingExecutionsFixture>;
 };
 
 export type MockFeedControl = {
@@ -109,21 +107,18 @@ export async function installMockApi(
     if (path === "/api/trading/signals") {
       return fulfill(route, tradingSignalsForMarket(url.searchParams.get("market")));
     }
-    if (path === "/api/trading/execution/observations") {
-      return fulfill(route, options.tradingObservations ?? tradingObservationsFixture());
+    if (path === "/api/trading/executions") {
+      return fulfill(route, options.tradingExecutions ?? tradingExecutionsFixture());
     }
     if (path === "/api/trading/execution/commands") {
-      if (route.request().method() === "POST") {
-        return fulfill(route, {
-          command_id: "a".repeat(64),
-          disposition: "awaiting_runtime",
-          reason: null,
-          requested_at_ns: TRADING_NOW_MS * 1_000_000,
-          seq: 7,
-          truth: "intent_recorded_not_runtime_or_venue",
-        });
-      }
-      return fulfill(route, options.tradingCommands ?? tradingCommandsFixture());
+      return fulfill(route, {
+        command_id: "a".repeat(64),
+        disposition: "awaiting_runtime",
+        reason: null,
+        requested_at_ns: TRADING_NOW_MS * 1_000_000,
+        seq: 7,
+        truth: "intent_recorded_not_runtime_or_venue",
+      });
     }
     // #269: the admission ledger the OI audit reads for a whole page of frames at once.
     if (path === "/api/trading/gate") return fulfill(route, tradingGateFixture());

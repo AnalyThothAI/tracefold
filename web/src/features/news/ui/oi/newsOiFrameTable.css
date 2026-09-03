@@ -282,22 +282,11 @@
     white-space: nowrap;
   }
 
-  /* The gate's own stage word, when there is one. Quiet and unboxed: it qualifies the verdict, where the
-     quadrant beside it is a category the lane assigned. */
+  /* The gate's own stage word, when there is one. Quiet and unboxed: it qualifies the verdict. */
   .news-oi-trading-cell small {
     flex: 0 0 auto;
     color: var(--text-subtle);
     font-size: var(--font-size-eyebrow);
-  }
-
-  .news-oi-quadrant {
-    flex: 0 0 auto;
-    padding: 0 5px;
-    border-radius: var(--radius-xs);
-    box-shadow: inset 0 0 0 1px var(--border-strong);
-    color: var(--text-secondary);
-    font: 600 var(--font-size-eyebrow)/1.8 var(--font-mono);
-    white-space: nowrap;
   }
 
   .news-oi-more {

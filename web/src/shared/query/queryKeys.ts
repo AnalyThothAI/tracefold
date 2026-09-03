@@ -55,8 +55,9 @@ export const queryKeys = {
   tradingStatus: () => ["trading-status"] as const,
   tradingCases: (underlying: string) => ["trading-cases", underlying] as const,
   tradingSignals: (market: string) => ["trading-signals", market] as const,
-  tradingCommands: () => ["trading-execution-commands"] as const,
-  tradingObservations: () => ["trading-execution-observations"] as const,
+  // #528 PR-2: one key for the folded execution read model — the desk's Signal rows and Command rows
+  // arrive in the same response, so they cannot disagree about the window they describe.
+  tradingExecutions: () => ["trading-executions"] as const,
   tradingGateSource: (eventId: string) => ["trading-gate-source", eventId] as const,
   // #269: the admission ledger's own window, shared by the frame table and the leverage list.
   tradingGate: () => ["trading-gate"] as const,

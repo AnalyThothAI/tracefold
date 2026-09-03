@@ -7,12 +7,11 @@ import {
 } from "@tests/e2e/support/layoutAssertions";
 import { installMockApi, type MockApiOptions } from "@tests/e2e/support/mockApi";
 import {
-  tradingCommandFixture,
-  tradingCommandsFixture,
+  tradingCommandRowFixture,
   tradingCurrentAccountFixture,
-  tradingExecutionFixture,
-  tradingObservationFixture,
-  tradingObservationsFixture,
+  tradingExecutionRowFixture,
+  tradingExecutionsFixture,
+  tradingLiveExecutionFixture,
 } from "@tests/fixtures/tradingFixture";
 
 test.setTimeout(60_000);
@@ -36,7 +35,7 @@ const tradingArchetype = {
   name: "trading",
   path: "/trading",
   ready: (page: Page) => page.locator(".trading-safety-grid"),
-  settled: (page: Page) => page.getByRole("heading", { name: "Command 进度" }),
+  settled: (page: Page) => page.getByRole("heading", { name: "今日执行" }),
 } as const;
 
 /*
@@ -108,26 +107,9 @@ test("freezes the Alpha and execution pages at every project viewport", async ({
   await freezeArchetypes(page, [symbolArchetype, tradingArchetype, tradingCaseArchetype]);
 });
 
-test("confirms an operator command without claiming Runtime or venue success", async ({ page }) => {
+test("writes an operator command in one click and claims only persistence", async ({ page }) => {
   await page.unroute("**/api/**");
-  await installMockApi(page, {
-    tradingExecution: tradingExecutionFixture({
-      account_flat: false,
-      account_flat_proven: false,
-      alive: true,
-      current_account: tradingCurrentAccountFixture(),
-      entries_armed: false,
-      entries_paused: true,
-      entry_block_reason: "entries_paused",
-      execution_safe: true,
-      mode: "paper",
-      open_orders_count: 1,
-      positions_count: 1,
-      protection_status: "protected",
-      reconciliation_age_ms: 1_000,
-      startup_reconciled: true,
-    }),
-  });
+  await installMockApi(page, { tradingExecution: tradingLiveExecutionFixture() });
   await page.goto("/trading");
   await expect(page.locator(".trading-safety-grid")).toBeVisible();
 
@@ -137,74 +119,55 @@ test("confirms an operator command without claiming Runtime or venue success", a
       new URL(request.url()).pathname === "/api/trading/execution/commands",
   );
   await page.getByRole("button", { name: "Resume / Arm" }).click();
-  await expect(page.getByRole("alertdialog")).toBeVisible();
-  await page.getByRole("button", { name: "确认写入 Command" }).click();
   const request = await posted;
 
+  expect(page.getByRole("alertdialog")).toHaveCount(0);
   expect(request.headers().authorization).toBe("Bearer secret");
   expect(request.postDataJSON()).toMatchObject({ text: "/resume operator console" });
   await expect(page.getByText(/Command 已持久化/)).toContainText(
     "这不代表 Runtime 受理、订单或成交",
   );
-  await page.getByText("Advanced Audit").click();
-  await expect(page.getByText(/profile/)).toBeVisible();
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoNestedHorizontalOverflow(page, [
     ".trading-safety-grid",
     ".trading-account-overview",
     ".trading-control-panel",
-    ".trading-latest-progress-card",
     ".trading-position-row",
-    ".trading-ledger-row",
+    ".trading-command-row",
   ]);
   await expectNoUnhandledApiRequests(page);
 });
 
-test("keeps execution truth distinct across unsafe, recovery, flat, and stale states", async ({
+test("keeps execution truth distinct across unsafe, protected, flat, and expired states", async ({
   page,
 }) => {
   await page.unroute("**/api/**");
   const options: MockApiOptions = {};
   await installMockApi(page, options);
 
-  options.tradingExecution = tradingExecutionFixture({
-    alive: true,
-    entries_armed: false,
-    entries_paused: true,
-    entry_block_reason: "private_reconciliation_unavailable",
+  options.tradingExecution = tradingLiveExecutionFixture({
+    current_account: null,
+    entry_block_reason: "reconciliation_stale",
     execution_safe: false,
-    mode: "paper",
+    open_orders_count: 0,
+    positions_count: 0,
+    protection_status: "unknown",
   });
   await page.goto("/trading?browser-state=alive-unsafe");
   let safety = page.getByLabel("执行安全状态");
   await expect(safety.locator(".ui-metric").nth(0)).toContainText("YES");
   await expect(safety.locator(".ui-metric").nth(1)).toContainText("NO");
+  await expect(page.getByText("私有对账已过期")).toBeVisible();
 
-  options.tradingExecution = tradingExecutionFixture({
-    account_flat: false,
-    account_flat_proven: false,
-    alive: true,
+  options.tradingExecution = tradingLiveExecutionFixture({
     current_account: tradingCurrentAccountFixture({ unknown_orders_count: 1 }),
-    entries_armed: false,
-    entries_paused: true,
-    entry_block_reason: "entries_paused",
-    execution_safe: true,
-    mode: "paper",
-    open_orders_count: 1,
-    positions_count: 1,
-    protection_status: "protected",
-    reconciliation_age_ms: 1_000,
-    startup_reconciled: true,
   });
   await page.goto("/trading?browser-state=protected");
   await expect(page.getByText("FULL COVERAGE")).toBeVisible();
   await expect(page.getByText("Unknown").locator("..")).toContainText("1");
 
   const unprotectedAccount = tradingCurrentAccountFixture();
-  options.tradingExecution = tradingExecutionFixture({
-    account_flat: false,
-    account_flat_proven: false,
-    alive: true,
+  options.tradingExecution = tradingLiveExecutionFixture({
     current_account: tradingCurrentAccountFixture({
       complete: false,
       positions: [
@@ -217,94 +180,42 @@ test("keeps execution truth distinct across unsafe, recovery, flat, and stale st
         },
       ],
     }),
-    entries_armed: false,
-    entries_paused: true,
-    entry_block_reason: "protection_unavailable",
+    entry_block_reason: "unexpected_exposure",
     execution_safe: false,
-    mode: "paper",
-    open_orders_count: 0,
-    positions_count: 1,
     protection_status: "unprotected",
-    reconciliation_age_ms: 1_000,
-    startup_reconciled: true,
   });
   await page.goto("/trading?browser-state=unprotected");
   await expect(page.getByText("UNPROTECTED").first()).toBeVisible();
   await expect(page.getByText("NOT FULLY COVERED")).toBeVisible();
+  await expect(page.getByText("PARTIAL")).toBeVisible();
 
-  const flatten = tradingCommandFixture({ action: "flatten" });
-  options.tradingCommands = tradingCommandsFixture({ commands: [flatten] });
-  options.tradingObservations = tradingObservationsFixture({
-    observations: [
-      tradingObservationFixture({
-        command_id: flatten.command_id,
-        normalized_kind: "readiness",
-        summary: { control_stage: "runtime_accepted" },
-      }),
-    ],
+  // Every stage the read model can report for one Command, straight from `control_disposition`.
+  options.tradingExecutions = tradingExecutionsFixture({
+    commands: [tradingCommandRowFixture({ action: "flatten", stage: "recorded" })],
+    executions: [],
   });
-  await page.goto("/trading?browser-state=flatten-pending");
-  await expect(page.getByText("RUNTIME ACCEPTED").first()).toBeVisible();
-  await expect(page.getByText("等待 venue").first()).toBeVisible();
+  await page.goto("/trading?browser-state=flatten-recorded");
+  await expect(page.getByText("已持久化").first()).toBeVisible();
 
-  const acceptedOrder = tradingObservationFixture({
-    command_id: flatten.command_id,
-    event_id: "1".repeat(64),
-    normalized_kind: "order",
-    summary: { status: "accepted" },
-  });
-  options.tradingObservations = tradingObservationsFixture({
-    observations: [
-      tradingObservationFixture({
-        command_id: flatten.command_id,
-        normalized_kind: "readiness",
-        summary: { control_stage: "runtime_accepted" },
-      }),
-      acceptedOrder,
-    ],
-  });
-  await page.goto("/trading?browser-state=order-accepted");
-  await expect(page.getByText("ORDER ACCEPTED").first()).toBeVisible();
-
-  options.tradingObservations = tradingObservationsFixture({
-    observations: [
-      acceptedOrder,
-      tradingObservationFixture({
-        command_id: flatten.command_id,
-        event_id: "2".repeat(64),
-        normalized_kind: "fill",
-      }),
-    ],
-  });
-  await page.goto("/trading?browser-state=fill-observed");
-  await expect(page.getByText("FILL OBSERVED").first()).toBeVisible();
-
-  options.tradingCommands = tradingCommandsFixture({
-    commands: [tradingCommandFixture({ disposition: "rejected" })],
-  });
-  options.tradingObservations = tradingObservationsFixture();
-  await page.goto("/trading?browser-state=runtime-rejected");
-  await expect(page.getByText("RUNTIME REJECTED").first()).toBeVisible();
-
-  options.tradingCommands = tradingCommandsFixture({
-    commands: [tradingCommandFixture({ expired: true })],
-  });
-  await page.goto("/trading?browser-state=expired");
-  await expect(page.getByText("EXPIRED").first()).toBeVisible();
-
-  options.tradingCommands = tradingCommandsFixture({
+  options.tradingExecutions = tradingExecutionsFixture({
     commands: [
-      tradingCommandFixture({
-        action: "flatten",
-        disposition: "completed",
-        disposition_reason: "binance_account_flat",
-      }),
+      tradingCommandRowFixture({ action: "flatten", stage: "completed" }),
+      tradingCommandRowFixture({ command_id: "d".repeat(64), stage: "rejected" }),
     ],
+    executions: [],
   });
-  options.tradingExecution = tradingExecutionFixture({
+  await page.goto("/trading?browser-state=flatten-completed");
+  await expect(page.getByText("已完成 · 私有对账证明").first()).toBeVisible();
+  await expect(page.getByText("Runtime 拒绝").first()).toBeVisible();
+
+  // And the whole Signal ledger the desk exists for: one row from ordered to closed with a number on it.
+  options.tradingExecutions = tradingExecutionsFixture({
+    commands: [],
+    executions: [tradingExecutionRowFixture()],
+  });
+  options.tradingExecution = tradingLiveExecutionFixture({
     account_flat: true,
     account_flat_proven: true,
-    alive: true,
     current_account: tradingCurrentAccountFixture({
       aggregate_risk_usd: "0",
       inflight_orders_count: 0,
@@ -313,42 +224,33 @@ test("keeps execution truth distinct across unsafe, recovery, flat, and stale st
       positions: [],
       unknown_orders_count: 0,
     }),
-    entries_armed: false,
-    entries_paused: true,
-    entry_block_reason: "entries_paused",
-    execution_safe: true,
-    mode: "paper",
     open_orders_count: 0,
     positions_count: 0,
     protection_status: "not_applicable",
-    reconciliation_age_ms: 1_000,
-    startup_reconciled: true,
   });
   await page.goto("/trading?browser-state=flat-proven");
   safety = page.getByLabel("执行安全状态");
   await expect(safety.locator(".ui-metric").nth(3)).toContainText("PROVEN");
-  await expect(page.getByText("ACCOUNT FLAT · PROVEN").first()).toBeVisible();
+  await expect(page.getByText("已平仓").first()).toBeVisible();
+  await expect(page.getByText("flatten 退出").first()).toBeVisible();
   await expect(page.getByText(/新鲜 Binance 私有对账已证明账户为空/)).toBeVisible();
 
-  options.tradingCommands = tradingCommandsFixture();
-  options.tradingObservations = tradingObservationsFixture();
-  options.tradingExecution = tradingExecutionFixture({
+  /*
+   * Past the instant `/status` published as the end of its own budget, all four safety words read 过期.
+   * The page runs no timer to get there: the expiry is absolute, and the comparison is against the clock
+   * this test fixed above.
+   */
+  options.tradingExecution = tradingLiveExecutionFixture({
     account_flat: true,
-    account_flat_proven: false,
-    alive: true,
-    current_account: tradingCurrentAccountFixture({ complete: false }),
-    entries_armed: false,
-    entries_paused: true,
-    entry_block_reason: "reconciliation_stale",
-    execution_safe: false,
-    mode: "paper",
-    reconciliation_age_ms: 15_000,
-    startup_reconciled: true,
+    account_flat_proven: true,
+    entries_armed: true,
+    entries_paused: false,
+    entry_block_reason: null,
+    facts_expire_at_ms: Date.parse("2026-08-25T11:59:00Z"),
   });
-  await page.goto("/trading?browser-state=stale-partial");
-  await expect(page.getByText("PARTIAL")).toBeVisible();
-  await expect(page.getByText("15,000 ms")).toBeVisible();
-  await expect(page.getByText("NOT PROVEN")).toBeVisible();
+  await page.goto("/trading?browser-state=facts-expired");
+  await expect(page.getByLabel("执行安全状态").getByText("过期")).toHaveCount(4);
+  await expect(page.getByText(/本次读取的事实已过期/)).toBeVisible();
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoUnhandledApiRequests(page);
 });
@@ -430,10 +332,10 @@ async function expectTradingOverflowContract(page: Page) {
     ".trading-safety-grid",
     ".trading-account-overview",
     ".trading-control-panel",
-    ".trading-latest-progress-card",
+    ".trading-funnel-grid",
     ".trading-case-list",
     ".trading-case-card",
-    ".trading-ledger-row",
+    ".trading-command-row",
   ]);
 }
 
