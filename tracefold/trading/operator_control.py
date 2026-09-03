@@ -2,6 +2,9 @@
 
 The parser accepts only operator intent.  It never accepts quantity, notional,
 leverage, order type, venue, or any other capital parameter.
+
+Authority is the authenticated ingress plus a reason; a typed `CONFIRM` suffix was a second one
+that stood between the operator and the two commands that *reduce* risk (#520 PR-B).
 """
 
 from __future__ import annotations
@@ -17,7 +20,6 @@ _COMMAND_MAX_BYTES = 1_024
 _CONTROL_TTL_SECONDS = 300
 _SHORT_TTL_MIN_SECONDS = 5
 _SHORT_TTL_MAX_SECONDS = 120
-_CONFIRMATION_TOKEN = "CONFIRM"
 _MARKET_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
 
 
@@ -36,7 +38,6 @@ class ParsedOperatorCommand:
     scope: str | None = None
     reason: str | None = None
     ttl_seconds: int | None = None
-    confirmed: bool = False
     market_key: str | None = None
     direction: Literal["long", "short"] | None = None
 
@@ -55,21 +56,19 @@ def parse_operator_command(text: str) -> ParsedOperatorCommand:
     if command == "/status" and len(tokens) == 1:
         return ParsedOperatorCommand(kind="status")
     if command == "/pause" and len(tokens) >= 2:
-        return _control("pause_entries", "entries", " ".join(tokens[1:]), confirmed=False)
-    if command in {"/resume", "/halt"} and len(tokens) >= 3 and tokens[-1] == _CONFIRMATION_TOKEN:
+        return _control("pause_entries", "entries", " ".join(tokens[1:]))
+    if command in {"/resume", "/halt"} and len(tokens) >= 2:
         action = "resume_entries" if command == "/resume" else "emergency_halt"
         scope = "entries" if command == "/resume" else "account"
-        return _control(action, scope, " ".join(tokens[1:-1]), confirmed=True)
-    if command == "/flatten" and len(tokens) == 4 and tokens[1] == "account" and tokens[-1] == _CONFIRMATION_TOKEN:
+        return _control(action, scope, " ".join(tokens[1:]))
+    if command == "/flatten" and len(tokens) == 3 and tokens[1] == "account":
         scope = tokens[1]
-        ttl_seconds = _short_ttl(tokens[2])
         return ParsedOperatorCommand(
             kind="intent",
             action="flatten",
             scope=scope,
             reason=f"flatten {scope}",
-            ttl_seconds=ttl_seconds,
-            confirmed=True,
+            ttl_seconds=_short_ttl(tokens[2]),
         )
     if command in {"/long", "/short"} and len(tokens) == 3:
         direction: Literal["long", "short"] = "long" if command == "/long" else "short"
@@ -111,17 +110,6 @@ def prepare_parsed_operator_intent(
             "source_command_id": source_command_id,
         }
     )
-    confirmation_identity = (
-        canonical_sha256(
-            {
-                "contract": "operator-command-confirmation-v1",
-                "command_id": command_id,
-                "token": _CONFIRMATION_TOKEN,
-            }
-        )
-        if parsed.confirmed
-        else None
-    )
     try:
         return prepare_operator_intent(
             command_id=command_id,
@@ -133,7 +121,6 @@ def prepare_parsed_operator_intent(
             authentication_identity=authentication_identity,
             requested_at_ns=requested_at_ns,
             expires_at_ns=requested_at_ns + parsed.ttl_seconds * 1_000_000_000,
-            confirmation_identity=confirmation_identity,
             market_key=parsed.market_key,
             direction=parsed.direction,
         )
@@ -141,7 +128,7 @@ def prepare_parsed_operator_intent(
         raise OperatorCommandError("operator_command_invalid") from None
 
 
-def _control(action: str, scope: str, reason: str, *, confirmed: bool) -> ParsedOperatorCommand:
+def _control(action: str, scope: str, reason: str) -> ParsedOperatorCommand:
     if not reason or len(reason) > 256:
         raise OperatorCommandError("operator_command_reason_invalid")
     return ParsedOperatorCommand(
@@ -150,7 +137,6 @@ def _control(action: str, scope: str, reason: str, *, confirmed: bool) -> Parsed
         scope=scope,
         reason=reason,
         ttl_seconds=_CONTROL_TTL_SECONDS,
-        confirmed=confirmed,
     )
 
 

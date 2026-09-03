@@ -37,7 +37,6 @@ RESEARCH = {
     "trading/research/oi_replay.py",
 }
 EXECUTION_PATH = {
-    "trading/demo_receipt.py",
     "trading/execution_contracts.py",
     "trading/notification_policy.py",
     "trading/operator_control.py",
@@ -274,10 +273,7 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
         "SHA256_PATTERN",
         "AlphaDecision",
         "Bar",
-        "BinanceDemoReceipt",
         "CaseState",
-        "DemoReceiptError",
-        "DemoReceiptObservation",
         "ExecutionAccountOrder",
         "ExecutionAccountPosition",
         "ExecutionAccountSnapshot",
@@ -294,7 +290,6 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
         "postgres_text_valid",
         "prepare_execution_observations",
         "prepare_parsed_operator_intent",
-        "verify_binance_demo_receipt",
     ]
     assert "TradingRepository" not in trading.__dict__
     assert "CapitalLane" not in trading.__dict__

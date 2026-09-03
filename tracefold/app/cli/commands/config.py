@@ -15,7 +15,6 @@ from tracefold.platform.config.models import (
     news_model_availability,
     news_push_availability,
 )
-from tracefold.platform.config.secret_file import secret_file_configured
 from tracefold.platform.paths import config_path
 
 
@@ -40,7 +39,6 @@ def handle_init(args: Namespace) -> tuple[int, dict[str, Any]]:
         name: _ensure_optional_secret_file(path.parent / name)
         for name in ("binance_usdm_api_key", "binance_usdm_api_secret")
     }
-    trading_console_write_token_path = _ensure_generated_secret_file(path.parent / "trading_console_write_token")
     return (
         0,
         {
@@ -55,7 +53,6 @@ def handle_init(args: Namespace) -> tuple[int, dict[str, Any]]:
                 "trading_execution_secret_files": {
                     name: str(secret_path) for name, secret_path in trading_execution_secret_paths.items()
                 },
-                "trading_console_write_token_file": str(trading_console_write_token_path),
                 "created": args.force or not existed,
                 "config_migrated": bool(config_backup_paths),
                 "config_backup_path": None if config_backup_path is None else str(config_backup_path),
@@ -73,7 +70,6 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
     binance_secret_file = settings.trading_binance_usdm_api_secret_file()
     trading_bot_token_file = settings.trading_telegram_bot_token_file()
     trading_webhook_secret_file = settings.trading_telegram_webhook_secret_file()
-    trading_console_write_token_file = settings.trading_console_write_token_file()
     return (
         0,
         {
@@ -136,10 +132,6 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                     "enabled": settings.trading.enabled,
                     "control": {
                         "enabled": settings.trading.control.enabled,
-                        "console_write_token_file": (
-                            None if trading_console_write_token_file is None else str(trading_console_write_token_file)
-                        ),
-                        "console_write_token_configured": secret_file_configured(trading_console_write_token_file),
                         "telegram_bot_token_file": (
                             None if trading_bot_token_file is None else str(trading_bot_token_file)
                         ),
@@ -180,15 +172,6 @@ def _ensure_bootstrap_postgres_password_file(app_home: Path) -> Path:
 def _ensure_password_file(path: Path) -> Path:
     if path.exists() and not path.is_file():
         raise ValueError(f"postgres_password_path_not_file:{path.name}")
-    if not path.exists():
-        path.write_text(secrets.token_urlsafe(32) + "\n", encoding="utf-8")
-    path.chmod(0o600)
-    return path
-
-
-def _ensure_generated_secret_file(path: Path) -> Path:
-    if path.is_symlink() or (path.exists() and not path.is_file()):
-        raise ValueError(f"generated_secret_path_not_file:{path.name}")
     if not path.exists():
         path.write_text(secrets.token_urlsafe(32) + "\n", encoding="utf-8")
     path.chmod(0o600)

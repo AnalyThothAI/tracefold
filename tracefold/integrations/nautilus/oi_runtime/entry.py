@@ -44,7 +44,7 @@ class EntryCoordinator:
         readiness: RuntimeReadiness,
         observations: RuntimeObservationWriter,
         quotes: QuoteStreamCoordinator,
-        current_day_start: Callable[[], DayStartBaseline | None],
+        day_start_baseline: Callable[..., DayStartBaseline],
         readiness_snapshot: Callable[[], RuntimeReadinessSnapshot],
         verify_owned_exposure: Callable[[], bool],
         request_reconciliation: Callable[[PrivateReconciliationReason], None],
@@ -55,7 +55,7 @@ class EntryCoordinator:
         self._readiness = readiness
         self._observations = observations
         self._quotes = quotes
-        self._current_day_start = current_day_start
+        self._day_start_baseline = day_start_baseline
         self._readiness_snapshot = readiness_snapshot
         self._verify_owned_exposure = verify_owned_exposure
         self._request_reconciliation = request_reconciliation
@@ -104,10 +104,6 @@ class EntryCoordinator:
                 (ready.entry_block_reason or "entry_blocked") if not ready.entries_armed else "protection_unproven",
             )
             return
-        day_start = self._current_day_start()
-        if day_start is None:
-            self._observations.dispose_entry(request, "day_start_baseline_missing")
-            return
         # Admission passed, so this instrument is now worth a market-data stream. The first tick can
         # be up to a round trip away; the wait is spent as redeliveries of an unresolved Signal, never
         # as a blocked event loop, and it is bounded well inside the Signal's TTL (#510 E).
@@ -140,6 +136,15 @@ class EntryCoordinator:
             return
         if facts.unexpected_exposure:
             self._readiness.halt_for_unexpected_exposure()
+        # A missing day-start baseline is recorded from this equity and the entry continues; it used
+        # to redeliver the Signal until a background write landed (#520 PR-B). An equity that cannot
+        # be a baseline at all - non-positive, or beyond the observation's precision - is a terminal
+        # refusal here rather than an exception on the callback thread.
+        try:
+            day_start = self._day_start_baseline(equity_usd=facts.equity_usd, now_ns=now_ns)
+        except ValueError as exc:
+            self._observations.dispose_entry(request, str(exc))
+            return
         requested_risk = min(
             facts.equity_usd * self._profile.risk.risk_fraction_per_trade,
             self._profile.risk.max_risk_per_trade_usd,

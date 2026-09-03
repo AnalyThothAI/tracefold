@@ -223,7 +223,7 @@ async def _run_active_runtime(
             execution_strategy=_EXECUTION_STRATEGY,
         )
     )
-    readiness = RuntimeReadiness()
+    readiness = RuntimeReadiness(reconciliation_stale_after_ns=profile.risk.reconciliation_stale_after_ns)
     loop = asyncio.get_running_loop()
     runtime_wake = asyncio.Event()
     reconciliation_requests = _PrivateReconciliationRequests(loop=loop, wake=runtime_wake)
@@ -242,7 +242,6 @@ async def _run_active_runtime(
         readiness=readiness,
         dispatch_pump=dispatch_pump_on_loop,
         singleton_ready=lambda: singleton.acquired,
-        control_plane_ready=lambda: bridge is not None and bridge.connected and bridge.inputs_ready,
         day_start=None,
         request_reconciliation=reconciliation_requests.request,
         initial_control_state=control,
@@ -349,9 +348,8 @@ async def _run_active_runtime(
             now_ns = time.time_ns()
             # The same function the entry path's `NautilusRiskFacts` uses, so the day-start baseline
             # and every intraday comparison against it are one definition of equity (#510 B). A
-            # missing account or an unpriced owned position simply defers the baseline; entries stay
-            # blocked on `day_start_baseline_missing` until it can be written, which is the safe way
-            # to be unsure.
+            # missing account or an unpriced owned position simply defers the baseline; an entry that
+            # arrives first records the day's row itself from its own equity (#520 PR-B).
             with suppress(RuntimeError):
                 bridge.set_equity(
                     account_equity_usd(

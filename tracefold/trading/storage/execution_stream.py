@@ -191,6 +191,11 @@ class ExecutionAccountSnapshot:
     unknown_orders_count: int
     complete: bool
     truncated: bool = False
+    # Whether the Runtime's durable audit copy is keeping up. It is reported, never enforced: Binance
+    # holds the account's own order and fill history, so an unwritable local copy is a thing to show
+    # an operator, not a reason to refuse exposure (#520 PR-B).
+    audit_healthy: bool = True
+    audit_failure_reason: str | None = None
 
     def __post_init__(self) -> None:
         if self.observed_at_ns <= 0 or (self.market_observed_at_ns is not None and self.market_observed_at_ns <= 0):
@@ -198,6 +203,8 @@ class ExecutionAccountSnapshot:
         if min(self.open_orders_count, self.inflight_orders_count, self.unknown_orders_count) < 0:
             raise ValueError("execution_account_snapshot_count_invalid")
         if len(self.positions) > 100 or len(self.orders) > 200:
+            raise ValueError("execution_account_snapshot_bounds_invalid")
+        if self.audit_failure_reason is not None and len(self.audit_failure_reason) > 128:
             raise ValueError("execution_account_snapshot_bounds_invalid")
 
     def payload(self) -> dict[str, Any]:
@@ -349,7 +356,6 @@ def prepare_operator_intent(
     authentication_identity: str,
     requested_at_ns: int,
     expires_at_ns: int,
-    confirmation_identity: str | None,
     market_key: str | None,
     direction: str | None,
 ) -> PreparedOperatorIntent:
@@ -365,17 +371,13 @@ def prepare_operator_intent(
             "authentication_identity": authentication_identity,
             "requested_at_ns": requested_at_ns,
             "expires_at_ns": expires_at_ns,
-            "confirmation_identity": confirmation_identity,
             "market_key": market_key,
             "direction": direction,
         }
     )
     return PreparedOperatorIntent(
         value=value,
-        # `confirmation_identity` is no longer stored: #520 dropped the column and the CHECK, and
-        # #520 PR-B drops the contract field. Keeping it out of the payload now means that PR needs
-        # no migration and no stored Command ever carries a key the contract will not accept.
-        payload_json=_dumps(value.model_dump(mode="json", exclude={"seq", "confirmation_identity"})),
+        payload_json=_dumps(value.model_dump(mode="json", exclude={"seq"})),
     )
 
 

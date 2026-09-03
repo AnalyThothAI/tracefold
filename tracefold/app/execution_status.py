@@ -88,7 +88,7 @@ def execution_readiness_projection(
     elif current_control is None:
         entry_block_reason = "runtime_control_state_missing"
     elif emergency_halted:
-        entry_block_reason = "emergency_halt"
+        entry_block_reason = "emergency_halted"
     elif entries_paused:
         entry_block_reason = "entries_paused"
     else:

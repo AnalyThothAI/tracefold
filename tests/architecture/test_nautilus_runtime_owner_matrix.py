@@ -129,9 +129,10 @@ def test_current_production_wiring_has_one_input_reconciliation_and_projection_o
         "                    with self._lock:\n"
         "                        self._connected = True"
     ) in bridge_source
-    assert (
-        "control_plane_ready=lambda: bridge is not None and bridge.connected and bridge.inputs_ready,"
-    ) in root_source
+    # #520 PR-B: no readiness gate hangs off the input reads any more. An entry request can only
+    # arrive through them, so a Runtime whose reads are failing has nothing to admit.
+    assert "control_plane_ready" not in root_source
+    assert "inputs_ready" not in bridge_source
     # #510 F, measured in `tests/integration/test_nautilus_live_clock_threads.py`: `LiveClock` fires
     # `on_timer` on a Rust-owned thread, so the live root is the only caller allowed to name the
     # event loop as the one thread that may mutate `RuntimeExecutionState`.
@@ -139,7 +140,6 @@ def test_current_production_wiring_has_one_input_reconciliation_and_projection_o
     assert "loop.call_soon_threadsafe(pump)" in root_source
     assert "self._dispatch_pump(self._pump)" in strategy_source
     assert strategy_source.count("def _pump(self) -> None:") == 1
-    assert bridge_source.count('_INPUT_STEPS = ("commands", "signals")') == 1
     assert bridge_source.count("self._signals.poll_commands_once(") == 1
     assert bridge_source.count("self._signals.poll_once(") == 1
     assert bridge_source.index("self._signals.poll_commands_once(") < bridge_source.index("self._signals.poll_once(")

@@ -258,9 +258,6 @@ describe("TradingPage", () => {
     renderTrading();
 
     expect(await screen.findByText("PROVEN")).toBeVisible();
-    fireEvent.change(screen.getByLabelText("Operator write token"), {
-      target: { value: "operator-write-token" },
-    });
     expect(screen.getByText("$997.50")).toBeVisible();
     expect(screen.getByText("9,000 ms")).toBeVisible();
     expect(screen.getByRole("button", { name: "Flatten account" })).toBeDisabled();
@@ -307,9 +304,6 @@ describe("TradingPage", () => {
     const { client } = renderTrading();
 
     expect(await screen.findByText("允许新增 exposure")).toBeVisible();
-    fireEvent.change(screen.getByLabelText("Operator write token"), {
-      target: { value: "operator-write-token" },
-    });
     expect(within(screen.getByLabelText("执行安全状态")).getAllByText("YES")).toHaveLength(3);
     expect(screen.getByText("PROVEN")).toBeVisible();
     expect(screen.getByRole("button", { name: "Flatten account" })).toBeDisabled();
@@ -370,26 +364,23 @@ describe("TradingPage", () => {
     );
     renderTrading();
 
-    fireEvent.change(await screen.findByLabelText("Operator write token"), {
-      target: { value: "operator-write-token" },
-    });
     fireEvent.click(await screen.findByRole("button", { name: "Resume / Arm" }));
     expect(screen.getByRole("alertdialog")).toBeVisible();
     expect(posted).toBeUndefined();
     fireEvent.click(screen.getByRole("button", { name: "确认写入 Command" }));
 
     await waitFor(() => expect(posted).toBeDefined());
-    expect(authorization).toBe("Bearer operator-write-token");
+    expect(authorization).toBe("Bearer test-token");
     expect(posted).toMatchObject({
       request_id: "11111111-1111-4111-8111-111111111111",
-      text: "/resume operator console CONFIRM",
+      text: "/resume operator console",
     });
     expect(await screen.findByText(/Command 已持久化/)).toHaveTextContent(
       "这不代表 Runtime 受理、订单或成交",
     );
   });
 
-  it("requires typed confirmation before writing a Live command", async () => {
+  it("writes a Live command from the dialog with no second typed token", async () => {
     vi.stubGlobal("crypto", {
       randomUUID: () => "22222222-2222-4222-8222-222222222222",
     });
@@ -427,15 +418,9 @@ describe("TradingPage", () => {
     );
     renderTrading();
 
-    fireEvent.change(await screen.findByLabelText("Operator write token"), {
-      target: { value: "operator-write-token" },
-    });
     fireEvent.click(await screen.findByRole("button", { name: "Resume / Arm" }));
+    expect(screen.queryByLabelText("Operator write token")).toBeNull();
     const submit = screen.getByRole("button", { name: "确认写入 Command" });
-    expect(submit).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Live 模式：输入 CONFIRM 进行二次确认"), {
-      target: { value: "CONFIRM" },
-    });
     expect(submit).toBeEnabled();
     fireEvent.click(submit);
 
@@ -489,9 +474,6 @@ describe("TradingPage", () => {
     );
     renderTrading();
 
-    fireEvent.change(await screen.findByLabelText("Operator write token"), {
-      target: { value: "operator-write-token" },
-    });
     fireEvent.click(await screen.findByRole("button", { name: "Resume / Arm" }));
     fireEvent.click(screen.getByRole("button", { name: "确认写入 Command" }));
     expect(await screen.findByText(/提交结果未知/)).toHaveTextContent(

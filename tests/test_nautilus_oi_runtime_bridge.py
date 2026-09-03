@@ -217,7 +217,7 @@ def test_a_transient_audit_failure_leaves_the_batch_queued_without_killing_the_b
     assert bridge.fatal_error is None
     assert audit.queued_count == 1
     assert audit.failure_reason == "audit_append_failed"
-    assert audit.can_accept_exposure() is False
+    assert audit.healthy is False
 
 
 def test_a_lost_connection_still_aborts_the_cycle_so_the_session_is_replaced() -> None:
@@ -248,13 +248,13 @@ def test_a_lost_connection_still_aborts_the_cycle_so_the_session_is_replaced() -
     raise AssertionError("a lost connection must reach _run, which replaces the session")
 
 
-def test_a_stuck_input_step_disarms_entries_through_control_plane_readiness() -> None:
-    """A Runtime that has stopped consuming its inputs must not stay armed for new exposure.
+def test_a_stuck_input_step_keeps_reading_and_never_disarms_entries() -> None:
+    """#520 PR-B: the read that is failing is the only source of entry requests.
 
-    Logging the failure and returning left `entries_armed` true while nothing was being read: armed to
-    open a position it could then never be told to close. `control_plane_ready` already means exactly
-    "the control path is not reaching this Runtime", so the stuck step lands there - it blocks new
-    entries and leaves `execution_safe` alone, because existing exposure stays protected.
+    `control_plane_ready` turned a stuck Command or Signal read into `entries_armed=false`, on the
+    theory that a Runtime consuming nothing must not stay armed. It could never fire on anything: an
+    entry request arrives through exactly that read, so while it fails there is nothing to admit. The
+    cycle logs the cause once and keeps re-reading, which is what actually recovers.
     """
 
     profile = oi_profile()
@@ -272,43 +272,37 @@ def test_a_stuck_input_step_disarms_entries_through_control_plane_readiness() ->
     )
     bridge = _bridge(audit=audit, signals=signals)
 
-    readiness = RuntimeReadiness()
+    readiness = RuntimeReadiness(reconciliation_stale_after_ns=profile.risk.reconciliation_stale_after_ns)
     readiness.reconciled(account_observed_at_ns=NOW_NS, reconciliation_observed_at_ns=NOW_NS)
 
     def snapshot() -> RuntimeReadinessSnapshot:
-        # `root.py` passes `bridge.connected and bridge.inputs_ready` here; this bridge was never
-        # started, so only the half this test is about varies. The owner matrix pins the composition.
         return readiness.snapshot(
+            now_ns=NOW_NS,
             singleton_ready=True,
-            portfolio_ready=True,
-            control_plane_ready=bridge.inputs_ready,
-            audit_ready=audit.can_accept_exposure(),
-            day_start_ready=True,
             entries_paused=False,
             emergency_halted=False,
         )
 
-    assert bridge.inputs_ready is True
     armed = snapshot()
     assert (armed.execution_safe, armed.entries_armed, armed.entry_block_reason) == (True, True, None)
 
     bridge._cycle(repos)
     bridge._cycle(repos)
 
+    # A failing read is retried on the very next cycle rather than silencing itself or the others.
     assert trading.signal_reads == 2
-    assert bridge.inputs_ready is False
-    disarmed = snapshot()
-    assert disarmed.execution_safe is True
-    assert disarmed.entries_armed is False
-    assert disarmed.entry_block_reason == "control_plane_unavailable"
-    assert disarmed.control_plane_ready is False
+    still_armed = snapshot()
+    assert (still_armed.execution_safe, still_armed.entries_armed, still_armed.entry_block_reason) == (
+        True,
+        True,
+        None,
+    )
 
     trading.recover()
     bridge._cycle(repos)
 
-    assert bridge.inputs_ready is True
-    rearmed = snapshot()
-    assert (rearmed.execution_safe, rearmed.entries_armed, rearmed.entry_block_reason) == (True, True, None)
+    assert trading.signal_reads == 3
+    assert snapshot().entries_armed is True
 
 
 def test_the_bridge_thread_owns_the_projection_write_the_recovery_read_and_the_slot_heartbeat() -> None:
@@ -348,7 +342,7 @@ def test_the_bridge_thread_owns_the_projection_write_the_recovery_read_and_the_s
     running = replace(
         starting,
         lifecycle_state="running",
-        entry_block_reason="portfolio_unavailable",
+        entry_block_reason="reconciliation_stale",
         heartbeat_at_ns=starting.heartbeat_at_ns + 1,
         updated_at_ns=starting.updated_at_ns + 1,
     )
@@ -411,6 +405,5 @@ def test_a_failing_projection_write_logs_once_and_leaves_the_inputs_and_the_gate
     assert len(trading.updates) == 3
     assert projector.current == starting
     assert bridge.fatal_error is None
-    assert bridge.inputs_ready is True
     assert trading.command_reads == 3
     assert records.count("OI Runtime database bridge step failed (projection)") == 1

@@ -54,15 +54,18 @@ def exit_leg(generation: int) -> str:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeReadinessSnapshot:
+    """The two readiness facts this Runtime derives, plus the raw facts they are derived from.
+
+    `alive` is the third and belongs to the composition root's loop, which is the only thing that
+    knows the node, the event loop and the database session are all still up. The five booleans that
+    used to sit here - singleton, portfolio, control plane, audit and day start - were true whenever
+    the process could run at all, or gated entries on something that is not a risk (#520 PR-B).
+    """
+
     execution_safe: bool
     entries_armed: bool
     entry_block_reason: str | None
-    singleton_ready: bool
     startup_reconciled: bool
-    portfolio_ready: bool
-    control_plane_ready: bool
-    audit_ready: bool
-    day_start_ready: bool
     unexpected_exposure: bool
     reconciliation_observed_at_ns: int
 
@@ -139,7 +142,10 @@ class RuntimeEntryRequest:
 class RuntimeReadiness:
     """Thread-safe mechanical gates; it contains no capital or order lifecycle."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, reconciliation_stale_after_ns: int) -> None:
+        if reconciliation_stale_after_ns <= 0:
+            raise ValueError("oi_runtime_reconciliation_staleness_invalid")
+        self._reconciliation_stale_after_ns = reconciliation_stale_after_ns
         self._startup_reconciled = False
         self._unexpected_exposure = False
         self._account_observed_at_ns = 0
@@ -166,23 +172,29 @@ class RuntimeReadiness:
     def snapshot(
         self,
         *,
+        now_ns: int,
         singleton_ready: bool,
-        portfolio_ready: bool,
-        control_plane_ready: bool,
-        audit_ready: bool,
-        day_start_ready: bool,
         entries_paused: bool,
         emergency_halted: bool,
     ) -> RuntimeReadinessSnapshot:
+        """Derive `execution_safe` and `entries_armed` from facts, never from a startup ritual.
+
+        `execution_safe` means this Runtime's picture of the account is current and undisputed:
+        startup reconciliation happened, the private scan behind it is still fresh, no exposure it
+        does not own showed up, and it still holds the account slot. `entries_armed` adds only what
+        an operator asked for. Everything else an entry needs - equity, quotes, the day baseline, a
+        writable audit - is answered on the entry path itself against that request's own facts.
+        """
+
         with self._lock:
             startup = self._startup_reconciled
             unexpected = self._unexpected_exposure
             reconciled_at = self._reconciliation_observed_at_ns
         safe_gates = (
-            (singleton_ready, "singleton_unavailable"),
             (startup, "startup_reconciliation_unproven"),
-            (portfolio_ready, "portfolio_unavailable"),
+            (now_ns - reconciled_at <= self._reconciliation_stale_after_ns, "reconciliation_stale"),
             (not unexpected, "unexpected_exposure"),
+            (singleton_ready, "singleton_lost"),
         )
         reason: str | None = None
         for passed, failed_reason in safe_gates:
@@ -191,14 +203,10 @@ class RuntimeReadiness:
                 break
         execution_safe = reason is None
         if execution_safe:
-            entry_gates = (
-                (not emergency_halted, "emergency_halt"),
+            for passed, failed_reason in (
+                (not emergency_halted, "emergency_halted"),
                 (not entries_paused, "entries_paused"),
-                (control_plane_ready, "control_plane_unavailable"),
-                (audit_ready, "audit_unavailable"),
-                (day_start_ready, "day_start_baseline_missing"),
-            )
-            for passed, failed_reason in entry_gates:
+            ):
                 if not passed:
                     reason = failed_reason
                     break
@@ -206,12 +214,7 @@ class RuntimeReadiness:
             execution_safe=execution_safe,
             entries_armed=reason is None,
             entry_block_reason=reason,
-            singleton_ready=singleton_ready,
             startup_reconciled=startup,
-            portfolio_ready=portfolio_ready,
-            control_plane_ready=control_plane_ready,
-            audit_ready=audit_ready,
-            day_start_ready=day_start_ready,
             unexpected_exposure=unexpected,
             reconciliation_observed_at_ns=reconciled_at,
         )

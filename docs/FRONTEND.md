@@ -320,9 +320,10 @@ the route components into the eager shell chunk.
   unavailable; zero visible rows never becomes flatness evidence. Only a fresh
   Binance private reconciliation may light the proven-flat state.
 
-  Pause writes immediately; Resume / Arm and Flatten use a confirmation dialog,
-  and Live requires the operator to type `CONFIRM`. `execution.mode=disabled`
-  locks all three controls. A successful POST says only that the Command was
+  Pause writes immediately; Resume / Arm and Flatten use a confirmation dialog.
+  `execution.mode=disabled` locks all three controls. All three write with the
+  session token the page already holds; the separate pasted write token and the
+  Live `CONFIRM` re-entry went with #520 PR-B. A successful POST says only that the Command was
   persisted. Each recent Signal and Command keeps persisted, Runtime disposition,
   venue order/fill, position, and final private-flat stages separate, so HTTP
   success, Runtime acceptance, order acceptance, fill observation, and account
@@ -546,9 +547,9 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
    On `/trading`, verify disabled controls; alive-but-unsafe and safe-but-paused
    states; a protected position; pending/failed protection; an unknown order;
    persisted, Runtime-accepted, order-accepted, fill-observed, flatten-pending,
-   expired/rejected, and fresh-private-flat progress. Confirm paper Resume and
-   Flatten require the dialog, Live additionally requires typed `CONFIRM`, and
-   every success message still denies Runtime/venue completion.
+   expired/rejected, and fresh-private-flat progress. Confirm Resume and
+   Flatten require the dialog and every success message still denies
+   Runtime/venue completion.
 5. Confirm the topbar shows no status pill while `/api/status.runtime.ok` is
    true and shows the first runtime reason when it is not, and that the feed
    header shows no health pill while `health.overall` is `ok`.

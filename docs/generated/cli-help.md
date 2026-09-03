@@ -760,16 +760,15 @@ options:
 
 ```
 usage: tracefold trading [-h]
-                         {status,cases,signals,observations,commands,demo-receipt,issue,oi-corpus,oi-replay} ...
+                         {status,cases,signals,observations,commands,issue,oi-corpus,oi-replay} ...
 
 positional arguments:
-  {status,cases,signals,observations,commands,demo-receipt,issue,oi-corpus,oi-replay}
+  {status,cases,signals,observations,commands,issue,oi-corpus,oi-replay}
     status              show Alpha producer and disabled execution readiness
     cases               list Trading cases newest first
     signals             list engine-neutral TradeSignalV1 rows
     observations        list append-only Runtime observations
     commands            list authenticated OperatorIntentV1 rows
-    demo-receipt        verify a paper entry/restart/flatten venue receipt
     issue               durably record one local OS-authenticated operator
                         intent
     oi-corpus           pull or re-seal the sealed Binance open-interest
@@ -839,19 +838,6 @@ options:
   -h, --help            show this help message and exit
   --action {pause_entries,resume_entries,emergency_halt,flatten,manual_entry}
   --limit LIMIT
-
-```
-
-## `trading demo-receipt`
-
-```
-usage: tracefold trading demo-receipt [-h] --entry-command-id ENTRY_COMMAND_ID
-                                      --flatten-command-id FLATTEN_COMMAND_ID
-
-options:
-  -h, --help            show this help message and exit
-  --entry-command-id ENTRY_COMMAND_ID
-  --flatten-command-id FLATTEN_COMMAND_ID
 
 ```
 

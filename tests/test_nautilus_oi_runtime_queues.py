@@ -204,7 +204,7 @@ def test_failed_command_scan_closes_the_signal_gate() -> None:
     assert client.poll_once(SignalRows(signal)) == 0
 
 
-def test_audit_flush_failure_keeps_batch_and_blocks_exposure_until_success() -> None:
+def test_audit_flush_failure_keeps_the_batch_and_reports_unhealthy_until_success() -> None:
     factory = _factory()
     value = factory.create(
         normalized_kind="readiness",
@@ -223,13 +223,11 @@ def test_audit_flush_failure_keeps_batch_and_blocks_exposure_until_success() -> 
         sink.flush_once(fail)
     assert sink.queued_count == 1
     assert sink.healthy is False
-    assert sink.can_accept_exposure() is False
 
     written: list[object] = []
     assert sink.flush_once(written.extend) == (value,)
     assert sink.queued_count == 0
     assert sink.healthy is True
-    assert sink.can_accept_exposure() is False
 
 
 def test_audit_identity_conflict_stays_unhealthy_until_gap_is_durable() -> None:
@@ -371,7 +369,7 @@ def test_rejected_batch_is_quarantined_and_the_queue_behind_it_keeps_flushing() 
     assert refusals == 1
 
 
-def test_a_rejected_batch_blocks_new_exposure_until_its_gap_is_durable() -> None:
+def test_a_rejected_batch_stays_unhealthy_until_its_gap_is_durable() -> None:
     factory = _factory()
     value = factory.create(
         normalized_kind="fill",
@@ -389,7 +387,6 @@ def test_a_rejected_batch_blocks_new_exposure_until_its_gap_is_durable() -> None
     assert sink.flush_once(refuse) == (value,)
     assert sink.healthy is False
     assert sink.failure_reason == "audit_append_rejected"
-    assert sink.can_accept_exposure() is False
 
     written: list[object] = []
     gap_batch = sink.flush_once(written.extend)
@@ -398,7 +395,6 @@ def test_a_rejected_batch_blocks_new_exposure_until_its_gap_is_durable() -> None
     assert gap_batch[0].normalized_kind == "audit_gap"
     assert gap_batch[0].summary["cause"] == "audit_append_rejected"
     assert sink.healthy is True
-    assert sink.can_accept_exposure() is True
 
 
 def test_a_systemically_rejected_queue_drains_one_batch_per_pass_without_spinning() -> None:

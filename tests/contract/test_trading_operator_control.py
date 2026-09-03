@@ -49,14 +49,14 @@ def _webhook() -> TelegramControlWebhook:
 
 
 @pytest.mark.parametrize(
-    ("text", "action", "scope", "ttl", "market", "direction", "confirmed"),
+    ("text", "action", "scope", "ttl", "market", "direction"),
     [
-        ("/pause investigate feed", "pause_entries", "entries", 300, None, None, False),
-        ("/resume incident cleared CONFIRM", "resume_entries", "entries", 300, None, None, True),
-        ("/halt unexpected exposure CONFIRM", "emergency_halt", "account", 300, None, None, True),
-        ("/flatten account 30 CONFIRM", "flatten", "account", 30, None, None, True),
-        ("/long crypto:perp:BTC:USDT 20", "manual_entry", "market", 20, "crypto:perp:BTC:USDT", "long", False),
-        ("/short crypto:perp:ETH:USDT 15", "manual_entry", "market", 15, "crypto:perp:ETH:USDT", "short", False),
+        ("/pause investigate feed", "pause_entries", "entries", 300, None, None),
+        ("/resume incident cleared", "resume_entries", "entries", 300, None, None),
+        ("/halt unexpected exposure", "emergency_halt", "account", 300, None, None),
+        ("/flatten account 30", "flatten", "account", 30, None, None),
+        ("/long crypto:perp:BTC:USDT 20", "manual_entry", "market", 20, "crypto:perp:BTC:USDT", "long"),
+        ("/short crypto:perp:ETH:USDT 15", "manual_entry", "market", 15, "crypto:perp:ETH:USDT", "short"),
     ],
 )
 def test_closed_command_parser_carries_no_capital_parameters(
@@ -66,7 +66,6 @@ def test_closed_command_parser_carries_no_capital_parameters(
     ttl: int,
     market: str | None,
     direction: str | None,
-    confirmed: bool,
 ) -> None:
     parsed = parse_operator_command(text)
 
@@ -75,7 +74,6 @@ def test_closed_command_parser_carries_no_capital_parameters(
     assert parsed.ttl_seconds == ttl
     assert parsed.market_key == market
     assert parsed.direction == direction
-    assert parsed.confirmed is confirmed
     assert not hasattr(parsed, "quantity")
     assert not hasattr(parsed, "leverage")
 
@@ -83,11 +81,12 @@ def test_closed_command_parser_carries_no_capital_parameters(
 @pytest.mark.parametrize(
     "text",
     [
-        "/resume incident cleared",
-        "/halt CONFIRM",
-        "/flatten account 121 CONFIRM",
-        "/flatten account 30",
-        "/flatten symbol 30 CONFIRM",
+        "/resume",
+        "/halt",
+        "/flatten account 121",
+        "/flatten account",
+        "/flatten account 30 CONFIRM",
+        "/flatten symbol 30",
         "/long crypto:perp:BTC:USDT 20 1BTC",
         "/long crypto/perp/BTC/USDT 20",
         "/short crypto:perp:BTC:USDT 20 leverage=5",
@@ -95,9 +94,43 @@ def test_closed_command_parser_carries_no_capital_parameters(
         " /status",
     ],
 )
-def test_closed_command_parser_rejects_missing_confirmation_bad_ttl_and_extra_parameters(text: str) -> None:
+def test_closed_command_parser_rejects_a_missing_reason_bad_ttl_and_extra_parameters(text: str) -> None:
     with pytest.raises(OperatorCommandError):
         parse_operator_command(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "action", "scope", "reason", "ttl"),
+    [
+        ("/resume maintenance", "resume_entries", "entries", "maintenance", 300),
+        ("/halt unexpected exposure", "emergency_halt", "account", "unexpected exposure", 300),
+        ("/flatten account 30", "flatten", "account", "flatten account", 30),
+    ],
+)
+def test_control_grammar_needs_no_confirmation_token(text: str, action: str, scope: str, reason: str, ttl: int) -> None:
+    """#520 PR-B: authentication plus a reason is the whole authority; `CONFIRM` was a second one."""
+
+    parsed = parse_operator_command(text)
+
+    assert parsed.action == action
+    assert parsed.scope == scope
+    assert parsed.reason == reason
+    assert parsed.ttl_seconds == ttl
+    assert not hasattr(parsed, "confirmed")
+
+    prepared = prepare_parsed_operator_intent(
+        parsed,
+        source="cli:uid:501:host:desk-a",
+        source_command_id="ops-confirmless",
+        account_slot="binance-usdm-demo-v1",
+        operator_identity="local-cli:501",
+        authentication_identity="local-os-uid:501",
+        requested_at_ns=1_800_000_000_000_000_000,
+    )
+
+    assert prepared.value.action == action
+    assert not hasattr(prepared.value, "confirmation_identity")
+    assert "confirmation_identity" not in json.loads(prepared.payload_json)
 
 
 def test_status_is_read_only_and_creates_no_intent() -> None:
@@ -115,7 +148,7 @@ def test_authenticated_allowlisted_update_is_stable_and_secret_free() -> None:
     webhook = _webhook()
     kwargs = {
         "headers": {"X-Telegram-Bot-Api-Secret-Token": _SECRET},
-        "body": _body("/flatten account 30 CONFIRM"),
+        "body": _body("/flatten account 30"),
         "received_at_ns": (_SENT_AT_SECONDS + 1) * 1_000_000_000,
     }
 

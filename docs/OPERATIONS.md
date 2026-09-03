@@ -101,10 +101,50 @@ mode-`0600` files, set `execution.mode: paper`, and run `make up`. A slot with
 no Command history starts with entries armed. Inspect `make status` and `trading
 status` before letting a Signal or `/long`/`/short` enter, and use
 `/pause REASON` if it should not. After the bounded Demo exercise, issue
-`/flatten account TTL_SECONDS CONFIRM`, require a later private Binance flat
-reconciliation, run `trading demo-receipt`, restore `execution.mode: disabled`,
-and run `make up` again. Demo evidence is not live-money evidence. Never select
-`live` or perform a live canary without separate explicit operator authority.
+`/flatten account TTL_SECONDS`, require a later private Binance flat
+reconciliation, read the receipt out of `trading status` and the observation
+table (below), restore `execution.mode: disabled`, and run `make up` again. Demo
+evidence is not live-money evidence. Never select `live` or perform a live
+canary without separate explicit operator authority.
+
+#### Reading the Demo receipt out of the durable facts
+
+`trading status` carries the current runtime identity plus `account_flat`,
+`reconciliation_observed_at_ns` and `reconciliation_age_ms`; a flat account is
+proven by that projection inside its freshness budget, never by the absence of a
+row. The three appends the exercise itself has to show are queries, not a
+verifier (#520 PR-B deleted `trading demo-receipt`). Run them against the
+Tracefold database, substituting the entry and flatten `command_id` values the
+ingress returned:
+
+```sql
+-- 1. the entry: venue-accepted order and its fill, with the Binance identities
+SELECT normalized_kind, summary ->> 'leg' AS leg, summary ->> 'status' AS status,
+       native_identity_references, observed_at_ns
+  FROM trading_execution_observations
+ WHERE command_id = :entry_command_id
+   AND normalized_kind IN ('order', 'fill')
+ ORDER BY observed_at_ns;
+
+-- 2. the protection: an explicit reduce-only stop, accepted by the venue
+SELECT summary ->> 'status' AS status, summary ->> 'explicit_quantity' AS quantity,
+       summary ->> 'reduce_only' AS reduce_only, native_identity_references, observed_at_ns
+  FROM trading_execution_observations
+ WHERE command_id = :entry_command_id
+   AND normalized_kind = 'protection'
+ ORDER BY observed_at_ns;
+
+-- 3. the flatten: completed against a later private Binance flat reconciliation
+SELECT summary ->> 'disposition' AS disposition, summary ->> 'reason' AS reason, observed_at_ns
+  FROM trading_execution_observations
+ WHERE command_id = :flatten_command_id
+   AND normalized_kind = 'control_disposition'
+ ORDER BY observed_at_ns;
+```
+
+The kill -9 restart receipt is the `readiness` observations with
+`summary ->> 'lifecycle' = 'started'` for the slot: one before the entry and one
+after its fill is what proves the position survived a restart.
 
 ### Trading operator control (#433-D)
 
@@ -115,7 +155,6 @@ execution. Configure the one Workers-owned Telegram boundary:
 trading:
   control:
     enabled: true
-    console_write_token_file: "trading_console_write_token"
     telegram_bot_token_file: "telegram_bot_token"
     telegram_webhook_secret_file: "telegram_webhook_secret"
     allowed_chat_ids: [-1001234567890]
@@ -135,8 +174,8 @@ secret-token header value. Do not put the secret in a URL, config comment,
 Issue, command transcript, or log. Both the message chat and sender user must
 be allowlisted.
 
-The closed commands are `/status`, `/pause REASON`, `/resume REASON CONFIRM`,
-`/halt REASON CONFIRM`, `/flatten account TTL_SECONDS CONFIRM`, and optional
+The closed commands are `/status`, `/pause REASON`, `/resume REASON`,
+`/halt REASON`, `/flatten account TTL_SECONDS`, and optional
 `/long MARKET_KEY TTL_SECONDS` / `/short MARKET_KEY TTL_SECONDS`. Flatten and
 manual TTL are 5–120 seconds; control TTL is five minutes. There is no quantity,
 notional, leverage, venue, order type, or direct order option. Manual direction
@@ -159,23 +198,10 @@ from a recent `decision.last_case_at_ms`, or from Runtime readiness. Do not
 read flatness out of the observation ledger: an unchanged steady reconciliation
 appends no row (#510).
 
-The browser reads use the bootstrap token, but Command writes use the separate
-mode-`0600` `trading_console_write_token` created by `tracefold init`. Paste
-that value into the Trading desk's password field only for the current page
-session. Bootstrap, logs, Issues, screenshots, and browser persistence must
-never carry it. A directly launched Serve reads a replacement on the next
-request. The canonical
-Compose deployment bind-mounts the single file, so an atomic host-side rename
-does not move the running container to the new inode. After securely replacing
-the file, immediately run:
-
-```text
-docker compose up -d --no-deps --force-recreate serve
-```
-
-Treat the old token as valid until the recreated Serve is healthy; verify the
-new token succeeds and the old token returns `401` before considering rotation
-complete.
+The browser reads and the one Command write both use the bootstrap `ws_token`
+(#520 PR-B deleted the separate `console_write_token`). The write still requires
+it as an `Authorization: Bearer` header: a `?token=` query parameter, which lands
+in proxy logs and browser history, authenticates reads only.
 
 The local fallback writer uses the identical parser and an OS UID identity:
 
@@ -193,10 +219,19 @@ reconciliation, or PostgreSQL audit.
 The execution Runtime publishes three independent states. `alive` proves only
 the process/TradingNode/event loop; `execution_safe` proves existing exposure can
 still be reconciled, protected, canceled, exited, flattened, and recovered;
-`entries_armed` alone permits new exposure. Nautilus `/readyz` requires the first
-two and deliberately stays green when entries are paused, audit admission is
-backpressured, the day-start baseline is absent, or the control plane cannot arm
-new exposure. Use `entry_block_reason`, `positions_count`, `open_orders_count`,
+`entries_armed` alone permits new exposure. There are exactly these three, and
+`entries_armed` differs from `execution_safe` only by what an operator asked for.
+Nautilus `/readyz` requires the first two and deliberately stays green when
+entries are paused. The Runtime's own `entry_block_reason` is one of
+`startup_reconciliation_unproven`, `reconciliation_stale`, `unexpected_exposure`,
+`singleton_lost`, `entries_paused` and `emergency_halted`, and the read
+projection adds only its own `disabled` / `runtime_*` reasons for a row that is
+missing, stale or from another identity; a backpressured audit
+queue and a missing day-start baseline are no longer among them. An unwritable
+audit copy shows as `audit_healthy=false` with `audit_failure_reason` in
+`current_account`, and the day's baseline is recorded from current equity by
+whichever of the entry path and the background owner needs it first. Use
+`entry_block_reason`, `positions_count`, `open_orders_count`,
 `protection_status`, `unexpected_exposure`, and `reconciliation_age_ms` to locate
 the blocked layer; none is an order, fill, or account-flat receipt.
 
@@ -208,7 +243,7 @@ opened by hand on Binance, one older than the seven-day recovery window, or one
 on a route whose last Runtime position was already recorded closed. Read
 `current_account` in `trading status` or on the Trading page: every position and
 order row carries `owned`, so the unclaimed instrument, side and quantity are
-named. `/flatten account TTL_SECONDS CONFIRM` converges the whole account slot,
+named. `/flatten account TTL_SECONDS` converges the whole account slot,
 not only Runtime-owned exposure: it reduce-only closes every open position and
 cancels every resting order, and completes only after a later private Binance
 reconciliation proves flat. Ownership constrains only new entries.

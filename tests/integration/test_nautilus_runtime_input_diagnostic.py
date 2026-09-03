@@ -250,7 +250,6 @@ def _append_workload(
                     authentication_identity="diagnostic:isolated-postgres",
                     requested_at_ns=now_ns,
                     expires_at_ns=now_ns + 60_000_000_000,
-                    confirmation_identity=None,
                     market_key=None,
                     direction=None,
                 )

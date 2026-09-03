@@ -15,12 +15,6 @@ from .contracts import (
     TradingCaseManifest,
     canonical_sha256,
 )
-from .demo_receipt import (
-    BinanceDemoReceipt,
-    DemoReceiptError,
-    DemoReceiptObservation,
-    verify_binance_demo_receipt,
-)
 from .execution_contracts import (
     IDENTITY_PATTERN,
     MARKET_KEY_PATTERN,
@@ -55,10 +49,7 @@ __all__ = [
     "SHA256_PATTERN",
     "AlphaDecision",
     "Bar",
-    "BinanceDemoReceipt",
     "CaseState",
-    "DemoReceiptError",
-    "DemoReceiptObservation",
     "ExecutionAccountOrder",
     "ExecutionAccountPosition",
     "ExecutionAccountSnapshot",
@@ -75,5 +66,4 @@ __all__ = [
     "postgres_text_valid",
     "prepare_execution_observations",
     "prepare_parsed_operator_intent",
-    "verify_binance_demo_receipt",
 ]

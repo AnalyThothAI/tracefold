@@ -138,10 +138,6 @@ class OperatorIntentV1(_FrozenContract):
     authentication_identity: str = Field(min_length=1, max_length=256)
     requested_at_ns: int = Field(gt=0)
     expires_at_ns: int = Field(gt=0)
-    # Carried but no longer stored: #520 PR-C dropped the column, its CHECK and the rule that tied it
-    # to `resume_entries` / `emergency_halt` / `flatten`. The `CONFIRM` token is still parsed at the
-    # ingress, and #520 PR-B deletes both it and this field.
-    confirmation_identity: str | None = Field(default=None, pattern=SHA256_PATTERN)
     market_key: str | None = Field(default=None, pattern=MARKET_KEY_PATTERN)
     direction: Literal["long", "short"] | None = None
 

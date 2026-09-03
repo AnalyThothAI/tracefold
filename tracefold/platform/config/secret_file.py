@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hmac
 import os
 import stat
 from pathlib import Path
@@ -42,18 +41,6 @@ def _open_secure(path: Path) -> int:
     return descriptor
 
 
-def secret_file_configured(path: Path | None) -> bool:
-    """Return whether the same file the worker would read passes the secret-file policy."""
-
-    if path is None:
-        return False
-    try:
-        read_secure_secret_text(path)
-    except SecretFileError:
-        return False
-    return True
-
-
 def read_secure_secret_text(path: Path) -> str:
     """Read a bounded regular file without following symlinks or exposing failure details."""
 
@@ -81,22 +68,7 @@ def read_secure_secret_text(path: Path) -> str:
     return value
 
 
-def read_secure_distinct_token(path: Path, *, forbidden_value: str | None) -> str:
-    """Read a strong token that cannot reuse a separately disclosed credential."""
-
-    value = read_secure_secret_text(path)
-    if len(value) < 32:
-        raise SecretFileError("too_short")
-    if not value.isascii():
-        raise SecretFileError("non_ascii")
-    if forbidden_value and forbidden_value.isascii() and hmac.compare_digest(value, forbidden_value):
-        raise SecretFileError("conflict")
-    return value
-
-
 __all__ = [
     "SecretFileError",
-    "read_secure_distinct_token",
     "read_secure_secret_text",
-    "secret_file_configured",
 ]

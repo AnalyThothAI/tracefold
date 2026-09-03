@@ -75,7 +75,7 @@ def _pre_0357_observation(observation, *, profile_key: str | None = None) -> tup
 
 
 def _pre_0357_command_payload(payload_json: str, *, confirmation_identity: str | None) -> str:
-    """`OperatorIntentV1` still carries `confirmation_identity`; the column and key return here."""
+    """The column and its payload key are pre-0357 history; #520 PR-B removed both from the contract."""
 
     payload = json.loads(payload_json)
     payload["confirmation_identity"] = confirmation_identity
@@ -223,6 +223,7 @@ def test_runtime_control_hard_cut_backfills_current_control_and_forces_runtime_r
             )
             factory = ObservationFactory(profile_id, "runtime-test", "oi_nautilus_v1")
             for index, action in enumerate(("pause_entries", "resume_entries", "emergency_halt"), start=1):
+                confirmation_identity = "b" * 64 if action != "pause_entries" else None
                 prepared = prepare_operator_intent(
                     command_id=f"{index:064x}",
                     account_slot=profile_id,
@@ -233,7 +234,6 @@ def test_runtime_control_hard_cut_backfills_current_control_and_forces_runtime_r
                     authentication_identity="test:authenticated",
                     requested_at_ns=1_000 + index,
                     expires_at_ns=10_000 + index,
-                    confirmation_identity="b" * 64 if action != "pause_entries" else None,
                     market_key=None,
                     direction=None,
                 )
@@ -257,10 +257,10 @@ def test_runtime_control_hard_cut_backfills_current_control_and_forces_runtime_r
                         value.authentication_identity,
                         value.requested_at_ns,
                         value.expires_at_ns,
-                        value.confirmation_identity,
+                        confirmation_identity,
                         _pre_0357_command_payload(
                             _renamed_key(prepared.payload_json, "account_slot", "target_profile_id"),
-                            confirmation_identity=value.confirmation_identity,
+                            confirmation_identity=confirmation_identity,
                         ),
                     ),
                 ).fetchone()
@@ -378,6 +378,7 @@ def _seed_pre_0356_profile(
         """,
         (profile_id, account_slot, f"{command_index:064x}", created_at_ns),
     )
+    confirmation_identity = "b" * 64 if action != "pause_entries" else None
     prepared = prepare_operator_intent(
         command_id=f"{command_index:064x}",
         account_slot=profile_id,
@@ -388,7 +389,6 @@ def _seed_pre_0356_profile(
         authentication_identity="test:authenticated",
         requested_at_ns=created_at_ns,
         expires_at_ns=created_at_ns + 1_000,
-        confirmation_identity="b" * 64 if action != "pause_entries" else None,
         market_key=None,
         direction=None,
     )
@@ -412,10 +412,10 @@ def _seed_pre_0356_profile(
             value.authentication_identity,
             value.requested_at_ns,
             value.expires_at_ns,
-            value.confirmation_identity,
+            confirmation_identity,
             _pre_0357_command_payload(
                 _renamed_key(prepared.payload_json, "account_slot", "target_profile_id"),
-                confirmation_identity=value.confirmation_identity,
+                confirmation_identity=confirmation_identity,
             ),
         ),
     ).fetchone()
@@ -735,7 +735,6 @@ def test_account_slot_identity_cut_refuses_an_identity_it_cannot_map_to_a_slot()
                 authentication_identity="test:authenticated",
                 requested_at_ns=1_000,
                 expires_at_ns=2_000,
-                confirmation_identity=None,
                 market_key=None,
                 direction=None,
             )
@@ -830,7 +829,6 @@ def _seed_pre_0357_facts(conn, *, signal_id: str, case_id: str, command_id: str,
         authentication_identity="test:authenticated",
         requested_at_ns=1_000,
         expires_at_ns=2_000,
-        confirmation_identity="a" * 64,
         market_key=None,
         direction=None,
     )

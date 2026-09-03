@@ -117,13 +117,10 @@ def operator_intent(
     action: str = "pause_entries",
     requested_at_ns: int = NOW_NS - 1_000_000,
     expires_at_ns: int = NOW_NS + 60_000_000_000,
-    confirmation_identity: str | None = None,
     scope: str = "entries",
     market_key: str | None = None,
     direction: str | None = None,
 ) -> OperatorIntentV1:
-    if action in {"resume_entries", "emergency_halt", "flatten"} and confirmation_identity is None:
-        confirmation_identity = "6" * 64
     return OperatorIntentV1.model_validate(
         {
             "seq": 1,
@@ -136,7 +133,6 @@ def operator_intent(
             "authentication_identity": "test:authenticated",
             "requested_at_ns": requested_at_ns,
             "expires_at_ns": expires_at_ns,
-            "confirmation_identity": confirmation_identity,
             "market_key": market_key,
             "direction": direction,
         }
@@ -223,7 +219,7 @@ def registered_oi_strategy(
         execution_strategy="oi_nautilus_v1",
     )
     selected_audit = audit or AuditSink(factory=factory)
-    readiness = RuntimeReadiness()
+    readiness = RuntimeReadiness(reconciliation_stale_after_ns=profile.risk.reconciliation_stale_after_ns)
     if mark_reconciled:
         readiness.reconciled(
             account_observed_at_ns=NOW_NS,
@@ -241,7 +237,6 @@ def registered_oi_strategy(
         # `tests/integration/test_nautilus_live_clock_threads.py` (#510 F).
         dispatch_pump=lambda pump: pump(),
         singleton_ready=lambda: singleton_state[0],
-        control_plane_ready=lambda: True,
         day_start=DayStartBaseline(
             utc_day="2030-03-17",
             equity_usd=Decimal("1000"),

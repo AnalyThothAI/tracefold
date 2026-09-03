@@ -63,6 +63,8 @@ class TradingExecutionAccountData(ExactApiSchema):
     unknown_orders_count: int = Field(ge=0)
     complete: bool
     truncated: bool = False
+    audit_healthy: bool = True
+    audit_failure_reason: str | None = None
 
 
 class TradingExecutionReadinessData(ExactApiSchema):

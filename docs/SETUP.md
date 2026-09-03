@@ -110,19 +110,18 @@ key fails `extra="forbid"` rather than silently overriding the artifact.
 `make up` runs `tracefold init`. The command creates `~/.tracefold/` with mode
 `0700`, `logs/` and `cache/`, one config with a locally generated API bearer
 token (`ws_token`) but no external credentials, two PostgreSQL password files,
-a generated local console write token, and empty Telegram and Binance execution placeholders:
+and empty Telegram and Binance execution placeholders:
 
 ```text
 telegram_bot_token
 telegram_webhook_secret
 binance_usdm_api_key
 binance_usdm_api_secret
-trading_console_write_token
 postgres_password
 postgres_database_password
 ```
 
-The config, Telegram placeholders, console write token, and all password files are mode `0600`.
+The config, Telegram placeholders, and all password files are mode `0600`.
 Ordinary `tracefold init` preserves an existing current-schema config, never
 rotates an existing password, and repairs the required permissions on every
 run. The only content rewrites are the validated, backed-up, one-time #433-C
@@ -159,7 +158,7 @@ The credentials a live deployment can hold are exactly: the OpenNews token
 `llm.news_reader_card`, `llm.news_triage_fallback`, and
 `llm.news_reader_card_fallback` triples), the RabbitMQ URL (`news.broker.url`), the
 one push provider's configuration (`news.push.*`), Trading control's Telegram
-bot token, webhook secret, and console write token (`trading.control.*` file references), the Binance
+bot token and webhook secret (`trading.control.*` file references), the Binance
 execution pair, and the PostgreSQL role password files.
 
 The product process is usable without optional live credentials, but affected
