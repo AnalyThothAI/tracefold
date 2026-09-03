@@ -32,6 +32,14 @@ Flat and top level. The date belongs in the filename
 | [`news-gepa-frozen-run-evaluation.ipynb`](news-gepa-frozen-run-evaluation.ipynb) | B | Does one frozen GEPA run form a consistent experiment, and may its candidate proceed? |
 | [`news-learning-loop-audit-2026-08-21.ipynb`](news-learning-loop-audit-2026-08-21.ipynb) | C | What does the fixed 2026-08-21 24 h window actually say about the learning plane? |
 | [`trading-agent-72h-event-study.ipynb`](trading-agent-72h-event-study.ipynb) | A | Over 72 h of delivered pushes, would a trading agent have had anything executable? |
+| [`oi_chain_backtest_2026_09_03.py`](oi_chain_backtest_2026_09_03.py) | A | What did the deployed OI chain do to the 310 frames it saw, and were those frames worth anything? |
+
+A plain `.py` belongs here on the same terms as a notebook when the work has no
+reason to carry cell state: same header block, same channel, same red lines. It
+is a script rather than a notebook because its whole output is one receipt file
+that `docs/research/` cites, and a committed `.ipynb` of a channel-A run would
+have to be stripped of exactly that output. `make check` reads only `.ipynb`, so
+a `.py` here answers to `ruff check` and `ruff format` instead.
 
 ## The three data channels
 
