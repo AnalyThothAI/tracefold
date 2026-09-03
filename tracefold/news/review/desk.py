@@ -2611,7 +2611,7 @@ def review_read_statements(*, now_ms: int) -> tuple[ReviewReadStatement, ...]:
             bundle_sha256="0" * 64,
             program_version="news_semantic_program_v8",
             program_sha256="1" * 64,
-            policy_version="news_triage_policy_v12",
+            policy_version="news_triage_policy_v13",
             model="audit-model",
         ),
     )

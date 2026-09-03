@@ -13,7 +13,7 @@ EVENT_IDENTITY_VERSION = "news_event_identity_v6"
 GATE_POLICY_VERSION = "news_gate_v6"
 # v10 (#160) removes queue/provider hints from editorial authority and chooses
 # reader actions from the typed trade-relevance contract plus objective guards.
-TRIAGE_POLICY_VERSION = "news_triage_policy_v12"
+TRIAGE_POLICY_VERSION = "news_triage_policy_v13"
 DELIVERY_CARD_VERSION = "news_delivery_card_v11"
 
 Admission = Literal[

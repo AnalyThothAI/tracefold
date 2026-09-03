@@ -1030,7 +1030,7 @@ registry cannot move a key, and adding a storyline is one row plus one
 assertion rather than a reordering of everything above it. The symbol shape
 accepts one exchange suffix (`02015.HK`, `DTE.DE`). `none` replaces the old
 `macro:<dedupe_family>` fallback: the dedupe family is a column on the Event
-row, not a storyline, and policy v12's budget exempts `none` exactly.
+row, not a storyline, and policy v13's budget exempts `none` exactly.
 
 The preliminary key (status bar and told retrieval before Triage) walks that
 rank with its first step removed: registry first, then an A/A+ or cashtag
@@ -1337,7 +1337,10 @@ OI, liquidation and degraded judgments each carry their own typed
 the existing stale-source and content-similarity protections remain after
 action selection. The action section is exactly:
 
-1. deterministic listing objective guard;
+1. deterministic listing objective guard, unless the model marked the frame
+   `reader_value=none` (policy v13, #523: the admission is the provider's
+   `engine_type=listing` tag, so it also carries marketing, trading-competition
+   and operations notices; a `background` listing frame still pushes);
 2. grounded-watchlist objective guard;
 3. `reader_value=escalate` and `realtime_eligible` -> `escalate`;
 4. `reader_value=realtime` and `realtime_eligible` -> `push`;
@@ -1355,12 +1358,12 @@ cannot select or rescue an action. A Gate-admitted `listing_deterministic` frame
 (`listing_exempt_from_duplicate`) skips the restatement drop and similarity
 throttle only when the matched card names none of its instruments, compared as
 symbol sets rather than headline text; a re-issued notice for the same
-instrument is still withheld. `news.policy` exposes six v12 knobs:
+instrument is still withheld. `news.policy` exposes six v13 knobs:
 `restatement_drop`, `similarity_max`, `stale_source_max_age_s`,
 `listing_exempt_from_duplicate`, `storyline_budget_window_s` and
 `storyline_budget_max`.
 
-Policy v12 has **no reader-global quota** (no hourly, two-hour or four-hour
+Policy v13 has **no reader-global quota** (no hourly, two-hour or four-hour
 cap on what the reader receives, and no operator mute) but it does have a
 **per-storyline content budget** (#504, which withdraws policy v7's "no
 storyline quota" decision): an ordinary `push` whose final storyline key
@@ -1370,8 +1373,11 @@ already has `storyline_budget_max` (2) delivered cards inside
 similarity check reads (sent first deliveries, newest first, `settled_at_ms`
 and the card's final key). Three exemptions, all content: an `escalate` that
 survived corroboration; a bullish/bearish reversal against the newest
-delivered card on that key; and the `none` key, which is not a storyline (the
-registry matched nothing) and is neither counted nor budgeted. Either knob at
+*directional* delivered card on that key — policy v13 (#523) reads past
+neutral, unclear and direction-less cards to find it, because one neutral card
+landing on a key otherwise hid a real reversal behind it, while those cards
+still count toward the budget; and the `none` key, which is not a storyline
+(the registry matched nothing) and is neither counted nor budgeted. Either knob at
 0 disables the budget. Two more v12 rules run before it: an eligible
 `escalate` whose code-owned `editorial.taxonomy.source_authority` is
 `unknown` and whose Event has a single member is downgraded to `push` as
@@ -1620,7 +1626,7 @@ interrupted rows are terminalized at startup. Recovery items, suppressed
 events never deliver. There is no operator pause or mute: `news_control_state`
 was removed after never withholding a single card in the whole retained history,
 and an unread singleton that two hot-path consumers still SELECT is how a second
-decision plane grows beside `decide()`. Policy v12 has
+decision plane grows beside `decide()`. Policy v13 has
 no reader-global quota; its only volume rule is the per-storyline content
 budget (`storyline:<key>:budget`, #504) with the escalate, reversal and
 `none` exemptions and the `throttled_by_key` observation described above.
@@ -2074,11 +2080,13 @@ columns and narrows the Case state and admission status/stage CHECKs to the
 values a writer can reach, refusing to run while a stored row still holds a
 retired one; destructive `20260903_0356` makes `account_slot` the execution
 identity and drops the profile activation ledger with the Decision Plane
-heartbeat (#520 PR-A); and destructive `20260903_0357`, the current single head,
+heartbeat (#520 PR-A); destructive `20260903_0357`
 makes the contract the only validator — every JSON-shape CHECK and the four
 `trading_*` functions behind them are gone, along with the unread
 `payload_digest` / `alpha_contract_sha256` / `evidence_sha256` digests, the
-`confirmation_identity` column and the five readiness booleans (#520 PR-C).
+`confirmation_identity` column and the five readiness booleans (#520 PR-C); and
+additive `20260903_0358`, the current single head, opens the judgment CHECK's
+model, OI and degraded branches to `news_triage_policy_v13` (#523).
 
 Every new schema change is again a normal linear, immutable, forward-only
 revision after the baseline. Exact-image replacement requires source, image,

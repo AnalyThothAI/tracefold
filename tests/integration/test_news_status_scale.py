@@ -96,7 +96,7 @@ def _seed_production_sized_trace_corpus(*, now_ms: int) -> None:
               trace, scored_judgment_sha256, runtime_manifest_sha, program_version,
               program_sha256, evidence_version, evidence_sha256, focus_fact_id, created_at_ms
             )
-            SELECT 'status-event-' || g, 'triage', 'news_triage_policy_v12',
+            SELECT 'status-event-' || g, 'triage', 'news_triage_policy_v13',
                    'news_judgment_v2', 'degraded', 'drop', 'drop', verdict, true,
                    'status_scale_fixture',
                    jsonb_build_object(

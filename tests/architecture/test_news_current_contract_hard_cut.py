@@ -152,6 +152,22 @@ _EXACT_ALLOWLIST: dict[str, frozenset[str]] = {
             "unclear_push_event_types",
         }
     ),
+    # #523 restates it a fourth time to open the same literal to v13.
+    "tracefold/platform/postgres/alembic/versions/20260903_0358_news_policy_v13_judgment_check.py": frozenset(
+        {
+            "actionable",
+            "display_title",
+            "event_type",
+            "event_type_zh",
+            "legacy_event_type",
+            "legacy_label",
+            "model_decision",
+            "novelty_defaulted",
+            "project_legacy_event_type",
+            "provider_cost_usd",
+            "unclear_push_event_types",
+        }
+    ),
     "tests/fixtures/news_baseline_calibration_v1.json.gz": frozenset(
         {
             "actionable",

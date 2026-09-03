@@ -1052,6 +1052,51 @@ def test_listing_frames_are_exempt_from_duplicate_evidence_only_across_instrumen
     assert kept.final == "drop" and kept.override_rule == "restatement"
 
 
+def test_policy_v13_listing_admission_yields_only_to_a_reader_value_none_frame() -> None:
+    """#523 D1. `listing_deterministic` is the provider's `engine_type=listing` tag, not a content judgment.
+
+    Over 24 h it admitted 56 frames: 20 real listings/delistings, 10 marketing/airdrop/rebate posts, 7
+    operations notices and 19 market or company miscellany. The model scored 17 of them `reader_value=none`
+    and 13 of those were pushed anyway (a Binance trading competition, a "Rug Pulls explained" explainer, a
+    35% APR promotion). v13 lets exactly those fall through to the ordinary `reader_value_none` drop; nothing
+    else about the branch moves.
+    """
+
+    listing = replace(_NO_WATCHLIST, admission="listing_deterministic", grounded_assets=("BICO",))
+    frame = _verdict(assets=[TriageAsset(symbol="BICO", role="primary")], headline_zh="币安上线 BICO 交易竞赛")
+    worthless: dict[str, Any] = {
+        "reader_value": "none",
+        "tradability": "contextual",
+        "channels": [],
+        "affected_markets": [],
+    }
+
+    dropped = decide(frame, listing, None, relevance=worthless)
+    assert dropped.final == "drop" and dropped.override_rule == "reader_value_none"
+    # The degraded lane has no `reader_value` at all, so a listing frame still pushes objectively there —
+    # which is also what the dropped card reports as the baseline it was measured against.
+    assert dropped.rule_baseline == "push"
+    assert rule_baseline(listing) == "push"
+    assert fallback_verdict(listing, error_code="news_program_route_deadline").decision.final == "push"
+
+    # `background` keeps the objective guard: v13 yields to `none` only, because `none` is the one value that
+    # says the model found nothing a reader could use. Moving the branch below `background` instead cost four
+    # genuine listings in the same replay.
+    background = decide(frame, listing, None, relevance={**worthless, "reader_value": "background"})
+    assert background.final == "push" and background.override_rule == "listing_deterministic"
+    # And a real listing notice is untouched, whichever ordinary rule would also have selected it.
+    for relevance in ({}, {"reader_value": "escalate"}):
+        admitted = decide(frame, listing, None, relevance=relevance)
+        assert admitted.final == "push" and admitted.override_rule == "listing_deterministic", relevance
+    # `reader_value` is the whole condition: a `none` frame with a full trade surface still yields.
+    surfaced = decide(frame, listing, None, relevance={"reader_value": "none"})
+    assert surfaced.final == "drop" and surfaced.override_rule == "reader_value_none"
+    # The objective watchlist guard still runs after the listing branch, so a grounded watchlist asset the
+    # model called worthless is pushed by the guard, not by the admission.
+    guarded = decide(frame, replace(_FACTS, admission="listing_deterministic"), None, relevance=worthless)
+    assert guarded.final == "push" and guarded.override_rule == "watchlist_objective_guard"
+
+
 def test_decide_rules_and_throttle() -> None:
     # The grounded watchlist is an objective guard and wins before model relevance.
     guarded = decide(
@@ -1200,6 +1245,51 @@ def test_decide_withholds_the_third_card_on_a_storyline_inside_the_budget_window
         now_ms=_NOW,
     )
     assert guarded.final == "throttled" and guarded.override_rule == "watchlist_objective_guard"
+
+
+def test_policy_v13_budget_reversal_exemption_reads_past_a_non_directional_card() -> None:
+    """#523 D2. The reversal exemption compares against the newest *directional* delivered card.
+
+    v12 compared against the newest delivered card whatever its direction, so one neutral card landing on a
+    key hid a real reversal behind it: "Russia will raise output" was withheld against a "will cut output"
+    card 55 minutes earlier. Reading past non-directional cards released 5 more cards over the 2888-judgment
+    replay, all genuine reversals, at most one per key per hour. Only the newest directional card is
+    consulted; "against any delivered card" would have released 101 and let 10 escape on one key in an hour.
+    """
+
+    key = "conflict:mideast_2026"
+    bullish = _verdict(scope="macro", assets=[], direction="bullish", headline_zh="俄罗斯宣布增产")
+
+    # [neutral newest, bearish older] + bullish candidate: the budget is spent, and the newest card the
+    # reader could read a direction from is the bearish one this contradicts.
+    behind_neutral = storyline_status(key, seen=_sent(key, "neutral", "bearish"))
+    freed = decide(bullish, _NO_WATCHLIST, behind_neutral, now_ms=_NOW)
+    assert freed.final == "push" and freed.throttled_by is None
+    # Still only the newest *directional* one: newest bullish, older bearish, bullish candidate is no flip.
+    same_direction = storyline_status(key, seen=_sent(key, "bullish", "bearish"))
+    assert decide(bullish, _NO_WATCHLIST, same_direction, now_ms=_NOW).throttled_by == f"storyline:{key}:budget"
+    # `unclear` and a direction-less row are not directions either, and are read past the same way.
+    for hidden in ("unclear", ""):
+        blind = storyline_status(key, seen=_sent(key, hidden, "bearish"))
+        assert decide(bullish, _NO_WATCHLIST, blind, now_ms=_NOW).final == "push", hidden
+
+    # The count is unchanged: a neutral card is still a card the reader received, so two of them spend the
+    # budget and, with no directional card to contradict, nothing is exempt.
+    neutral_only = storyline_status(key, seen=_sent(key, "neutral", "neutral"))
+    spent = decide(bullish, _NO_WATCHLIST, neutral_only, now_ms=_NOW)
+    assert spent.final == "throttled" and spent.throttled_by == f"storyline:{key}:budget"
+    # Two neutrals plus the bearish card is three delivered cards, over budget, and still exempt as a flip.
+    over_budget = storyline_status(key, seen=_sent(key, "neutral", "neutral", "bearish"))
+    assert decide(bullish, _NO_WATCHLIST, over_budget, now_ms=_NOW).final == "push"
+    # A neutral candidate is not a reversal of anything, whatever the ledger holds.
+    assert (
+        decide(bullish.model_copy(update={"direction": "neutral"}), _NO_WATCHLIST, behind_neutral, now_ms=_NOW).final
+        == "throttled"
+    )
+    # Only in-window rows on this key are read: the directional card behind the neutral one still has to be
+    # inside the budget window to be reversed, and an out-of-window ledger is under budget anyway.
+    aged = storyline_status(key, seen=_sent(key, "neutral", "bearish", minutes_ago=90))
+    assert decide(bullish, _NO_WATCHLIST, aged, now_ms=_NOW).final == "push"
 
 
 def test_decide_escalate_needs_corroboration_and_a_corroborated_escalate_ignores_the_budget() -> None:

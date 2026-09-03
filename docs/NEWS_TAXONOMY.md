@@ -88,7 +88,7 @@ Membership is a judgment about corroboration weight, so three categories stay
 out on purpose: personal accounts (analysts, traders, journalists posting under
 their own name), aggregators and relays that restate an origin they do not own,
 and a belligerent's state media, which is a party to the event it reports.
-Policy v12 reads `source_authority` when it decides whether an `escalate` is
+Policy v13 reads `source_authority` when it decides whether an `escalate` is
 corroborated, and none of those three can carry that weight.
 
 ## Persistence and readers

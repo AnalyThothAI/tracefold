@@ -672,7 +672,7 @@ def test_current_verdict_schema_rejects_raw_and_cross_origin_payloads() -> None:
     }
     payload = {
         "stage": "triage",
-        "policy_version": "news_triage_policy_v12",
+        "policy_version": "news_triage_policy_v13",
         "judgment_contract_version": "news_judgment_v2",
         "judgment_origin": "model",
         "judgment_sha256": "b" * 64,
