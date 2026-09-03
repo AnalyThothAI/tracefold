@@ -11,10 +11,12 @@ from typing import Any, Literal
 
 from loguru import logger
 from psycopg import InterfaceError, OperationalError
+from psycopg.errors import IntegrityError
 
 from tracefold.app.repository_session import RepositorySession
 from tracefold.app.repository_session import repositories as open_repositories
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import (
+    AuditAppendRejected,
     AuditSink,
     ObservationFactory,
     day_start_baseline_from_observation,
@@ -24,7 +26,6 @@ from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import (
     ExecutionSignalClient,
     install_execution_stream_listener,
-    poll_execution_inputs_once,
     wait_for_execution_stream_wake,
 )
 from tracefold.integrations.nautilus.oi_runtime.state import RuntimeControlSnapshot
@@ -36,6 +37,10 @@ from tracefold.trading.storage.execution_stream import (
     materialize_trade_signals,
     prepare_execution_observations,
 )
+
+# The two `_cycle` steps that read the Runtime's inputs. While either is failing the Runtime is not
+# consuming Signals or Commands, which is exactly what `control_plane_ready` already means.
+_INPUT_STEPS = ("commands", "signals")
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +82,7 @@ class OiRuntimeDatabaseBridge:
         self._fatal_error: BaseException | None = None
         self._equity: tuple[Decimal, int] | None = None
         self._baseline_day: str | None = None
+        self._step_failures: dict[str, str] = {}
 
     @property
     def connected(self) -> bool:
@@ -87,6 +93,19 @@ class OiRuntimeDatabaseBridge:
     def fatal_error(self) -> BaseException | None:
         with self._lock:
             return self._fatal_error
+
+    @property
+    def inputs_ready(self) -> bool:
+        """False while a Command or Signal read keeps failing, so entries disarm instead of drifting.
+
+        A step that only logs would leave the Runtime `entries_armed` while it is silently consuming
+        nothing - armed for exposure it could never be told to unwind. This is the same fact
+        `control_plane_ready` has always carried, so it needs no gate of its own: it blocks new
+        entries and leaves `execution_safe` alone, because existing exposure is still protected.
+        """
+
+        with self._lock:
+            return not any(name in self._step_failures for name in _INPUT_STEPS)
 
     def set_equity(self, equity_usd: Decimal, observed_at_ns: int) -> None:
         if equity_usd <= 0 or observed_at_ns <= 0:
@@ -133,22 +152,28 @@ class OiRuntimeDatabaseBridge:
             self._connected = False
 
     def _cycle(self, repos: RepositorySession) -> None:
-        poll_execution_inputs_once(
-            client=self._signals,
-            command_reader=lambda profile, strategy, limit: load_unresolved_operator_intents(
-                repos,
-                profile,
-                strategy,
-                limit,
-            ),
-            reader=lambda profile, strategy, limit: load_unresolved_trade_signals(
-                repos,
-                profile,
-                strategy,
-                limit,
+        """Three independent steps, so no one of them can silence the other two.
+
+        Reading Commands is what lets an operator flatten, and on 2026-09-02 it stopped for six hours
+        because the audit append in the same `try` kept raising: the runtime went deaf while holding a
+        position (#510 A). Commands are still read first, so a Signal or audit failure cannot even
+        delay them, and only a lost connection still aborts the cycle - that is the session-replacement
+        path in `_run` and it has to keep working.
+        """
+
+        self._step(
+            "commands",
+            lambda: self._signals.poll_commands_once(
+                lambda profile, strategy, limit: load_unresolved_operator_intents(repos, profile, strategy, limit),
             ),
         )
-        flush_audit_once(repos=repos, audit=self._audit, signals=self._signals)
+        self._step(
+            "signals",
+            lambda: self._signals.poll_once(
+                lambda profile, strategy, limit: load_unresolved_trade_signals(repos, profile, strategy, limit),
+            ),
+        )
+        self._step("audit", lambda: flush_audit_once(repos=repos, audit=self._audit, signals=self._signals))
         with self._lock:
             equity = self._equity
         if equity is None:
@@ -166,6 +191,31 @@ class OiRuntimeDatabaseBridge:
         )
         self._update_day_start(baseline)
         self._baseline_day = utc_day
+
+    def _step(self, name: str, run: Callable[[], object]) -> None:
+        """Run one cycle step, and log a repeating cause once instead of once per cycle.
+
+        The production log for the same CheckViolation carried 742 identical tracebacks in six hours.
+        The first line of a psycopg error names the relation and constraint without the offending row,
+        so it is stable across rows and is the right thing to deduplicate on.
+        """
+
+        try:
+            run()
+        except (InterfaceError, OperationalError):
+            raise
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {str(exc).strip().splitlines()[0][:200]}"
+            with self._lock:
+                changed = self._step_failures.get(name) != reason
+                self._step_failures[name] = reason
+            if changed:
+                logger.exception("OI Runtime database bridge step failed ({})", name)
+            return
+        with self._lock:
+            recovered = self._step_failures.pop(name, None) is not None
+        if recovered:
+            logger.info("OI Runtime database bridge step recovered ({})", name)
 
 
 def run_nautilus(profile: OiRuntimeProfile) -> OiRuntimeReadiness:
@@ -244,12 +294,22 @@ def flush_audit_once(
     audit: AuditSink,
     signals: ExecutionSignalClient,
 ) -> int:
-    """Background-only durable append; no Strategy callback can reach this function."""
+    """Background-only durable append; no Strategy callback can reach this function.
+
+    `flush_once` returns everything that left the queue, durably appended or quarantined, and both
+    settle their input: a Signal or Command whose disposition the database refused is disposed of all
+    the same, because the Runtime lost the audit fact, not the decision.
+    """
 
     def writer(values: Sequence[ExecutionObservationV1]) -> None:
         prepared = prepare_execution_observations(values)
-        with repos.transaction():
-            repos.trading.append_execution_observations(prepared)
+        try:
+            with repos.transaction():
+                repos.trading.append_execution_observations(prepared)
+        except IntegrityError as exc:
+            # A CHECK, unique, foreign key or NOT NULL refusal is a verdict on the batch, not weather:
+            # replaying it forever is what blinded the ledger. The sink drops it and records the gap.
+            raise AuditAppendRejected(f"{type(exc).__name__}: {exc.diag.constraint_name or exc.sqlstate}") from exc
 
     flushed = audit.flush_once(writer)
     for value in flushed:

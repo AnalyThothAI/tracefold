@@ -129,7 +129,14 @@ def test_current_production_wiring_has_one_input_reconciliation_and_projection_o
         "                    with self._lock:\n"
         "                        self._connected = True"
     ) in bridge_source
-    assert "poll_execution_inputs_once(" in bridge_source
+    assert (
+        "control_plane_ready=lambda: bridge is not None and bridge.connected and bridge.inputs_ready,"
+    ) in root_source
+    assert bridge_source.count('_INPUT_STEPS = ("commands", "signals")') == 1
+    assert bridge_source.count("self._signals.poll_commands_once(") == 1
+    assert bridge_source.count("self._signals.poll_once(") == 1
+    assert bridge_source.index("self._signals.poll_commands_once(") < bridge_source.index("self._signals.poll_once(")
+    assert "poll_execution_inputs_once" not in signal_client_source
     assert "flush_audit_once(" in bridge_source
     assert "load_or_record_day_start(" in bridge_source
     assert "for route in self._profile.routes:\n            self.subscribe_quote_ticks" in strategy_source

@@ -1122,6 +1122,70 @@ def test_contract_and_postgres_json_bounds_match_at_exact_edges() -> None:
         conn.close()
 
 
+def test_nautilus_shaped_mixed_case_references_are_admitted_as_python_ordered_them() -> None:
+    """Real Nautilus identities mix cases, and the database must order them as the contract does.
+
+    Every reference the Runtime ever writes comes out of `ExecutionObservationV1`, which sorts by code
+    point. Binance contract and position identities are upper case, deterministic client order ids are
+    lower case `tf...`, and the two orderings only agree while a batch stays in one case. Production wrote
+    exactly this mixture the first time a fill carried a position, and `en_US.utf8` reordered it, so the
+    CHECK rejected every observation of the open position for six hours (#510 A).
+    """
+
+    references = (
+        "462066006",
+        "61742419",
+        "UNIUSDT-PERP.BINANCE-OI-RUNTIME-02A27DC240DF",
+        "tf0065f6482c5577533ba696da631582",
+    )
+    assert references == tuple(sorted(references))
+    references_json = json.dumps(references, ensure_ascii=False)
+    fill = _observation(
+        event="7",
+        kind="fill",
+        native_identity_references=references,
+        summary={"leg": "entry", "last_quantity": "3", "last_price": "7.401"},
+    )
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        ordering = conn.execute(
+            """
+            SELECT (SELECT jsonb_agg(item ORDER BY item #>> '{}')
+                      FROM jsonb_array_elements(%s::jsonb) item) AS database_collation_order,
+                   (SELECT jsonb_agg(item ORDER BY (item #>> '{}') COLLATE "C")
+                      FROM jsonb_array_elements(%s::jsonb) item) AS code_point_order
+            """,
+            (references_json, references_json),
+        ).fetchone()
+        assert ordering is not None
+        assert ordering["code_point_order"] == list(references)
+        assert ordering["database_collation_order"] != list(references), (
+            "this database orders Nautilus identities the same way Python does, "
+            "so it cannot witness the collation risk this test exists for"
+        )
+
+        valid = conn.execute(
+            "SELECT trading_execution_string_array_valid(%s::jsonb) AS ok",
+            (references_json,),
+        ).fetchone()
+        assert valid is not None
+        assert valid["ok"] is True
+
+        repo = TradingRepository(conn)
+        with conn.transaction():
+            repo.append_execution_observations(prepare_execution_observations((fill,)))
+
+        stored = conn.execute(
+            "SELECT native_identity_references FROM trading_execution_observations WHERE event_id = %s",
+            (fill.event_id,),
+        ).fetchone()
+        assert stored is not None
+        assert stored["native_identity_references"] == list(references)
+    finally:
+        conn.close()
+
+
 def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
     signal = _prepare_signal(suffix="a")
     command = _prepare_command(suffix="b")

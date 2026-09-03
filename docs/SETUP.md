@@ -446,7 +446,7 @@ paths, booleans, and diagnostic command status; do not paste the API token,
 model keys, provider passwords, or full config payloads into docs or chat.
 
 Alembic has one root: baseline `20260831_0340` and current head
-`20260903_0352`. A new empty PostgreSQL 18 database applies baseline, the
+`20260903_0353`. A new empty PostgreSQL 18 database applies baseline, the
 `0341` Signal hard cut, the additive `0342` Trading notification delivery
 ledger, the additive `0343` execution Runtime projection/indexes, the
 destructive `0344` News open-interest push cut, and the `0345` Runtime
@@ -456,7 +456,8 @@ readiness/current-control hard cut, the additive `0349` bounded current
 account read projection, the additive `0350` `pg_trgm` pin with the
 `title_similarity` told-trace reason, the additive `0351` judgment CHECK
 opening to program v9 with blind review drafts, and the additive `0352`
-judgment CHECK opening to triage policy v12 (#504), in order.
+judgment CHECK opening to triage policy v12 (#504), and the `0353` rewrite of
+`trading_execution_string_array_valid` to code-point ordering (#510), in order.
 Current source intentionally has no upgrade path from an earlier revision. To
 recover a pre-#449 backup, use the exact pre-cut image/source to restore and
 advance it to the old terminal `20260831_0340`, take a verified backup, perform

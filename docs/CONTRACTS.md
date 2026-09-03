@@ -1091,8 +1091,11 @@ Runtime facts, and status carries readiness plus bounded totals.
   rows newest first, with TTL/expiry and opaque pagination. It publishes no
   account, route, quantity, leverage, order, or execution state.
 - `GET /api/trading/execution/observations` — append-only normalized Runtime
-  observations. An empty result is not evidence of execution or flatness; only
-  a fresh private Binance reconciliation with `account_flat=true` proves flat.
+  observations. An empty result is not evidence of execution or flatness, and
+  neither is the newest `reconciliation` row: an unchanged steady reconciliation
+  appends nothing (#510). Flatness is proven only by `account_flat` on the
+  current `GET /api/trading/status` execution projection, inside its
+  `reconciliation_age_ms` freshness budget.
 - `GET /api/trading/execution/commands?profile={profile}&action={action}` —
   authenticated `OperatorIntentV1` facts, expiry, confirmation presence, and
   any final disposition, newest first with opaque pagination. It never returns

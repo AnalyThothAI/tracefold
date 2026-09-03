@@ -211,22 +211,8 @@ def wait_for_execution_stream_wake(conn: Any, timeout_seconds: float) -> bool:
     return notification is not None
 
 
-def poll_execution_inputs_once(
-    *,
-    client: ExecutionSignalClient,
-    reader: SignalReader,
-    command_reader: CommandReader | None = None,
-) -> tuple[int, int]:
-    """Admit Commands before Signals into their one shared bounded queue."""
-
-    commands = 0 if command_reader is None else client.poll_commands_once(command_reader)
-    signals = client.poll_once(reader)
-    return commands, signals
-
-
 __all__ = [
     "ExecutionSignalClient",
     "install_execution_stream_listener",
-    "poll_execution_inputs_once",
     "wait_for_execution_stream_wake",
 ]
