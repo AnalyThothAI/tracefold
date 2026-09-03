@@ -14,10 +14,15 @@ from .sql_values import _dumps
 
 @dataclass(frozen=True, slots=True)
 class SignalLaneSnapshot:
-    """Only durable facts needed to prevent duplicate or concurrent Alpha work."""
+    """Only durable facts needed to prevent duplicate or wasted Alpha work."""
 
     cased_source_keys: frozenset[str]
     underlyings_in_flight: frozenset[str]
+    # The union of every published Runtime route catalogue, or `None` when no Runtime has published
+    # one. `None` and "empty catalogue" have to be different answers: with execution disabled there is
+    # no projection row at all, the Signal is a notification card, and refusing every market would
+    # silently delete the product.
+    executable_market_keys: frozenset[str] | None = None
 
 
 class LaneStorage:
@@ -32,11 +37,23 @@ class LaneStorage:
             """,
             (int(since_ms),),
         ).fetchall()
+        # One read, two facts: whether this Source already has a Case, and whether any configured
+        # Runtime can execute its market at all. A Case frozen for a market no Runtime lists spends
+        # the turn's one freeze and comes back `instrument_unmapped` (#510 B).
+        routes = self.conn.execute(
+            """
+            SELECT coalesce(jsonb_agg(DISTINCT market_key), '[]'::jsonb) AS market_keys
+              FROM trading_execution_runtime_state,
+                   LATERAL jsonb_array_elements_text(routes) AS market_key
+            """
+        ).fetchone()
+        executable = frozenset(str(value) for value in (routes["market_keys"] if routes is not None else ()))
         return SignalLaneSnapshot(
             cased_source_keys=frozenset(str(row["primary_source_key"]) for row in rows),
             underlyings_in_flight=frozenset(
                 str(row["underlying_key"]) for row in rows if str(row["state"]) in {"PENDING", "RUNNING"}
             ),
+            executable_market_keys=executable or None,
         )
 
     def create_case(

@@ -18,11 +18,11 @@ from tracefold.app.nautilus.root import (
     _observe_reconciliation,
     _observe_runtime_start,
     _preflight_profile,
-    _private_reconciliation_interval_seconds,
     _PrivateReconciliationRequests,
     _PrivateReconciliationResult,
     _probe_payload,
     _reconcile_account,
+    _risk_limits,
     _RuntimeStateProjector,
 )
 from tracefold.app.workers.trading_notifications import trading_notification_text
@@ -223,12 +223,25 @@ def test_superseded_profile_cannot_be_reactivated() -> None:
         _preflight_profile(_repos(trading), oi_profile())
 
 
-def test_steady_private_reconciliation_refreshes_at_half_the_risk_staleness_budget() -> None:
-    stale_after_ns = oi_profile().risk.reconciliation_stale_after_ns
-    interval = _private_reconciliation_interval_seconds(stale_after_ns)
+def test_one_reconciliation_period_owns_both_account_freshness_budgets() -> None:
+    """#510 B. Production ran `account_stale_after_ns` at exactly one reconciliation period.
 
-    assert interval == 5.0
-    assert interval < stale_after_ns / 1_000_000_000
+    The account clock is only ever as fresh as the last private scan, so a budget equal to the period
+    is expired for the tail of every cycle by construction: `evaluate_entry` returned
+    `halt("account_stale")` for five of 2026-09-02's six Signals. There is now one input, and both
+    budgets are multiples of it, so the relation cannot be edited apart.
+    """
+
+    risk = oi_profile().risk
+    production = _risk_limits()
+
+    assert risk.reconciliation_interval_seconds == 5.0
+    assert risk.account_stale_after_ns == 2 * risk.reconciliation_interval_ns
+    assert risk.reconciliation_stale_after_ns == 3 * risk.reconciliation_interval_ns
+    assert production.account_stale_after_ns > production.reconciliation_interval_ns
+    assert production.reconciliation_stale_after_ns > production.account_stale_after_ns
+    # Market freshness is a quote-stream fact and stays its own operator number.
+    assert production.market_stale_after_ns == 5_000_000_000
 
 
 def test_private_reconciliation_requests_wake_immediately_and_coalesce_duplicate_reasons() -> None:

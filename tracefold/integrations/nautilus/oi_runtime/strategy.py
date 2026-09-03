@@ -62,6 +62,14 @@ class OiNautilusStrategy(Strategy):
         signals: ExecutionSignalClient,
         audit: AuditSink,
         readiness: RuntimeReadiness,
+        # Whoever owns the one thread allowed to mutate `RuntimeExecutionState`. Measured on the
+        # pinned `nautilus-trader` 1.231.0 with a real `TradingNode`: `on_start` and every
+        # order/position callback run on the asyncio event-loop thread, while a `LiveClock` timer
+        # callback runs on a Rust-owned thread `threading.enumerate()` does not even list
+        # (`tests/integration/test_nautilus_live_clock_threads.py`, #510 F). The live composition
+        # root therefore passes `loop.call_soon_threadsafe`; a `BacktestEngine` has one thread and no
+        # loop, and passes direct invocation, which is the same statement about that engine.
+        dispatch_pump: Callable[[Callable[[], None]], None],
         singleton_ready: Any,
         control_plane_ready: Callable[[], bool],
         day_start: DayStartBaseline | None,
@@ -80,6 +88,7 @@ class OiNautilusStrategy(Strategy):
         self._signals = signals
         self._audit = audit
         self._readiness = readiness
+        self._dispatch_pump = dispatch_pump
         self._singleton_ready = singleton_ready
         self._control_plane_ready = control_plane_ready
         self._day_start = day_start
@@ -156,6 +165,16 @@ class OiNautilusStrategy(Strategy):
             self.unsubscribe_quote_ticks(route.instrument_id)
 
     def on_timer(self, _event: object) -> None:
+        """Hand the pump to the callback thread; live, this one is not it.
+
+        Every field of `RuntimeExecutionState` is a plain dict, set or dataclass attribute with no
+        lock, and the order, position and exit callbacks that share it all arrive on the event loop.
+        Pumping here would race them from a second OS thread (#510 F).
+        """
+
+        self._dispatch_pump(self._pump)
+
+    def _pump(self) -> None:
         for _ in range(_CALLBACK_BATCH):
             command = self._signals.next_command_nowait()
             if command is None:

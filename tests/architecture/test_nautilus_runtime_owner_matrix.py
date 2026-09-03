@@ -132,6 +132,13 @@ def test_current_production_wiring_has_one_input_reconciliation_and_projection_o
     assert (
         "control_plane_ready=lambda: bridge is not None and bridge.connected and bridge.inputs_ready,"
     ) in root_source
+    # #510 F, measured in `tests/integration/test_nautilus_live_clock_threads.py`: `LiveClock` fires
+    # `on_timer` on a Rust-owned thread, so the live root is the only caller allowed to name the
+    # event loop as the one thread that may mutate `RuntimeExecutionState`.
+    assert "dispatch_pump=dispatch_pump_on_loop," in root_source
+    assert "loop.call_soon_threadsafe(pump)" in root_source
+    assert "self._dispatch_pump(self._pump)" in strategy_source
+    assert strategy_source.count("def _pump(self) -> None:") == 1
     assert bridge_source.count('_INPUT_STEPS = ("commands", "signals")') == 1
     assert bridge_source.count("self._signals.poll_commands_once(") == 1
     assert bridge_source.count("self._signals.poll_once(") == 1

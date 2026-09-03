@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -27,6 +28,7 @@ from tracefold.news.pipeline.triage import TriageConsumer
 from tracefold.news.storage.trade_projection import NEWS_TRADE_PROJECTION_VERSION
 from tracefold.trading.contracts import Bar, CaseState, OiCandidateRow
 from tracefold.trading.signal_lane import BAR_INTERVAL_MS, SignalLane, SignalLaneConfig
+from tracefold.trading.storage.execution_stream import ExecutionProfileActivation, ExecutionRuntimeState
 
 pytestmark = pytest.mark.integration
 
@@ -125,7 +127,7 @@ def conn(postgres_module_clone_dsn: str):
 def clean(conn: Any):
     conn.execute(
         "TRUNCATE news_items, news_event_evidence_snapshots, trading_cases, trading_trade_signals, "
-        "trading_candidate_gate_decisions RESTART IDENTITY CASCADE"
+        "trading_candidate_gate_decisions, trading_execution_profile_activations RESTART IDENTITY CASCADE"
     )
     conn.commit()
     return conn
@@ -234,7 +236,7 @@ def test_news_frame_mapper_and_signal_lane_commit_one_current_pair(clean: Any) -
     # `test_trading_signal_hard_cut.py::test_0347_drops_every_retired_execution_table_and_only_its_own_functions`.
 
 
-def _numeric_oi_fact(conn: Any, *, event_id: str, item_id: str, observed_at_ms: int) -> None:
+def _numeric_oi_fact(conn: Any, *, event_id: str, item_id: str, observed_at_ms: int, symbol: str = OI_SYMBOL) -> None:
     """One News OI ledger row and the Item it was parsed from, and nothing else.
 
     No verdict, no editorial pipeline output, no learning epoch and no active-arm row: the
@@ -297,7 +299,7 @@ def _numeric_oi_fact(conn: Any, *, event_id: str, item_id: str, observed_at_ms: 
         news.insert_oi_signal(
             event_id=event_id,
             metric_version=OI_METRIC_VERSION,
-            symbol=OI_SYMBOL,
+            symbol=symbol,
             direction="rise",
             oi_change_bps=720,
             oi_value_usd=32_170_000,
@@ -363,3 +365,139 @@ def test_numeric_oi_ledger_alone_freezes_a_case_and_emits_a_signal(clean: Any) -
     assert cases[0]["manifest"]["manifest_version"] == "trading_manifest_v11"
     assert cases[0]["manifest"]["primary_trigger"]["persisted_at_ms"] == observed
     assert signals[0]["market_key"] == f"crypto:perp:{OI_SYMBOL}:USDT"
+
+
+def _publish_runtime_catalogue(conn: Any, *market_keys: str) -> None:
+    """One started Runtime that has published exactly the markets it can reach."""
+
+    repos = repositories_for_connection(conn)
+    activation = ExecutionProfileActivation(
+        runtime_profile_id="oi-paper-profile",
+        account_slot="binance_usdm_primary",
+        activated_after_signal_seq=0,
+        activated_after_command_seq=0,
+        mode="paper",
+        runtime_release="nautilus-1.231.0+oi-v1",
+        config_sha256="a" * 64,
+        created_at_ns=1_000,
+    )
+    with repos.transaction():
+        repos.trading.append_execution_profile_activation(activation)
+        repos.trading.put_execution_runtime_state(
+            ExecutionRuntimeState(
+                account_slot="binance_usdm_primary",
+                runtime_profile_id="oi-paper-profile",
+                mode="paper",
+                runtime_release="nautilus-1.231.0+oi-v1",
+                config_sha256="a" * 64,
+                runtime_id=UUID("33333333-3333-4333-8333-333333333333"),
+                runtime_revision="b" * 40,
+                image_digest="sha256:" + "c" * 64,
+                credential_fingerprint="d" * 64,
+                lifecycle_state="running",
+                alive=True,
+                execution_safe=True,
+                entries_armed=True,
+                control_plane_ready=True,
+                singleton_ready=True,
+                credential_ready=True,
+                activation_ready=True,
+                startup_reconciled=True,
+                portfolio_ready=True,
+                audit_ready=True,
+                day_start_ready=True,
+                unexpected_exposure=False,
+                account_flat=True,
+                positions_count=0,
+                open_orders_count=0,
+                protection_status="not_applicable",
+                reconciliation_observed_at_ns=2_000,
+                heartbeat_at_ns=2_100,
+                entry_block_reason=None,
+                started_at_ns=1_900,
+                updated_at_ns=2_100,
+                routes=tuple(sorted(market_keys)),
+            )
+        )
+    conn.commit()
+
+
+def _seam_lane(conn: Any) -> SignalLane:
+    async def bars(_candidate: Any, start: int, end: int) -> list[Bar]:
+        aligned = (start // BAR_INTERVAL_MS) * BAR_INTERVAL_MS
+        return [
+            Bar(open_at_ms=opened, close_at_ms=opened + BAR_INTERVAL_MS, close=Decimal("150.00"))
+            for opened in range(aligned, end + BAR_INTERVAL_MS, BAR_INTERVAL_MS)
+        ]
+
+    return SignalLane(
+        db=TradingDatabase(conn),
+        config=SignalLaneConfig(),
+        bars=bars,
+        oi_projection=_news_projection(NewsDatabase(conn)),
+        release_revision="test-release",
+        clock=now_ms,
+    )
+
+
+def test_a_market_the_runtime_cannot_execute_never_spends_the_turns_one_case_freeze(clean: Any) -> None:
+    """#510 PR-2 F2P. The lane freezes one Case per turn; an unlistable market used to win it.
+
+    On 2026-09-02 three of six Signals were emitted for markets Binance USD-M does not list. Each
+    froze a Case, emitted a Signal, and came back `instrument_unmapped` from the Runtime, while a
+    listed market behind it was deferred as `lane_capacity_exhausted`. Here the unlisted frame is the
+    newer one, so before the cut it took the freeze and BTC waited a turn.
+    """
+
+    conn = clean
+    _publish_runtime_catalogue(conn, "crypto:perp:BTC:USDT")
+    _numeric_oi_fact(conn, event_id="listed-evt", item_id="listed-item", observed_at_ms=now_ms() - 60_000, symbol="BTC")
+    _numeric_oi_fact(
+        conn, event_id="absent-evt", item_id="absent-item", observed_at_ms=now_ms() - 30_000, symbol="DELL"
+    )
+    conn.commit()
+
+    turn = asyncio.run(_seam_lane(conn).advance())
+
+    decisions = {
+        str(row["source_key"]): dict(row)
+        for row in conn.execute("SELECT * FROM trading_candidate_gate_decisions").fetchall()
+    }
+    cases = [dict(row) for row in conn.execute("SELECT * FROM trading_cases").fetchall()]
+    unlisted = decisions["oi:absent-evt:oi_signal_v1"]
+
+    assert turn.sources == 2
+    assert (unlisted["status"], unlisted["stage"], unlisted["reason"]) == (
+        "REJECTED",
+        "eligibility",
+        "instrument_unmapped",
+    )
+    assert unlisted["retryable"] is False
+    assert unlisted["evidence"]["market_key"] == "crypto:perp:DELL:USDT"
+    assert unlisted["gate_version"] == "trading_admission_v8"
+    assert unlisted["case_id"] is None
+    # The one freeze went to the market a Runtime can actually reach.
+    assert [row["underlying_key"] for row in cases] == ["crypto:BTC"]
+    assert turn.cases_created == 1
+    assert [
+        str(row["market_key"]) for row in conn.execute("SELECT market_key FROM trading_trade_signals").fetchall()
+    ] == ["crypto:perp:BTC:USDT"]
+
+
+def test_no_published_catalogue_admits_every_market_exactly_as_before(clean: Any) -> None:
+    """Execution disabled, or no Runtime started yet: the Signal is a notification card, not an order."""
+
+    conn = clean
+    _numeric_oi_fact(
+        conn, event_id="absent-evt", item_id="absent-item", observed_at_ms=now_ms() - 30_000, symbol="DELL"
+    )
+    conn.commit()
+    assert conn.execute("SELECT count(*) AS n FROM trading_execution_runtime_state").fetchone()["n"] == 0
+
+    turn = asyncio.run(_seam_lane(conn).advance())
+
+    reasons = {
+        str(row["reason"]) for row in conn.execute("SELECT reason FROM trading_candidate_gate_decisions").fetchall()
+    }
+    assert turn.cases_created == 1
+    assert reasons == {"case_created"}

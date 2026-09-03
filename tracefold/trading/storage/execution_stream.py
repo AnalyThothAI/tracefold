@@ -10,7 +10,7 @@ from uuid import UUID
 
 from tracefold.platform.postgres.client import require_transaction
 
-from ..execution_contracts import ExecutionObservationV1, OperatorIntentV1, TradeSignalV1
+from ..execution_contracts import MARKET_KEY_PATTERN, ExecutionObservationV1, OperatorIntentV1, TradeSignalV1
 from .execution_stream_sql import UNRESOLVED_OPERATOR_INTENTS_SQL, UNRESOLVED_TRADE_SIGNALS_SQL
 from .sql_values import _dumps
 
@@ -20,6 +20,9 @@ MAX_OBSERVATION_APPEND_BATCH = 128
 MAX_OBSERVATION_APPEND_BYTES = 1_048_576
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,127}$")
+_MARKET_KEY = re.compile(MARKET_KEY_PATTERN)
+# What `trading_execution_market_key_array_valid` accepts, stated once on this side of the seam.
+MAX_EXECUTION_ROUTES = 1_024
 _OBSERVATION_BATCH_SAVEPOINT = "tracefold_execution_observation_batch"
 
 type StoredExecutionPayload = tuple[int, dict[str, Any]]
@@ -227,6 +230,11 @@ class ExecutionRuntimeState:
     started_at_ns: int
     updated_at_ns: int
     account_snapshot: ExecutionAccountSnapshot | None = None
+    # Every `market_key` this Runtime generation can actually reach, sorted by code point and unique,
+    # as the Runtime discovered it at start. Fixed for the life of one `runtime_id`, like the release
+    # and the config digest beside it, so only the insert writes it. Empty means no catalogue is
+    # published and the Signal lane admits markets exactly as it did before #510 PR-2.
+    routes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if _IDENTITY.fullmatch(self.account_slot) is None or _IDENTITY.fullmatch(self.runtime_profile_id) is None:
@@ -270,6 +278,13 @@ class ExecutionRuntimeState:
             raise ValueError("execution_runtime_entry_reason_invalid")
         if self.entry_block_reason is not None and _IDENTITY.fullmatch(self.entry_block_reason) is None:
             raise ValueError("execution_runtime_entry_reason_invalid")
+        if (
+            len(self.routes) > MAX_EXECUTION_ROUTES
+            or len(set(self.routes)) != len(self.routes)
+            or list(self.routes) != sorted(self.routes)
+            or any(_MARKET_KEY.fullmatch(value) is None for value in self.routes)
+        ):
+            raise ValueError("execution_runtime_routes_invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -956,7 +971,7 @@ class ExecutionStreamStorage:
                    portfolio_ready, audit_ready, day_start_ready, unexpected_exposure, account_flat,
                    positions_count, open_orders_count, protection_status,
                    reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
-                   started_at_ns, updated_at_ns, account_snapshot
+                   started_at_ns, updated_at_ns, account_snapshot, routes
               FROM trading_execution_runtime_state
              WHERE account_slot = %s
              FOR UPDATE
@@ -970,7 +985,7 @@ class ExecutionStreamStorage:
                    portfolio_ready, audit_ready, day_start_ready, unexpected_exposure, account_flat,
                    positions_count, open_orders_count, protection_status,
                    reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
-                   started_at_ns, updated_at_ns, account_snapshot
+                   started_at_ns, updated_at_ns, account_snapshot, routes
               FROM trading_execution_runtime_state
              WHERE account_slot = %s
             """
@@ -990,11 +1005,11 @@ class ExecutionStreamStorage:
               portfolio_ready, audit_ready, day_start_ready, unexpected_exposure, account_flat,
               positions_count, open_orders_count, protection_status,
               reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
-              started_at_ns, updated_at_ns, account_snapshot
+              started_at_ns, updated_at_ns, account_snapshot, routes
             ) VALUES (
               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s, %s, %s, %s, %s::jsonb
+              %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb
             )
             ON CONFLICT (account_slot) DO UPDATE SET
               runtime_profile_id = EXCLUDED.runtime_profile_id,
@@ -1027,7 +1042,8 @@ class ExecutionStreamStorage:
               entry_block_reason = EXCLUDED.entry_block_reason,
               started_at_ns = EXCLUDED.started_at_ns,
               updated_at_ns = EXCLUDED.updated_at_ns,
-              account_snapshot = EXCLUDED.account_snapshot
+              account_snapshot = EXCLUDED.account_snapshot,
+              routes = EXCLUDED.routes
             """,
             self._runtime_state_values(value),
         )
@@ -1119,6 +1135,7 @@ class ExecutionStreamStorage:
                 if row["account_snapshot"] is None
                 else ExecutionAccountSnapshot.from_payload(dict(row["account_snapshot"]))
             ),
+            routes=tuple(str(value) for value in row["routes"]),
         )
 
     @staticmethod
@@ -1160,6 +1177,7 @@ class ExecutionStreamStorage:
             value.started_at_ns,
             value.updated_at_ns,
             cls._account_snapshot_json(value.account_snapshot),
+            _dumps(list(value.routes)),
         )
 
     def execution_runtime_control_state(

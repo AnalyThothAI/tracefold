@@ -675,6 +675,7 @@
 | `open_orders_count` | `INTEGER` | False | `None` |
 | `protection_status` | `TEXT` | False | `None` |
 | `account_snapshot` | `JSONB` | True | `None` |
+| `routes` | `JSONB` | False | `'[]'::jsonb` |
 
 ## `trading_operator_intents`
 

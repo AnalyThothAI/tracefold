@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Container
 from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_FLOOR, Decimal
@@ -33,6 +34,51 @@ def _mid_price(cache: Any, instrument_id: InstrumentId) -> tuple[Decimal, int]:
     if bid <= 0 or ask <= 0 or ask < bid:
         raise RuntimeError("oi_runtime_market_invalid")
     return (bid + ask) / Decimal(2), int(quote.ts_event)
+
+
+def account_equity_usd(
+    *,
+    cache: Any,
+    portfolio: Any,
+    account_id: AccountId,
+    routes: Container[InstrumentId],
+) -> Decimal:
+    """The one equity this Runtime means: USDT balance plus unrealized PnL at current marks.
+
+    There used to be two. `evaluate_entry` compares `DayStartBaseline.equity_usd` against
+    `NautilusRiskFacts.equity_usd`, and the baseline was recorded from `balance_total` alone while the
+    facts included open-position PnL, so `daily_loss_limit` was subtracting one definition from
+    another and the gap was exactly the unrealized PnL held at UTC midnight (#510 B). This function is
+    now the only place either number is produced.
+
+    Positions on instruments this Runtime has no route for are not priced here; they are already
+    unexpected exposure, and `NautilusRiskFacts.collect` is what names them.
+    """
+
+    account = cache.account(account_id)
+    if account is None:
+        raise RuntimeError("oi_runtime_account_missing")
+    total = account.balance_total(USDT)
+    if total is None:
+        raise RuntimeError("oi_runtime_account_balance_missing")
+    equity = _decimal(total)
+    for position in cache.positions_open(account_id=account_id):
+        instrument_id = position.instrument_id
+        if instrument_id not in routes:
+            continue
+        price, _ = _mid_price(cache, instrument_id)
+        instrument = cache.instrument(instrument_id)
+        if instrument is None:
+            raise RuntimeError("oi_runtime_instrument_missing")
+        unrealized = portfolio.unrealized_pnl(
+            instrument_id,
+            price=instrument.make_price(price),
+            account_id=account_id,
+            target_currency=USDT,
+        )
+        if unrealized is not None:
+            equity += _decimal(unrealized)
+    return equity
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,13 +136,7 @@ class NautilusRiskFacts:
         account_observed_at_ns: int,
         reconciliation_observed_at_ns: int,
     ) -> NautilusRiskFacts:
-        account = cache.account(account_id)
-        if account is None:
-            raise RuntimeError("oi_runtime_account_missing")
-        total = account.balance_total(USDT)
-        if total is None:
-            raise RuntimeError("oi_runtime_account_balance_missing")
-        equity = _decimal(total)
+        equity = account_equity_usd(cache=cache, portfolio=portfolio, account_id=account_id, routes=routes)
         positions = tuple(cache.positions_open(account_id=account_id))
         open_orders = tuple(cache.orders_open(account_id=account_id))
         inflight_orders = tuple(cache.orders_inflight(account_id=account_id))
@@ -116,17 +156,6 @@ class NautilusRiskFacts:
             price, observed_at_ns = _mid_price(cache, instrument_id)
             prices[instrument_id] = price
             market_clocks.append(observed_at_ns)
-            instrument = cache.instrument(instrument_id)
-            if instrument is None:
-                raise RuntimeError("oi_runtime_instrument_missing")
-            unrealized = portfolio.unrealized_pnl(
-                instrument_id,
-                price=instrument.make_price(price),
-                account_id=account_id,
-                target_currency=USDT,
-            )
-            if unrealized is not None:
-                equity += _decimal(unrealized)
         if candidate_instrument_id not in prices:
             raise RuntimeError("oi_runtime_candidate_market_missing")
         market_observed_at_ns = min(market_clocks)
@@ -269,5 +298,6 @@ __all__ = [
     "OiFuturesRiskPolicy",
     "RiskAction",
     "RiskDecision",
+    "account_equity_usd",
     "fixed_risk_quantity",
 ]

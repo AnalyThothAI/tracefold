@@ -720,6 +720,7 @@ def test_runtime_state_is_single_generation_and_activation_recency_is_authoritat
             unknown_orders_count=0,
             complete=True,
         ),
+        routes=("crypto:perp:BTC:USDT", "crypto:perp:ETH:USDT"),
     )
 
     conn = connect_postgres_test(read_only=False)
@@ -753,7 +754,24 @@ def test_runtime_state_is_single_generation_and_activation_recency_is_authoritat
         )
         with conn.transaction():
             assert repo.update_execution_runtime_state(stopped) is True
+        # The catalogue is generation identity, not heartbeat state: the update statement never
+        # names it and the row keeps what the insert published (#510 PR-2).
         assert repo.execution_runtime_state("binance_usdm_primary") == stopped
+        assert repo.execution_runtime_state("binance_usdm_primary").routes == running.routes
+
+        for invalid in (
+            '["crypto:perp:ETH:USDT", "crypto:perp:BTC:USDT"]',
+            '["crypto:perp:BTC:USDT", "crypto:perp:BTC:USDT"]',
+            '["crypto perp BTC"]',
+            "[1]",
+            "{}",
+        ):
+            with pytest.raises(psycopg.errors.CheckViolation) as rejected, conn.transaction():
+                conn.execute(
+                    "UPDATE trading_execution_runtime_state SET routes = %s::jsonb WHERE account_slot = %s",
+                    (invalid, "binance_usdm_primary"),
+                )
+            assert rejected.value.diag.constraint_name == "trading_execution_runtime_routes_check"
     finally:
         conn.close()
 
@@ -1452,6 +1470,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
                     [
                         "trading_execution_metadata_valid",
                         "trading_execution_string_array_valid",
+                        "trading_execution_market_key_array_valid",
                         "reject_trading_execution_stream_mutation",
                     ],
                 ),
@@ -1463,7 +1482,24 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
                    trading_execution_metadata_valid('{"nested":{}}'::jsonb) AS metadata_nested,
                    trading_execution_string_array_valid('["a","b"]'::jsonb) AS refs_valid,
                    trading_execution_string_array_valid('["b","a"]'::jsonb) AS refs_unsorted,
-                   trading_execution_string_array_valid('["a","a"]'::jsonb) AS refs_duplicate
+                   trading_execution_string_array_valid('["a","a"]'::jsonb) AS refs_duplicate,
+                   trading_execution_market_key_array_valid('[]'::jsonb) AS routes_empty,
+                   trading_execution_market_key_array_valid(
+                     '["crypto:perp:BTC:USDT","crypto:perp:ETH:USDT"]'::jsonb
+                   ) AS routes_valid,
+                   trading_execution_market_key_array_valid(
+                     '["crypto:perp:ETH:USDT","crypto:perp:BTC:USDT"]'::jsonb
+                   ) AS routes_unsorted,
+                   trading_execution_market_key_array_valid(
+                     '["crypto:perp:BTC:USDT","crypto:perp:BTC:USDT"]'::jsonb
+                   ) AS routes_duplicate,
+                   trading_execution_market_key_array_valid('["crypto perp BTC"]'::jsonb) AS routes_malformed,
+                   -- The reason this is its own validator: the observation one stops at 16 elements.
+                   trading_execution_market_key_array_valid(
+                     (SELECT jsonb_agg(key ORDER BY key COLLATE "C")
+                        FROM (SELECT 'crypto:perp:' || lpad(n::text, 4, '0') || ':USDT' AS key
+                                FROM generate_series(1, 525) n) keys)
+                   ) AS routes_catalogue_scale
             """
         ).fetchone()
     finally:
@@ -1590,6 +1626,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
             "trading_execution_runtime_armed_check",
             "trading_execution_runtime_entry_reason_check",
             "trading_execution_runtime_account_snapshot_check",
+            "trading_execution_runtime_routes_check",
         },
     }
     assert set(triggers) == {
@@ -1608,6 +1645,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
     assert functions == {
         "trading_execution_metadata_valid": ("i", "s", False, "boolean"),
         "trading_execution_string_array_valid": ("i", "s", False, "boolean"),
+        "trading_execution_market_key_array_valid": ("i", "s", False, "boolean"),
         "reject_trading_execution_stream_mutation": ("v", "u", False, "trigger"),
     }
     assert validators == {
@@ -1616,6 +1654,12 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "refs_valid": True,
         "refs_unsorted": False,
         "refs_duplicate": False,
+        "routes_empty": True,
+        "routes_valid": True,
+        "routes_unsorted": False,
+        "routes_duplicate": False,
+        "routes_malformed": False,
+        "routes_catalogue_scale": True,
     }
 
 

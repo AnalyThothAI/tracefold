@@ -57,6 +57,17 @@ class OiInstrumentRoute:
             raise ValueError("oi_runtime_stop_distance_invalid")
 
 
+# How much older than one private-reconciliation period the account and reconciliation clocks may be
+# before an entry is refused. They are multiples of the period rather than free numbers because the
+# period is what moves them: the account clock is only ever as fresh as the last scan, so any budget
+# at or below one period is expired for part of every cycle by construction. Two periods tolerates one
+# missed scan, three tolerates two, and both still refuse a Runtime that has genuinely stopped
+# reconciling. Production ran `account_stale_after_ns` at exactly one period and refused an entry at
+# the tail of every cycle (#510 B).
+_ACCOUNT_STALE_PERIODS = 2
+_RECONCILIATION_STALE_PERIODS = 3
+
+
 @dataclass(frozen=True, slots=True)
 class OiRiskLimits:
     """The smallest Runtime-owned gap policy beyond Nautilus RiskEngine."""
@@ -67,9 +78,10 @@ class OiRiskLimits:
     max_positions: int
     max_leverage: int
     max_daily_loss_usd: Decimal
+    # Market freshness is owned by the quote stream, not by the private scan, so it stays its own
+    # number. The two account clocks below are owned by the private scan and are derived from it.
     market_stale_after_ns: int
-    account_stale_after_ns: int
-    reconciliation_stale_after_ns: int
+    reconciliation_interval_ns: int
 
     def __post_init__(self) -> None:
         if not Decimal("0") < self.risk_fraction_per_trade <= Decimal("1"):
@@ -84,15 +96,20 @@ class OiRiskLimits:
             raise ValueError("oi_runtime_max_leverage_invalid")
         if self.max_daily_loss_usd <= 0:
             raise ValueError("oi_runtime_daily_loss_invalid")
-        if (
-            min(
-                self.market_stale_after_ns,
-                self.account_stale_after_ns,
-                self.reconciliation_stale_after_ns,
-            )
-            <= 0
-        ):
+        if min(self.market_stale_after_ns, self.reconciliation_interval_ns) <= 0:
             raise ValueError("oi_runtime_staleness_invalid")
+
+    @property
+    def account_stale_after_ns(self) -> int:
+        return self.reconciliation_interval_ns * _ACCOUNT_STALE_PERIODS
+
+    @property
+    def reconciliation_stale_after_ns(self) -> int:
+        return self.reconciliation_interval_ns * _RECONCILIATION_STALE_PERIODS
+
+    @property
+    def reconciliation_interval_seconds(self) -> float:
+        return self.reconciliation_interval_ns / 1_000_000_000
 
 
 @dataclass(frozen=True, slots=True)

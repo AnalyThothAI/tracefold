@@ -2,7 +2,13 @@
 
 `SignalLane.advance()` owns admission, point-in-time evidence, pure Alpha evaluation, and the atomic
 Case/Signal commit. It knows no execution profile, credential, account, balance, position, size,
-leverage, order, protection, capital grant, reservation, or Runtime state.
+leverage, order, protection, capital grant or reservation.
+
+The one Runtime fact it reads is the published route catalogue on
+`trading_execution_runtime_state.routes`: which `market_key`s a configured Runtime can reach at all.
+That is a catalogue, not permission, sizing or a route choice — the lane still names no venue,
+instrument, account or quantity — and reading it is what keeps the turn's single Case freeze off a
+market whose only possible execution answer is `instrument_unmapped` (#510 B).
 """
 
 from __future__ import annotations
@@ -272,6 +278,20 @@ class SignalLane:
             )
             if verdict is not None:
                 results[normalized.source_key] = verdict
+                continue
+            executable = snapshot.executable_market_keys
+            candidate_market = market_key(normalized.base_symbol)
+            if executable is not None and candidate_market not in executable:
+                # Terminal: the catalogue is the venue's listing, so no later scan of the same frame
+                # reaches a different answer while this Runtime generation is the current one. A new
+                # catalogue arrives as a new Runtime start, and `gate_config_digest` is unchanged, so
+                # the row simply keeps this reason until a Source with a listed market arrives.
+                results[normalized.source_key] = reject(
+                    normalized,
+                    stage="eligibility",
+                    reason="instrument_unmapped",
+                    evidence={"market_key": candidate_market},
+                )
                 continue
             incumbent = admitted.get(normalized.underlying_key)
             if incumbent is None:
