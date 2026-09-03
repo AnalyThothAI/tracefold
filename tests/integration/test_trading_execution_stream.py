@@ -21,7 +21,6 @@ from tracefold.trading.storage.execution_stream import (
     ExecutionAccountOrder,
     ExecutionAccountPosition,
     ExecutionAccountSnapshot,
-    ExecutionProfileActivation,
     ExecutionRuntimeState,
     PreparedExecutionObservationBatch,
     PreparedOperatorIntent,
@@ -82,7 +81,7 @@ def _append_signal(repo: TradingRepository, prepared: PreparedTradeSignal) -> di
 def _prepare_command(*, suffix: str, **updates: object) -> PreparedOperatorIntent:
     values: dict[str, object] = {
         "command_id": suffix * 64,
-        "target_profile_id": "demo-v1",
+        "account_slot": "demo-v1",
         "action": "pause_entries",
         "scope": "account",
         "reason": "test",
@@ -103,7 +102,7 @@ def _observation(
 ) -> ExecutionObservationV1:
     values: dict[str, object] = {
         "event_id": event * 64,
-        "runtime_profile_id": "demo-v1",
+        "account_slot": "demo-v1",
         "runtime_release": "sha256:" + "1" * 64,
         "execution_strategy": "oi_nautilus_v1",
         "signal_id": signal_id,
@@ -192,7 +191,7 @@ def test_exact_append_is_idempotent_and_identity_conflicts_fail_closed() -> None
     assert materialize_operator_intent(command_row).command_id == command.value.command_id
 
 
-def test_operator_ingress_records_only_the_idempotent_intent_without_interpreting_activation() -> None:
+def test_operator_ingress_records_only_the_idempotent_intent_without_interpreting_it() -> None:
     command = _prepare_command(suffix="9", requested_at_ns=2_000, expires_at_ns=10_000)
     conn = connect_postgres_test(read_only=False)
     try:
@@ -217,23 +216,12 @@ def test_operator_ingress_records_only_the_idempotent_intent_without_interpretin
         conn.close()
 
 
-def test_operator_ingress_leaves_active_profile_command_for_the_runtime() -> None:
-    command = _prepare_command(suffix="8", requested_at_ns=2_000, expires_at_ns=10_000)
-    activation = ExecutionProfileActivation(
-        runtime_profile_id="demo-v1",
-        account_slot="binance_usdm_primary",
-        activated_after_signal_seq=0,
-        activated_after_command_seq=0,
-        mode="disabled",
-        runtime_release="sha256:" + "1" * 64,
-        config_sha256="3" * 64,
-        created_at_ns=1_500,
-    )
+def test_operator_ingress_leaves_the_slots_command_for_the_runtime() -> None:
+    now_ns = time.time_ns()
+    command = _prepare_command(suffix="8", requested_at_ns=now_ns, expires_at_ns=now_ns + 3_600_000_000_000)
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)
-        with conn.transaction():
-            repo.append_execution_profile_activation(activation)
         with conn.transaction():
             receipt = persist_operator_intent(repo, command)
 
@@ -247,8 +235,9 @@ def test_operator_ingress_leaves_active_profile_command_for_the_runtime() -> Non
         )
         with conn.transaction():
             unresolved = repo.unresolved_operator_intents(
-                runtime_profile_id="demo-v1",
+                account_slot="demo-v1",
                 execution_strategy="oi_nautilus_v1",
+                now_ns=now_ns,
                 limit=10,
             )
         assert materialize_operator_intents(unresolved) == (command.value.model_copy(update={"seq": 1}),)
@@ -386,33 +375,9 @@ def test_execution_stream_append_requires_caller_owned_transaction() -> None:
         conn.close()
 
 
-def test_activation_rejects_postgres_unrepresentable_text_before_storage() -> None:
-    with pytest.raises(ValueError, match="execution_profile_release_invalid"):
-        ExecutionProfileActivation(
-            runtime_profile_id="demo-v1",
-            account_slot="binance_usdm_primary",
-            activated_after_signal_seq=0,
-            activated_after_command_seq=0,
-            mode="disabled",
-            runtime_release="bad\x00release",
-            config_sha256="3" * 64,
-            created_at_ns=1_500,
-        )
-
-
 def test_concurrent_identical_appends_are_idempotent() -> None:
     signal = _prepare_signal(suffix="a")
     command = _prepare_command(suffix="b")
-    activation = ExecutionProfileActivation(
-        runtime_profile_id="demo-v1",
-        account_slot="binance_usdm_primary",
-        activated_after_signal_seq=0,
-        activated_after_command_seq=0,
-        mode="disabled",
-        runtime_release="sha256:" + "1" * 64,
-        config_sha256="3" * 64,
-        created_at_ns=1_500,
-    )
     observation = prepare_execution_observations((_observation(event="c", kind="risk"),))
     first = connect_postgres_test(read_only=False)
     second = connect_postgres_test(read_only=False)
@@ -453,21 +418,6 @@ def test_concurrent_identical_appends_are_idempotent() -> None:
 
             started.clear()
 
-            def second_activation_append():
-                second.execute("SET application_name = 'tracefold-433-activation-retry'")
-                with second.transaction():
-                    started.set()
-                    return second_repo.append_execution_profile_activation(activation)
-
-            with first.transaction():
-                first_activation = first_repo.append_execution_profile_activation(activation)
-                activation_future = executor.submit(second_activation_append)
-                assert started.wait(1)
-                _wait_for_database_lock(observer, application_name="tracefold-433-activation-retry")
-            assert activation_future.result(timeout=5) == first_activation
-
-            started.clear()
-
             def second_observation_append():
                 second.execute("SET application_name = 'tracefold-433-observation-retry'")
                 with second.transaction():
@@ -486,59 +436,42 @@ def test_concurrent_identical_appends_are_idempotent() -> None:
         observer.close()
 
 
-def test_activation_fence_and_final_disposition_drive_bounded_anti_join_reads() -> None:
-    historical_signal_prepared = _prepare_signal(suffix="a")
-    historical_command_prepared = _prepare_command(suffix="b")
-    signal_prepared = _prepare_signal(suffix="c", observed_at_ns=2_000, expires_at_ns=20_000)
-    command_prepared = _prepare_command(suffix="e", requested_at_ns=2_000, expires_at_ns=20_000)
+def test_a_final_disposition_drives_the_bounded_anti_join_reads() -> None:
+    """A Signal or Command leaves the pending set exactly when its disposition is durable."""
+
+    now_ns = time.time_ns()
+    hour_ns = 3_600_000_000_000
+    signal_prepared = _prepare_signal(suffix="c", observed_at_ns=now_ns, expires_at_ns=now_ns + hour_ns)
+    command_prepared = _prepare_command(suffix="e", requested_at_ns=now_ns, expires_at_ns=now_ns + hour_ns)
+
+    def read(repo: TradingRepository) -> tuple[tuple[object, ...], tuple[object, ...]]:
+        return (
+            materialize_trade_signals(
+                repo.unresolved_trade_signals(
+                    account_slot="demo-v1", execution_strategy="oi_nautilus_v1", now_ns=now_ns, limit=10
+                )
+            ),
+            materialize_operator_intents(
+                repo.unresolved_operator_intents(
+                    account_slot="demo-v1", execution_strategy="oi_nautilus_v1", now_ns=now_ns, limit=10
+                )
+            ),
+        )
 
     conn = connect_postgres_test(read_only=False)
     try:
+        repo = TradingRepository(conn)
         with conn.transaction():
-            repo = TradingRepository(conn)
-            historical_signal_row = _append_signal(repo, historical_signal_prepared)
-            historical_command_row = repo.append_operator_intent(historical_command_prepared)
-
-        historical_signal = materialize_trade_signal(historical_signal_row)
-        historical_command = materialize_operator_intent(historical_command_row)
-        activation = ExecutionProfileActivation(
-            runtime_profile_id="demo-v1",
-            account_slot="binance_usdm_primary",
-            activated_after_signal_seq=historical_signal.seq,
-            activated_after_command_seq=historical_command.seq,
-            mode="paper",
-            runtime_release="sha256:" + "1" * 64,
-            config_sha256="3" * 64,
-            created_at_ns=1_500,
-        )
-        conflicting_activation = ExecutionProfileActivation(**(activation.as_kwargs() | {"mode": "disabled"}))
-
-        with conn.transaction():
-            assert repo.append_execution_profile_activation(activation) == activation
-            with pytest.raises(RuntimeError, match="execution_stream_identity_conflict"):
-                repo.append_execution_profile_activation(conflicting_activation)
             signal_row = _append_signal(repo, signal_prepared)
             command_row = repo.append_operator_intent(command_prepared)
 
         signal = materialize_trade_signal(signal_row)
         command = materialize_operator_intent(command_row)
         with conn.transaction():
-            first_signal_read = repo.unresolved_trade_signals(
-                runtime_profile_id="demo-v1", execution_strategy="oi_nautilus_v1", limit=10
-            )
-            second_signal_read = repo.unresolved_trade_signals(
-                runtime_profile_id="demo-v1", execution_strategy="oi_nautilus_v1", limit=10
-            )
-            first_command_read = repo.unresolved_operator_intents(
-                runtime_profile_id="demo-v1", execution_strategy="oi_nautilus_v1", limit=10
-            )
-            second_command_read = repo.unresolved_operator_intents(
-                runtime_profile_id="demo-v1", execution_strategy="oi_nautilus_v1", limit=10
-            )
-        assert materialize_trade_signals(first_signal_read) == (signal,)
-        assert materialize_trade_signals(second_signal_read) == (signal,)
-        assert materialize_operator_intents(first_command_read) == (command,)
-        assert materialize_operator_intents(second_command_read) == (command,)
+            first = read(repo)
+            second = read(repo)
+        # The read is idempotent: nothing about it consumes what it returns.
+        assert first == second == ((signal,), (command,))
 
         dispositions = prepare_execution_observations(
             (
@@ -561,14 +494,52 @@ def test_activation_fence_and_final_disposition_drive_bounded_anti_join_reads() 
             assert conn.execute("SELECT count(*) AS n FROM trading_execution_observations").fetchone()["n"] == 2
 
         with conn.transaction():
-            final_signal_read = repo.unresolved_trade_signals(
-                runtime_profile_id="demo-v1", execution_strategy="oi_nautilus_v1", limit=10
+            assert read(repo) == ((), ())
+    finally:
+        conn.close()
+
+
+def test_unresolved_reads_return_only_unexpired_intents() -> None:
+    """#520 PR-A. A pending Signal or Command is one whose own TTL has not run out.
+
+    The activation waterline used to answer this question by sequence number, which meant a Runtime
+    could only ever be told about facts newer than the row that named it. Expiry is the fact the
+    contract already carries, so the read states it directly and needs no activation row at all.
+    """
+
+    now_ns = time.time_ns()
+    hour_ns = 3_600_000_000_000
+    expired_signal = _prepare_signal(
+        suffix="a",
+        observed_at_ns=now_ns - 2 * hour_ns,
+        expires_at_ns=now_ns - hour_ns,
+    )
+    live_signal = _prepare_signal(suffix="c", observed_at_ns=now_ns, expires_at_ns=now_ns + hour_ns)
+    expired_command = _prepare_command(
+        suffix="b",
+        requested_at_ns=now_ns - 2 * hour_ns,
+        expires_at_ns=now_ns - hour_ns,
+    )
+    live_command = _prepare_command(suffix="e", requested_at_ns=now_ns, expires_at_ns=now_ns + hour_ns)
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        with conn.transaction():
+            _append_signal(repo, expired_signal)
+            live_signal_row = _append_signal(repo, live_signal)
+            repo.append_operator_intent(expired_command)
+            live_command_row = repo.append_operator_intent(live_command)
+
+        with conn.transaction():
+            signals = repo.unresolved_trade_signals(
+                account_slot="demo-v1", execution_strategy="oi_nautilus_v1", now_ns=now_ns, limit=10
             )
-            final_command_read = repo.unresolved_operator_intents(
-                runtime_profile_id="demo-v1", execution_strategy="oi_nautilus_v1", limit=10
+            commands = repo.unresolved_operator_intents(
+                account_slot="demo-v1", execution_strategy="oi_nautilus_v1", now_ns=now_ns, limit=10
             )
-        assert materialize_trade_signals(final_signal_read) == ()
-        assert materialize_operator_intents(final_command_read) == ()
+        assert materialize_trade_signals(signals) == (materialize_trade_signal(live_signal_row),)
+        assert materialize_operator_intents(commands) == (materialize_operator_intent(live_command_row),)
     finally:
         conn.close()
 
@@ -629,26 +600,9 @@ def test_account_slot_advisory_lock_has_one_session_owner() -> None:
         second.close()
 
 
-def test_runtime_state_is_single_generation_and_activation_recency_is_authoritative() -> None:
-    first_activation = ExecutionProfileActivation(
-        runtime_profile_id="demo-v1",
-        account_slot="binance_usdm_primary",
-        activated_after_signal_seq=0,
-        activated_after_command_seq=0,
-        mode="paper",
-        runtime_release="nautilus-1.231.0+oi-v1",
-        config_sha256="3" * 64,
-        created_at_ns=1_500,
-    )
-    second_activation = replace(
-        first_activation,
-        runtime_profile_id="demo-v2",
-        config_sha256="4" * 64,
-        created_at_ns=1_600,
-    )
+def test_runtime_state_is_single_generation_per_account_slot() -> None:
     running = ExecutionRuntimeState(
         account_slot="binance_usdm_primary",
-        runtime_profile_id="demo-v2",
         mode="paper",
         runtime_release="nautilus-1.231.0+oi-v1",
         config_sha256="4" * 64,
@@ -662,8 +616,6 @@ def test_runtime_state_is_single_generation_and_activation_recency_is_authoritat
         entries_armed=True,
         control_plane_ready=True,
         singleton_ready=True,
-        credential_ready=True,
-        activation_ready=True,
         startup_reconciled=True,
         portfolio_ready=True,
         audit_ready=True,
@@ -726,10 +678,6 @@ def test_runtime_state_is_single_generation_and_activation_recency_is_authoritat
     try:
         repo = TradingRepository(conn)
         with conn.transaction():
-            repo.append_execution_profile_activation(first_activation)
-            repo.append_execution_profile_activation(second_activation)
-            assert repo.latest_execution_profile_activation("binance_usdm_primary") == second_activation
-            assert repo.execution_stream_fence() == (0, 0)
             assert repo.put_execution_runtime_state(running) == running
 
         assert repo.execution_runtime_state("binance_usdm_primary") == running
@@ -775,15 +723,22 @@ def test_runtime_state_is_single_generation_and_activation_recency_is_authoritat
         conn.close()
 
 
-def test_manual_entry_recovery_read_is_activation_bounded() -> None:
-    before = _prepare_command(
+def test_manual_entry_recovery_read_is_bounded_by_durable_facts_and_the_window() -> None:
+    """#520 PR-A. Recovery is bounded by what a manual entry actually did, not by a waterline.
+
+    A Command with no durable entry-order fact never reached the venue and can hold nothing; one whose
+    latest position fact is `closed` is finished. Both used to sit behind the activation fence as well,
+    which also hid every intent older than the current profile.
+    """
+
+    unsent = _prepare_command(
         suffix="7",
         action="manual_entry",
         scope="market",
         market_key="crypto:perp:BTC:USDT",
         direction="long",
     )
-    after = _prepare_command(
+    submitted = _prepare_command(
         suffix="8",
         action="manual_entry",
         scope="market",
@@ -794,36 +749,17 @@ def test_manual_entry_recovery_read_is_activation_bounded() -> None:
     try:
         repo = TradingRepository(conn)
         with conn.transaction():
-            repo.append_operator_intent(before)
-            _signal_seq, command_seq = repo.execution_stream_fence()
-            repo.append_execution_profile_activation(
-                ExecutionProfileActivation(
-                    runtime_profile_id="demo-v1",
-                    account_slot="binance_usdm_primary",
-                    activated_after_signal_seq=0,
-                    activated_after_command_seq=command_seq,
-                    mode="paper",
-                    runtime_release="nautilus-1.231.0+oi-v1",
-                    config_sha256="3" * 64,
-                    created_at_ns=1_500,
-                )
-            )
-            repo.append_operator_intent(after)
+            repo.append_operator_intent(unsent)
+            repo.append_operator_intent(submitted)
 
-        assert repo.execution_recovery_manual_entries(runtime_profile_id="demo-v1", since_ns=0, limit=10) == ()
+        assert repo.execution_recovery_manual_entries(account_slot="demo-v1", since_ns=0, limit=10) == ()
         with conn.transaction():
             repo.append_execution_observations(
                 prepare_execution_observations(
                     (
                         _observation(
-                            event="8",
-                            command_id=before.value.command_id,
-                            kind="order",
-                            summary={"leg": "entry", "status": "submitted"},
-                        ),
-                        _observation(
                             event="9",
-                            command_id=after.value.command_id,
+                            command_id=submitted.value.command_id,
                             kind="order",
                             summary={"leg": "entry", "status": "submitted"},
                         ),
@@ -831,24 +767,26 @@ def test_manual_entry_recovery_read_is_activation_bounded() -> None:
                 )
             )
 
-        rows = repo.execution_recovery_manual_entries(runtime_profile_id="demo-v1", since_ns=0, limit=10)
+        rows = repo.execution_recovery_manual_entries(account_slot="demo-v1", since_ns=0, limit=10)
 
-        assert materialize_operator_intents(rows) == (after.value.model_copy(update={"seq": rows[0][0]}),)
-        assert repo.execution_recovery_manual_entries(runtime_profile_id="demo-v1", since_ns=2_101, limit=10) == ()
+        assert materialize_operator_intents(rows) == (submitted.value.model_copy(update={"seq": rows[0][0]}),)
+        assert repo.execution_recovery_manual_entries(account_slot="demo-v1", since_ns=2_101, limit=10) == ()
+        # A different account slot never claims this one's exposure.
+        assert repo.execution_recovery_manual_entries(account_slot="other-slot", since_ns=0, limit=10) == ()
         with conn.transaction():
             repo.append_execution_observations(
                 prepare_execution_observations(
                     (
                         _observation(
                             event="a",
-                            command_id=after.value.command_id,
+                            command_id=submitted.value.command_id,
                             kind="position",
                             summary={"status": "closed", "quantity": "0"},
                         ),
                     )
                 )
             )
-        assert repo.execution_recovery_manual_entries(runtime_profile_id="demo-v1", since_ns=0, limit=10) == ()
+        assert repo.execution_recovery_manual_entries(account_slot="demo-v1", since_ns=0, limit=10) == ()
     finally:
         conn.close()
 
@@ -861,19 +799,6 @@ def test_signal_recovery_keeps_only_windowed_durable_entry_order_facts() -> None
     try:
         repo = TradingRepository(conn)
         with conn.transaction():
-            _signal_seq, command_seq = repo.execution_stream_fence()
-            repo.append_execution_profile_activation(
-                ExecutionProfileActivation(
-                    runtime_profile_id="demo-v1",
-                    account_slot="binance_usdm_primary",
-                    activated_after_signal_seq=0,
-                    activated_after_command_seq=command_seq,
-                    mode="paper",
-                    runtime_release="nautilus-1.231.0+oi-v1",
-                    config_sha256="3" * 64,
-                    created_at_ns=1_500,
-                )
-            )
             _append_signal(repo, active)
             _append_signal(repo, stopped)
             _append_signal(repo, retired)
@@ -933,12 +858,12 @@ def test_signal_recovery_keeps_only_windowed_durable_entry_order_facts() -> None
                 )
             )
 
-        rows = repo.execution_recovery_signals(runtime_profile_id="demo-v1", since_ns=0, limit=10)
+        rows = repo.execution_recovery_signals(account_slot="demo-v1", since_ns=0, limit=10)
 
         # `_matched_position` claims by instrument and direction alone, so a stopped-out identity
         # and a canceled entry must never reach it: either would adopt an unrelated position.
         assert materialize_trade_signals(rows) == (active.value.model_copy(update={"seq": rows[0][0]}),)
-        assert repo.execution_recovery_signals(runtime_profile_id="demo-v1", since_ns=5_001, limit=10) == ()
+        assert repo.execution_recovery_signals(account_slot="demo-v1", since_ns=5_001, limit=10) == ()
     finally:
         conn.close()
 
@@ -951,19 +876,6 @@ def test_signal_recovery_readmits_an_identity_that_reopened_after_a_closed_posit
     try:
         repo = TradingRepository(conn)
         with conn.transaction():
-            _signal_seq, command_seq = repo.execution_stream_fence()
-            repo.append_execution_profile_activation(
-                ExecutionProfileActivation(
-                    runtime_profile_id="demo-v1",
-                    account_slot="binance_usdm_primary",
-                    activated_after_signal_seq=0,
-                    activated_after_command_seq=command_seq,
-                    mode="paper",
-                    runtime_release="nautilus-1.231.0+oi-v1",
-                    config_sha256="3" * 64,
-                    created_at_ns=1_500,
-                )
-            )
             _append_signal(repo, reopened)
             repo.append_execution_observations(
                 prepare_execution_observations(
@@ -993,7 +905,7 @@ def test_signal_recovery_readmits_an_identity_that_reopened_after_a_closed_posit
                 )
             )
 
-        rows = repo.execution_recovery_signals(runtime_profile_id="demo-v1", since_ns=0, limit=10)
+        rows = repo.execution_recovery_signals(account_slot="demo-v1", since_ns=0, limit=10)
 
         assert materialize_trade_signals(rows) == (reopened.value.model_copy(update={"seq": rows[0][0]}),)
     finally:
@@ -1005,7 +917,7 @@ def test_signal_recovery_rejects_a_negative_window() -> None:
     try:
         repo = TradingRepository(conn)
         with pytest.raises(ValueError, match="execution_recovery_window_invalid"):
-            repo.execution_recovery_signals(runtime_profile_id="demo-v1", since_ns=-1, limit=10)
+            repo.execution_recovery_signals(account_slot="demo-v1", since_ns=-1, limit=10)
     finally:
         conn.close()
 
@@ -1114,11 +1026,11 @@ def test_contract_and_postgres_json_bounds_match_at_exact_edges() -> None:
             conn.execute(
                 """
                 INSERT INTO trading_execution_observations (
-                  event_id, runtime_profile_id, runtime_release, execution_strategy,
+                  event_id, account_slot, runtime_release, execution_strategy,
                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                   native_identity_references, summary, payload_digest, payload
                 )
-                SELECT %s, runtime_profile_id, runtime_release, execution_strategy,
+                SELECT %s, account_slot, runtime_release, execution_strategy,
                        signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                        %s::jsonb, summary, payload_digest,
                        payload || jsonb_build_object(
@@ -1206,16 +1118,6 @@ def test_nautilus_shaped_mixed_case_references_are_admitted_as_python_ordered_th
 def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
     signal = _prepare_signal(suffix="a")
     command = _prepare_command(suffix="b")
-    activation = ExecutionProfileActivation(
-        runtime_profile_id="demo-v1",
-        account_slot="binance_usdm_primary",
-        activated_after_signal_seq=0,
-        activated_after_command_seq=0,
-        mode="disabled",
-        runtime_release="sha256:" + "1" * 64,
-        config_sha256="3" * 64,
-        created_at_ns=1_500,
-    )
     observation = _observation(event="c", kind="risk")
     observation_batch = prepare_execution_observations((observation,))
 
@@ -1225,7 +1127,6 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
         with conn.transaction():
             _append_signal(repo, signal)
             repo.append_operator_intent(command)
-            repo.append_execution_profile_activation(activation)
             repo.append_execution_observations(observation_batch)
 
         cases: tuple[tuple[str, tuple[object, ...], type[Exception], str], ...] = (
@@ -1247,11 +1148,11 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
             (
                 """
                 INSERT INTO trading_operator_intents (
-                  command_id, target_profile_id, action, scope, reason, operator_identity,
+                  command_id, account_slot, action, scope, reason, operator_identity,
                   authentication_identity, requested_at_ns, expires_at_ns,
                   confirmation_identity, market_key, direction, payload
                 )
-                SELECT %s, target_profile_id, 'resume_entries', scope, reason, operator_identity,
+                SELECT %s, account_slot, 'resume_entries', scope, reason, operator_identity,
                        authentication_identity, requested_at_ns, expires_at_ns,
                        NULL, NULL, NULL,
                        payload || jsonb_build_object('command_id', %s::text, 'action', 'resume_entries')
@@ -1264,11 +1165,11 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
             (
                 """
                 INSERT INTO trading_operator_intents (
-                  command_id, target_profile_id, action, scope, reason, operator_identity,
+                  command_id, account_slot, action, scope, reason, operator_identity,
                   authentication_identity, requested_at_ns, expires_at_ns,
                   confirmation_identity, market_key, direction, payload
                 )
-                SELECT %s, target_profile_id, 'manual_entry', scope, reason, operator_identity,
+                SELECT %s, account_slot, 'manual_entry', scope, reason, operator_identity,
                        authentication_identity, requested_at_ns, expires_at_ns,
                        NULL, NULL, NULL,
                        payload || jsonb_build_object('command_id', %s::text, 'action', 'manual_entry')
@@ -1281,11 +1182,11 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
             (
                 """
                 INSERT INTO trading_operator_intents (
-                  command_id, target_profile_id, action, scope, reason, operator_identity,
+                  command_id, account_slot, action, scope, reason, operator_identity,
                   authentication_identity, requested_at_ns, expires_at_ns,
                   confirmation_identity, market_key, direction, payload
                 )
-                SELECT %s, target_profile_id, action, scope, reason, operator_identity,
+                SELECT %s, account_slot, action, scope, reason, operator_identity,
                        authentication_identity, requested_at_ns, expires_at_ns,
                        confirmation_identity, market_key, direction,
                        payload || jsonb_build_object('command_id', %s::text, 'reason', 'payload drift')
@@ -1297,23 +1198,12 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
             ),
             (
                 """
-                INSERT INTO trading_execution_profile_activations (
-                  runtime_profile_id, account_slot, activated_after_signal_seq,
-                  activated_after_command_seq, mode, runtime_release, config_sha256, created_at_ns
-                ) VALUES ('invalid-fence', 'slot', -1, 0, 'disabled', 'release', %s, 1)
-                """,
-                ("4" * 64,),
-                psycopg.errors.CheckViolation,
-                "trading_execution_activation_fence_check",
-            ),
-            (
-                """
                 INSERT INTO trading_execution_observations (
-                  event_id, runtime_profile_id, runtime_release, execution_strategy,
+                  event_id, account_slot, runtime_release, execution_strategy,
                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                   native_identity_references, summary, payload_digest, payload
                 )
-                SELECT %s, runtime_profile_id, runtime_release, execution_strategy,
+                SELECT %s, account_slot, runtime_release, execution_strategy,
                        %s, %s, normalized_kind, occurred_at_ns, observed_at_ns,
                        native_identity_references, summary, payload_digest,
                        payload || jsonb_build_object(
@@ -1336,11 +1226,11 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
             (
                 """
                 INSERT INTO trading_execution_observations (
-                  event_id, runtime_profile_id, runtime_release, execution_strategy,
+                  event_id, account_slot, runtime_release, execution_strategy,
                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                   native_identity_references, summary, payload_digest, payload
                 )
-                SELECT %s, runtime_profile_id, runtime_release, execution_strategy,
+                SELECT %s, account_slot, runtime_release, execution_strategy,
                        signal_id, command_id, normalized_kind, 3000, observed_at_ns,
                        native_identity_references, summary, payload_digest,
                        payload || jsonb_build_object('event_id', %s::text, 'occurred_at_ns', 3000)
@@ -1353,11 +1243,11 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
             (
                 """
                 INSERT INTO trading_execution_observations (
-                  event_id, runtime_profile_id, runtime_release, execution_strategy,
+                  event_id, account_slot, runtime_release, execution_strategy,
                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                   native_identity_references, summary, payload_digest, payload
                 )
-                SELECT %s, runtime_profile_id, runtime_release, execution_strategy,
+                SELECT %s, account_slot, runtime_release, execution_strategy,
                        %s, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                        native_identity_references, summary, payload_digest,
                        payload || jsonb_build_object('event_id', %s::text, 'signal_id', %s::text)
@@ -1370,11 +1260,11 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
             (
                 """
                 INSERT INTO trading_execution_observations (
-                  event_id, runtime_profile_id, runtime_release, execution_strategy,
+                  event_id, account_slot, runtime_release, execution_strategy,
                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                   native_identity_references, summary, payload_digest, payload
                 )
-                SELECT %s, runtime_profile_id, runtime_release, execution_strategy,
+                SELECT %s, account_slot, runtime_release, execution_strategy,
                        signal_id, %s, normalized_kind, occurred_at_ns, observed_at_ns,
                        native_identity_references, summary, payload_digest,
                        payload || jsonb_build_object('event_id', %s::text, 'command_id', %s::text)
@@ -1387,11 +1277,11 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
             (
                 """
                 INSERT INTO trading_execution_observations (
-                  event_id, runtime_profile_id, runtime_release, execution_strategy,
+                  event_id, account_slot, runtime_release, execution_strategy,
                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                   native_identity_references, summary, payload_digest, payload
                 )
-                SELECT %s, runtime_profile_id, runtime_release, execution_strategy,
+                SELECT %s, account_slot, runtime_release, execution_strategy,
                        signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                        native_identity_references, '{"different":true}'::jsonb, payload_digest,
                        payload || jsonb_build_object('event_id', %s::text)
@@ -1420,7 +1310,6 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "trading_trade_signals",
         "trading_operator_intents",
         "trading_execution_observations",
-        "trading_execution_profile_activations",
         "trading_execution_runtime_control_state",
         "trading_execution_runtime_state",
     )
@@ -1511,18 +1400,16 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "ix_trading_trade_signals_expires_at",
         "ix_trading_trade_signals_unresolved",
         "trading_operator_intents_pkey",
-        "trading_operator_intent_profile_unique",
-        "ix_trading_operator_intents_unresolved",
+        "trading_operator_intent_slot_unique",
+        "ix_trading_operator_intents_pending",
         "trading_execution_observations_pkey",
         "trading_execution_observations_seq_key",
-        "ix_trading_execution_observations_runtime",
+        "ix_trading_execution_observations_slot",
         "ix_trading_execution_observations_signal_recovery",
         "ix_trading_execution_observations_command_recovery",
         "trading_execution_notification_candidates_idx",
         "ux_trading_execution_signal_disposition",
         "ux_trading_execution_control_disposition",
-        "trading_execution_profile_activations_pkey",
-        "ix_trading_execution_activations_slot_created",
         "trading_execution_runtime_control_state_pkey",
         "trading_execution_runtime_state_pkey",
         "trading_execution_runtime_state_runtime_id_key",
@@ -1532,8 +1419,8 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
     )
     assert indexes["ix_trading_trade_signals_observed_at"].endswith("USING btree (observed_at_ns)")
     assert indexes["ix_trading_trade_signals_expires_at"].endswith("USING btree (expires_at_ns)")
-    assert indexes["ix_trading_operator_intents_unresolved"].endswith(
-        "USING btree (target_profile_id, seq) INCLUDE (command_id, expires_at_ns)"
+    assert indexes["ix_trading_operator_intents_pending"].endswith(
+        "USING btree (account_slot, seq) INCLUDE (command_id, expires_at_ns)"
     )
     assert "WHERE (normalized_kind = 'signal_disposition'::text)" in indexes["ux_trading_execution_signal_disposition"]
     assert (
@@ -1557,9 +1444,9 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         },
         "trading_operator_intents": {
             "trading_operator_intents_pkey",
-            "trading_operator_intent_profile_unique",
+            "trading_operator_intent_slot_unique",
             "trading_operator_intent_id_check",
-            "trading_operator_intent_profile_check",
+            "trading_operator_intent_slot_check",
             "trading_operator_intent_action_check",
             "trading_operator_intent_text_check",
             "trading_operator_intent_clock_check",
@@ -1567,23 +1454,13 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
             "trading_operator_intent_manual_entry_check",
             "trading_operator_intent_payload_check",
         },
-        "trading_execution_profile_activations": {
-            "trading_execution_profile_activations_pkey",
-            "trading_execution_activation_profile_check",
-            "trading_execution_activation_slot_check",
-            "trading_execution_activation_fence_check",
-            "trading_execution_activation_mode_check",
-            "trading_execution_activation_release_check",
-            "trading_execution_activation_config_check",
-            "trading_execution_activation_clock_check",
-        },
         "trading_execution_observations": {
             "trading_execution_observations_pkey",
             "trading_execution_observations_seq_key",
             "trading_execution_observations_signal_id_fkey",
             "trading_execution_observation_command_fk",
             "trading_execution_observation_id_check",
-            "trading_execution_observation_profile_check",
+            "trading_execution_observation_slot_check",
             "trading_execution_observation_release_check",
             "trading_execution_observation_strategy_check",
             "trading_execution_observation_kind_check",
@@ -1596,8 +1473,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         },
         "trading_execution_runtime_control_state": {
             "trading_execution_runtime_control_state_pkey",
-            "trading_execution_runtime_control_state_runtime_profile_id_fkey",
-            "trading_execution_runtime_control_profile_check",
+            "trading_execution_runtime_control_slot_check",
             "trading_execution_runtime_control_seq_check",
             "trading_execution_runtime_control_command_check",
             "trading_execution_runtime_control_clock_check",
@@ -1606,9 +1482,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "trading_execution_runtime_state": {
             "trading_execution_runtime_state_pkey",
             "trading_execution_runtime_state_runtime_id_key",
-            "trading_execution_runtime_state_runtime_profile_id_fkey",
             "trading_execution_runtime_slot_check",
-            "trading_execution_runtime_profile_check",
             "trading_execution_runtime_mode_check",
             "trading_execution_runtime_release_check",
             "trading_execution_runtime_config_check",
@@ -1632,7 +1506,6 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "trg_trading_trade_signals_append_only",
         "trg_trading_operator_intents_append_only",
         "trg_trading_execution_observations_append_only",
-        "trg_trading_execution_profile_activations_append_only",
         "trading_trade_signals_case_link",
     }
     assert all(
@@ -1663,16 +1536,6 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
 
 
 def test_unresolved_reads_use_the_production_query_specs_and_indexes() -> None:
-    activation = ExecutionProfileActivation(
-        runtime_profile_id="demo-v1",
-        account_slot="binance_usdm_primary",
-        activated_after_signal_seq=0,
-        activated_after_command_seq=0,
-        mode="disabled",
-        runtime_release="sha256:" + "1" * 64,
-        config_sha256="3" * 64,
-        created_at_ns=1_500,
-    )
     signals = tuple(
         _prepare_signal(
             suffix="a",
@@ -1692,7 +1555,6 @@ def test_unresolved_reads_use_the_production_query_specs_and_indexes() -> None:
     try:
         repo = TradingRepository(conn)
         with conn.transaction():
-            repo.append_execution_profile_activation(activation)
             for signal, command in zip(signals, commands, strict=True):
                 _append_signal(repo, signal)
                 repo.append_operator_intent(command)
@@ -1701,7 +1563,7 @@ def test_unresolved_reads_use_the_production_query_specs_and_indexes() -> None:
         audit = PostgresQueryAudit(
             conn,
             catalog=QueryAuditCatalog(
-                queries=execution_stream_query_specs(runtime_profile_id="demo-v1"),
+                queries=execution_stream_query_specs(account_slot="demo-v1"),
                 query_routes={"dormant-execution-stream": tuple(spec.name for spec in execution_stream_query_specs())},
                 no_sql_routes=frozenset(),
             ),
@@ -1711,8 +1573,13 @@ def test_unresolved_reads_use_the_production_query_specs_and_indexes() -> None:
 
     assert audit["ok"] is True
     plans = {item["name"]: _plan_index_names(item["plan"]) for item in audit["queries"]}
-    assert "ix_trading_trade_signals_unresolved" in plans["trading_unresolved_trade_signals"]
-    assert "ix_trading_operator_intents_unresolved" in plans["trading_unresolved_operator_intents"]
+    # The Signal read is now bounded by the intent's own TTL, so it enters on the expiry index and
+    # anti-joins through the disposition index; the Command read still enters on its slot index.
+    assert plans["trading_unresolved_trade_signals"] == {
+        "ix_trading_trade_signals_expires_at",
+        "ux_trading_execution_signal_disposition",
+    }
+    assert "ix_trading_operator_intents_pending" in plans["trading_unresolved_operator_intents"]
 
 
 def test_a_held_observation_survives_another_kinds_delivery_and_its_own_window_releases_it() -> None:

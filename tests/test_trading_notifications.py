@@ -112,7 +112,7 @@ def _row(**updates: object) -> dict[str, Any]:
     row: dict[str, Any] = {
         "seq": 7,
         "event_id": "b" * 64,
-        "runtime_profile_id": "demo-v1",
+        "account_slot": "demo-v1",
         "signal_id": None,
         "command_id": "c" * 64,
         "normalized_kind": "control_disposition",
@@ -143,7 +143,7 @@ def test_telegram_outage_never_appends_delivery_or_raises_into_workers_root() ->
     assert sender.messages == [
         "Tracefold execution: Command accepted\n"
         "at: 2025-09-01T07:35:12Z\n"
-        "profile: demo-v1\n"
+        "account: demo-v1\n"
         "correlation: cccccccccccccccc\n"
         "event: bbbbbbbbbbbbbbbb"
     ]

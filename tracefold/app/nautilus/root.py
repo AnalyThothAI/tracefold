@@ -69,7 +69,7 @@ from tracefold.platform.config.models import Settings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.runtime_identity import runtime_identity
 from tracefold.trading import EXECUTION_STRATEGY_ID, canonical_sha256
-from tracefold.trading.storage.execution_stream import ExecutionProfileActivation, ExecutionRuntimeState
+from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
 
 _RUNTIME_RELEASE = "nautilus-1.231.0+oi-v1"
 _EXECUTION_STRATEGY = EXECUTION_STRATEGY_ID
@@ -95,13 +95,11 @@ class _ProbeState:
                 "entries_armed": False,
                 "entry_block_reason": "runtime_starting",
                 "mode": profile.mode,
-                "runtime_profile_id": profile.profile_id,
+                "account_slot": profile.account_slot,
                 "runtime_release": profile.runtime_release,
                 "config_sha256": profile.config_sha256,
                 "credential_fingerprint": credential_fingerprint,
                 "singleton_ready": False,
-                "credential_ready": True,
-                "activation_ready": False,
                 "startup_reconciled": False,
                 "portfolio_ready": False,
                 "control_plane_ready": False,
@@ -216,15 +214,16 @@ async def _run_active_runtime(
         stop_distance_bps=execution.risk.stop_distance_bps,
     )
     profile = _active_profile(settings, routes)
-    existing_activation = _preflight_profile(repos, profile)
-    control = load_runtime_control_state(repos, profile.profile_id) if existing_activation is not None else None
+    # Control state belongs to the account slot and outlives this process: a slot the operator
+    # resumed is still resumed after a restart, a new image or a risk-config change (#520 PR-A).
+    control = load_runtime_control_state(repos, profile.account_slot, now_ns=time.time_ns())
     signals = ExecutionSignalClient(
-        runtime_profile_id=profile.profile_id,
+        account_slot=profile.account_slot,
         execution_strategy=_EXECUTION_STRATEGY,
     )
     audit = AuditSink(
         factory=ObservationFactory(
-            runtime_profile_id=profile.profile_id,
+            account_slot=profile.account_slot,
             runtime_release=profile.runtime_release,
             execution_strategy=_EXECUTION_STRATEGY,
         )
@@ -279,15 +278,7 @@ async def _run_active_runtime(
         result = await _reconcile_account(node=node, client=client, triggers=("startup",))
         reports = result.reports
         observed_at_ns = result.observed_at_ns
-        activation = _activate_profile(
-            repos=repos,
-            profile=profile,
-            existing=existing_activation,
-            account_flat=reports.account_flat,
-            created_at_ns=observed_at_ns,
-        )
-        recovery_inputs = load_recovery_inputs(repos, profile.profile_id, observed_at_ns)
-        readiness.activate()
+        recovery_inputs = load_recovery_inputs(repos, profile.account_slot, observed_at_ns)
         strategy.reconcile_runtime(
             build_runtime_reconciliation_snapshot(
                 profile=profile,
@@ -303,7 +294,6 @@ async def _run_active_runtime(
         identity = runtime_identity()
         state = ExecutionRuntimeState(
             account_slot=profile.account_slot,
-            runtime_profile_id=activation.runtime_profile_id,
             mode=_active_mode(profile),
             runtime_release=profile.runtime_release,
             config_sha256=profile.config_sha256,
@@ -317,8 +307,6 @@ async def _run_active_runtime(
             entries_armed=False,
             control_plane_ready=False,
             singleton_ready=True,
-            credential_ready=True,
-            activation_ready=True,
             startup_reconciled=False,
             portfolio_ready=bool(node.portfolio.initialized),
             audit_ready=False,
@@ -340,11 +328,7 @@ async def _run_active_runtime(
             routes=tuple(sorted(route.market_key for route in profile.routes)),
         )
         _observe_runtime_start(audit=audit, state=state)
-        projector = RuntimeStateProjector(
-            initial=state,
-            activation=activation,
-            recovery_inputs=recovery_inputs,
-        )
+        projector = RuntimeStateProjector(initial=state, recovery_inputs=recovery_inputs)
         projector.start(repos)
         bridge = OiRuntimeDatabaseBridge(
             settings=settings,
@@ -419,14 +403,9 @@ async def _run_active_runtime(
             strategy_readiness = strategy.readiness()
             portfolio_ready = bool(node.portfolio.initialized)
             audit_ready = audit.can_accept_exposure() and bridge.connected
-            activation_current = bridge.activation_current
-            execution_safe = bool(strategy_readiness.execution_safe and activation_current)
+            execution_safe = bool(strategy_readiness.execution_safe)
             entries_armed = bool(strategy_readiness.entries_armed and execution_safe)
-            entry_block_reason = _entry_block_reason(
-                entries_armed=entries_armed,
-                activation_ready=activation_current,
-                strategy_reason=strategy_readiness.entry_block_reason,
-            )
+            entry_block_reason = None if entries_armed else strategy_readiness.entry_block_reason or "entry_blocked"
             positions_count = len(reports.positions)
             state = replace(
                 state,
@@ -436,7 +415,6 @@ async def _run_active_runtime(
                 entries_armed=entries_armed,
                 control_plane_ready=strategy_readiness.control_plane_ready,
                 singleton_ready=singleton.acquired,
-                activation_ready=activation_current,
                 startup_reconciled=strategy_readiness.startup_reconciled,
                 portfolio_ready=portfolio_ready,
                 audit_ready=audit_ready,
@@ -503,19 +481,17 @@ def _disabled_profile(settings: Settings) -> OiRuntimeProfile:
     execution = settings.trading.execution
     identity = {
         "mode": execution.mode,
-        "profile_id": execution.profile_id,
         "account_slot": execution.account_slot,
         "runtime_release": _RUNTIME_RELEASE,
     }
     return OiRuntimeProfile(
         mode="disabled",
-        profile_id=execution.profile_id,
         account_slot=execution.account_slot,
         account_id=_BINANCE_USDM_ACCOUNT_ID,
         runtime_release=_RUNTIME_RELEASE,
         config_sha256=canonical_sha256(identity),
-        cache_namespace=f"tracefold:{execution.profile_id}:disabled",
-        client_order_namespace=f"tracefold:{execution.profile_id}:disabled",
+        cache_namespace=f"tracefold:{execution.account_slot}:disabled",
+        client_order_namespace=f"tracefold:{execution.account_slot}:disabled",
         routes=(),
         risk=_risk_limits(settings),
     )
@@ -528,7 +504,6 @@ def _active_profile(settings: Settings, routes: tuple[OiInstrumentRoute, ...]) -
         {
             "config_version": "oi_binance_usdm_v1",
             "mode": execution.mode,
-            "profile_id": execution.profile_id,
             "account_slot": execution.account_slot,
             "account_id": _BINANCE_USDM_ACCOUNT_ID.value,
             "runtime_release": _RUNTIME_RELEASE,
@@ -537,10 +512,11 @@ def _active_profile(settings: Settings, routes: tuple[OiInstrumentRoute, ...]) -
             "risk": {key: str(value) for key, value in asdict(risk).items()},
         }
     )
-    namespace = f"tracefold:{execution.profile_id}:{execution.mode}"
+    # Every deterministic client order id this Runtime can claim lives under this namespace, so the
+    # account slot and the mode are what a restart rebuilds ownership from (#520 PR-A).
+    namespace = f"tracefold:{execution.account_slot}:{execution.mode}"
     return OiRuntimeProfile(
         mode=execution.mode,
-        profile_id=execution.profile_id,
         account_slot=execution.account_slot,
         account_id=_BINANCE_USDM_ACCOUNT_ID,
         runtime_release=_RUNTIME_RELEASE,
@@ -579,9 +555,9 @@ def _build_active_node(
 def _risk_limits(settings: Settings) -> OiRiskLimits:
     """The operator's risk section, as the Runtime's gap policy (#510 E).
 
-    These were literals here, which put them outside the `config_sha256` activation fence: an operator
-    could not see them with `tracefold config` and a change to any of them did not require a new
-    profile. `reconciliation_interval_seconds` stays the single input both account clocks derive from.
+    These were literals here, so an operator could not see them with `tracefold config` and could not
+    change one without a new image. `reconciliation_interval_seconds` stays the single input both
+    account clocks derive from.
     """
 
     risk = settings.trading.execution.risk
@@ -644,51 +620,6 @@ async def _discover_routes(
     if not routes:
         raise RuntimeError("oi_runtime_route_catalog_empty")
     return tuple(routes[key] for key in sorted(routes))
-
-
-def _preflight_profile(repos: RepositorySession, profile: OiRuntimeProfile) -> ExecutionProfileActivation | None:
-    current = repos.trading.latest_execution_profile_activation(profile.account_slot)
-    existing = repos.trading.execution_profile_activation(profile.profile_id)
-    if existing is not None and current != existing:
-        raise RuntimeError("oi_runtime_profile_cannot_be_reactivated")
-    if existing is not None and (
-        existing.account_slot != profile.account_slot
-        or existing.mode != profile.mode
-        or existing.runtime_release != profile.runtime_release
-        or existing.config_sha256 != profile.config_sha256
-    ):
-        raise RuntimeError("oi_runtime_profile_identity_changed")
-    return existing
-
-
-def _activate_profile(
-    *,
-    repos: RepositorySession,
-    profile: OiRuntimeProfile,
-    existing: ExecutionProfileActivation | None,
-    account_flat: bool,
-    created_at_ns: int,
-) -> ExecutionProfileActivation:
-    if existing is not None:
-        return existing
-    if not account_flat:
-        raise RuntimeError("oi_runtime_cold_transition_requires_binance_flat")
-    signal_seq, command_seq = repos.trading.execution_stream_fence()
-    activation = ExecutionProfileActivation(
-        runtime_profile_id=profile.profile_id,
-        account_slot=profile.account_slot,
-        activated_after_signal_seq=signal_seq,
-        activated_after_command_seq=command_seq,
-        mode=profile.mode,
-        runtime_release=profile.runtime_release,
-        config_sha256=profile.config_sha256,
-        created_at_ns=created_at_ns,
-    )
-    with repos.transaction():
-        repos.trading.append_execution_profile_activation(activation)
-    if repos.trading.latest_execution_profile_activation(profile.account_slot) != activation:
-        raise RuntimeError("oi_runtime_activation_not_current")
-    return activation
 
 
 async def _reconcile_account(
@@ -860,19 +791,6 @@ async def _await_node_started(*, node: TradingNode, node_task: asyncio.Task[None
         await asyncio.sleep(0.05)
 
 
-def _entry_block_reason(
-    *,
-    entries_armed: bool,
-    activation_ready: bool,
-    strategy_reason: str | None,
-) -> str | None:
-    if entries_armed:
-        return None
-    if not activation_ready:
-        return "activation_not_current"
-    return strategy_reason or "entry_blocked"
-
-
 def _probe_payload(state: ExecutionRuntimeState) -> dict[str, Any]:
     return {
         "ok": state.alive and state.execution_safe,
@@ -881,15 +799,13 @@ def _probe_payload(state: ExecutionRuntimeState) -> dict[str, Any]:
         "entries_armed": state.entries_armed,
         "entry_block_reason": state.entry_block_reason,
         "mode": state.mode,
-        "runtime_profile_id": state.runtime_profile_id,
+        "account_slot": state.account_slot,
         "runtime_release": state.runtime_release,
         "config_sha256": state.config_sha256,
         "runtime_revision": state.runtime_revision,
         "image_digest": state.image_digest,
         "credential_fingerprint": state.credential_fingerprint,
         "singleton_ready": state.singleton_ready,
-        "credential_ready": state.credential_ready,
-        "activation_ready": state.activation_ready,
         "startup_reconciled": state.startup_reconciled,
         "portfolio_ready": state.portfolio_ready,
         "control_plane_ready": state.control_plane_ready,

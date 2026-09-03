@@ -17,9 +17,9 @@ GateStage = Literal["source", "venue", "eligibility", "market_context", "freeze"
 
 
 class TradingDecisionRuntimeData(ExactApiSchema):
-    state: Literal["DISABLED", "STARTING", "RUNNING", "FAULTED"]
-    heartbeat_at_ms: int | None = None
-    reason: str | None = None
+    """When the Signal lane last froze a Case; `None` means it has not frozen one yet (#520)."""
+
+    last_case_at_ms: int | None = None
 
 
 class TradingExecutionPositionData(ExactApiSchema):
@@ -67,7 +67,6 @@ class TradingExecutionAccountData(ExactApiSchema):
 
 class TradingExecutionReadinessData(ExactApiSchema):
     mode: Literal["disabled", "paper", "live"]
-    profile_id: str
     account_slot: str
     alive: bool
     execution_safe: bool
@@ -83,8 +82,6 @@ class TradingExecutionReadinessData(ExactApiSchema):
     reconciliation_observed_at_ns: int | None = None
     reconciliation_age_ms: int | None = None
     singleton_ready: bool = False
-    credential_ready: bool = False
-    activation_ready: bool = False
     startup_reconciled: bool = False
     portfolio_ready: bool = False
     control_plane_ready: bool = False
@@ -272,7 +269,7 @@ class TradingSignalsData(ExactApiSchema):
 class TradingExecutionObservationData(ExactApiSchema):
     seq: int
     event_id: str
-    runtime_profile_id: str
+    account_slot: str
     runtime_release: str
     execution_strategy: str
     signal_id: str | None = None
@@ -296,7 +293,7 @@ class TradingExecutionObservationsData(ExactApiSchema):
 class TradingOperatorIntentData(ExactApiSchema):
     seq: int
     command_id: str
-    target_profile_id: str
+    account_slot: str
     action: Literal["pause_entries", "resume_entries", "emergency_halt", "flatten", "manual_entry"]
     scope: str
     reason: str

@@ -201,7 +201,7 @@ def test_signal_waits_until_the_persisted_command_backlog_is_drained() -> None:
 
 def test_signal_full_queue_yields_to_a_later_durable_pause_scan() -> None:
     client = ExecutionSignalClient(
-        runtime_profile_id="oi-paper-profile",
+        account_slot="oi-paper-profile",
         execution_strategy="oi_nautilus_v1",
         max_count=2,
     )
@@ -296,7 +296,7 @@ def test_flatten_is_runtime_accepted_but_not_complete_until_fresh_flat_reconcili
 
     assert context.strategy.reconcile_runtime(
         RuntimeReconciliationSnapshot(
-            runtime_profile_id=context.profile.profile_id,
+            account_slot=context.profile.account_slot,
             account_observed_at_ns=NOW_NS + 1,
             reconciliation_observed_at_ns=NOW_NS + 2,
         )
@@ -347,7 +347,6 @@ def test_unresolved_signal_replay_rejects_wrong_cached_entry_shape() -> None:
     first = registered_oi_strategy()
     entry_id = deterministic_client_order_id(
         namespace=first.profile.client_order_namespace,
-        profile_id=first.profile.profile_id,
         entry_id=signal.signal_id,
         leg="entry",
     )
@@ -375,7 +374,6 @@ def test_expired_unresolved_signal_reclaims_cached_filled_position_and_flattens(
     first = registered_oi_strategy()
     entry_id = deterministic_client_order_id(
         namespace=first.profile.client_order_namespace,
-        profile_id=first.profile.profile_id,
         entry_id=signal.signal_id,
         leg="entry",
     )
@@ -419,7 +417,6 @@ def test_closed_replayed_entry_does_not_keep_instrument_busy() -> None:
     first = registered_oi_strategy()
     entry_id = deterministic_client_order_id(
         namespace=first.profile.client_order_namespace,
-        profile_id=first.profile.profile_id,
         entry_id=first_signal.signal_id,
         leg="entry",
     )
@@ -448,7 +445,6 @@ def test_restart_reconciliation_rejects_wrong_entry_shape() -> None:
     first = registered_oi_strategy()
     entry_id = deterministic_client_order_id(
         namespace=first.profile.client_order_namespace,
-        profile_id=first.profile.profile_id,
         entry_id=signal.signal_id,
         leg="entry",
     )
@@ -460,7 +456,7 @@ def test_restart_reconciliation_rejects_wrong_entry_shape() -> None:
     )
     _accepted(first, wrong_entry)
     snapshot = RuntimeReconciliationSnapshot(
-        runtime_profile_id=first.profile.profile_id,
+        account_slot=first.profile.account_slot,
         account_observed_at_ns=NOW_NS,
         reconciliation_observed_at_ns=NOW_NS,
         executions=(
@@ -532,7 +528,6 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
     )
     old_stop_id = deterministic_client_order_id(
         namespace=first.profile.client_order_namespace,
-        profile_id=first.profile.profile_id,
         entry_id=signal.signal_id,
         leg="protection:1:0.04",
     )
@@ -548,7 +543,6 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
     _accepted(first, old_stop, position_id=position_id)
     replacement_id = deterministic_client_order_id(
         namespace=first.profile.client_order_namespace,
-        profile_id=first.profile.profile_id,
         entry_id=signal.signal_id,
         leg="protection:2:0.05",
     )
@@ -573,7 +567,7 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
     exit_order.apply(TestEventStubs.order_submitted(exit_order, account_id=ACCOUNT_ID, ts_event=NOW_NS + 3))
     first.cache.update_order(exit_order)
     snapshot = RuntimeReconciliationSnapshot(
-        runtime_profile_id=first.profile.profile_id,
+        account_slot=first.profile.account_slot,
         account_observed_at_ns=NOW_NS + 3,
         reconciliation_observed_at_ns=NOW_NS + 3,
         executions=(
@@ -632,7 +626,7 @@ def test_app_owned_reconciliation_refreshes_clock_before_stale_entry_check() -> 
     refreshed_at_ns = NOW_NS + 11_000_000_000
     context = registered_oi_strategy(values=(trade_signal(signal_id="8" * 64),))
     snapshot = RuntimeReconciliationSnapshot(
-        runtime_profile_id=context.profile.profile_id,
+        account_slot=context.profile.account_slot,
         account_observed_at_ns=refreshed_at_ns,
         reconciliation_observed_at_ns=refreshed_at_ns,
     )
@@ -789,7 +783,6 @@ def test_cached_same_id_invalid_protection_flattens_instead_of_replaying() -> No
     context.strategy.on_order_accepted(_accepted(context, first_stop, position_id=position_id))
     cached_id = deterministic_client_order_id(
         namespace=context.profile.client_order_namespace,
-        profile_id=context.profile.profile_id,
         entry_id=signal.signal_id,
         leg="protection:2:0.08",
     )
@@ -1047,7 +1040,6 @@ def test_cached_exit_with_wrong_shape_is_never_reclaimed() -> None:
     )
     bad_exit_id = deterministic_client_order_id(
         namespace=context.profile.client_order_namespace,
-        profile_id=context.profile.profile_id,
         entry_id=signal.signal_id,
         leg="exit",
     )
@@ -1069,7 +1061,7 @@ def test_cached_exit_with_wrong_shape_is_never_reclaimed() -> None:
 
 def test_failed_audit_writer_rejects_later_signal_before_any_new_exposure() -> None:
     profile = registered_oi_strategy().profile
-    factory = ObservationFactory(profile.profile_id, profile.runtime_release, "oi_nautilus_v1")
+    factory = ObservationFactory(profile.account_slot, profile.runtime_release, "oi_nautilus_v1")
     audit = AuditSink(factory=factory)
     audit.offer(
         factory.create(
@@ -1335,7 +1327,6 @@ def _cold_stop(context: SimpleNamespace, entry_id: str, *, quantity: str = "0.05
         reduce_only=True,
         client_order_id=deterministic_client_order_id(
             namespace=context.profile.client_order_namespace,
-            profile_id=context.profile.profile_id,
             entry_id=entry_id,
             leg=protection_leg(1, Decimal(quantity)),
         ),

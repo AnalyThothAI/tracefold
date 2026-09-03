@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any
 
 import psycopg
@@ -14,7 +15,6 @@ from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.platform.postgres.restore_drill import run_restore_drill as run_platform_restore_drill
 from tracefold.trading import EXECUTION_STRATEGY_ID, ExecutionObservationV1
 from tracefold.trading.storage.execution_stream import (
-    ExecutionProfileActivation,
     materialize_operator_intents,
     prepare_execution_observations,
     prepare_operator_intent,
@@ -26,7 +26,10 @@ _CASE_ID = "restore-trading-case"
 _SIGNAL_ID = "8" * 64
 _COMMAND_ID = "9" * 64
 _OBSERVATION_ID = "a" * 64
-_PROFILE_ID = "restore-disabled"
+_ACCOUNT_SLOT = "restore-account"
+# The Command read is bounded by its own TTL now, so the drill's Command has to be live when the
+# restored database is smoke-tested rather than frozen at a fixed nanosecond (#520 PR-A).
+_COMMAND_TTL_NS = 3_600_000_000_000
 
 
 def run_restore_drill(admin_dsn: str, migration_dsn: str) -> dict[str, Any]:
@@ -51,16 +54,17 @@ def _seed_and_summarize(dsn: str) -> dict[str, Any]:
         evidence_sha256="c" * 64,
         alpha_metadata={"restore": True},
     )
+    requested_at_ns = time.time_ns()
     command = prepare_operator_intent(
         command_id=_COMMAND_ID,
-        target_profile_id=_PROFILE_ID,
+        account_slot=_ACCOUNT_SLOT,
         action="pause_entries",
         scope="account",
         reason="restore drill",
         operator_identity="restore-drill",
         authentication_identity="restore-drill",
-        requested_at_ns=1_000,
-        expires_at_ns=10_000,
+        requested_at_ns=requested_at_ns,
+        expires_at_ns=requested_at_ns + _COMMAND_TTL_NS,
         confirmation_identity=None,
         market_key=None,
         direction=None,
@@ -69,7 +73,7 @@ def _seed_and_summarize(dsn: str) -> dict[str, Any]:
         (
             ExecutionObservationV1(
                 event_id=_OBSERVATION_ID,
-                runtime_profile_id=_PROFILE_ID,
+                account_slot=_ACCOUNT_SLOT,
                 runtime_release="restore-release",
                 execution_strategy=EXECUTION_STRATEGY_ID,
                 signal_id=_SIGNAL_ID,
@@ -81,17 +85,6 @@ def _seed_and_summarize(dsn: str) -> dict[str, Any]:
             ),
         )
     )
-    activation = ExecutionProfileActivation(
-        runtime_profile_id=_PROFILE_ID,
-        account_slot="restore-account",
-        activated_after_signal_seq=0,
-        activated_after_command_seq=0,
-        mode="disabled",
-        runtime_release="restore-release",
-        config_sha256="e" * 64,
-        created_at_ns=1_500,
-    )
-
     with psycopg.connect(dsn, autocommit=True, row_factory=dict_row) as conn:
         repos = repositories_for_connection(conn)
         with conn.transaction():
@@ -99,7 +92,6 @@ def _seed_and_summarize(dsn: str) -> dict[str, Any]:
             repos.trading.seed_restore_drill_case(case_id=_CASE_ID)
             repos.trading.append_trade_signal(signal)
             repos.trading.append_operator_intent(command)
-            repos.trading.append_execution_profile_activation(activation)
             repos.trading.append_execution_observations(observations)
         return _summary(conn)
 
@@ -131,9 +123,7 @@ def _summary(conn: Any) -> dict[str, Any]:
                    (SELECT count(*) FROM trading_operator_intents
                      WHERE command_id = %s AND payload ->> 'command_id' = command_id) AS command_rows,
                    (SELECT count(*) FROM trading_execution_observations
-                     WHERE event_id = %s AND payload ->> 'event_id' = event_id) AS observation_rows,
-                   (SELECT count(*) FROM trading_execution_profile_activations
-                     WHERE runtime_profile_id = %s AND config_sha256 = %s) AS activation_rows
+                     WHERE event_id = %s AND payload ->> 'event_id' = event_id) AS observation_rows
             """,
             (
                 _CURRENT_EVENT_ID,
@@ -146,8 +136,6 @@ def _summary(conn: Any) -> dict[str, Any]:
                 _CASE_ID,
                 _COMMAND_ID,
                 _OBSERVATION_ID,
-                _PROFILE_ID,
-                "e" * 64,
             ),
         ).fetchone()
     )
@@ -161,7 +149,6 @@ def _summary(conn: Any) -> dict[str, Any]:
         "signal_rows",
         "command_rows",
         "observation_rows",
-        "activation_rows",
     }
     return {key: int(value) if key in numeric else str(value) for key, value in row.items()}
 
@@ -174,8 +161,9 @@ def _smoke(conn: Any) -> dict[str, bool]:
     case = repos.trading.case(case_id=_CASE_ID)
     commands = materialize_operator_intents(
         repos.trading.unresolved_operator_intents(
-            runtime_profile_id=_PROFILE_ID,
+            account_slot=_ACCOUNT_SLOT,
             execution_strategy=EXECUTION_STRATEGY_ID,
+            now_ns=time.time_ns(),
             limit=10,
         )
     )
@@ -189,9 +177,7 @@ def _smoke(conn: Any) -> dict[str, bool]:
         and case["state"] == "SIGNAL_EMITTED"
         and case["manifest_sha256"] == summary["case_manifest_sha256"],
         "trading_signal_fact": summary["signal_rows"] == 1,
-        "trading_execution_stream_facts": all(
-            summary[key] == 1 for key in ("command_rows", "observation_rows", "activation_rows")
-        ),
+        "trading_execution_stream_facts": all(summary[key] == 1 for key in ("command_rows", "observation_rows")),
         "trading_execution_stream_read": len(commands) == 1 and commands[0].command_id == _COMMAND_ID,
     }
 

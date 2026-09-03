@@ -109,7 +109,6 @@ def migrate_pre_433c_trading_config(path: Path) -> Path | None:
     migrated_trading = {key: value for key, value in trading.items() if key not in retired}
     migrated_trading["execution"] = {
         "mode": "disabled",
-        "profile_id": "binance_usdm_primary",
         "account_slot": "binance_usdm_primary",
         "credentials": {
             "api_key_file": binance.get("api_key_file", "binance_usdm_api_key"),
@@ -378,7 +377,6 @@ trading:
     notification_chat_id:
   execution:
     mode: disabled
-    profile_id: binance_usdm_primary
     account_slot: binance_usdm_primary
     credentials:
       api_key_file: "binance_usdm_api_key"

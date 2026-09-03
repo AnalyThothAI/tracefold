@@ -156,7 +156,6 @@ class ExitCoordinator:
         side = OrderSide.SELL if state.entry.direction == "long" else OrderSide.BUY
         client_order_id = deterministic_client_order_id(
             namespace=self._profile.client_order_namespace,
-            profile_id=self._profile.profile_id,
             entry_id=entry_id,
             leg=exit_leg(state.exit_generation),
         )

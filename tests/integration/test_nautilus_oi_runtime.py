@@ -45,7 +45,6 @@ from tracefold.integrations.telegram_control import TelegramControlWebhook
 from tracefold.platform.config.models import Settings
 from tracefold.trading import ExecutionObservationV1
 from tracefold.trading.storage.execution_stream import (
-    ExecutionProfileActivation,
     ExecutionRuntimeState,
     PreparedOperatorIntent,
     prepare_execution_observations,
@@ -57,20 +56,14 @@ from tracefold.trading.storage.root import TradingRepository
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
 
-def _activate(repo: TradingRepository) -> None:
+_ACCOUNT_SLOT = "binance_usdm_primary"
+
+
+def _control_row(repo: TradingRepository) -> None:
+    """The current control row a Runtime creates for its slot on first start (#520 PR-A)."""
+
     with repo.conn.transaction():
-        repo.append_execution_profile_activation(
-            ExecutionProfileActivation(
-                runtime_profile_id="oi-paper-profile",
-                account_slot="binance_usdm_primary",
-                activated_after_signal_seq=0,
-                activated_after_command_seq=0,
-                mode="paper",
-                runtime_release="nautilus-1.231.0+oi-v1",
-                config_sha256="a" * 64,
-                created_at_ns=NOW_NS,
-            )
-        )
+        repo.ensure_execution_runtime_control_state(_ACCOUNT_SLOT, now_ns=NOW_NS)
 
 
 def _append_signal(repo: TradingRepository, *, suffix: str = "1") -> None:
@@ -107,7 +100,7 @@ def _append_signal(repo: TradingRepository, *, suffix: str = "1") -> None:
 def _append_command(repo: TradingRepository, *, suffix: str, action: str) -> PreparedOperatorIntent:
     prepared = prepare_operator_intent(
         command_id=suffix * 64,
-        target_profile_id="oi-paper-profile",
+        account_slot=_ACCOUNT_SLOT,
         action=action,
         scope="account" if action in {"emergency_halt", "flatten"} else "entries",
         reason="operator test",
@@ -134,7 +127,7 @@ def _append_entry_order_fact(repo: TradingRepository, *, signal_id: str, observe
     observation = ExecutionObservationV1.model_validate(
         {
             "event_id": _sha(f"entry-order:{signal_id}"),
-            "runtime_profile_id": "oi-paper-profile",
+            "account_slot": _ACCOUNT_SLOT,
             "runtime_release": "nautilus-1.231.0+oi-v1",
             "execution_strategy": "oi_nautilus_v1",
             "signal_id": signal_id,
@@ -145,7 +138,6 @@ def _append_entry_order_fact(repo: TradingRepository, *, signal_id: str, observe
             "native_identity_references": (
                 deterministic_client_order_id(
                     namespace=oi_profile().client_order_namespace,
-                    profile_id="oi-paper-profile",
                     entry_id=signal_id,
                     leg="entry",
                 ).value,
@@ -164,7 +156,7 @@ def _append_closed_position_fact(repo: TradingRepository, *, signal_id: str) -> 
     observation = ExecutionObservationV1.model_validate(
         {
             "event_id": _sha(f"closed-position:{signal_id}"),
-            "runtime_profile_id": "oi-paper-profile",
+            "account_slot": _ACCOUNT_SLOT,
             "runtime_release": "nautilus-1.231.0+oi-v1",
             "execution_strategy": "oi_nautilus_v1",
             "signal_id": signal_id,
@@ -222,7 +214,7 @@ def _append_input_burst(repo: TradingRepository, *, size: int) -> None:
             repo.append_operator_intent(
                 prepare_operator_intent(
                     command_id=_sha(f"command:{index}"),
-                    target_profile_id="oi-paper-profile",
+                    account_slot=_ACCOUNT_SLOT,
                     action="pause_entries",
                     scope="entries",
                     reason="475 PR-A burst",
@@ -253,26 +245,12 @@ def _bridge_singleton() -> AccountSlotSingleton:
 def _bridge_projector() -> RuntimeStateProjector:
     """A projector with nothing offered: `write_once` is a no-op until the loop offers a row."""
 
-    return RuntimeStateProjector(
-        initial=_runtime_state(),
-        activation=ExecutionProfileActivation(
-            runtime_profile_id="oi-paper-profile",
-            account_slot="binance_usdm_primary",
-            activated_after_signal_seq=0,
-            activated_after_command_seq=0,
-            mode="paper",
-            runtime_release="nautilus-1.231.0+oi-v1",
-            config_sha256="a" * 64,
-            created_at_ns=NOW_NS,
-        ),
-        recovery_inputs=((), ()),
-    )
+    return RuntimeStateProjector(initial=_runtime_state(), recovery_inputs=((), ()))
 
 
 def _runtime_state() -> ExecutionRuntimeState:
     return ExecutionRuntimeState(
         account_slot="binance_usdm_primary",
-        runtime_profile_id="oi-paper-profile",
         mode="paper",
         runtime_release="nautilus-1.231.0+oi-v1",
         config_sha256="a" * 64,
@@ -286,8 +264,6 @@ def _runtime_state() -> ExecutionRuntimeState:
         entries_armed=False,
         control_plane_ready=False,
         singleton_ready=True,
-        credential_ready=True,
-        activation_ready=True,
         startup_reconciled=False,
         portfolio_ready=False,
         audit_ready=False,
@@ -311,7 +287,7 @@ def _runtime_bridge(signals: ExecutionSignalClient, *, poll_seconds: float = 0.2
         settings=Settings(ws_token="475-pra", storage=postgres_settings_storage()),
         profile=profile,
         signals=signals,
-        audit=AuditSink(factory=ObservationFactory(profile.profile_id, profile.runtime_release, "oi_nautilus_v1")),
+        audit=AuditSink(factory=ObservationFactory(profile.account_slot, profile.runtime_release, "oi_nautilus_v1")),
         update_day_start=lambda _baseline: None,
         singleton=_bridge_singleton(),
         projector=_bridge_projector(),
@@ -387,14 +363,14 @@ def test_a_database_refused_batch_is_quarantined_and_leaves_a_durable_audit_gap(
     try:
         repos = repositories_for_connection(conn)
         repo = TradingRepository(conn)
-        _activate(repo)
+        _control_row(repo)
         _append_signal(repo, suffix="1")
 
         profile = oi_profile()
-        factory = ObservationFactory(profile.profile_id, profile.runtime_release, "oi_nautilus_v1")
+        factory = ObservationFactory(profile.account_slot, profile.runtime_release, "oi_nautilus_v1")
         audit = AuditSink(factory=factory)
         signals = ExecutionSignalClient(
-            runtime_profile_id=profile.profile_id,
+            account_slot=profile.account_slot,
             execution_strategy="oi_nautilus_v1",
         )
         assert signals.poll_once(partial(load_unresolved_trade_signals, repos)) == 1
@@ -470,9 +446,9 @@ def test_listen_is_wake_only_and_poll_repairs_before_and_after_notifications() -
     try:
         listener_repos = repositories_for_connection(listener)
         writer_repo = TradingRepository(writer)
-        _activate(writer_repo)
+        _control_row(writer_repo)
         client = ExecutionSignalClient(
-            runtime_profile_id="oi-paper-profile",
+            account_slot=_ACCOUNT_SLOT,
             execution_strategy="oi_nautilus_v1",
         )
         reader = partial(load_unresolved_trade_signals, listener_repos)
@@ -511,9 +487,9 @@ def test_production_bridge_owns_listener_and_normal_wake_latency(
     monkeypatch.setattr(oi_runtime_module, "install_execution_stream_listener", observe_install)
     try:
         repo = TradingRepository(writer)
-        _activate(repo)
+        _control_row(repo)
         signals = ExecutionSignalClient(
-            runtime_profile_id="oi-paper-profile",
+            account_slot=_ACCOUNT_SLOT,
             execution_strategy="oi_nautilus_v1",
         )
         bridge = _runtime_bridge(signals)
@@ -561,9 +537,9 @@ def test_production_bridge_repairs_when_every_wake_is_discarded(
     monkeypatch.setattr(oi_runtime_module, "wait_for_execution_stream_wake", discard_wake)
     try:
         repo = TradingRepository(writer)
-        _activate(repo)
+        _control_row(repo)
         signals = ExecutionSignalClient(
-            runtime_profile_id="oi-paper-profile",
+            account_slot=_ACCOUNT_SLOT,
             execution_strategy="oi_nautilus_v1",
         )
         bridge = _runtime_bridge(signals)
@@ -589,9 +565,9 @@ def test_production_bridge_100_pair_burst_is_bounded_and_duplicate_wakes_do_not_
     bridge: OiRuntimeDatabaseBridge | None = None
     try:
         repo = TradingRepository(writer)
-        _activate(repo)
+        _control_row(repo)
         signals = ExecutionSignalClient(
-            runtime_profile_id="oi-paper-profile",
+            account_slot=_ACCOUNT_SLOT,
             execution_strategy="oi_nautilus_v1",
         )
         bridge = _runtime_bridge(signals)
@@ -645,9 +621,9 @@ def test_production_bridge_reconnect_reinstalls_listener_before_consuming(
     monkeypatch.setattr(oi_runtime_module, "install_execution_stream_listener", observe_install)
     try:
         repo = TradingRepository(writer)
-        _activate(repo)
+        _control_row(repo)
         signals = ExecutionSignalClient(
-            runtime_profile_id="oi-paper-profile",
+            account_slot=_ACCOUNT_SLOT,
             execution_strategy="oi_nautilus_v1",
         )
         bridge = _runtime_bridge(signals)
@@ -677,8 +653,8 @@ def test_restart_control_state_reads_current_pause_resume_and_sticky_halt_projec
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)
-        _activate(repo)
-        factory = ObservationFactory("oi-paper-profile", "runtime-test", "oi_nautilus_v1")
+        _control_row(repo)
+        factory = ObservationFactory(_ACCOUNT_SLOT, "runtime-test", "oi_nautilus_v1")
         actions = ("pause_entries", "resume_entries", "emergency_halt")
         for suffix, action in zip(("4", "5", "6"), actions, strict=True):
             prepared = _append_command(repo, suffix=suffix, action=action)
@@ -694,7 +670,7 @@ def test_restart_control_state_reads_current_pause_resume_and_sticky_halt_projec
             with conn.transaction():
                 repo.append_execution_observations(prepare_execution_observations((observation,)))
 
-        state = load_runtime_control_state(repositories_for_connection(conn), "oi-paper-profile")
+        state = load_runtime_control_state(repositories_for_connection(conn), _ACCOUNT_SLOT, now_ns=NOW_NS)
 
         assert state.entries_paused is True
         assert state.emergency_halted is True
@@ -707,8 +683,8 @@ def test_current_control_projection_is_idempotent_and_never_regresses_on_out_of_
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)
-        _activate(repo)
-        factory = ObservationFactory("oi-paper-profile", "runtime-test", "oi_nautilus_v1")
+        _control_row(repo)
+        factory = ObservationFactory(_ACCOUNT_SLOT, "runtime-test", "oi_nautilus_v1")
         resume = _append_command(repo, suffix="7", action="resume_entries")
         pause = _append_command(repo, suffix="8", action="pause_entries")
 
@@ -726,7 +702,7 @@ def test_current_control_projection_is_idempotent_and_never_regresses_on_out_of_
         pause_observation = accepted(pause, "pause_entries", observed_at_ns=NOW_NS + 2)
         with conn.transaction():
             repo.append_execution_observations(prepare_execution_observations((pause_observation,)))
-        after_pause = repo.execution_runtime_control_state("oi-paper-profile")
+        after_pause = repo.execution_runtime_control_state(_ACCOUNT_SLOT)
         assert after_pause is not None
         assert after_pause.entries_paused is True
         assert after_pause.last_command_seq == 2
@@ -735,18 +711,18 @@ def test_current_control_projection_is_idempotent_and_never_regresses_on_out_of_
             repo.append_execution_observations(
                 prepare_execution_observations((accepted(resume, "resume_entries", observed_at_ns=NOW_NS + 1),))
             )
-        assert repo.execution_runtime_control_state("oi-paper-profile") == after_pause
+        assert repo.execution_runtime_control_state(_ACCOUNT_SLOT) == after_pause
 
         with conn.transaction():
             repo.append_execution_observations(prepare_execution_observations((pause_observation,)))
-        assert repo.execution_runtime_control_state("oi-paper-profile") == after_pause
+        assert repo.execution_runtime_control_state(_ACCOUNT_SLOT) == after_pause
 
         halt = _append_command(repo, suffix="9", action="emergency_halt")
         with conn.transaction():
             repo.append_execution_observations(
                 prepare_execution_observations((accepted(halt, "emergency_halt", observed_at_ns=NOW_NS + 3),))
             )
-        halted = repo.execution_runtime_control_state("oi-paper-profile")
+        halted = repo.execution_runtime_control_state(_ACCOUNT_SLOT)
         assert halted is not None
         assert halted.entries_paused is True
         assert halted.emergency_halted is True
@@ -759,7 +735,7 @@ def test_current_control_projection_is_idempotent_and_never_regresses_on_out_of_
                     (accepted(impossible_resume, "resume_entries", observed_at_ns=NOW_NS + 4),)
                 )
             )
-        still_halted = repo.execution_runtime_control_state("oi-paper-profile")
+        still_halted = repo.execution_runtime_control_state(_ACCOUNT_SLOT)
         assert still_halted is not None
         assert still_halted.entries_paused is True
         assert still_halted.emergency_halted is True
@@ -768,19 +744,27 @@ def test_current_control_projection_is_idempotent_and_never_regresses_on_out_of_
         conn.close()
 
 
-def test_restart_control_state_without_accepted_observations_stays_paused() -> None:
+def test_a_slot_with_no_commands_starts_armed_and_a_restart_reads_back_the_same_row() -> None:
+    """#520 PR-A. Control belongs to the slot: only a Command pauses it, and nothing re-pauses it.
+
+    Every new `profile_id` used to insert `entries_paused = TRUE`, so a deploy silently disarmed
+    entries and needed another authenticated `/resume … CONFIRM`. `mode: disabled` is the switch that
+    means "do not trade"; a restart is not one.
+    """
+
     conn = connect_postgres_test(read_only=False)
     try:
-        repo = TradingRepository(conn)
-        _activate(repo)
+        repos = repositories_for_connection(conn)
+        unpaused = RuntimeControlSnapshot(entries_paused=False, emergency_halted=False, flatten_pending=())
 
-        state = load_runtime_control_state(repositories_for_connection(conn), "oi-paper-profile")
+        assert load_runtime_control_state(repos, _ACCOUNT_SLOT, now_ns=NOW_NS) == unpaused
+        # The second start is the restart: the same row, not a fresh paused one.
+        assert load_runtime_control_state(repos, _ACCOUNT_SLOT, now_ns=NOW_NS + 1_000) == unpaused
 
-        assert state == RuntimeControlSnapshot(
-            entries_paused=True,
-            emergency_halted=False,
-            flatten_pending=(),
-        )
+        row = TradingRepository(conn).execution_runtime_control_state(_ACCOUNT_SLOT)
+        assert row is not None
+        assert (row.entries_paused, row.emergency_halted, row.last_command_seq) == (False, False, 0)
+        assert row.updated_at_ns == NOW_NS
     finally:
         conn.close()
 
@@ -825,7 +809,7 @@ def test_day_start_baseline_is_append_only_and_restart_reads_original_equity() -
         repos = repositories_for_connection(conn)
         profile = oi_profile()
         factory = ObservationFactory(
-            runtime_profile_id=profile.profile_id,
+            account_slot=profile.account_slot,
             runtime_release=profile.runtime_release,
             execution_strategy="oi_nautilus_v1",
         )
@@ -863,7 +847,7 @@ def test_real_postgres_signal_to_pinned_nautilus_callback_to_observation_process
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)
-        _activate(repo)
+        _control_row(repo)
         _append_signal(repo)
     finally:
         conn.close()
@@ -908,7 +892,7 @@ def test_real_postgres_signal_to_pinned_nautilus_callback_to_observation_process
             """
             SELECT normalized_kind, payload -> 'summary' ->> 'disposition' AS disposition
               FROM trading_execution_observations
-             WHERE runtime_profile_id = 'oi-paper-profile'
+             WHERE account_slot = 'binance_usdm_primary'
              ORDER BY seq
             """
         ).fetchall()
@@ -931,7 +915,7 @@ def test_replayed_database_signal_reaches_one_economic_entry_in_pinned_nautilus_
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)
-        _activate(repo)
+        _control_row(repo)
         _append_signal(repo)
     finally:
         conn.close()
@@ -965,7 +949,7 @@ def test_authenticated_webhook_to_postgres_to_nautilus_command_observation_proce
         bot_id=1234567,
         allowed_chat_ids=frozenset({-433}),
         allowed_user_ids=frozenset({433}),
-        target_profile_id="oi-paper-profile",
+        account_slot=_ACCOUNT_SLOT,
     )
     parsed = webhook.parse(
         headers={"X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret-433d"},
@@ -987,7 +971,7 @@ def test_authenticated_webhook_to_postgres_to_nautilus_command_observation_proce
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)
-        _activate(repo)
+        _control_row(repo)
         with conn.transaction():
             receipt = persist_operator_intent(repo, parsed.intent)
         assert receipt.disposition == "awaiting_runtime"
@@ -1057,7 +1041,7 @@ def test_cold_cache_restart_reclaims_position_and_stop_from_durable_entry_facts(
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)
-        _activate(repo)
+        _control_row(repo)
         _append_signal(repo)
         _append_entry_order_fact(repo, signal_id="1" * 64)
     finally:
@@ -1096,13 +1080,78 @@ def test_cold_cache_restart_reclaims_position_and_stop_from_durable_entry_facts(
             """
             SELECT summary ->> 'disposition' AS disposition
               FROM trading_execution_observations
-             WHERE runtime_profile_id = 'oi-paper-profile'
+             WHERE account_slot = 'binance_usdm_primary'
                AND normalized_kind = 'signal_disposition'
             """
         ).fetchall()
         assert [row["disposition"] for row in dispositions] == ["recovered"]
     finally:
         verify.close()
+
+
+def test_rolling_restart_after_an_identity_change_keeps_control_state_and_needs_no_flat(
+    postgres_clone_dsn: str,
+) -> None:
+    """#520 PR-A. A deploy that changes the release or the risk config is a restart, not a new identity.
+
+    On 2026-09-03 this was 58 crash loops: `config_sha256` moved, `_preflight_profile` refused with
+    `oi_runtime_profile_identity_changed`, and the only way out was a new `profile_id`, a flat account
+    and a fresh `/resume`. The account slot is the identity, so the same slot restarts into whatever
+    control state the operator last set, while holding a position.
+    """
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        _control_row(repo)
+        _append_signal(repo)
+        _append_entry_order_fact(repo, signal_id="1" * 64)
+        # The operator resumed entries on the previous generation; a restart must not undo that.
+        resume = _append_command(repo, suffix="7", action="resume_entries")
+        factory = ObservationFactory(_ACCOUNT_SLOT, "nautilus-1.231.0+oi-v1", "oi_nautilus_v1")
+        with conn.transaction():
+            repo.append_execution_observations(
+                prepare_execution_observations(
+                    (
+                        factory.create(
+                            normalized_kind="control_disposition",
+                            command_id=resume.value.command_id,
+                            occurred_at_ns=NOW_NS,
+                            observed_at_ns=NOW_NS,
+                            summary={
+                                "action": "resume_entries",
+                                "disposition": "accepted",
+                                "reason": "entries_resumed",
+                            },
+                            payload={"action": "resume_entries", "disposition": "accepted"},
+                            event_identity="resume",
+                        ),
+                    )
+                )
+            )
+    finally:
+        conn.close()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "tests.helpers.nautilus_oi_runtime_process", postgres_clone_dsn, "rolling_restart"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert receipt["execution_safe"] is True, receipt
+    assert receipt["unexpected_exposure"] is False, receipt
+    # The account was holding a position across the restart and nothing asked it to be flat.
+    assert receipt["positions_count"] == 1, receipt
+    assert receipt["recovered"] is True, receipt
+    assert receipt["control"] == {
+        "entries_paused": False,
+        "emergency_halted": False,
+        "flatten_pending": [],
+    }, receipt
 
 
 def test_position_without_durable_entry_facts_halts_and_flatten_account_closes_it(
@@ -1113,7 +1162,7 @@ def test_position_without_durable_entry_facts_halts_and_flatten_account_closes_i
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)
-        _activate(repo)
+        _control_row(repo)
         _append_command(repo, suffix="b", action="flatten")
     finally:
         conn.close()
@@ -1152,7 +1201,7 @@ def test_position_without_durable_entry_facts_halts_and_flatten_account_closes_i
             """
             SELECT summary
               FROM trading_execution_observations
-             WHERE runtime_profile_id = 'oi-paper-profile'
+             WHERE account_slot = 'binance_usdm_primary'
                AND normalized_kind = 'order'
             """
         ).fetchall()
@@ -1173,7 +1222,7 @@ def test_stopped_out_identity_does_not_reclaim_a_new_position_on_the_same_route(
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)
-        _activate(repo)
+        _control_row(repo)
         _append_signal(repo)
         _append_entry_order_fact(repo, signal_id="1" * 64)
         _append_closed_position_fact(repo, signal_id="1" * 64)
@@ -1209,7 +1258,7 @@ def test_stopped_out_identity_does_not_reclaim_a_new_position_on_the_same_route(
 def test_the_bridge_thread_owns_the_projection_write_and_the_account_slot_heartbeat() -> None:
     """#510 PR-5b. Real PostgreSQL: the trading event loop keeps no session of its own.
 
-    Production ran the generation-fenced projection write, the activation currency read and the
+    Production ran the generation-fenced projection write, the durable recovery read and the
     account-slot heartbeat synchronously on the trading event loop, over a third connection, every
     500 ms, on the same thread as every Nautilus order callback and with no statement timeout
     (#510 E). This starts only the bridge and proves the row still moves.
@@ -1220,7 +1269,7 @@ def test_the_bridge_thread_owns_the_projection_write_and_the_account_slot_heartb
     bridge: OiRuntimeDatabaseBridge | None = None
     try:
         repo = TradingRepository(writer)
-        _activate(repo)
+        _control_row(repo)
         lock_repo = TradingRepository(lock_conn)
         singleton = AccountSlotSingleton(
             account_slot="binance_usdm_primary",
@@ -1235,21 +1284,22 @@ def test_the_bridge_thread_owns_the_projection_write_and_the_account_slot_heartb
         projector.start(repositories_for_connection(writer))
         profile = oi_profile()
         signals = ExecutionSignalClient(
-            runtime_profile_id=profile.profile_id,
+            account_slot=profile.account_slot,
             execution_strategy="oi_nautilus_v1",
         )
         bridge = OiRuntimeDatabaseBridge(
             settings=Settings(ws_token="510-pr5b", storage=postgres_settings_storage()),
             profile=profile,
             signals=signals,
-            audit=AuditSink(factory=ObservationFactory(profile.profile_id, profile.runtime_release, "oi_nautilus_v1")),
+            audit=AuditSink(
+                factory=ObservationFactory(profile.account_slot, profile.runtime_release, "oi_nautilus_v1")
+            ),
             update_day_start=lambda _baseline: None,
             singleton=singleton,
             projector=projector,
         )
         bridge.start()
         _wait_for_bridge(bridge, lambda: bridge.connected)
-        _wait_for_bridge(bridge, lambda: projector.activation_current)
 
         started = projector.current
         running = replace(
@@ -1265,7 +1315,7 @@ def test_the_bridge_thread_owns_the_projection_write_and_the_account_slot_heartb
             """
             SELECT lifecycle_state
               FROM trading_execution_runtime_state
-             WHERE runtime_profile_id = 'oi-paper-profile'
+             WHERE account_slot = 'binance_usdm_primary'
             """
         ).fetchone()
         assert row == {"lifecycle_state": "running"}

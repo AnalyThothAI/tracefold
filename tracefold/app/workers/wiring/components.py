@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -89,20 +88,6 @@ async def _wire_components(
     telegram_control = _wire_telegram_control(settings=settings, db=trading_db)
     trading_notifications = _wire_trading_notifications(settings=settings, db=trading_db, finite=finite)
     signal_lane = _wire_signal_lane(settings=settings, db=db, telemetry=telemetry)
-    if signal_lane is None:
-        now_ms = int(time.time() * 1_000)
-        updated = await trading_db.tx(
-            "trading_decision_disabled",
-            lambda repos: repos.trading.set_decision_runtime(
-                state="DISABLED",
-                heartbeat_at_ms=None,
-                reason="trading_disabled",
-                now_ms=now_ms,
-            ),
-            timeout_seconds=10.0,
-        )
-        if not updated:
-            raise RuntimeError("trading_decision_runtime_missing")
     return _Components(
         news_pipeline=news_pipeline,
         news_bus=news_bus,
@@ -142,7 +127,7 @@ def _wire_telegram_control(*, settings: Settings, db: WorkerTradingDatabase) -> 
             bot_id=telegram_bot_id(bot_token),
             allowed_chat_ids=frozenset(control.allowed_chat_ids),
             allowed_user_ids=frozenset(control.allowed_user_ids),
-            target_profile_id=settings.trading.execution.profile_id,
+            account_slot=settings.trading.execution.account_slot,
         )
     except ValueError as exc:
         raise RuntimeError("trading_control_configuration_invalid") from exc

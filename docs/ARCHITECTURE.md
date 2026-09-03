@@ -184,7 +184,7 @@ does not apply.
 | US reference instruments | 6 h; 15 m retry if no venue answers | latest directory | reference family | one directory snapshot | one family fetch | venue families serial | 20 s provider | no / yes / yes | failed reference source is omitted; it cannot remove crypto venue rows |
 | Event Reaction | 60 s; 1 h/4 h horizons; at most 20 chained turns | complete before candle history expires | instrument + merged time range | 100 due rows/turn | 32 merged requests/turn | 4 provider calls | no outer deadline / 8 s provider | yes / yes / no | transient no-answer stays due; terminal gap/expiry is persisted explicitly |
 | Trading Signal lane | App-owned poll, 2 s | source age <= configured admission window; Signal TTL = min(180 s, admission window) | underlying / durable source key | 1 Case freeze and 4 decisions/turn | source-native public bar calls serial | one | adapter-owned provider / 10 s PostgreSQL boundaries | bounded overlap / durable source idempotency / no | missing or uncertain evidence creates no Signal; Case+Signal commit atomically |
-| Nautilus OI Runtime | active only for `paper|live`; 0.5 s current heartbeat; complete private proof every 5 s and immediately on ambiguity/flatten; Nautilus native in-flight/open/position checks at 2/5/5 s | command/Signal TTL; account clock <10 s and complete reconciliation <15 s, both derived from the one 5 s period; public heartbeat stale after 5 s | account slot / immutable activation fence | Commands and Signals share one count-and-byte bound; Commands admit and execute first | one Binance USD-M account | one account-slot writer | Runtime-owned | bounded anti-join replay / deterministic client IDs / fail closed | disabled starts no node; new profiles require complete flat proof and explicit resume; unowned exposure or lost singleton halts |
+| Nautilus OI Runtime | active only for `paper|live`; 0.5 s current heartbeat; complete private proof every 5 s and immediately on ambiguity/flatten; Nautilus native in-flight/open/position checks at 2/5/5 s | command/Signal TTL; account clock <10 s and complete reconciliation <15 s, both derived from the one 5 s period; public heartbeat stale after 5 s | account slot advisory lock | Commands and Signals share one count-and-byte bound; Commands admit and execute first | one Binance USD-M account | one account-slot writer | Runtime-owned | bounded anti-join replay / deterministic client IDs / fail closed | disabled starts no node; control state survives restarts and only a Command moves it; unowned exposure or lost singleton halts |
 
 Workers exposes one bounded Prometheus vocabulary at the existing telemetry
 seam. The concrete metric names carry the project prefix:
@@ -231,7 +231,7 @@ NautilusTrader `1.231.0` is a pinned dependency and the execution authority
 inside the one profile-gated Binance USD-M Runtime process. It is not a new
 business truth, scheduler, News transport, or provider registry. It consumes
 `TradeSignalV1` and `OperatorIntentV1`, proves the dedicated account before
-activation, and projects venue outcomes back as append-only Observations plus
+the account slot, and projects venue outcomes back as append-only Observations plus
 one current row. PostgreSQL remains business truth; News, Triage, Review and
 Learning stay on their present runtimes.
 
@@ -2220,22 +2220,27 @@ permission, an execution environment or a venue. `long` produces a
 The Nautilus OI Runtime owns the account, the risk numbers, orders, protection,
 exits and recovery. `tracefold.trading` owns none of them and holds no order
 state. Paper and live run the same Strategy / Risk / OMS / reconciliation code
-and differ only by immutable profile identity, credential namespace and Binance
-environment.
+and differ only by account slot, credential namespace and Binance environment.
 
 Canonical up/deploy/status derives the execution Compose profile from operator
 config: disabled stops Nautilus, while paper or live starts exactly one Binance
-USD-M TradingNode. A session advisory lock owns the account slot. One immutable
-activation fence binds mode, Runtime release and config digest. A new profile
-requires a complete private Binance flat report and starts with entries paused;
-a current profile rolls forward without one.
+USD-M TradingNode. **`account_slot` plus `mode` is the whole execution
+identity.** A session advisory lock owns the account slot and is the only thing
+that decides who may execute for it; `runtime_release`, `config_sha256`,
+`image_digest` and `credential_fingerprint` ride on the durable projection and
+on every Observation as evidence of what is running, never as a gate on whether
+it may run. A restart after a code, image or risk-config change is a restart:
+the Runtime does not need a new name, does not require a flat account, and does
+not reset control state. `mode: disabled` is the switch that means "do not
+trade".
 
 **Private account truth has one owner.** The App root disables Nautilus's
 duplicate startup reconciliation and requires one complete Binance position +
 regular-order + Algo-order report before activation. It refreshes that report
 every `reconciliation_interval_seconds`, and wakes immediately for
 unknown order outcomes, protection ambiguity, unexpected exposure and pending
-flatten. Only a successfully loaded empty triple can assert `account_flat=true`;
+flatten. It is a proof, not a precondition: a Runtime starts while the account
+holds a position and rebuilds ownership from durable facts. Only a successfully loaded empty triple can assert `account_flat=true`;
 a provider, parse, account-scope or Cache projection error escapes without
 advancing the reconciliation clock. Nautilus keeps its native in-flight,
 missing-open-order and position consistency loops as ExecutionEngine mechanics,
@@ -2256,9 +2261,9 @@ carries `risk_fraction_per_trade`, `max_risk_per_trade_usd`,
 `max_total_risk_usd`, `max_positions`, `max_leverage`, `max_daily_loss_usd`,
 `stop_distance_bps`, `reconciliation_interval_seconds` and
 `market_stale_after_seconds`, each with a pydantic bound that states why it is
-where it is. `tracefold config` prints them and they are inside the profile
-`config_sha256`, so changing one requires a new profile id and a fresh
-activation exactly as changing the mode or the account slot does. The stop
+where it is. `tracefold config` prints them and they are inside `config_sha256`,
+which lands on the durable projection and on the Runtime's start Observation, so
+a deploy can be told apart from the one before it. The stop
 distance stays a Runtime number: the Nautilus Strategy places and replaces the
 stop, and neither the Case nor the Signal carries it.
 
@@ -2266,8 +2271,8 @@ stop, and neither the Case nor the Signal carries it.
 three. The singleton session holds the account-slot advisory lock and is read
 during the sequential startup sequence; from `bridge.start()` the bridge thread
 is the only PostgreSQL caller the process has, owning the singleton heartbeat,
-the activation currency read, the durable recovery identities, the day-start
-baseline, the projection write, the two input reads and the audit flush. Its
+the durable recovery identities, the day-start baseline, the projection write,
+the two input reads and the audit flush. Its
 session carries a five-second `statement_timeout`, because reading Commands on
 it is how an operator flattens and a statement that has not finished within one
 reconciliation period is broken rather than slow. The trading event loop keeps
@@ -2299,7 +2304,7 @@ execution_safe`.
 **Restart recovery reads durable facts, not Cache.** Nautilus Cache is process
 memory and the Binance private proof carries only open orders and position risk,
 so a restart while in a position has no filled entry market order to key off.
-Recovery reads this profile's durable `order` / `leg=entry` Observations inside
+Recovery reads this account slot's durable `order` / `leg=entry` Observations inside
 a seven-day window, regenerates the deterministic entry/stop/exit client order
 ids from each identity, and claims an open position on that identity's routed
 instrument with the same direction plus the resting orders whose client order id
@@ -2315,8 +2320,7 @@ and quantity with `owned=false`.
 whole account slot: a deterministic reduce-only exit for every owned position, a
 reduce-only market close bounded to three attempts for every unowned one, and a
 cancel for every remaining resting order. `complete_from_reconciliation` still
-requires the later Binance private flat proof, and
-`oi_runtime_cold_transition_requires_binance_flat` still gates a new profile.
+requires the later Binance private flat proof.
 
 **One closed operator-control path.** Workers alone exposes
 `POST /telegram/control` on its loopback probe; the Telegram secret header and
@@ -2325,7 +2329,7 @@ read-only. `/pause`, confirmed `/resume`, confirmed `/halt`, account-only
 confirmed `/flatten`, and optional short-lived `/long` / `/short` map to
 `OperatorIntentV1`; the grammar contains no quantity, notional, leverage, venue
 or order parameter. Workers appends the intent before replying and never
-interprets activation or manufactures a disposition — only the Runtime may
+manufactures a disposition — only the Runtime may
 append accepted, rejected or completed control Observations. Pause blocks only
 new entries; halt is sticky, rejects resume, and does not mean flatten; flatten
 pauses entries and does not complete until a later fresh reconciliation proves
@@ -2333,6 +2337,13 @@ flat. The console's only mutation, header-authenticated `POST
 /api/trading/execution/commands`, reuses that same parser, TTL, confirmation,
 idempotent request identity and Runtime consumer, and admits only
 pause/resume/flatten. HTTP success proves persistence and nothing else.
+
+**Control state belongs to the account slot and survives every deploy.**
+`trading_execution_runtime_control_state` is keyed by `account_slot`; the
+Runtime creates an unpaused row the first time it starts for a slot and nothing
+but an accepted Command moves it afterwards. A pending Signal or Command is one
+whose own `expires_at_ns` has not passed, which is why there is no activation
+waterline: the read states the TTL the contract already carries.
 
 Commands and Signals share one bounded Runtime input, with Commands admitted and
 handled first; queue pressure evicts only volatile Signal admission, because
@@ -2365,8 +2376,10 @@ Expected business refusals are a closed typed vocabulary written durably.
 Everything else — a PostgreSQL timeout, a serialization failure, a repository
 bug — propagates out of `advance()` with its transaction rolled back, so the
 Case stays claimable and the Source is not consumed by an infrastructure fault.
-A missing `trading_decision_runtime` row halts the turn rather than defaulting
-to healthy. Case+Signal failure rolls back both rows; no partial handoff exists.
+Case+Signal failure rolls back both rows; no partial handoff exists. The Signal
+lane keeps no heartbeat row of its own: `/readyz` states whether the Workers
+process is alive, and the newest `trading_cases.created_at_ms` is when the lane
+last froze a Case.
 
 **A verdict and a clock are different refusals.** On the entry path
 `account_stale`, `market_stale`, `day_start_baseline_missing` and the two
@@ -2407,10 +2420,8 @@ locks and primitive row checks.
 
 Current product reads are Source/Admission, Case/Alpha, TradeSignal,
 ExecutionObservation, and the current execution Runtime projection — one HTTP
-owner each. `trading_cases`, `trading_candidate_gate_decisions`,
-`trading_decision_runtime`, `trading_trade_signals`,
+owner each. `trading_cases`, `trading_candidate_gate_decisions`, `trading_trade_signals`,
 `trading_operator_intents`, `trading_execution_observations`,
-`trading_execution_profile_activations`,
 `trading_execution_notification_deliveries`,
 `trading_execution_runtime_control_state` and
 `trading_execution_runtime_state` are the whole Trading schema.

@@ -167,7 +167,7 @@ export function TradingPage({ token }: { token: string }) {
           className="trading-heading-aside"
           data-tone={currentExecution.execution_safe ? undefined : "caution"}
         >
-          <span>ALPHA {status.decision.state}</span>
+          <span>ALPHA {caseClock(status.decision.last_case_at_ms)}</span>
           <small>EXECUTION {status.execution.mode}</small>
         </div>
       </header>
@@ -312,9 +312,9 @@ export function TradingPage({ token }: { token: string }) {
             <summary>Advanced Audit</summary>
             <div className="trading-advanced-body">
               <p>
-                profile <code>{status.execution.profile_id}</code> · account slot{" "}
-                <code>{status.execution.account_slot}</code> · reconcile{" "}
-                <code>{currentExecution.reconciliation_age_ms ?? "?"}ms</code>
+                account slot <code>{status.execution.account_slot}</code> · config{" "}
+                <code>{(status.execution.config_sha256 ?? "unavailable").slice(0, 12)}</code> ·
+                reconcile <code>{currentExecution.reconciliation_age_ms ?? "?"}ms</code>
               </p>
               <p>
                 runtime <code>{status.execution.runtime_release ?? "unavailable"}</code> · image{" "}

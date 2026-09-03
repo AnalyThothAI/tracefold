@@ -121,7 +121,7 @@ describe("TradingPage", () => {
 
     fireEvent.click(await screen.findByText("Advanced Audit"));
     expect(screen.getByText("signal_disposition")).toBeVisible();
-    expect(screen.getAllByText("demo-v1").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("binance_usdm_primary").length).toBeGreaterThan(0);
   });
 
   it("marks later execution stages unknown when the Observation ledger cannot be read", async () => {

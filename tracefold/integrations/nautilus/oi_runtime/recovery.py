@@ -56,7 +56,7 @@ class RecoveryCoordinator:
     def reconcile(self, snapshot: RuntimeReconciliationSnapshot) -> bool:
         """Rebuild runtime ownership only from durable identities and current Cache state."""
 
-        if snapshot.runtime_profile_id != self._profile.profile_id:
+        if snapshot.account_slot != self._profile.account_slot:
             self._readiness.halt_for_unexpected_exposure()
             return False
         executions: dict[str, ExecutionState] = {}
@@ -67,7 +67,6 @@ class RecoveryCoordinator:
             route = self._routes.get(request.market_key)
             expected_entry = deterministic_client_order_id(
                 namespace=self._profile.client_order_namespace,
-                profile_id=self._profile.profile_id,
                 entry_id=request.entry_id,
                 leg="entry",
             )
@@ -141,7 +140,6 @@ class RecoveryCoordinator:
             if seed.exit_client_order_id is not None:
                 expected_exit = deterministic_client_order_id(
                     namespace=self._profile.client_order_namespace,
-                    profile_id=self._profile.profile_id,
                     entry_id=request.entry_id,
                     leg=exit_leg(seed.exit_generation),
                 )

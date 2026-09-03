@@ -35,7 +35,7 @@ def _intent(**updates: object) -> OperatorIntentV1:
         "intent_version": "operator_intent_v1",
         "seq": 1,
         "command_id": "d" * 64,
-        "target_profile_id": "binance-usdm-demo-v1",
+        "account_slot": "binance-usdm-demo-v1",
         "action": "flatten",
         "scope": "account",
         "reason": "operator drill",
@@ -55,7 +55,7 @@ def _observation(**updates: object) -> ExecutionObservationV1:
     payload: dict[str, object] = {
         "observation_version": "execution_observation_v1",
         "event_id": "f" * 64,
-        "runtime_profile_id": "binance-usdm-demo-v1",
+        "account_slot": "binance-usdm-demo-v1",
         "runtime_release": "sha256:" + "1" * 64,
         "execution_strategy": "oi_nautilus_v1",
         "signal_id": "a" * 64,

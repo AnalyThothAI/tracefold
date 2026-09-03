@@ -18,7 +18,7 @@ from tests.postgres_test_utils import (
     temporary_unmigrated_postgres_database,
 )
 from tracefold.platform.postgres.client import connect_postgres
-from tracefold.platform.postgres.migrations import alembic_config
+from tracefold.platform.postgres.migrations import alembic_config, latest_migration_version
 from tracefold.trading.storage.execution_stream import PreparedTradeSignal, prepare_trade_signal
 from tracefold.trading.storage.root import TradingRepository
 
@@ -292,7 +292,10 @@ def test_0355_refuses_a_retired_value_it_cannot_archive_and_passes_once_the_row_
         conn.execute(purge)
         conn.commit()
         command.upgrade(config, "head")
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260903_0355"
+        assert (
+            conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
+            == latest_migration_version()
+        )
         assert (
             conn.execute(
                 """

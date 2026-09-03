@@ -133,7 +133,7 @@ class OperatorIntentV1(_FrozenContract):
     intent_version: Literal["operator_intent_v1"] = "operator_intent_v1"
     seq: int = Field(ge=1)
     command_id: str = Field(pattern=SHA256_PATTERN)
-    target_profile_id: str = Field(pattern=IDENTITY_PATTERN)
+    account_slot: str = Field(pattern=IDENTITY_PATTERN)
     action: ExecutionAction
     scope: str = Field(min_length=1, max_length=128)
     reason: str = Field(min_length=1, max_length=256)
@@ -174,7 +174,7 @@ class ExecutionObservationV1(_FrozenContract):
 
     observation_version: Literal["execution_observation_v1"] = "execution_observation_v1"
     event_id: str = Field(pattern=SHA256_PATTERN)
-    runtime_profile_id: str = Field(pattern=IDENTITY_PATTERN)
+    account_slot: str = Field(pattern=IDENTITY_PATTERN)
     runtime_release: str = Field(min_length=1, max_length=128)
     execution_strategy: str = Field(pattern=IDENTITY_PATTERN)
     signal_id: str | None = Field(default=None, pattern=SHA256_PATTERN)

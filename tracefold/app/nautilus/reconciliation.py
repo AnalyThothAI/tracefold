@@ -62,7 +62,6 @@ def build_runtime_reconciliation_snapshot(
     for request in reversed(subjects):
         entry_id = deterministic_client_order_id(
             namespace=profile.client_order_namespace,
-            profile_id=profile.profile_id,
             entry_id=request.entry_id,
             leg="entry",
         )
@@ -95,7 +94,7 @@ def build_runtime_reconciliation_snapshot(
         )
     seeds.reverse()
     return RuntimeReconciliationSnapshot(
-        runtime_profile_id=profile.profile_id,
+        account_slot=profile.account_slot,
         account_observed_at_ns=account_observed_at_ns,
         reconciliation_observed_at_ns=reconciliation_observed_at_ns,
         executions=tuple(seeds),
@@ -131,7 +130,6 @@ def _recovered_protections(
         for generation in range(1, _MAX_RECOVERY_GENERATIONS + 1):
             expected = deterministic_client_order_id(
                 namespace=profile.client_order_namespace,
-                profile_id=profile.profile_id,
                 entry_id=request.entry_id,
                 leg=f"protection:{generation}:{format(quantity.normalize(), 'f')}",
             )
@@ -168,7 +166,6 @@ def _recovered_exit(
         leg = "exit" if generation == 0 else f"exit:{generation}"
         expected = deterministic_client_order_id(
             namespace=profile.client_order_namespace,
-            profile_id=profile.profile_id,
             entry_id=request.entry_id,
             leg=leg,
         )

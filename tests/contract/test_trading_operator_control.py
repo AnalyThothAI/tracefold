@@ -44,7 +44,7 @@ def _webhook() -> TelegramControlWebhook:
         bot_id=1234567,
         allowed_chat_ids=frozenset({_CHAT_ID}),
         allowed_user_ids=frozenset({_USER_ID}),
-        target_profile_id="binance-usdm-demo-v1",
+        account_slot="binance-usdm-demo-v1",
     )
 
 
@@ -143,7 +143,7 @@ def test_update_identity_is_namespaced_by_stable_bot_identity() -> None:
         bot_id=7654321,
         allowed_chat_ids=frozenset({_CHAT_ID}),
         allowed_user_ids=frozenset({_USER_ID}),
-        target_profile_id="binance-usdm-demo-v1",
+        account_slot="binance-usdm-demo-v1",
     ).parse(**kwargs)
 
     assert first.intent is not None and replacement.intent is not None
@@ -158,7 +158,7 @@ def test_cli_request_identity_is_stable_per_uid_and_host_and_separate_across_cal
             parsed,
             source=_cli_request_source(local_uid=uid, hostname=hostname),
             source_command_id="ops-1",
-            target_profile_id="binance-usdm-demo-v1",
+            account_slot="binance-usdm-demo-v1",
             operator_identity=f"local-cli:{uid}",
             authentication_identity=f"local-os-uid:{uid}",
             requested_at_ns=1_800_000_000_000_000_000,

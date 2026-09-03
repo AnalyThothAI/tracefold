@@ -13,7 +13,6 @@ from fastapi.testclient import TestClient
 from tracefold.app.http.app import create_app
 from tracefold.app.http.routes import trading as trading_routes
 from tracefold.platform.config.models import Settings
-from tracefold.trading import DecisionRuntimeV1
 
 TOKEN = "trading-contract-token"
 WRITE_TOKEN = "operator-write-" + "w" * 40
@@ -25,8 +24,8 @@ class _Trading:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.persisted: list[Any] = []
 
-    def decision_runtime(self) -> DecisionRuntimeV1:
-        return DecisionRuntimeV1(state="RUNNING", heartbeat_at_ms=NOW, reason=None, updated_at_ms=NOW)
+    def latest_case_created_at_ms(self) -> int:
+        return NOW
 
     def runtime_summary(self, **kwargs: Any) -> dict[str, int]:
         self.calls.append(("runtime_summary", kwargs))
@@ -42,7 +41,7 @@ class _Trading:
     def execution_runtime_state(self, _account_slot: str) -> None:
         return None
 
-    def execution_runtime_control_state(self, _runtime_profile_id: str) -> None:
+    def execution_runtime_control_state(self, _account_slot: str) -> None:
         return None
 
     def console_cases(self, **kwargs: Any) -> list[dict[str, Any]]:
@@ -110,7 +109,7 @@ class _Trading:
             {
                 "seq": 4,
                 "command_id": "f" * 64,
-                "target_profile_id": "binance_usdm_primary",
+                "account_slot": "binance_usdm_primary",
                 "action": "pause_entries",
                 "scope": "entries",
                 "reason": "operator investigation",
@@ -179,10 +178,9 @@ def test_status_keeps_execution_truthfully_disabled(client: tuple[TestClient, _T
     api, _ = client
     data = api.get("/api/trading/status", params={"token": TOKEN}).json()["data"]
 
-    assert data["decision"]["state"] == "RUNNING"
+    assert data["decision"] == {"last_case_at_ms": NOW}
     expected = {
         "mode": "disabled",
-        "profile_id": "binance_usdm_primary",
         "account_slot": "binance_usdm_primary",
         "alive": False,
         "execution_safe": False,
@@ -257,7 +255,7 @@ def test_console_command_post_records_only_an_intent(
     assert persisted.action == "resume_entries"
     assert persisted.scope == "entries"
     assert persisted.reason == "operator review complete"
-    assert persisted.target_profile_id == "binance_usdm_primary"
+    assert persisted.account_slot == "binance_usdm_primary"
     assert persisted.authentication_identity == "http-operator-write-token:v1"
     assert persisted.confirmation_identity is not None
 

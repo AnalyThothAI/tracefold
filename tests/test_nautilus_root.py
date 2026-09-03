@@ -16,11 +16,9 @@ from tests.nautilus_oi_runtime_fixtures import oi_profile
 from tracefold.app.nautilus import root as nautilus_root
 from tracefold.app.nautilus.oi_runtime import RuntimeStateProjector
 from tracefold.app.nautilus.root import (
-    _activate_profile,
     _discover_routes,
     _observe_reconciliation,
     _observe_runtime_start,
-    _preflight_profile,
     _PrivateReconciliationRequests,
     _PrivateReconciliationResult,
     _probe_payload,
@@ -33,46 +31,11 @@ from tracefold.integrations.nautilus.oi_runtime.config import BinanceRuntimeCred
 from tracefold.integrations.nautilus.oi_runtime.nautilus_1231_binance_compat import CompleteBinanceAccountReports
 from tracefold.platform.config.models import Settings
 from tracefold.trading.notification_policy import is_notifiable
-from tracefold.trading.storage.execution_stream import ExecutionProfileActivation, ExecutionRuntimeState
-
-
-class _Trading:
-    def __init__(self, current: ExecutionProfileActivation | None = None) -> None:
-        self.current = current
-        self.by_profile = {} if current is None else {current.runtime_profile_id: current}
-        self.appended: list[ExecutionProfileActivation] = []
-
-    def latest_execution_profile_activation(self, _account_slot: str) -> ExecutionProfileActivation | None:
-        return self.current
-
-    def execution_profile_activation(self, profile_id: str) -> ExecutionProfileActivation | None:
-        return self.by_profile.get(profile_id)
-
-    def execution_stream_fence(self) -> tuple[int, int]:
-        return 12, 34
-
-    def append_execution_profile_activation(self, value: ExecutionProfileActivation) -> None:
-        self.appended.append(value)
-        self.by_profile[value.runtime_profile_id] = value
-        self.current = value
+from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
 
 
 def _repos(trading: Any) -> Any:
     return SimpleNamespace(trading=trading, transaction=nullcontext)
-
-
-def _activation(profile_id: str = "oi-paper-profile") -> ExecutionProfileActivation:
-    profile = oi_profile()
-    return ExecutionProfileActivation(
-        runtime_profile_id=profile_id,
-        account_slot=profile.account_slot,
-        activated_after_signal_seq=1,
-        activated_after_command_seq=2,
-        mode="paper",
-        runtime_release=profile.runtime_release,
-        config_sha256=profile.config_sha256,
-        created_at_ns=100,
-    )
 
 
 def _complete_reports(
@@ -91,7 +54,6 @@ def _complete_reports(
 def _runtime_state(*, heartbeat_at_ns: int = 1_000_000_000) -> ExecutionRuntimeState:
     return ExecutionRuntimeState(
         account_slot="binance_usdm_primary",
-        runtime_profile_id="oi-paper-profile",
         mode="paper",
         runtime_release="nautilus-1.231.0+oi-v1",
         config_sha256="a" * 64,
@@ -105,8 +67,6 @@ def _runtime_state(*, heartbeat_at_ns: int = 1_000_000_000) -> ExecutionRuntimeS
         entries_armed=False,
         control_plane_ready=False,
         singleton_ready=True,
-        credential_ready=True,
-        activation_ready=True,
         startup_reconciled=False,
         portfolio_ready=False,
         audit_ready=False,
@@ -168,64 +128,6 @@ def test_route_discovery_uses_real_clock_and_skips_unaddressable_provider_symbol
     assert type(captured["client"]["clock"]).__name__ == "LiveClock"
     assert [route.market_key for route in routes] == ["crypto:perp:BTC:USDT"]
     assert [route.stop_distance_bps for route in routes] == [100]
-
-
-def test_new_profile_activation_requires_authoritative_binance_flat() -> None:
-    trading = _Trading()
-
-    with pytest.raises(RuntimeError, match="oi_runtime_cold_transition_requires_binance_flat"):
-        _activate_profile(
-            repos=_repos(trading),
-            profile=oi_profile(),
-            existing=None,
-            account_flat=False,
-            created_at_ns=200,
-        )
-
-    assert trading.appended == []
-
-
-def test_rolling_restart_of_an_existing_profile_does_not_require_binance_flat() -> None:
-    """#510 PR-3. Only a cold transition to a new profile needs a proven flat account."""
-
-    existing = _activation()
-    trading = _Trading(existing)
-
-    activation = _activate_profile(
-        repos=_repos(trading),
-        profile=oi_profile(),
-        existing=existing,
-        account_flat=False,
-        created_at_ns=200,
-    )
-
-    assert activation == existing
-    assert trading.appended == []
-
-
-def test_new_profile_activation_records_the_current_stream_fence() -> None:
-    trading = _Trading()
-
-    activation = _activate_profile(
-        repos=_repos(trading),
-        profile=oi_profile(),
-        existing=None,
-        account_flat=True,
-        created_at_ns=200,
-    )
-
-    assert activation.activated_after_signal_seq == 12
-    assert activation.activated_after_command_seq == 34
-    assert trading.current == activation
-
-
-def test_superseded_profile_cannot_be_reactivated() -> None:
-    old = _activation()
-    trading = _Trading(_activation("next-profile"))
-    trading.by_profile[old.runtime_profile_id] = old
-
-    with pytest.raises(RuntimeError, match="oi_runtime_profile_cannot_be_reactivated"):
-        _preflight_profile(_repos(trading), oi_profile())
 
 
 def test_one_reconciliation_period_owns_both_account_freshness_budgets() -> None:
@@ -332,10 +234,9 @@ def test_private_report_failure_does_not_project_cache_or_mint_a_fresh_reconcili
 
 
 class _ProjectionTrading:
-    def __init__(self, *, latest: ExecutionProfileActivation | None = None) -> None:
+    def __init__(self) -> None:
         self.puts: list[ExecutionRuntimeState] = []
         self.updates: list[ExecutionRuntimeState] = []
-        self.latest = latest
 
     def put_execution_runtime_state(self, state: ExecutionRuntimeState) -> None:
         self.puts.append(state)
@@ -344,20 +245,9 @@ class _ProjectionTrading:
         self.updates.append(state)
         return True
 
-    def latest_execution_profile_activation(self, _account_slot: str) -> ExecutionProfileActivation | None:
-        return self.latest
 
-
-def _projector(
-    starting: ExecutionRuntimeState,
-    *,
-    activation: ExecutionProfileActivation | None = None,
-) -> RuntimeStateProjector:
-    return RuntimeStateProjector(
-        initial=starting,
-        activation=activation or _activation(),
-        recovery_inputs=((), ()),
-    )
+def _projector(starting: ExecutionRuntimeState) -> RuntimeStateProjector:
+    return RuntimeStateProjector(initial=starting, recovery_inputs=((), ()))
 
 
 def test_runtime_state_projector_writes_changes_immediately_and_unchanged_state_only_on_heartbeat() -> None:
@@ -405,22 +295,6 @@ def test_runtime_state_projector_writes_changes_immediately_and_unchanged_state_
     assert trading.updates == [changed, heartbeat]
 
 
-def test_projector_reads_activation_currency_for_a_loop_that_no_longer_holds_a_connection() -> None:
-    activation = _activation()
-    trading = _ProjectionTrading(latest=activation)
-    repos = _repos(trading)
-    projector = _projector(_runtime_state(), activation=activation)
-
-    assert projector.activation_current is True
-
-    projector.refresh_activation(repos)
-    assert projector.activation_current is True
-
-    trading.latest = _activation("next-profile")
-    projector.refresh_activation(repos)
-    assert projector.activation_current is False
-
-
 def test_probe_readiness_requires_execution_safety_but_not_entry_arming() -> None:
     safe_but_paused = replace(
         _runtime_state(),
@@ -445,7 +319,7 @@ def test_probe_readiness_requires_execution_safety_but_not_entry_arming() -> Non
 def test_reconciliation_observation_preserves_native_ids_and_flat_proof() -> None:
     audit = AuditSink(
         factory=ObservationFactory(
-            runtime_profile_id="oi-paper-profile",
+            account_slot="oi-paper-profile",
             runtime_release="nautilus-1.231.0+oi-v1",
             execution_strategy="oi_nautilus_v1",
         )
@@ -494,7 +368,7 @@ def test_a_steady_reconciliation_that_changed_nothing_stays_out_of_the_ledger() 
 
     audit = AuditSink(
         factory=ObservationFactory(
-            runtime_profile_id="oi-paper-profile",
+            account_slot="oi-paper-profile",
             runtime_release="nautilus-1.231.0+oi-v1",
             execution_strategy="oi_nautilus_v1",
         )
@@ -556,7 +430,7 @@ def test_a_steady_reconciliation_that_changed_nothing_stays_out_of_the_ledger() 
 def test_runtime_start_receipt_binds_exact_runtime_image_config_and_credentials() -> None:
     audit = AuditSink(
         factory=ObservationFactory(
-            runtime_profile_id="oi-paper-profile",
+            account_slot="oi-paper-profile",
             runtime_release="nautilus-1.231.0+oi-v1",
             execution_strategy="oi_nautilus_v1",
         )
@@ -594,7 +468,7 @@ def test_the_notification_predicate_reads_the_summaries_these_writers_actually_p
 
     audit = AuditSink(
         factory=ObservationFactory(
-            runtime_profile_id="oi-paper-profile",
+            account_slot="oi-paper-profile",
             runtime_release="nautilus-1.231.0+oi-v1",
             execution_strategy="oi_nautilus_v1",
         )
@@ -679,12 +553,13 @@ def test_risk_limits_come_from_the_operator_config_and_carry_the_route_stop_dist
         {"market_stale_after_seconds": 7.0},
     ],
 )
-def test_every_risk_value_is_inside_the_config_digest_the_activation_fence_reads(override: dict[str, Any]) -> None:
-    """#510 E. Risk lived outside `config_sha256`, so the fence could not see an operator edit.
+def test_every_risk_value_is_inside_the_reported_config_digest(override: dict[str, Any]) -> None:
+    """#510 E. Risk lived outside `config_sha256`, so an operator edit left no trace at all.
 
-    The fence is `_preflight_profile`: a profile id whose recorded `config_sha256` no longer matches
-    the one this process computed cannot be reused, so a risk change now needs a new profile and a
-    fresh activation, exactly like a mode or account-slot change.
+    Since #520 PR-A the digest is evidence rather than a fence: it lands on the durable projection and
+    on the Runtime's start observation, the account slot is unchanged by a risk edit, and the Runtime
+    restarts without a rename. Every risk value still has to move it, or a deploy cannot be told apart
+    from the one before it.
     """
 
     routes = oi_profile().routes
@@ -692,18 +567,8 @@ def test_every_risk_value_is_inside_the_config_digest_the_activation_fence_reads
     edited = nautilus_root._active_profile(_settings_with_risk(**override), routes)
 
     assert edited.config_sha256 != baseline.config_sha256
-    assert edited.profile_id == baseline.profile_id
-
-    recorded = replace(
-        _activation(baseline.profile_id),
-        account_slot=baseline.account_slot,
-        runtime_release=baseline.runtime_release,
-        config_sha256=baseline.config_sha256,
-    )
-    trading = _Trading(recorded)
-
-    with pytest.raises(RuntimeError, match="oi_runtime_profile_identity_changed"):
-        _preflight_profile(_repos(trading), edited)
+    assert edited.account_slot == baseline.account_slot
+    assert edited.client_order_namespace == baseline.client_order_namespace
 
 
 @pytest.mark.parametrize(

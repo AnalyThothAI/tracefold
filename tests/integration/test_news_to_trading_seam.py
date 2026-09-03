@@ -28,7 +28,7 @@ from tracefold.news.pipeline.triage import TriageConsumer
 from tracefold.news.storage.trade_projection import NEWS_TRADE_PROJECTION_VERSION
 from tracefold.trading.contracts import Bar, CaseState, OiCandidateRow
 from tracefold.trading.signal_lane import BAR_INTERVAL_MS, SignalLane, SignalLaneConfig
-from tracefold.trading.storage.execution_stream import ExecutionProfileActivation, ExecutionRuntimeState
+from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
 
 pytestmark = pytest.mark.integration
 
@@ -127,7 +127,7 @@ def conn(postgres_module_clone_dsn: str):
 def clean(conn: Any):
     conn.execute(
         "TRUNCATE news_items, news_event_evidence_snapshots, trading_cases, trading_trade_signals, "
-        "trading_candidate_gate_decisions, trading_execution_profile_activations RESTART IDENTITY CASCADE"
+        "trading_candidate_gate_decisions, trading_execution_runtime_state RESTART IDENTITY CASCADE"
     )
     conn.commit()
     return conn
@@ -374,22 +374,10 @@ def _publish_runtime_catalogue(conn: Any, *market_keys: str) -> None:
     """One started Runtime that has published exactly the markets it can reach."""
 
     repos = repositories_for_connection(conn)
-    activation = ExecutionProfileActivation(
-        runtime_profile_id="oi-paper-profile",
-        account_slot="binance_usdm_primary",
-        activated_after_signal_seq=0,
-        activated_after_command_seq=0,
-        mode="paper",
-        runtime_release="nautilus-1.231.0+oi-v1",
-        config_sha256="a" * 64,
-        created_at_ns=1_000,
-    )
     with repos.transaction():
-        repos.trading.append_execution_profile_activation(activation)
         repos.trading.put_execution_runtime_state(
             ExecutionRuntimeState(
                 account_slot="binance_usdm_primary",
-                runtime_profile_id="oi-paper-profile",
                 mode="paper",
                 runtime_release="nautilus-1.231.0+oi-v1",
                 config_sha256="a" * 64,
@@ -403,8 +391,6 @@ def _publish_runtime_catalogue(conn: Any, *market_keys: str) -> None:
                 entries_armed=True,
                 control_plane_ready=True,
                 singleton_ready=True,
-                credential_ready=True,
-                activation_ready=True,
                 startup_reconciled=True,
                 portfolio_ready=True,
                 audit_ready=True,

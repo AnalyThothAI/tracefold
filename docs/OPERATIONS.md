@@ -48,9 +48,11 @@ uv run tracefold trading status
 Disabled status reports `alive=false`, `execution_safe=false`, and
 `entries_armed=false`; canonical deployment stops any stale Nautilus container.
 Active safety additionally requires exactly one current account-slot owner,
-secure non-empty credential files, immutable activation, startup reconciliation,
-initialized Portfolio, no unexpected exposure, a fresh heartbeat, and the exact
-configured profile/revision/image/config identity. Durable audit, current control,
+secure non-empty credential files, startup reconciliation, initialized
+Portfolio, no unexpected exposure, a fresh heartbeat, and the configured
+account slot and mode. `runtime_release`, `config_sha256`, `image_digest` and
+`credential_fingerprint` are reported as evidence of what is running; none of
+them gates a start. Durable audit, current control,
 day-start baseline, pause, and halt govern `entries_armed` without taking away
 existing-exposure safety. Serve and Workers never receive Binance secrets.
 
@@ -82,15 +84,23 @@ tuning.
 Quote streams are opened per admitted entry rather than for the whole route
 catalogue, so an operator reading Nautilus logs should expect one market-data
 stream per live thesis and none at rest. The nine risk numbers under
-`trading.execution.risk` are operator-owned and inside the profile
-`config_sha256`: editing one requires a new profile id and a fresh activation.
+`trading.execution.risk` are operator-owned and move `config_sha256`, which is
+reported on the projection and on the Runtime's start Observation; editing one
+needs a restart and nothing else.
 
-For the first Demo activation, confirm the Binance account is authoritatively
-flat, populate the configured Binance files as regular mode-`0600` files,
-choose a new immutable profile, set `execution.mode: paper`, and run `make up`.
-A new profile starts with entries paused. Inspect `make status` and `trading
-status`, then issue an authenticated `/resume REASON CONFIRM` before either a
-Signal or `/long`/`/short` can enter. After the bounded Demo exercise, issue
+**A deploy is a restart.** Changing the image, the release or any
+`trading.execution.*` value does not require a new name, a flat account or a
+fresh `/resume`: `account_slot` plus `mode` is the execution identity, the
+account-slot advisory lock is what keeps two Runtimes apart, and control state
+lives on the slot. Entries stay exactly as the last accepted Command left them.
+`execution.mode: disabled` is the switch that means "do not trade".
+
+For the first Demo start on a slot, confirm the Binance account is
+authoritatively flat, populate the configured Binance files as regular
+mode-`0600` files, set `execution.mode: paper`, and run `make up`. A slot with
+no Command history starts with entries armed. Inspect `make status` and `trading
+status` before letting a Signal or `/long`/`/short` enter, and use
+`/pause REASON` if it should not. After the bounded Demo exercise, issue
 `/flatten account TTL_SECONDS CONFIRM`, require a later private Binance flat
 reconciliation, run `trading demo-receipt`, restore `execution.mode: disabled`,
 and run `make up` again. Demo evidence is not live-money evidence. Never select
@@ -138,16 +148,16 @@ state. The same bot keeps command identity across token rotation; replacing the
 bot creates a new namespace because Telegram `update_id` values are bot-scoped.
 
 Telegram's “意图已记录” and CLI `ok` prove only the PostgreSQL intent. With no
-active execution profile, the intent remains `awaiting_runtime`; ingress never
-interprets activation and never fabricates a terminal Runtime Observation.
+Runtime running, the intent remains `awaiting_runtime` until its TTL passes;
+ingress never fabricates a terminal Runtime Observation.
 Inspect `trading commands` or `/api/trading/execution/commands` for the command disposition and
 `trading observations` for later Runtime facts. The only valid evidence ladder
 is: intent recorded, Runtime accepted, order accepted, fill observed, and
 `account_flat=true` on the current execution projection within its
 `reconciliation_age_ms` budget. Never infer a later stage from an earlier one,
-from Decision `RUNNING`, or from Runtime readiness. Do not read flatness out of
-the observation ledger: an unchanged steady reconciliation appends no row
-(#510).
+from a recent `decision.last_case_at_ms`, or from Runtime readiness. Do not
+read flatness out of the observation ledger: an unchanged steady reconciliation
+appends no row (#510).
 
 The browser reads use the bootstrap token, but Command writes use the separate
 mode-`0600` `trading_console_write_token` created by `tracefold init`. Paste

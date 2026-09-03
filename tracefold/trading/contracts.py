@@ -28,7 +28,6 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Final, Literal, TypedDict
@@ -46,16 +45,6 @@ TRADING_MANIFEST_VERSION: Final = "trading_manifest_v11"
 EXECUTION_STRATEGY_ID: Final = "oi_nautilus_v1"
 # Code-owned persistence timing shared by the Signal lane.
 TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
-
-
-@dataclass(frozen=True, slots=True)
-class DecisionRuntimeV1:
-    """The durable Decision Plane heartbeat projected across the App seam."""
-
-    state: Literal["DISABLED", "FAULTED", "RUNNING", "STARTING"]
-    heartbeat_at_ms: int | None
-    reason: str | None
-    updated_at_ms: int
 
 
 # No News identity of any kind: the measurements, the two clocks and the venue are the fact, and every

@@ -49,8 +49,8 @@ from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSi
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.platform.config.models import Settings
 from tracefold.trading.storage.execution_stream import (
-    ExecutionProfileActivation,
     ExecutionRuntimeState,
+    prepare_execution_observations,
     prepare_operator_intent,
     prepare_trade_signal,
 )
@@ -190,31 +190,10 @@ def _current_rss_bytes() -> int:
     return int(rss_kib) * 1_024
 
 
-def _fence(repo: TradingRepository) -> tuple[int, int]:
-    return repo.execution_stream_fence()
-
-
-def _activate(repo: TradingRepository, *, profile: str, slot: str, now_ns: int) -> None:
-    signal_seq, command_seq = _fence(repo)
-    with repo.conn.transaction():
-        repo.append_execution_profile_activation(
-            ExecutionProfileActivation(
-                runtime_profile_id=profile,
-                account_slot=slot,
-                activated_after_signal_seq=signal_seq,
-                activated_after_command_seq=command_seq,
-                mode="paper",
-                runtime_release="nautilus-1.231.0+oi-v1",
-                config_sha256="a" * 64,
-                created_at_ns=now_ns,
-            )
-        )
-
-
 def _append_workload(
     repo: TradingRepository,
     *,
-    profile: str,
+    account_slot: str,
     size: int,
     seed: str,
     now_ns: int,
@@ -265,7 +244,7 @@ def _append_workload(
             repo.append_operator_intent(
                 prepare_operator_intent(
                     command_id=_sha(f"command:{seed}:{index}"),
-                    target_profile_id=profile,
+                    account_slot=account_slot,
                     action="pause_entries",
                     scope="entries",
                     reason="475 Runtime input diagnostic",
@@ -281,21 +260,58 @@ def _append_workload(
         before_commit()
 
 
+def _dispose_workload(repo: TradingRepository, *, account_slot: str, size: int, seed: str) -> None:
+    """Settle a burst the way the Runtime does, so the next one measures its own pending set.
+
+    Since #520 PR-A a pending Signal is any Signal inside its own TTL with no disposition from this
+    account slot; the activation waterline that used to hide earlier bursts is gone. The measurement
+    keeps one slot -- production has exactly one -- and appends the dispositions the Runtime would
+    have appended for what it just dequeued.
+    """
+
+    factory = ObservationFactory(account_slot, "nautilus-1.231.0+oi-v1", "oi_nautilus_v1")
+    observations = []
+    for index in range(size):
+        observations.append(
+            factory.create(
+                normalized_kind="signal_disposition",
+                signal_id=_sha(f"signal:{seed}:{index}"),
+                occurred_at_ns=NOW_NS,
+                observed_at_ns=NOW_NS,
+                summary={"disposition": "accepted"},
+                payload={"disposition": "accepted"},
+                event_identity=f"diagnostic-signal:{seed}:{index}",
+            )
+        )
+        observations.append(
+            factory.create(
+                normalized_kind="control_disposition",
+                command_id=_sha(f"command:{seed}:{index}"),
+                occurred_at_ns=NOW_NS,
+                observed_at_ns=NOW_NS,
+                summary={"action": "pause_entries", "disposition": "accepted"},
+                payload={"action": "pause_entries", "disposition": "accepted"},
+                event_identity=f"diagnostic-command:{seed}:{index}",
+            )
+        )
+    for start in range(0, len(observations), 100):
+        with repo.conn.transaction():
+            repo.append_execution_observations(prepare_execution_observations(observations[start : start + 100]))
+
+
 def _runtime_bridge(
     *,
     settings: Settings,
-    profile_id: str,
     account_slot: str,
     signals: ExecutionSignalClient,
 ) -> _MeasuredRuntimeBridge:
     profile = replace(
         oi_profile(),
-        profile_id=profile_id,
         account_slot=account_slot,
-        cache_namespace=f"{profile_id}-cache",
-        client_order_namespace=f"{profile_id}-orders",
+        cache_namespace=f"{account_slot}-cache",
+        client_order_namespace=f"{account_slot}-orders",
     )
-    audit = AuditSink(factory=ObservationFactory(profile_id, profile.runtime_release, "oi_nautilus_v1"))
+    audit = AuditSink(factory=ObservationFactory(account_slot, profile.runtime_release, "oi_nautilus_v1"))
     singleton = AccountSlotSingleton(
         account_slot=account_slot,
         try_acquire=lambda _slot: True,
@@ -303,16 +319,6 @@ def _runtime_bridge(
         heartbeat=lambda: True,
     )
     assert singleton.acquire() is True
-    activation = ExecutionProfileActivation(
-        runtime_profile_id=profile_id,
-        account_slot=account_slot,
-        activated_after_signal_seq=0,
-        activated_after_command_seq=0,
-        mode="paper",
-        runtime_release=profile.runtime_release,
-        config_sha256="a" * 64,
-        created_at_ns=NOW_NS,
-    )
     return _MeasuredRuntimeBridge(
         settings=settings,
         profile=profile,
@@ -323,18 +329,16 @@ def _runtime_bridge(
         # Nothing is ever offered here, so the projection step is the no-op this diagnostic wants:
         # it measures the input path, not the current-state path.
         projector=RuntimeStateProjector(
-            initial=_runtime_state(profile_id=profile_id, account_slot=account_slot),
-            activation=activation,
+            initial=_runtime_state(account_slot=account_slot),
             recovery_inputs=((), ()),
         ),
         poll_seconds=_REPAIR_SECONDS,
     )
 
 
-def _runtime_state(*, profile_id: str, account_slot: str) -> ExecutionRuntimeState:
+def _runtime_state(*, account_slot: str) -> ExecutionRuntimeState:
     return ExecutionRuntimeState(
         account_slot=account_slot,
-        runtime_profile_id=profile_id,
         mode="paper",
         runtime_release="nautilus-1.231.0+oi-v1",
         config_sha256="a" * 64,
@@ -348,8 +352,6 @@ def _runtime_state(*, profile_id: str, account_slot: str) -> ExecutionRuntimeSta
         entries_armed=False,
         control_plane_ready=False,
         singleton_ready=True,
-        credential_ready=True,
-        activation_ready=True,
         startup_reconciled=False,
         portfolio_ready=False,
         audit_ready=False,
@@ -417,20 +419,13 @@ def _stream_samples(settings: Settings) -> tuple[dict[str, Any], int]:
         repo = TradingRepository(writer)
         by_burst: dict[str, Any] = {}
         max_connections = 0
+        slot = "runtime-input-slot"
         for size in _BURST_SIZES:
             dequeue_ms: list[float] = []
             for repeat in range(_REPEATS):
                 seed = f"{size}-{repeat}"
-                profile = f"runtime-input-475-{size}-{repeat}"
-                slot = f"runtime-input-slot-{size}-{repeat}"
-                _activate(repo, profile=profile, slot=slot, now_ns=NOW_NS + repeat)
-                client = ExecutionSignalClient(runtime_profile_id=profile, execution_strategy="oi_nautilus_v1")
-                bridge = _runtime_bridge(
-                    settings=settings,
-                    profile_id=profile,
-                    account_slot=slot,
-                    signals=client,
-                )
+                client = ExecutionSignalClient(account_slot=slot, execution_strategy="oi_nautilus_v1")
+                bridge = _runtime_bridge(settings=settings, account_slot=slot, signals=client)
                 bridge.start()
                 try:
                     _wait_until_bridge_connects(bridge)
@@ -439,7 +434,7 @@ def _stream_samples(settings: Settings) -> tuple[dict[str, Any], int]:
                     _wait_until_initial_cycle_finishes(bridge)
                     _append_workload(
                         repo,
-                        profile=profile,
+                        account_slot=slot,
                         size=size,
                         seed=seed,
                         now_ns=NOW_NS + repeat,
@@ -465,6 +460,7 @@ def _stream_samples(settings: Settings) -> tuple[dict[str, Any], int]:
                     bridge.stop()
                     bridge.join(2.0)
                     assert not bridge.connected
+                _dispose_workload(repo, account_slot=slot, size=size, seed=seed)
             by_burst[str(size)] = {
                 "samples": _REPEATS,
                 "delivery_path": "production_listen_notify_with_indexed_repair",
@@ -474,13 +470,9 @@ def _stream_samples(settings: Settings) -> tuple[dict[str, Any], int]:
                 "pending_identity_duplicates": 0,
             }
 
-        profile = "runtime-input-475-missed-wake"
-        slot = "runtime-input-slot-repair"
-        _activate(repo, profile=profile, slot=slot, now_ns=NOW_NS + 100)
-        client = ExecutionSignalClient(runtime_profile_id=profile, execution_strategy="oi_nautilus_v1")
+        client = ExecutionSignalClient(account_slot=slot, execution_strategy="oi_nautilus_v1")
         bridge = _runtime_bridge(
             settings=settings,
-            profile_id=profile,
             account_slot=slot,
             signals=client,
         )
@@ -494,7 +486,7 @@ def _stream_samples(settings: Settings) -> tuple[dict[str, Any], int]:
                 _wait_until_initial_cycle_finishes(bridge)
                 _append_workload(
                     repo,
-                    profile=profile,
+                    account_slot=slot,
                     size=1,
                     seed="repair",
                     now_ns=NOW_NS + 100,
@@ -525,12 +517,10 @@ def _stream_samples(settings: Settings) -> tuple[dict[str, Any], int]:
 def _audit_sample() -> dict[str, Any]:
     conn = connect_postgres_test(read_only=False)
     try:
-        profile = "runtime-input-475-audit"
-        repo = TradingRepository(conn)
-        _activate(repo, profile=profile, slot="runtime-input-slot-audit", now_ns=NOW_NS + 200)
+        slot = "runtime-input-slot-audit"
         repos = repositories_for_connection(conn)
-        signals = ExecutionSignalClient(runtime_profile_id=profile, execution_strategy="oi_nautilus_v1")
-        sink = AuditSink(factory=ObservationFactory(profile, "nautilus-1.231.0+oi-v1", "oi_nautilus_v1"))
+        signals = ExecutionSignalClient(account_slot=slot, execution_strategy="oi_nautilus_v1")
+        sink = AuditSink(factory=ObservationFactory(slot, "nautilus-1.231.0+oi-v1", "oi_nautilus_v1"))
         for index in range(100):
             assert sink.offer(
                 sink.factory.create(

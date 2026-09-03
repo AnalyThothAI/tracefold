@@ -33,7 +33,7 @@ def _observation(**over: Any) -> dict[str, Any]:
     row: dict[str, Any] = {
         "seq": 41,
         "event_id": "e" * 64,
-        "runtime_profile_id": "binance_usdm_primary",
+        "account_slot": "binance_usdm_primary",
         "signal_id": "5" * 64,
         "command_id": None,
         "normalized_kind": "signal_disposition",

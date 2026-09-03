@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 from decimal import Decimal
 from functools import partial
 
@@ -24,6 +25,7 @@ from tests.nautilus_oi_runtime_fixtures import ACCOUNT_ID, NOW_NS, oi_profile
 from tracefold.app.nautilus.oi_runtime import (
     flush_audit_once,
     load_recovery_inputs,
+    load_runtime_control_state,
     load_unresolved_operator_intents,
     load_unresolved_trade_signals,
 )
@@ -119,7 +121,6 @@ def _seed_cold_cache(
         reduce_only=True,
         client_order_id=deterministic_client_order_id(
             namespace=profile.client_order_namespace,
-            profile_id=profile.profile_id,
             entry_id=entry_id,
             leg=protection_leg(1, _COLD_QUANTITY),
         ),
@@ -137,18 +138,18 @@ def _seed_cold_cache(
 def main() -> None:
     dsn = sys.argv[1]
     mode = sys.argv[2] if len(sys.argv) > 2 else "signal"
-    if mode not in {"command", "signal", "signal_replay", "cold_recovery", "cold_unclaimed"}:
+    if mode not in {"command", "signal", "signal_replay", "cold_recovery", "cold_unclaimed", "rolling_restart"}:
         raise ValueError("nautilus_process_fixture_mode_invalid")
     conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
     try:
         signals = ExecutionSignalClient(
-            runtime_profile_id="oi-paper-profile",
+            account_slot=oi_profile().account_slot,
             execution_strategy="oi_nautilus_v1",
         )
         repos = repositories_for_connection(conn)
         admitted = (
             signals.poll_once(partial(load_unresolved_trade_signals, repos))
-            if mode in {"signal", "signal_replay", "cold_recovery", "cold_unclaimed"}
+            if mode in {"signal", "signal_replay", "cold_recovery", "cold_unclaimed", "rolling_restart"}
             else 0
         )
         replay_admitted = (
@@ -160,10 +161,16 @@ def main() -> None:
             else 0
         )
         profile = oi_profile()
-        factory = ObservationFactory(profile.profile_id, profile.runtime_release, "oi_nautilus_v1")
+        control_state = RuntimeControlSnapshot(False, False, ())
+        if mode == "rolling_restart":
+            # A rolling restart after a code or configuration change: same account slot, same
+            # deployment, a Runtime whose release string moved. #520 PR-A: this simply starts, keeps
+            # whatever control state the operator last set, and never demands a flat account.
+            profile = replace(profile, runtime_release="nautilus-1.231.0+oi-v2")
+            control_state = load_runtime_control_state(repos, profile.account_slot, now_ns=NOW_NS)
+        factory = ObservationFactory(profile.account_slot, profile.runtime_release, "oi_nautilus_v1")
         audit = AuditSink(factory=factory)
         readiness = RuntimeReadiness()
-        readiness.activate()
         strategy = _CountingOiStrategy(
             profile=profile,
             signals=signals,
@@ -176,7 +183,7 @@ def main() -> None:
             control_plane_ready=lambda: True,
             day_start=DayStartBaseline("2030-03-17", Decimal("1000"), NOW_NS - 1, "4" * 64),
             request_reconciliation=lambda _reason: None,
-            initial_control_state=RuntimeControlSnapshot(False, False, ()),
+            initial_control_state=control_state,
         )
         instrument = TestInstrumentProvider.btcusdt_perp_binance()
         engine = BacktestEngine(
@@ -213,8 +220,8 @@ def main() -> None:
             ]
         )
         engine.add_strategy(strategy)
-        if mode in {"cold_recovery", "cold_unclaimed"}:
-            recovery_signals, recovery_manual_entries = load_recovery_inputs(repos, profile.profile_id, NOW_NS)
+        if mode in {"cold_recovery", "cold_unclaimed", "rolling_restart"}:
+            recovery_signals, recovery_manual_entries = load_recovery_inputs(repos, profile.account_slot, NOW_NS)
             _seed_cold_cache(
                 engine=engine,
                 strategy=strategy,
@@ -234,7 +241,7 @@ def main() -> None:
         else:
             recovery_signals = ()
             snapshot = RuntimeReconciliationSnapshot(
-                runtime_profile_id=profile.profile_id,
+                account_slot=profile.account_slot,
                 account_observed_at_ns=NOW_NS,
                 reconciliation_observed_at_ns=NOW_NS,
             )
