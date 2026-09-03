@@ -7,7 +7,7 @@ describes a filter the lane no longer applies.
 
 It fails closed on everything it cannot prove. A symbol that canonicalises to nothing, a missing clock,
 an unknown direction — each is a named rejection, never a default. Nothing here reads an upstream
-judge, Program, policy or cohort: since #510 there is no such field on the row to read.
+judge, Program, policy or cohort: no such field exists on the row.
 
 **Age is not one of these rules.** `normalize_oi_source` answers "is this a usable fact", which is a
 property of the row. Whether it is fresh enough to open a Case is Admission's, with its own budget.
@@ -60,14 +60,12 @@ def _int(value: Any, default: int | None = None) -> int | None:
 
 
 def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejected:
-    """One projected telemetry fact, or a named source-contract failure. No clock, no policy (#264).
+    """One projected telemetry fact, or a named source-contract failure. No clock, no policy.
 
     This is the **source** stage and nothing else: is the row a usable, live OI fact at all? The
-    liquidity floor, the deny list, freshness and idempotency belong to Admission, and they used to be
-    here as well as in News's SELECT — which is how the same threshold came to be executed in three
-    places and a rejection came to be indistinguishable from a row that never existed. (A rank ceiling
-    and a per-symbol cooldown were on that list until #348 retired both, and #458 then removed the rank
-    itself along with the News push rule that spent it.)
+    liquidity floor, freshness and idempotency belong to Admission, and each rule has exactly one of
+    the two homes — a threshold executed in both makes a rejection indistinguishable from a row that
+    never existed.
     """
 
     symbol = canonical_base_symbol(row.get("symbol"))
@@ -105,9 +103,8 @@ def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejecte
         return SourceRejected(rule="oi_direction_unknown", symbol=symbol)
 
     # The provider's own venue text decides which book this frame is a claim about, including whether
-    # it is Hyperliquid's `hl.xyz` builder DEX. It used to be inferred from an `XYZ-` prefix on a title
-    # token the projection carried alongside the fact; the ledger's own `symbol` is already canonical,
-    # so the venue field is the only thing that can answer this, and it is the field that means it.
+    # it is Hyperliquid's `hl.xyz` builder DEX. The ledger's own `symbol` is already canonical, so the
+    # venue field is the only field that can answer this, and it is the field that means it.
     raw_venue = str(row.get("venue") or "").strip().lower()
     venue = normalize_source_venue(raw_venue) or raw_venue
     return OiTradeCandidate(

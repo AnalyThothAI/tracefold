@@ -7,14 +7,14 @@ describe("Alpha labels", () => {
   });
 
   it("names a system block and a policy rule from the same lookup, and neither invents a synonym", () => {
-    // #331: `BLOCKED` reasons and policy rules are two closed vocabularies with one reader. A key with
+    // `BLOCKED` reasons and policy rules are two closed vocabularies with one reader. A key with
     // no entry renders as itself — it is the string an operator greps.
-    expect(policyReasonLabel("capability_mismatch")).toBe("能力指针已改变，冻结的合约不再权威");
+    expect(policyReasonLabel("policy_identity_retired")).toBe("该案例的策略身份已退役");
     expect(policyReasonLabel("smart_money_momentum_long")).toBe("聪明钱动量 · 做多");
     expect(policyReasonLabel("a_rule_nobody_translated")).toBe("a_rule_nobody_translated");
     expect(policyReasonLabel(null)).toBe("—");
-    // The retired catch-all has no translation because nothing writes it any more.
-    expect(policyReasonLabel("intent_admission_blocked")).toBe("intent_admission_blocked");
+    // A reason the deleted execution owner used to write has no translation, because nothing writes it.
+    expect(policyReasonLabel("capability_mismatch")).toBe("capability_mismatch");
   });
 
   it("prints a signed percentage from basis points, and a dash for an unmeasured one", () => {

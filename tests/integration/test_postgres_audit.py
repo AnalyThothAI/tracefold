@@ -166,6 +166,14 @@ def test_query_audit_analyzes_all_route_query_families_on_empty_schema(
     assert payload["analyze"] is True
     assert all(item["metrics"]["plan_json_valid"] for item in payload["queries"])
     assert all(item["violations"] == [] for item in payload["queries"])
+    # #510 PR-5a: the console routes plan a filtered statement too, and it is EXPLAINed here rather
+    # than only the unfiltered first page.
+    assert {
+        "trading_console_cases_filtered",
+        "trading_console_signals_filtered",
+        "trading_console_observations_filtered",
+        "trading_console_commands_filtered",
+    } <= {item["name"] for item in payload["queries"]}
 
 
 def _vacuum_analyze(conn, table_name: str) -> None:

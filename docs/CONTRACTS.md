@@ -279,13 +279,12 @@ execution environment or a venue. There is no Trading model call and no
 Decision runtime is `DISABLED|STARTING|RUNNING|FAULTED`. A pure-policy LONG is
 committed as exactly one `TradeSignalV1` plus `Case=SIGNAL_EMITTED`; `NO_TRADE`
 creates no Signal. The Signal is venue-neutral and carries no execution
-authority. Legacy binding, Capital, capability, catalog, Intent, order, replay,
-and evidence-clock tables remain queryable only as immutable historical audit
-after `20260901_0341`; current execution writes only
-`trading_operator_intents`, append-only `trading_execution_observations`, the
-`0342` append-only notification delivery ledger, immutable profile activations,
-and the generation-fenced `0343` current Runtime projection, never those legacy
-owners. One delivery row per `(target, observation)` carries `delivered_at_ns`
+authority. The retired binding, Capital, capability, catalog, Intent, order,
+replay and evidence-clock tables were dropped by `20260901_0347`; execution
+writes only `trading_operator_intents`, append-only
+`trading_execution_observations`, the `0342` append-only notification delivery
+ledger, immutable profile activations, and the generation-fenced `0343` current
+Runtime projection. One delivery row per `(target, observation)` carries `delivered_at_ns`
 and, for a Signal card, `result_delivered_at_ns`: the second message that reports
 the 1 h/4 h outcome. `message_id` is present only on a channel that can address a
 sent message again; the deployed Feishu webhook cannot, so it is `NULL` there. The
@@ -948,12 +947,9 @@ factory-v7 receipt without rewriting or appending the `program_v7` epoch row.
 Accepted review labels remain immutable truth, while exact current-bundle
 eligibility makes prior-factory judgments audit-only and starts the factory-v7
 cohort at zero.
-`20260828_0316` then adds the #283 immutable `trading_intents` handoff and its
-least-privilege Workers, Serve, and Nautilus grants.
-`20260828_0317` performs the atomic authority cut: it refuses unresolved legacy
-Cases, nonterminal Intents, or active/unknown legacy Orders, admits
-`INTENT_EMITTED`, and revokes legacy execution mutations from Workers. It has no
-downgrade because restoring a second writer is not a safe rollback.
+`20260828_0316` and `20260828_0317` build the retired Capital/Intent execution
+owner and cut authority to it; neither has a downgrade, because restoring a
+second writer is not a safe rollback.
 `20260828_0318` is #306's prompt-layer hard cut: it appends the `program_v8`
 epoch for `factory_v8`, trips every armed or active canary, adds no column, and
 is irreversible. Two byte changes land under that one identity migration —
@@ -966,11 +962,9 @@ irreversible. The structured-output constraint now follows the endpoint —
 `json_schema` where supported, `json_object` with the same schema inlined into
 the system message where not — which moves fallback-route prompt bytes while
 leaving both seed texts unchanged.
-`20260828_0320` adds append-only execution-capability snapshots and replay
-receipts, the active capability/blacklist revisions, the distinct bootstrap
-account-zero proof, TradeIntentV2, and immutable News instrument-listing
-validity events used by source-time replay. It requires `PAUSED` with no
-nonterminal Intent, rejects every new V1 insert, and has no downgrade.
+`20260828_0320` adds the retired owner's capability, blacklist and replay
+ledgers together with the immutable News instrument-listing validity events used
+by source-time replay. It has no downgrade.
 `20260828_0321` is #314's computed-identity cut and the last epoch migration
 there will be: `news_learning_epochs` gains `bundle_sha` and `envelope_sha256`,
 `epoch_id` is tied to `left(bundle_sha, 8)` by CHECK, `program_factory_id`
@@ -987,8 +981,8 @@ refuses to advance if any existing delivery row has a partial lifecycle shape.
 A database on that retired chain must be restored with its exact pre-#449
 image/source, advanced to the old terminal head, and cut over before current
 source is used. A fresh database applies baseline `20260831_0340`, the
-`20260901_0341` Signal hard cut, and current head
-`20260902_0350`; `0342` adds the Trading notification delivery ledger,
+`20260901_0341` Signal hard cut, and every revision after it up to current head
+`20260903_0355`; `0342` adds the Trading notification delivery ledger,
 `0343` adds the current execution Runtime projection and recovery indexes, and
 destructive `0344` restates the `news_verdicts` judgment CHECK for the News
 open-interest push cut, dropping `news_oi_signals.rank_in_window` and every
@@ -1007,7 +1001,13 @@ current control projection. `0349` adds the bounded nullable Runtime-owned
 current account JSON projection without changing any append-only ledger.
 Additive `0350` pins the `pg_trgm` extension and admits the `title_similarity`
 retrieval reason into the `news_verdicts` told trace CHECK for the
-reader-history title-similarity band (#491). The exact
+reader-history title-similarity band (#491). `0351` and `0352` open the same
+CHECK to `news_semantic_program_v9` and `news_triage_policy_v12`. `0353`
+reorders `trading_execution_string_array_valid` by code point (`COLLATE "C"`);
+additive `0354` adds `trading_execution_runtime_state.routes` and its validator;
+and destructive `0355` drops the six dead `trading_cases` columns and narrows
+the Case state and admission status/stage CHECKs to the values a writer can
+reach, refusing to run while a stored row still holds a retired one. The exact
 News base-table set plus four security-barrier review views is asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
 perform no provider, broker, model, or outbound call and have no compatibility
@@ -1117,8 +1117,8 @@ Runtime facts, and status carries readiness plus bounded totals.
 - `GET /api/trading/gate` — the Source/Admission aggregate over a bounded
   24-hour window: the admission `config` its rows were filed under, then per
   Source the status, stage, named reason, retryability, version/config digest,
-  frozen evidence, timestamps, attempt count, `research_only`, and the linked
-  `case_id` when one exists. It publishes no Case state and no execution state.
+  frozen evidence, timestamps, attempt count, and the linked `case_id` when one
+  exists. It publishes no Case state and no execution state.
 - `GET /api/trading/gate/{event_id}` — one deterministic OI Source's admission
   answer, joined only by `oi:{event_id}:{metric_version}`. Joining by symbol and
   time would record a link the ledger does not have.
@@ -1142,7 +1142,7 @@ Runtime facts, and status carries readiness plus bounded totals.
 - service/config: `serve`, `workers`, `nautilus run`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
 - News: `news bus-check|control|instruments|review|learning|replay|why|dlq`;
-- Trading: `trading status|cases|signals|observations|commands|issue`;
+- Trading: `trading status|cases|signals|observations|commands|issue|demo-receipt|oi-corpus|oi-replay`;
 - maintenance: `ops validate-projections`.
 
 There is no `recent` or `search` command and no market rebuild/sync/reconcile
@@ -1560,40 +1560,30 @@ through Runtime risk/OMS without fabricating Signal/Case/Alpha facts; success sa
 read-only Demo closure verifier over durable native receipts. There is no blacklist,
 capability, replay, evidence, quantity, leverage, venue, or direct order command.
 
-### Historical pre-433-C Trading CLI and manifest (retired)
+Trading consumes one public News projection: the deterministic OI ledger joined
+to its source Item for `first_ingest_mode` only. Editorial News and liquidation
+do not cross this seam, and no News judgment, Program, policy or cohort identity
+is on the candidate. OI rows freeze `ingest_mode`, so Item retention cannot
+erase live/recovery provenance; a recovery row is not an eligible trigger.
 
-The following contract records deleted reader/control/replay surfaces and old
-manifest generations for audit only. It does not describe a current command or
-writer.
+`trading_manifest_v11` freezes one `primary_trigger`, point-in-time `contexts`,
+a venue-neutral `market_key`, and the policy id, version, exact typed
+configuration and config digest. The serialized manifest has one market fact at
+`contexts.market`; there is no alias named `market_context`. A pending Case
+reconstructs its policy from that frozen snapshot, so editing thresholds affects
+only later Cases. A Case frozen under an earlier manifest version is readable
+but cannot advance: it is terminalized `BLOCKED / manifest_invalid` on its next
+claim, and one naming a retired policy identity is `BLOCKED /
+policy_identity_retired`.
 
-Trading consumes `news_trade_projection_v10`: exact current
-`news_judgment_v2` OI rows plus the public instrument catalogue. Editorial News
-and liquidation do not cross this capital seam. OI rows freeze `ingest_mode`,
-so Item retention cannot erase live/recovery provenance; recovery rows are not
-eligible triggers.
-
-`trading_manifest_v9` freezes the learning epoch, OI Program v2 version and
-SHA, policy v11, judgment contract/origin/SHA, runtime-manifest SHA, and the OI
-verdict's own persistence stamp (#211),
-the single primary trigger, point-in-time contexts, and strategy ID, version,
-the exact typed configuration values and their digest (#213), and the public
-venue catalog digest used to resolve its instrument. The serialized
-manifest has one market fact at `contexts.market`; there is no serialized or
-accessor alias named `market_context`. A pending Case reconstructs its strategy from that frozen
-snapshot, so editing runtime thresholds affects only later Cases.
-Cases frozen under any earlier manifest version remain readable audit rows but
-cannot advance: an undecided case is terminalized as
-`BLOCKED/not_run/source_generation_retired`; an already emitted Intent is not
-rewritten and remains owned by Nautilus reconciliation.
-
-The HTTP shape uses `trigger_kind`, never the retired `case_kind`. Every Case
-and Intent projection carries `policy_id` and `policy_version` — the read model
-is where the storage columns `strategy_id` / `strategy_version` meet the
-product word, rather than a rename migration over 228 historical rows. The
-shadow strategy ledgers and their status projections are gone with their
-writers (#331, migration `20260829_0325`).
+The HTTP shape uses `trigger_kind`, never the retired `case_kind`. A Case
+projection carries `policy_id` and `policy_version` — the read model is where
+the storage columns `strategy_id` / `strategy_version` meet the product word,
+rather than a rename migration over historical rows.
 The typed liquidation ledger is not cascade-owned by `news_items`; raw Item
 retention cannot delete the normalized replay fact.
+[ADR 0002](adr/0002-trading-execution-owner-hard-cuts.md) records the retired
+reader, control and replay surfaces and the older manifest generations.
 
 The `ops` family is exactly `validate-projections`. It constructs only the
 dependencies required by the named domain operation and invokes that bounded

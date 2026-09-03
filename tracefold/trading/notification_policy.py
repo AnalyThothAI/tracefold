@@ -1,12 +1,9 @@
 """Which execution observation is worth an operator card, and how often — stated once.
 
-Three copies of this predicate drifted apart before #472: the SQL read, the partial index it rides,
-and the worker's renderer. The SQL asked `reconciliation` for a `state` key no observation has ever
-carried, and asked `readiness` for the control stage the Runtime writes only when it accepts
-`/flatten`, so those branches were unreachable for their whole life while the Runtime wrote
-`account_flat` and `lifecycle` instead. The vocabulary lives here now: the read carries it into SQL
-as parameters and the renderer gates on it, so a Runtime that renames a summary key fails a test
-instead of silently emptying the queue.
+The vocabulary lives here and nowhere else: the read carries it into SQL as parameters and the
+renderer gates on the same values, so a Runtime that renames a summary key fails a test instead of
+silently emptying the queue. A copy in the SQL, in its partial index and in the renderer drifts, and a
+drifted branch is unreachable without ever erroring.
 
 Frequency is part of the same statement. `reconciliation` arrives whenever the account's positions or
 orders change, plus once per requested reconciliation, and `readiness` once per Runtime start, so both
@@ -75,7 +72,7 @@ NOTIFICATION_POLICY: Mapping[ObservationKind, KindNotification] = {
         ),
         coalesced=True,
     ),
-    # Since #510 a steady reconciliation that changed nothing appends no observation at all, so what
+    # A steady reconciliation that changed nothing appends no observation at all, so what
     # reaches here is a change; exposure is the change worth a card.
     "reconciliation": KindNotification(
         matches=(SummaryMatch("account_flat", ("false",)),),

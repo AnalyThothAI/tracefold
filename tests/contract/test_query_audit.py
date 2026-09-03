@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -13,6 +14,7 @@ from tracefold.platform.postgres.audit import (
     ReadQuerySpec,
     postgres_query_specs,
 )
+from tracefold.trading.storage.root import TradingRepository
 
 _NEWS_QUERY_NAMES = (
     "news_feed_events",
@@ -121,9 +123,20 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_status_delivery_1h",
         "news_status_learning_retention",
     )
-    assert catalog.query_routes["/api/trading/signals"] == ("trading_console_signals",)
-    assert catalog.query_routes["/api/trading/execution/observations"] == ("trading_console_observations",)
-    assert catalog.query_routes["/api/trading/execution/commands"] == ("trading_console_commands",)
+    # #510 PR-5a: each console read is certified twice, unfiltered and filtered, because the route
+    # plans both and the audit must not certify a statement the route does not execute.
+    assert catalog.query_routes["/api/trading/signals"] == (
+        "trading_console_signals",
+        "trading_console_signals_filtered",
+    )
+    assert catalog.query_routes["/api/trading/execution/observations"] == (
+        "trading_console_observations",
+        "trading_console_observations_filtered",
+    )
+    assert catalog.query_routes["/api/trading/execution/commands"] == (
+        "trading_console_commands",
+        "trading_console_commands_filtered",
+    )
     assert not any(
         route.startswith(("/api/news/stories", "/api/news/brief", "/api/news/sources"))
         for route in catalog.query_routes
@@ -181,6 +194,77 @@ def test_app_catalog_rejects_unapproved_aggregate_input_queries():
 
     with pytest.raises(ValueError, match="only bounded aggregate reads"):
         query_audit_catalog(now_ms=0, news_query_specs=news_specs)
+
+
+def test_trading_console_audit_explains_the_statements_the_routes_execute():
+    """#510 PR-5a: the audited console SQL is the repository's own, byte for byte.
+
+    The audit used to register a second copy of each console statement, without the optional
+    predicates the route adds. Editing one and not the other left the plan audit passing on SQL nobody
+    runs. Driving `TradingRepository` against a recording connection is what makes that unrepeatable.
+    """
+
+    now_ms = 123_456
+    since_ms = now_ms - 24 * 3_600_000
+    since_ns = since_ms * 1_000_000
+    queries = {query.name: query for query in query_audit_catalog(now_ms=now_ms).queries}
+    conn = RecordingStatementConn()
+    repository = TradingRepository(conn)
+
+    repository.console_cases(since_ms=since_ms, underlying_key=None, states=(), before=None, limit=101)
+    repository.console_cases(
+        since_ms=since_ms,
+        underlying_key="crypto:BTC",
+        states=("SIGNAL_EMITTED", "NO_TRADE"),
+        before=(since_ms + 1, "z" * 32),
+        limit=101,
+    )
+    repository.console_signals(since_ns=since_ns, market_key=None, before=None, limit=101)
+    repository.console_signals(
+        since_ns=since_ns,
+        market_key="crypto:perp:BTC:USDT",
+        before=(since_ns + 1, "z" * 64),
+        limit=101,
+    )
+    repository.console_execution_observations(
+        since_ns=since_ns, runtime_profile_id=None, normalized_kind=None, before=None, limit=101
+    )
+    repository.console_execution_observations(
+        since_ns=since_ns,
+        runtime_profile_id="query-audit-disabled",
+        normalized_kind="signal_disposition",
+        before=(since_ns + 1, "z" * 64),
+        limit=101,
+    )
+    repository.console_operator_intents(since_ns=since_ns, runtime_profile_id=None, action=None, before=None, limit=101)
+    repository.console_operator_intents(
+        since_ns=since_ns,
+        runtime_profile_id="query-audit-disabled",
+        action="flatten",
+        before=(since_ns + 1, "z" * 64),
+        limit=101,
+    )
+
+    executed = conn.statements
+    audited = [
+        (queries[name].sql, queries[name].params)
+        for name in (
+            "trading_console_cases",
+            "trading_console_cases_filtered",
+            "trading_console_signals",
+            "trading_console_signals_filtered",
+            "trading_console_observations",
+            "trading_console_observations_filtered",
+            "trading_console_commands",
+            "trading_console_commands_filtered",
+        )
+    ]
+    assert executed == audited
+    # The filtered half really is a different statement, or registering it twice proves nothing.
+    assert audited[0][0] != audited[1][0]
+    assert "underlying_key = %(underlying)s" in audited[1][0]
+    assert "state = ANY(%(states)s)" in audited[1][0]
+    assert "(created_at_ms, case_id) < (%(before_ms)s, %(before_id)s)" in audited[1][0]
 
 
 def test_query_audit_covers_every_public_openapi_route():
@@ -359,6 +443,20 @@ def test_each_query_owns_its_amplification_budget():
 def test_catalog_rejects_a_query_without_its_own_amplification_budget():
     with pytest.raises(ValueError, match="amplification budget missing: unbudgeted"):
         _single_query_catalog(ReadQuerySpec(name="unbudgeted", sql="SELECT 1"))
+
+
+class RecordingStatementConn:
+    """Captures the exact SQL and bound parameters a repository method executes."""
+
+    def __init__(self) -> None:
+        self.statements: list[tuple[str, Any]] = []
+
+    def execute(self, sql, params=None):
+        self.statements.append((sql, params))
+        return self
+
+    def fetchall(self):
+        return []
 
 
 class RecordingJsonPlanConn:

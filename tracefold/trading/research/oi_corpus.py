@@ -1,4 +1,4 @@
-"""#459 Stage A corpus format: how a sealed open-interest window is written, read back and proven.
+"""Sealed open-interest corpus format: how a window is written, read back and proven.
 
 Binance keeps `/futures/data/openInterestHist` for 30 days only, so a corpus of that window can never
 be re-pulled: whatever is on disk is the only copy there will ever be of the data an issue was closed

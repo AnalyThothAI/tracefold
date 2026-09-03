@@ -9,18 +9,17 @@ from tracefold.platform.postgres.audit import (
     ReadQuerySpec,
     postgres_query_specs,
 )
-from tracefold.trading.storage.execution_stream_query_specs import execution_stream_query_specs
-from tracefold.trading.storage.query_sql import (
-    GATE_DECISION_FOR_SOURCE_KEY_SQL,
+from tracefold.trading.storage.execution_stream import execution_stream_query_specs
+from tracefold.trading.storage.gate import GATE_DECISION_FOR_SOURCE_KEY_SQL, gate_decisions_since_sql
+from tracefold.trading.storage.queries import (
     TRADING_CASE_COUNTS_SQL,
     TRADING_CASE_REASON_COUNTS_SQL,
-    TRADING_CONSOLE_CASES_SQL,
-    TRADING_CONSOLE_COMMANDS_SQL,
-    TRADING_CONSOLE_OBSERVATIONS_SQL,
-    TRADING_CONSOLE_SIGNALS_SQL,
     TRADING_STATUS_CASE_COUNTS_SQL,
     TRADING_STATUS_SIGNAL_COUNTS_SQL,
-    gate_decisions_since_sql,
+    console_cases_statement,
+    console_execution_observations_statement,
+    console_operator_intents_statement,
+    console_signals_statement,
 )
 
 from .workers.runtime import workers_runtime_read_query
@@ -68,14 +67,24 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_status_learning_retention",
     ),
     "/api/trading/status": ("trading_status_case_counts", "trading_status_signal_counts"),
+    # Each console read is registered twice, because the route plans two statements: the first page
+    # with no filter, and the filtered page a reader gets once they narrow or scroll. Certifying only
+    # one of them certifies a plan the route does not always execute.
     "/api/trading/cases": (
         "trading_console_cases",
+        "trading_console_cases_filtered",
         "trading_case_counts",
         "trading_case_reason_counts",
     ),
-    "/api/trading/signals": ("trading_console_signals",),
-    "/api/trading/execution/observations": ("trading_console_observations",),
-    "/api/trading/execution/commands": ("trading_console_commands",),
+    "/api/trading/signals": ("trading_console_signals", "trading_console_signals_filtered"),
+    "/api/trading/execution/observations": (
+        "trading_console_observations",
+        "trading_console_observations_filtered",
+    ),
+    "/api/trading/execution/commands": (
+        "trading_console_commands",
+        "trading_console_commands_filtered",
+    ),
     "/api/trading/gate/{event_id}": ("trading_gate_decision_for_source_key",),
     # #269. The same admission ledger the event endpoint reads one row of, for a whole window — bounded
     # by 24 h and a hard row limit, like the two beside it.
@@ -153,9 +162,15 @@ def _default_news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
 
 
 def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
-    """The bounded Signal console reads with their production predicates."""
+    """The bounded Signal console reads, built by the production statement builders.
+
+    Every console spec below calls the same builder `QueryStorage` runs, once with no optional
+    predicate and once with all of them, so both plans the route can execute are certified and neither
+    can drift away from an audited copy.
+    """
 
     since_ms = int(now_ms) - 24 * 3_600_000
+    since_ns = since_ms * 1_000_000
     return (
         ReadQuerySpec(
             name="trading_status_case_counts",
@@ -192,11 +207,16 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             params=("oi", since_ms, 401),
             max_read_return_amplification=20.0,
         ),
-        ReadQuerySpec(
+        *_console_specs(
             name="trading_console_cases",
-            sql=TRADING_CONSOLE_CASES_SQL,
-            params={"since": since_ms, "limit": 101},
-            max_read_return_amplification=20.0,
+            unfiltered=console_cases_statement(since_ms=since_ms, limit=101),
+            filtered=console_cases_statement(
+                since_ms=since_ms,
+                underlying_key="crypto:BTC",
+                states=("SIGNAL_EMITTED", "NO_TRADE"),
+                before=(since_ms + 1, "z" * 32),
+                limit=101,
+            ),
         ),
         ReadQuerySpec(
             name="trading_case_counts",
@@ -210,24 +230,52 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             params=(since_ms,),
             max_read_return_amplification=20.0,
         ),
-        ReadQuerySpec(
+        *_console_specs(
             name="trading_console_signals",
-            sql=TRADING_CONSOLE_SIGNALS_SQL,
-            params={"since": since_ms * 1_000_000, "limit": 101},
-            max_read_return_amplification=20.0,
+            unfiltered=console_signals_statement(since_ns=since_ns, limit=101),
+            filtered=console_signals_statement(
+                since_ns=since_ns,
+                market_key="crypto:perp:BTC:USDT",
+                before=(since_ns + 1, "z" * 64),
+                limit=101,
+            ),
         ),
-        ReadQuerySpec(
+        *_console_specs(
             name="trading_console_observations",
-            sql=TRADING_CONSOLE_OBSERVATIONS_SQL,
-            params={"since": since_ms * 1_000_000, "limit": 101},
-            max_read_return_amplification=20.0,
+            unfiltered=console_execution_observations_statement(since_ns=since_ns, limit=101),
+            filtered=console_execution_observations_statement(
+                since_ns=since_ns,
+                runtime_profile_id="query-audit-disabled",
+                normalized_kind="signal_disposition",
+                before=(since_ns + 1, "z" * 64),
+                limit=101,
+            ),
         ),
-        ReadQuerySpec(
+        *_console_specs(
             name="trading_console_commands",
-            sql=TRADING_CONSOLE_COMMANDS_SQL,
-            params={"since": since_ms * 1_000_000, "limit": 101},
-            max_read_return_amplification=20.0,
+            unfiltered=console_operator_intents_statement(since_ns=since_ns, limit=101),
+            filtered=console_operator_intents_statement(
+                since_ns=since_ns,
+                runtime_profile_id="query-audit-disabled",
+                action="flatten",
+                before=(since_ns + 1, "z" * 64),
+                limit=101,
+            ),
         ),
+    )
+
+
+def _console_specs(
+    *,
+    name: str,
+    unfiltered: tuple[str, dict[str, object]],
+    filtered: tuple[str, dict[str, object]],
+) -> tuple[ReadQuerySpec, ...]:
+    """One console read's two plans: the first page, and the narrowed page after it."""
+
+    return tuple(
+        ReadQuerySpec(name=spec_name, sql=sql, params=params, max_read_return_amplification=20.0)
+        for spec_name, (sql, params) in ((name, unfiltered), (f"{name}_filtered", filtered))
     )
 
 

@@ -23,12 +23,8 @@ SIGNAL_PATH = (
     "trading/telemetry.py",
     "trading/storage/root.py",
     "trading/storage/lane.py",
-    "trading/storage/cases.py",
-    "trading/storage/catalog.py",
     "trading/storage/gate.py",
     "trading/storage/queries.py",
-    "trading/storage/query_sql.py",
-    "trading/storage/sql_values.py",
     "app/workers/wiring/trading.py",
     "app/workers/wiring/news_to_trading.py",
     "app/trading_config.py",
@@ -46,8 +42,6 @@ EXECUTION_PATH = {
     "trading/notification_policy.py",
     "trading/operator_control.py",
     "trading/storage/execution_stream.py",
-    "trading/storage/execution_stream_query_specs.py",
-    "trading/storage/execution_stream_sql.py",
 }
 BANNED_FRAMEWORKS = {"autogen", "crewai", "deepagents", "dspy", "langchain", "langgraph", "langsmith"}
 BANNED_CAPABILITIES = {"boto3", "httpx", "os", "pathlib", "requests", "shutil", "socket", "subprocess"}

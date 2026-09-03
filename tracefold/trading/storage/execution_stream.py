@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
-from typing import Any, Literal
+from typing import Any, Final, Literal
 from uuid import UUID
 
+from tracefold.platform.postgres.audit import ReadQuerySpec
 from tracefold.platform.postgres.client import require_transaction
 
+from ..contracts import EXECUTION_STRATEGY_ID
 from ..execution_contracts import MARKET_KEY_PATTERN, ExecutionObservationV1, OperatorIntentV1, TradeSignalV1
-from .execution_stream_sql import UNRESOLVED_OPERATOR_INTENTS_SQL, UNRESOLVED_TRADE_SIGNALS_SQL
-from .sql_values import _dumps
 
 EXECUTION_STREAM_NOTIFY_CHANNEL = "tracefold_trading_execution_stream"
 MAX_EXECUTION_READ_BATCH = 1_000
@@ -26,6 +27,73 @@ MAX_EXECUTION_ROUTES = 1_024
 _OBSERVATION_BATCH_SAVEPOINT = "tracefold_execution_observation_batch"
 
 type StoredExecutionPayload = tuple[int, dict[str, Any]]
+
+
+# The one canonical jsonb encoder for this package: sorted keys and no whitespace drift, so a payload
+# and its digest cannot disagree. `lane` and `gate` import it from here.
+def _dumps(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+# The two reads the Runtime bridge runs every cycle: everything this profile was activated for that has
+# no disposition observation yet. Anti-joined rather than flagged, because a mutable "consumed" column
+# on an append-only ledger would be a second truth about the same fact.
+UNRESOLVED_TRADE_SIGNALS_SQL: Final = """
+    SELECT signal.seq, signal.payload
+      FROM trading_execution_profile_activations activation
+      JOIN trading_trade_signals signal
+        ON signal.seq > activation.activated_after_signal_seq
+      LEFT JOIN trading_execution_observations disposition
+        ON disposition.runtime_profile_id = activation.runtime_profile_id
+       AND disposition.execution_strategy = %s
+       AND disposition.signal_id = signal.signal_id
+       AND disposition.normalized_kind = 'signal_disposition'
+     WHERE activation.runtime_profile_id = %s
+       AND disposition.event_id IS NULL
+     ORDER BY signal.seq
+     LIMIT %s
+"""
+
+UNRESOLVED_OPERATOR_INTENTS_SQL: Final = """
+    SELECT command.seq, command.payload
+      FROM trading_execution_profile_activations activation
+      JOIN trading_operator_intents command
+        ON command.target_profile_id = activation.runtime_profile_id
+       AND command.seq > activation.activated_after_command_seq
+      LEFT JOIN trading_execution_observations disposition
+        ON disposition.runtime_profile_id = activation.runtime_profile_id
+       AND disposition.execution_strategy = %s
+       AND disposition.command_id = command.command_id
+       AND disposition.normalized_kind = 'control_disposition'
+     WHERE activation.runtime_profile_id = %s
+       AND disposition.event_id IS NULL
+     ORDER BY command.seq
+     LIMIT %s
+"""
+
+
+def execution_stream_query_specs(
+    *,
+    runtime_profile_id: str = "query-audit-disabled",
+    execution_strategy: str = EXECUTION_STRATEGY_ID,
+) -> tuple[ReadQuerySpec, ...]:
+    """The two bridge reads, bound, for the query-plan audit."""
+
+    params = (execution_strategy, runtime_profile_id, 100)
+    return (
+        ReadQuerySpec(
+            name="trading_unresolved_trade_signals",
+            sql=UNRESOLVED_TRADE_SIGNALS_SQL,
+            params=params,
+            max_read_return_amplification=20.0,
+        ),
+        ReadQuerySpec(
+            name="trading_unresolved_operator_intents",
+            sql=UNRESOLVED_OPERATOR_INTENTS_SQL,
+            params=params,
+            max_read_return_amplification=20.0,
+        ),
+    )
 
 
 def _postgres_text_valid(value: str) -> bool:
@@ -233,7 +301,7 @@ class ExecutionRuntimeState:
     # Every `market_key` this Runtime generation can actually reach, sorted by code point and unique,
     # as the Runtime discovered it at start. Fixed for the life of one `runtime_id`, like the release
     # and the config digest beside it, so only the insert writes it. Empty means no catalogue is
-    # published and the Signal lane admits markets exactly as it did before #510 PR-2.
+    # published and no catalogue is published and the Signal lane applies no routability rule.
     routes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -1265,6 +1333,8 @@ __all__ = [
     "MAX_EXECUTION_READ_BATCH",
     "MAX_OBSERVATION_APPEND_BATCH",
     "MAX_OBSERVATION_APPEND_BYTES",
+    "UNRESOLVED_OPERATOR_INTENTS_SQL",
+    "UNRESOLVED_TRADE_SIGNALS_SQL",
     "ExecutionAccountOrder",
     "ExecutionAccountPosition",
     "ExecutionAccountSnapshot",
@@ -1275,6 +1345,7 @@ __all__ = [
     "PreparedOperatorIntent",
     "PreparedTradeSignal",
     "StoredExecutionPayload",
+    "execution_stream_query_specs",
     "materialize_execution_observation",
     "materialize_operator_intent",
     "materialize_operator_intents",

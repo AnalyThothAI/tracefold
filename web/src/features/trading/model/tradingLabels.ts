@@ -1,38 +1,24 @@
-/**
- * The three answers a Case may end in, plus the two historical states that stay readable (#331).
- *
- * `POLICY_REJECTED` and `ORDER_PREPARED` have no writer any more, and their Chinese says so rather than
- * pretending they are current vocabulary: a reader who meets one is looking at a row this lane can no
- * longer produce.
- */
+/** The whole `trading_cases.state` vocabulary: two while a Case is claimed, three terminal. */
 export const CASE_STATE_ZH: Record<string, string> = {
+  PENDING: "待决",
+  RUNNING: "判定中",
   BLOCKED: "无法安全判定",
   NO_TRADE: "不交易",
   SIGNAL_EMITTED: "已发出 Signal",
-  PENDING: "待决",
-  RUNNING: "判定中",
-  POLICY_REJECTED: "历史 · 地板拒绝",
-  ORDER_PREPARED: "历史 · 已备单",
-  INTENT_EMITTED: "历史 · 已形成意图",
 };
 
 /**
- * Why a Case that ran could not reach a decision, keyed exactly as the writer stores it (#331).
+ * Why a Case that ran could not reach a decision, keyed exactly as the writer stores it.
  *
  * Every one of these is a *system* fact, never an opinion about the trade: an opinion ends in `NO_TRADE`
- * with its frozen checks attached. `intent_admission_blocked` — the catch-all that covered a PostgreSQL
- * timeout and a genuine capability change alike — is deliberately absent, because nothing writes it.
+ * with its frozen checks attached. A catch-all covering a PostgreSQL timeout and a real refusal alike is
+ * deliberately absent — a blocked Case must name which of the four it is.
  */
 export const BLOCKED_REASON_ZH: Record<string, string> = {
-  blacklisted: "标的在拒绝名单",
-  capability_absent: "当前能力快照没有这个标的",
-  capability_mismatch: "能力指针已改变，冻结的合约不再权威",
-  capacity_exhausted: "通道额度已满",
   case_stale: "案例超过判定时限",
   manifest_invalid: "冻结清单无法解析",
   policy_identity_retired: "该案例的策略身份已退役",
-  quantity_unexecutable: "按场所步长无可提交数量",
-  source_generation_retired: "来源世代已被替换",
+  source_stale: "来源事实已过时",
 };
 
 /** The pure policy's own rule names. A rule with no entry renders as itself; it is what an operator greps. */
@@ -77,9 +63,8 @@ export function policyLabel(policyId: string): string {
  * here renders as itself — a missing translation is a gap in this table, not a reason to hide a refusal.
  */
 export const GATE_REASON_ZH: Record<string, string> = {
-  "capability:capability_absent": "当前能力快照没有这个标的",
   "eligibility:already_consumed": "同一来源已成案",
-  // #510 PR-2: no configured Runtime lists this market, so a Case would only ever be refused later.
+  // No configured Runtime lists this market, so a Case would only ever be refused later.
   "eligibility:instrument_unmapped": "运行时目录里没有这个市场",
   "eligibility:blacklisted": "标的在拒绝名单",
   "eligibility:lane_capacity_exhausted": "本轮成案预算已满",
@@ -99,15 +84,8 @@ export const GATE_REASON_ZH: Record<string, string> = {
   "market_context:market_data_invalid": "截面无可用收盘价",
   "market_context:market_data_unavailable": "行情暂不可读",
   "source:source_contract_invalid": "来源契约不成立",
-  "source:source_generation_mismatch": "来源属于已退役世代",
   "source:source_not_live": "非 live 摄入",
-  // #331: a real market fact from a venue this lane may study and never trade.
-  "venue:research_only_venue": "仅研究场所 · 无资本权限",
   "venue:venue_unresolved": "场所标记无法识别",
-  // Written before #331 and still in the table.
-  "routing:no_native_perp": "该场所无原生永续",
-  "routing:unsupported_venue": "场所未启用",
-  "routing:venue_unresolved": "场所标记无法识别",
 };
 
 /** The four answers an admission decision can hold. `DEFERRED` is the only open one. */

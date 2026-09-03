@@ -19,9 +19,8 @@ one:
     Decision      the one terminal business answer about a Case: NO_TRADE, BLOCKED, SIGNAL_EMITTED.
     Signal        the immutable, engine-neutral Alpha conclusion handed to a Runtime.
 
-`POLICY_REJECTED`, `INTENT_EMITTED`, and `ORDER_PREPARED` survive here for one reason only: historical
-rows must stay readable. `CURRENT_TERMINAL_STATES` is what the writer may reach, and `settle_case`
-refuses anything outside it.
+`CaseState` is the whole closed vocabulary, and `trading_cases_state_check` admits exactly it.
+`CURRENT_TERMINAL_STATES` is the subset a decision may land on, and `settle_case` refuses anything else.
 """
 
 from __future__ import annotations
@@ -37,18 +36,13 @@ from typing import Any, Final, Literal, TypedDict
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Bumped whenever the manifest layout or pure policy changes shape: a Case frozen under one version is
-# not comparable with a Case frozen under another. v10 was #433-C's engine-neutral hard cut. v11 is
-# #510 PR-4: the frozen Source is the provider's measured fact and its own two clocks, with none of
-# News's judgment, epoch, Program or policy identity on it. A pending v10 Case cannot validate against
-# this layout and is `BLOCKED / manifest_invalid` on its next claim, which is what the five-minute Case
-# decision TTL already does to anything older than one deploy.
+# not comparable with a Case frozen under another. A pending Case from an earlier version cannot
+# validate against this layout and is `BLOCKED / manifest_invalid` on its next claim.
 TRADING_MANIFEST_VERSION: Final = "trading_manifest_v11"
-# The `execution_strategy` every execution-stream row is keyed on. It lived as three separate literals
-# until #460 — the runtime's own `oi_nautilus_v1`, and `oi-nautilus-v1` in both the query-plan audit and
-# the restore drill. The hyphenated spelling matches no row: production holds 782 observations under
-# `oi_nautilus_v1` and none under the other, so the audit was measuring the plan for a predicate that
-# selects nothing. It lives in Trading rather than beside the runtime because the ledger column is
-# Trading's, and `tracefold.trading.storage` cannot import from `tracefold.app`.
+# The `execution_strategy` every execution-stream row is keyed on, spelled once: a second spelling
+# elsewhere is a predicate that selects nothing, silently. It lives in Trading rather than beside the
+# runtime because the ledger column is Trading's, and `tracefold.trading.storage` cannot import from
+# `tracefold.app`.
 EXECUTION_STRATEGY_ID: Final = "oi_nautilus_v1"
 # Code-owned persistence timing shared by the Signal lane.
 TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
@@ -64,11 +58,9 @@ class DecisionRuntimeV1:
     updated_at_ms: int
 
 
-# No News identity of any kind (#510). Trading used to pin `program_version`, `policy_version`,
-# `judgment_contract_version` and the learning epoch, which meant a News policy bump — v11 to v12 in
-# #504 — could only ship by editing this file. None of the four ever decided anything a Trading rule
-# reads: the measurements, the two clocks and the venue are the fact, and every admission rule is about
-# those. What upstream calls its judge is upstream's business.
+# No News identity of any kind: the measurements, the two clocks and the venue are the fact, and every
+# admission rule is about those. Pinning an upstream version here would make an upstream bump a Trading
+# edit; what upstream calls its judge is upstream's business.
 
 # ---------------------------------------------------------------------------- upstream input rows
 # What the composition root must hand this context to produce candidates. Trading owns these because
@@ -132,19 +124,11 @@ class CaseState(StrEnum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
     NO_TRADE = "NO_TRADE"
-    INTENT_EMITTED = "INTENT_EMITTED"
     SIGNAL_EMITTED = "SIGNAL_EMITTED"
     BLOCKED = "BLOCKED"
-    # Read-only history. `POLICY_REJECTED` was the old writer's word for both "the policy said no" and
-    # "the lane could not decide"; `ORDER_PREPARED` belonged to the retired Paper/OpenTrade writer.
-    # Production holds a few hundred rows in the first and two in the second, so both stay readable —
-    # and neither is reachable from `CURRENT_TERMINAL_STATES`.
-    POLICY_REJECTED = "POLICY_REJECTED"
-    ORDER_PREPARED = "ORDER_PREPARED"
 
 
-# The current writer reaches only the three states below. Historical states remain readable but have
-# no writer path.
+# A claim moves a Case through `PENDING` and `RUNNING`; only these three are terminal.
 CURRENT_TERMINAL_STATES: Final[frozenset[CaseState]] = frozenset(
     {CaseState.NO_TRADE, CaseState.SIGNAL_EMITTED, CaseState.BLOCKED}
 )
@@ -172,9 +156,8 @@ def canonical_base_symbol(value: object) -> str:
 def underlying_key(base_symbol: object) -> str:
     """Venue-independent identity. One issuer, one bucket, on whichever book it is listed.
 
-    The single owner of the construction (#331 §3). It was being hand-assembled as `'crypto:' || x` in
-    the capability builder, in SQL and on the candidate at once, so the three could drift apart one
-    canonicalisation rule at a time.
+    The single owner of the construction: nothing else assembles a `crypto:` key, or the copies drift
+    apart one canonicalisation rule at a time.
     """
 
     canonical = canonical_base_symbol(base_symbol)
@@ -273,11 +256,9 @@ class AlphaDecision(_Frozen):
     invalidation: str
     checks: tuple[PolicyCheck, ...]
     policy_id: str
-    # Required, and always the deciding policy's own version. It defaulted to a separate
-    # `trading_capital_policy_v2` constant, so one legacy Case row carried two conflicting identities in
-    # `strategy_version` and something else in `policy_checks.policy_version` — two names for one
-    # version in one row, on the surface whose whole job is being readable against the exact identity
-    # that decided it.
+    # Required, and always the deciding policy's own version — never a separate default, or one row
+    # carries two identities on the surface whose whole job is being readable against the identity that
+    # decided it.
     policy_version: str
 
     def evidence(self) -> dict[str, Any]:
@@ -300,8 +281,8 @@ class OiMarketTrigger(_Frozen):
     kind: Literal["oi"] = "oi"
     source_key: str
     observed_at_ms: int
-    # The source's own `available_at_ms`. It used to be the triage verdict's insert stamp, which made a
-    # Case's second clock a property of the editorial pipeline rather than of the fact (#510).
+    # The source's own `available_at_ms`, never a downstream pipeline's insert stamp: the Case's second
+    # clock is a property of the fact.
     persisted_at_ms: int
     venue: str
 

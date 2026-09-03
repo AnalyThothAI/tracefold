@@ -3,13 +3,10 @@ import type { TradingCase, TradingCases, TradingPolicyCheck } from "../api/tradi
 import { CASE_STATE_ZH, bpsPercent, policyReasonLabel } from "./tradingLabels";
 
 /**
- * The Case/Decision surface's whole model (#331).
+ * The Case/Decision surface's whole model.
  *
- * It is small because it derives nothing. The 988-line module this replaces rebuilt Capital in
- * the browser: it re-ran threshold comparisons against `/api/trading/status`, inferred a phase from an
- * Intent's execution state, and printed 冲突 on rows whose Case had passed — because it was measuring a
- * Case frozen last week with a floor edited yesterday. Every threshold is now frozen onto the Case, so
- * the page's job is to render what the server already decided.
+ * It derives nothing. Every threshold is frozen onto the Case, so the page renders what the server
+ * already decided: a Case frozen last week must not be re-measured against a floor edited yesterday.
  */
 export type CaseTab = "all" | "emitted" | "no_trade" | "blocked";
 
@@ -17,7 +14,7 @@ export const CASE_TABS: Record<CaseTab, { label: string; states: readonly string
   all: { label: "全部", states: [] },
   emitted: { label: "已发出 Signal", states: ["SIGNAL_EMITTED"] },
   no_trade: { label: "不交易", states: ["NO_TRADE"] },
-  blocked: { label: "无法判定", states: ["BLOCKED", "POLICY_REJECTED", "ORDER_PREPARED"] },
+  blocked: { label: "无法判定", states: ["BLOCKED"] },
 };
 
 const TAB_KEYS = Object.keys(CASE_TABS) as CaseTab[];

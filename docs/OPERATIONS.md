@@ -57,10 +57,10 @@ existing-exposure safety. Serve and Workers never receive Binance secrets.
 The active Runtime has two deliberately different reconciliation roles. The
 App root owns complete Binance private-account proof: positions, regular orders,
 and Algo orders must all load and project successfully before startup or a
-fresh `account_flat=true` fact exists. It refreshes that proof every five
-seconds—half the ten-second risk staleness budget—and wakes it immediately for
-unknown submit/query outcomes, protection ambiguity, unexpected exposure, and
-pending flatten. Nautilus owns native in-flight, missing-open-order, and
+fresh `account_flat=true` fact exists. It refreshes that proof every
+`trading.execution.risk.reconciliation_interval_seconds` and wakes it
+immediately for unknown submit/query outcomes, protection ambiguity, unexpected
+exposure, and pending flatten. Nautilus owns native in-flight, missing-open-order, and
 position consistency mechanics at their pinned 2/5/5-second checks; its
 duplicate startup reconciliation is disabled. Any complete-report or Cache
 projection error terminates the generation without refreshing the old fact.
@@ -69,13 +69,21 @@ All Nautilus 1.231 Binance private calls used by that proof are pinned behind
 No App reconciliation or Strategy lifecycle module may call a private adapter
 member directly.
 
-One persistent autocommit PostgreSQL session owns the Runtime current
-projection; it never holds a transaction across Binance I/O. Semantic changes
-write on the next Runtime wake and the unchanged generation heartbeats every
-500 ms, before the public five-second stale threshold. These cadences are
-code-owned safety budgets, not operator tuning. Current all-route quote
-subscription remains unchanged until active Demo measurement can establish its
-inbound rate, event-loop lag, and adapter cost.
+The Runtime process holds two PostgreSQL connections. The singleton session
+holds the account-slot advisory lock; from the moment the bridge starts, its
+thread is the only PostgreSQL caller the process has, and it never holds a
+transaction across Binance I/O. Its session carries a five-second
+`statement_timeout`, because reading operator Commands on it is how a flatten
+reaches the Runtime. Semantic changes are written on the next bridge cycle and
+the unchanged generation heartbeats every 500 ms, before the public five-second
+stale threshold; those two cadences are code-owned safety budgets, not operator
+tuning.
+
+Quote streams are opened per admitted entry rather than for the whole route
+catalogue, so an operator reading Nautilus logs should expect one market-data
+stream per live thesis and none at rest. The nine risk numbers under
+`trading.execution.risk` are operator-owned and inside the profile
+`config_sha256`: editing one requires a new profile id and a fresh activation.
 
 For the first Demo activation, confirm the Binance account is authoritatively
 flat, populate the configured Binance files as regular mode-`0600` files,
@@ -205,240 +213,23 @@ composition is invalid, Workers must fail startup/readiness or record Decision
 `FAULTED`. Do not classify an arbitrary exception as legal no-key observer
 mode.
 
-#### Historical Production V3 evidence clock (#377, retired)
-
-This subsection records the pre-433-C Capital/Intent evidence protocol. Its
-CLI modules and active writers are deleted; migration `0341` makes the retained
-tables immutable. Do not execute these commands on current source.
-
-Keep Capital `PAUSED` while building discovery and future-holdout evidence.
-Use one content-addressed artifact root and record every returned full digest
-and receipt; never edit an artifact in place or reuse a future window after a
-protocol change. The operator sequence is:
-
-```text
-trading evidence capture --partition discovery ...
-trading evidence drain --capture ... --max-horizon-ms ... --finalization-lag-ms ... --cost-model ...
-trading evidence corpus-seal --capture ... --drain ...
-trading evidence candidate-register --file ...
-trading evidence capture --partition future ... --candidate ... --candidate-receipt ...  # repeat each locked interval
-trading evidence drain --capture ... --candidate ... --candidate-receipt ...
-trading evidence future-unblind --capture ... --drain ... --candidate ... --candidate-receipt ...
-```
-
-Capture and drain are not one command: the first cannot see outcome bars or
-funding. Future capture is periodic, not one post-window query. Run it at every
-candidate-locked `capture_interval_ms`. Each call appends only the next contiguous
-batch and reports blind collection health: collector/Workers generation, expected and
-missing source mass, `capture_lag_ms`, late/catalog counts, bar/funding continuity, and
-artifact integrity. PostgreSQL rejects a gap, overlap, wrong binding, late call
-beyond `maximum_capture_lag_ms`, or changed candidate. The last batch seals the one
-`FUTURE_CAPTURE_SEALED` only after PostgreSQL recomputes the full interval chain,
-health digest, and canonical incident set; later source-population variants cannot replace it. A missed
-deadline fails closed and requires a new preregistered future protocol, not a backfill.
-The second refuses all future provider I/O before the locked drain cutoff or under a
-different candidate receipt/cost/horizon. The first successful future drain
-transaction appends `FUTURE_DRAIN_SEALED`; a second drain cannot replace it, and
-unblind accepts only its exact capture and drain artifacts. During the blind period inspect collection
-health only: batch continuity, schedule lag, raw source counts, late availability,
-catalog coverage, and provider availability. Do not calculate candidate PnL, cohort profitability, hurdle
-distance, or extend/stop the window based on results. Provider outage,
-source-wide missingness, catalog reset/delist, correction, missing bars or
-funding, protection drift, and clock violations use the locked incident map;
-they are never adjudicated after unblind.
-
-All public evidence transitions use PostgreSQL `clock_timestamp`; the caller's wall
-clock is not preregistration evidence. Candidate registration re-runs the code-owned
-finite selector over the sealed corpus and refuses a hand-authored terminal or eligible
-population. The News handoff fields are the source Item/venue/availability/learning
-epoch frozen when the OI ledger row was inserted, not reconstructed from current Event
-or deployment state.
-
-Before any human grant review, run `trading evidence verify --receipt SHA` on
-the exact `PROMOTE` result. Promotion then follows #376's separate immutable
-risk-policy -> grant -> arm path and still requires the explicit bounded
-canary approval. A canary passes only after the durable Intent reaches
-authoritative `CLOSED_FLAT` and risk settlement; profit is irrelevant and
-`MANUAL_REVIEW` is not a pass. Keep the exact canary Intent ids. For the
-required restart drill, stop the Nautilus generation only after the Intent is
-filled and natively protected, start the same frozen release again, let it
-query-first reconcile and close, and bind both immutable runtime ids plus the
-final `flat_verified_at_ms` in the restart receipt. A service restart without
-those two PostgreSQL start facts is not restart evidence.
-
-Freeze the release candidate before final observation. Its artifact names the
-exact tag/commit/tree, OCI image, migration head, committed OpenAPI, built web
-tree, Workers/Serve revisions, Nautilus wheel/source, execution contracts,
-per-binding catalog/capability/account identities, evidence/grant/risk
-receipts, and one exact seven-day window with nonzero minimum activity. With the exact
-approved Workers and Serve processes already running, execute
-`trading evidence release-register --file FILE` before the window starts. The database
-records its own registration time and binds both current runtime ids, start times,
-revisions, and image digests; restarting either process invalidates the window. Run
-`trading evidence verify --release FILE` only after its drain cutoff. The tag
-must be an annotated signature-verifiable Git tag resolving to the declared
-commit and tree; the release file must enumerate the exact canary Intent set
-and one protected-to-recovered Nautilus restart receipt. A green
-CI run or a mathematically conserved empty window is not acceptance. At window
-start, the preregistered Workers and Serve generations must already report the
-declared commit and image; the Workers durable heartbeat and a final authenticated
-Serve observation must cover the end, and every Admission plus Intent authority chain in
-the window must name that same release. Deploying another release invalidates
-the window. At
-rollback, pause Capital, revoke/expire every grant, reconcile every enabled
-venue flat, drain active risk/Intent obligations, then run
-`trading evidence verify --rollback FILE`. Keep the observer/Decision path
-running past the rollback receipt; do not revive a terminal Intent, submit a
-replacement entry, or infer a flat account from local
-state. The rollback receipt names and re-hashes the exact release-candidate
-artifact, covers its exact binding/grant scope, and cannot predate that release
-window's drain cutoff. The v2 rollback receipt also names new Workers and Serve
-runtime ids; both must differ from the registered release generations and must
-start at or after rollback. Every enabled binding must then report `ready`,
-`reconciled_flat`, and a query-first reconciliation heartbeat no earlier than
-both rollback and the new Workers start before zero-refill and
-observer-continuity checks can pass.
-
-These commands implement the clock and verification mechanism. Until the
-calendar window, human approval, venue receipts, fixed seven-day accounting,
-and rollback receipts actually exist, #377 remains open and no production
-terminal may be claimed.
-
 On a fresh database, `tracefold init` creates one shared application password
 and the independent bootstrap password. `make up` creates only the `tracefold`
-application login and the NOLOGIN `tracefold_app` bootstrap identity. Restores
+application login and the NOLOGIN `tracefold_app` bootstrap identity, and
+idempotently creates empty mode-`0600` Binance credential placeholders. Restores
 must land in a fresh PostgreSQL cluster carrying that same current login shape.
 
-#### Retired pre-#350 execution cutover record — do not execute
+Do not seed a Case to make the console non-empty. A Case exists only because a
+source frame passed live admission.
 
-The remaining PR 1/PR 2 Demo activation notes in this subsection describe the
-immutable pre-#350 Intent/replay era. The current CLI rejects
-`trading refresh-capabilities`, deployment does not start Nautilus, and these
-steps cannot authorize a new Intent. They remain only as recovery context for
-existing durable rows.
-
-The one-time PR 2 cutover from the PR 1 dark slice is:
-
-1. Set Trading control to `PAUSED`. Do not stop Nautilus; it must retain
-   authority over any already-fenced lifecycle.
-2. Update `~/.tracefold/config.yaml` to the current contract before running the
-   new CLI or image: remove the retired `mode`, `live_symbol`, `account_ref`,
-   `venues`, `opentrade` and `nautilus.accept_intents` keys, and — since #331 —
-   `trading.regime.*`, `trading.policy.*`, `trading.candidates.news_lookback_seconds`,
-   `trading.candidates.oi_lookback_seconds`, `trading.candidates.max_dspy_cases_per_day`
-   and `llm.trading_decision_model`. Those six are gone because a capital
-   threshold in a YAML file is a rule with no version and no frozen evidence;
-   the policy owns its own numbers and freezes them onto every Case. Preserve
-   `trading.enabled`, the two `trading.candidates.*` filters (`max_age_seconds`,
-   `min_oi_value_usd`; `symbol_cooldown_seconds` and `max_rank_in_window` were
-   retired by #348),
-   `trading.order.fixed_notional_usd` (`0 < value <= 10`) and the two Nautilus
-   Demo secret-file paths. Run `uv run tracefold config`; every model is
-   `extra="forbid"`, so a retired key left in place fails Serve and Workers at
-   settings load rather than being ignored.
-3. Confirm the current Nautilus `/readyz` is green. Its startup reconciliation
-   must have proved the exact Demo account/instrument configuration,
-   authoritative venue flat, and no unexpected exposure.
-4. Run `make trading-hard-cut-preflight` from the clean primary checkout. It
-   fails unless control is `PAUSED`, exactly one Nautilus Compose replica
-   exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
-   zero, nonterminal Intents are zero, and legacy active/unknown Orders are
-   zero.
-5. Deploy the exact reviewed image at the current Alembic head (`20260831_0340`
-   at this release). Both
-   `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
-   the full preflight before migration or service shutdown; migration `0317`
-   repeats the three database drain predicates in its transaction before
-   revoking the legacy writer. The later `0327` cut requires PAUSED and no
-   undecided Case but deliberately preserves a nonterminal Intent as a recovery
-   obligation, projected as `recovery_blocked_credentials_missing` when its
-   binding has no credential. The `0328` → `0329` automatic preflight is
-   deliberately database-only: it requires PAUSED and zero nonterminal Intents,
-   so a no-key deployment can drain that recovery obligation without inventing
-   a Nautilus readiness requirement. `0329` repeats those two predicates before
-   installing Intent-level Q1/fence/Q2 evidence. `0330` then hard-cuts the
-   current News contract; upgrading that head to Trading Production V3 `0331`
-   repeats the full venue-flat/Nautilus preflight. Upgrading `0331` to Trading
-   capital authority `0332` also repeats that preflight. `0333` is the
-   subsequent additive News Verdict-handoff partial index and has no capital
-   cutover predicate. `0334` adds the Trading evidence clock and requires Capital
-   `PAUSED` with no pre-existing unbound promotion grant, but does not require a
-   recovery-only Nautilus process. `0335` adds the News open-incident uniqueness
-   index; its preflight fails if two incidents of one cause class are already
-   open, which an operator resolves by closing the stale duplicate rather than by
-   deleting evidence. `0336` is the separate News genesis described in the
-   current migrations runbook below. Older execution-authority cutover routes
-   retain the full
-   venue-flat/Nautilus preflight above.
-6. Run `make status`, then `uv run tracefold trading status`. Require one
-   healthy Nautilus replica, `execution_authority=nautilus`,
-   each configured binding's exact account generation, catalog, capability and
-   execution binding; current
-   heartbeat, `engine_ready=true`, and `unexpected_exposure=false`.
-7. Set control to `RUNNING`. The capital lane can now atomically write a fresh
-   Intent; there is no `accept_intents` flag or per-order approval.
-
-For the first V2 capability activation, keep Trading `PAUSED` and require zero
-nonterminal Intents. When no active snapshot exists, `make up` starts a bounded
-zero-claim Nautilus process, waits for its fresh account-wide
-`nautilus_bootstrap_account_zero_at_ms` proof while `/readyz` correctly remains
-red, activates the first snapshot, stops that process, and recreates the normal
-capability-governed Nautilus service. The proof remains valid for the bounded
-provider load (at most five minutes) and activation clears it.
-
-Once an active snapshot exists, `make up` and `make deploy-image` reuse it and
-only recreate normal Nautilus. They do not refresh capability or write Trading
-control; stale-but-valid is an accepted deployment state. A later replacement
-is an explicit paused-window operation:
-
-```text
-uv run tracefold trading control paused
-uv run tracefold trading refresh-capabilities
-make up
-uv run tracefold trading status
-uv run tracefold trading control running
-```
-
-Before refresh, require zero nonterminal Intents and current Nautilus readiness
-with no unexpected exposure; leave Nautilus running so that proof stays fresh.
-The refresh command fails before provider I/O unless control is already
-`PAUSED`, and it never pauses or resumes Trading itself. Record the new snapshot
-digest/count and blacklist revision, and restore `RUNNING` only after recreated
-Nautilus is ready and has revalidated every included instrument. A failed load
-or activation leaves the old active snapshot unchanged and the operator-chosen
-`PAUSED` control intact. If the old snapshot cannot load, keep Trading `PAUSED`
-and use the bounded `tracefold nautilus run --bootstrap-zero-claims` recovery
-process before retrying refresh; that process refuses active Intents, never
-claims readiness, and never consumes an Intent.
-
-Do not seed a production Case or Intent to make the console non-empty. A normal
-source must produce the Case, and only a frozen long/non-shadow Case admitted by
-the active snapshot and current blacklist may emit an Intent.
-
-Current `make up` and `make deploy-image` idempotently create empty 0600
-Binance credential placeholders, do not require execution credentials, and do
-not start an execution Runtime. The browser and HTTP surface expose durable
-Decision/Alpha/disabled-execution facts plus Case/Signal/Observation ledgers.
-
-If an Intent reaches `MANUAL_REVIEW`, an entry outcome is unknown, protection
-cannot be proved, or flat cannot be proved:
-
-- immediately set `PAUSED` or `CLOSE_ONLY` to block new entry fences;
-- leave Nautilus running so query/protection/full-close reconciliation
-  continues;
-- do not start a legacy writer, submit a manual replacement through Tracefold,
-  or mark the row closed from local inference;
-- treat fresh targeted venue proof of zero position plus terminal/canceled
-  owned legs as the only `CLOSED_FLAT` proof.
-
-Rollback is permitted only while the venue is authoritatively flat and only to
-an image compatible with the live schema. A non-flat incident must roll
-forward: Nautilus remains the sole authority until exposure is protected or
-closed.
+Rollback is permitted only while the Binance account is authoritatively flat and
+only to an image compatible with the live schema. A non-flat incident rolls
+forward: the Runtime remains the sole authority until exposure is protected or
+closed, and `/flatten account` is the operator's convergence command.
 
 The deterministic PostgreSQL acceptance lane is `make trading-smoke`; it proves
-the real News→Case→Signal seam, atomic Case/Signal handoff, and the irreversible
-legacy-writer hard cut. It contacts no execution venue and is not Demo evidence.
+the real News -> Case -> Signal seam and the atomic Case/Signal handoff. It
+contacts no execution venue and is not Demo evidence.
 
 ## Operator lifecycle
 
@@ -1392,14 +1183,11 @@ remaining eligible count, last-turn deletes, oldest retained age and error.
 Feed shows Events from the first frame after deployment; there is no backfill
 of pre-V3 history.
 
-### Why an OI frame produced no case (#264, #331)
+### Why an OI frame produced no case
 
 `trading_candidate_gate_decisions` — the admission ledger — holds one row per
 `(source_key, gate_version, gate_config_digest)` and answers this without a
-replay. It replaced `trading_runtime_state.funnel`, a JSONB document reset on
-the UTC day key that counted one entry per *re-read* of the same frame; #331
-dropped the column, so this ledger is now the only answer and there is no
-second number to disagree with it.
+replay. It is the only answer: there is no counter beside it that can disagree.
 
 Start from `uv run tracefold trading status`:
 
@@ -1407,19 +1195,16 @@ Start from `uv run tracefold trading status`:
   lane saw and what happened to them, by `DEFERRED | REJECTED | CASE_CREATED |
   EXPIRED` for current writers. Counted on the frame's own observation time, so a
   runner restart that re-reads a backlog cannot move yesterday's frames into
-  today. `RESEARCH_ONLY` can still appear while the 90-day ledger retains rows
-  written by the retired single-venue contract; current Hyperliquid frames use
-  their native binding.
+  today. The four statuses are the whole vocabulary; `20260903_0355` narrowed the
+  CHECK to exactly them.
 - `candidate_reasons_24h` — the same population by `stage:reason`. The stages run
-  `source -> venue -> eligibility -> catalog -> market_context -> freeze`
-  (`routing` still appears on rows written before #331), and the reason
-  vocabulary is closed; anything outside it is a bug, not a new rule.
+  `source -> venue -> eligibility -> market_context -> freeze` and the reason
+  vocabulary is closed; anything outside either set is a bug, not a new rule.
 - `latest_source_at_ms` and `latest_gate_eligible_at_ms` sit on either side of
   admission. A recent source with no recent `CASE_CREATED` is an admission
-  question; a recent Case with no `latest_intent_emitted_at_ms` is a strategy or
-  atomic admission question. Compare `latest_entry_fenced_at_ms`,
-  `latest_position_opened_at_ms`, and `latest_position_closed_at_ms` only after
-  an Intent exists.
+  question; a recent `CASE_CREATED` with no Signal is a strategy question, and
+  `trading signals` plus the `signal_disposition` observations answer what the
+  Runtime then did with it.
 
 For one frame, `GET /api/trading/gate/{event_id}?lane=oi` returns the decision
 with its `gate_evidence` — the measurement it failed on and the threshold it
@@ -1436,7 +1221,7 @@ SELECT status, stage, reason, retryable, attempt_count, evidence, case_id
 times the answer changed: a terminal row keeps its status, stage, reason and
 evidence, and only the two evaluation counters move. `DEFERRED` is the only
 non-terminal state and means a later scan could genuinely answer differently
-(`market_data_unavailable`, `capability_absent`, `underlying_busy`); the lane's own sweep
+(`market_data_unavailable`, `underlying_busy`, `instrument_unmapped`); the lane's own sweep
 turns one `EXPIRED` with `trigger_stale` once the frame is past the trigger
 budget, so an open row that never resolved reads as the clock's answer rather
 than as pending work. Retention is 90 days, purged in bounded batches by the
@@ -1452,7 +1237,7 @@ Changing a threshold does not rewrite history: `gate_config_digest` is half the
 key, so an edit starts a new row and the old one stays as the record of what the
 old rule decided.
 
-### OI research replay (#459)
+### OI research replay
 
 `uv run tracefold trading oi-corpus` seals a Binance open-interest corpus under
 `--out`; `uv run tracefold trading oi-replay` scores the one pre-registered rule
@@ -1517,22 +1302,13 @@ snapshot.
 ## Migrations
 
 Alembic has one root, baseline `20260831_0340`, and current head
-`20260903_0353`. A fresh PostgreSQL 18 database applies baseline, `0341`, the
-additive `0342` notification delivery ledger, the additive `0343` current
-execution Runtime projection/indexes, and the destructive `0344` News
-open-interest push cut, followed by the `0345` Runtime exposure projection
-constraint hard cut, the additive `0346` notification result column, and the
-destructive `0347` drop of the twenty-two read-only execution tables, then the
-`0348` Runtime readiness hard cut and profile-keyed current control projection,
-then the additive `0349` bounded current account read projection, and the
-additive `0350` `pg_trgm` pin plus `title_similarity` told-trace reason for the
-News reader-history title-similarity band, then the additive `0351` (program v9
-judgment CHECK, blind review drafts) and `0352` (triage policy v12 judgment
-CHECK, #504) constraint rewrites, and finally the `0353` rewrite of
-`trading_execution_string_array_valid` to order `native_identity_references` by
-code point (`COLLATE "C"`) instead of the database default collation, so the
-CHECK accepts the mixed-case Nautilus identities the contract produces (#510),
-in order. This
+`20260903_0355`. A fresh PostgreSQL 18 database applies the baseline and every
+revision after it in order; each revision's own docstring carries its evidence.
+Two of them need an operator step before the upgrade runs: `20260901_0347`
+drops twenty-two read-only execution tables, and `20260903_0355` drops the six
+dead `trading_cases` columns and refuses to run while any row still holds a
+retired state or admission value. Both archive to `~/.tracefold/backups/`
+first; [the migration guide](MIGRATIONS.md) carries the exact commands. This
 source may merge or deploy only after the supported pre-cut database
 is advanced to the old terminal revision with its recorded image, backed up,
 and put through the #449 stopped-writer role catalog cut while retaining the
@@ -1641,7 +1417,7 @@ extra field, invalid identity, unverified snapshot, nonzero or unobserved queue
 count, a Git mismatch, an image/runtime-manifest mismatch or schema-object
 inventory drift before deleting anything.
 
-After deployment, require Alembic head `20260903_0353`; zero rows in every cleared
+After deployment, require Alembic head `20260903_0355`; zero rows in every cleared
 owner except the single new `news_learning_artifacts(kind='epoch_reset')` row
 and fresh singleton rows in `news_ingest_state` and
 `news_learning_retention_state`;
@@ -1754,9 +1530,6 @@ trips open canary activations and appends the factory-v6 to factory-v7 receipt,
 but neither rewrites nor appends the `program_v7` epoch row. Earlier rows and
 bundles remain immutable audit history; exact current-bundle acceptance makes
 prior-factory evidence audit-only, so the factory-v7 cohort starts at zero.
-`0316` added the #283 immutable Trading Intent handoff and Nautilus execution
-projection. Its separate Nautilus role was part of the retired pre-#449 chain;
-current source has only the shared `tracefold` login.
 `0318` is the #306 prompt-layer hard cut. It
 appends `program_v8` for `factory_v8` and trips every armed or active canary.
 Two byte changes land under that one identity migration, deliberately paid once
@@ -1774,10 +1547,8 @@ supported, `json_object` with the same schema inlined into the system message
 for DeepSeek-class endpoints — which moves fallback-route prompt bytes; the
 first hours of the v8 cohort, a third of whose verdicts degraded against the
 rejected format, become immutable audit history.
-`0320` is the #286 TradeIntentV2 hard cut. It adds immutable capability/replay
-ledgers plus the News catalogue's immutable listing-validity events, refuses a
-warm migration, and never rewrites V1 history. Roll forward; there is no
-downgrade to a second execution permission model.
+`0320` adds the News catalogue's immutable listing-validity events and refuses a
+warm migration. Its execution ledgers were dropped by `20260901_0347`.
 `0321` is #314's computed-identity cut and the last epoch migration there will
 be. It adds `bundle_sha` and `envelope_sha256` to `news_learning_epochs`, ties
 `epoch_id` to `left(bundle_sha, 8)` by CHECK, relaxes `program_factory_id` to
@@ -1799,28 +1570,13 @@ Issue #325 owns the operator-approved recovery: keep the database at `0323`,
 repair only the invalid lifecycle tuple from provider evidence, and then roll
 forward to `0324`; never start an older-schema image after that migration commits.
 
-Before applying 0326 remove `trading.candidates.symbol_cooldown_seconds` and
-`trading.candidates.max_rank_in_window` from `~/.tracefold/config.yaml`; both
-models are `extra="forbid"`, so either key left in place fails Serve and Workers
-at settings load. 0326 also refuses to run while any Intent is nonterminal —
-`daily_entry_fence_nonterminal_intent` — because it moves the execution policy
-identity to `trade_intent_policy_v3` and removes the CHECK that pinned the old
-digest; drain the lane (`uv run tracefold trading control paused`, wait for the open
-thesis to close) before migrating. Verify after restart: `/api/trading/gate`
-answers with a `trading_admission_v3` config block whose `config_digest` has
-moved, and a second Case on a day that already entered is decided rather than
-deferred.
-
-Before applying 0325 remove `trading.regime.*`, `trading.policy.*`,
+The retired `trading.regime.*`, `trading.policy.*`,
+`trading.candidates.symbol_cooldown_seconds`, `trading.candidates.max_rank_in_window`,
 `trading.candidates.news_lookback_seconds`, `trading.candidates.oi_lookback_seconds`,
-`trading.candidates.max_dspy_cases_per_day` and `llm.trading_decision_model`
-from `~/.tracefold/config.yaml`; the settings schema rejects them and
-Serve/Workers fail to start with them present. Verify after restart:
-`uv run tracefold trading status` reports `control`, the active capability
-digest, `engine_ready=true` and `unexpected_exposure=false`; `/api/trading/gate`
-answers with a `trading_admission_v3` config block; and the first admitted
-Binance OI frame reaches a Case whose `policy_checks` carry the thresholds it
-was decided against.
+`trading.candidates.max_dspy_cases_per_day` and `llm.trading_decision_model` keys
+must not appear in `~/.tracefold/config.yaml`; the settings models are
+`extra="forbid"`, so any one of them fails Serve and Workers at settings load.
+[Public contracts](CONTRACTS.md) carries the keys that are accepted today.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the

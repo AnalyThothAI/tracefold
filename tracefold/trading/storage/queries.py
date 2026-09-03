@@ -1,4 +1,9 @@
-"""Bounded read projections for Cases, Signals, Observations, and readiness."""
+"""Bounded read projections for Cases, Signals, Observations, and readiness.
+
+Each console page is one statement builder plus the method that runs it. The query-plan audit calls the
+same builder with representative predicates, so what it EXPLAINs is the statement the route executes
+rather than a copy of it that an edit can leave behind (`docs/MIGRATIONS.md`, database standard 3).
+"""
 
 from __future__ import annotations
 
@@ -12,12 +17,166 @@ from tracefold.trading.notification_policy import (
     notifiable_policy_rows,
 )
 
-from .query_sql import (
-    TRADING_CASE_COUNTS_SQL,
-    TRADING_CASE_REASON_COUNTS_SQL,
-    TRADING_STATUS_CASE_COUNTS_SQL,
-    TRADING_STATUS_SIGNAL_COUNTS_SQL,
+# Keyed on `created_at_ms`: when the Case formed, which is what "the lane produced N cases today"
+# means. The admission ledger's own counts key on `source_observed_at_ms` instead, so a restarted
+# runner re-reading a backlog cannot move yesterday's frames into today's total; a Case is created
+# once and has no such backlog.
+TRADING_STATUS_CASE_COUNTS_SQL = """
+    SELECT
+      count(*) FILTER (WHERE created_at_ms >= %(since)s) AS cases_24h,
+      count(*) FILTER (WHERE created_at_ms >= %(since)s AND state = 'SIGNAL_EMITTED') AS signals_24h,
+      count(*) FILTER (WHERE created_at_ms >= %(since)s AND state = 'NO_TRADE') AS no_trade_24h,
+      count(*) FILTER (WHERE created_at_ms >= %(since)s AND state = 'BLOCKED') AS blocked_24h,
+      count(*) FILTER (WHERE state IN ('PENDING', 'RUNNING')) AS cases_open
+    FROM trading_cases
+    WHERE created_at_ms >= %(since)s OR state IN ('PENDING', 'RUNNING')
+"""
+TRADING_STATUS_SIGNAL_COUNTS_SQL = """
+    SELECT count(*) FILTER (WHERE observed_at_ns >= %(since)s) AS signals_24h,
+           count(*) FILTER (WHERE expires_at_ns > %(now)s) AS signals_unexpired
+      FROM trading_trade_signals
+     WHERE observed_at_ns >= %(since)s OR expires_at_ns > %(now)s
+"""
+TRADING_CASE_COUNTS_SQL = "SELECT state, count(*) AS n FROM trading_cases WHERE created_at_ms >= %s GROUP BY state"
+TRADING_CASE_REASON_COUNTS_SQL = (
+    "SELECT coalesce(policy_reason, 'undecided') AS reason, count(*) AS n "
+    "FROM trading_cases WHERE created_at_ms >= %s GROUP BY reason"
 )
+
+
+def console_cases_statement(
+    *,
+    since_ms: int,
+    underlying_key: str | None = None,
+    states: tuple[str, ...] = (),
+    before: tuple[int, str] | None = None,
+    limit: int,
+) -> tuple[str, dict[str, Any]]:
+    """`GET /api/trading/cases`, with whichever of its three optional predicates the caller sent."""
+
+    predicates = ["created_at_ms >= %(since)s"]
+    params: dict[str, Any] = {"since": int(since_ms), "limit": int(limit)}
+    if underlying_key is not None:
+        predicates.append("underlying_key = %(underlying)s")
+        params["underlying"] = underlying_key
+    if states:
+        predicates.append("state = ANY(%(states)s)")
+        params["states"] = list(states)
+    if before is not None:
+        predicates.append("(created_at_ms, case_id) < (%(before_ms)s, %(before_id)s)")
+        params["before_ms"], params["before_id"] = before
+    sql = f"""
+        SELECT case_id, underlying_key, trigger_kind, primary_source_key, manifest,
+               manifest_sha256, state, policy_decision, policy_reason, policy_checks,
+               observed_at_ms, created_at_ms AS case_created_at_ms, decided_at_ms,
+               strategy_id, strategy_version, strategy_config_digest
+          FROM trading_cases
+         WHERE {" AND ".join(predicates)}
+         ORDER BY created_at_ms DESC, case_id DESC
+         LIMIT %(limit)s
+    """  # noqa: S608 -- predicates are fixed fragments; all values remain bound
+    return sql, params
+
+
+def console_signals_statement(
+    *,
+    since_ns: int,
+    market_key: str | None = None,
+    before: tuple[int, str] | None = None,
+    limit: int,
+) -> tuple[str, dict[str, Any]]:
+    """`GET /api/trading/signals`."""
+
+    predicates = ["observed_at_ns >= %(since)s"]
+    params: dict[str, Any] = {"since": int(since_ns), "limit": int(limit)}
+    if market_key is not None:
+        predicates.append("market_key = %(market_key)s")
+        params["market_key"] = market_key
+    if before is not None:
+        predicates.append("(observed_at_ns, signal_id) < (%(before_ns)s, %(before_id)s)")
+        params["before_ns"], params["before_id"] = before
+    sql = f"""
+        SELECT seq, signal_id, case_id, alpha_contract_sha256, market_key, direction,
+               observed_at_ns, expires_at_ns, evidence_sha256, alpha_metadata
+          FROM trading_trade_signals
+         WHERE {" AND ".join(predicates)}
+         ORDER BY observed_at_ns DESC, signal_id DESC
+         LIMIT %(limit)s
+    """  # noqa: S608 -- predicates are fixed fragments; all values remain bound
+    return sql, params
+
+
+def console_execution_observations_statement(
+    *,
+    since_ns: int,
+    runtime_profile_id: str | None = None,
+    normalized_kind: str | None = None,
+    before: tuple[int, str] | None = None,
+    limit: int,
+) -> tuple[str, dict[str, Any]]:
+    """`GET /api/trading/execution/observations`."""
+
+    predicates = ["observed_at_ns >= %(since)s"]
+    params: dict[str, Any] = {"since": int(since_ns), "limit": int(limit)}
+    if runtime_profile_id is not None:
+        predicates.append("runtime_profile_id = %(profile)s")
+        params["profile"] = runtime_profile_id
+    if normalized_kind is not None:
+        predicates.append("normalized_kind = %(kind)s")
+        params["kind"] = normalized_kind
+    if before is not None:
+        predicates.append("(observed_at_ns, event_id) < (%(before_ns)s, %(before_id)s)")
+        params["before_ns"], params["before_id"] = before
+    sql = f"""
+        SELECT seq, event_id, runtime_profile_id, runtime_release, execution_strategy,
+               signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
+               native_identity_references, summary, payload_digest
+          FROM trading_execution_observations
+         WHERE {" AND ".join(predicates)}
+         ORDER BY observed_at_ns DESC, event_id DESC
+         LIMIT %(limit)s
+    """  # noqa: S608 -- predicates are fixed fragments; all values remain bound
+    return sql, params
+
+
+def console_operator_intents_statement(
+    *,
+    since_ns: int,
+    runtime_profile_id: str | None = None,
+    action: str | None = None,
+    before: tuple[int, str] | None = None,
+    limit: int,
+) -> tuple[str, dict[str, Any]]:
+    """`GET /api/trading/execution/commands`, each Command beside its disposition observation."""
+
+    predicates = ["command.requested_at_ns >= %(since)s"]
+    params: dict[str, Any] = {"since": int(since_ns), "limit": int(limit)}
+    if runtime_profile_id is not None:
+        predicates.append("command.target_profile_id = %(profile)s")
+        params["profile"] = runtime_profile_id
+    if action is not None:
+        predicates.append("command.action = %(action)s")
+        params["action"] = action
+    if before is not None:
+        predicates.append("(command.requested_at_ns, command.command_id) < (%(before_ns)s, %(before_id)s)")
+        params["before_ns"], params["before_id"] = before
+    sql = f"""
+        SELECT command.seq, command.command_id, command.target_profile_id, command.action,
+               command.scope, command.reason, command.operator_identity,
+               command.requested_at_ns, command.expires_at_ns,
+               command.confirmation_identity IS NOT NULL AS confirmed,
+               command.market_key, command.direction,
+               disposition.summary ->> 'disposition' AS disposition,
+               disposition.summary ->> 'reason' AS disposition_reason
+          FROM trading_operator_intents command
+          LEFT JOIN trading_execution_observations disposition
+            ON disposition.command_id = command.command_id
+           AND disposition.normalized_kind = 'control_disposition'
+         WHERE {" AND ".join(predicates)}
+         ORDER BY command.requested_at_ns DESC, command.command_id DESC
+         LIMIT %(limit)s
+    """  # noqa: S608 -- predicates are fixed fragments; all values remain bound
+    return sql, params
 
 
 class QueryStorage:
@@ -54,31 +213,14 @@ class QueryStorage:
         before: tuple[int, str] | None,
         limit: int,
     ) -> list[dict[str, Any]]:
-        predicates = ["created_at_ms >= %(since)s"]
-        params: dict[str, Any] = {"since": int(since_ms), "limit": int(limit)}
-        if underlying_key is not None:
-            predicates.append("underlying_key = %(underlying)s")
-            params["underlying"] = underlying_key
-        if states:
-            predicates.append("state = ANY(%(states)s)")
-            params["states"] = list(states)
-        if before is not None:
-            predicates.append("(created_at_ms, case_id) < (%(before_ms)s, %(before_id)s)")
-            params["before_ms"], params["before_id"] = before
-        rows = self.conn.execute(
-            f"""
-            SELECT case_id, underlying_key, trigger_kind, primary_source_key, manifest,
-                   manifest_sha256, state, policy_decision, policy_reason, policy_checks,
-                   observed_at_ms, created_at_ms AS case_created_at_ms, decided_at_ms,
-                   strategy_id, strategy_version, strategy_config_digest
-              FROM trading_cases
-             WHERE {" AND ".join(predicates)}
-             ORDER BY created_at_ms DESC, case_id DESC
-             LIMIT %(limit)s
-            """,  # noqa: S608 -- predicates are fixed fragments; all values remain bound
-            params,
-        ).fetchall()
-        return [dict(row) for row in rows]
+        sql, params = console_cases_statement(
+            since_ms=since_ms,
+            underlying_key=underlying_key,
+            states=states,
+            before=before,
+            limit=limit,
+        )
+        return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
 
     def console_signals(
         self,
@@ -88,26 +230,13 @@ class QueryStorage:
         before: tuple[int, str] | None,
         limit: int,
     ) -> list[dict[str, Any]]:
-        predicates = ["observed_at_ns >= %(since)s"]
-        params: dict[str, Any] = {"since": int(since_ns), "limit": int(limit)}
-        if market_key is not None:
-            predicates.append("market_key = %(market_key)s")
-            params["market_key"] = market_key
-        if before is not None:
-            predicates.append("(observed_at_ns, signal_id) < (%(before_ns)s, %(before_id)s)")
-            params["before_ns"], params["before_id"] = before
-        rows = self.conn.execute(
-            f"""
-            SELECT seq, signal_id, case_id, alpha_contract_sha256, market_key, direction,
-                   observed_at_ns, expires_at_ns, evidence_sha256, alpha_metadata
-              FROM trading_trade_signals
-             WHERE {" AND ".join(predicates)}
-             ORDER BY observed_at_ns DESC, signal_id DESC
-             LIMIT %(limit)s
-            """,  # noqa: S608 -- predicates are fixed fragments; all values remain bound
-            params,
-        ).fetchall()
-        return [dict(row) for row in rows]
+        sql, params = console_signals_statement(
+            since_ns=since_ns,
+            market_key=market_key,
+            before=before,
+            limit=limit,
+        )
+        return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
 
     def console_execution_observations(
         self,
@@ -118,30 +247,14 @@ class QueryStorage:
         before: tuple[int, str] | None,
         limit: int,
     ) -> list[dict[str, Any]]:
-        predicates = ["observed_at_ns >= %(since)s"]
-        params: dict[str, Any] = {"since": int(since_ns), "limit": int(limit)}
-        if runtime_profile_id is not None:
-            predicates.append("runtime_profile_id = %(profile)s")
-            params["profile"] = runtime_profile_id
-        if normalized_kind is not None:
-            predicates.append("normalized_kind = %(kind)s")
-            params["kind"] = normalized_kind
-        if before is not None:
-            predicates.append("(observed_at_ns, event_id) < (%(before_ns)s, %(before_id)s)")
-            params["before_ns"], params["before_id"] = before
-        rows = self.conn.execute(
-            f"""
-            SELECT seq, event_id, runtime_profile_id, runtime_release, execution_strategy,
-                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
-                   native_identity_references, summary, payload_digest
-              FROM trading_execution_observations
-             WHERE {" AND ".join(predicates)}
-             ORDER BY observed_at_ns DESC, event_id DESC
-             LIMIT %(limit)s
-            """,  # noqa: S608 -- predicates are fixed fragments; all values remain bound
-            params,
-        ).fetchall()
-        return [dict(row) for row in rows]
+        sql, params = console_execution_observations_statement(
+            since_ns=since_ns,
+            runtime_profile_id=runtime_profile_id,
+            normalized_kind=normalized_kind,
+            before=before,
+            limit=limit,
+        )
+        return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
 
     def console_operator_intents(
         self,
@@ -152,44 +265,21 @@ class QueryStorage:
         before: tuple[int, str] | None,
         limit: int,
     ) -> list[dict[str, Any]]:
-        predicates = ["command.requested_at_ns >= %(since)s"]
-        params: dict[str, Any] = {"since": int(since_ns), "limit": int(limit)}
-        if runtime_profile_id is not None:
-            predicates.append("command.target_profile_id = %(profile)s")
-            params["profile"] = runtime_profile_id
-        if action is not None:
-            predicates.append("command.action = %(action)s")
-            params["action"] = action
-        if before is not None:
-            predicates.append("(command.requested_at_ns, command.command_id) < (%(before_ns)s, %(before_id)s)")
-            params["before_ns"], params["before_id"] = before
-        rows = self.conn.execute(
-            f"""
-            SELECT command.seq, command.command_id, command.target_profile_id, command.action,
-                   command.scope, command.reason, command.operator_identity,
-                   command.requested_at_ns, command.expires_at_ns,
-                   command.confirmation_identity IS NOT NULL AS confirmed,
-                   command.market_key, command.direction,
-                   disposition.summary ->> 'disposition' AS disposition,
-                   disposition.summary ->> 'reason' AS disposition_reason
-              FROM trading_operator_intents command
-              LEFT JOIN trading_execution_observations disposition
-                ON disposition.command_id = command.command_id
-               AND disposition.normalized_kind = 'control_disposition'
-             WHERE {" AND ".join(predicates)}
-             ORDER BY command.requested_at_ns DESC, command.command_id DESC
-             LIMIT %(limit)s
-            """,  # noqa: S608 -- predicates are fixed fragments; all values remain bound
-            params,
-        ).fetchall()
-        return [dict(row) for row in rows]
+        sql, params = console_operator_intents_statement(
+            since_ns=since_ns,
+            runtime_profile_id=runtime_profile_id,
+            action=action,
+            before=before,
+            limit=limit,
+        )
+        return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
 
     def next_execution_notification(self, target_sha256: str, *, now_ns: int) -> dict[str, Any] | None:
         """Read the next notifiable observation without creating a mutable delivery cursor.
 
-        The watermark is per kind (#472). A single watermark over all kinds silently skipped any
-        observation whose sequence fell below a later delivery, so one out-of-order turn dropped
-        events for good; a kind can now only ever skip its own past.
+        The watermark is per kind: a single watermark over all kinds silently skips any observation
+        whose sequence falls below a later delivery, so one out-of-order turn drops events for good.
+        A kind can only ever skip its own past.
 
         `tracefold.trading.notification_policy` owns both halves of the choice: which observation is
         worth a card, and — for the kinds that arrive on a timer — that only the newest pending one
@@ -229,9 +319,9 @@ class QueryStorage:
                      observation.occurred_at_ns, observation.observed_at_ns,
                      observation.native_identity_references, observation.summary,
                      observation.payload_digest,
-                     -- #458 PR-B: the Case a Signal card states its reasons from. Read here rather
-                     -- than in a second round trip so the rendered text is a pure function of one
-                     -- row, and LEFT so a non-Signal observation is still notifiable.
+                     -- The Case a Signal card states its reasons from. Read here rather than in a
+                     -- second round trip so the rendered text is a pure function of one row, and
+                     -- LEFT so a non-Signal observation is still notifiable.
                      signal.case_id, signal.market_key, signal.direction,
                      signal.observed_at_ns AS signal_observed_at_ns,
                      trading_case.policy_decision, trading_case.policy_reason,
@@ -287,15 +377,15 @@ class QueryStorage:
     ) -> dict[str, Any]:
         """Append one delivery receipt; retries never mutate an earlier receipt.
 
-        `message_id` is optional because a Feishu custom-bot webhook returns none (#458 PR-B). The
-        receipt still records that this observation reached this target at this instant, which is what
+        `message_id` is optional because a Feishu custom-bot webhook returns none. The receipt still
+        records that this observation reached this target at this instant, which is what
         the watermark and the coverage measure read; only a channel that can address a sent message
         again has an id worth storing.
 
         `selected_at_ns` is the clock the caller chose this observation with, not the clock it was
         delivered at. The two differ by however long the send took, and a throttle window that
         expires in between would otherwise let the guard pick a different candidate than the one that
-        was actually sent (#472).
+        was actually sent.
         """
 
         require_transaction(self.conn, operation="append_execution_notification_delivery")
@@ -401,4 +491,14 @@ class QueryStorage:
         return row is not None
 
 
-__all__ = ["QueryStorage"]
+__all__ = [
+    "TRADING_CASE_COUNTS_SQL",
+    "TRADING_CASE_REASON_COUNTS_SQL",
+    "TRADING_STATUS_CASE_COUNTS_SQL",
+    "TRADING_STATUS_SIGNAL_COUNTS_SQL",
+    "QueryStorage",
+    "console_cases_statement",
+    "console_execution_observations_statement",
+    "console_operator_intents_statement",
+    "console_signals_statement",
+]

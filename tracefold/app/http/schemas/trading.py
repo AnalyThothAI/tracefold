@@ -8,15 +8,12 @@ from pydantic import Field
 
 from .common import ExactApiSchema
 
-# `RESEARCH_ONLY` was here as a fifth archive value until #460. Unlike the retired *stages* below, no
-# row ever carried it: the ledger holds 321 `CASE_CREATED`, 204 `EXPIRED` and 86 `REJECTED` and nothing
-# else, and `AdmissionStatus` cannot produce a fifth. The database CHECK still admits the name.
+# The admission ledger's two closed vocabularies, exactly as `trading_candidate_gate_status_check` and
+# `trading_candidate_gate_stage_check` admit them and `AdmissionStatus` / `AdmissionStage` write them.
+# `GET /api/trading/gate/{event_id}` reads one stored row with no time bound, so a value here that the
+# database can hold but this Literal cannot would turn opening that Event into a 500.
 GateStatus = Literal["DEFERRED", "REJECTED", "CASE_CREATED", "EXPIRED"]
-# Wider than `AdmissionStage`, and deliberately. `capability`, `catalog` and `routing` have no current
-# writer, but `GET /api/trading/gate/{event_id}` reads one row by `source_key` with no time bound, and
-# the ledger still holds rows that named them — 8 `routing` and 6 `capability` as of 2026-09-01.
-# Narrowing this to what admission can emit today turns opening one of those Events into a 500.
-GateStage = Literal["source", "venue", "eligibility", "capability", "catalog", "routing", "market_context", "freeze"]
+GateStage = Literal["source", "venue", "eligibility", "market_context", "freeze"]
 
 
 class TradingDecisionRuntimeData(ExactApiSchema):

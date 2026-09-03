@@ -54,6 +54,50 @@ locking, or backfill behavior. Business processes remain behind the maintenance
 gate until migration succeeds. An irreversible downgrade is a verified backup
 restore, never invented reverse DDL.
 
+## Operator archive before a destructive revision
+
+A revision that deletes durable data refuses to run rather than deleting it for
+the operator. Two revisions do this today, and both expect the same archive
+step first: a `pg_dump` of the affected rows into `~/.tracefold/backups/`, taken
+after the writers are stopped by the canonical migration gate, so the dump and
+the database cannot diverge between the two.
+
+`20260903_0355` drops the six dead `trading_cases` columns and narrows three
+closed vocabularies. It counts the rows that still use a retired value and
+raises `trading_retired_values_present` with both totals if any exist. To
+upgrade such a database:
+
+```bash
+pg_dump --data-only --table=trading_cases --table=trading_candidate_gate_decisions \
+  > ~/.tracefold/backups/pre-0355-trading-retired-values-$(date +%Y%m%d).sql
+
+# The admission ledger first: `trading_candidate_gate_decisions.case_id` references
+# `trading_cases`, so a `CASE_CREATED` row pointing at a retired-state Case would
+# otherwise refuse that Case's delete. Deleting only its retired *values* is not
+# enough, because the row that links it is `CASE_CREATED` and not itself retired.
+psql -c "DELETE FROM trading_candidate_gate_decisions
+          WHERE status = 'RESEARCH_ONLY'
+             OR stage IN ('capability', 'catalog', 'routing')
+             OR case_id IN (SELECT case_id FROM trading_cases
+                             WHERE state IN ('POLICY_REJECTED', 'INTENT_EMITTED', 'ORDER_PREPARED'))"
+psql -c "DELETE FROM trading_cases
+          WHERE state IN ('POLICY_REJECTED', 'INTENT_EMITTED', 'ORDER_PREPARED')"
+```
+
+A retired-state Case can carry no Signal — `enforce_trading_case_signal_link`
+allows one only on `SIGNAL_EMITTED` — so the admission ledger is the only
+foreign key in the way.
+
+The dump is the only copy afterwards: the six columns' contents go with the
+columns, and `downgrade` refuses rather than inventing reverse DDL. Restore it
+into a scratch database to read an archived row. `20260901_0347` recorded the
+same step for the 22 execution tables it dropped, in
+`~/.tracefold/backups/pre-0347-retired-trading-tables-20260901.sql`.
+
+A Case that is still `PENDING` or `RUNNING` is not affected: those states
+survive, and the migration gate has already stopped the lane that would settle
+them.
+
 ## Database development standard
 
 1. The deployment has one non-superuser application login, `tracefold`.
