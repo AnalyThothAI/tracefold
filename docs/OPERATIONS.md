@@ -762,7 +762,7 @@ OpenNews account Strategy WSS (whatever the account has enabled; no local allowl
      SemanticJudge.judge(TriageContext) -> EventSemantics.v2 + TradeRelevanceV1 -> SemanticNormalizer
      -> ReaderCard.v2
      -> deterministic assembler -> atomic SemanticJudgment/ScoredJudgment
-     -> policy-v12 decide() -> news_verdicts (editorial + runtime manifest)
+     -> policy-v13 decide() -> news_verdicts (editorial + runtime manifest)
      -> verdict.push (an escalate rides the same key at AMQP priority 5)
   -> q:news.deliver [SAC] Deliverer: one configured-provider attempt per Event (kind first)
   -> RabbitMQ 4.3 native delayed retry inside each business queue: TransientError is a counted return
@@ -991,11 +991,13 @@ Diagnose News in this order:
    policy. A storyline key reads `asset:<SYM>`, `conflict:<id>`, `actor:<id>`,
    `geo:<id>`, `topic:<id>` or `none`; `tracefold news why` renders the
    registry's `label_zh` for it.
-   A `storyline:<key>:budget` throttle key is the policy-v12 per-storyline
+   A `storyline:<key>:budget` throttle key is the policy-v13 per-storyline
    budget (#504): the reader already received `storyline_budget_max` cards on
    that final storyline key inside `storyline_budget_window_s`, and this one
-   was neither a corroborated escalate nor a direction reversal. The `none`
-   key never appears there.
+   was neither a corroborated escalate nor a direction reversal of the newest
+   *directional* card delivered on that key (#523: neutral, unclear and
+   direction-less cards are read past when looking for it, and still count
+   toward the budget). The `none` key never appears there.
    After a deploy that changes the key format, the budget counts only the cards
    delivered inside `storyline_budget_window_s` (1 h), and for that first hour
    those rows still carry the previous format, so they match no new key and are
@@ -1312,12 +1314,17 @@ snapshot.
 ## Migrations
 
 Alembic has one root, baseline `20260831_0340`, and current head
-`20260903_0355`. A fresh PostgreSQL 18 database applies the baseline and every
+`20260903_0358`, the additive judgment-CHECK opening to
+`news_triage_policy_v13` (#523). A fresh PostgreSQL 18 database applies the
+baseline and every
 revision after it in order; each revision's own docstring carries its evidence.
-Two of them need an operator step before the upgrade runs: `20260901_0347`
-drops twenty-two read-only execution tables, and `20260903_0355` drops the six
+Four of them need an operator step before the upgrade runs: `20260901_0347`
+drops twenty-two read-only execution tables, `20260903_0355` drops the six
 dead `trading_cases` columns and refuses to run while any row still holds a
-retired state or admission value. Both archive to `~/.tracefold/backups/`
+retired state or admission value, `20260903_0356` drops the profile and
+activation ledgers, and `20260903_0357` drops the JSON-shape CHECKs with the
+nine unread columns and their payload keys. All four archive to
+`~/.tracefold/backups/`
 first; [the migration guide](MIGRATIONS.md) carries the exact commands. This
 source may merge or deploy only after the supported pre-cut database
 is advanced to the old terminal revision with its recorded image, backed up,
@@ -1427,7 +1434,7 @@ extra field, invalid identity, unverified snapshot, nonzero or unobserved queue
 count, a Git mismatch, an image/runtime-manifest mismatch or schema-object
 inventory drift before deleting anything.
 
-After deployment, require Alembic head `20260903_0355`; zero rows in every cleared
+After deployment, require Alembic head `20260903_0358`; zero rows in every cleared
 owner except the single new `news_learning_artifacts(kind='epoch_reset')` row
 and fresh singleton rows in `news_ingest_state` and
 `news_learning_retention_state`;

@@ -265,12 +265,18 @@ def grounded_restatement(verdict: TriageVerdict, status: StorylineStatus | None)
 
 def _budget_exhausted(direction: str, status: StorylineStatus, *, now_ms: int, window_ms: int, budget_max: int) -> bool:
     """True when the reader already received ``budget_max`` cards on this storyline inside the window and this
-    one does not reverse the newest of them (#504 D2).
+    one does not reverse the newest *directional* card among them (#504 D2, narrowed by #523 D2).
 
-    Rows are newest first, so the first in-window row on the key is the latest delivered card; a bullish/bearish
-    flip against it is new information whatever the count says (same test as ``_seen_flip``). The ``none`` key
-    is exempt: it is not a storyline but "the registry matched nothing", and counting it withheld Chile's GDP
-    print behind an RBNZ decision in the 2026-09-02 replay (#509 D6).
+    Rows are newest first. Every in-window row on the key counts against ``budget_max`` — a neutral card is
+    still a card the reader received — but the reversal comparison skips rows the reader could not have read a
+    direction from: only a `bullish`/`bearish` row can be contradicted, so neutral, unclear and direction-less
+    rows are passed over rather than ending the search (same test as ``_seen_flip``). Comparing against the
+    newest row whatever its direction hid real reversals behind one neutral card: "Russia will raise output"
+    was withheld against a "will cut output" card 55 minutes earlier because an unrelated neutral card had
+    landed on the key between them. Only the newest directional card is consulted, never any older one:
+    "against any delivered card" let 101 more cards through and 10 escape on one key in one hour. The ``none``
+    key is exempt: it is not a storyline but "the registry matched nothing", and counting it withheld Chile's
+    GDP print behind an RBNZ decision in the 2026-09-02 replay (#509 D6).
     """
 
     if status.key == NO_STORYLINE_KEY:
@@ -282,8 +288,10 @@ def _budget_exhausted(direction: str, status: StorylineStatus, *, now_ms: int, w
             continue
         if now_ms - int(status.seen_at_ms[index]) > window_ms:
             continue
-        if latest_direction is None:
-            latest_direction = status.seen_directions[index] if index < len(status.seen_directions) else ""
+        if latest_direction is None and index < len(status.seen_directions):
+            told = status.seen_directions[index]
+            if told in _DIRECTIONAL:
+                latest_direction = told
         delivered += 1
     if delivered < budget_max:
         return False
@@ -310,7 +318,9 @@ def decide(
     ``DecisionResult`` and cannot enter this function.
 
     Order is fixed (#504): restatement drop -> admission / reader_value branch -> escalate corroboration ->
-    ``single_name_without_instrument`` -> stale source -> similarity -> storyline budget.
+    ``single_name_without_instrument`` -> stale source -> similarity -> storyline budget. Policy v13 changes
+    one condition inside that branch and none of its order: the deterministic listing guard no longer covers a
+    frame the model marked ``reader_value=none``, which falls through to the ``reader_value_none`` drop.
     """
 
     if facts.admission in {"telemetry_deterministic", "liquidation_deterministic"}:
@@ -334,7 +344,15 @@ def decide(
 
     final: Decision
     rule: str | None
-    if facts.admission == "listing_deterministic":
+    # #523 D1: `listing_deterministic` is the provider's `engine_type=listing` tag, not a content judgment, so
+    # the admission alone let marketing, trading-competition and operations notices ride the objective guard.
+    # Of 56 listing frames in a 24 h window the model scored 17 `reader_value=none`, and 13 of those reached
+    # the reader anyway: a Binance trading competition, a "Rug Pulls explained" explainer, a 35% APR
+    # promotion. A frame the model itself scored `reader_value=none` is the one case where the tag is provably
+    # not about a listing the reader can act on, and it is the only condition added: the branch keeps its
+    # position, so a real listing notice still wins over the watchlist guard and over every model rule, and
+    # `background` still pushes (moving the branch instead cost four genuine listings in the same replay).
+    if facts.admission == "listing_deterministic" and relevance.reader_value != "none":
         final, rule = "push", "listing_deterministic"
     elif watch_hits:
         final, rule = "push", "watchlist_objective_guard"

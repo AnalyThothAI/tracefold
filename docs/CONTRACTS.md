@@ -728,7 +728,7 @@ the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `news_event_evidence_v3`, `news_judgment_v2`,
 `news_semantic_program_v9` (or `news_oi_signal_v3` /
 `news_liquidation_fact_v2` for deterministic structured lanes),
-`news_triage_policy_v12`, `news_delivery_card_v11`, artifact schema
+`news_triage_policy_v13`, `news_delivery_card_v11`, artifact schema
 `news_program_strategy_artifact_v1`, and source classifier
 `opennews_source_classifier_v1`. The epoch is the running bundle's
 (`bundle_<sha8>`) and is not a declared version. The exact Program identity is
@@ -804,7 +804,7 @@ still carries the section fails at startup. Status exposes
 `telemetry_received_24h`, `telemetry_parsed_24h` and
 `telemetry_parse_failed_24h`; parser-contract failures
 also appear under `dropped_by_rule.oi_parse_failed` and never call a model.
-`news.policy` has exactly six v12 keys: `restatement_drop` (true),
+`news.policy` has exactly six v13 keys: `restatement_drop` (true),
 `similarity_max` (0.25), `listing_exempt_from_duplicate` (true),
 `stale_source_max_age_s` (43200 = 12 h; #154: an x/twitter artifact already older
 than this when the provider pushed it is a replay, withheld as
@@ -812,7 +812,9 @@ than this when the provider pushed it is a replay, withheld as
 `storyline_budget_window_s` (3600) and `storyline_budget_max` (2; #504: at
 most this many delivered cards per final storyline key inside the window,
 withheld as `storyline:<key>:budget`; a corroborated `escalate`, a direction
-reversal and the `none` key are exempt; either key at 0 disables
+reversal of the newest *directional* delivered card on the key (#523: neutral,
+unclear and direction-less cards are read past, and still counted) and the
+`none` key are exempt; either key at 0 disables
 the budget).
 Trade-relevance eligibility and objective-guard ordering are code-owned, not
 operator thresholds. `direct_surface` requires direct/second-order tradability
@@ -820,7 +822,8 @@ and non-empty channels/markets. `material_change` requires `state_change`, or
 `material_detail` plus direct tradability or an unscheduled/material surprise;
 `realtime_eligible` requires both and magnitude >= 2. After the grounded-
 restatement guard, the generic v10 action order is deterministic
-listing/telemetry,
+listing/telemetry — which since v13 (#523) does not cover a listing frame the
+model marked `reader_value=none`, leaving it to the `reader_value_none` drop —
 grounded watchlist, eligible `reader_value=escalate`, eligible
 `reader_value=realtime`, background/none, then
 `trade_relevance_inconsistent`; then the v12 escalate corroboration
@@ -1011,8 +1014,9 @@ current control projection. `0349` adds the bounded nullable Runtime-owned
 current account JSON projection without changing any append-only ledger.
 Additive `0350` pins the `pg_trgm` extension and admits the `title_similarity`
 retrieval reason into the `news_verdicts` told trace CHECK for the
-reader-history title-similarity band (#491). `0351` and `0352` open the same
-CHECK to `news_semantic_program_v9` and `news_triage_policy_v12`. `0353`
+reader-history title-similarity band (#491). `0351`, `0352` and `0358` open the same
+CHECK to `news_semantic_program_v9`, `news_triage_policy_v12` and
+`news_triage_policy_v13`. `0353`
 reorders `trading_execution_string_array_valid` by code point (`COLLATE "C"`);
 additive `0354` adds `trading_execution_runtime_state.routes` and its validator;
 destructive `0355` drops the six dead `trading_cases` columns and narrows

@@ -146,7 +146,7 @@ def _seed(conn: Any) -> None:
           scored_judgment_sha256, runtime_manifest_sha, model, program_version, program_sha256,
           degraded, error_code, trace, evidence_version, evidence_sha256, focus_fact_id, created_at_ms
         )
-        SELECT 'e-' || g, 'triage', 'news_triage_policy_v12', 'news_judgment_v2', 'degraded',
+        SELECT 'e-' || g, 'triage', 'news_triage_policy_v13', 'news_judgment_v2', 'degraded',
                'push', final_decision, 'capacity_fixture', verdict, NULL,
                judgment_sha, repeat('b', 64), NULL, 'news_semantic_program_v9', repeat('a', 64),
                true, 'capacity_fixture',
