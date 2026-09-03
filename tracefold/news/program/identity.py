@@ -99,7 +99,7 @@ _GOLDEN_OUTPUTS: Final[dict[PredictorName, dict[str, Any]]] = {
             "assertion_status": "unknown",
         }
     },
-    "reader_card": {"card": {"headline_zh": "示例", "why_zh": ""}},
+    "reader_card": {"card": {"headline_zh": "示例标题", "why_zh": "示例机制说明一句话。"}},
 }
 _MATERIAL_IMPLEMENTATION_SYMBOLS: Final[dict[str, tuple[str, ...]]] = {
     "artifact.py": ("render_model_evidence_json",),

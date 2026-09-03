@@ -78,6 +78,7 @@ def test_taxonomy_schema_is_exact_bounded_and_content_pinned() -> None:
     ("sources", "expected"),
     [
         (("sec.gov",), "regulatory_filing"),
+        (("edgar.sec.gov",), "regulatory_filing"),
         (("@coinbase",), "issuer_first_party"),
         (("https://www.reuters.com/world",), "reputable_secondary"),
         (("Reuters fan account",), "unknown"),
@@ -85,8 +86,29 @@ def test_taxonomy_schema_is_exact_bounded_and_content_pinned() -> None:
         (("fake|sec",), "unknown"),
         (("notreuters.com",), "unknown"),
         (("https://reuters.com.evil.example/world",), "unknown"),
+        (("reuters.com.evil.example",), "unknown"),
         (("https://reuters.com@evil.example/world",), "unknown"),
-        (("https://wire.reuters.com/world",), "unknown"),
+        # #522 D1: a registered domain owns its subdomains. The three above still do not match, because
+        # the boundary is a leading dot at the end of the host, not a substring.
+        (("https://wire.reuters.com/world",), "reputable_secondary"),
+        (("investor.uber.com",), "issuer_first_party"),
+        (("www.barrons.com",), "reputable_secondary"),
+        # A newswire distributes the issuer's own release verbatim, so it is first-party, not secondary.
+        (("globenewswire.com",), "issuer_first_party"),
+        (("prnewswire.com",), "issuer_first_party"),
+        (("businesswire.com",), "issuer_first_party"),
+        # The two highest-volume reporting origins of the #504 receipt, and one issuer product line.
+        (("jin10",), "reputable_secondary"),
+        (("first squawk",), "reputable_secondary"),
+        (("@firstsquawk",), "reputable_secondary"),
+        (("binance wallet",), "issuer_first_party"),
+        # Deliberately out of the registry: an aggregator, a relay and a personal account carry no
+        # institutional authority, and a belligerent's state media is a party to what it reports.
+        (("opennews",), "unknown"),
+        (("zerohedge",), "unknown"),
+        (("alexbward",), "unknown"),
+        (("tass",), "unknown"),
+        (("irib",), "unknown"),
     ],
 )
 def test_source_authority_is_exact_code_owned_reporting_source(

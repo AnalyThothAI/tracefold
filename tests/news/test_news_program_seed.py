@@ -167,7 +167,6 @@ def test_the_event_semantics_seed_carries_the_product_definition() -> None:
     for marker in (
         "Reader: trades coins on Binance/OKX/Hyperliquid and US- and Hong Kong-listed stocks",
         "reader_value: escalate for a fact that changes what the reader trades today",
-        "single-source report never is",
         "realtime for a new fact with a tradable instrument or explicit transmission",
         "background for small-economy data or central-bank talk without G4, Treasury, oil or risk-asset transmission",
         "one more strike or statement in a running conflict",
@@ -185,3 +184,57 @@ def test_the_event_semantics_seed_carries_the_product_definition() -> None:
     # Unchanged calibrations the product definition must not have displaced.
     for kept in ("## Magnitude", "## Price-only a-e calibration", "Tesla is finally launching the Cybercab"):
         assert kept in semantics, kept
+
+
+def test_the_escalate_tier_no_longer_contradicts_its_own_positive_example() -> None:
+    """#522 D2: the tier excluded "single-source report" while its own example was a single-source strike.
+
+    The 9 h receipt after the #504 deploy had 11 model escalates and 0 delivered ones: the model followed
+    the example, and policy v12 D3 then downgraded every uncorroborated card. Corroboration is a code
+    decision (`source_authority` plus `member_count`), so the seed must state the editorial bar and stop
+    asking the model to guess at sourcing.
+    """
+
+    semantics = seed_instruction("event_semantics")
+    assert "single-source report never is" not in semantics
+    assert "an observable military escalation or official closure" in semantics
+    assert "a threat, intention, one-sided statement, commentary or market recap never is" in semantics
+    assert "Corroboration is decided by code, not by you." in semantics
+    # The positive example the old exclusion contradicted stays: it is the escalate the reader wants.
+    assert '"Iran strikes Gulf bases hosting US forces after US attacks"' in semantics
+
+
+def test_the_reader_card_seed_asks_for_a_condensed_headline_and_a_required_why() -> None:
+    """#522 D4: three pushed headlines stopped at exactly 60 characters mid-clause and four had no why_zh.
+
+    The stored `headline_zh` was exactly 60 characters with an unfinished sentence, so the cut happened
+    where the provider enforces the schema's `maxLength`, not in delivery. A schema cannot ask for a
+    shorter sentence; only the seed can, which is why the target moved below the hard limit.
+    """
+
+    card = seed_instruction("reader_card")
+    assert "Aim for at most 50 characters and never exceed 60" in card
+    assert "Never stop mid-clause to fit the limit: condense first" in card
+    assert "why_zh is required: exactly one plain sentence, never empty and never punctuation alone" in card
+    assert "Write the headline in Chinese even when the original is entirely English" in card
+    assert "If the faithful result is at most 60 characters, do not shorten it further." not in card
+
+
+def test_the_taxonomy_seed_names_the_state_a_running_event_is_in() -> None:
+    """#522 D2: 11 of 22 audited change_state errors called an attack or outage under way `reported`.
+
+    The definitions only denied the wrong answer in the abstract; the codebook now names the concrete
+    cases on both sides of the boundary, and the rendered seed carries them because it is rendered from
+    these constants.
+    """
+
+    taxonomy = seed_instruction("taxonomy")
+    assert "never merely because an outlet reported the event" in taxonomy
+    assert "an attack, outage, exploit or on-chain transfer that is under way is effective" in taxonomy
+    assert "A party's statement, accusation, threat or guidance is announced." in taxonomy
+    for example in (
+        "air defenses are engaging incoming missiles right now -> geopolitical_conflict / effective / claimed",
+        "network is currently degraded -> security_operational_incident / effective / confirmed",
+        "cuts its own full-year guidance",
+    ):
+        assert example in taxonomy, example

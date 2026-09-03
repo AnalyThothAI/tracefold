@@ -24,6 +24,7 @@ from tracefold.news.program.lm import (
 )
 from tracefold.news.program.module import NativeNewsProgram, NativeProgramResult
 from tracefold.news.program.runtime import PROGRAM_VERSION
+from tracefold.news.program.signatures import ReaderCard
 
 
 def _semantics(**updates: Any) -> dict[str, Any]:
@@ -399,3 +400,49 @@ def test_outer_dspy_envelope_sibling_is_filtered_but_business_model_remains_exac
     assert result.semantics.relevance.channels == ("rates", "security_incident")
     assert result.semantics.relevance.affected_markets == ("fx", "single_asset")
     assert result.card.model_dump(mode="json") == _card()
+
+
+@pytest.mark.parametrize(
+    ("card", "error"),
+    [
+        pytest.param({"headline_zh": "比特币出现新进展"}, "news_program_reader_why_empty", id="why-omitted"),
+        pytest.param(
+            {"headline_zh": "比特币出现新进展", "why_zh": "：：：：：：：：："},
+            "news_program_reader_why_empty",
+            id="why-punctuation-only",
+        ),
+        pytest.param(
+            {"headline_zh": "比特币出现新进展", "why_zh": "        "},
+            "news_program_reader_why_empty",
+            id="why-whitespace-only",
+        ),
+        pytest.param(
+            {"headline_zh": "Bitcoin reclaims $70,000 after the Fed cut", "why_zh": "美联储降息推动风险资产反弹。"},
+            "news_program_reader_headline_not_chinese",
+            id="headline-english",
+        ),
+        pytest.param({"headline_zh": "   ", "why_zh": "美联储降息推动风险资产反弹。"}, None, id="headline-blank"),
+    ],
+)
+def test_reader_card_refuses_copy_the_reader_cannot_use(card: dict[str, str], error: str | None) -> None:
+    """#522 D4: the #504 receipt pushed cards with an empty why_zh, a why_zh of ":" and an English headline.
+
+    `max_length` and a non-blank headline were the whole contract, so each of those was a valid ReaderCard.
+    A rejection here is not a lost card: the JSON adapter already makes one format retry, and a card that
+    reaches the reader without its mechanism sentence has nothing to say.
+    """
+
+    with pytest.raises(ValidationError) as raised:
+        ReaderCard.model_validate(card)
+    if error is not None:
+        assert error in str(raised.value)
+
+
+def test_reader_card_accepts_ordinary_chinese_copy() -> None:
+    card = ReaderCard.model_validate(
+        {
+            "headline_zh": "美联储意外降息 25 个基点",
+            "why_zh": "美元利率下行直接抬高风险资产估值，比特币与美股同步走强。",
+        }
+    )
+    assert card.headline_zh == "美联储意外降息 25 个基点"
