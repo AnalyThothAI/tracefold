@@ -18,12 +18,10 @@ def _signal(**updates: object) -> TradeSignalV1:
         "seq": 1,
         "signal_id": "a" * 64,
         "case_id": "case-btc-long",
-        "alpha_contract_sha256": "b" * 64,
         "market_key": "crypto:perp:BTC:USDT",
         "direction": "long",
         "observed_at_ns": 1_000,
         "expires_at_ns": 2_000,
-        "evidence_sha256": "c" * 64,
         "alpha_metadata": {"policy": "oi-v1", "score_bps": 750},
     }
     payload.update(updates)
@@ -65,7 +63,6 @@ def _observation(**updates: object) -> ExecutionObservationV1:
         "observed_at_ns": 1_600,
         "native_identity_references": ("client_order_id:entry-1",),
         "summary": {"disposition": "accepted"},
-        "payload_digest": "2" * 64,
     }
     payload.update(updates)
     return ExecutionObservationV1.model_validate(payload)
@@ -92,6 +89,10 @@ def test_json_bounds_use_postgres_jsonb_text_bytes_at_exact_edges() -> None:
 
     assert _signal(alpha_metadata=metadata).alpha_metadata == metadata
     assert _observation(native_identity_references=references).native_identity_references == references
+    # The same 16 references offered out of order and with a repeat: the contract normalizes rather
+    # than refusing, because no CHECK restates the ordering rule any more (#520 PR-C).
+    shuffled = (references[3], references[0], references[3], *references[1:3], *references[4:])
+    assert _observation(native_identity_references=shuffled).native_identity_references == references
 
     oversized_metadata = metadata | {"k0": "x" * 247}
     oversized_references = (references[0] + "x", *references[1:])
@@ -123,9 +124,14 @@ def test_contracts_reject_postgres_unrepresentable_text_before_storage(
 
 
 @pytest.mark.parametrize("action", ["resume_entries", "emergency_halt", "flatten"])
-def test_high_risk_operator_actions_require_confirmation(action: str) -> None:
-    with pytest.raises(ValidationError, match="operator_intent_confirmation_required"):
-        _intent(action=action, confirmation_identity=None)
+def test_a_high_risk_action_is_a_plain_authenticated_command(action: str) -> None:
+    """#520 PR-C: the confirmation identity is not stored, so it cannot be a contract requirement.
+
+    It was one until the column and its CHECK went. `CONFIRM` is still demanded where a human types
+    it, at the command ingress, and #520 PR-B removes that too.
+    """
+
+    assert _intent(action=action, confirmation_identity=None).action == action
 
 
 def test_manual_entry_has_no_size_or_leverage_and_requires_market_direction() -> None:

@@ -65,12 +65,7 @@ def _runtime_state(*, heartbeat_at_ns: int = 1_000_000_000) -> ExecutionRuntimeS
         alive=True,
         execution_safe=False,
         entries_armed=False,
-        control_plane_ready=False,
-        singleton_ready=True,
         startup_reconciled=False,
-        portfolio_ready=False,
-        audit_ready=False,
-        day_start_ready=False,
         unexpected_exposure=False,
         account_flat=True,
         positions_count=0,
@@ -301,9 +296,7 @@ def test_probe_readiness_requires_execution_safety_but_not_entry_arming() -> Non
         lifecycle_state="running",
         execution_safe=True,
         entries_armed=False,
-        control_plane_ready=True,
         startup_reconciled=True,
-        portfolio_ready=True,
         entry_block_reason="entries_paused",
     )
 

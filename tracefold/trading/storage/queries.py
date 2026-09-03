@@ -96,8 +96,8 @@ def console_signals_statement(
         predicates.append("(observed_at_ns, signal_id) < (%(before_ns)s, %(before_id)s)")
         params["before_ns"], params["before_id"] = before
     sql = f"""
-        SELECT seq, signal_id, case_id, alpha_contract_sha256, market_key, direction,
-               observed_at_ns, expires_at_ns, evidence_sha256, alpha_metadata
+        SELECT seq, signal_id, case_id, market_key, direction,
+               observed_at_ns, expires_at_ns, alpha_metadata
           FROM trading_trade_signals
          WHERE {" AND ".join(predicates)}
          ORDER BY observed_at_ns DESC, signal_id DESC
@@ -130,7 +130,7 @@ def console_execution_observations_statement(
     sql = f"""
         SELECT seq, event_id, account_slot, runtime_release, execution_strategy,
                signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
-               native_identity_references, summary, payload_digest
+               native_identity_references, summary
           FROM trading_execution_observations
          WHERE {" AND ".join(predicates)}
          ORDER BY observed_at_ns DESC, event_id DESC
@@ -164,7 +164,6 @@ def console_operator_intents_statement(
         SELECT command.seq, command.command_id, command.account_slot, command.action,
                command.scope, command.reason, command.operator_identity,
                command.requested_at_ns, command.expires_at_ns,
-               command.confirmation_identity IS NOT NULL AS confirmed,
                command.market_key, command.direction,
                disposition.summary ->> 'disposition' AS disposition,
                disposition.summary ->> 'reason' AS disposition_reason
@@ -318,7 +317,6 @@ class QueryStorage:
                      observation.signal_id, observation.command_id, observation.normalized_kind,
                      observation.occurred_at_ns, observation.observed_at_ns,
                      observation.native_identity_references, observation.summary,
-                     observation.payload_digest,
                      -- The Case a Signal card states its reasons from. Read here rather than in a
                      -- second round trip so the rendered text is a pure function of one row, and
                      -- LEFT so a non-Signal observation is still notifiable.
@@ -353,7 +351,7 @@ class QueryStorage:
             )
             SELECT seq, event_id, account_slot, runtime_release, execution_strategy,
                    signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
-                   native_identity_references, summary, payload_digest,
+                   native_identity_references, summary,
                    case_id, market_key, direction, signal_observed_at_ns,
                    policy_decision, policy_reason, policy_checks, manifest
               FROM candidate

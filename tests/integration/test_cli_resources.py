@@ -59,7 +59,7 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
     data = response["data"]
     assert set(data["decision"]) == {"last_case_at_ms"}
     assert data["alpha"]["policy_id"] == "source_native_oi_smart_money_long_v4"
-    assert len(data["alpha"]["contract_sha256"]) == 64
+    assert len(data["alpha"]["config_digest"]) == 64
     assert data["execution"] == {
         "mode": "disabled",
         "account_slot": "binance_usdm_primary",
@@ -76,12 +76,7 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
         "heartbeat_at_ns": None,
         "reconciliation_observed_at_ns": None,
         "reconciliation_age_ms": None,
-        "singleton_ready": False,
         "startup_reconciled": False,
-        "portfolio_ready": False,
-        "control_plane_ready": False,
-        "audit_ready": False,
-        "day_start_ready": False,
         "entries_paused": True,
         "emergency_halted": False,
         "unexpected_exposure": False,

@@ -81,12 +81,7 @@ class TradingExecutionReadinessData(ExactApiSchema):
     heartbeat_at_ns: int | None = None
     reconciliation_observed_at_ns: int | None = None
     reconciliation_age_ms: int | None = None
-    singleton_ready: bool = False
     startup_reconciled: bool = False
-    portfolio_ready: bool = False
-    control_plane_ready: bool = False
-    audit_ready: bool = False
-    day_start_ready: bool = False
     entries_paused: bool = True
     emergency_halted: bool = False
     unexpected_exposure: bool = False
@@ -111,7 +106,6 @@ class TradingAlphaIdentityData(ExactApiSchema):
     policy_id: str
     policy_version: str
     config_digest: str
-    contract_sha256: str
     config: dict[str, str] = Field(default_factory=dict)
 
 
@@ -248,13 +242,11 @@ class TradingSignalData(ExactApiSchema):
     seq: int
     signal_id: str
     case_id: str
-    alpha_contract_sha256: str
     market_key: str
     direction: Literal["long", "short"]
     observed_at_ns: int
     expires_at_ns: int
     expired: bool
-    evidence_sha256: str
     alpha_metadata: dict[str, str | int | bool] = Field(default_factory=dict)
 
 
@@ -279,7 +271,6 @@ class TradingExecutionObservationData(ExactApiSchema):
     observed_at_ns: int
     native_identity_references: list[str] = Field(default_factory=list)
     summary: dict[str, Any] = Field(default_factory=dict)
-    payload_digest: str
 
 
 class TradingExecutionObservationsData(ExactApiSchema):
@@ -301,7 +292,6 @@ class TradingOperatorIntentData(ExactApiSchema):
     requested_at_ns: int
     expires_at_ns: int
     expired: bool
-    confirmed: bool
     market_key: str | None = None
     direction: Literal["long", "short"] | None = None
     disposition: str | None = None

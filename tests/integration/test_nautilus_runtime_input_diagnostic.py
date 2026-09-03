@@ -233,12 +233,10 @@ def _append_workload(
                 prepare_trade_signal(
                     signal_id=identity,
                     case_id=case_id,
-                    alpha_contract_sha256="c" * 64,
                     market_key="crypto:perp:BTC:USDT",
                     direction="long",
                     observed_at_ns=now_ns,
                     expires_at_ns=now_ns + 60_000_000_000,
-                    evidence_sha256="d" * 64,
                 )
             )
             repo.append_operator_intent(
@@ -350,12 +348,7 @@ def _runtime_state(*, account_slot: str) -> ExecutionRuntimeState:
         alive=True,
         execution_safe=False,
         entries_armed=False,
-        control_plane_ready=False,
-        singleton_ready=True,
         startup_reconciled=False,
-        portfolio_ready=False,
-        audit_ready=False,
-        day_start_ready=False,
         unexpected_exposure=False,
         account_flat=True,
         positions_count=0,

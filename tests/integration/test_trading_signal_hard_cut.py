@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -91,12 +92,10 @@ def _signal(
     return prepare_trade_signal(
         signal_id=suffix * 64,
         case_id=case_id,
-        alpha_contract_sha256="d" * 64,
         market_key="crypto:perp:SOL:USDT",
         direction="long",
         observed_at_ns=1_000,
         expires_at_ns=expires_at_ns,
-        evidence_sha256="e" * 64,
         alpha_metadata={"policy_rule": "test"},
     )
 
@@ -175,8 +174,41 @@ def _seed_unreconciled_previously_executable_account(conn: Any) -> None:
 
 
 def _seed_preexisting_signal(conn: Any) -> None:
+    """One Signal in the shape 20260831_0340 stored it, before the digests were dropped (#520 PR-C)."""
+
+    payload = {
+        "signal_version": "trade_signal_v1",
+        "signal_id": "c" * 64,
+        "case_id": "preflight-no-case",
+        "alpha_contract_sha256": "d" * 64,
+        "market_key": "crypto:perp:SOL:USDT",
+        "direction": "long",
+        "observed_at_ns": 1_000,
+        "expires_at_ns": 10_000,
+        "evidence_sha256": "e" * 64,
+        "alpha_metadata": {"policy_rule": "test"},
+    }
     with conn.transaction():
-        TradingRepository(conn).append_trade_signal(_signal(case_id="preflight-no-case"))
+        conn.execute(
+            """
+            INSERT INTO trading_trade_signals (
+              signal_id, case_id, alpha_contract_sha256, market_key, direction,
+              observed_at_ns, expires_at_ns, evidence_sha256, alpha_metadata, payload
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+            """,
+            (
+                payload["signal_id"],
+                payload["case_id"],
+                payload["alpha_contract_sha256"],
+                payload["market_key"],
+                payload["direction"],
+                payload["observed_at_ns"],
+                payload["expires_at_ns"],
+                payload["evidence_sha256"],
+                json.dumps(payload["alpha_metadata"], sort_keys=True, separators=(",", ":")),
+                json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            ),
+        )
 
 
 @contextmanager
@@ -570,16 +602,14 @@ _DROPPED_FUNCTIONS = (
     "trading_canonical_jsonb",
 )
 
-# The guards 0347 must not take with it: two still fire on `trading_cases` / `trading_trade_signals` /
-# the execution stream, and three are called from live CHECKs on the Signal and observation payloads.
-# `reject_retired_trading_case_state` and `reject_retired_candidate_gate_stage` are not here because
-# `20260903_0355` dropped both — a narrowed CHECK says the same thing once.
+# The guards 0347 must not take with it: the two that still fire on `trading_cases` /
+# `trading_trade_signals` / the execution stream. `reject_retired_trading_case_state` and
+# `reject_retired_candidate_gate_stage` are not here because `20260903_0355` dropped both — a
+# narrowed CHECK says the same thing once. The three payload validators are not here either:
+# `20260903_0357` dropped them with the CHECKs that called them, and the contract is the validator.
 _KEPT_FUNCTIONS = (
     "enforce_trading_case_signal_link",
     "reject_trading_execution_stream_mutation",
-    "trading_jsonb_object_size",
-    "trading_execution_metadata_valid",
-    "trading_execution_string_array_valid",
 )
 
 

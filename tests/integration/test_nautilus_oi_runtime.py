@@ -71,12 +71,10 @@ def _append_signal(repo: TradingRepository, *, suffix: str = "1") -> None:
     prepared = prepare_trade_signal(
         signal_id=suffix * 64,
         case_id=case_id,
-        alpha_contract_sha256="2" * 64,
         market_key="crypto:perp:BTC:USDT",
         direction="long",
         observed_at_ns=NOW_NS - 1_000_000,
         expires_at_ns=NOW_NS + 60_000_000_000,
-        evidence_sha256="3" * 64,
     )
     with repo.conn.transaction():
         repo.conn.execute(
@@ -143,7 +141,6 @@ def _append_entry_order_fact(repo: TradingRepository, *, signal_id: str, observe
                 ).value,
             ),
             "summary": {"leg": "entry", "status": "submitted"},
-            "payload_digest": _sha(f"entry-order-payload:{signal_id}"),
         }
     )
     with repo.conn.transaction():
@@ -166,7 +163,6 @@ def _append_closed_position_fact(repo: TradingRepository, *, signal_id: str) -> 
             "observed_at_ns": NOW_NS,
             "native_identity_references": (),
             "summary": {"status": "closed", "quantity": "0"},
-            "payload_digest": _sha(f"closed-position-payload:{signal_id}"),
         }
     )
     with repo.conn.transaction():
@@ -203,12 +199,10 @@ def _append_input_burst(repo: TradingRepository, *, size: int) -> None:
                 prepare_trade_signal(
                     signal_id=_sha(f"signal:{index}"),
                     case_id=case_id,
-                    alpha_contract_sha256="2" * 64,
                     market_key="crypto:perp:BTC:USDT",
                     direction="long",
                     observed_at_ns=NOW_NS - 1_000_000,
                     expires_at_ns=NOW_NS + 60_000_000_000,
-                    evidence_sha256="3" * 64,
                 )
             )
             repo.append_operator_intent(
@@ -262,12 +256,7 @@ def _runtime_state() -> ExecutionRuntimeState:
         alive=True,
         execution_safe=False,
         entries_armed=False,
-        control_plane_ready=False,
-        singleton_ready=True,
         startup_reconciled=False,
-        portfolio_ready=False,
-        audit_ready=False,
-        day_start_ready=False,
         unexpected_exposure=False,
         account_flat=True,
         positions_count=0,
@@ -316,31 +305,6 @@ def _stop_bridge(bridge: OiRuntimeDatabaseBridge) -> None:
     assert bridge.connected is False
 
 
-# The `20260903_0353` downgrade body: `trading_execution_string_array_valid` as production ran it on
-# 2026-09-02, ordering `native_identity_references` under the database default collation. The test
-# below restores it inside its own throwaway clone so the refusal PostgreSQL actually raises - a real
-# `CheckViolation`, on the real constraint - drives the whole quarantine path.
-_PRE_0353_STRING_ARRAY_VALID = """
-CREATE OR REPLACE FUNCTION public.trading_execution_string_array_valid(value jsonb) RETURNS boolean
-    LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
-    AS $$
-          SELECT jsonb_typeof(value) = 'array'
-             AND jsonb_array_length(value) <= 16
-             AND octet_length(value::text) <= 4096
-             AND NOT EXISTS (
-               SELECT 1 FROM jsonb_array_elements(value) item
-                WHERE jsonb_typeof(item) <> 'string' OR char_length(item #>> '{}') NOT BETWEEN 1 AND 256
-             )
-             AND value = COALESCE(
-               (SELECT jsonb_agg(item ORDER BY item #>> '{}') FROM jsonb_array_elements(value) item),
-               '[]'::jsonb
-             )
-             AND jsonb_array_length(value) = (
-               SELECT count(DISTINCT item) FROM jsonb_array_elements(value) item
-             )
-        $$
-"""
-
 _NAUTILUS_SHAPED_REFERENCES = (
     "462066006",
     "61742419",
@@ -352,10 +316,12 @@ _NAUTILUS_SHAPED_REFERENCES = (
 def test_a_database_refused_batch_is_quarantined_and_leaves_a_durable_audit_gap() -> None:
     """The real refusal, the real recovery: PostgreSQL says no, the ledger says what it lost.
 
-    Running the pre-`0353` function makes the database reject the exact fill shape that stopped
-    production on 2026-09-02. What is being proved here is everything a fake writer cannot: that
-    psycopg raises an `IntegrityError` the App writer catches, that the aborted transaction leaves the
-    session usable, that the `audit_gap` lands durably in the same flush, and that the Signal whose
+    The refusal is the Command foreign key -- a fill correlated to a Command nobody issued.
+    Until #520 PR-C this test installed the pre-`0353` collation function instead; that whole class of
+    refusal is gone with the JSON-shape CHECKs, and what is left is exactly the relational kind the
+    contract cannot check for itself. What is being proved here is everything a fake writer cannot:
+    that psycopg raises an `IntegrityError` the App writer catches, that the aborted transaction leaves
+    the session usable, that the `audit_gap` lands durably in the same flush, and that the Signal whose
     disposition was refused stops being pending instead of hanging forever.
     """
 
@@ -378,8 +344,10 @@ def test_a_database_refused_batch_is_quarantined_and_leaves_a_durable_audit_gap(
         assert signal is not None
         assert signals.pending_ids == {signal.signal_id}
 
-        fill = factory.create(
+        orphan_command_id = "9" * 64
+        orphan = factory.create(
             normalized_kind="fill",
+            command_id=orphan_command_id,
             occurred_at_ns=NOW_NS,
             observed_at_ns=NOW_NS,
             native_identity_references=_NAUTILUS_SHAPED_REFERENCES,
@@ -395,19 +363,12 @@ def test_a_database_refused_batch_is_quarantined_and_leaves_a_durable_audit_gap(
             summary={"disposition": "accepted"},
             payload={"disposition": "accepted"},
         )
-        assert audit.offer(fill) is True
+        assert audit.offer(orphan) is True
         assert audit.offer(disposition) is True
 
-        head_definition = conn.execute(
-            "SELECT pg_get_functiondef("
-            "'public.trading_execution_string_array_valid(jsonb)'::regprocedure) AS definition"
-        ).fetchone()
-        assert head_definition is not None
-        assert 'COLLATE "C"' in head_definition["definition"]
-        conn.execute(_PRE_0353_STRING_ARRAY_VALID)
-        with pytest.raises(psycopg.errors.CheckViolation) as refused, conn.transaction():
-            repo.append_execution_observations(prepare_execution_observations((fill,)))
-        assert refused.value.diag.constraint_name == "trading_execution_observation_native_refs_check"
+        with pytest.raises(psycopg.errors.ForeignKeyViolation) as refused, conn.transaction():
+            repo.append_execution_observations(prepare_execution_observations((orphan,)))
+        assert refused.value.diag.constraint_name == "trading_execution_observation_command_fk"
 
         assert flush_audit_once(repos=repos, audit=audit, signals=signals) == 3
 
@@ -421,18 +382,35 @@ def test_a_database_refused_batch_is_quarantined_and_leaves_a_durable_audit_gap(
         assert rows[0]["summary"] == {
             "cause": "audit_append_rejected",
             "dropped_count": 2,
-            "first_event_id": fill.event_id,
+            "first_event_id": orphan.event_id,
             "kind.fill": 1,
             "kind.signal_disposition": 1,
         }
 
-        # Head restores code-point ordering, and the same fill is admitted unchanged.
-        conn.execute(head_definition["definition"])
-        assert audit.offer(fill) is True
+        # Issue the Command the fill names, and the same observation is admitted unchanged --
+        # mixed-case Nautilus identities and all.
+        with conn.transaction():
+            repo.append_operator_intent(
+                prepare_operator_intent(
+                    command_id=orphan_command_id,
+                    account_slot=profile.account_slot,
+                    action="manual_entry",
+                    scope="market",
+                    reason="quarantine recovery",
+                    operator_identity="operator:test",
+                    authentication_identity="test:authenticated",
+                    requested_at_ns=NOW_NS,
+                    expires_at_ns=NOW_NS + 1_000_000_000,
+                    confirmation_identity=None,
+                    market_key="crypto:perp:UNI:USDT",
+                    direction="long",
+                )
+            )
+        assert audit.offer(orphan) is True
         assert flush_audit_once(repos=repos, audit=audit, signals=signals) == 1
         stored = conn.execute(
             "SELECT native_identity_references FROM trading_execution_observations WHERE event_id = %s",
-            (fill.event_id,),
+            (orphan.event_id,),
         ).fetchone()
         assert stored is not None
         assert stored["native_identity_references"] == list(_NAUTILUS_SHAPED_REFERENCES)

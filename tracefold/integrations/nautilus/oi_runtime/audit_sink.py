@@ -58,7 +58,8 @@ class ObservationFactory:
         event_identity: str | None = None,
         fixed_event_id: str | None = None,
     ) -> ExecutionObservationV1:
-        payload_digest = _sha256(payload)
+        # The native payload is not stored (#520 PR-C), but its digest and the normalized
+        # reference set still fix the event id, so no two native events collapse onto one.
         references = tuple(sorted(set(native_identity_references)))
         event_id = fixed_event_id or _sha256(
             {
@@ -69,7 +70,7 @@ class ObservationFactory:
                 "signal": signal_id,
                 "command": command_id,
                 "native": references,
-                "payload": payload_digest,
+                "payload": _sha256(payload),
                 "identity": event_identity,
             }
         )
@@ -86,7 +87,6 @@ class ObservationFactory:
                 "observed_at_ns": observed_at_ns,
                 "native_identity_references": references,
                 "summary": dict(summary or {}),
-                "payload_digest": payload_digest,
             }
         )
 
@@ -461,9 +461,9 @@ class AuditSink:
     def _enqueue_rejected_gap_when_room(self) -> None:
         """Name what the ledger lost: how many, the first identity, and which kinds.
 
-        `trading_execution_metadata_valid` allows 16 keys and 2048 bytes. Three fixed keys plus the
-        ten-value `normalized_kind` vocabulary is 13 keys of short names and integers, so this summary
-        cannot outgrow the CHECK that the gap record exists to report on.
+        `ExecutionObservationV1` allows a summary of 16 keys and 2048 bytes. Three fixed keys plus
+        the ten-value `normalized_kind` vocabulary is 13 keys of short names and integers, so this
+        summary cannot itself be refused by the contract the gap record exists to report on.
         """
 
         if self._rejected_count == 0 or self._rejected_gap_event_id is not None:

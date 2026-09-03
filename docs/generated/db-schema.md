@@ -596,7 +596,6 @@
 | `observed_at_ns` | `BIGINT` | False | `None` |
 | `native_identity_references` | `JSONB` | False | `None` |
 | `summary` | `JSONB` | False | `None` |
-| `payload_digest` | `TEXT` | False | `None` |
 | `payload` | `JSONB` | False | `None` |
 
 ## `trading_execution_runtime_control_state`
@@ -624,10 +623,7 @@
 | `credential_fingerprint` | `TEXT` | False | `None` |
 | `lifecycle_state` | `TEXT` | False | `None` |
 | `alive` | `BOOLEAN` | False | `None` |
-| `singleton_ready` | `BOOLEAN` | False | `None` |
 | `startup_reconciled` | `BOOLEAN` | False | `None` |
-| `portfolio_ready` | `BOOLEAN` | False | `None` |
-| `audit_ready` | `BOOLEAN` | False | `None` |
 | `unexpected_exposure` | `BOOLEAN` | False | `None` |
 | `account_flat` | `BOOLEAN` | False | `None` |
 | `reconciliation_observed_at_ns` | `BIGINT` | False | `None` |
@@ -637,8 +633,6 @@
 | `updated_at_ns` | `BIGINT` | False | `None` |
 | `execution_safe` | `BOOLEAN` | False | `None` |
 | `entries_armed` | `BOOLEAN` | False | `None` |
-| `control_plane_ready` | `BOOLEAN` | False | `None` |
-| `day_start_ready` | `BOOLEAN` | False | `None` |
 | `positions_count` | `INTEGER` | False | `None` |
 | `open_orders_count` | `INTEGER` | False | `None` |
 | `protection_status` | `TEXT` | False | `None` |
@@ -659,7 +653,6 @@
 | `authentication_identity` | `TEXT` | False | `None` |
 | `requested_at_ns` | `BIGINT` | False | `None` |
 | `expires_at_ns` | `BIGINT` | False | `None` |
-| `confirmation_identity` | `TEXT` | True | `None` |
 | `market_key` | `TEXT` | True | `None` |
 | `direction` | `TEXT` | True | `None` |
 | `payload` | `JSONB` | False | `None` |
@@ -671,12 +664,10 @@
 | `seq` | `BIGINT` | False | `None` |
 | `signal_id` | `TEXT` | False | `None` |
 | `case_id` | `TEXT` | False | `None` |
-| `alpha_contract_sha256` | `TEXT` | False | `None` |
 | `market_key` | `TEXT` | False | `None` |
 | `direction` | `TEXT` | False | `None` |
 | `observed_at_ns` | `BIGINT` | False | `None` |
 | `expires_at_ns` | `BIGINT` | False | `None` |
-| `evidence_sha256` | `TEXT` | False | `None` |
 | `alpha_metadata` | `JSONB` | False | `None` |
 | `payload` | `JSONB` | False | `None` |
 

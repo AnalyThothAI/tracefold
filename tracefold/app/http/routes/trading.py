@@ -18,7 +18,6 @@ from tracefold.app.trading_config import ADMISSION_VERSION, signal_lane_config
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from tracefold.trading import (
     OperatorCommandError,
-    canonical_sha256,
     parse_operator_command,
     prepare_parsed_operator_intent,
 )
@@ -95,13 +94,6 @@ def get_trading_status(request: Request) -> Response:
             now_ns=now_ms * 1_000_000,
         )
     config = signal_lane_config(runtime.settings)
-    alpha_contract = canonical_sha256(
-        {
-            "policy_id": config.policy.policy_id,
-            "policy_version": config.policy.policy_version,
-            "policy_config": config.policy.config_snapshot,
-        }
-    )
     return _etagged(
         {
             "decision": {"last_case_at_ms": last_case_at_ms},
@@ -110,7 +102,6 @@ def get_trading_status(request: Request) -> Response:
                 "policy_id": config.policy.policy_id,
                 "policy_version": config.policy.policy_version,
                 "config_digest": config.policy.config_digest,
-                "contract_sha256": alpha_contract,
                 "config": {key: str(value) for key, value in sorted(config.policy.config_snapshot.items())},
             },
             "counts": counts,
@@ -487,13 +478,11 @@ def _signal(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
         "seq": int(row["seq"]),
         "signal_id": str(row["signal_id"]),
         "case_id": str(row["case_id"]),
-        "alpha_contract_sha256": str(row["alpha_contract_sha256"]),
         "market_key": str(row["market_key"]),
         "direction": str(row["direction"]),
         "observed_at_ns": int(row["observed_at_ns"]),
         "expires_at_ns": int(row["expires_at_ns"]),
         "expired": int(row["expires_at_ns"]) <= now_ns,
-        "evidence_sha256": str(row["evidence_sha256"]),
         "alpha_metadata": row.get("alpha_metadata") or {},
     }
 
@@ -512,7 +501,6 @@ def _observation(row: dict[str, Any]) -> dict[str, Any]:
         "observed_at_ns": int(row["observed_at_ns"]),
         "native_identity_references": list(row.get("native_identity_references") or []),
         "summary": row.get("summary") or {},
-        "payload_digest": str(row["payload_digest"]),
     }
 
 
@@ -528,7 +516,6 @@ def _command(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
         "requested_at_ns": int(row["requested_at_ns"]),
         "expires_at_ns": int(row["expires_at_ns"]),
         "expired": int(row["expires_at_ns"]) <= now_ns,
-        "confirmed": bool(row["confirmed"]),
         "market_key": row.get("market_key"),
         "direction": row.get("direction"),
         "disposition": row.get("disposition"),

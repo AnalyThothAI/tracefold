@@ -165,17 +165,21 @@ class LaneStorage(CandidateGateStorage, ExecutionStreamStorage):
         *,
         case_id: str,
         run_id: str,
-        manifest: TradingCaseManifest,
         policy_reason: str,
         policy_checks: Mapping[str, Any],
         prepared: PreparedTradeSignal,
         now_ms: int,
     ) -> bool:
-        """Commit exactly one Signal and the Case terminal transition, or neither."""
+        """Commit exactly one Signal and the Case terminal transition, or neither.
+
+        The claim is `case_id + run_id` on a still-undecided Case, taken `FOR UPDATE`. Re-deriving the
+        caller's manifest digest and comparing it to the stored one said nothing that predicate does
+        not: the run holding the lease is the run that froze the manifest (#520 PR-C).
+        """
 
         row = self.conn.execute(
             """
-            SELECT manifest_sha256
+            SELECT case_id
               FROM trading_cases
              WHERE case_id = %s AND run_id = %s AND state IN ('PENDING', 'RUNNING')
              FOR UPDATE
@@ -184,8 +188,6 @@ class LaneStorage(CandidateGateStorage, ExecutionStreamStorage):
         ).fetchone()
         if row is None:
             return False
-        if str(row["manifest_sha256"]) != manifest.digest():
-            raise RuntimeError("trading_case_signal_claim_invalid")
         if prepared.value.case_id != case_id:
             raise RuntimeError("trading_case_signal_identity_invalid")
         self.append_trade_signal(prepared)

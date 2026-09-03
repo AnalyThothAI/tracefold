@@ -151,17 +151,6 @@ class SignalLane:
         self._clock = clock
         self._telemetry = telemetry
         self._run_id = uuid.uuid4().hex
-        self._alpha_contract_sha256 = canonical_sha256(
-            {
-                "policy_id": config.policy.policy_id,
-                "policy_version": config.policy.policy_version,
-                "policy_config": config.policy.config_snapshot,
-            }
-        )
-
-    @property
-    def alpha_contract_sha256(self) -> str:
-        return self._alpha_contract_sha256
 
     async def advance(self) -> LaneTurn:
         return await self._advance_turn()
@@ -423,28 +412,16 @@ class SignalLane:
             return await self._block(case_id, "source_stale", commit_at)
         observed_at_ns = commit_at * 1_000_000
         expires_at_ns = min(commit_at + self._config.signal_ttl_ms, source_deadline_ms) * 1_000_000
-        evidence_sha256 = canonical_sha256({"case_manifest_sha256": manifest.digest(), "alpha_evidence": evidence})
-        signal_id = canonical_sha256(
-            {
-                "signal_version": "trade_signal_v1",
-                "case_id": case_id,
-                "alpha_contract_sha256": self._alpha_contract_sha256,
-                "market_key": manifest.market_key,
-                "direction": "long",
-                "observed_at_ns": observed_at_ns,
-                "expires_at_ns": expires_at_ns,
-                "evidence_sha256": evidence_sha256,
-            }
-        )
+        # One Case emits at most one Signal, and a re-run of the same Case at the same instant is
+        # the same Signal; the two facts that identify it are all the id needs (#520 PR-C).
+        signal_id = canonical_sha256({"case_id": case_id, "observed_at_ns": observed_at_ns})
         prepared = prepare_trade_signal(
             signal_id=signal_id,
             case_id=case_id,
-            alpha_contract_sha256=self._alpha_contract_sha256,
             market_key=manifest.market_key,
             direction="long",
             observed_at_ns=observed_at_ns,
             expires_at_ns=expires_at_ns,
-            evidence_sha256=evidence_sha256,
             alpha_metadata={"policy_rule": decision.rule},
         )
         committed = await self._db.tx(
@@ -452,7 +429,6 @@ class SignalLane:
             lambda repos: _trading(repos).commit_signal(
                 case_id=case_id,
                 run_id=self._run_id,
-                manifest=manifest,
                 policy_reason=decision.rule,
                 policy_checks=evidence,
                 prepared=prepared,

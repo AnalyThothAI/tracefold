@@ -99,12 +99,7 @@ class _ProbeState:
                 "runtime_release": profile.runtime_release,
                 "config_sha256": profile.config_sha256,
                 "credential_fingerprint": credential_fingerprint,
-                "singleton_ready": False,
                 "startup_reconciled": False,
-                "portfolio_ready": False,
-                "control_plane_ready": False,
-                "audit_ready": False,
-                "day_start_ready": False,
                 "unexpected_exposure": False,
                 "account_flat": False,
                 "reconciliation_observed_at_ns": 0,
@@ -305,12 +300,7 @@ async def _run_active_runtime(
             alive=True,
             execution_safe=False,
             entries_armed=False,
-            control_plane_ready=False,
-            singleton_ready=True,
             startup_reconciled=False,
-            portfolio_ready=bool(node.portfolio.initialized),
-            audit_ready=False,
-            day_start_ready=False,
             unexpected_exposure=False,
             account_flat=reports.account_flat,
             positions_count=len(reports.positions),
@@ -401,8 +391,6 @@ async def _run_active_runtime(
                 )
                 next_reconciliation = loop.time() + reconciliation_interval
             strategy_readiness = strategy.readiness()
-            portfolio_ready = bool(node.portfolio.initialized)
-            audit_ready = audit.can_accept_exposure() and bridge.connected
             execution_safe = bool(strategy_readiness.execution_safe)
             entries_armed = bool(strategy_readiness.entries_armed and execution_safe)
             entry_block_reason = None if entries_armed else strategy_readiness.entry_block_reason or "entry_blocked"
@@ -413,12 +401,7 @@ async def _run_active_runtime(
                 alive=True,
                 execution_safe=execution_safe,
                 entries_armed=entries_armed,
-                control_plane_ready=strategy_readiness.control_plane_ready,
-                singleton_ready=singleton.acquired,
                 startup_reconciled=strategy_readiness.startup_reconciled,
-                portfolio_ready=portfolio_ready,
-                audit_ready=audit_ready,
-                day_start_ready=strategy_readiness.day_start_ready,
                 unexpected_exposure=strategy_readiness.unexpected_exposure,
                 account_flat=reports.account_flat,
                 positions_count=positions_count,
@@ -449,7 +432,6 @@ async def _run_active_runtime(
                     alive=False,
                     execution_safe=False,
                     entries_armed=False,
-                    control_plane_ready=False,
                     heartbeat_at_ns=stopped_at_ns,
                     entry_block_reason="runtime_stopped",
                     updated_at_ns=stopped_at_ns,
@@ -805,12 +787,7 @@ def _probe_payload(state: ExecutionRuntimeState) -> dict[str, Any]:
         "runtime_revision": state.runtime_revision,
         "image_digest": state.image_digest,
         "credential_fingerprint": state.credential_fingerprint,
-        "singleton_ready": state.singleton_ready,
         "startup_reconciled": state.startup_reconciled,
-        "portfolio_ready": state.portfolio_ready,
-        "control_plane_ready": state.control_plane_ready,
-        "audit_ready": state.audit_ready,
-        "day_start_ready": state.day_start_ready,
         "unexpected_exposure": state.unexpected_exposure,
         "account_flat": state.account_flat,
         "positions_count": state.positions_count,
