@@ -26,6 +26,36 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration]
 
 
 def _insert_case(conn: Any, *, case_id: str, state: str) -> None:
+    """Insert one Case against the current schema, which has no capital columns (`20260903_0355`)."""
+
+    conn.execute(
+        """
+        INSERT INTO trading_cases (
+          case_id, underlying_key, trigger_kind, primary_source_key,
+          supplemental_source_keys, manifest, manifest_sha256, state,
+          policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
+          updated_at_ms, strategy_id, strategy_version, strategy_config_digest
+        ) VALUES (
+          %s, %s, 'news', %s, '[]'::jsonb, '{"test":"signal-hard-cut"}'::jsonb,
+          %s, %s, %s, 'test_fixture', 1, 1, 1, 1,
+          'signal_hard_cut_fixture', 'v1', %s
+        )
+        """,
+        (
+            case_id,
+            f"hard-cut:{case_id}",
+            f"hard-cut-source:{case_id}",
+            "a" * 64,
+            state,
+            "long" if state == "SIGNAL_EMITTED" else "no_trade",
+            "b" * 64,
+        ),
+    )
+
+
+def _insert_case_at_0340(conn: Any, *, case_id: str, state: str) -> None:
+    """The same Case at `20260831_0340`, where `capital_disposition` is still NOT NULL."""
+
     conn.execute(
         """
         INSERT INTO trading_cases (
@@ -76,12 +106,12 @@ def _seed_not_paused(conn: Any) -> None:
 
 
 def _seed_pending_case(conn: Any) -> None:
-    _insert_case(conn, case_id="preflight-pending-case", state="PENDING")
+    _insert_case_at_0340(conn, case_id="preflight-pending-case", state="PENDING")
 
 
 def _seed_pending_intent(conn: Any) -> None:
     case_id = "preflight-pending-intent"
-    _insert_case(conn, case_id=case_id, state="INTENT_EMITTED")
+    _insert_case_at_0340(conn, case_id=case_id, state="INTENT_EMITTED")
     # 0340 already forbids creating a new v1 row. Disabling only that insert guard recreates an
     # historical row that could still exist at cutover; all table constraints and FKs remain active.
     conn.execute("ALTER TABLE trading_intents DISABLE TRIGGER trg_trading_intents_v3_only")
@@ -104,7 +134,7 @@ def _seed_pending_intent(conn: Any) -> None:
 
 def _seed_nonterminal_order(conn: Any) -> None:
     case_id = "preflight-open-order"
-    _insert_case(conn, case_id=case_id, state="ORDER_PREPARED")
+    _insert_case_at_0340(conn, case_id=case_id, state="ORDER_PREPARED")
     conn.execute(
         """
         INSERT INTO trading_orders (
@@ -159,6 +189,188 @@ def _at_0340(postgres_server_dsn: str) -> Iterator[tuple[str, Any]]:
             command.upgrade(config, "20260831_0340")
         with connect_postgres(dsn) as conn:
             yield dsn, conn
+
+
+@contextmanager
+def _at_0354(postgres_server_dsn: str) -> Iterator[tuple[str, Any]]:
+    """One database at the revision before the dead-column drop."""
+
+    with temporary_unmigrated_postgres_database(postgres_server_dsn) as dsn:
+        prepare_test_migration_database(dsn)
+        config = alembic_config()
+        config.attributes["database_url"] = postgres_migration_test_dsn(dsn)
+        with news_genesis_test_evidence():
+            command.upgrade(config, "20260903_0354")
+        with connect_postgres(dsn) as conn:
+            yield dsn, conn
+
+
+def _seed_retired_case_state(conn: Any) -> None:
+    # 0341's trigger already refuses to *write* a retired state. Disabling only that guard recreates a
+    # row an older writer left behind, which is exactly what 0355's count has to find. Its admission
+    # row is `CASE_CREATED` — not itself retired — so it is the foreign key the operator's archive
+    # step has to clear first, and `docs/MIGRATIONS.md` deletes the ledger before the Case for it.
+    conn.execute("ALTER TABLE trading_cases DISABLE TRIGGER reject_retired_case_state")
+    _insert_case_at_0340(conn, case_id="retired-state-case", state="POLICY_REJECTED")
+    conn.execute("ALTER TABLE trading_cases ENABLE TRIGGER reject_retired_case_state")
+    conn.execute(
+        """
+        INSERT INTO trading_candidate_gate_decisions (
+          source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
+          source_observed_at_ms, status, stage, reason, retryable, evidence, case_id,
+          first_evaluated_at_ms, last_evaluated_at_ms, attempt_count, release_revision
+        ) VALUES (
+          'oi:retired-state-case:v1', 'trading_admission_v3', %s, 'oi', 'crypto:RETIRED',
+          1, 'CASE_CREATED', 'freeze', 'case_created', false, '{}'::jsonb, 'retired-state-case',
+          1, 1, 1, 'test'
+        )
+        """,
+        ("d" * 64,),
+    )
+
+
+def _seed_retired_gate_decision(conn: Any) -> None:
+    conn.execute(
+        """
+        INSERT INTO trading_candidate_gate_decisions (
+          source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
+          source_observed_at_ms, status, stage, reason, retryable, evidence, case_id,
+          first_evaluated_at_ms, last_evaluated_at_ms, attempt_count, release_revision
+        ) VALUES (
+          'oi:retired-stage:v1', 'trading_admission_v3', %s, 'oi', 'crypto:RETIRED',
+          1, 'RESEARCH_ONLY', 'routing', 'unsupported_venue', false, '{}'::jsonb, NULL,
+          1, 1, 1, 'test'
+        )
+        """,
+        ("c" * 64,),
+    )
+
+
+@pytest.mark.parametrize(
+    ("seed", "purge"),
+    [
+        (
+            _seed_retired_case_state,
+            # Exactly the two statements `docs/MIGRATIONS.md` gives the operator, in that order.
+            "DELETE FROM trading_candidate_gate_decisions"
+            " WHERE status = 'RESEARCH_ONLY'"
+            "    OR stage IN ('capability', 'catalog', 'routing')"
+            "    OR case_id IN (SELECT case_id FROM trading_cases"
+            "                    WHERE state IN ('POLICY_REJECTED', 'INTENT_EMITTED', 'ORDER_PREPARED'));"
+            " DELETE FROM trading_cases"
+            "  WHERE state IN ('POLICY_REJECTED', 'INTENT_EMITTED', 'ORDER_PREPARED')",
+        ),
+        (
+            _seed_retired_gate_decision,
+            "DELETE FROM trading_candidate_gate_decisions"
+            " WHERE status = 'RESEARCH_ONLY' OR stage IN ('capability', 'catalog', 'routing')",
+        ),
+    ],
+    ids=("case-state", "gate-decision"),
+)
+def test_0355_refuses_a_retired_value_it_cannot_archive_and_passes_once_the_row_is_gone(
+    postgres_server_dsn: str,
+    seed: Callable[[Any], None],
+    purge: str,
+) -> None:
+    """The narrowed CHECKs are unreachable while a stored row still uses the vocabulary.
+
+    Deleting a historical row is the operator's decision, not a migration's, so the revision counts
+    them first and refuses by name. `docs/MIGRATIONS.md` carries the archive step the refusal points at.
+    """
+
+    with _at_0354(postgres_server_dsn) as (dsn, conn):
+        seed(conn)
+        conn.commit()
+        config = alembic_config()
+        config.attributes["database_url"] = postgres_migration_test_dsn(dsn)
+
+        with pytest.raises(Exception, match="trading_retired_values_present"):
+            command.upgrade(config, "head")
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260903_0354"
+
+        conn.execute(purge)
+        conn.commit()
+        command.upgrade(config, "head")
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260903_0355"
+        assert (
+            conn.execute(
+                """
+                SELECT count(*) AS n FROM information_schema.columns
+                 WHERE table_name = 'trading_cases'
+                   AND column_name IN ('regime', 'program_version', 'program_sha256',
+                                       'program_output', 'capital_disposition', 'capital_reason')
+                """
+            ).fetchone()["n"]
+            == 0
+        )
+
+
+def test_0355_leaves_one_owner_for_each_closed_trading_vocabulary(postgres_clone_dsn: str) -> None:
+    """At head: no dead Case column, no retired-value trigger, and a CHECK that refuses each name."""
+
+    del postgres_clone_dsn
+    conn = connect_postgres_test(read_only=False)
+    try:
+        columns = {
+            str(row["column_name"])
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'trading_cases'"
+            ).fetchall()
+        }
+        triggers = {
+            str(row["tgname"])
+            for row in conn.execute("SELECT tgname FROM pg_trigger WHERE NOT tgisinternal").fetchall()
+        }
+        assert columns.isdisjoint(
+            {
+                "regime",
+                "program_version",
+                "program_sha256",
+                "program_output",
+                "capital_disposition",
+                "capital_reason",
+            }
+        )
+        assert triggers.isdisjoint({"reject_retired_case_state", "trg_trading_candidate_gate_stage_hard_cut"})
+
+        with (
+            pytest.raises(psycopg.errors.CheckViolation, match="trading_candidate_gate_status_check"),
+            conn.transaction(),
+        ):
+            _insert_gate_decision(conn, source_key="oi:retired-status:v1", status="RESEARCH_ONLY", stage="source")
+        for retired_stage in ("capability", "catalog", "routing"):
+            with (
+                pytest.raises(psycopg.errors.CheckViolation, match="trading_candidate_gate_stage_check"),
+                conn.transaction(),
+            ):
+                _insert_gate_decision(
+                    conn, source_key=f"oi:retired-{retired_stage}:v1", status="REJECTED", stage=retired_stage
+                )
+        for retired_state in ("POLICY_REJECTED", "INTENT_EMITTED", "ORDER_PREPARED"):
+            with (
+                pytest.raises(psycopg.errors.CheckViolation, match="trading_cases_state_check"),
+                conn.transaction(),
+            ):
+                _insert_case(conn, case_id=f"retired-{retired_state}", state=retired_state)
+    finally:
+        conn.close()
+
+
+def _insert_gate_decision(conn: Any, *, source_key: str, status: str, stage: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO trading_candidate_gate_decisions (
+          source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
+          source_observed_at_ms, status, stage, reason, retryable, evidence, case_id,
+          first_evaluated_at_ms, last_evaluated_at_ms, attempt_count, release_revision
+        ) VALUES (
+          %s, 'trading_admission_v8', %s, 'oi', 'crypto:RETIRED',
+          1, %s, %s, 'test_fixture', false, '{}'::jsonb, NULL, 1, 1, 1, 'test'
+        )
+        """,
+        (source_key, "c" * 64, status, stage),
+    )
 
 
 @pytest.mark.parametrize(
@@ -297,14 +509,17 @@ def test_0341_enforces_the_atomic_case_signal_pair(
                     (state, "paired-signal-case"),
                 )
 
-        with (
-            pytest.raises(psycopg.errors.RaiseException, match="retired_trading_case_state"),
-            conn.transaction(),
-        ):
-            conn.execute(
-                "UPDATE trading_cases SET state = 'ORDER_PREPARED' WHERE case_id = %s",
-                ("paired-signal-case",),
-            )
+        # `20260903_0355` dropped `reject_retired_case_state`: the narrowed CHECK is the one owner of
+        # the state vocabulary, and it refuses the retired names on insert and update alike.
+        for retired_state in ("POLICY_REJECTED", "INTENT_EMITTED", "ORDER_PREPARED"):
+            with (
+                pytest.raises(psycopg.errors.CheckViolation, match="trading_cases_state_check"),
+                conn.transaction(),
+            ):
+                conn.execute(
+                    "UPDATE trading_cases SET state = %s WHERE case_id = %s",
+                    (retired_state, "paired-signal-case"),
+                )
     finally:
         conn.close()
 
@@ -352,12 +567,11 @@ _DROPPED_FUNCTIONS = (
     "trading_canonical_jsonb",
 )
 
-# The guards 0347 must not take with it: four still fire on `trading_cases` / `trading_trade_signals` /
-# `trading_candidate_gate_decisions` / the execution stream, and three are called from live CHECKs on
-# the Signal and observation payloads.
+# The guards 0347 must not take with it: two still fire on `trading_cases` / `trading_trade_signals` /
+# the execution stream, and three are called from live CHECKs on the Signal and observation payloads.
+# `reject_retired_trading_case_state` and `reject_retired_candidate_gate_stage` are not here because
+# `20260903_0355` dropped both — a narrowed CHECK says the same thing once.
 _KEPT_FUNCTIONS = (
-    "reject_retired_candidate_gate_stage",
-    "reject_retired_trading_case_state",
     "enforce_trading_case_signal_link",
     "reject_trading_execution_stream_mutation",
     "trading_jsonb_object_size",

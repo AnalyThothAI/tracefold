@@ -4,23 +4,16 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from .cases import CaseStorage
-from .catalog import CatalogStorage
-from .execution_stream import ExecutionStreamStorage
-from .gate import CandidateGateStorage
 from .lane import LaneStorage
 from .queries import QueryStorage
 
 
-class TradingRepository(
-    ExecutionStreamStorage,
-    CatalogStorage,
-    CandidateGateStorage,
-    CaseStorage,
-    LaneStorage,
-    QueryStorage,
-):
-    """Connection-bound persistence facade; callers continue to own transactions."""
+class TradingRepository(LaneStorage, QueryStorage):
+    """Connection-bound persistence facade; callers continue to own transactions.
+
+    Two bases, four modules: `LaneStorage` already carries the admission ledger and the execution
+    stream, because the lane's Case and Signal writes are atomic compositions with them.
+    """
 
     def __init__(self, conn: Any) -> None:
         self.conn = conn

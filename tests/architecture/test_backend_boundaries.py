@@ -88,7 +88,6 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # #433-A. App owns the dormant transport's query-audit registration and restore-drill seed.
         # Neither path activates a producer or consumer; both compose the Trading-owned storage seam.
         "tracefold.trading.storage.execution_stream",
-        "tracefold.trading.storage.execution_stream_query_specs",
         # #269/#286. Three surfaces have to describe the *same* capital rules — the Workers wiring that
         # executes them, the CLI replay that reports what they did, and the HTTP status the console
         # reads — so `app/trading_config.py` assembles them from settings once and every reader gets
@@ -100,7 +99,8 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.trading.contracts",
         "tracefold.trading.market_context",
         "tracefold.trading.policy",
-        "tracefold.trading.storage.query_sql",
+        "tracefold.trading.storage.queries",
+        "tracefold.trading.storage.gate",
     ),
     "app.http": (
         "tracefold.news.health",

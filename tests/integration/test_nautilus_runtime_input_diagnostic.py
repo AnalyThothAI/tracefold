@@ -230,13 +230,12 @@ def _append_workload(
                   case_id, underlying_key, trigger_kind, primary_source_key,
                   supplemental_source_keys, manifest, manifest_sha256, state,
                   policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
-                  updated_at_ms, strategy_id, strategy_version, strategy_config_digest,
-                  capital_disposition, capital_reason
+                  updated_at_ms, strategy_id, strategy_version, strategy_config_digest
                 ) VALUES (
                   %s, %s, 'oi', %s, '[]'::jsonb, '{"diagnostic":"475-runtime-input"}'::jsonb,
                   %s, 'SIGNAL_EMITTED', 'long', 'runtime_input_diagnostic', %s, %s, %s, %s,
                   'source_native_oi_smart_money_long_v4', 'source_native_oi_smart_money_long_v4',
-                  %s, 'not_applicable', NULL
+                  %s
                 )
                 """,
                 (

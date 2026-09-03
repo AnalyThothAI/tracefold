@@ -4,17 +4,11 @@ Pure, deterministic, long-only, and the whole of what decides a Case. It answers
 and nothing else — no permission, no execution environment, no venue. The result is an engine-neutral
 Signal; execution authority belongs to a later Runtime boundary.
 
-**Why a new identity rather than a retuned `oi_smart_money_momentum_v1` (#331).** The arithmetic is
-carried over unchanged, deliberately: this hard cut is not the place to move a threshold. What changed
-is everything around it — the trigger is provider-native, the manifest lost the quadrant and the News
-counterpart, the config lost `allow_short`, and the decision now carries frozen per-check evidence. A
-Case decided under the old identity cannot be replayed under this code, and reusing the id would make
-every one of production's 153 historical rows claim rules they were never decided by. The old decoder
-is gone with the registry, so those rows stay readable as rows and are never re-executed.
+A Case decided under an earlier policy id is never re-executed under this code: the id is the claim
+about which rules decided a row, so a changed rulebook takes a new id rather than reusing one.
 
-`allow_short` is dropped rather than pinned to `False`. It could not change a decision: a `fall` frame
-is refused by `not_oi_rise` before any side exists and no other path produces one, so it was a config
-key whose only effect was on the digest.
+There is no `allow_short`, pinned or otherwise: a `fall` frame is refused by `not_oi_rise` before any
+side exists and no other path produces one, so the key's only effect would be on the digest.
 
 The template this implements is three conditions on one frame:
 
@@ -24,10 +18,9 @@ The template this implements is three conditions on one frame:
 
 plus a confirmed price direction and a chasing ceiling above it.
 
-**The OI floor is 5% and the ceiling is 10% by operator decision, not by measurement (#273).** The
-template's own number was 10%, and at 10% this lane is starved: over the seven days to 2026-08-27,
-462 parsed frames yielded four that cleared all three conditions. At 5% the same corpus yields 32.
-What that bought is throughput for a lane whose purpose is receipts; what it did not buy is evidence.
+**The OI floor is 5% by operator decision, not by measurement.** The template's own number is 10%,
+which starves this lane. Lowering it bought throughput for a lane whose purpose is receipts; it did
+not buy evidence.
 
 **The 1000 bps ceiling contradicts a measurement, and recording the contradiction is the point.**
 `docs/research/oi-agent-design-2026-08-22.md` §1.6 bucketed the full OI corpus by the same 1 h
@@ -66,15 +59,15 @@ ALPHA_POLICY_ID: Final = "source_native_oi_smart_money_long_v4"
 class AlphaPolicyConfig:
     """Every number the policy executes, and nothing the Admission Gate already owns.
 
-    The absolute OI liquidity floor is absent on purpose: it is a universe/routability rule with one
-    owner in Admission (#264). A policy re-checking it made the same number both an admission rule and
-    an Alpha rule, which is why moving the canary floor from 20M to 5M moved neither.
+    The absolute OI liquidity floor is absent on purpose: it is a universe rule with one owner in
+    Admission. A policy re-checking it would make the same number both an admission rule and an Alpha
+    rule, so neither answer would be the reason a frame was refused.
     """
 
     # Not a preference: the frame must *prove* it was measured over this window, or the Case has no
     # basis for reading "10%" as a five-minute move.
     measurement_window_ms: int = 300_000
-    # 5%, not the template's 10%: an operator throughput decision recorded above and in #273.
+    # 5%, not the template's 10%: an operator throughput decision, recorded above.
     min_oi_change_bps: int = 500
     # Strictly above. 5000 bps is exactly half and does not qualify.
     min_whale_oi_ratio_bps: int = 5_000

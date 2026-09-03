@@ -65,13 +65,9 @@ export function NewsOiGates({
         <PolicyTile label="帧时效" value={gate ? compactDuration(gate.max_age_ms) : "—"} />
         <PolicyTile
           /*
-           * #376: source venue selects one code-owned execution binding. There is no venue priority
-           * and no cross-venue fallback. `RESEARCH_ONLY` was a fifth gate status for a venue that
-           * could be studied and not traded; no row ever carried it, and #460 removed the name.
-           *
-           * The rank ceiling and the per-symbol cooldown used to sit in this panel and are gone with
-           * the gates themselves (#348) — a panel naming a threshold nothing enforces is worse than
-           * a shorter panel.
+           * Source venue names evidence provenance only: there is no venue priority, no cross-venue
+           * fallback, and no venue-derived execution route. A tile naming a threshold nothing
+           * enforces is worse than a shorter panel, so this panel holds only the two the Gate reads.
            */
           label="来源场所"
           note="只决定证据来源，不决定执行路由"

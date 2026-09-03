@@ -229,7 +229,10 @@ def test_news_frame_mapper_and_signal_lane_commit_one_current_pair(clean: Any) -
     assert len(cases) == len(signals) == 1
     assert CaseState(cases[0]["state"]) is CaseState.SIGNAL_EMITTED
     assert cases[0]["case_id"] == signals[0]["case_id"]
-    assert cases[0]["capital_disposition"] == "not_applicable"
+    # `20260903_0355` dropped the six dead columns; a Case row now carries only what the lane writes.
+    assert set(cases[0]).isdisjoint(
+        {"regime", "program_version", "program_sha256", "program_output", "capital_disposition", "capital_reason"}
+    )
     assert signals[0]["market_key"] == f"crypto:perp:{OI_SYMBOL}:USDT"
     # The lane emitting no Intent and no order used to be two `count(*) = 0` reads. `20260901_0347`
     # dropped both tables, so the claim is now made by the schema rather than measured here — see

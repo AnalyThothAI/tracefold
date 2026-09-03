@@ -6467,9 +6467,6 @@
                   "source",
                   "venue",
                   "eligibility",
-                  "capability",
-                  "catalog",
-                  "routing",
                   "market_context",
                   "freeze"
                 ],

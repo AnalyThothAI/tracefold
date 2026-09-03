@@ -26,6 +26,7 @@ from tracefold.trading.storage.execution_stream import (
     PreparedExecutionObservationBatch,
     PreparedOperatorIntent,
     PreparedTradeSignal,
+    execution_stream_query_specs,
     materialize_operator_intent,
     materialize_operator_intents,
     materialize_trade_signal,
@@ -34,7 +35,6 @@ from tracefold.trading.storage.execution_stream import (
     prepare_operator_intent,
     prepare_trade_signal,
 )
-from tracefold.trading.storage.execution_stream_query_specs import execution_stream_query_specs
 from tracefold.trading.storage.root import TradingRepository
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
@@ -66,12 +66,11 @@ def _append_signal(repo: TradingRepository, prepared: PreparedTradeSignal) -> di
           case_id, underlying_key, trigger_kind, primary_source_key,
           supplemental_source_keys, manifest, manifest_sha256, state,
           policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
-          updated_at_ms, strategy_id, strategy_version, strategy_config_digest,
-          capital_disposition, capital_reason
+          updated_at_ms, strategy_id, strategy_version, strategy_config_digest
         ) VALUES (
-          %s, %s, 'news', %s, '[]'::jsonb, '{"test":"execution-stream"}'::jsonb,
+          %s, %s, 'oi', %s, '[]'::jsonb, '{"test":"execution-stream"}'::jsonb,
           %s, 'SIGNAL_EMITTED', 'long', 'execution_stream_fixture', 1, 1, 1, 1,
-          'execution_stream_fixture', 'v1', %s, 'not_applicable', NULL
+          'execution_stream_fixture', 'v1', %s
         )
         ON CONFLICT DO NOTHING
         """,

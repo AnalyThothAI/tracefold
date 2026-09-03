@@ -12,10 +12,9 @@ Two facts this module exists to keep true:
    losses are all above the band, so a rule with only a minimum keeps exactly the chasing trades the
    measurement rejects. The band itself lives in `policy.py`, with the Case that executed it.
 
-The OI/price quadrant is gone (#331). It was `oi_momentum_v1`'s entry rule, and after that strategy
-was cut the only thing `assess()` still decided was `no_price_fail_closed` — which the lane's own
-"there is no candle at the cutoff" check already answers, by name, in the admission ledger. A
-`regime` column that no rule reads and every console renders is a business claim nothing makes.
+This module classifies nothing. A `regime` label that no rule reads and every console renders is a
+business claim nothing makes, and "there is no candle at the cutoff" is already answered by name in
+the admission ledger.
 
 The lookback is code-owned rather than derived, because the measured bands above are 1 h bands:
 changing the window silently invalidates the thresholds the policy executes.
@@ -72,13 +71,10 @@ def select_bar(bars: Sequence[Bar], *, target_ms: int, gap_tolerance_ms: int) ->
 def move_bps(p0: Decimal | None, p1: Decimal | None) -> int | None:
     """`(p1 / p0) - 1` in integer basis points, Decimal throughout so the number is reproducible.
 
-    Both ends must be a price that could have traded. The guard used to cover only `p0`, where a
-    non-positive value is a division problem, and let a non-positive `p1` through as arithmetic:
-    a close of `0` on a halted or delisted interval returned a confident `-10000` — a -100% move
-    persisted as a material fact and served over HTTP. `Bar.close` carries no positivity constraint
-    and the bars come from a provider REST page, so this is reachable from data rather than from a
-    caller mistake. `select_bar`'s docstring names the same failure for the same reason: an absent
-    price has to read as missing data, not as a price.
+    Both ends must be a price that could have traded, `p1` as much as `p0`. `Bar.close` carries no
+    positivity constraint and the bars come from a provider REST page, so a `0` close on a halted or
+    delisted interval is reachable from data; unguarded it returns a confident `-10000` and persists a
+    -100% move as a material fact. An absent price reads as missing data, not as a price.
     """
 
     if p0 is None or p1 is None or p0 <= 0 or p1 <= 0:

@@ -8,8 +8,7 @@ from typing import Literal, Protocol
 
 TradingWorkSemantics = Literal["derived_work", "durable_event", "latest_state", "signal_truth"]
 TradingExternalDataName = Literal["trading_signal_lane", "trading_reconcile"]
-# One live provider. Hyperliquid stays in the vocabulary because the research replay measures it;
-# `model` is gone with the Trading DSPy program (#331), which no longer exists to be measured.
+# One live provider. Hyperliquid stays in the vocabulary because the research replay measures it.
 TradingExternalDataSource = Literal["binance", "hyperliquid", "other"]
 TradingExternalDataOutcome = Literal["error", "partial", "success"]
 TradingExternalDataProviderOutcome = Literal["error", "success"]

@@ -8,7 +8,7 @@ The one Runtime fact it reads is the published route catalogue on
 `trading_execution_runtime_state.routes`: which `market_key`s a configured Runtime can reach at all.
 That is a catalogue, not permission, sizing or a route choice — the lane still names no venue,
 instrument, account or quantity — and reading it is what keeps the turn's single Case freeze off a
-market whose only possible execution answer is `instrument_unmapped` (#510 B).
+market whose only possible execution answer is `instrument_unmapped`.
 """
 
 from __future__ import annotations

@@ -1,9 +1,8 @@
 """The one place a Source is admitted to the live Signal lane, and the one vocabulary it refuses in.
 
-Every rule here used to be executed somewhere else as well — the rank ceiling and the liquidity floor
-in News's SELECT, the floor again inside the strategy, the venue check in two places. That is what made
-`oi_rows = 0` unanswerable: a frame filtered out upstream and a frame that never existed were the same
-absence.
+Every admission rule executes here and nowhere else. A rule also executed upstream would make
+`oi_rows = 0` unanswerable: a frame filtered out somewhere else and a frame that never existed are
+then the same absence.
 
 **One trigger kind, two supported source venues.** Binance and Hyperliquid OI frames keep their own
 venue identity for source-native public market context. Unknown venues fail before a Case exists.
@@ -29,7 +28,7 @@ execution disabled, or none started yet — there is nothing to read and the rul
 that is liquid, routable and priced but whose numbers the policy dislikes must reach a Case and be
 refused there by name, or the manifest never records what was rejected.
 
-Two reasons from #264's taxonomy are deliberately absent:
+Two neighbouring reasons are deliberately absent:
 
 * `whale_ratio_below_floor`. The smart-money ratio is an *Alpha* threshold, and one policy's Alpha gate
   must never delete another reader's data.
@@ -48,24 +47,14 @@ from .sources import SourceRejected, normalize_source_venue
 
 # Bumped when a rule is added, removed, or changes what it means. It is half of the durable row's key,
 # so a new version re-decides every source rather than inheriting an answer from a rule that is gone.
-# v5 is #433-C: source venue is evidence provenance, not an execution binding or catalogue lookup.
-# v6 keeps Hyperliquid's `xyz` builder DEX distinct so source-native candles cannot silently fall
-# back to the main perpetual book.
-# v7 is #510 PR-4: the upstream-generation rule is gone with the News identity fields it read, and the
-# builder DEX is decided by the provider's venue rather than by a title token. Every rule below is now
-# a statement about the measured frame.
-# v8 is #510 PR-2: `instrument_unmapped` refuses a market no configured Runtime lists. It is still not
-# a route choice — the catalogue is the Runtime's own published fact and admission only reads it.
 ADMISSION_VERSION: Final = "trading_admission_v8"
 
 AdmissionStatus = Literal["DEFERRED", "REJECTED", "CASE_CREATED", "EXPIRED"]
-AdmissionStage = Literal["source", "venue", "eligibility", "catalog", "market_context", "freeze"]
+AdmissionStage = Literal["source", "venue", "eligibility", "market_context", "freeze"]
 
-# The closed vocabulary a *writer* may reach. Reading history does not pass through here, which is why
-# `blacklisted` and `catalog_absent` could leave in #460 while their `tradingLabels.ts` entries stayed:
-# the one stored `eligibility:blacklisted` row is served as a plain string and still renders. A reason
-# outside this set is a bug, not a new rule: an unbounded key set is exactly what the retired funnel's
-# venue counter already failed at.
+# The closed vocabulary a writer may reach. A reason outside this set is a bug, not a new rule: an
+# unbounded reason key set is what makes a refusal distribution unreadable. Reading history does not
+# pass through here — the console renders a stored reason as a plain string.
 ADMISSION_REASONS: Final[frozenset[str]] = frozenset(
     {
         "source_contract_invalid",
@@ -75,15 +64,15 @@ ADMISSION_REASONS: Final[frozenset[str]] = frozenset(
         "venue_unresolved",
         "trigger_stale",
         "oi_value_below_floor",
-        # One name for "this issuer already has an undecided Case". `cooldown` remains retired; Signal
-        # TTL and execution risk belong to later boundaries.
+        # One name for "this issuer already has an undecided Case". Signal TTL and execution risk are
+        # later boundaries and have their own names.
         "underlying_busy",
         "market_data_unavailable",
         "market_data_invalid",
         "already_consumed",
         "superseded_by_newer_trigger",
-        # No configured Runtime lists this market. Three of 2026-09-02's six Signals were spent on
-        # markets Binance USD-M does not have, and each had already consumed the turn's one freeze.
+        # No configured Runtime lists this market: a Case frozen for one spends the turn's single
+        # freeze on an entry that can only come back refused.
         "instrument_unmapped",
         # The per-turn Case budget refuses a Source that passed every rule about itself; calling that
         # `underlying_busy` would blame the frame's own issuer for a different name being ahead of it.
@@ -277,10 +266,9 @@ def admit_frame(candidate: OiTradeCandidate, *, config: AdmissionConfig) -> Admi
     and it says whether this fact may ground a capital decision *at all*. It is a venue prior — how
     much book stands behind the name — which is why it lives here and not in the policy.
 
-    `rank_above_limit` used to sit beside it and is gone (#348). A "only the top N in the window"
-    ceiling is a *selectivity* rule, and selectivity belongs to the policy, which already owns four
-    thresholds of it. Splitting the strategy's rulebook across two files bought two refusals in seven
-    days and cost a reader having to know both places to answer what the strategy requires.
+    A selectivity rule — "only the top N in the window" — belongs to the policy instead, which already
+    owns four thresholds of it: splitting one rulebook across two files makes a reader consult both to
+    answer what the strategy requires.
 
     Terminal on purpose: a `DEFERRED` here would promise a retry that can only ever reach the same
     conclusion, since the number it failed on is frozen in the frame.

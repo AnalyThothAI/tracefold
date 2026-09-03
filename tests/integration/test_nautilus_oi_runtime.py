@@ -92,12 +92,11 @@ def _append_signal(repo: TradingRepository, *, suffix: str = "1") -> None:
               case_id, underlying_key, trigger_kind, primary_source_key,
               supplemental_source_keys, manifest, manifest_sha256, state,
               policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
-              updated_at_ms, strategy_id, strategy_version, strategy_config_digest,
-              capital_disposition, capital_reason
+              updated_at_ms, strategy_id, strategy_version, strategy_config_digest
             ) VALUES (
-              %s, %s, 'news', %s, '[]'::jsonb, '{"test":"nautilus-runtime"}'::jsonb,
+              %s, %s, 'oi', %s, '[]'::jsonb, '{"test":"nautilus-runtime"}'::jsonb,
               %s, 'SIGNAL_EMITTED', 'long', 'nautilus_runtime_fixture', 1, 1, 1, 1,
-              'nautilus_runtime_fixture', 'v1', %s, 'not_applicable', NULL
+              'nautilus_runtime_fixture', 'v1', %s
             )
             """,
             (case_id, f"runtime:{case_id}", f"runtime-source:{case_id}", "4" * 64, "5" * 64),
@@ -192,13 +191,12 @@ def _append_input_burst(repo: TradingRepository, *, size: int) -> None:
                   case_id, underlying_key, trigger_kind, primary_source_key,
                   supplemental_source_keys, manifest, manifest_sha256, state,
                   policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
-                  updated_at_ms, strategy_id, strategy_version, strategy_config_digest,
-                  capital_disposition, capital_reason
+                  updated_at_ms, strategy_id, strategy_version, strategy_config_digest
                 ) VALUES (
                   %s, %s, 'oi', %s, '[]'::jsonb, '{"test":"475-pra"}'::jsonb,
                   %s, 'SIGNAL_EMITTED', 'long', '475-pra', 1, 1, 1, 1,
                   'source_native_oi_smart_money_long_v4', 'source_native_oi_smart_money_long_v4',
-                  %s, 'not_applicable', NULL
+                  %s
                 )
                 """,
                 (

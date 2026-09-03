@@ -1,4 +1,4 @@
-"""Persistence for the candidate admission ledger (#264).
+"""Persistence for the candidate admission ledger.
 
 One row per `(source_key, gate_version, gate_config_digest)`. The monotonic transition lives in the
 `ON CONFLICT` clause rather than in the runner, because the runner is not an authority across a
@@ -10,15 +10,51 @@ statement here that can move one back.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Final
 
 # S608 exemptions below reuse closed ledger/select fragments defined in this module; all values stay bound.
-from .query_sql import GATE_DECISION_FOR_SOURCE_KEY_SQL, LATEST_GATE_DECISION_PER_SOURCE_SQL, gate_decisions_since_sql
-from .sql_values import _dumps
+from .execution_stream import _dumps
 
 # One turn's worth of retention work. The lane persists about 90 OI facts a day, so this drains a
 # 90-day backlog in a handful of turns and is a no-op on every turn after that.
 _PURGE_BATCH = 500
+
+_GATE_DECISION_COLUMNS = """
+    source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
+    source_observed_at_ms, status, stage, reason, retryable, evidence, case_id,
+    first_evaluated_at_ms, last_evaluated_at_ms, attempt_count
+"""
+GATE_DECISION_FOR_SOURCE_KEY_SQL: Final = f"""
+    SELECT {_GATE_DECISION_COLUMNS}
+      FROM trading_candidate_gate_decisions
+     WHERE source_key = %s
+     ORDER BY (status = 'CASE_CREATED') DESC, last_evaluated_at_ms DESC, gate_config_digest
+     LIMIT 1
+"""  # noqa: S608 -- a module-owned column list; the source key stays bound
+LATEST_GATE_DECISION_PER_SOURCE_SQL: Final = f"""
+    SELECT DISTINCT ON (source_key)
+           {_GATE_DECISION_COLUMNS}
+      FROM trading_candidate_gate_decisions
+     WHERE trigger_kind = %s AND source_observed_at_ms >= %s
+     ORDER BY source_key, (status = 'CASE_CREATED') DESC, last_evaluated_at_ms DESC
+"""  # noqa: S608 -- a module-owned column list; both predicates stay bound
+
+
+def gate_decisions_since_sql() -> str:
+    """The dedup set re-sorted into frame order.
+
+    The subquery and the outer sort are both deliberate: the dedup has to order by `source_key` and the
+    table has to arrive in frame order, so the read materialises the whole window's dedup set. Flattening
+    it into one `DISTINCT ON` with the limit inside would plan a read that can stop early, which is not
+    the read this route runs.
+    """
+
+    return f"""
+        SELECT {_GATE_DECISION_COLUMNS}
+          FROM ({LATEST_GATE_DECISION_PER_SOURCE_SQL}) latest
+         ORDER BY source_observed_at_ms DESC, source_key
+         LIMIT %s
+    """  # noqa: S608 -- the interpolated subquery and column list are module-owned constants
 
 
 # One row per source, whatever configurations have looked at it.
@@ -60,14 +96,12 @@ class CandidateGateStorage:
         `last_evaluated_at_ms` and `attempt_count` move. That is what makes "the scanner re-read this
         source 40 times" and "the answer changed" distinguishable in the ledger.
 
-        The clock is the one answer that closes a row *without* replacing what it was waiting on
-        (#268). `expire_stale_gate_decisions` already knew that and left `stage`/`reason` alone, but
-        the sweep never got to say it: the scanner re-reads its whole overlap window every couple of
-        seconds, so a frame deferred on `routing:no_native_perp` was re-evaluated by `admit_trigger`
-        the moment it passed `max_age_ms` and arrived here as `eligibility:trigger_stale`, which the
-        old clause wrote over the top. Every reason a source can *wait* on — an unlisted instrument,
-        an unavailable candle, a deny-list entry — therefore collapsed into `trigger_stale` within
-        five minutes, and `candidate_reasons_*` aggregated the clock instead of the bottleneck.
+        The clock is the one answer that closes a row *without* replacing what it was waiting on. The
+        scanner re-reads its whole overlap window every couple of seconds, so a row deferred on an
+        unlisted instrument or an unavailable candle is re-evaluated the moment it passes `max_age_ms`
+        and arrives here as `eligibility:trigger_stale`. Letting that overwrite the stored reason
+        collapses every waiting reason into the clock within five minutes, and `candidate_reasons_*`
+        then aggregates the clock instead of the bottleneck.
 
         So `status` and `retryable` always advance out of `DEFERRED` — the row is closed either way —
         while `stage`, `reason`, `evidence` and `case_id` advance only when the incoming answer is
@@ -134,11 +168,10 @@ class CandidateGateStorage:
         `gate_config_digest`: a threshold edit starts new rows, and the rows written under the previous
         digest still need closing.
 
-        `stage` and `reason` are left exactly as the gate wrote them. Overwriting the reason with
-        `trigger_stale` produced `stage:reason` pairs no rule can emit — `routing:trigger_stale`,
-        `market_context:trigger_stale` — which the read model aggregates on and no label covers. The
-        status is what the sweep has to say, and keeping the reason says more: this row was waiting on
-        a listing, or on a candle, and the clock closed it.
+        `stage` and `reason` are left exactly as the gate wrote them: only a `stage:reason` pair some
+        rule can emit is legal, the read model aggregates on those pairs, and the status alone already
+        says what the sweep has to say. Keeping the reason says more — this row was waiting on a
+        listing, or on a candle, and the clock closed it.
         """
 
         cursor = self.conn.execute(
@@ -185,15 +218,13 @@ class CandidateGateStorage:
         return dict(row) if row is not None else None
 
     def gate_decisions_since(self, *, since_ms: int, trigger_kind: str = "oi", limit: int) -> list[dict[str, Any]]:
-        """One admission answer per source in the window, newest frame first (#269).
+        """One admission answer per source in the window, newest frame first.
 
-        One lane per call, defaulting to OI, and that default is the read model's whole shape. Since
-        #273 the News lane writes rows here too, but every reader of this table is asking an OI
-        question: `/api/trading/gate` joins each row back to an OI frame by `oi:{event}:{version}`,
-        and the console funnel counts the capital lane a frame at a time. Mixing a News trigger into
-        either would put two populations under one bar — the same error as counting a 24 h rolling
-        window and a UTC day in one chart. News rows are durable evidence, queryable by source key or
-        by SQL; they are deliberately not console numbers.
+        One lane per call, defaulting to OI, and that default is the read model's whole shape. Every
+        reader of this table asks an OI question: `/api/trading/gate` joins each row back to an OI
+        frame by `oi:{event}:{version}`. Mixing another trigger kind in would put two populations under
+        one bar. Rows of another kind stay durable evidence, queryable by source key or by SQL, and are
+        deliberately not console numbers.
 
         The same one-row-per-source rule the counts use, so the table a reader scrolls and the
         distribution above it cannot disagree: a frame two configurations have looked at appears once,
@@ -214,16 +245,13 @@ class CandidateGateStorage:
         """Durable status and reason distributions for one lane, keyed on when the *frame* was observed.
 
         The axis is the source's own observation time rather than the evaluation time, so a runner that
-        restarts and re-reads a backlog cannot move yesterday's facts into today's counts — the exact
-        failure mode that made `funnel_today` unable to explain a cross-midnight question. That is why
-        this is the one of the console's three "24 h" figures that does not key on a creation time:
-        `TRADING_STATUS_CASE_COUNTS_SQL` counts Cases on `created_at_ms` because a Case is created once
-        and has no backlog to re-read, and News's `_oi_telemetry_24h` counts its own items on its own
-        table. #460 asked whether to collapse them; collapsing this one would reintroduce the bug.
+        restarts and re-reads a backlog cannot move yesterday's facts into today's counts. This is the
+        one of the console's "24 h" figures that does not key on a creation time; collapsing it onto
+        one would reintroduce that bug.
 
-        One row per *source*, not per stored row. Grouping the raw table
-        counted a frame once per configuration that had ever looked at it, so a single threshold edit
-        turned the "upstream frames" total into something that was not a frame count.
+        One row per *source*, not per stored row: grouping the raw table counts a frame once per
+        configuration that ever looked at it, so one threshold edit turns the "upstream frames" total
+        into something that is not a frame count.
         """
 
         status_rows = self.conn.execute(
@@ -269,9 +297,9 @@ class CandidateGateStorage:
     def candidate_admission_report(self, *, now_ms: int, trigger_kind: str = "oi") -> dict[str, Any]:
         """The whole durable half of the lane's status, assembled once.
 
-        The counts a lane reports are otherwise keyed on a case or an order existing, which is exactly
-        what a lane with neither has none of — and the counter this replaced reset on the UTC day key,
-        so a question about yesterday had no evidence at all. This is the part that survives both.
+        The counts a lane reports are otherwise keyed on a case existing, which is exactly what a lane
+        that froze none has none of. This is the part that survives that, and a question about
+        yesterday still has evidence.
         """
 
         window_24h = self.gate_decision_counts(since_ms=int(now_ms) - 86_400_000, trigger_kind=trigger_kind)
@@ -285,4 +313,9 @@ class CandidateGateStorage:
         }
 
 
-__all__ = ["CandidateGateStorage"]
+__all__ = [
+    "GATE_DECISION_FOR_SOURCE_KEY_SQL",
+    "LATEST_GATE_DECISION_PER_SOURCE_SQL",
+    "CandidateGateStorage",
+    "gate_decisions_since_sql",
+]

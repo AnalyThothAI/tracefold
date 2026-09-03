@@ -557,10 +557,6 @@
 | `run_id` | `TEXT` | True | `None` |
 | `lease_expires_at_ms` | `BIGINT` | True | `None` |
 | `attempt_count` | `INTEGER` | False | `0` |
-| `regime` | `TEXT` | True | `None` |
-| `program_version` | `TEXT` | True | `None` |
-| `program_sha256` | `TEXT` | True | `None` |
-| `program_output` | `JSONB` | True | `None` |
 | `policy_decision` | `TEXT` | False | `None` |
 | `policy_reason` | `TEXT` | True | `None` |
 | `observed_at_ms` | `BIGINT` | False | `None` |
@@ -573,8 +569,6 @@
 | `strategy_version` | `TEXT` | False | `None` |
 | `strategy_config_digest` | `TEXT` | False | `None` |
 | `policy_checks` | `JSONB` | True | `None` |
-| `capital_disposition` | `TEXT` | False | `None` |
-| `capital_reason` | `TEXT` | True | `None` |
 
 ## `trading_decision_runtime`
 

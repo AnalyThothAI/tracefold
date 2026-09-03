@@ -131,9 +131,8 @@ def verify_binance_demo_receipt(
         predicate=lambda row: row.disposition == "completed" and row.reason == "binance_account_flat",
         reason="binance_demo_flatten_not_completed",
     )
-    # The flat proof is the current projection, not the newest `reconciliation` observation. Steady
-    # reconciliation stopped appending an observation per cycle in #510 PR-1, so after the account went
-    # flat and stayed flat there is no later row to find - and there never needed to be one:
+    # The flat proof is the current projection, not the newest `reconciliation` observation: a steadily
+    # flat account appends no new observation, so there is no later row to find.
     # `trading_execution_runtime_state` carries `account_flat` and the clock that proved it, written by
     # the same reconciliation, and this function already required `state.account_flat` above.
     if state.reconciliation_observed_at_ns < flat.observed_at_ns:
