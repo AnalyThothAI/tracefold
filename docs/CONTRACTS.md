@@ -715,7 +715,7 @@ commits to it and the call trace no longer repeats a signature, instruction or
 demo digest. A told-only re-ask may restore
 the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `triage` is the only current stage. Current versions are
-`news_title_norm_v2`, `news_gate_v5`, `news_storyline_registry_v1`,
+`news_title_norm_v2`, `news_gate_v6`, `news_storyline_registry_v1`,
 `news_event_evidence_v3`, `news_judgment_v2`,
 `news_semantic_program_v9` (or `news_oi_signal_v3` /
 `news_liquidation_fact_v2` for deterministic structured lanes),
@@ -727,7 +727,7 @@ its content SHA plus `envelope_sha256`, not the display version alone; see
 `docs/ARCHITECTURE.md` for the identity model.
 
 The normalized tuple `2000 / 实时清算 / market / market` is a separate
-deterministic contract composed after Gate v5; strategy id `2000` alone has no
+deterministic contract composed after Gate v6; strategy id `2000` alone has no
 routing authority and does not silently widen that policy or editorial policy
 v11. Its release identities are `news_liquidation_admission_v1`,
 `news_liquidation_fact_v2`, `news_liquidation_policy_v2`,
@@ -826,7 +826,7 @@ are rejected as unknown configuration instead of being silently carried
 forward. `news.retention` keys are `raw_days` (30) and
 `judged_days` (365, >= `raw_days`): an Item behind an Event that carries a
 verdict or accepted review is evidence and outlives the raw tier.
-The exact Strategy 2000 source contract never enters that order: after generic Gate v5 it is composed as
+The exact Strategy 2000 source contract never enters that order: after generic Gate v6 it is composed as
 `liquidation_deterministic`, then its own v1 policy emits the parser's
 direction-neutral push/drop. Parse failure is a deterministic drop.
 

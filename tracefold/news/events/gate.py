@@ -2,10 +2,17 @@
 
 The Gate no longer decides relevance and keeps no name table of its own: the provider already resolved entities into
 ``coins[]`` with a grade, so a B+/A/A+ tag (or a literal ``$TICKER`` cashtag) *is* the grounded asset; Triage — the
-model — verifies which of them are primary. The lexicons only set queue order, the energy context for ``CL``, and the
-preliminary storyline theme. The only admissions that skip the model are recovery replays, deterministic listing
-notices, law-firm PR templates without a grounded asset, and unscored or under-80 market telemetry frames (#126).
-Provider-specific deterministic lanes compose after this policy.
+model — verifies which of them are primary. The only admissions that skip the model are recovery replays,
+deterministic listing notices, law-firm PR templates without a grounded asset, and unscored or under-80 market
+telemetry frames (#126). Provider-specific deterministic lanes compose after this policy.
+
+The three word lists this policy still needs — the energy context that lets a ``CL`` tag ground, the macro reading
+behind ``asset_class="macro"``, and the queue-order subset — are **not defined here**. They are flags on the
+storyline registry (#509 D3): ``gate.energy_context`` on the energy topic and the Gulf places, ``gate.macro`` on the
+central banks and the macro topics, ``gate.queue_high`` on the subset a desk wants ahead of the queue. The Gate reads
+whatever ``events.storyline`` matched, so "energy" is one vocabulary with one owner instead of a regex here and a
+theme there that disagreed about ``iranian``, 沙特, ``barrels`` and every central bank outside the Fed. Only the
+law-firm PR templates stay regexes: they are sentence templates, not a storyline anyone groups by.
 """
 
 from __future__ import annotations
@@ -17,22 +24,8 @@ from typing import Any, Final
 
 from ..market_review.instruments import NON_CRYPTO_CLASSES
 from ..models import Admission, AssetClass, EngineType
+from .storyline import match_storyline, storyline_entry
 
-GATE_LEXICON_VERSION: Final = "news_gate_lexicon_v2"
-
-ENERGY_LEXICON = re.compile(
-    r"\b(oil|crude|brent|wti|opec|hormuz|strait|tanker|barrel|bpd|refiner\w*|pipeline|gasoline|diesel|lng|natural gas"
-    r"|novorossiysk|houthi|red sea|shale|rig count|eia|iran|iraq|saudi|aramco|oman|qatar|kuwait|uae|energy)\b"
-    r"|石油|原油|油价|布油|美油|霍尔木兹|欧佩克|油轮|伊朗",
-    re.IGNORECASE,
-)
-MACRO_LEXICON = re.compile(
-    r"\b(fed|fomc|powell|rate (cut|hike|decision)|cpi|ppi|pce|nonfarm|payrolls?|jobless|unemployment|gdp|ism|pmi"
-    r"|retail sales|treasury|treasuries|yields?|tariffs?|trade (deal|talks)|ecb|boj|boe|pboc|lpr|mlf|dollar index|dxy"
-    r"|bond|housing starts|building permits|import prices|export prices|stagflation|recession)\b"
-    r"|美联储|加息|降息|非农|关税|国务院|央行|收益率|国债|通胀|营建许可|新屋开工|进口物价|滞胀",
-    re.IGNORECASE,
-)
 # Law-firm solicitation templates. The strong list (firm names, template phrases) is vetoed outright — a real
 # company event never reads like this; the weak list ("class action", "law firm") only vetoes ungrounded titles.
 PR_TEMPLATE_STRONG_LEXICON = re.compile(
@@ -47,7 +40,6 @@ PR_TEMPLATE_STRONG_LEXICON = re.compile(
 PR_TEMPLATE_LEXICON = re.compile(
     r"securities (investigation|class action)|law ?firm|class action|securities fraud lawsuit", re.IGNORECASE
 )
-_HIGH_PRIORITY_MACRO = re.compile(r"yield|rate|fed|fomc|cpi|收益率|加息|降息|美联储", re.IGNORECASE)
 # Provider tags whose symbol collides with an ordinary English word, so the tag is usually about the word rather
 # than the asset ("near-instant" -> NEAR, "SPOT GOLD" -> SPOT, "the Clarity bill" -> BILL). This is a *collision*
 # list, not a tradability list: all of these except SPOT/CORE/PRIME are real listed contracts (OPENAI and ANTHROPIC
@@ -59,6 +51,44 @@ _TICKER_TAG_STOP: Final = frozenset(
 _GROUNDING_GRADES: Final = frozenset({"B+", "A", "A+"})
 _STRONG_GRADES: Final = frozenset({"A", "A+"})
 _MARKET_TELEMETRY_MIN_SCORE: Final = 80.0
+
+
+@dataclass(frozen=True, slots=True)
+class GateFlags:
+    """The three registry readings this policy makes of one text (#509 D3).
+
+    ``energy`` is the context a bare ``CL`` tag needs before it counts as a grounded asset; ``macro`` is what
+    ``asset_class_of`` turns into ``"macro"`` and what the model sees as evidence; ``queue_high`` is broker
+    scheduling only. Each is "any matched entry carries this flag", so adding a word to the desk's vocabulary is
+    a registry row, and the Gate and the storyline key can no longer disagree about what counts as energy.
+    """
+
+    energy: bool = False
+    macro: bool = False
+    queue_high: bool = False
+
+
+def gate_lexicon_flags(text: str) -> GateFlags:
+    """Read ``energy`` / ``macro`` / ``queue_high`` off the storyline registry entries ``text`` matches.
+
+    The registry owns the matching rules — NFKC + case-fold, word boundaries for Latin aliases and substrings for
+    every other script, longest alias first — so this function is only the disjunction. The v5 regexes it replaces
+    read a *different* vocabulary from the storyline lexicon standing next to them: word-bounded ``iran`` that
+    missed "Iranian", ``pboc`` and a bare 央行 in place of the other nine central banks, and an unbounded
+    high-priority pattern whose ``rate`` matched "accelerate" and whose ``fed`` matched "federal". There is now
+    one list, and one place to add to it.
+    """
+
+    energy = macro = queue_high = False
+    for hit in match_storyline(text):
+        entry = storyline_entry(hit.entry_id)
+        gate = entry.gate if entry is not None else None
+        if gate is None:
+            continue
+        energy = energy or gate.energy_context
+        macro = macro or gate.macro
+        queue_high = queue_high or gate.queue_high
+    return GateFlags(energy=energy, macro=macro, queue_high=queue_high)
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +137,7 @@ def grounded_assets(
     *,
     raw_first_line: str = "",
     strong_only: bool = False,
+    energy: bool | None = None,
 ) -> tuple[str, ...]:
     """Provider coins the pipeline treats as grounded: grade B+/A/A+ tags and any literal ``$TICKER`` cashtag.
 
@@ -114,7 +145,8 @@ def grounded_assets(
     Gate does not second-guess that with its own name table. ``CL`` (crude) counts only in energy context and a
     short stop-list drops tags whose symbol collides with an English word. Triage decides which grounded assets are
     primary; ``decide()`` only trusts primaries that are also grounded. ``strong_only`` keeps A/A+ tags and
-    cashtags — the ones allowed to open a preliminary storyline before Triage has spoken.
+    cashtags — the ones allowed to open a preliminary storyline before Triage has spoken. ``energy`` lets a
+    caller that already read the registry for this exact text hand the answer in; ``None`` reads it here.
 
     Existence on a venue is deliberately *not* a condition. #75 shipped that filter behind a flag and a dry-run
     killed it: of a full week's grounding tags, every one the provider had mapped to a venue itself (the ``XYZ-``
@@ -123,7 +155,8 @@ def grounded_assets(
     """
 
     text = f"{title} {raw_first_line}".strip()
-    energy = bool(ENERGY_LEXICON.search(text))
+    if energy is None:
+        energy = gate_lexicon_flags(text).energy
     grades = _STRONG_GRADES if strong_only else _GROUNDING_GRADES
     out: list[str] = []
     for coin in coins:
@@ -173,12 +206,14 @@ def asset_class_of(
 def evaluate_gate(inp: GateInput) -> GateVerdict:
     title = inp.title
     text = f"{title} {inp.raw_first_line}".strip()
-    macro = bool(MACRO_LEXICON.search(text))
-    energy = bool(ENERGY_LEXICON.search(text))
+    flags = gate_lexicon_flags(text)
+    macro = flags.macro
     pr_strong = bool(PR_TEMPLATE_STRONG_LEXICON.search(text))
     pr_template = pr_strong or bool(PR_TEMPLATE_LEXICON.search(text))
-    grounded = grounded_assets(title, inp.coins, raw_first_line=inp.raw_first_line)
-    strong = grounded_assets(title, inp.coins, raw_first_line=inp.raw_first_line, strong_only=True)
+    # One registry scan per event: the flags are all `grounded_assets` needed the text for, and matching it
+    # three times cost ~70 µs an event on the live corpus.
+    grounded = grounded_assets(title, inp.coins, raw_first_line=inp.raw_first_line, energy=flags.energy)
+    strong = grounded_assets(title, inp.coins, raw_first_line=inp.raw_first_line, strong_only=True, energy=flags.energy)
     score = float(inp.provider_score) if inp.provider_score is not None else 0.0
     watch_hits = tuple(sorted(s for s in grounded if _base_symbol(s) in inp.watchlist_symbols))
     reasons: list[str] = []
@@ -202,14 +237,16 @@ def evaluate_gate(inp: GateInput) -> GateVerdict:
     else:
         admission = "candidate"
 
-    high = score >= 90 or bool(watch_hits) or listing or (macro and bool(_HIGH_PRIORITY_MACRO.search(text)))
+    # `queue_high` entries are a subset of the `macro` ones (asserted on the registry), so the old
+    # `macro and <high-priority pattern>` conjunction is the flag itself.
+    high = score >= 90 or bool(watch_hits) or listing or flags.queue_high
     return GateVerdict(
         admission=admission,
         queue_priority="high" if high else "normal",
         asset_class=asset_class_of(grounded, macro, instrument_classes=inp.instrument_classes),
         grounded_assets=grounded,
         macro_lexicon=macro,
-        energy_lexicon=energy,
+        energy_lexicon=flags.energy,
         pr_template=pr_template,
         watchlist_hits=watch_hits,
         reasons=tuple(reasons),
@@ -218,14 +255,13 @@ def evaluate_gate(inp: GateInput) -> GateVerdict:
 
 
 __all__ = [
-    "ENERGY_LEXICON",
-    "GATE_LEXICON_VERSION",
-    "MACRO_LEXICON",
     "PR_TEMPLATE_LEXICON",
     "PR_TEMPLATE_STRONG_LEXICON",
+    "GateFlags",
     "GateInput",
     "GateVerdict",
     "asset_class_of",
     "evaluate_gate",
+    "gate_lexicon_flags",
     "grounded_assets",
 ]
