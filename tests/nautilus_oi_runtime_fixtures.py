@@ -78,12 +78,10 @@ def trade_signal(*, signal_id: str = "1" * 64, expires_at_ns: int = NOW_NS + 60_
         seq=1,
         signal_id=signal_id,
         case_id=f"case-{signal_id[:8]}",
-        alpha_contract_sha256="2" * 64,
         market_key="crypto:perp:BTC:USDT",
         direction="long",
         observed_at_ns=NOW_NS - 1_000_000,
         expires_at_ns=expires_at_ns,
-        evidence_sha256="3" * 64,
     )
 
 

@@ -5229,10 +5229,6 @@
             "title": "Config Digest",
             "type": "string"
           },
-          "contract_sha256": {
-            "title": "Contract Sha256",
-            "type": "string"
-          },
           "policy_id": {
             "title": "Policy Id",
             "type": "string"
@@ -5245,8 +5241,7 @@
         "required": [
           "policy_id",
           "policy_version",
-          "config_digest",
-          "contract_sha256"
+          "config_digest"
         ],
         "title": "TradingAlphaIdentityData",
         "type": "object"
@@ -5710,10 +5705,6 @@
             "title": "Occurred At Ns",
             "type": "integer"
           },
-          "payload_digest": {
-            "title": "Payload Digest",
-            "type": "string"
-          },
           "runtime_release": {
             "title": "Runtime Release",
             "type": "string"
@@ -5747,8 +5738,7 @@
           "execution_strategy",
           "normalized_kind",
           "occurred_at_ns",
-          "observed_at_ns",
-          "payload_digest"
+          "observed_at_ns"
         ],
         "title": "TradingExecutionObservationData",
         "type": "object"
@@ -5984,11 +5974,6 @@
             "title": "Alive",
             "type": "boolean"
           },
-          "audit_ready": {
-            "default": false,
-            "title": "Audit Ready",
-            "type": "boolean"
-          },
           "config_sha256": {
             "anyOf": [
               {
@@ -5999,11 +5984,6 @@
               }
             ],
             "title": "Config Sha256"
-          },
-          "control_plane_ready": {
-            "default": false,
-            "title": "Control Plane Ready",
-            "type": "boolean"
           },
           "credential_fingerprint": {
             "anyOf": [
@@ -6025,11 +6005,6 @@
                 "type": "null"
               }
             ]
-          },
-          "day_start_ready": {
-            "default": false,
-            "title": "Day Start Ready",
-            "type": "boolean"
           },
           "emergency_halted": {
             "default": false,
@@ -6115,11 +6090,6 @@
             "title": "Open Orders Count",
             "type": "integer"
           },
-          "portfolio_ready": {
-            "default": false,
-            "title": "Portfolio Ready",
-            "type": "boolean"
-          },
           "positions_count": {
             "default": 0,
             "minimum": 0.0,
@@ -6181,11 +6151,6 @@
               }
             ],
             "title": "Runtime Revision"
-          },
-          "singleton_ready": {
-            "default": false,
-            "title": "Singleton Ready",
-            "type": "boolean"
           },
           "startup_reconciled": {
             "default": false,
@@ -6762,10 +6727,6 @@
             "title": "Command Id",
             "type": "string"
           },
-          "confirmed": {
-            "title": "Confirmed",
-            "type": "boolean"
-          },
           "direction": {
             "anyOf": [
               {
@@ -6853,8 +6814,7 @@
           "operator_identity",
           "requested_at_ns",
           "expires_at_ns",
-          "expired",
-          "confirmed"
+          "expired"
         ],
         "title": "TradingOperatorIntentData",
         "type": "object"
@@ -6981,10 +6941,6 @@
       "TradingSignalData": {
         "additionalProperties": false,
         "properties": {
-          "alpha_contract_sha256": {
-            "title": "Alpha Contract Sha256",
-            "type": "string"
-          },
           "alpha_metadata": {
             "additionalProperties": {
               "anyOf": [
@@ -7012,10 +6968,6 @@
               "short"
             ],
             "title": "Direction",
-            "type": "string"
-          },
-          "evidence_sha256": {
-            "title": "Evidence Sha256",
             "type": "string"
           },
           "expired": {
@@ -7047,13 +6999,11 @@
           "seq",
           "signal_id",
           "case_id",
-          "alpha_contract_sha256",
           "market_key",
           "direction",
           "observed_at_ns",
           "expires_at_ns",
-          "expired",
-          "evidence_sha256"
+          "expired"
         ],
         "title": "TradingSignalData",
         "type": "object"

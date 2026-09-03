@@ -28,7 +28,6 @@ _MAX_METADATA_ENTRIES = 16
 _MAX_METADATA_BYTES = 2_048
 _MAX_METADATA_STRING_LENGTH = 256
 _MAX_OPERATOR_INTENT_TTL_NS = 3_600_000_000_000
-_HIGH_RISK_ACTIONS = frozenset({"resume_entries", "emergency_halt", "flatten"})
 
 MetadataScalar = str | int | bool
 ExecutionAction = Literal[
@@ -100,12 +99,10 @@ class TradeSignalV1(_FrozenContract):
     seq: int = Field(ge=1)
     signal_id: str = Field(pattern=SHA256_PATTERN)
     case_id: str = Field(min_length=1, max_length=128)
-    alpha_contract_sha256: str = Field(pattern=SHA256_PATTERN)
     market_key: str = Field(pattern=MARKET_KEY_PATTERN)
     direction: Literal["long", "short"]
     observed_at_ns: int = Field(gt=0)
     expires_at_ns: int = Field(gt=0)
-    evidence_sha256: str = Field(pattern=SHA256_PATTERN)
     alpha_metadata: dict[str, MetadataScalar] = Field(default_factory=dict)
 
     @field_validator("case_id")
@@ -141,6 +138,9 @@ class OperatorIntentV1(_FrozenContract):
     authentication_identity: str = Field(min_length=1, max_length=256)
     requested_at_ns: int = Field(gt=0)
     expires_at_ns: int = Field(gt=0)
+    # Carried but no longer stored: #520 PR-C dropped the column, its CHECK and the rule that tied it
+    # to `resume_entries` / `emergency_halt` / `flatten`. The `CONFIRM` token is still parsed at the
+    # ingress, and #520 PR-B deletes both it and this field.
     confirmation_identity: str | None = Field(default=None, pattern=SHA256_PATTERN)
     market_key: str | None = Field(default=None, pattern=MARKET_KEY_PATTERN)
     direction: Literal["long", "short"] | None = None
@@ -157,10 +157,6 @@ class OperatorIntentV1(_FrozenContract):
         ttl_ns = self.expires_at_ns - self.requested_at_ns
         if ttl_ns <= 0 or ttl_ns > _MAX_OPERATOR_INTENT_TTL_NS:
             raise ValueError("operator_intent_clock_invalid")
-        if self.action in _HIGH_RISK_ACTIONS and self.confirmation_identity is None:
-            raise ValueError("operator_intent_confirmation_required")
-        if self.action not in _HIGH_RISK_ACTIONS and self.confirmation_identity is not None:
-            raise ValueError("operator_intent_confirmation_not_allowed")
         if self.action == "manual_entry":
             if self.market_key is None or self.direction is None:
                 raise ValueError("operator_manual_entry_market_required")
@@ -184,7 +180,6 @@ class ExecutionObservationV1(_FrozenContract):
     observed_at_ns: int = Field(gt=0)
     native_identity_references: tuple[str, ...] = Field(default=(), max_length=16)
     summary: dict[str, MetadataScalar] = Field(default_factory=dict)
-    payload_digest: str = Field(pattern=SHA256_PATTERN)
 
     @field_validator("runtime_release")
     @classmethod
@@ -196,16 +191,22 @@ class ExecutionObservationV1(_FrozenContract):
     @field_validator("native_identity_references", mode="before")
     @classmethod
     def validate_native_references(cls, value: object) -> tuple[str, ...]:
+        """Normalize the reference set here, because nothing downstream checks it again.
+
+        Nautilus hands these out in whatever order the callback saw them and in whatever case the
+        venue uses -- lower-case client order ids beside upper-case Binance position ids. Sorting and
+        de-duplicating is the contract's job now that no CHECK restates it (#520 PR-C); what stays a
+        refusal is content the store cannot hold.
+        """
+
         if not isinstance(value, list | tuple) or any(not isinstance(item, str) for item in value):
             raise ValueError("execution_observation_native_identity_invalid")
-        value = tuple(value)
-        if value != tuple(sorted(value)) or len(set(value)) != len(value):
+        references = tuple(sorted(set(value)))
+        if any(not item or len(item) > 256 or not postgres_text_valid(item) for item in references):
             raise ValueError("execution_observation_native_identity_invalid")
-        if any(not item or len(item) > 256 or not postgres_text_valid(item) for item in value):
+        if _jsonb_text_size(references) > 4_096:
             raise ValueError("execution_observation_native_identity_invalid")
-        if _jsonb_text_size(value) > 4_096:
-            raise ValueError("execution_observation_native_identity_invalid")
-        return value
+        return references
 
     @field_validator("summary", mode="before")
     @classmethod

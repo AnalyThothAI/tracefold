@@ -131,6 +131,35 @@ deterministic client order ids move from `tracefold:{profile_id}:{mode}` to
 `tracefold:{account_slot}:{mode}`, so an order opened under the old namespace can
 no longer be reclaimed by recovery.
 
+`20260903_0357` makes the contract the only validator. It drops the twelve
+JSON-shape CHECKs on `trading_execution_observations`, `trading_trade_signals`,
+`trading_operator_intents` and `trading_execution_runtime_state`, and with them
+the four functions they called (`trading_execution_metadata_valid`,
+`trading_execution_string_array_valid`,
+`trading_execution_market_key_array_valid`, `trading_jsonb_object_size`); no
+function named `trading_*` is left. What stays is what only the database can
+enforce: primary keys, foreign keys, NOT NULL, the enumerated value sets, the
+identity regexes, the clock inequalities and the append-only triggers. It also
+drops nine columns — `trading_execution_observations.payload_digest`,
+`trading_trade_signals.alpha_contract_sha256` and `evidence_sha256`,
+`trading_operator_intents.confirmation_identity`, and
+`trading_execution_runtime_state.singleton_ready`, `portfolio_ready`,
+`control_plane_ready`, `audit_ready` and `day_start_ready` — and removes the
+same keys from every stored `payload`, because the contracts forbid unknown keys
+and a row that still carried one could not be read back.
+`trading_cases.manifest_sha256` stays: Case idempotency is still stated with it.
+
+```bash
+pg_dump --data-only --table=trading_execution_observations \
+  --table=trading_trade_signals --table=trading_operator_intents \
+  --table=trading_execution_runtime_state \
+  > ~/.tracefold/backups/pre-0357-trading-json-checks-$(date +%Y%m%d).sql
+```
+
+The dump is the only copy afterwards: `downgrade` refuses, and the nine columns
+and their payload keys are gone from the live rows as well. No operator config
+step goes with it, and the account need not be flat.
+
 ## Database development standard
 
 1. The deployment has one non-superuser application login, `tracefold`.

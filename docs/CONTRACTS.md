@@ -290,7 +290,11 @@ writes only `trading_operator_intents`, append-only
 ledger, the slot-keyed current control projection, and the generation-fenced
 `0343` current Runtime projection. `20260903_0356` dropped the profile
 activation ledger and the Decision Plane heartbeat with it, and renamed both
-execution identity columns to `account_slot`. One delivery row per `(target, observation)` carries `delivered_at_ns`
+execution identity columns to `account_slot`; `20260903_0357` dropped every
+JSON-shape CHECK on those tables, the four `trading_*` functions behind them,
+and the `payload_digest`, `alpha_contract_sha256`, `evidence_sha256` and
+`confirmation_identity` columns, leaving the Pydantic contract as the only
+validator of an execution fact's shape. One delivery row per `(target, observation)` carries `delivered_at_ns`
 and, for a Signal card, `result_delivered_at_ns`: the second message that reports
 the 1 h/4 h outcome. `message_id` is present only on a channel that can address a
 sent message again; the deployed Feishu webhook cannot, so it is `NULL` there. The
@@ -1011,9 +1015,12 @@ reader-history title-similarity band (#491). `0351` and `0352` open the same
 CHECK to `news_semantic_program_v9` and `news_triage_policy_v12`. `0353`
 reorders `trading_execution_string_array_valid` by code point (`COLLATE "C"`);
 additive `0354` adds `trading_execution_runtime_state.routes` and its validator;
-and destructive `0355` drops the six dead `trading_cases` columns and narrows
+destructive `0355` drops the six dead `trading_cases` columns and narrows
 the Case state and admission status/stage CHECKs to the values a writer can
-reach, refusing to run while a stored row still holds a retired one. The exact
+reach, refusing to run while a stored row still holds a retired one; destructive
+`0356` makes `account_slot` the execution identity; and destructive `0357`
+deletes the JSON-shape CHECKs, their four functions, the unread digests and the
+five readiness booleans. The exact
 News base-table set plus four security-barrier review views is asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
 perform no provider, broker, model, or outbound call and have no compatibility

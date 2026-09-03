@@ -2241,8 +2241,6 @@ export interface components {
             };
             /** Config Digest */
             config_digest: string;
-            /** Contract Sha256 */
-            contract_sha256: string;
             /** Policy Id */
             policy_id: string;
             /** Policy Version */
@@ -2387,8 +2385,6 @@ export interface components {
             observed_at_ns: number;
             /** Occurred At Ns */
             occurred_at_ns: number;
-            /** Payload Digest */
-            payload_digest: string;
             /** Runtime Release */
             runtime_release: string;
             /** Seq */
@@ -2487,26 +2483,11 @@ export interface components {
             account_slot: string;
             /** Alive */
             alive: boolean;
-            /**
-             * Audit Ready
-             * @default false
-             */
-            audit_ready: boolean;
             /** Config Sha256 */
             config_sha256?: string | null;
-            /**
-             * Control Plane Ready
-             * @default false
-             */
-            control_plane_ready: boolean;
             /** Credential Fingerprint */
             credential_fingerprint?: string | null;
             current_account?: components["schemas"]["TradingExecutionAccountData"] | null;
-            /**
-             * Day Start Ready
-             * @default false
-             */
-            day_start_ready: boolean;
             /**
              * Emergency Halted
              * @default false
@@ -2540,11 +2521,6 @@ export interface components {
              */
             open_orders_count: number;
             /**
-             * Portfolio Ready
-             * @default false
-             */
-            portfolio_ready: boolean;
-            /**
              * Positions Count
              * @default 0
              */
@@ -2563,11 +2539,6 @@ export interface components {
             runtime_release?: string | null;
             /** Runtime Revision */
             runtime_revision?: string | null;
-            /**
-             * Singleton Ready
-             * @default false
-             */
-            singleton_ready: boolean;
             /**
              * Startup Reconciled
              * @default false
@@ -2760,8 +2731,6 @@ export interface components {
             action: "pause_entries" | "resume_entries" | "emergency_halt" | "flatten" | "manual_entry";
             /** Command Id */
             command_id: string;
-            /** Confirmed */
-            confirmed: boolean;
             /** Direction */
             direction?: ("long" | "short") | null;
             /** Disposition */
@@ -2846,8 +2815,6 @@ export interface components {
         };
         /** TradingSignalData */
         TradingSignalData: {
-            /** Alpha Contract Sha256 */
-            alpha_contract_sha256: string;
             /** Alpha Metadata */
             alpha_metadata?: {
                 [key: string]: string | number | boolean;
@@ -2859,8 +2826,6 @@ export interface components {
              * @enum {string}
              */
             direction: "long" | "short";
-            /** Evidence Sha256 */
-            evidence_sha256: string;
             /** Expired */
             expired: boolean;
             /** Expires At Ns */

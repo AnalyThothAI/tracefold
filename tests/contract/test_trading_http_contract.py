@@ -89,12 +89,10 @@ class _Trading:
                 "seq": 1,
                 "signal_id": "c" * 64,
                 "case_id": "case-sol",
-                "alpha_contract_sha256": "d" * 64,
                 "market_key": "crypto:perp:SOL:USDT",
                 "direction": "long",
                 "observed_at_ns": NOW * 1_000_000,
                 "expires_at_ns": (NOW + 180_000) * 1_000_000,
-                "evidence_sha256": "e" * 64,
                 "alpha_metadata": {"policy_rule": "smart_money_long"},
             }
         ]
@@ -116,7 +114,6 @@ class _Trading:
                 "operator_identity": "telegram:user:7001",
                 "requested_at_ns": NOW * 1_000_000,
                 "expires_at_ns": (NOW + 300_000) * 1_000_000,
-                "confirmed": False,
                 "market_key": None,
                 "direction": None,
                 "disposition": "accepted",
@@ -189,8 +186,11 @@ def test_status_keeps_execution_truthfully_disabled(client: tuple[TestClient, _T
     }
     assert {key: data["execution"][key] for key in expected} == expected
     assert data["execution"]["runtime_release"] is None
-    assert data["execution"]["singleton_ready"] is False
+    assert data["execution"]["startup_reconciled"] is False
     assert data["execution"]["account_flat"] is False
+    assert {"singleton_ready", "portfolio_ready", "control_plane_ready", "audit_ready", "day_start_ready"}.isdisjoint(
+        data["execution"]
+    )
     assert data["counts"]["signals_24h"] == 1
     assert data["alpha"]["policy_id"] == "source_native_oi_smart_money_long_v4"
     assert "capital" not in data and "bindings" not in data and "budget" not in data

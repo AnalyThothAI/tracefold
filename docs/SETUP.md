@@ -456,8 +456,12 @@ readiness/current-control hard cut, the additive `0349` bounded current
 account read projection, the additive `0350` `pg_trgm` pin with the
 `title_similarity` told-trace reason, the additive `0351` judgment CHECK
 opening to program v9 with blind review drafts, and the additive `0352`
-judgment CHECK opening to triage policy v12 (#504), and the `0353` rewrite of
-`trading_execution_string_array_valid` to code-point ordering (#510), in order.
+judgment CHECK opening to triage policy v12 (#504), the `0353` rewrite of
+`trading_execution_string_array_valid` to code-point ordering (#510), the
+additive `0354` Runtime route catalogue, the destructive `0355` dead Case column
+drop, the destructive `0356` `account_slot` identity cut, and the destructive
+`0357` cut of every JSON-shape CHECK, its four functions, the unread digests and
+the five readiness booleans (#520), in order.
 Current source intentionally has no upgrade path from an earlier revision. To
 recover a pre-#449 backup, use the exact pre-cut image/source to restore and
 advance it to the old terminal `20260831_0340`, take a verified backup, perform

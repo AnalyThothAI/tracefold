@@ -13,7 +13,13 @@ from tracefold.platform.postgres.audit import ReadQuerySpec
 from tracefold.platform.postgres.client import require_transaction
 
 from ..contracts import EXECUTION_STRATEGY_ID
-from ..execution_contracts import MARKET_KEY_PATTERN, ExecutionObservationV1, OperatorIntentV1, TradeSignalV1
+from ..execution_contracts import (
+    MARKET_KEY_PATTERN,
+    ExecutionObservationV1,
+    OperatorIntentV1,
+    TradeSignalV1,
+    postgres_text_valid,
+)
 
 EXECUTION_STREAM_NOTIFY_CHANNEL = "tracefold_trading_execution_stream"
 MAX_EXECUTION_READ_BATCH = 1_000
@@ -22,7 +28,7 @@ MAX_OBSERVATION_APPEND_BYTES = 1_048_576
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,127}$")
 _MARKET_KEY = re.compile(MARKET_KEY_PATTERN)
-# What `trading_execution_market_key_array_valid` accepts, stated once on this side of the seam.
+# How many `market_key`s one Runtime generation may publish.
 MAX_EXECUTION_ROUTES = 1_024
 _OBSERVATION_BATCH_SAVEPOINT = "tracefold_execution_observation_batch"
 
@@ -96,16 +102,6 @@ def execution_stream_query_specs(
     )
 
 
-def _postgres_text_valid(value: str) -> bool:
-    if "\x00" in value:
-        return False
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError:
-        return False
-    return True
-
-
 @dataclass(frozen=True, slots=True)
 class PreparedTradeSignal:
     """Validated Signal input and canonical JSON prepared before the DB callback."""
@@ -149,7 +145,7 @@ class ExecutionAccountPosition:
     protection_full_coverage: bool
 
     def __post_init__(self) -> None:
-        if not self.position_id or len(self.position_id) > 256 or not _postgres_text_valid(self.position_id):
+        if not self.position_id or len(self.position_id) > 256 or not postgres_text_valid(self.position_id):
             raise ValueError("execution_account_position_identity_invalid")
         if _IDENTITY.fullmatch(self.instrument_id) is None:
             raise ValueError("execution_account_position_instrument_invalid")
@@ -171,11 +167,7 @@ class ExecutionAccountOrder:
     owned: bool
 
     def __post_init__(self) -> None:
-        if (
-            not self.client_order_id
-            or len(self.client_order_id) > 256
-            or not _postgres_text_valid(self.client_order_id)
-        ):
+        if not self.client_order_id or len(self.client_order_id) > 256 or not postgres_text_valid(self.client_order_id):
             raise ValueError("execution_account_order_identity_invalid")
         if _IDENTITY.fullmatch(self.instrument_id) is None or not self.quantity:
             raise ValueError("execution_account_order_value_invalid")
@@ -243,12 +235,7 @@ class ExecutionRuntimeState:
     alive: bool
     execution_safe: bool
     entries_armed: bool
-    control_plane_ready: bool
-    singleton_ready: bool
     startup_reconciled: bool
-    portfolio_ready: bool
-    audit_ready: bool
-    day_start_ready: bool
     unexpected_exposure: bool
     account_flat: bool
     positions_count: int
@@ -285,22 +272,9 @@ class ExecutionRuntimeState:
             raise ValueError("execution_runtime_counts_invalid")
         if self.alive and self.lifecycle_state not in {"starting", "running", "stopping"}:
             raise ValueError("execution_runtime_alive_invalid")
-        safe_gates = (
-            self.alive,
-            self.singleton_ready,
-            self.startup_reconciled,
-            self.portfolio_ready,
-            not self.unexpected_exposure,
-        )
-        if self.execution_safe and not all(safe_gates):
+        if self.execution_safe and not (self.alive and self.startup_reconciled and not self.unexpected_exposure):
             raise ValueError("execution_runtime_safe_invalid")
-        armed_gates = (
-            self.execution_safe,
-            self.control_plane_ready,
-            self.audit_ready,
-            self.day_start_ready,
-        )
-        if self.entries_armed and not all(armed_gates):
+        if self.entries_armed and not self.execution_safe:
             raise ValueError("execution_runtime_armed_invalid")
         if self.entries_armed != (self.entry_block_reason is None):
             raise ValueError("execution_runtime_entry_reason_invalid")
@@ -341,24 +315,20 @@ def prepare_trade_signal(
     *,
     signal_id: str,
     case_id: str,
-    alpha_contract_sha256: str,
     market_key: str,
     direction: Literal["long", "short"],
     observed_at_ns: int,
     expires_at_ns: int,
-    evidence_sha256: str,
     alpha_metadata: dict[str, str | int | bool] | None = None,
 ) -> PreparedTradeSignal:
     value = TradeSignalV1(
         seq=1,
         signal_id=signal_id,
         case_id=case_id,
-        alpha_contract_sha256=alpha_contract_sha256,
         market_key=market_key,
         direction=direction,
         observed_at_ns=observed_at_ns,
         expires_at_ns=expires_at_ns,
-        evidence_sha256=evidence_sha256,
         alpha_metadata=alpha_metadata or {},
     )
     return PreparedTradeSignal(
@@ -402,7 +372,10 @@ def prepare_operator_intent(
     )
     return PreparedOperatorIntent(
         value=value,
-        payload_json=_dumps(value.model_dump(mode="json", exclude={"seq"})),
+        # `confirmation_identity` is no longer stored: #520 dropped the column and the CHECK, and
+        # #520 PR-B drops the contract field. Keeping it out of the payload now means that PR needs
+        # no migration and no stored Command ever carries a key the contract will not accept.
+        payload_json=_dumps(value.model_dump(mode="json", exclude={"seq", "confirmation_identity"})),
     )
 
 
@@ -453,21 +426,19 @@ class ExecutionStreamStorage:
         inserted = self.conn.execute(
             """
             INSERT INTO trading_trade_signals (
-              signal_id, case_id, alpha_contract_sha256, market_key, direction,
-              observed_at_ns, expires_at_ns, evidence_sha256, alpha_metadata, payload
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+              signal_id, case_id, market_key, direction,
+              observed_at_ns, expires_at_ns, alpha_metadata, payload
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
             ON CONFLICT DO NOTHING
             RETURNING seq, payload
             """,
             (
                 candidate.signal_id,
                 candidate.case_id,
-                candidate.alpha_contract_sha256,
                 candidate.market_key,
                 candidate.direction,
                 candidate.observed_at_ns,
                 candidate.expires_at_ns,
-                candidate.evidence_sha256,
                 prepared.metadata_json,
                 prepared.payload_json,
             ),
@@ -494,8 +465,8 @@ class ExecutionStreamStorage:
             INSERT INTO trading_operator_intents (
               command_id, account_slot, action, scope, reason, operator_identity,
               authentication_identity, requested_at_ns, expires_at_ns,
-              confirmation_identity, market_key, direction, payload
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+              market_key, direction, payload
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
             ON CONFLICT (command_id) DO NOTHING
             RETURNING seq, payload
             """,
@@ -509,7 +480,6 @@ class ExecutionStreamStorage:
                 candidate.authentication_identity,
                 candidate.requested_at_ns,
                 candidate.expires_at_ns,
-                candidate.confirmation_identity,
                 candidate.market_key,
                 candidate.direction,
                 prepared.payload_json,
@@ -532,76 +502,43 @@ class ExecutionStreamStorage:
             return ()
         self.conn.execute(f"SAVEPOINT {_OBSERVATION_BATCH_SAVEPOINT}")
         try:
+            # `prepare_execution_observations` already bounded the batch, refused duplicate event ids
+            # and validated every row, so the append is one ordinary INSERT. Until #520 PR-C this
+            # statement re-derived those same bounds in SQL to feed the per-key `payload` CHECK.
             inserted = self.conn.execute(
                 """
-                WITH batch AS (
-                  SELECT payloads,
-                         CASE WHEN jsonb_typeof(payloads) = 'array' THEN
-                           jsonb_array_length(payloads) = %s
-                           AND jsonb_array_length(payloads) <= 128
-                           AND payload_bytes <= 1048576
-                         ELSE FALSE END AS bounded
-                    FROM (
-                      SELECT %s::jsonb AS payloads, octet_length(%s::text) AS payload_bytes
-                    ) input
-                ), offered AS (
-                  SELECT value AS payload, ordinality::integer AS ordinal
-                    FROM batch
-                    CROSS JOIN LATERAL jsonb_array_elements(
-                      CASE WHEN batch.bounded THEN batch.payloads ELSE '[]'::jsonb END
-                    ) WITH ORDINALITY
-                ), identity_guard AS (
-                  SELECT count(*) = count(DISTINCT payload ->> 'event_id') AS unique_event_ids
-                    FROM offered
-                ), inserted AS (
-                  INSERT INTO trading_execution_observations (
-                    event_id, account_slot, runtime_release, execution_strategy,
-                    signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
-                    native_identity_references, summary, payload_digest, payload
-                  )
-                  SELECT payload ->> 'event_id', payload ->> 'account_slot',
-                         payload ->> 'runtime_release', payload ->> 'execution_strategy',
-                         payload ->> 'signal_id', payload ->> 'command_id',
-                         payload ->> 'normalized_kind', (payload ->> 'occurred_at_ns')::bigint,
-                         (payload ->> 'observed_at_ns')::bigint,
-                         payload -> 'native_identity_references', payload -> 'summary',
-                         payload ->> 'payload_digest', payload
-                    FROM offered
-                   WHERE (SELECT unique_event_ids FROM identity_guard)
-                   ORDER BY ordinal
-                  ON CONFLICT (event_id) DO NOTHING
-                  RETURNING seq
+                INSERT INTO trading_execution_observations (
+                  event_id, account_slot, runtime_release, execution_strategy,
+                  signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
+                  native_identity_references, summary, payload
                 )
-                SELECT batch.bounded, identity_guard.unique_event_ids,
-                       (SELECT count(*) FROM inserted) AS inserted_count
-                  FROM batch CROSS JOIN identity_guard
+                SELECT payload ->> 'event_id', payload ->> 'account_slot',
+                       payload ->> 'runtime_release', payload ->> 'execution_strategy',
+                       payload ->> 'signal_id', payload ->> 'command_id',
+                       payload ->> 'normalized_kind', (payload ->> 'occurred_at_ns')::bigint,
+                       (payload ->> 'observed_at_ns')::bigint,
+                       payload -> 'native_identity_references', payload -> 'summary', payload
+                  FROM jsonb_array_elements(%s::jsonb) WITH ORDINALITY AS offered(payload, ordinal)
+                 ORDER BY offered.ordinal
+                ON CONFLICT (event_id) DO NOTHING
                 """,
-                (prepared.count, prepared.payload_json, prepared.payload_json),
-            ).fetchone()
-            if inserted is None or not inserted["bounded"]:
-                raise ValueError("execution_observation_batch_bounds_invalid")
-            if not inserted["unique_event_ids"]:
-                raise ValueError("execution_observation_batch_identity_duplicate")
+                (prepared.payload_json,),
+            )
             resolved = self.conn.execute(
                 """
-                WITH offered AS (
-                  SELECT value AS payload, ordinality::integer AS ordinal
-                    FROM jsonb_array_elements(%s::jsonb) WITH ORDINALITY
-                )
-                SELECT count(*) = %s AS resolved_all,
-                       COALESCE(bool_and(existing.payload = offered.payload), FALSE) AS all_exact,
-                       array_agg(existing.seq ORDER BY offered.ordinal) AS sequences
-                  FROM offered
+                SELECT array_agg(existing.seq ORDER BY offered.ordinal) AS sequences
+                  FROM jsonb_array_elements(%s::jsonb) WITH ORDINALITY AS offered(payload, ordinal)
                   JOIN trading_execution_observations existing
                     ON existing.event_id = offered.payload ->> 'event_id'
                 """,
-                (prepared.payload_json, prepared.count),
+                (prepared.payload_json,),
             ).fetchone()
-            if resolved is None or not resolved["resolved_all"] or not resolved["all_exact"]:
+            stored = () if resolved is None else (resolved["sequences"] or ())
+            if len(stored) != prepared.count:
                 raise RuntimeError("execution_stream_identity_conflict")
-            if int(inserted["inserted_count"]) > 0:
+            sequences = tuple(int(seq) for seq in stored)
+            if inserted.rowcount > 0:
                 self._notify("observation")
-            sequences = tuple(int(seq) for seq in resolved["sequences"])
             self._project_runtime_control_state(prepared.payload_json)
         except Exception:
             self.conn.execute(f"ROLLBACK TO SAVEPOINT {_OBSERVATION_BATCH_SAVEPOINT}")
@@ -857,9 +794,8 @@ class ExecutionStreamStorage:
             """
             SELECT account_slot, mode, runtime_release, config_sha256,
                    runtime_id, runtime_revision, image_digest, credential_fingerprint,
-                   lifecycle_state, alive, execution_safe, entries_armed, control_plane_ready,
-                   singleton_ready, startup_reconciled,
-                   portfolio_ready, audit_ready, day_start_ready, unexpected_exposure, account_flat,
+                   lifecycle_state, alive, execution_safe, entries_armed,
+                   startup_reconciled, unexpected_exposure, account_flat,
                    positions_count, open_orders_count, protection_status,
                    reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
                    started_at_ns, updated_at_ns, account_snapshot, routes
@@ -871,9 +807,8 @@ class ExecutionStreamStorage:
             else """
             SELECT account_slot, mode, runtime_release, config_sha256,
                    runtime_id, runtime_revision, image_digest, credential_fingerprint,
-                   lifecycle_state, alive, execution_safe, entries_armed, control_plane_ready,
-                   singleton_ready, startup_reconciled,
-                   portfolio_ready, audit_ready, day_start_ready, unexpected_exposure, account_flat,
+                   lifecycle_state, alive, execution_safe, entries_armed,
+                   startup_reconciled, unexpected_exposure, account_flat,
                    positions_count, open_orders_count, protection_status,
                    reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
                    started_at_ns, updated_at_ns, account_snapshot, routes
@@ -891,16 +826,15 @@ class ExecutionStreamStorage:
             INSERT INTO trading_execution_runtime_state (
               account_slot, mode, runtime_release, config_sha256,
               runtime_id, runtime_revision, image_digest, credential_fingerprint,
-              lifecycle_state, alive, execution_safe, entries_armed, control_plane_ready,
-              singleton_ready, startup_reconciled,
-              portfolio_ready, audit_ready, day_start_ready, unexpected_exposure, account_flat,
+              lifecycle_state, alive, execution_safe, entries_armed,
+              startup_reconciled, unexpected_exposure, account_flat,
               positions_count, open_orders_count, protection_status,
               reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
               started_at_ns, updated_at_ns, account_snapshot, routes
             ) VALUES (
               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb
+              %s, %s, %s, %s::jsonb, %s::jsonb
             )
             ON CONFLICT (account_slot) DO UPDATE SET
               mode = EXCLUDED.mode,
@@ -914,12 +848,7 @@ class ExecutionStreamStorage:
               alive = EXCLUDED.alive,
               execution_safe = EXCLUDED.execution_safe,
               entries_armed = EXCLUDED.entries_armed,
-              control_plane_ready = EXCLUDED.control_plane_ready,
-              singleton_ready = EXCLUDED.singleton_ready,
               startup_reconciled = EXCLUDED.startup_reconciled,
-              portfolio_ready = EXCLUDED.portfolio_ready,
-              audit_ready = EXCLUDED.audit_ready,
-              day_start_ready = EXCLUDED.day_start_ready,
               unexpected_exposure = EXCLUDED.unexpected_exposure,
               account_flat = EXCLUDED.account_flat,
               positions_count = EXCLUDED.positions_count,
@@ -945,10 +874,8 @@ class ExecutionStreamStorage:
             """
             UPDATE trading_execution_runtime_state
                SET lifecycle_state = %s, alive = %s, execution_safe = %s,
-                   entries_armed = %s, control_plane_ready = %s,
-                   singleton_ready = %s,
-                   startup_reconciled = %s, portfolio_ready = %s, audit_ready = %s,
-                   day_start_ready = %s, unexpected_exposure = %s, account_flat = %s,
+                   entries_armed = %s,
+                   startup_reconciled = %s, unexpected_exposure = %s, account_flat = %s,
                    positions_count = %s, open_orders_count = %s, protection_status = %s,
                    reconciliation_observed_at_ns = %s, heartbeat_at_ns = %s,
                    entry_block_reason = %s, updated_at_ns = %s,
@@ -960,12 +887,7 @@ class ExecutionStreamStorage:
                 value.alive,
                 value.execution_safe,
                 value.entries_armed,
-                value.control_plane_ready,
-                value.singleton_ready,
                 value.startup_reconciled,
-                value.portfolio_ready,
-                value.audit_ready,
-                value.day_start_ready,
                 value.unexpected_exposure,
                 value.account_flat,
                 value.positions_count,
@@ -997,12 +919,7 @@ class ExecutionStreamStorage:
             alive=bool(row["alive"]),
             execution_safe=bool(row["execution_safe"]),
             entries_armed=bool(row["entries_armed"]),
-            control_plane_ready=bool(row["control_plane_ready"]),
-            singleton_ready=bool(row["singleton_ready"]),
             startup_reconciled=bool(row["startup_reconciled"]),
-            portfolio_ready=bool(row["portfolio_ready"]),
-            audit_ready=bool(row["audit_ready"]),
-            day_start_ready=bool(row["day_start_ready"]),
             unexpected_exposure=bool(row["unexpected_exposure"]),
             account_flat=bool(row["account_flat"]),
             positions_count=int(row["positions_count"]),
@@ -1040,12 +957,7 @@ class ExecutionStreamStorage:
             value.alive,
             value.execution_safe,
             value.entries_armed,
-            value.control_plane_ready,
-            value.singleton_ready,
             value.startup_reconciled,
-            value.portfolio_ready,
-            value.audit_ready,
-            value.day_start_ready,
             value.unexpected_exposure,
             value.account_flat,
             value.positions_count,

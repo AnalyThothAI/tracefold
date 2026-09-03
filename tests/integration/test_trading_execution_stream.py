@@ -43,12 +43,10 @@ def _prepare_signal(*, suffix: str, case_id: str | None = None, **updates: objec
     values: dict[str, object] = {
         "signal_id": suffix * 64,
         "case_id": case_id or f"case-{suffix}",
-        "alpha_contract_sha256": "b" * 64,
         "market_key": "crypto:perp:BTC:USDT",
         "direction": "long",
         "observed_at_ns": 1_000,
         "expires_at_ns": 10_000,
-        "evidence_sha256": "c" * 64,
         "alpha_metadata": {"policy": "oi-v1"},
     }
     values.update(updates)
@@ -112,7 +110,6 @@ def _observation(
         "observed_at_ns": 2_100,
         "native_identity_references": (),
         "summary": {"disposition": "accepted"},
-        "payload_digest": "2" * 64,
     }
     values.update(updates)
     return ExecutionObservationV1.model_validate(values)
@@ -158,9 +155,6 @@ def test_exact_append_is_idempotent_and_identity_conflicts_fail_closed() -> None
         kind="signal_disposition",
     )
     observation_batch = prepare_execution_observations((observation,))
-    conflicting_observation_batch = prepare_execution_observations(
-        (observation.model_copy(update={"payload_digest": "4" * 64}),)
-    )
     with pytest.raises(ValueError, match="execution_observation_batch_count_exceeded"):
         prepare_execution_observations((observation,) * 129)
 
@@ -182,8 +176,6 @@ def test_exact_append_is_idempotent_and_identity_conflicts_fail_closed() -> None
                 repo.append_operator_intent(conflicting_command)
             observed_seq = repo.append_execution_observations(observation_batch)
             assert repo.append_execution_observations(observation_batch) == observed_seq
-            with pytest.raises(RuntimeError, match="execution_stream_identity_conflict"):
-                repo.append_execution_observations(conflicting_observation_batch)
     finally:
         conn.close()
 
@@ -361,12 +353,10 @@ def test_execution_stream_append_requires_caller_owned_transaction() -> None:
         prepared = prepare_trade_signal(
             signal_id="a" * 64,
             case_id="case-a",
-            alpha_contract_sha256="b" * 64,
             market_key="crypto:perp:BTC:USDT",
             direction="long",
             observed_at_ns=1_000,
             expires_at_ns=10_000,
-            evidence_sha256="c" * 64,
         )
         with pytest.raises(RuntimeError, match="append_trade_signal_requires_explicit_transaction"):
             repo.append_trade_signal(prepared)
@@ -545,11 +535,18 @@ def test_unresolved_reads_return_only_unexpired_intents() -> None:
 
 
 def test_rejected_observation_batch_rolls_back_its_new_prefix() -> None:
+    """One append is one batch: a row the database refuses takes the whole batch with it.
+
+    The refusal used here is the Command foreign key, which is what remains after #520 PR-C took the
+    per-key `payload` CHECK away: an observation disposing of a Command nobody issued. Without the
+    savepoint the first element of the batch would already be durable when the second raised.
+    """
+
     existing = _observation(event="a", kind="risk")
     existing_batch = prepare_execution_observations((existing,))
     new_value = _observation(event="b", kind="risk")
-    conflicting = existing.model_copy(update={"payload_digest": "4" * 64})
-    conflicting_batch = prepare_execution_observations((new_value, conflicting))
+    unknown_command = _observation(event="c", command_id="9" * 64, kind="control_disposition")
+    rejected_batch = prepare_execution_observations((new_value, unknown_command))
 
     conn = connect_postgres_test(read_only=False)
     try:
@@ -558,8 +555,8 @@ def test_rejected_observation_batch_rolls_back_its_new_prefix() -> None:
             repo.append_execution_observations(existing_batch)
 
         with conn.transaction():
-            with pytest.raises(RuntimeError, match="execution_stream_identity_conflict"):
-                repo.append_execution_observations(conflicting_batch)
+            with pytest.raises(psycopg.errors.ForeignKeyViolation):
+                repo.append_execution_observations(rejected_batch)
 
             assert conn.execute("SELECT event_id FROM trading_execution_observations ORDER BY event_id").fetchall() == [
                 {"event_id": existing.event_id}
@@ -568,8 +565,16 @@ def test_rejected_observation_batch_rolls_back_its_new_prefix() -> None:
         conn.close()
 
 
-def test_append_rechecks_forged_observation_batch_bounds() -> None:
-    forged_count = PreparedExecutionObservationBatch(payload_json=json.dumps([{}] * 129), count=1)
+def test_a_hand_built_observation_batch_writes_nothing() -> None:
+    """`prepare_execution_observations` is the only thing that may produce an append.
+
+    It states the batch bounds once and validates every row; #520 PR-C removed the SQL that
+    re-derived those bounds so the per-key `payload` CHECK could compare against them. A batch built
+    by hand therefore reaches the INSERT, and what stops it is what the contract would have supplied:
+    the NOT NULL identity columns. Nothing durable is left behind either way.
+    """
+
+    forged_count = PreparedExecutionObservationBatch(payload_json=json.dumps([{}] * 129), count=129)
     forged_bytes = PreparedExecutionObservationBatch(
         payload_json=json.dumps([{"blob": "x" * 1_048_576}]),
         count=1,
@@ -578,7 +583,7 @@ def test_append_rechecks_forged_observation_batch_bounds() -> None:
     try:
         repo = TradingRepository(conn)
         for prepared in (forged_count, forged_bytes):
-            with conn.transaction(), pytest.raises(ValueError, match="execution_observation_batch_bounds_invalid"):
+            with conn.transaction(), pytest.raises(psycopg.errors.NotNullViolation):
                 repo.append_execution_observations(prepared)
         assert conn.execute("SELECT count(*) AS n FROM trading_execution_observations").fetchone()["n"] == 0
     finally:
@@ -614,12 +619,7 @@ def test_runtime_state_is_single_generation_per_account_slot() -> None:
         alive=True,
         execution_safe=True,
         entries_armed=True,
-        control_plane_ready=True,
-        singleton_ready=True,
         startup_reconciled=True,
-        portfolio_ready=True,
-        audit_ready=True,
-        day_start_ready=True,
         unexpected_exposure=False,
         account_flat=True,
         positions_count=0,
@@ -706,19 +706,15 @@ def test_runtime_state_is_single_generation_per_account_slot() -> None:
         assert repo.execution_runtime_state("binance_usdm_primary") == stopped
         assert repo.execution_runtime_state("binance_usdm_primary").routes == running.routes
 
-        for invalid in (
-            '["crypto:perp:ETH:USDT", "crypto:perp:BTC:USDT"]',
-            '["crypto:perp:BTC:USDT", "crypto:perp:BTC:USDT"]',
-            '["crypto perp BTC"]',
-            "[1]",
-            "{}",
+        # The catalogue's shape is the projection's own rule now: unsorted, duplicated and
+        # malformed market keys are refused before a statement is ever built (#520 PR-C).
+        for invalid_routes in (
+            ("crypto:perp:ETH:USDT", "crypto:perp:BTC:USDT"),
+            ("crypto:perp:BTC:USDT", "crypto:perp:BTC:USDT"),
+            ("crypto perp BTC",),
         ):
-            with pytest.raises(psycopg.errors.CheckViolation) as rejected, conn.transaction():
-                conn.execute(
-                    "UPDATE trading_execution_runtime_state SET routes = %s::jsonb WHERE account_slot = %s",
-                    (invalid, "binance_usdm_primary"),
-                )
-            assert rejected.value.diag.constraint_name == "trading_execution_runtime_routes_check"
+            with pytest.raises(ValueError, match="execution_runtime_routes_invalid"):
+                replace(running, routes=invalid_routes)
     finally:
         conn.close()
 
@@ -946,11 +942,25 @@ def test_database_rejects_execution_fact_mutation() -> None:
         conn.close()
 
 
-def test_contract_and_postgres_json_bounds_match_at_exact_edges() -> None:
+def test_the_contract_is_the_only_json_bound_and_it_holds_at_the_exact_edges() -> None:
+    """The bounds live in one place now, so the test that pins them writes through the real seam.
+
+    Until #520 PR-C the same numbers were stated twice -- once in `ExecutionObservationV1` /
+    `TradeSignalV1` and once in `trading_execution_metadata_valid` /
+    `trading_execution_string_array_valid` -- and this test proved the two agreed. There is no second
+    statement left to disagree with, so what has to be proven is that the surviving one still admits
+    the largest legal fact and still refuses the next byte, all the way to durable storage.
+    """
+
     metadata = {f"k{index}": "x" * 246 for index in range(8)}
     references = tuple(f"{index:02d}" + "x" * 250 for index in range(16))
     oversized_metadata = metadata | {"k0": "x" * 247}
     oversized_references = (references[0] + "x", *references[1:])
+
+    assert len(json.dumps(metadata, ensure_ascii=False, sort_keys=True).encode("utf-8")) == 2_048
+    assert len(json.dumps(oversized_metadata, ensure_ascii=False, sort_keys=True).encode("utf-8")) == 2_049
+    assert len(json.dumps(references, ensure_ascii=False).encode("utf-8")) == 4_096
+    assert len(json.dumps(oversized_references, ensure_ascii=False).encode("utf-8")) == 4_097
 
     signal = _prepare_signal(suffix="3", alpha_metadata=metadata)
     observation = _observation(
@@ -964,15 +974,10 @@ def test_contract_and_postgres_json_bounds_match_at_exact_edges() -> None:
         _prepare_signal(suffix="5", alpha_metadata=oversized_metadata)
     with pytest.raises(ValidationError, match="execution_observation_native_identity_invalid"):
         _observation(event="6", kind="risk", native_identity_references=oversized_references)
-
-    metadata_json = json.dumps(metadata, ensure_ascii=False, sort_keys=True)
-    oversized_metadata_json = json.dumps(oversized_metadata, ensure_ascii=False, sort_keys=True)
-    references_json = json.dumps(references, ensure_ascii=False)
-    oversized_references_json = json.dumps(oversized_references, ensure_ascii=False)
-    assert len(metadata_json.encode("utf-8")) == 2_048
-    assert len(oversized_metadata_json.encode("utf-8")) == 2_049
-    assert len(references_json.encode("utf-8")) == 4_096
-    assert len(oversized_references_json.encode("utf-8")) == 4_097
+    with pytest.raises(ValidationError, match="execution_observation_native_identity_invalid"):
+        _observation(event="6", kind="risk", native_identity_references=("tf00", 17))
+    with pytest.raises(ValidationError):
+        _observation(event="6", kind="risk", native_identity_references=tuple(f"ref-{n:03d}" for n in range(17)))
 
     conn = connect_postgres_test(read_only=False)
     try:
@@ -981,126 +986,53 @@ def test_contract_and_postgres_json_bounds_match_at_exact_edges() -> None:
             _append_signal(repo, signal)
             repo.append_execution_observations(observation_batch)
 
-        validators = conn.execute(
+        stored = conn.execute(
             """
-            SELECT trading_execution_metadata_valid(%s::jsonb) AS metadata_at_limit,
-                   trading_execution_metadata_valid(%s::jsonb) AS metadata_over_limit,
-                   trading_execution_string_array_valid(%s::jsonb) AS references_at_limit,
-                   trading_execution_string_array_valid(%s::jsonb) AS references_over_limit
+            SELECT (SELECT alpha_metadata FROM trading_trade_signals WHERE signal_id = %s) AS alpha_metadata,
+                   (SELECT native_identity_references FROM trading_execution_observations
+                     WHERE event_id = %s) AS native_identity_references
             """,
-            (metadata_json, oversized_metadata_json, references_json, oversized_references_json),
+            (signal.value.signal_id, observation.event_id),
         ).fetchone()
-        assert validators == {
-            "metadata_at_limit": True,
-            "metadata_over_limit": False,
-            "references_at_limit": True,
-            "references_over_limit": False,
-        }
-
-        with pytest.raises(psycopg.errors.CheckViolation) as metadata_rejected, conn.transaction():
-            conn.execute(
-                """
-                INSERT INTO trading_trade_signals (
-                  signal_id, case_id, alpha_contract_sha256, market_key, direction,
-                  observed_at_ns, expires_at_ns, evidence_sha256, alpha_metadata, payload
-                )
-                SELECT %s, 'json-boundary-invalid', alpha_contract_sha256, market_key, direction,
-                       observed_at_ns, expires_at_ns, evidence_sha256, %s::jsonb,
-                       payload || jsonb_build_object(
-                         'signal_id', %s::text, 'case_id', 'json-boundary-invalid',
-                         'alpha_metadata', %s::jsonb
-                       )
-                  FROM trading_trade_signals WHERE signal_id = %s
-                """,
-                (
-                    "5" * 64,
-                    oversized_metadata_json,
-                    "5" * 64,
-                    oversized_metadata_json,
-                    signal.value.signal_id,
-                ),
-            )
-        assert metadata_rejected.value.diag.constraint_name == "trading_trade_signal_metadata_check"
-
-        with pytest.raises(psycopg.errors.CheckViolation) as references_rejected, conn.transaction():
-            conn.execute(
-                """
-                INSERT INTO trading_execution_observations (
-                  event_id, account_slot, runtime_release, execution_strategy,
-                  signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
-                  native_identity_references, summary, payload_digest, payload
-                )
-                SELECT %s, account_slot, runtime_release, execution_strategy,
-                       signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
-                       %s::jsonb, summary, payload_digest,
-                       payload || jsonb_build_object(
-                         'event_id', %s::text, 'native_identity_references', %s::jsonb
-                       )
-                  FROM trading_execution_observations WHERE event_id = %s
-                """,
-                (
-                    "6" * 64,
-                    oversized_references_json,
-                    "6" * 64,
-                    oversized_references_json,
-                    observation.event_id,
-                ),
-            )
-        assert references_rejected.value.diag.constraint_name == "trading_execution_observation_native_refs_check"
+        assert stored is not None
+        assert stored["alpha_metadata"] == metadata
+        assert stored["native_identity_references"] == list(references)
     finally:
         conn.close()
 
 
-def test_nautilus_shaped_mixed_case_references_are_admitted_as_python_ordered_them() -> None:
-    """Real Nautilus identities mix cases, and the database must order them as the contract does.
+def test_unsorted_mixed_case_nautilus_references_are_normalized_by_the_contract_alone() -> None:
+    """The collation incident cannot recur, because only one component orders these now.
 
-    Every reference the Runtime ever writes comes out of `ExecutionObservationV1`, which sorts by code
-    point. Binance contract and position identities are upper case, deterministic client order ids are
-    lower case `tf...`, and the two orderings only agree while a batch stays in one case. Production wrote
-    exactly this mixture the first time a fill carried a position, and `en_US.utf8` reordered it, so the
-    CHECK rejected every observation of the open position for six hours (#510 A).
+    Real Nautilus identities mix cases -- Binance contract and position ids are upper case,
+    deterministic client order ids are lower case `tf...` -- and they arrive in whatever order the
+    callback saw them. `trading_execution_string_array_valid` demanded the database's own collation
+    order for the same array `ExecutionObservationV1` sorted by code point, and on 2026-09-02 that
+    single disagreement refused every observation of an open position for six hours (#510 A). #520
+    PR-C deletes the second opinion: the contract normalizes, the database stores, and no function
+    named `trading_*` is left to hold a third one.
     """
 
-    references = (
+    unsorted_references = (
+        "tf0065f6482c5577533ba696da631582",
+        "UNIUSDT-PERP.BINANCE-OI-RUNTIME-02A27DC240DF",
         "462066006",
         "61742419",
-        "UNIUSDT-PERP.BINANCE-OI-RUNTIME-02A27DC240DF",
         "tf0065f6482c5577533ba696da631582",
     )
-    assert references == tuple(sorted(references))
-    references_json = json.dumps(references, ensure_ascii=False)
+    normalized = tuple(sorted(set(unsorted_references)))
+    assert unsorted_references[: len(normalized)] != normalized
+
     fill = _observation(
         event="7",
         kind="fill",
-        native_identity_references=references,
+        native_identity_references=unsorted_references,
         summary={"leg": "entry", "last_quantity": "3", "last_price": "7.401"},
     )
+    assert fill.native_identity_references == normalized
 
     conn = connect_postgres_test(read_only=False)
     try:
-        ordering = conn.execute(
-            """
-            SELECT (SELECT jsonb_agg(item ORDER BY item #>> '{}')
-                      FROM jsonb_array_elements(%s::jsonb) item) AS database_collation_order,
-                   (SELECT jsonb_agg(item ORDER BY (item #>> '{}') COLLATE "C")
-                      FROM jsonb_array_elements(%s::jsonb) item) AS code_point_order
-            """,
-            (references_json, references_json),
-        ).fetchone()
-        assert ordering is not None
-        assert ordering["code_point_order"] == list(references)
-        assert ordering["database_collation_order"] != list(references), (
-            "this database orders Nautilus identities the same way Python does, "
-            "so it cannot witness the collation risk this test exists for"
-        )
-
-        valid = conn.execute(
-            "SELECT trading_execution_string_array_valid(%s::jsonb) AS ok",
-            (references_json,),
-        ).fetchone()
-        assert valid is not None
-        assert valid["ok"] is True
-
         repo = TradingRepository(conn)
         with conn.transaction():
             repo.append_execution_observations(prepare_execution_observations((fill,)))
@@ -1110,12 +1042,29 @@ def test_nautilus_shaped_mixed_case_references_are_admitted_as_python_ordered_th
             (fill.event_id,),
         ).fetchone()
         assert stored is not None
-        assert stored["native_identity_references"] == list(references)
+        assert stored["native_identity_references"] == list(normalized)
+
+        surviving = conn.execute(
+            """
+            SELECT count(*) AS n FROM pg_proc
+             WHERE pronamespace = 'public'::regnamespace AND proname LIKE 'trading\\_%'
+            """
+        ).fetchone()
+        assert surviving is not None
+        assert surviving["n"] == 0
     finally:
         conn.close()
 
 
 def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
+    """What the database still refuses on its own: enumerated values, clocks, correlation and links.
+
+    The per-key `payload` CHECKs used to be in this list. They only ever restated the INSERT that
+    produced the row, so #520 PR-C deleted them; the cases below are the refusals no writer can
+    supply for itself, because each one is about a *relationship* -- to another row, to the clock, or
+    to the fixed value set the column is allowed to hold.
+    """
+
     signal = _prepare_signal(suffix="a")
     command = _prepare_command(suffix="b")
     observation = _observation(event="c", kind="risk")
@@ -1133,93 +1082,60 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
             (
                 """
                 INSERT INTO trading_trade_signals (
-                  signal_id, case_id, alpha_contract_sha256, market_key, direction,
-                  observed_at_ns, expires_at_ns, evidence_sha256, alpha_metadata, payload
+                  signal_id, case_id, market_key, direction,
+                  observed_at_ns, expires_at_ns, alpha_metadata, payload
                 )
-                SELECT %s, 'case-drift', alpha_contract_sha256, market_key, 'short',
-                       observed_at_ns, expires_at_ns, evidence_sha256, alpha_metadata,
-                       payload || jsonb_build_object('signal_id', %s::text, 'case_id', 'case-drift')
+                SELECT %s, case_id, market_key, 'sideways',
+                       observed_at_ns, expires_at_ns, alpha_metadata, payload
                   FROM trading_trade_signals WHERE signal_id = %s
                 """,
-                ("d" * 64, "d" * 64, signal.value.signal_id),
+                ("d" * 64, signal.value.signal_id),
                 psycopg.errors.CheckViolation,
-                "trading_trade_signal_payload_check",
+                "trading_trade_signal_direction_check",
             ),
             (
                 """
-                INSERT INTO trading_operator_intents (
-                  command_id, account_slot, action, scope, reason, operator_identity,
-                  authentication_identity, requested_at_ns, expires_at_ns,
-                  confirmation_identity, market_key, direction, payload
+                INSERT INTO trading_trade_signals (
+                  signal_id, case_id, market_key, direction,
+                  observed_at_ns, expires_at_ns, alpha_metadata, payload
                 )
-                SELECT %s, account_slot, 'resume_entries', scope, reason, operator_identity,
-                       authentication_identity, requested_at_ns, expires_at_ns,
-                       NULL, NULL, NULL,
-                       payload || jsonb_build_object('command_id', %s::text, 'action', 'resume_entries')
-                  FROM trading_operator_intents WHERE command_id = %s
+                SELECT %s, case_id, market_key, direction,
+                       observed_at_ns, observed_at_ns, alpha_metadata, payload
+                  FROM trading_trade_signals WHERE signal_id = %s
                 """,
-                ("d" * 64, "d" * 64, command.value.command_id),
+                ("e" * 64, signal.value.signal_id),
                 psycopg.errors.CheckViolation,
-                "trading_operator_intent_confirmation_check",
+                "trading_trade_signal_clock_check",
             ),
             (
                 """
                 INSERT INTO trading_operator_intents (
                   command_id, account_slot, action, scope, reason, operator_identity,
                   authentication_identity, requested_at_ns, expires_at_ns,
-                  confirmation_identity, market_key, direction, payload
+                  market_key, direction, payload
                 )
                 SELECT %s, account_slot, 'manual_entry', scope, reason, operator_identity,
                        authentication_identity, requested_at_ns, expires_at_ns,
-                       NULL, NULL, NULL,
-                       payload || jsonb_build_object('command_id', %s::text, 'action', 'manual_entry')
+                       NULL, NULL, payload
                   FROM trading_operator_intents WHERE command_id = %s
                 """,
-                ("e" * 64, "e" * 64, command.value.command_id),
+                ("e" * 64, command.value.command_id),
                 psycopg.errors.CheckViolation,
                 "trading_operator_intent_manual_entry_check",
-            ),
-            (
-                """
-                INSERT INTO trading_operator_intents (
-                  command_id, account_slot, action, scope, reason, operator_identity,
-                  authentication_identity, requested_at_ns, expires_at_ns,
-                  confirmation_identity, market_key, direction, payload
-                )
-                SELECT %s, account_slot, action, scope, reason, operator_identity,
-                       authentication_identity, requested_at_ns, expires_at_ns,
-                       confirmation_identity, market_key, direction,
-                       payload || jsonb_build_object('command_id', %s::text, 'reason', 'payload drift')
-                  FROM trading_operator_intents WHERE command_id = %s
-                """,
-                ("f" * 64, "f" * 64, command.value.command_id),
-                psycopg.errors.CheckViolation,
-                "trading_operator_intent_payload_check",
             ),
             (
                 """
                 INSERT INTO trading_execution_observations (
                   event_id, account_slot, runtime_release, execution_strategy,
                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
-                  native_identity_references, summary, payload_digest, payload
+                  native_identity_references, summary, payload
                 )
                 SELECT %s, account_slot, runtime_release, execution_strategy,
                        %s, %s, normalized_kind, occurred_at_ns, observed_at_ns,
-                       native_identity_references, summary, payload_digest,
-                       payload || jsonb_build_object(
-                         'event_id', %s::text, 'signal_id', %s::text, 'command_id', %s::text
-                       )
+                       native_identity_references, summary, payload
                   FROM trading_execution_observations WHERE event_id = %s
                 """,
-                (
-                    "d" * 64,
-                    signal.value.signal_id,
-                    command.value.command_id,
-                    "d" * 64,
-                    signal.value.signal_id,
-                    command.value.command_id,
-                    observation.event_id,
-                ),
+                ("d" * 64, signal.value.signal_id, command.value.command_id, observation.event_id),
                 psycopg.errors.CheckViolation,
                 "trading_execution_observation_correlation_check",
             ),
@@ -1228,15 +1144,14 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
                 INSERT INTO trading_execution_observations (
                   event_id, account_slot, runtime_release, execution_strategy,
                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
-                  native_identity_references, summary, payload_digest, payload
+                  native_identity_references, summary, payload
                 )
                 SELECT %s, account_slot, runtime_release, execution_strategy,
                        signal_id, command_id, normalized_kind, 3000, observed_at_ns,
-                       native_identity_references, summary, payload_digest,
-                       payload || jsonb_build_object('event_id', %s::text, 'occurred_at_ns', 3000)
+                       native_identity_references, summary, payload
                   FROM trading_execution_observations WHERE event_id = %s
                 """,
-                ("e" * 64, "e" * 64, observation.event_id),
+                ("e" * 64, observation.event_id),
                 psycopg.errors.CheckViolation,
                 "trading_execution_observation_clock_check",
             ),
@@ -1245,15 +1160,14 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
                 INSERT INTO trading_execution_observations (
                   event_id, account_slot, runtime_release, execution_strategy,
                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
-                  native_identity_references, summary, payload_digest, payload
+                  native_identity_references, summary, payload
                 )
                 SELECT %s, account_slot, runtime_release, execution_strategy,
                        %s, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
-                       native_identity_references, summary, payload_digest,
-                       payload || jsonb_build_object('event_id', %s::text, 'signal_id', %s::text)
+                       native_identity_references, summary, payload
                   FROM trading_execution_observations WHERE event_id = %s
                 """,
-                ("f" * 64, "0" * 64, "f" * 64, "0" * 64, observation.event_id),
+                ("f" * 64, "0" * 64, observation.event_id),
                 psycopg.errors.ForeignKeyViolation,
                 "trading_execution_observations_signal_id_fkey",
             ),
@@ -1262,34 +1176,16 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
                 INSERT INTO trading_execution_observations (
                   event_id, account_slot, runtime_release, execution_strategy,
                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
-                  native_identity_references, summary, payload_digest, payload
+                  native_identity_references, summary, payload
                 )
                 SELECT %s, account_slot, runtime_release, execution_strategy,
                        signal_id, %s, normalized_kind, occurred_at_ns, observed_at_ns,
-                       native_identity_references, summary, payload_digest,
-                       payload || jsonb_build_object('event_id', %s::text, 'command_id', %s::text)
+                       native_identity_references, summary, payload
                   FROM trading_execution_observations WHERE event_id = %s
                 """,
-                ("2" * 64, "2" * 64, "2" * 64, "2" * 64, observation.event_id),
+                ("2" * 64, "2" * 64, observation.event_id),
                 psycopg.errors.ForeignKeyViolation,
                 "trading_execution_observation_command_fk",
-            ),
-            (
-                """
-                INSERT INTO trading_execution_observations (
-                  event_id, account_slot, runtime_release, execution_strategy,
-                  signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
-                  native_identity_references, summary, payload_digest, payload
-                )
-                SELECT %s, account_slot, runtime_release, execution_strategy,
-                       signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
-                       native_identity_references, '{"different":true}'::jsonb, payload_digest,
-                       payload || jsonb_build_object('event_id', %s::text)
-                  FROM trading_execution_observations WHERE event_id = %s
-                """,
-                ("1" * 64, "1" * 64, observation.event_id),
-                psycopg.errors.CheckViolation,
-                "trading_execution_observation_payload_check",
             ),
         )
         for statement, params, error, constraint_name in cases:
@@ -1352,44 +1248,10 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
                        pg_get_function_result(oid) AS result_type
                   FROM pg_proc
                  WHERE pronamespace = 'public'::regnamespace
-                   AND proname = ANY(%s)
-                """,
-                (
-                    [
-                        "trading_execution_metadata_valid",
-                        "trading_execution_string_array_valid",
-                        "trading_execution_market_key_array_valid",
-                        "reject_trading_execution_stream_mutation",
-                    ],
-                ),
+                   AND (proname LIKE 'trading\\_%' OR proname = 'reject_trading_execution_stream_mutation')
+                """
             ).fetchall()
         }
-        validators = conn.execute(
-            """
-            SELECT trading_execution_metadata_valid('{"ok":1,"flag":true}'::jsonb) AS metadata_valid,
-                   trading_execution_metadata_valid('{"nested":{}}'::jsonb) AS metadata_nested,
-                   trading_execution_string_array_valid('["a","b"]'::jsonb) AS refs_valid,
-                   trading_execution_string_array_valid('["b","a"]'::jsonb) AS refs_unsorted,
-                   trading_execution_string_array_valid('["a","a"]'::jsonb) AS refs_duplicate,
-                   trading_execution_market_key_array_valid('[]'::jsonb) AS routes_empty,
-                   trading_execution_market_key_array_valid(
-                     '["crypto:perp:BTC:USDT","crypto:perp:ETH:USDT"]'::jsonb
-                   ) AS routes_valid,
-                   trading_execution_market_key_array_valid(
-                     '["crypto:perp:ETH:USDT","crypto:perp:BTC:USDT"]'::jsonb
-                   ) AS routes_unsorted,
-                   trading_execution_market_key_array_valid(
-                     '["crypto:perp:BTC:USDT","crypto:perp:BTC:USDT"]'::jsonb
-                   ) AS routes_duplicate,
-                   trading_execution_market_key_array_valid('["crypto perp BTC"]'::jsonb) AS routes_malformed,
-                   -- The reason this is its own validator: the observation one stops at 16 elements.
-                   trading_execution_market_key_array_valid(
-                     (SELECT jsonb_agg(key ORDER BY key COLLATE "C")
-                        FROM (SELECT 'crypto:perp:' || lpad(n::text, 4, '0') || ':USDT' AS key
-                                FROM generate_series(1, 525) n) keys)
-                   ) AS routes_catalogue_scale
-            """
-        ).fetchone()
     finally:
         conn.close()
 
@@ -1415,7 +1277,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "trading_execution_runtime_state_runtime_id_key",
     }
     assert indexes["ix_trading_trade_signals_unresolved"].endswith(
-        "USING btree (seq) INCLUDE (signal_id, alpha_contract_sha256, expires_at_ns, payload)"
+        "USING btree (seq) INCLUDE (signal_id, expires_at_ns, payload)"
     )
     assert indexes["ix_trading_trade_signals_observed_at"].endswith("USING btree (observed_at_ns)")
     assert indexes["ix_trading_trade_signals_expires_at"].endswith("USING btree (expires_at_ns)")
@@ -1434,13 +1296,9 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
             "trading_trade_signals_case_link",
             "trading_trade_signal_id_check",
             "trading_trade_signal_case_check",
-            "trading_trade_signal_alpha_sha_check",
             "trading_trade_signal_market_check",
             "trading_trade_signal_direction_check",
             "trading_trade_signal_clock_check",
-            "trading_trade_signal_evidence_sha_check",
-            "trading_trade_signal_metadata_check",
-            "trading_trade_signal_payload_check",
         },
         "trading_operator_intents": {
             "trading_operator_intents_pkey",
@@ -1450,9 +1308,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
             "trading_operator_intent_action_check",
             "trading_operator_intent_text_check",
             "trading_operator_intent_clock_check",
-            "trading_operator_intent_confirmation_check",
             "trading_operator_intent_manual_entry_check",
-            "trading_operator_intent_payload_check",
         },
         "trading_execution_observations": {
             "trading_execution_observations_pkey",
@@ -1466,10 +1322,6 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
             "trading_execution_observation_kind_check",
             "trading_execution_observation_correlation_check",
             "trading_execution_observation_clock_check",
-            "trading_execution_observation_native_refs_check",
-            "trading_execution_observation_summary_check",
-            "trading_execution_observation_digest_check",
-            "trading_execution_observation_payload_check",
         },
         "trading_execution_runtime_control_state": {
             "trading_execution_runtime_control_state_pkey",
@@ -1498,8 +1350,6 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
             "trading_execution_runtime_safe_check",
             "trading_execution_runtime_armed_check",
             "trading_execution_runtime_entry_reason_check",
-            "trading_execution_runtime_account_snapshot_check",
-            "trading_execution_runtime_routes_check",
         },
     }
     assert set(triggers) == {
@@ -1514,25 +1364,9 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         if name != "trading_trade_signals_case_link"
     )
     assert "CONSTRAINT TRIGGER trading_trade_signals_case_link" in triggers["trading_trade_signals_case_link"]
-    assert functions == {
-        "trading_execution_metadata_valid": ("i", "s", False, "boolean"),
-        "trading_execution_string_array_valid": ("i", "s", False, "boolean"),
-        "trading_execution_market_key_array_valid": ("i", "s", False, "boolean"),
-        "reject_trading_execution_stream_mutation": ("v", "u", False, "trigger"),
-    }
-    assert validators == {
-        "metadata_valid": True,
-        "metadata_nested": False,
-        "refs_valid": True,
-        "refs_unsorted": False,
-        "refs_duplicate": False,
-        "routes_empty": True,
-        "routes_valid": True,
-        "routes_unsorted": False,
-        "routes_duplicate": False,
-        "routes_malformed": False,
-        "routes_catalogue_scale": True,
-    }
+    # One function is left on this seam, and it is the append-only trigger. Every `trading_*`
+    # validator went with the CHECKs that called it (#520 PR-C).
+    assert functions == {"reject_trading_execution_stream_mutation": ("v", "u", False, "trigger")}
 
 
 def test_unresolved_reads_use_the_production_query_specs_and_indexes() -> None:

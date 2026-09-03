@@ -19,7 +19,6 @@ from tracefold.trading import (
     DemoReceiptError,
     DemoReceiptObservation,
     OperatorCommandError,
-    canonical_sha256,
     parse_operator_command,
     prepare_parsed_operator_intent,
     verify_binance_demo_receipt,
@@ -60,13 +59,6 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                         "policy_id": config.policy.policy_id,
                         "policy_version": config.policy.policy_version,
                         "config_digest": config.policy.config_digest,
-                        "contract_sha256": canonical_sha256(
-                            {
-                                "policy_id": config.policy.policy_id,
-                                "policy_version": config.policy.policy_version,
-                                "policy_config": config.policy.config_snapshot,
-                            }
-                        ),
                     },
                     "execution": execution_status,
                     "counts": trading.runtime_summary(since_ms=now_ms - _WINDOW_MS, now_ms=now_ms),

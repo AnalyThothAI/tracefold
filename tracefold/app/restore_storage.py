@@ -46,12 +46,10 @@ def _seed_and_summarize(dsn: str) -> dict[str, Any]:
     signal = prepare_trade_signal(
         signal_id=_SIGNAL_ID,
         case_id=_CASE_ID,
-        alpha_contract_sha256="b" * 64,
         market_key="crypto:perp:RESTORE:USDT",
         direction="long",
         observed_at_ns=1_000,
         expires_at_ns=10_000,
-        evidence_sha256="c" * 64,
         alpha_metadata={"restore": True},
     )
     requested_at_ns = time.time_ns()
@@ -81,7 +79,6 @@ def _seed_and_summarize(dsn: str) -> dict[str, Any]:
                 occurred_at_ns=2_000,
                 observed_at_ns=2_100,
                 summary={"disposition": "expired"},
-                payload_digest="d" * 64,
             ),
         )
     )

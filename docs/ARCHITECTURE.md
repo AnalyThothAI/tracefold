@@ -2068,11 +2068,17 @@ CHECK's model, OI and degraded branches to `news_triage_policy_v12` (#504); and
 way `ExecutionObservationV1` sorts them and a fill that mixes upper-case Binance
 identities with lower-case `tf...` client order ids is no longer rejected;
 additive `20260903_0354` publishes each Runtime's executable `market_key`
-catalogue on `trading_execution_runtime_state.routes`; and destructive
-`20260903_0355`, the current single head, drops the six dead `trading_cases`
+catalogue on `trading_execution_runtime_state.routes`;
+destructive `20260903_0355` drops the six dead `trading_cases`
 columns and narrows the Case state and admission status/stage CHECKs to the
 values a writer can reach, refusing to run while a stored row still holds a
-retired one.
+retired one; destructive `20260903_0356` makes `account_slot` the execution
+identity and drops the profile activation ledger with the Decision Plane
+heartbeat (#520 PR-A); and destructive `20260903_0357`, the current single head,
+makes the contract the only validator — every JSON-shape CHECK and the four
+`trading_*` functions behind them are gone, along with the unread
+`payload_digest` / `alpha_contract_sha256` / `evidence_sha256` digests, the
+`confirmation_identity` column and the five readiness booleans (#520 PR-C).
 
 Every new schema change is again a normal linear, immutable, forward-only
 revision after the baseline. Exact-image replacement requires source, image,
@@ -2127,7 +2133,13 @@ One word, one meaning, shared by the writer and every read surface:
 five stages are closed the same way, by
 `trading_candidate_gate_status_check` and `trading_candidate_gate_stage_check`.
 Each vocabulary has one owner: a narrowed CHECK, not a CHECK and a trigger
-saying the same thing twice.
+saying the same thing twice. Shape is owned the same way, one level up: the
+Pydantic contract that produces a durable execution fact is the only thing that
+validates its JSON. `20260903_0357` deleted the CHECKs that restated those rules
+in SQL, because two statements of one rule can disagree and did — the collation
+incident of 2026-09-02 (#510 PR-1). The database keeps what only it can know:
+primary keys, foreign keys, NOT NULL, the enumerated value sets, the identity
+regexes, the clock inequalities and the append-only triggers.
 
 ### The one live path
 
@@ -2404,8 +2416,8 @@ into the sink's own `AuditAppendRejected`.
 The bridge cycle runs its Command read, Signal read and audit flush as three
 independent steps in that order, and only a lost connection aborts the cycle, so
 an unwritable ledger cannot stop an operator from flattening. While a Command or
-Signal read is failing the bridge reports `control_plane_ready` false and
-`entries_armed` goes false: a Runtime that has stopped consuming its inputs must
+Signal read is failing the Runtime's own control-plane readiness goes false and
+`entries_armed` with it: a Runtime that has stopped consuming its inputs must
 not stay armed to open exposure it could then never be told to unwind. That is
 an entry gate, not a safety gate — `execution_safe` is unchanged and existing
 exposure keeps its protection — and the first successful read clears it.

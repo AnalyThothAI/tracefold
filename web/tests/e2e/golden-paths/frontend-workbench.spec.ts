@@ -233,7 +233,7 @@ test("keeps execution truth distinct across unsafe, recovery, flat, and stale st
   await expect(page.getByText("UNPROTECTED").first()).toBeVisible();
   await expect(page.getByText("NOT FULLY COVERED")).toBeVisible();
 
-  const flatten = tradingCommandFixture({ action: "flatten", confirmed: true });
+  const flatten = tradingCommandFixture({ action: "flatten" });
   options.tradingCommands = tradingCommandsFixture({ commands: [flatten] });
   options.tradingObservations = tradingObservationsFixture({
     observations: [
@@ -297,7 +297,6 @@ test("keeps execution truth distinct across unsafe, recovery, flat, and stale st
     commands: [
       tradingCommandFixture({
         action: "flatten",
-        confirmed: true,
         disposition: "completed",
         disposition_reason: "binance_account_flat",
       }),
