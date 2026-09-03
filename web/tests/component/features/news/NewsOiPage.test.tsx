@@ -630,6 +630,10 @@ describe("NewsOiPage", () => {
       screen.getByText(/持仓额低于流动性地板（eligibility:oi_value_below_floor）/),
     ).toBeInTheDocument();
     expect(screen.getByText("5000000")).toBeInTheDocument();
+    // #532: the trace renders whatever keys the ledger wrote, `market_key` included, under a label when
+    // it knows one and under the raw key when it does not. No fixed evidence shape stands between them.
+    expect(screen.getByText("市场")).toBeInTheDocument();
+    expect(screen.getByText("crypto:perp:STORJ:USDT")).toBeInTheDocument();
   });
 
   it("says so plainly when the window holds no eligible frame", async () => {

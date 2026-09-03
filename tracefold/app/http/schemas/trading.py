@@ -114,34 +114,6 @@ class TradingStatusData(ExactApiSchema):
     measured_at_ms: int
 
 
-# Every key any writer has ever put in `evidence`, because the admission ledger keeps rows for 90 days.
-# `source_decision`, `source_rule`, `blacklist_reason`, `cooldown_ms`, `since_close_ms`, `limit` and
-# `live_exchange_id` have no writer left — the first two went with the News judgment fields in #510 —
-# and they stay declared because this model forbids extras and stored rows still carry them. A row
-# written before a rule retired must keep rendering; that is what makes the ledger a ledger. The note
-# is a comment rather than a docstring so it does not become a public OpenAPI description.
-class TradingGateEvidenceData(ExactApiSchema):
-    venue: str = ""
-    oi_change_bps: int | None = None
-    oi_value_usd: int | None = None
-    whale_oi_ratio_bps: int | None = None
-    whale_long_profit_bps: int | None = None
-    source_decision: str = ""
-    source_rule: str = ""
-    floor: int | None = None
-    age_ms: int | None = None
-    max_age_ms: int | None = None
-    holds: str = ""
-    limit: int | None = None
-    since_close_ms: int | None = None
-    cooldown_ms: int | None = None
-    blacklist_reason: str = ""
-    live_exchange_id: str = ""
-    lane_full: str = ""
-    enabled: list[str] = Field(default_factory=list)
-    rule: str = ""
-
-
 class TradingGateConfigData(ExactApiSchema):
     version: str
     config_digest: str
@@ -163,7 +135,11 @@ class TradingGateDecisionData(ExactApiSchema):
     gate_retryable: bool | None = None
     gate_version: str | None = None
     gate_config_digest: str | None = None
-    gate_evidence: TradingGateEvidenceData | None = None
+    # The admission ledger's `evidence` jsonb, rendered exactly as the deciding rule wrote it. Enumerating
+    # its keys here made this a second shape check over a ledger that keeps rows for 90 days: `market_key`
+    # (#510 PR-2) turned every `GET /api/trading/gate` into a 500 (#532). The rule that wrote a row owns
+    # what it says; the console renders whatever keys it finds.
+    gate_evidence: dict[str, str | int | bool | list[str] | None] = Field(default_factory=dict)
     gate_first_evaluated_at_ms: int | None = None
     gate_last_evaluated_at_ms: int | None = None
     gate_attempt_count: int | None = None
