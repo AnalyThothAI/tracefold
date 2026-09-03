@@ -183,7 +183,8 @@ A restart while in a position reclaims that position and its stop from this
 profile's durable entry-order facts, so a rolling restart of the current profile
 needs no flat account and opens no second entry. `unexpected_exposure=true`
 means the account carries exposure no durable entry identity claims — a position
-opened by hand on Binance, or one older than the seven-day recovery window. Read
+opened by hand on Binance, one older than the seven-day recovery window, or one
+on a route whose last Runtime position was already recorded closed. Read
 `current_account` in `trading status` or on the Trading page: every position and
 order row carries `owned`, so the unclaimed instrument, side and quantity are
 named. `/flatten account TTL_SECONDS CONFIRM` converges the whole account slot,

@@ -153,6 +153,29 @@ def _append_entry_order_fact(repo: TradingRepository, *, signal_id: str, observe
         repo.append_execution_observations(prepare_execution_observations((observation,)))
 
 
+def _append_closed_position_fact(repo: TradingRepository, *, signal_id: str) -> None:
+    """Write the `position`/`closed` fact that retires an identity from recovery."""
+
+    observation = ExecutionObservationV1.model_validate(
+        {
+            "event_id": _sha(f"closed-position:{signal_id}"),
+            "runtime_profile_id": "oi-paper-profile",
+            "runtime_release": "nautilus-1.231.0+oi-v1",
+            "execution_strategy": "oi_nautilus_v1",
+            "signal_id": signal_id,
+            "command_id": None,
+            "normalized_kind": "position",
+            "occurred_at_ns": NOW_NS,
+            "observed_at_ns": NOW_NS,
+            "native_identity_references": (),
+            "summary": {"status": "closed", "quantity": "0"},
+            "payload_digest": _sha(f"closed-position-payload:{signal_id}"),
+        }
+    )
+    with repo.conn.transaction():
+        repo.append_execution_observations(prepare_execution_observations((observation,)))
+
+
 def _append_input_burst(repo: TradingRepository, *, size: int) -> None:
     with repo.conn.transaction():
         for index in range(size):
@@ -929,3 +952,46 @@ def test_position_without_durable_entry_facts_halts_and_flatten_account_closes_i
         assert rows[0]["summary"]["quantity"] == "0.049"
     finally:
         verify.close()
+
+
+def test_stopped_out_identity_does_not_reclaim_a_new_position_on_the_same_route(
+    postgres_clone_dsn: str,
+) -> None:
+    """#510 PR-3. `_matched_position` claims by instrument and direction, so the read must retire
+    an identity whose own position fact says closed; otherwise a hand-opened position on the same
+    route would be adopted as Runtime-owned instead of halting."""
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        _activate(repo)
+        _append_signal(repo)
+        _append_entry_order_fact(repo, signal_id="1" * 64)
+        _append_closed_position_fact(repo, signal_id="1" * 64)
+        _append_command(repo, suffix="b", action="flatten")
+    finally:
+        conn.close()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "tests.helpers.nautilus_oi_runtime_process", postgres_clone_dsn, "cold_unclaimed"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert receipt["recovery_signals"] == 0, receipt
+    assert receipt["recovered_seeds"] == 0, receipt
+    assert receipt["recovered"] is False, receipt
+    assert receipt["unexpected_exposure"] is True, receipt
+    assert receipt["execution_safe"] is False, receipt
+    closes = [
+        order
+        for order in receipt["orders"]
+        if order["reduce_only"] and order["order_type"] == "MARKET" and not order["client_order_id"].startswith("tf")
+    ]
+    assert len(closes) == 1, receipt
+    assert closes[0]["status"] == "FILLED"
+    assert receipt["positions_count"] == 0, receipt

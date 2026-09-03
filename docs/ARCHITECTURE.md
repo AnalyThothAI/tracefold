@@ -2277,7 +2277,12 @@ durable `order`/`leg=entry` Observations inside a seven-day window, regenerates
 the deterministic entry/stop/exit client order ids from each identity, and
 claims the reconciled exposure: an open position on that identity's routed
 instrument with the same direction, and the resting orders whose client order id
-equals its deterministic stop/exit id. A stop or exit reclaimed from the Binance
+equals its deterministic stop/exit id. Because that position match is by
+instrument and direction alone, the read admits an identity only while its own
+facts leave exposure possible: its latest `position` fact must not be `closed`
+and its latest entry-order fact must not be `canceled`/`rejected`/`denied`/
+`expired`. A stopped-out identity would otherwise adopt an unrelated position on
+the same route. A stop or exit reclaimed from the Binance
 report carries no Cache position index, so ownership is proven by that
 deterministic identity and the order's own shape, not by a Cache back-reference.
 Exposure no identity claims stays unowned: `execution_safe=false`,
