@@ -84,6 +84,11 @@ _START_TIMEOUT_SECONDS = 90.0
 _HEARTBEAT_INTERVAL_SECONDS = 0.5
 _HEARTBEAT_INTERVAL_NS = int(_HEARTBEAT_INTERVAL_SECONDS * 1_000_000_000)
 _RECONCILIATION_FRESHNESS_DIVISOR = 2
+# Recovery reads the durable entry-order facts that can still hold Binance exposure. Seven days
+# is the widest gap this single-host deployment can be down and still find its own position on
+# the venue; older entries cannot be open because a Signal's TTL and this account slot's
+# activation fence have both long since retired them.
+_RECOVERY_ENTRY_FACT_WINDOW_NS = 7 * 24 * 60 * 60 * 1_000_000_000
 _DEFAULT_STOP_DISTANCE_BPS = 100
 _BINANCE_USDM_ACCOUNT_ID = AccountId("BINANCE-USDT_FUTURES-master")
 
@@ -332,6 +337,7 @@ async def _run_active_runtime_with_state(
         recovery_signals, recovery_manual_entries = _load_recovery_inputs(
             state_repos,
             profile.profile_id,
+            observed_at_ns,
         )
         readiness.activate()
         snapshot = build_runtime_reconciliation_snapshot(
@@ -423,6 +429,7 @@ async def _run_active_runtime_with_state(
                 recovery_signals, recovery_manual_entries = _load_recovery_inputs(
                     state_repos,
                     profile.profile_id,
+                    observed_at_ns,
                 )
                 strategy.reconcile_runtime(
                     build_runtime_reconciliation_snapshot(
@@ -705,13 +712,19 @@ def _activate_profile(
 def _load_recovery_inputs(
     repos: RepositorySession,
     profile_id: str,
+    observed_at_ns: int,
 ) -> tuple[tuple[TradeSignalV1, ...], tuple[OperatorIntentV1, ...]]:
+    """Read the durable entry identities that can still hold Binance exposure."""
+
+    since_ns = max(0, observed_at_ns - _RECOVERY_ENTRY_FACT_WINDOW_NS)
     signal_rows = repos.trading.execution_recovery_signals(
         runtime_profile_id=profile_id,
+        since_ns=since_ns,
         limit=MAX_EXECUTION_READ_BATCH,
     )
     command_rows = repos.trading.execution_recovery_manual_entries(
         runtime_profile_id=profile_id,
+        since_ns=since_ns,
         limit=MAX_EXECUTION_READ_BATCH,
     )
     if (

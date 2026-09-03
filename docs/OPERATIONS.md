@@ -179,6 +179,18 @@ new exposure. Use `entry_block_reason`, `positions_count`, `open_orders_count`,
 `protection_status`, `unexpected_exposure`, and `reconciliation_age_ms` to locate
 the blocked layer; none is an order, fill, or account-flat receipt.
 
+A restart while in a position reclaims that position and its stop from this
+profile's durable entry-order facts, so a rolling restart of the current profile
+needs no flat account and opens no second entry. `unexpected_exposure=true`
+means the account carries exposure no durable entry identity claims — a position
+opened by hand on Binance, or one older than the seven-day recovery window. Read
+`current_account` in `trading status` or on the Trading page: every position and
+order row carries `owned`, so the unclaimed instrument, side and quantity are
+named. `/flatten account TTL_SECONDS CONFIRM` converges the whole account slot,
+not only Runtime-owned exposure: it reduce-only closes every open position and
+cancels every resting order, and completes only after a later private Binance
+reconciliation proves flat. Ownership constrains only new entries.
+
 Runtime control restart reads the single
 `trading_execution_runtime_control_state` row for the active profile. Accepted or
 completed Runtime Observations advance it atomically with append-only history;

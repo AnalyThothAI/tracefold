@@ -256,11 +256,15 @@ class RuntimeReconciliationSnapshot:
 class ExecutionState:
     entry: RuntimeEntryRequest
     route: OiInstrumentRoute
-    entry_order: Any
+    entry_client_order_id: ClientOrderId
     submitted_at_ns: int
     disposition_reason: str
+    # A restart reclaims the position from durable order facts plus the Binance reports, and the
+    # filled entry market order is in neither: Nautilus Cache is process memory and Binance only
+    # reports open orders. `None` therefore means "this execution was recovered, not submitted".
+    entry_order: Any = None
     active: bool = True
-    entry_query_pending: bool = True
+    entry_query_pending: bool = False
     position_id: PositionId | None = None
     position_quantity: Decimal = Decimal(0)
     avg_entry_price: Decimal | None = None
@@ -293,6 +297,10 @@ class RuntimeExecutionState:
     disposed_command_ids: set[str] = field(default_factory=set)
     pending_flatten: dict[str, OperatorIntentV1] = field(default_factory=dict)
     flatten_accept_observed: set[str] = field(default_factory=set)
+    # Reduce-only closes this Runtime submitted for positions it does not own; `/flatten account`
+    # converges the whole account slot, so these have no entry identity to hang off.
+    unclaimed_flatten_orders: dict[PositionId, Any] = field(default_factory=dict)
+    unclaimed_flatten_attempts: dict[PositionId, int] = field(default_factory=dict)
     unexpected_exposure_reconciliation_requested: bool = False
 
     @classmethod
@@ -379,7 +387,9 @@ def exit_order_valid(
         and exit_order.order_type == OrderType.MARKET
         and exit_order.is_reduce_only
         and exit_order.quantity.as_decimal() == state.position_quantity
-        and cache.position_for_order(exit_order.client_order_id) == position
+        # Same as a reclaimed stop: a reduce-only exit read back from Binance carries no Cache
+        # position index until it fills.
+        and cache.position_for_order(exit_order.client_order_id) in {None, position}
     )
 
 

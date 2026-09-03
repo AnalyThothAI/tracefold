@@ -134,13 +134,19 @@ class RuntimeAccountProjector:
 
         order_rows: list[ExecutionAccountOrder] = []
         unknown_ids: set[str] = set()
+        flatten_ids = {order.client_order_id for order in self._state.unclaimed_flatten_orders.values()}
         for order_state, orders in (("open", raw_open_orders), ("inflight", raw_inflight_orders)):
             for order in sorted(orders, key=lambda item: item.client_order_id.value):
                 route = self._state.orders.get(order.client_order_id)
-                owned = route is not None and order.strategy_id == self._engine.id
+                owned = (route is not None or order.client_order_id in flatten_ids) and (
+                    order.strategy_id == self._engine.id
+                )
                 if not owned:
                     unknown_ids.add(order.client_order_id.value)
-                leg_root = None if route is None else route[1].partition(":")[0]
+                if route is None:
+                    leg_root = "exit" if order.client_order_id in flatten_ids else None
+                else:
+                    leg_root = route[1].partition(":")[0]
                 leg = leg_root if leg_root in {"entry", "exit", "protection"} else "unknown"
                 if leg == "unknown":
                     unknown_ids.add(order.client_order_id.value)
@@ -168,7 +174,7 @@ class RuntimeAccountProjector:
                     aggregate_risk += abs(quantity) * mark_fact[0] * Decimal(stop_bps) / Decimal(10_000)
         for execution in self._state.executions.values():
             if execution.entry_query_pending or execution.private_reconciliation_requested:
-                unknown_ids.add(execution.entry_order.client_order_id.value)
+                unknown_ids.add(execution.entry_client_order_id.value)
 
         equity = account_balance + unrealized_total if account_balance is not None and position_pnl_complete else None
         daily_drawdown: Decimal | None = None

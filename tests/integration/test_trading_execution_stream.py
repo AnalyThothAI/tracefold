@@ -793,23 +793,36 @@ def test_manual_entry_recovery_read_is_activation_bounded() -> None:
             )
             repo.append_operator_intent(after)
 
-        rows = repo.execution_recovery_manual_entries(runtime_profile_id="demo-v1", limit=10)
+        assert repo.execution_recovery_manual_entries(runtime_profile_id="demo-v1", since_ns=0, limit=10) == ()
+        with conn.transaction():
+            repo.append_execution_observations(
+                prepare_execution_observations(
+                    (
+                        _observation(
+                            event="8",
+                            command_id=before.value.command_id,
+                            kind="order",
+                            summary={"leg": "entry", "status": "submitted"},
+                        ),
+                        _observation(
+                            event="9",
+                            command_id=after.value.command_id,
+                            kind="order",
+                            summary={"leg": "entry", "status": "submitted"},
+                        ),
+                    )
+                )
+            )
+
+        rows = repo.execution_recovery_manual_entries(runtime_profile_id="demo-v1", since_ns=0, limit=10)
 
         assert materialize_operator_intents(rows) == (after.value.model_copy(update={"seq": rows[0][0]}),)
-        final = _observation(
-            event="9",
-            command_id=after.value.command_id,
-            kind="control_disposition",
-            summary={"action": "manual_entry", "disposition": "rejected"},
-        )
-        with conn.transaction():
-            repo.append_execution_observations(prepare_execution_observations((final,)))
-        assert repo.execution_recovery_manual_entries(runtime_profile_id="demo-v1", limit=10) == ()
+        assert repo.execution_recovery_manual_entries(runtime_profile_id="demo-v1", since_ns=2_101, limit=10) == ()
     finally:
         conn.close()
 
 
-def test_signal_recovery_keeps_only_current_order_or_position_obligations() -> None:
+def test_signal_recovery_keeps_only_windowed_durable_entry_order_facts() -> None:
     active = _prepare_signal(suffix="6", case_id="case-active")
     closed = _prepare_signal(suffix="7", case_id="case-closed")
     conn = connect_postgres_test(read_only=False)
@@ -842,8 +855,9 @@ def test_signal_recovery_keeps_only_current_order_or_position_obligations() -> N
                         _observation(
                             event="2",
                             signal_id=active.value.signal_id,
-                            kind="position",
-                            summary={"status": "opened", "quantity": "0.01"},
+                            kind="order",
+                            summary={"leg": "entry", "status": "submitted"},
+                            observed_at_ns=5_000,
                         ),
                         _observation(
                             event="3",
@@ -853,24 +867,36 @@ def test_signal_recovery_keeps_only_current_order_or_position_obligations() -> N
                         _observation(
                             event="4",
                             signal_id=closed.value.signal_id,
-                            kind="position",
-                            summary={"status": "opened", "quantity": "0.01"},
+                            kind="protection",
+                            summary={"leg": "protection", "status": "submitted"},
+                            observed_at_ns=5_000,
                         ),
                         _observation(
                             event="5",
                             signal_id=closed.value.signal_id,
-                            kind="position",
-                            summary={"status": "closed", "quantity": "0"},
-                            occurred_at_ns=2_200,
-                            observed_at_ns=2_300,
+                            kind="order",
+                            summary={"leg": "exit", "status": "submitted"},
+                            observed_at_ns=5_000,
                         ),
                     )
                 )
             )
 
-        rows = repo.execution_recovery_signals(runtime_profile_id="demo-v1", limit=10)
+        rows = repo.execution_recovery_signals(runtime_profile_id="demo-v1", since_ns=0, limit=10)
 
+        # Only the Signal with a durable `order`/`leg=entry` fact can still hold Binance exposure.
         assert materialize_trade_signals(rows) == (active.value.model_copy(update={"seq": rows[0][0]}),)
+        assert repo.execution_recovery_signals(runtime_profile_id="demo-v1", since_ns=5_001, limit=10) == ()
+    finally:
+        conn.close()
+
+
+def test_signal_recovery_rejects_a_negative_window() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        with pytest.raises(ValueError, match="execution_recovery_window_invalid"):
+            repo.execution_recovery_signals(runtime_profile_id="demo-v1", since_ns=-1, limit=10)
     finally:
         conn.close()
 

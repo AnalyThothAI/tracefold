@@ -280,6 +280,9 @@ class ProtectionCoordinator:
             leg=protection_leg(seed.generation, seed.quantity),
         )
         expected_side = OrderSide.SELL if state.entry.direction == "long" else OrderSide.BUY
+        # A stop reclaimed from the Binance open-order report is added to Cache without any
+        # position index (`LiveExecutionEngine._reconcile_order_report`), so an unbound stop is
+        # normal after a restart. The deterministic client order id is what proves it is ours.
         bound_position = (
             None if protection is None else self._engine.cache.position_for_order(protection.client_order_id)
         )
@@ -291,8 +294,7 @@ class ProtectionCoordinator:
             and not protection.is_closed
             and protection.strategy_id == self._engine.id
             and protection.account_id == self._profile.account_id
-            and bound_position is not None
-            and bound_position.id == state.position_id
+            and (bound_position is None or bound_position.id == state.position_id)
             and protection.instrument_id == state.route.instrument_id
             and protection.side == expected_side
             and protection.order_type == OrderType.STOP_MARKET

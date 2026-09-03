@@ -66,17 +66,23 @@ class RecoveryCoordinator:
                 entry_id=request.entry_id,
                 leg="entry",
             )
+            # The entry market order is absent from a cold Cache; the seed's position match is then
+            # the only ownership proof, and there is nothing left to shape-check.
             entry_order = self._engine.cache.order(seed.entry_client_order_id)
             if (
                 route is None
                 or request.entry_id in executions
                 or seed.entry_client_order_id != expected_entry
-                or not entry_order_valid(
-                    profile=self._profile,
-                    strategy_id=self._engine.id,
-                    request=request,
-                    route=route,
-                    order=entry_order,
+                or (entry_order is None and seed.position_id is None)
+                or (
+                    entry_order is not None
+                    and not entry_order_valid(
+                        profile=self._profile,
+                        strategy_id=self._engine.id,
+                        request=request,
+                        route=route,
+                        order=entry_order,
+                    )
                 )
             ):
                 self._readiness.halt_for_unexpected_exposure()
@@ -84,18 +90,22 @@ class RecoveryCoordinator:
             state = ExecutionState(
                 entry=request,
                 route=route,
+                entry_client_order_id=seed.entry_client_order_id,
                 entry_order=entry_order,
                 submitted_at_ns=snapshot.reconciliation_observed_at_ns,
                 disposition_reason="recovered",
-                entry_query_pending=bool(entry_order.is_inflight or entry_order.is_active_local),
+                entry_query_pending=bool(
+                    entry_order is not None and (entry_order.is_inflight or entry_order.is_active_local)
+                ),
             )
             executions[request.entry_id] = state
-            orders[seed.entry_client_order_id] = (request.entry_id, "entry")
+            if entry_order is not None:
+                orders[seed.entry_client_order_id] = (request.entry_id, "entry")
             if seed.position_id is None:
                 if seed.protections or seed.exit_client_order_id is not None:
                     self._readiness.halt_for_unexpected_exposure()
                     return False
-                state.active = not entry_order.is_closed
+                state.active = entry_order is not None and not entry_order.is_closed
                 continue
             position = self._engine.cache.position(seed.position_id)
             expected_side = PositionSide.LONG if request.direction == "long" else PositionSide.SHORT
@@ -152,18 +162,22 @@ class RecoveryCoordinator:
                 else:
                     state.exit_order = exit_order
                     orders[seed.exit_client_order_id] = (request.entry_id, "exit")
-        if not self._all_cache_exposure_is_owned(orders=orders, positions=positions):
-            self._readiness.halt_for_unexpected_exposure()
-            return False
+        owned = self._all_cache_exposure_is_owned(orders=orders, positions=positions)
         self._state.executions = executions
         self._state.orders = orders
         self._state.positions = positions
-        self._state.unexpected_exposure_reconciliation_requested = False
         self._resume_ambiguous_actions(executions)
+        # Commit the rebuilt ownership even when exposure is left over: the operator has to see
+        # which instrument, side and quantity is unclaimed before `/flatten account` can act, and
+        # the reconciliation clock is exactly as fresh as the Binance proof that produced it.
         self._readiness.reconciled(
             account_observed_at_ns=snapshot.account_observed_at_ns,
             reconciliation_observed_at_ns=snapshot.reconciliation_observed_at_ns,
         )
+        if not owned:
+            self._readiness.halt_for_unexpected_exposure()
+            return False
+        self._state.unexpected_exposure_reconciliation_requested = False
         self._exits.complete_from_reconciliation(snapshot)
         return True
 
@@ -260,7 +274,7 @@ class RecoveryCoordinator:
 
     def _resume_ambiguous_actions(self, executions: dict[str, ExecutionState]) -> None:
         for state in executions.values():
-            if state.entry_query_pending:
+            if state.entry_query_pending and state.entry_order is not None:
                 self._engine.query_order(state.entry_order, client_id=ClientId("BINANCE"))
             if state.pending_stop_order is not None:
                 self._engine.query_order(state.pending_stop_order, client_id=ClientId("BINANCE"))

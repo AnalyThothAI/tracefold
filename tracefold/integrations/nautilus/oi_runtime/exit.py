@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from decimal import Decimal
 from typing import Any
 
 from nautilus_trader.model.enums import OrderSide
@@ -21,6 +22,10 @@ from .state import (
     exit_leg,
     exit_order_valid,
 )
+
+# A reduce-only market close on an open position fills; a repeated rejection is a venue fact the
+# operator has to see, not something to retry on the 100 ms callback pump.
+_MAX_UNCLAIMED_FLATTEN_ATTEMPTS = 3
 
 
 class ExitCoordinator:
@@ -49,6 +54,8 @@ class ExitCoordinator:
         self._request_reconciliation("flatten_pending")
 
     def advance_pending(self) -> None:
+        """Converge the whole account slot; ownership only constrains opening new exposure."""
+
         if not self._state.pending_flatten:
             return
         for command_id in tuple(self._state.pending_flatten):
@@ -56,11 +63,56 @@ class ExitCoordinator:
                 command_id
             ):
                 self._state.flatten_accept_observed.add(command_id)
-            for execution in self._state.executions.values():
-                if execution.position_id is not None and execution.position_quantity > 0:
-                    self.flatten(execution.position_id)
-                if not execution.entry_order.is_closed:
-                    self._engine.cancel_order(execution.entry_order, client_id=ClientId("BINANCE"))
+        for execution in self._state.executions.values():
+            if execution.position_id is not None and execution.position_quantity > 0:
+                self.flatten(execution.position_id)
+            if execution.entry_order is not None and not execution.entry_order.is_closed:
+                self._engine.cancel_order(execution.entry_order, client_id=ClientId("BINANCE"))
+        for position in self._engine.cache.positions_open(account_id=self._profile.account_id):
+            if position.id not in self._state.positions:
+                self._close_unclaimed(position)
+        working = self._working_flatten_order_ids()
+        for order in (
+            *self._engine.cache.orders_open(account_id=self._profile.account_id),
+            *self._engine.cache.orders_inflight(account_id=self._profile.account_id),
+        ):
+            if order.client_order_id in working or order.is_closed or order.is_pending_cancel:
+                continue
+            self._engine.cancel_order(order, client_id=ClientId("BINANCE"))
+
+    def _working_flatten_order_ids(self) -> frozenset[ClientOrderId]:
+        exits = {client_order_id for client_order_id, identity in self._state.orders.items() if identity[1] == "exit"}
+        exits.update(order.client_order_id for order in self._state.unclaimed_flatten_orders.values())
+        return frozenset(exits)
+
+    def _close_unclaimed(self, position: Any) -> None:
+        """Reduce-only close for exposure no durable entry identity claims."""
+
+        existing = self._state.unclaimed_flatten_orders.get(position.id)
+        if existing is not None and not existing.is_closed:
+            return
+        attempts = self._state.unclaimed_flatten_attempts.get(position.id, 0)
+        if attempts >= _MAX_UNCLAIMED_FLATTEN_ATTEMPTS:
+            return
+        instrument = self._engine.cache.instrument(position.instrument_id)
+        if instrument is None:
+            raise RuntimeError("oi_runtime_instrument_missing")
+        order = self._engine.order_factory.market(
+            instrument_id=position.instrument_id,
+            order_side=OrderSide.SELL if position.is_long else OrderSide.BUY,
+            quantity=instrument.make_qty(abs(Decimal(str(position.quantity)))),
+            reduce_only=True,
+        )
+        self._state.unclaimed_flatten_orders[position.id] = order
+        self._state.unclaimed_flatten_attempts[position.id] = attempts + 1
+        try:
+            self._engine.submit_order(order, position_id=position.id, client_id=ClientId("BINANCE"))
+        except Exception:
+            self._request_reconciliation("unknown_outcome")
+            self._engine.query_order(order, client_id=ClientId("BINANCE"))
+        command_id = min(self._state.pending_flatten, default=None)
+        if command_id is not None:
+            self._observations.unclaimed_flatten_order(command_id=command_id, position=position, order=order)
 
     def complete_from_reconciliation(self, snapshot: RuntimeReconciliationSnapshot) -> None:
         if not self._state.pending_flatten or snapshot.executions:
@@ -80,6 +132,9 @@ class ExitCoordinator:
             self._state.pending_flatten.pop(command_id)
             self._state.flatten_accept_observed.discard(command_id)
             self._state.disposed_command_ids.add(command_id)
+        if not self._state.pending_flatten:
+            self._state.unclaimed_flatten_orders.clear()
+            self._state.unclaimed_flatten_attempts.clear()
 
     def retry_failed(self) -> None:
         for state in self._state.executions.values():
