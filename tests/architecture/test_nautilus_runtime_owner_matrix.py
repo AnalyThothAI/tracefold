@@ -158,16 +158,14 @@ def test_current_production_wiring_has_one_input_reconciliation_and_projection_o
     assert "repos.trading.update_execution_runtime_state(candidate)" in bridge_source
     assert "update_execution_runtime_state" not in root_source
     assert 'self._step("projection"' in bridge_source
-    assert '"activation",' in bridge_source
     assert '"recovery",' in bridge_source
     assert "self._singleton.check()" in bridge_source
     assert "singleton.check()" not in root_source
     assert "if not singleton.acquired:" in root_source
-    assert "activation_current = bridge.activation_current" in root_source
     assert "projector.offer(state)" in root_source
     # Startup, on the session that already exists to hold the account-slot lock; never in the loop.
-    assert root_source.count("latest_execution_profile_activation") == 2
     assert root_source.count("load_recovery_inputs(") == 1
+    assert root_source.count("load_runtime_control_state(") == 1
     # #510 PR-5b. One quote stream per instrument an execution actually needs, opened by the
     # admission that needs it, not ~500 at `on_start` until Binance answers 1008.
     assert "self.subscribe_quote_ticks" not in strategy_source

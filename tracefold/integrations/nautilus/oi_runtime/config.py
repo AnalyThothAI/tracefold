@@ -114,10 +114,14 @@ class OiRiskLimits:
 
 @dataclass(frozen=True, slots=True)
 class OiRuntimeProfile:
-    """Immutable identity and policy for one cold-start Runtime."""
+    """The account slot this Runtime executes for, and the policy it executes under.
+
+    `account_slot` plus `mode` is the whole execution identity (#520). `runtime_release` and
+    `config_sha256` are still carried, and still land on the durable projection and on every
+    observation, but they name what is running rather than gate whether it may run.
+    """
 
     mode: RuntimeMode
-    profile_id: str
     account_slot: str
     account_id: AccountId
     runtime_release: str
@@ -131,7 +135,6 @@ class OiRuntimeProfile:
         if self.mode not in ("disabled", "paper", "live"):
             raise ValueError("oi_runtime_mode_invalid")
         for value, reason in (
-            (self.profile_id, "oi_runtime_profile_invalid"),
             (self.account_slot, "oi_runtime_account_slot_invalid"),
             (self.cache_namespace, "oi_runtime_cache_namespace_invalid"),
             (self.client_order_namespace, "oi_runtime_client_namespace_invalid"),
@@ -161,14 +164,12 @@ class BinanceRuntimeCredentials:
 
 
 def _trader_id(profile: OiRuntimeProfile) -> TraderId:
-    digest = hashlib.sha256(profile.profile_id.encode()).hexdigest()[:12].upper()
+    digest = hashlib.sha256(profile.cache_namespace.encode()).hexdigest()[:12].upper()
     return TraderId(f"OI-{digest}")
 
 
 def _instance_id(profile: OiRuntimeProfile) -> UUID4:
-    digest = hashlib.sha256(
-        f"tracefold:oi-runtime:{profile.profile_id}:{profile.cache_namespace}:{profile.config_sha256}".encode()
-    ).digest()
+    digest = hashlib.sha256(f"tracefold:oi-runtime:{profile.cache_namespace}:{profile.config_sha256}".encode()).digest()
     value = uuid.UUID(bytes=digest[:16], version=4)
     return UUID4.from_str(str(value))
 

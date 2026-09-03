@@ -40,7 +40,7 @@ def _sha256(value: object) -> str:
 
 @dataclass(frozen=True, slots=True)
 class ObservationFactory:
-    runtime_profile_id: str
+    account_slot: str
     runtime_release: str
     execution_strategy: str
 
@@ -62,7 +62,7 @@ class ObservationFactory:
         references = tuple(sorted(set(native_identity_references)))
         event_id = fixed_event_id or _sha256(
             {
-                "profile": self.runtime_profile_id,
+                "account_slot": self.account_slot,
                 "release": self.runtime_release,
                 "strategy": self.execution_strategy,
                 "kind": normalized_kind,
@@ -76,7 +76,7 @@ class ObservationFactory:
         return ExecutionObservationV1.model_validate(
             {
                 "event_id": event_id,
-                "runtime_profile_id": self.runtime_profile_id,
+                "account_slot": self.account_slot,
                 "runtime_release": self.runtime_release,
                 "execution_strategy": self.execution_strategy,
                 "signal_id": signal_id,
@@ -133,7 +133,7 @@ class ObservationFactory:
             raise ValueError("oi_runtime_utc_day_invalid")
         return _sha256(
             {
-                "profile": self.runtime_profile_id,
+                "account_slot": self.account_slot,
                 "strategy": self.execution_strategy,
                 "risk_fact": "day_start_equity",
                 "utc_day": utc_day,

@@ -20,7 +20,6 @@ def execution_readiness_projection(
 ) -> dict[str, Any]:
     base: dict[str, Any] = {
         "mode": execution.mode,
-        "profile_id": execution.profile_id,
         "account_slot": execution.account_slot,
         "alive": False,
         "execution_safe": False,
@@ -36,8 +35,6 @@ def execution_readiness_projection(
         "reconciliation_observed_at_ns": None,
         "reconciliation_age_ms": None,
         "singleton_ready": False,
-        "credential_ready": False,
-        "activation_ready": False,
         "startup_reconciled": False,
         "portfolio_ready": False,
         "control_plane_ready": False,
@@ -55,11 +52,7 @@ def execution_readiness_projection(
     }
     if execution.mode == "disabled" or state is None:
         return base
-    if (
-        state.mode != execution.mode
-        or state.runtime_profile_id != execution.profile_id
-        or state.account_slot != execution.account_slot
-    ):
+    if state.mode != execution.mode or state.account_slot != execution.account_slot:
         base["entry_block_reason"] = "runtime_identity_mismatch"
         return base
     heartbeat_age_ns = max(0, now_ns - state.heartbeat_at_ns)
@@ -80,7 +73,7 @@ def execution_readiness_projection(
         and state.account_snapshot.inflight_orders_count == 0
         and state.account_snapshot.unknown_orders_count == 0
     )
-    current_control = control if control is not None and control.runtime_profile_id == execution.profile_id else None
+    current_control = control if control is not None and control.account_slot == execution.account_slot else None
     entries_paused = True if current_control is None else current_control.entries_paused
     emergency_halted = False if current_control is None else current_control.emergency_halted
     alive = bool(state.alive and not stale)
@@ -121,8 +114,6 @@ def execution_readiness_projection(
             "reconciliation_observed_at_ns": state.reconciliation_observed_at_ns,
             "reconciliation_age_ms": reconciliation_age_ns // 1_000_000,
             "singleton_ready": state.singleton_ready,
-            "credential_ready": state.credential_ready,
-            "activation_ready": state.activation_ready,
             "startup_reconciled": state.startup_reconciled,
             "portfolio_ready": state.portfolio_ready,
             "control_plane_ready": state.control_plane_ready,

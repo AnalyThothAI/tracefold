@@ -41,19 +41,15 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
       signals_unexpired: 1,
     },
     decision: {
-      state: "RUNNING",
-      heartbeat_at_ms: TRADING_NOW_MS - 1_000,
-      reason: null,
+      last_case_at_ms: TRADING_NOW_MS - 1_000,
     },
     execution: {
       account_flat: false,
       account_flat_proven: false,
       account_slot: "binance_usdm_primary",
-      activation_ready: false,
       alive: false,
       audit_ready: false,
       control_plane_ready: false,
-      credential_ready: false,
       day_start_ready: false,
       emergency_halted: false,
       entries_armed: false,
@@ -64,7 +60,6 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
       open_orders_count: 0,
       portfolio_ready: false,
       positions_count: 0,
-      profile_id: "demo-v1",
       protection_status: "unknown",
       singleton_ready: false,
       startup_reconciled: false,
@@ -227,6 +222,7 @@ export function tradingObservationFixture(
   overrides: Partial<TradingExecutionObservation> = {},
 ): TradingExecutionObservation {
   return {
+    account_slot: "binance_usdm_primary",
     command_id: null,
     event_id: "e".repeat(64),
     execution_strategy: "oi-nautilus-v1",
@@ -235,7 +231,6 @@ export function tradingObservationFixture(
     observed_at_ns: TRADING_NOW_MS * 1_000_000,
     occurred_at_ns: (TRADING_NOW_MS - 1) * 1_000_000,
     payload_digest: "f".repeat(64),
-    runtime_profile_id: "demo-v1",
     runtime_release: "sha256:" + "1".repeat(64),
     seq: 1,
     signal_id: "d".repeat(64),
@@ -261,6 +256,7 @@ export function tradingCommandFixture(
   overrides: Partial<TradingOperatorIntent> = {},
 ): TradingOperatorIntent {
   return {
+    account_slot: "binance_usdm_primary",
     action: "pause_entries",
     command_id: "9".repeat(64),
     confirmed: false,
@@ -275,7 +271,6 @@ export function tradingCommandFixture(
     requested_at_ns: TRADING_NOW_MS * 1_000_000,
     scope: "entries",
     seq: 1,
-    target_profile_id: "demo-v1",
     ...overrides,
   };
 }

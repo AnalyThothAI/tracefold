@@ -243,8 +243,9 @@ delivery consumer settles `terminal/delivery_unavailable`.
   `source_observed_at + max_age_seconds` deadline; a Case reaching that deadline
   is `BLOCKED/source_stale` and emits no Signal;
 - `execution.mode`: `disabled|paper|live`, default `disabled`;
-- `execution.profile_id` and `execution.account_slot`, cold immutable
-  identities for the profile-gated Runtime;
+- `execution.account_slot`, the one Binance USD-M account this deployment
+  executes for; with `execution.mode` it is the whole execution identity, and it
+  is also the namespace every deterministic client order id is derived from;
 - `execution.credentials.api_key_file` / `api_secret_file`, operator-owned
   Binance USD-M secret references;
 - `control.console_write_token_file`, default `trading_console_write_token`,
@@ -276,15 +277,20 @@ It answers `long` or `no_trade` only; it cannot express a permission, an
 execution environment or a venue. There is no Trading model call and no
 `llm.trading_decision_model` key.
 
-Decision runtime is `DISABLED|STARTING|RUNNING|FAULTED`. A pure-policy LONG is
+`GET /api/trading/status` reports `decision.last_case_at_ms`, the newest
+`trading_cases.created_at_ms`: the Signal lane keeps no heartbeat row of its own,
+and Workers `/readyz` already states whether its process is alive. A pure-policy
+LONG is
 committed as exactly one `TradeSignalV1` plus `Case=SIGNAL_EMITTED`; `NO_TRADE`
 creates no Signal. The Signal is venue-neutral and carries no execution
 authority. The retired binding, Capital, capability, catalog, Intent, order,
 replay and evidence-clock tables were dropped by `20260901_0347`; execution
 writes only `trading_operator_intents`, append-only
 `trading_execution_observations`, the `0342` append-only notification delivery
-ledger, immutable profile activations, and the generation-fenced `0343` current
-Runtime projection. One delivery row per `(target, observation)` carries `delivered_at_ns`
+ledger, the slot-keyed current control projection, and the generation-fenced
+`0343` current Runtime projection. `20260903_0356` dropped the profile
+activation ledger and the Decision Plane heartbeat with it, and renamed both
+execution identity columns to `account_slot`. One delivery row per `(target, observation)` carries `delivered_at_ns`
 and, for a Signal card, `result_delivered_at_ns`: the second message that reports
 the 1 h/4 h outcome. `message_id` is present only on a channel that can address a
 sent message again; the deployed Feishu webhook cannot, so it is `NULL` there. The

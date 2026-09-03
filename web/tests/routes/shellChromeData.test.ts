@@ -1,6 +1,7 @@
+import { caseClock } from "@features/trading/shell";
 import { topbarFigures, topbarNewsSearchParams } from "@routes/shellChromeData";
 import { newsStatusFixture } from "@tests/fixtures/newsFixture";
-import { tradingStatusFixture } from "@tests/fixtures/tradingFixture";
+import { TRADING_NOW_MS, tradingStatusFixture } from "@tests/fixtures/tradingFixture";
 import { describe, expect, it } from "vitest";
 
 describe("route-aware shell figures", () => {
@@ -64,11 +65,7 @@ describe("route-aware shell figures", () => {
 
   it("keeps Alpha, execution readiness and Signal volume visible on the trading surface", () => {
     expect(topbarFigures("/trading", news, trading)).toEqual([
-      {
-        label: "DECISION",
-        text: "RUNNING",
-        tone: undefined,
-      },
+      { label: "LAST CASE", text: caseClock(TRADING_NOW_MS - 1_000) },
       { label: "EXECUTION", text: "disabled", tone: "caution" },
       { label: "SIGNALS 24H", value: 1 },
     ]);

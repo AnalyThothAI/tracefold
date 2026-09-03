@@ -21,7 +21,6 @@ RESUME = "3" * 64
 def _state() -> ExecutionRuntimeState:
     return ExecutionRuntimeState(
         account_slot="binance_usdm_primary",
-        runtime_profile_id="demo-v1",
         mode="paper",
         runtime_release="nautilus-1.231.0+oi-v1",
         config_sha256="a" * 64,
@@ -35,8 +34,6 @@ def _state() -> ExecutionRuntimeState:
         entries_armed=False,
         control_plane_ready=True,
         singleton_ready=True,
-        credential_ready=True,
-        activation_ready=True,
         startup_reconciled=True,
         portfolio_ready=True,
         audit_ready=True,
@@ -66,7 +63,7 @@ def _row(
     values = dict(summary or {})
     return DemoReceiptObservation(
         event_id=event * 64,
-        runtime_profile_id="demo-v1",
+        account_slot="binance_usdm_primary",
         command_id=command_id,
         normalized_kind=kind,
         observed_at_ns=at,

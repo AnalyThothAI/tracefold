@@ -35,7 +35,6 @@ from tracefold.trading import ExecutionObservationV1, OperatorIntentV1, TradeSig
 from tracefold.trading.storage.execution_stream import (
     EXECUTION_STREAM_NOTIFY_CHANNEL,
     MAX_EXECUTION_READ_BATCH,
-    ExecutionProfileActivation,
     ExecutionRuntimeState,
     materialize_execution_observation,
     materialize_operator_intents,
@@ -51,12 +50,8 @@ _INPUT_STEPS = ("commands", "signals")
 RUNTIME_HEARTBEAT_INTERVAL_NS = 500_000_000
 # Recovery reads the durable entry-order facts that can still hold Binance exposure. Seven days is the
 # widest gap this single-host deployment can be down and still find its own position on the venue;
-# older entries cannot be open because a Signal's TTL and this account slot's activation fence have
-# both long since retired them.
+# an entry order older than that has long since been filled and closed or cancelled by the venue.
 _RECOVERY_ENTRY_FACT_WINDOW_NS = 7 * 24 * 60 * 60 * 1_000_000_000
-# The activation currency check is a one-row indexed read of durable state, not an input. One second
-# is twice the projection heartbeat and still well inside the stale budget an operator reads.
-_ACTIVATION_READ_INTERVAL_NS = 1_000_000_000
 # This connection is the only PostgreSQL caller a Runtime holding live exposure has left, and reading
 # Commands on it is how an operator flattens. A statement that has not finished in one private
 # reconciliation period is broken, not slow: PostgreSQL cancels it, psycopg raises the
@@ -67,26 +62,22 @@ _STATEMENT_TIMEOUT_MS = 5_000
 class RuntimeStateProjector:
     """Durable current state: computed on the event loop, read and written by the bridge thread.
 
-    Three facts used to be synchronous PostgreSQL calls on the trading event loop, over a third
-    connection, every 500 ms: the generation-fenced `trading_execution_runtime_state` row, whether
-    this profile's activation is still the current one, and the durable entry identities a
-    reconciliation rebuilds ownership from (#510 E). None of them is an input and none of them needs
-    to be read by the thread that also runs every Nautilus order callback. The loop offers and reads
-    memory here; every statement belongs to the bridge thread and its one connection.
+    Two facts used to be synchronous PostgreSQL calls on the trading event loop, over a third
+    connection, every 500 ms: the generation-fenced `trading_execution_runtime_state` row and the
+    durable entry identities a reconciliation rebuilds ownership from (#510 E). Neither is an input
+    and neither needs to be read by the thread that also runs every Nautilus order callback. The loop
+    offers and reads memory here; every statement belongs to the bridge thread and its one connection.
     """
 
     def __init__(
         self,
         *,
         initial: ExecutionRuntimeState,
-        activation: ExecutionProfileActivation,
         recovery_inputs: tuple[tuple[TradeSignalV1, ...], tuple[OperatorIntentV1, ...]],
     ) -> None:
         self._lock = Lock()
         self._current = initial
         self._pending: ExecutionRuntimeState | None = None
-        self._activation = activation
-        self._activation_current = True
         self._recovery_inputs = recovery_inputs
 
     @property
@@ -95,13 +86,6 @@ class RuntimeStateProjector:
 
         with self._lock:
             return self._current
-
-    @property
-    def activation_current(self) -> bool:
-        """Is this profile's activation still the account slot's latest one?"""
-
-        with self._lock:
-            return self._activation_current
 
     def recovery_inputs(self) -> tuple[tuple[TradeSignalV1, ...], tuple[OperatorIntentV1, ...]]:
         """The durable entry identities the next reconciliation rebuilds ownership from."""
@@ -140,13 +124,8 @@ class RuntimeStateProjector:
         with self._lock:
             self._current = candidate
 
-    def refresh_activation(self, repos: RepositorySession) -> None:
-        current = repos.trading.latest_execution_profile_activation(self._activation.account_slot)
-        with self._lock:
-            self._activation_current = current == self._activation
-
     def refresh_recovery_inputs(self, repos: RepositorySession, observed_at_ns: int) -> None:
-        inputs = load_recovery_inputs(repos, self._activation.runtime_profile_id, observed_at_ns)
+        inputs = load_recovery_inputs(repos, self.current.account_slot, observed_at_ns)
         with self._lock:
             self._recovery_inputs = inputs
 
@@ -160,19 +139,19 @@ def _semantic_state(state: ExecutionRuntimeState) -> dict[str, Any]:
 
 def load_recovery_inputs(
     repos: RepositorySession,
-    profile_id: str,
+    account_slot: str,
     observed_at_ns: int,
 ) -> tuple[tuple[TradeSignalV1, ...], tuple[OperatorIntentV1, ...]]:
     """Read the durable entry identities that can still hold Binance exposure."""
 
     since_ns = max(0, observed_at_ns - _RECOVERY_ENTRY_FACT_WINDOW_NS)
     signal_rows = repos.trading.execution_recovery_signals(
-        runtime_profile_id=profile_id,
+        account_slot=account_slot,
         since_ns=since_ns,
         limit=MAX_EXECUTION_READ_BATCH,
     )
     command_rows = repos.trading.execution_recovery_manual_entries(
-        runtime_profile_id=profile_id,
+        account_slot=account_slot,
         since_ns=since_ns,
         limit=MAX_EXECUTION_READ_BATCH,
     )
@@ -226,7 +205,6 @@ class OiRuntimeDatabaseBridge:
         self._step_failures: dict[str, str] = {}
         self._appended_since_recovery_read = 0
         self._recovery_read_at_ns = 0
-        self._activation_read_at_ns = 0
 
     @property
     def connected(self) -> bool:
@@ -250,12 +228,6 @@ class OiRuntimeDatabaseBridge:
 
         with self._lock:
             return not any(name in self._step_failures for name in _INPUT_STEPS)
-
-    @property
-    def activation_current(self) -> bool:
-        """The activation currency the loop used to read from its own connection every 500 ms."""
-
-        return self._projector.activation_current
 
     def recovery_inputs(self) -> tuple[tuple[TradeSignalV1, ...], tuple[OperatorIntentV1, ...]]:
         """The durable entry identities the next reconciliation rebuilds ownership from."""
@@ -328,13 +300,13 @@ class OiRuntimeDatabaseBridge:
         self._step(
             "commands",
             lambda: self._signals.poll_commands_once(
-                lambda profile, strategy, limit: load_unresolved_operator_intents(repos, profile, strategy, limit),
+                lambda slot, strategy, limit: load_unresolved_operator_intents(repos, slot, strategy, limit),
             ),
         )
         self._step(
             "signals",
             lambda: self._signals.poll_once(
-                lambda profile, strategy, limit: load_unresolved_trade_signals(repos, profile, strategy, limit),
+                lambda slot, strategy, limit: load_unresolved_trade_signals(repos, slot, strategy, limit),
             ),
         )
         self._step("audit", lambda: self._flush_audit(repos))
@@ -381,11 +353,6 @@ class OiRuntimeDatabaseBridge:
         ):
             self._appended_since_recovery_read = 0
             self._recovery_read_at_ns = now_ns
-        if now_ns - self._activation_read_at_ns >= _ACTIVATION_READ_INTERVAL_NS and self._step(
-            "activation",
-            lambda: self._projector.refresh_activation(repos),
-        ):
-            self._activation_read_at_ns = now_ns
         self._step("projection", lambda: self._projector.write_once(repos))
 
     def _step(self, name: str, run: Callable[[], object]) -> bool:
@@ -427,15 +394,20 @@ def run_nautilus(profile: OiRuntimeProfile) -> None:
 
 def load_unresolved_trade_signals(
     repos: RepositorySession,
-    runtime_profile_id: str,
+    account_slot: str,
     execution_strategy: str,
     limit: int,
 ) -> tuple[TradeSignalV1, ...]:
-    """Materialize Trading-owned rows at the App composition boundary."""
+    """Materialize Trading-owned rows at the App composition boundary.
+
+    The wall clock is read here, at the composition seam, because "still pending" is a fact about now
+    and the storage statement takes it as a bound rather than reading a clock of its own.
+    """
 
     rows = repos.trading.unresolved_trade_signals(
-        runtime_profile_id=runtime_profile_id,
+        account_slot=account_slot,
         execution_strategy=execution_strategy,
+        now_ns=time.time_ns(),
         limit=limit,
     )
     return materialize_trade_signals(rows)
@@ -443,15 +415,16 @@ def load_unresolved_trade_signals(
 
 def load_unresolved_operator_intents(
     repos: RepositorySession,
-    runtime_profile_id: str,
+    account_slot: str,
     execution_strategy: str,
     limit: int,
 ) -> tuple[OperatorIntentV1, ...]:
     """Materialize authenticated Commands beside Signals at the App boundary."""
 
     rows = repos.trading.unresolved_operator_intents(
-        runtime_profile_id=runtime_profile_id,
+        account_slot=account_slot,
         execution_strategy=execution_strategy,
+        now_ns=time.time_ns(),
         limit=limit,
     )
     return materialize_operator_intents(rows)
@@ -465,13 +438,19 @@ def execution_stream_channel() -> str:
 
 def load_runtime_control_state(
     repos: RepositorySession,
-    runtime_profile_id: str,
+    account_slot: str,
+    *,
+    now_ns: int,
 ) -> RuntimeControlSnapshot:
-    """Load one current row; Command/Observation history is never a startup path."""
+    """Load this slot's current control row, creating an unpaused one the first time.
 
-    state = repos.trading.execution_runtime_control_state(runtime_profile_id)
-    if state is None:
-        raise RuntimeError("oi_runtime_control_state_missing")
+    Control belongs to the account slot and survives every deploy: a slot the operator resumed is
+    still resumed after a restart, a new image or a risk-config change, and only a Command moves it.
+    Command/Observation history is never a startup path.
+    """
+
+    with repos.transaction():
+        state = repos.trading.ensure_execution_runtime_control_state(account_slot, now_ns=now_ns)
     return RuntimeControlSnapshot(
         entries_paused=state.entries_paused,
         emergency_halted=state.emergency_halted,

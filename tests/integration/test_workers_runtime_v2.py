@@ -268,8 +268,9 @@ def test_real_workers_signal_lane_never_reads_execution_credentials(tmp_path: Pa
         extra_env={"TRACEFOLD_TEST_CONFIG_DIR": str(tmp_path)},
     )
     try:
+        # Readiness is the Decision Plane's whole liveness statement since #520 PR-A: the lane keeps
+        # no heartbeat row, and a lane that cannot advance fails the process instead.
         _wait_ready(process, port)
-        _wait_decision_state("RUNNING")
 
         process.send_signal(signal.SIGTERM)
         assert process.wait(timeout=5.0) == 0
@@ -304,29 +305,12 @@ def test_real_workers_accept_active_execution_without_owning_the_nautilus_runtim
         extra_env={"TRACEFOLD_TEST_CONFIG_DIR": str(tmp_path)},
     )
     try:
+        # Readiness is the Decision Plane's whole liveness statement since #520 PR-A: the lane keeps
+        # no heartbeat row, and a lane that cannot advance fails the process instead.
         _wait_ready(process, port)
-        _wait_decision_state("RUNNING")
 
         process.send_signal(signal.SIGTERM)
         assert process.wait(timeout=5.0) == 0
-    finally:
-        _ensure_process_stopped(process)
-
-
-@pytest.mark.slow
-def test_missing_decision_runtime_fails_workers_startup_and_readiness(tmp_path: Path) -> None:
-    port = _free_port()
-    process = _start_workers_process(
-        "trading_missing_runtime",
-        port,
-        extra_env={"TRACEFOLD_TEST_CONFIG_DIR": str(tmp_path)},
-    )
-    try:
-        assert process.wait(timeout=10.0) != 0
-        _assert_probe_closed(port)
-        row = _runtime_row()
-        assert row["lifecycle_state"] == "failed"
-        assert row["fatal_code"] == "startup_failed"
     finally:
         _ensure_process_stopped(process)
 
@@ -620,22 +604,6 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", 0))
         return int(listener.getsockname()[1])
-
-
-def _wait_decision_state(expected: str) -> None:
-    deadline = time.monotonic() + 10.0
-    latest: str | None = None
-    while time.monotonic() < deadline:
-        conn = connect_postgres_test(read_only=False)
-        try:
-            decision = conn.execute("SELECT state FROM trading_decision_runtime WHERE id = 1").fetchone()
-        finally:
-            conn.close()
-        latest = None if decision is None else str(decision["state"])
-        if latest == expected:
-            return
-        time.sleep(0.02)
-    raise AssertionError(f"decision runtime did not reach {expected}: {latest!r}")
 
 
 def _start_workers_process(

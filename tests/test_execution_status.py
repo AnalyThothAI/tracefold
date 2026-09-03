@@ -15,7 +15,7 @@ from tracefold.trading.storage.execution_stream import (
 
 
 def _execution(mode: str = "paper") -> SimpleNamespace:
-    return SimpleNamespace(mode=mode, profile_id="demo-v1", account_slot="binance_usdm_primary")
+    return SimpleNamespace(mode=mode, account_slot="binance_usdm_primary")
 
 
 def _account_snapshot(*, complete: bool = True, truncated: bool = False) -> ExecutionAccountSnapshot:
@@ -40,7 +40,6 @@ def _account_snapshot(*, complete: bool = True, truncated: bool = False) -> Exec
 def _state(*, heartbeat_at_ns: int = 10_000_000_000) -> ExecutionRuntimeState:
     return ExecutionRuntimeState(
         account_slot="binance_usdm_primary",
-        runtime_profile_id="demo-v1",
         mode="paper",
         runtime_release="nautilus-1.231.0+oi-v1",
         config_sha256="a" * 64,
@@ -54,8 +53,6 @@ def _state(*, heartbeat_at_ns: int = 10_000_000_000) -> ExecutionRuntimeState:
         entries_armed=True,
         control_plane_ready=True,
         singleton_ready=True,
-        credential_ready=True,
-        activation_ready=True,
         startup_reconciled=True,
         portfolio_ready=True,
         audit_ready=True,
@@ -76,7 +73,7 @@ def _state(*, heartbeat_at_ns: int = 10_000_000_000) -> ExecutionRuntimeState:
 
 def _control(*, entries_paused: bool = False) -> ExecutionRuntimeControlState:
     return ExecutionRuntimeControlState(
-        runtime_profile_id="demo-v1",
+        account_slot="binance_usdm_primary",
         entries_paused=entries_paused,
         emergency_halted=False,
         last_command_seq=1,
@@ -237,7 +234,7 @@ def test_current_account_projection_remains_a_distinct_read_model() -> None:
 
 def test_active_execution_fails_closed_on_identity_or_heartbeat_drift() -> None:
     mismatch = execution_readiness_projection(
-        SimpleNamespace(mode="paper", profile_id="demo-v2", account_slot="binance_usdm_primary"),
+        SimpleNamespace(mode="paper", account_slot="binance_usdm_secondary"),
         _state(),
         _control(),
         now_ns=10_000_000_000,

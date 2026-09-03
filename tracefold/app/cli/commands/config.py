@@ -152,14 +152,13 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                     },
                     "execution": {
                         "mode": settings.trading.execution.mode,
-                        "profile_id": settings.trading.execution.profile_id,
                         "account_slot": settings.trading.execution.account_slot,
                         "credentials": {
                             "api_key_file": None if binance_key_file is None else str(binance_key_file),
                             "api_secret_file": None if binance_secret_file is None else str(binance_secret_file),
                         },
-                        # None of these is a secret, and every one of them is now inside the profile
-                        # `config_sha256` the activation fence checks (#510 E).
+                        # None of these is a secret, and every one of them is reported so an operator
+                        # can read the limits the Runtime is actually running under (#510 E).
                         "risk": settings.trading.execution.risk.model_dump(),
                     },
                 },

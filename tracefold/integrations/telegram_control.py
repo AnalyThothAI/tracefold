@@ -38,7 +38,7 @@ class TelegramControlRequest:
     chat_id: int
     user_id: int
     message_id: int
-    target_profile_id: str
+    account_slot: str
     command: ParsedOperatorCommand
     intent: PreparedOperatorIntent | None
 
@@ -53,7 +53,7 @@ class TelegramControlWebhook:
         bot_id: int,
         allowed_chat_ids: frozenset[int],
         allowed_user_ids: frozenset[int],
-        target_profile_id: str,
+        account_slot: str,
     ) -> None:
         if _WEBHOOK_SECRET.fullmatch(webhook_secret) is None:
             raise ValueError("telegram_control_webhook_secret_invalid")
@@ -65,7 +65,7 @@ class TelegramControlWebhook:
         self._bot_id = bot_id
         self._allowed_chat_ids = allowed_chat_ids
         self._allowed_user_ids = allowed_user_ids
-        self._target_profile_id = target_profile_id
+        self._account_slot = account_slot
 
     def parse(
         self,
@@ -100,7 +100,7 @@ class TelegramControlWebhook:
                     command,
                     source=f"telegram:bot:{self._bot_id}",
                     source_command_id=str(update_id),
-                    target_profile_id=self._target_profile_id,
+                    account_slot=self._account_slot,
                     operator_identity=f"telegram:user:{user_id}",
                     authentication_identity="telegram:webhook+allowlist:v1",
                     requested_at_ns=sent_at_ns,
@@ -115,7 +115,7 @@ class TelegramControlWebhook:
             chat_id=chat_id,
             user_id=user_id,
             message_id=message_id,
-            target_profile_id=self._target_profile_id,
+            account_slot=self._account_slot,
             command=command,
             intent=intent,
         )

@@ -64,7 +64,7 @@ def test_workers_wires_control_only_from_two_secure_files_and_redacted_config(
             "bot_id": int(_BOT_TOKEN.partition(":")[0]),
             "allowed_chat_ids": frozenset({_CHAT_ID}),
             "allowed_user_ids": frozenset({_USER_ID}),
-            "target_profile_id": "binance_usdm_primary",
+            "account_slot": "binance_usdm_primary",
         },
     }
 

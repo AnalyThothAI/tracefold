@@ -16,7 +16,6 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
-from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import ClassVar, Final, Literal, Protocol
@@ -152,7 +151,6 @@ class SignalLane:
         self._clock = clock
         self._telemetry = telemetry
         self._run_id = uuid.uuid4().hex
-        self._started = False
         self._alpha_contract_sha256 = canonical_sha256(
             {
                 "policy_id": config.policy.policy_id,
@@ -166,17 +164,7 @@ class SignalLane:
         return self._alpha_contract_sha256
 
     async def advance(self) -> LaneTurn:
-        try:
-            if not self._started:
-                await self._record_runtime(state="STARTING", reason=None)
-                self._started = True
-            turn = await self._advance_turn()
-        except Exception:
-            with suppress(Exception):
-                await self._record_runtime(state="FAULTED", reason="decision_turn_fault")
-            raise
-        await self._record_runtime(state="RUNNING", reason=None)
-        return turn
+        return await self._advance_turn()
 
     async def _advance_turn(self) -> LaneTurn:
         now = self._clock()
@@ -231,21 +219,6 @@ class SignalLane:
             blocked=blocked,
             signals_emitted=signals_emitted,
         )
-
-    async def _record_runtime(self, *, state: str, reason: str | None) -> None:
-        now = self._clock()
-        updated = await self._db.tx(
-            "trading_decision_runtime",
-            lambda repos: _trading(repos).set_decision_runtime(
-                state=state,
-                heartbeat_at_ms=now,
-                reason=reason,
-                now_ms=now,
-            ),
-            timeout_seconds=COLD_WRITE_TIMEOUT_SECONDS,
-        )
-        if not updated:
-            raise RuntimeError("trading_decision_runtime_missing")
 
     def _admit(
         self,

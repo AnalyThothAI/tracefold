@@ -239,7 +239,7 @@ def trading_notification_text(row: dict[str, Any]) -> str | None:
     if stage is None:
         return None
     event_id = str(row.get("event_id") or "")
-    profile = str(row.get("runtime_profile_id") or "")
+    account_slot = str(row.get("account_slot") or "")
     command_id = str(row.get("command_id") or "")
     signal_id = str(row.get("signal_id") or "")
     correlation = command_id or signal_id
@@ -248,7 +248,7 @@ def trading_notification_text(row: dict[str, Any]) -> str | None:
         # The observation's own instant, not the send's. A coalesced kind can report a state observed
         # minutes before the card left, and a reader should never have to guess which (#472).
         f"at: {_utc_second(row.get('occurred_at_ns'))}",
-        f"profile: {profile}",
+        f"account: {account_slot}",
         f"correlation: {correlation[:16] or '-'}",
         f"event: {event_id[:16] or '-'}",
     ]

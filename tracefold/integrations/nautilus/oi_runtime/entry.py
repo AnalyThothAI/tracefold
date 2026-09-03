@@ -86,7 +86,6 @@ class EntryCoordinator:
             return
         client_order_id = deterministic_client_order_id(
             namespace=self._profile.client_order_namespace,
-            profile_id=self._profile.profile_id,
             entry_id=request.entry_id,
             leg="entry",
         )

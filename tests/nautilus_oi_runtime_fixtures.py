@@ -52,7 +52,6 @@ def oi_profile(mode: RuntimeMode = "paper") -> OiRuntimeProfile:
         )
     return OiRuntimeProfile(
         mode=mode,
-        profile_id=f"oi-{mode}-profile",
         account_slot="binance_usdm_primary",
         account_id=ACCOUNT_ID,
         runtime_release="nautilus-1.231.0+oi-v1",
@@ -94,7 +93,7 @@ class SignalRows:
 
     def __call__(
         self,
-        _runtime_profile_id: str,
+        _account_slot: str,
         _execution_strategy: str,
         limit: int,
     ) -> tuple[TradeSignalV1, ...]:
@@ -107,7 +106,7 @@ class CommandRows:
 
     def __call__(
         self,
-        _runtime_profile_id: str,
+        _account_slot: str,
         _execution_strategy: str,
         limit: int,
     ) -> tuple[OperatorIntentV1, ...]:
@@ -131,7 +130,7 @@ def operator_intent(
         {
             "seq": 1,
             "command_id": command_id,
-            "target_profile_id": oi_profile().profile_id,
+            "account_slot": oi_profile().account_slot,
             "action": action,
             "scope": scope,
             "reason": "operator test",
@@ -213,7 +212,7 @@ def registered_oi_strategy(
 ) -> SimpleNamespace:
     profile = profile or oi_profile()
     selected_signals = signal_client or ExecutionSignalClient(
-        runtime_profile_id=profile.profile_id,
+        account_slot=profile.account_slot,
         execution_strategy="oi_nautilus_v1",
     )
     if values:
@@ -221,13 +220,12 @@ def registered_oi_strategy(
     if commands:
         selected_signals.poll_commands_once(CommandRows(*commands))
     factory = ObservationFactory(
-        runtime_profile_id=profile.profile_id,
+        account_slot=profile.account_slot,
         runtime_release=profile.runtime_release,
         execution_strategy="oi_nautilus_v1",
     )
     selected_audit = audit or AuditSink(factory=factory)
     readiness = RuntimeReadiness()
-    readiness.activate()
     if mark_reconciled:
         readiness.reconciled(
             account_observed_at_ns=NOW_NS,

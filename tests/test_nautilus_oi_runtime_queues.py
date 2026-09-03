@@ -28,7 +28,7 @@ from tracefold.trading import ExecutionObservationV1
 def _factory() -> ObservationFactory:
     profile = oi_profile()
     return ObservationFactory(
-        runtime_profile_id=profile.profile_id,
+        account_slot=profile.account_slot,
         runtime_release=profile.runtime_release,
         execution_strategy="oi_nautilus_v1",
     )
@@ -39,7 +39,7 @@ def test_signal_queue_is_count_and_byte_bounded_without_silent_pending_claim() -
     second = trade_signal(signal_id="2" * 64)
     one_size = len(first.model_dump_json().encode())
     client = ExecutionSignalClient(
-        runtime_profile_id=oi_profile().profile_id,
+        account_slot=oi_profile().account_slot,
         execution_strategy="oi_nautilus_v1",
         max_count=2,
         max_bytes=one_size,
@@ -62,7 +62,7 @@ def test_signal_pending_set_prevents_duplicate_enqueue_until_disposition_is_dura
     signal = trade_signal()
     rows = SignalRows(signal)
     client = ExecutionSignalClient(
-        runtime_profile_id=oi_profile().profile_id,
+        account_slot=oi_profile().account_slot,
         execution_strategy="oi_nautilus_v1",
     )
 
@@ -76,7 +76,7 @@ def test_signal_pending_set_prevents_duplicate_enqueue_until_disposition_is_dura
 def test_signal_can_be_retried_when_audit_backpressure_prevents_final_disposition() -> None:
     signal = trade_signal()
     client = ExecutionSignalClient(
-        runtime_profile_id=oi_profile().profile_id,
+        account_slot=oi_profile().account_slot,
         execution_strategy="oi_nautilus_v1",
     )
     client.poll_once(SignalRows(signal))
@@ -92,7 +92,7 @@ def test_signal_client_consumes_commands_in_the_same_total_count_and_byte_bound(
     signal = trade_signal()
     command = operator_intent()
     client = ExecutionSignalClient(
-        runtime_profile_id=oi_profile().profile_id,
+        account_slot=oi_profile().account_slot,
         execution_strategy="oi_nautilus_v1",
         max_count=1,
         max_bytes=1_048_576,
@@ -114,7 +114,7 @@ def test_poll_admits_operator_commands_before_signals_into_the_shared_bound() ->
     signal = trade_signal()
     command = operator_intent()
     client = ExecutionSignalClient(
-        runtime_profile_id=oi_profile().profile_id,
+        account_slot=oi_profile().account_slot,
         execution_strategy="oi_nautilus_v1",
         max_count=1,
     )
@@ -129,7 +129,7 @@ def test_signal_retry_cannot_overfill_the_shared_command_and_signal_bound() -> N
     signal = trade_signal()
     command = operator_intent()
     client = ExecutionSignalClient(
-        runtime_profile_id=oi_profile().profile_id,
+        account_slot=oi_profile().account_slot,
         execution_strategy="oi_nautilus_v1",
         max_count=1,
     )
@@ -148,7 +148,7 @@ def test_durable_command_scan_evicts_one_buffered_signal_instead_of_being_starve
     second = trade_signal(signal_id="2" * 64)
     command = operator_intent(command_id="3" * 64)
     client = ExecutionSignalClient(
-        runtime_profile_id=oi_profile().profile_id,
+        account_slot=oi_profile().account_slot,
         execution_strategy="oi_nautilus_v1",
         max_count=2,
     )
@@ -171,7 +171,7 @@ def test_durable_command_scan_can_reclaim_signal_bytes_without_losing_database_t
     signal_bytes = len(first.model_dump_json().encode()) + len(second.model_dump_json().encode())
     command_bytes = len(command.model_dump_json().encode())
     client = ExecutionSignalClient(
-        runtime_profile_id=oi_profile().profile_id,
+        account_slot=oi_profile().account_slot,
         execution_strategy="oi_nautilus_v1",
         max_count=3,
         max_bytes=max(signal_bytes, command_bytes),
@@ -188,7 +188,7 @@ def test_durable_command_scan_can_reclaim_signal_bytes_without_losing_database_t
 def test_failed_command_scan_closes_the_signal_gate() -> None:
     signal = trade_signal()
     client = ExecutionSignalClient(
-        runtime_profile_id=oi_profile().profile_id,
+        account_slot=oi_profile().account_slot,
         execution_strategy="oi_nautilus_v1",
         max_count=2,
     )

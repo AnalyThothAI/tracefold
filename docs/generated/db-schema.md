@@ -570,16 +570,6 @@
 | `strategy_config_digest` | `TEXT` | False | `None` |
 | `policy_checks` | `JSONB` | True | `None` |
 
-## `trading_decision_runtime`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `id` | `SMALLINT` | False | `None` |
-| `state` | `TEXT` | False | `None` |
-| `heartbeat_at_ms` | `BIGINT` | True | `None` |
-| `reason` | `TEXT` | True | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
 ## `trading_execution_notification_deliveries`
 
 | Column | Type | Nullable | Default |
@@ -596,7 +586,7 @@
 |--------|------|----------|---------|
 | `seq` | `BIGINT` | False | `None` |
 | `event_id` | `TEXT` | False | `None` |
-| `runtime_profile_id` | `TEXT` | False | `None` |
+| `account_slot` | `TEXT` | False | `None` |
 | `runtime_release` | `TEXT` | False | `None` |
 | `execution_strategy` | `TEXT` | False | `None` |
 | `signal_id` | `TEXT` | True | `None` |
@@ -609,36 +599,22 @@
 | `payload_digest` | `TEXT` | False | `None` |
 | `payload` | `JSONB` | False | `None` |
 
-## `trading_execution_profile_activations`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `runtime_profile_id` | `TEXT` | False | `None` |
-| `account_slot` | `TEXT` | False | `None` |
-| `activated_after_signal_seq` | `BIGINT` | False | `None` |
-| `activated_after_command_seq` | `BIGINT` | False | `None` |
-| `mode` | `TEXT` | False | `None` |
-| `runtime_release` | `TEXT` | False | `None` |
-| `config_sha256` | `TEXT` | False | `None` |
-| `created_at_ns` | `BIGINT` | False | `None` |
-
 ## `trading_execution_runtime_control_state`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `runtime_profile_id` | `TEXT` | False | `None` |
 | `entries_paused` | `BOOLEAN` | False | `None` |
 | `emergency_halted` | `BOOLEAN` | False | `None` |
 | `last_command_seq` | `BIGINT` | False | `None` |
 | `last_command_id` | `TEXT` | True | `None` |
 | `updated_at_ns` | `BIGINT` | False | `None` |
+| `account_slot` | `TEXT` | False | `None` |
 
 ## `trading_execution_runtime_state`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `account_slot` | `TEXT` | False | `None` |
-| `runtime_profile_id` | `TEXT` | False | `None` |
 | `mode` | `TEXT` | False | `None` |
 | `runtime_release` | `TEXT` | False | `None` |
 | `config_sha256` | `TEXT` | False | `None` |
@@ -649,8 +625,6 @@
 | `lifecycle_state` | `TEXT` | False | `None` |
 | `alive` | `BOOLEAN` | False | `None` |
 | `singleton_ready` | `BOOLEAN` | False | `None` |
-| `credential_ready` | `BOOLEAN` | False | `None` |
-| `activation_ready` | `BOOLEAN` | False | `None` |
 | `startup_reconciled` | `BOOLEAN` | False | `None` |
 | `portfolio_ready` | `BOOLEAN` | False | `None` |
 | `audit_ready` | `BOOLEAN` | False | `None` |
@@ -677,7 +651,7 @@
 |--------|------|----------|---------|
 | `seq` | `BIGINT` | False | `None` |
 | `command_id` | `TEXT` | False | `None` |
-| `target_profile_id` | `TEXT` | False | `None` |
+| `account_slot` | `TEXT` | False | `None` |
 | `action` | `TEXT` | False | `None` |
 | `scope` | `TEXT` | False | `None` |
 | `reason` | `TEXT` | False | `None` |

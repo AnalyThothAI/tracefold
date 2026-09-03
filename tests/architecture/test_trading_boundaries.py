@@ -276,7 +276,6 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
         "Bar",
         "BinanceDemoReceipt",
         "CaseState",
-        "DecisionRuntimeV1",
         "DemoReceiptError",
         "DemoReceiptObservation",
         "ExecutionAccountOrder",

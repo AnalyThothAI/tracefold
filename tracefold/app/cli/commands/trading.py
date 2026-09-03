@@ -16,7 +16,6 @@ from tracefold.app.trading_config import signal_lane_config
 from tracefold.platform.config.loader import load_settings
 from tracefold.trading import (
     BinanceDemoReceipt,
-    DecisionRuntimeV1,
     DemoReceiptError,
     DemoReceiptObservation,
     OperatorCommandError,
@@ -44,28 +43,19 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
     with repositories(settings) as repos:
         trading = repos.trading
         if command == "status":
-            decision = trading.decision_runtime() or DecisionRuntimeV1(
-                state="FAULTED",
-                heartbeat_at_ms=None,
-                reason="decision_runtime_missing",
-                updated_at_ms=now_ms,
-            )
+            last_case_at_ms = trading.latest_case_created_at_ms()
             config = signal_lane_config(settings)
             execution = settings.trading.execution
             execution_status = execution_readiness_projection(
                 execution,
                 trading.execution_runtime_state(execution.account_slot),
-                trading.execution_runtime_control_state(execution.profile_id),
+                trading.execution_runtime_control_state(execution.account_slot),
                 now_ns=now_ms * 1_000_000,
             )
             return 0, {
                 "ok": True,
                 "data": {
-                    "decision": {
-                        "state": decision.state,
-                        "heartbeat_at_ms": decision.heartbeat_at_ms,
-                        "reason": decision.reason,
-                    },
+                    "decision": {"last_case_at_ms": last_case_at_ms},
                     "alpha": {
                         "policy_id": config.policy.policy_id,
                         "policy_version": config.policy.policy_version,
@@ -105,7 +95,7 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                 "ok": True,
                 "data": trading.console_execution_observations(
                     since_ns=(now_ms - _WINDOW_MS) * 1_000_000,
-                    runtime_profile_id=None,
+                    account_slot=None,
                     normalized_kind=None,
                     before=None,
                     limit=int(getattr(args, "limit", 20) or 20),
@@ -116,7 +106,7 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                 "ok": True,
                 "data": trading.console_operator_intents(
                     since_ns=(now_ms - _WINDOW_MS) * 1_000_000,
-                    runtime_profile_id=None,
+                    account_slot=None,
                     action=getattr(args, "action", None),
                     before=None,
                     limit=int(getattr(args, "limit", 20) or 20),
@@ -131,7 +121,7 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
             try:
                 observation_rows = trading.console_execution_observations(
                     since_ns=(now_ms - _WINDOW_MS) * 1_000_000,
-                    runtime_profile_id=execution.profile_id,
+                    account_slot=execution.account_slot,
                     normalized_kind=None,
                     before=None,
                     limit=1_000,
@@ -153,7 +143,7 @@ def _demo_observation(row: dict[str, Any]) -> DemoReceiptObservation:
     summary = row["summary"]
     return DemoReceiptObservation(
         event_id=str(row["event_id"]),
-        runtime_profile_id=str(row["runtime_profile_id"]),
+        account_slot=str(row["account_slot"]),
         command_id=None if row["command_id"] is None else str(row["command_id"]),
         normalized_kind=str(row["normalized_kind"]),
         observed_at_ns=int(row["observed_at_ns"]),
@@ -200,7 +190,7 @@ def _summary_bool(summary: object, key: str) -> bool | None:
 def _demo_receipt_payload(receipt: BinanceDemoReceipt) -> dict[str, Any]:
     return {
         "mode": receipt.mode,
-        "runtime_profile_id": receipt.runtime_profile_id,
+        "account_slot": receipt.account_slot,
         "runtime_release": receipt.runtime_release,
         "runtime_id": receipt.runtime_id,
         "runtime_revision": receipt.runtime_revision,
@@ -230,7 +220,7 @@ def _issue_operator_intent(args: Any, *, settings: Any) -> tuple[int, dict[str, 
             parsed,
             source=_cli_request_source(local_uid=local_uid, hostname=socket.gethostname()),
             source_command_id=request_id,
-            target_profile_id=settings.trading.execution.profile_id,
+            account_slot=settings.trading.execution.account_slot,
             operator_identity=f"local-cli:{local_uid}",
             authentication_identity=f"local-os-uid:{local_uid}",
             requested_at_ns=requested_at_ns,

@@ -93,7 +93,7 @@ def prepare_parsed_operator_intent(
     *,
     source: str,
     source_command_id: str,
-    target_profile_id: str,
+    account_slot: str,
     operator_identity: str,
     authentication_identity: str,
     requested_at_ns: int,
@@ -125,7 +125,7 @@ def prepare_parsed_operator_intent(
     try:
         return prepare_operator_intent(
             command_id=command_id,
-            target_profile_id=target_profile_id,
+            account_slot=account_slot,
             action=parsed.action,
             scope=parsed.scope,
             reason=parsed.reason,

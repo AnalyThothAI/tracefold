@@ -532,17 +532,21 @@ class TradingExecutionRiskSettings(BaseModel):
 
 
 class TradingExecutionSettings(BaseModel):
-    """The single cold Binance USD-M execution profile."""
+    """The one Binance USD-M account slot this deployment executes for.
+
+    `account_slot` plus `mode` is the whole execution identity (#520). There is no separate
+    `profile_id`: it existed only to fence a Runtime whose release or config digest had moved, and
+    that fence refused 58 restarts in one day without ever refusing a real risk.
+    """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     mode: Literal["disabled", "paper", "live"] = "disabled"
-    profile_id: str = "binance_usdm_primary"
     account_slot: str = "binance_usdm_primary"
     credentials: TradingExecutionCredentialsSettings = Field(default_factory=TradingExecutionCredentialsSettings)
     risk: TradingExecutionRiskSettings = Field(default_factory=TradingExecutionRiskSettings)
 
-    @field_validator("profile_id", "account_slot")
+    @field_validator("account_slot")
     @classmethod
     def validate_identity(cls, value: str) -> str:
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:._/-]{0,127}", value) is None:

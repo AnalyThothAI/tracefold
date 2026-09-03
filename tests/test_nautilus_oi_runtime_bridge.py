@@ -20,27 +20,14 @@ from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSi
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.integrations.nautilus.oi_runtime.state import RuntimeReadiness, RuntimeReadinessSnapshot
 from tracefold.trading.storage.execution_stream import (
-    ExecutionProfileActivation,
     ExecutionRuntimeState,
     PreparedExecutionObservationBatch,
-)
-
-_ACTIVATION = ExecutionProfileActivation(
-    runtime_profile_id="oi-paper-profile",
-    account_slot="binance_usdm_primary",
-    activated_after_signal_seq=0,
-    activated_after_command_seq=0,
-    mode="paper",
-    runtime_release="nautilus-1.231.0+oi-v1",
-    config_sha256="a" * 64,
-    created_at_ns=NOW_NS,
 )
 
 
 def _runtime_state() -> ExecutionRuntimeState:
     return ExecutionRuntimeState(
         account_slot="binance_usdm_primary",
-        runtime_profile_id="oi-paper-profile",
         mode="paper",
         runtime_release="nautilus-1.231.0+oi-v1",
         config_sha256="a" * 64,
@@ -54,8 +41,6 @@ def _runtime_state() -> ExecutionRuntimeState:
         entries_armed=False,
         control_plane_ready=False,
         singleton_ready=True,
-        credential_ready=True,
-        activation_ready=True,
         startup_reconciled=False,
         portfolio_ready=False,
         audit_ready=False,
@@ -83,12 +68,7 @@ class _FakeTrading:
         self.signal_reads = 0
         self.appended: list[str] = []
         self.updates: list[ExecutionRuntimeState] = []
-        self.activation_reads = 0
         self.recovery_reads = 0
-
-    def latest_execution_profile_activation(self, _account_slot: str) -> ExecutionProfileActivation:
-        self.activation_reads += 1
-        return _ACTIVATION
 
     def execution_recovery_signals(self, **_kwargs: Any) -> tuple[Any, ...]:
         self.recovery_reads += 1
@@ -151,8 +131,7 @@ def _bridge(
         audit=audit,
         update_day_start=lambda _baseline: None,
         singleton=singleton or _singleton([True]),
-        projector=projector
-        or RuntimeStateProjector(initial=_runtime_state(), activation=_ACTIVATION, recovery_inputs=((), ())),
+        projector=projector or RuntimeStateProjector(initial=_runtime_state(), recovery_inputs=((), ())),
     )
 
 
@@ -166,7 +145,7 @@ def test_a_failing_audit_step_never_stops_the_command_read_and_logs_one_cause_on
 
     profile = oi_profile()
     factory = ObservationFactory(
-        runtime_profile_id=profile.profile_id,
+        account_slot=profile.account_slot,
         runtime_release=profile.runtime_release,
         execution_strategy="oi_nautilus_v1",
     )
@@ -183,7 +162,7 @@ def test_a_failing_audit_step_never_stops_the_command_read_and_logs_one_cause_on
     trading = _FakeTrading(rejected_event_ids=frozenset({poisoned.event_id}))
     repos: Any = SimpleNamespace(trading=trading, transaction=nullcontext)
     signals = ExecutionSignalClient(
-        runtime_profile_id=profile.profile_id,
+        account_slot=profile.account_slot,
         execution_strategy="oi_nautilus_v1",
     )
     bridge = _bridge(audit=audit, signals=signals)
@@ -211,7 +190,7 @@ def test_a_failing_audit_step_never_stops_the_command_read_and_logs_one_cause_on
 def test_a_transient_audit_failure_leaves_the_batch_queued_without_killing_the_bridge() -> None:
     profile = oi_profile()
     factory = ObservationFactory(
-        runtime_profile_id=profile.profile_id,
+        account_slot=profile.account_slot,
         runtime_release=profile.runtime_release,
         execution_strategy="oi_nautilus_v1",
     )
@@ -232,7 +211,7 @@ def test_a_transient_audit_failure_leaves_the_batch_queued_without_killing_the_b
     trading = _Unavailable(rejected_event_ids=frozenset())
     repos: Any = SimpleNamespace(trading=trading, transaction=nullcontext)
     signals = ExecutionSignalClient(
-        runtime_profile_id=profile.profile_id,
+        account_slot=profile.account_slot,
         execution_strategy="oi_nautilus_v1",
     )
     bridge = _bridge(audit=audit, signals=signals)
@@ -249,7 +228,7 @@ def test_a_transient_audit_failure_leaves_the_batch_queued_without_killing_the_b
 def test_a_lost_connection_still_aborts_the_cycle_so_the_session_is_replaced() -> None:
     profile = oi_profile()
     factory = ObservationFactory(
-        runtime_profile_id=profile.profile_id,
+        account_slot=profile.account_slot,
         runtime_release=profile.runtime_release,
         execution_strategy="oi_nautilus_v1",
     )
@@ -262,7 +241,7 @@ def test_a_lost_connection_still_aborts_the_cycle_so_the_session_is_replaced() -
     trading = _Disconnected(rejected_event_ids=frozenset())
     repos: Any = SimpleNamespace(trading=trading, transaction=nullcontext)
     signals = ExecutionSignalClient(
-        runtime_profile_id=profile.profile_id,
+        account_slot=profile.account_slot,
         execution_strategy="oi_nautilus_v1",
     )
     bridge = _bridge(audit=audit, signals=signals)
@@ -285,7 +264,7 @@ def test_a_stuck_input_step_disarms_entries_through_control_plane_readiness() ->
 
     profile = oi_profile()
     factory = ObservationFactory(
-        runtime_profile_id=profile.profile_id,
+        account_slot=profile.account_slot,
         runtime_release=profile.runtime_release,
         execution_strategy="oi_nautilus_v1",
     )
@@ -293,13 +272,12 @@ def test_a_stuck_input_step_disarms_entries_through_control_plane_readiness() ->
     trading = _FakeTrading(rejected_event_ids=frozenset())
     repos: Any = SimpleNamespace(trading=trading, transaction=nullcontext)
     signals = ExecutionSignalClient(
-        runtime_profile_id=profile.profile_id,
+        account_slot=profile.account_slot,
         execution_strategy="oi_nautilus_v1",
     )
     bridge = _bridge(audit=audit, signals=signals)
 
     readiness = RuntimeReadiness()
-    readiness.activate()
     readiness.reconciled(account_observed_at_ns=NOW_NS, reconciliation_observed_at_ns=NOW_NS)
 
     def snapshot() -> RuntimeReadinessSnapshot:
@@ -338,17 +316,17 @@ def test_a_stuck_input_step_disarms_entries_through_control_plane_readiness() ->
     assert (rearmed.execution_safe, rearmed.entries_armed, rearmed.entry_block_reason) == (True, True, None)
 
 
-def test_the_bridge_thread_owns_the_projection_write_the_activation_read_and_the_slot_heartbeat() -> None:
+def test_the_bridge_thread_owns_the_projection_write_the_recovery_read_and_the_slot_heartbeat() -> None:
     """#510 PR-5b. The event loop offers a row and reads memory; this cycle does every statement.
 
-    Production ran `singleton.check()`, `latest_execution_profile_activation` and the projection write
-    synchronously on the trading event loop every 500 ms, over a third connection with no statement
-    timeout, on the same thread as every Nautilus order callback (#510 E).
+    Production ran `singleton.check()`, the recovery read and the projection write synchronously on
+    the trading event loop every 500 ms, over a third connection with no statement timeout, on the
+    same thread as every Nautilus order callback (#510 E).
     """
 
     profile = oi_profile()
     factory = ObservationFactory(
-        runtime_profile_id=profile.profile_id,
+        account_slot=profile.account_slot,
         runtime_release=profile.runtime_release,
         execution_strategy="oi_nautilus_v1",
     )
@@ -357,21 +335,19 @@ def test_the_bridge_thread_owns_the_projection_write_the_activation_read_and_the
     trading.recover()
     repos: Any = SimpleNamespace(trading=trading, transaction=nullcontext)
     signals = ExecutionSignalClient(
-        runtime_profile_id=profile.profile_id,
+        account_slot=profile.account_slot,
         execution_strategy="oi_nautilus_v1",
     )
     alive = [True]
     singleton = _singleton(alive)
     starting = _runtime_state()
-    projector = RuntimeStateProjector(initial=starting, activation=_ACTIVATION, recovery_inputs=((), ()))
+    projector = RuntimeStateProjector(initial=starting, recovery_inputs=((), ()))
     bridge = _bridge(audit=audit, signals=signals, singleton=singleton, projector=projector)
 
     bridge._cycle(repos)
 
     assert trading.updates == []
-    assert trading.activation_reads == 1
     assert trading.recovery_reads == 1
-    assert bridge.activation_current is True
     assert bridge.recovery_inputs() == ((), ())
 
     running = replace(
@@ -399,7 +375,7 @@ def test_a_failing_projection_write_logs_once_and_leaves_the_inputs_and_the_gate
 
     profile = oi_profile()
     factory = ObservationFactory(
-        runtime_profile_id=profile.profile_id,
+        account_slot=profile.account_slot,
         runtime_release=profile.runtime_release,
         execution_strategy="oi_nautilus_v1",
     )
@@ -414,11 +390,11 @@ def test_a_failing_projection_write_logs_once_and_leaves_the_inputs_and_the_gate
     trading.recover()
     repos: Any = SimpleNamespace(trading=trading, transaction=nullcontext)
     signals = ExecutionSignalClient(
-        runtime_profile_id=profile.profile_id,
+        account_slot=profile.account_slot,
         execution_strategy="oi_nautilus_v1",
     )
     starting = _runtime_state()
-    projector = RuntimeStateProjector(initial=starting, activation=_ACTIVATION, recovery_inputs=((), ()))
+    projector = RuntimeStateProjector(initial=starting, recovery_inputs=((), ()))
     bridge = _bridge(audit=audit, signals=signals, projector=projector)
 
     records: list[str] = []

@@ -44,9 +44,10 @@ test.describe("desktop sidebar navigation", () => {
     await expect(primaryNavigation.getByRole("link")).toHaveCount(3);
     await expect(primaryNavigation.getByRole("link", { name: "Alpha 判定" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "学习复盘" })).toHaveCount(0);
-    // Alpha decision state and explicit execution mode ride beside the label without renaming it.
+    // When the lane last froze a Case, and the explicit execution mode, ride beside the label
+    // without renaming it. The clock is rendered in the viewer's timezone, so match its shape.
     await expect(primaryNavigation.getByRole("link", { name: "交易" })).toContainText(
-      "RUNNING · disabled",
+      /\d{2}-\d{2} \d{2}:\d{2} · disabled/,
     );
     await expect(primaryNavigation.getByRole("link", { name: "Macro" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "Ops" })).toHaveCount(0);

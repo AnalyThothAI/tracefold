@@ -2327,17 +2327,13 @@ export interface components {
             /** Window Hours */
             window_hours: number;
         };
-        /** TradingDecisionRuntimeData */
+        /**
+         * TradingDecisionRuntimeData
+         * @description When the Signal lane last froze a Case; `None` means it has not frozen one yet (#520).
+         */
         TradingDecisionRuntimeData: {
-            /** Heartbeat At Ms */
-            heartbeat_at_ms?: number | null;
-            /** Reason */
-            reason?: string | null;
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "DISABLED" | "STARTING" | "RUNNING" | "FAULTED";
+            /** Last Case At Ms */
+            last_case_at_ms?: number | null;
         };
         /** TradingExecutionAccountData */
         TradingExecutionAccountData: {
@@ -2375,6 +2371,8 @@ export interface components {
         };
         /** TradingExecutionObservationData */
         TradingExecutionObservationData: {
+            /** Account Slot */
+            account_slot: string;
             /** Command Id */
             command_id?: string | null;
             /** Event Id */
@@ -2391,8 +2389,6 @@ export interface components {
             occurred_at_ns: number;
             /** Payload Digest */
             payload_digest: string;
-            /** Runtime Profile Id */
-            runtime_profile_id: string;
             /** Runtime Release */
             runtime_release: string;
             /** Seq */
@@ -2489,11 +2485,6 @@ export interface components {
             account_flat_proven: boolean;
             /** Account Slot */
             account_slot: string;
-            /**
-             * Activation Ready
-             * @default false
-             */
-            activation_ready: boolean;
             /** Alive */
             alive: boolean;
             /**
@@ -2510,11 +2501,6 @@ export interface components {
             control_plane_ready: boolean;
             /** Credential Fingerprint */
             credential_fingerprint?: string | null;
-            /**
-             * Credential Ready
-             * @default false
-             */
-            credential_ready: boolean;
             current_account?: components["schemas"]["TradingExecutionAccountData"] | null;
             /**
              * Day Start Ready
@@ -2563,8 +2549,6 @@ export interface components {
              * @default 0
              */
             positions_count: number;
-            /** Profile Id */
-            profile_id: string;
             /**
              * Protection Status
              * @default unknown
@@ -2767,6 +2751,8 @@ export interface components {
         };
         /** TradingOperatorIntentData */
         TradingOperatorIntentData: {
+            /** Account Slot */
+            account_slot: string;
             /**
              * Action
              * @enum {string}
@@ -2798,8 +2784,6 @@ export interface components {
             scope: string;
             /** Seq */
             seq: number;
-            /** Target Profile Id */
-            target_profile_id: string;
         };
         /** TradingOperatorIntentsData */
         TradingOperatorIntentsData: {
@@ -3205,7 +3189,7 @@ export interface operations {
     get_operator_intents_api_trading_execution_commands_get: {
         parameters: {
             query?: {
-                profile?: string;
+                slot?: string;
                 action?: string;
                 cursor?: string;
             };
@@ -3269,7 +3253,7 @@ export interface operations {
     get_execution_observations_api_trading_execution_observations_get: {
         parameters: {
             query?: {
-                profile?: string;
+                slot?: string;
                 kind?: string;
                 cursor?: string;
             };

@@ -57,7 +57,7 @@ restore, never invented reverse DDL.
 ## Operator archive before a destructive revision
 
 A revision that deletes durable data refuses to run rather than deleting it for
-the operator. Two revisions do this today, and both expect the same archive
+the operator. Three revisions do this today, and all expect the same archive
 step first: a `pg_dump` of the affected rows into `~/.tracefold/backups/`, taken
 after the writers are stopped by the canonical migration gate, so the dump and
 the database cannot diverge between the two.
@@ -97,6 +97,39 @@ same step for the 22 execution tables it dropped, in
 A Case that is still `PENDING` or `RUNNING` is not affected: those states
 survive, and the migration gate has already stopped the lane that would settle
 them.
+
+`20260903_0356` makes `account_slot` the execution identity. It renames
+`trading_execution_observations.runtime_profile_id` and
+`trading_operator_intents.target_profile_id` to `account_slot`, backfills their
+values and their `payload` keys from the activation ledger, folds
+`trading_execution_runtime_control_state` onto one row per slot, drops
+`trading_execution_runtime_state.runtime_profile_id`, `credential_ready` and
+`activation_ready`, and drops `trading_execution_profile_activations` and
+`trading_decision_runtime`. It refuses with
+`trading_folded_disposition_collisions` when two profiles on the same slot each
+hold a disposition Observation for the same Signal or Command, because after the
+fold those two rows are one key:
+
+```bash
+pg_dump --data-only --table=trading_execution_observations \
+  --table=trading_execution_profile_activations --table=trading_decision_runtime \
+  > ~/.tracefold/backups/pre-0356-trading-execution-identity-$(date +%Y%m%d).sql
+
+# Keep the newest disposition of each colliding pair and delete the rest; the
+# append-only trigger has to be lifted for that one statement, with every writer
+# already stopped by the canonical migration gate.
+```
+
+It also refuses with `trading_execution_identity_unmapped` when an Observation
+or Command names a profile that has no activation row, because that value has no
+account slot to become.
+
+**Two operator steps go with this revision.** Delete
+`trading.execution.profile_id` from `~/.tracefold/config.yaml` — strict settings
+validation refuses the retired key — and apply it with the Binance account flat:
+deterministic client order ids move from `tracefold:{profile_id}:{mode}` to
+`tracefold:{account_slot}:{mode}`, so an order opened under the old namespace can
+no longer be reclaimed by recovery.
 
 ## Database development standard
 

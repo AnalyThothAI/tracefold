@@ -41,15 +41,15 @@ class WorkersTelegramControl:
                 received_at_ns=time.time_ns(),
             )
             if parsed.intent is None:
-                active = await self._db.read(
+                state = await self._db.read(
                     "trading_operator_status",
-                    lambda repos: repos.trading.execution_profile_activation(parsed.target_profile_id),
+                    lambda repos: repos.trading.execution_runtime_state(parsed.account_slot),
                     timeout_seconds=_DB_TIMEOUT_SECONDS,
                 )
                 text = (
-                    "状态已读取：执行 profile 已激活。"
-                    if active is not None
-                    else "状态已读取：当前无活动执行 profile。"
+                    "状态已读取：执行 Runtime 存活。"
+                    if state is not None and state.alive
+                    else "状态已读取：当前无存活的执行 Runtime。"
                 )
             else:
                 await persist_operator_intent(self._db, parsed.intent)

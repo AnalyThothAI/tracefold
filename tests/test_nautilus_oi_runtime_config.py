@@ -97,7 +97,9 @@ def test_paper_and_live_have_disjoint_profile_cache_and_client_namespaces() -> N
     paper_node = build_oi_node_config(paper, BinanceRuntimeCredentials("paper-key", "paper-secret"))
     live_node = build_oi_node_config(live, BinanceRuntimeCredentials("live-key", "live-secret"))
 
-    assert paper.profile_id != live.profile_id
+    # One account slot, two modes: the mode is what keeps paper and live from claiming each other's
+    # orders, because it is the second half of the namespace every client order id is derived from.
+    assert paper.account_slot == live.account_slot
     assert paper.cache_namespace != live.cache_namespace
     assert paper.client_order_namespace != live.client_order_namespace
     assert paper_node.trader_id != live_node.trader_id
@@ -106,13 +108,13 @@ def test_paper_and_live_have_disjoint_profile_cache_and_client_namespaces() -> N
 
 def test_canonical_root_builds_one_real_binance_execution_client() -> None:
     profile = replace(oi_profile("paper"), account_id=AccountId("BINANCE-USDT_FUTURES-master"))
-    signals = ExecutionSignalClient(runtime_profile_id=profile.profile_id, execution_strategy="oi_nautilus_v1")
+    signals = ExecutionSignalClient(account_slot=profile.account_slot, execution_strategy="oi_nautilus_v1")
     strategy = OiNautilusStrategy(
         profile=profile,
         signals=signals,
         audit=AuditSink(
             factory=ObservationFactory(
-                runtime_profile_id=profile.profile_id,
+                account_slot=profile.account_slot,
                 runtime_release=profile.runtime_release,
                 execution_strategy="oi_nautilus_v1",
             )

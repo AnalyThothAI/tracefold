@@ -16,7 +16,7 @@ class DemoReceiptError(ValueError):
 @dataclass(frozen=True, slots=True)
 class DemoReceiptObservation:
     event_id: str
-    runtime_profile_id: str
+    account_slot: str
     command_id: str | None
     normalized_kind: str
     observed_at_ns: int
@@ -40,7 +40,7 @@ class DemoReceiptObservation:
 @dataclass(frozen=True, slots=True)
 class BinanceDemoReceipt:
     mode: Literal["paper"]
-    runtime_profile_id: str
+    account_slot: str
     runtime_release: str
     runtime_id: str
     runtime_revision: str
@@ -108,7 +108,7 @@ def verify_binance_demo_receipt(
             observations,
             kind="reconciliation",
             predicate=lambda row: (
-                row.runtime_profile_id == state.runtime_profile_id
+                row.account_slot == state.account_slot
                 and row.source == "binance_private_api"
                 and row.observed_at_ns >= explicit_protection.observed_at_ns
                 and len(row.native_identity_references) >= 2
@@ -141,7 +141,7 @@ def verify_binance_demo_receipt(
         (
             row
             for row in observations
-            if row.runtime_profile_id == state.runtime_profile_id
+            if row.account_slot == state.account_slot
             and row.normalized_kind == "readiness"
             and row.lifecycle == "started"
         ),
@@ -151,7 +151,7 @@ def verify_binance_demo_receipt(
         observations,
         kind="control_disposition",
         predicate=lambda row: (
-            row.runtime_profile_id == state.runtime_profile_id
+            row.account_slot == state.account_slot
             and row.action == "resume_entries"
             and row.disposition == "accepted"
             and row.observed_at_ns <= accepted.observed_at_ns
@@ -183,7 +183,7 @@ def verify_binance_demo_receipt(
     )
     return BinanceDemoReceipt(
         mode="paper",
-        runtime_profile_id=state.runtime_profile_id,
+        account_slot=state.account_slot,
         runtime_release=state.runtime_release,
         runtime_id=str(state.runtime_id),
         runtime_revision=state.runtime_revision,

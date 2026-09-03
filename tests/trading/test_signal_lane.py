@@ -63,15 +63,10 @@ class FakeTrading:
         self.claimable: list[str] = []
         self.signals: list[PreparedTradeSignal] = []
         self.admission: list[dict[str, Any]] = []
-        self.runtime_states: list[str] = []
 
     def signal_lane_snapshot(self, *, since_ms: int) -> SignalLaneSnapshot:
         del since_ms
         return self.snapshot
-
-    def set_decision_runtime(self, *, state: str, **_: Any) -> bool:
-        self.runtime_states.append(state)
-        return True
 
     def create_case(
         self,
@@ -422,10 +417,9 @@ def test_invalid_market_key_is_durably_rejected_without_faulting_workers() -> No
     assert trading.cases == {}
     assert trading.admission[0]["reason"] == "source_contract_invalid"
     assert trading.admission[0]["evidence"] == {"rule": "market_key_invalid"}
-    assert trading.runtime_states == ["STARTING", "RUNNING"]
 
 
-def test_repository_fault_propagates_and_faults_decision_runtime() -> None:
+def test_repository_fault_propagates_out_of_the_turn() -> None:
     class Broken(FakeTrading):
         def commit_signal(self, **_: Any) -> bool:
             raise RuntimeError("database unavailable")
@@ -436,4 +430,3 @@ def test_repository_fault_propagates_and_faults_decision_runtime() -> None:
         asyncio.run(_lane(trading).advance())
 
     assert trading.signals == []
-    assert trading.runtime_states == ["STARTING", "FAULTED"]

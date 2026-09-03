@@ -35,11 +35,12 @@ QUOTE_WARMUP_NS = 2_000_000_000
 def deterministic_client_order_id(
     *,
     namespace: str,
-    profile_id: str,
     entry_id: str,
     leg: str,
 ) -> ClientOrderId:
-    digest = hashlib.sha256(f"{namespace}:{profile_id}:{entry_id}:{leg}".encode()).hexdigest()
+    """One venue order id per (account slot, mode, intent, leg); the namespace carries the first two."""
+
+    digest = hashlib.sha256(f"{namespace}:{entry_id}:{leg}".encode()).hexdigest()
     return ClientOrderId(f"tf{digest[:30]}")
 
 
@@ -57,7 +58,6 @@ class RuntimeReadinessSnapshot:
     entries_armed: bool
     entry_block_reason: str | None
     singleton_ready: bool
-    activation_ready: bool
     startup_reconciled: bool
     portfolio_ready: bool
     control_plane_ready: bool
@@ -140,16 +140,11 @@ class RuntimeReadiness:
     """Thread-safe mechanical gates; it contains no capital or order lifecycle."""
 
     def __init__(self) -> None:
-        self._activation_ready = False
         self._startup_reconciled = False
         self._unexpected_exposure = False
         self._account_observed_at_ns = 0
         self._reconciliation_observed_at_ns = 0
         self._lock = Lock()
-
-    def activate(self) -> None:
-        with self._lock:
-            self._activation_ready = True
 
     def reconciled(self, *, account_observed_at_ns: int, reconciliation_observed_at_ns: int) -> None:
         if account_observed_at_ns <= 0 or reconciliation_observed_at_ns <= 0:
@@ -180,13 +175,11 @@ class RuntimeReadiness:
         emergency_halted: bool,
     ) -> RuntimeReadinessSnapshot:
         with self._lock:
-            activation = self._activation_ready
             startup = self._startup_reconciled
             unexpected = self._unexpected_exposure
             reconciled_at = self._reconciliation_observed_at_ns
         safe_gates = (
             (singleton_ready, "singleton_unavailable"),
-            (activation, "activation_missing"),
             (startup, "startup_reconciliation_unproven"),
             (portfolio_ready, "portfolio_unavailable"),
             (not unexpected, "unexpected_exposure"),
@@ -214,7 +207,6 @@ class RuntimeReadiness:
             entries_armed=reason is None,
             entry_block_reason=reason,
             singleton_ready=singleton_ready,
-            activation_ready=activation,
             startup_reconciled=startup,
             portfolio_ready=portfolio_ready,
             control_plane_ready=control_plane_ready,
@@ -248,7 +240,7 @@ class RecoveredExecutionSeed:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeReconciliationSnapshot:
-    runtime_profile_id: str
+    account_slot: str
     account_observed_at_ns: int
     reconciliation_observed_at_ns: int
     executions: tuple[RecoveredExecutionSeed, ...] = ()
@@ -380,7 +372,6 @@ def entry_order_valid(
 ) -> bool:
     expected_id = deterministic_client_order_id(
         namespace=profile.client_order_namespace,
-        profile_id=profile.profile_id,
         entry_id=request.entry_id,
         leg="entry",
     )
@@ -409,7 +400,6 @@ def exit_order_valid(
 ) -> bool:
     expected_id = deterministic_client_order_id(
         namespace=profile.client_order_namespace,
-        profile_id=profile.profile_id,
         entry_id=state.entry.entry_id,
         leg=exit_leg(state.exit_generation),
     )

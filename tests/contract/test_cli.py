@@ -383,14 +383,13 @@ class CliTests(unittest.TestCase):
             trading["execution"],
             {
                 "mode": "disabled",
-                "profile_id": "binance_usdm_primary",
                 "account_slot": "binance_usdm_primary",
                 "credentials": {
                     "api_key_file": str(home / ".tracefold" / "binance_usdm_api_key"),
                     "api_secret_file": str(home / ".tracefold" / "binance_usdm_api_secret"),
                 },
                 # #510 E: the Runtime risk gap policy is operator-owned and not a secret. Every value
-                # here is inside the profile `config_sha256` the activation fence checks.
+                # here is reported so an operator can read the limits the Runtime runs under.
                 "risk": {
                     "risk_fraction_per_trade": 0.01,
                     "max_risk_per_trade_usd": 10.0,
@@ -490,7 +489,6 @@ class CliTests(unittest.TestCase):
                 },
                 "execution": {
                     "mode": "disabled",
-                    "profile_id": "binance_usdm_primary",
                     "account_slot": "binance_usdm_primary",
                     "credentials": {
                         "api_key_file": "binance_usdm_api_key",
@@ -703,7 +701,6 @@ def test_init_migrates_the_pre_433c_trading_config_without_losing_operator_value
         "candidates": {"max_age_seconds": 240, "min_oi_value_usd": 30_000_000},
         "execution": {
             "mode": "disabled",
-            "profile_id": "binance_usdm_primary",
             "account_slot": "binance_usdm_primary",
             "credentials": {
                 "api_key_file": "operator-binance-key",

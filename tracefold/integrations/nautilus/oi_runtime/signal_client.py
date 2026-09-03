@@ -24,14 +24,14 @@ class ExecutionSignalClient:
     def __init__(
         self,
         *,
-        runtime_profile_id: str,
+        account_slot: str,
         execution_strategy: str,
         max_count: int = _DEFAULT_MAX_COUNT,
         max_bytes: int = _DEFAULT_MAX_BYTES,
     ) -> None:
         if max_count <= 0 or max_bytes <= 0:
             raise ValueError("oi_runtime_signal_bounds_invalid")
-        self.runtime_profile_id = runtime_profile_id
+        self.account_slot = account_slot
         self.execution_strategy = execution_strategy
         self._max_count = max_count
         self._max_bytes = max_bytes
@@ -82,7 +82,7 @@ class ExecutionSignalClient:
         if free_count <= 0:
             return 0
         values = reader(
-            self.runtime_profile_id,
+            self.account_slot,
             self.execution_strategy,
             free_count,
         )
@@ -109,7 +109,7 @@ class ExecutionSignalClient:
             free_count = self._max_count - len(self._values) - len(self._commands)
         if free_count <= 0:
             return 0
-        values = reader(self.runtime_profile_id, self.execution_strategy, free_count)
+        values = reader(self.account_slot, self.execution_strategy, free_count)
         scan_complete = len(values) < free_count
         admitted = 0
         for value in values:

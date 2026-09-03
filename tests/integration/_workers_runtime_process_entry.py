@@ -57,7 +57,6 @@ def _arguments() -> argparse.Namespace:
             "provider_publication",
             "trading_enabled",
             "trading_execution_requested",
-            "trading_missing_runtime",
             "trading_wiring_fault",
         ),
     )
@@ -377,7 +376,6 @@ async def _main() -> None:
     elif arguments.mode in {
         "trading_enabled",
         "trading_execution_requested",
-        "trading_missing_runtime",
         "trading_wiring_fault",
     }:
         if arguments.mode == "trading_wiring_fault":
@@ -391,7 +389,6 @@ async def _main() -> None:
     trading_process = arguments.mode in {
         "trading_enabled",
         "trading_execution_requested",
-        "trading_missing_runtime",
         "trading_wiring_fault",
     }
     settings = Settings(
@@ -404,15 +401,6 @@ async def _main() -> None:
     )
     if trading_process:
         settings.set_config_dir(Path(os.environ["TRACEFOLD_TEST_CONFIG_DIR"]))
-    if arguments.mode == "trading_missing_runtime":
-        from psycopg import connect
-
-        connection = connect(arguments.dsn)
-        try:
-            connection.execute("DELETE FROM trading_decision_runtime WHERE id = 1")
-            connection.commit()
-        finally:
-            connection.close()
     await workers.run_workers(settings)
 
 

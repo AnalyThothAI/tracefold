@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..admission import AdmissionRow
-from ..contracts import CURRENT_TERMINAL_STATES, CaseState, DecisionRuntimeV1, TradingCaseManifest
+from ..contracts import CURRENT_TERMINAL_STATES, CaseState, TradingCaseManifest
 from .execution_stream import ExecutionStreamStorage, PreparedTradeSignal, _dumps
 from .gate import CandidateGateStorage
 
@@ -267,38 +267,18 @@ class LaneStorage(CandidateGateStorage, ExecutionStreamStorage):
             (case_id, "a" * 64, "b" * 64),
         )
 
-    def decision_runtime(self) -> DecisionRuntimeV1 | None:
-        row = self.conn.execute(
-            "SELECT state, heartbeat_at_ms, reason, updated_at_ms FROM trading_decision_runtime WHERE id = 1"
-        ).fetchone()
-        return DecisionRuntimeV1(**dict(row)) if row is not None else None
+    def latest_case_created_at_ms(self) -> int | None:
+        """When the Signal lane last froze a Case, as the Decision Plane's only durable liveness.
 
-    def set_decision_runtime(
-        self,
-        *,
-        state: str,
-        heartbeat_at_ms: int | None,
-        reason: str | None,
-        now_ms: int,
-    ) -> bool:
-        row = self.conn.execute(
-            """
-            UPDATE trading_decision_runtime
-               SET state = %(state)s,
-                   heartbeat_at_ms = %(heartbeat)s,
-                   reason = %(reason)s,
-                   updated_at_ms = %(now)s
-             WHERE id = 1
-         RETURNING id
-            """,
-            {
-                "state": state,
-                "heartbeat": None if heartbeat_at_ms is None else int(heartbeat_at_ms),
-                "reason": reason,
-                "now": int(now_ms),
-            },
-        ).fetchone()
-        return row is not None
+        `trading_decision_runtime` was a one-row heartbeat the lane wrote every turn and every reader
+        treated as a state machine; a missing row stopped the lane outright (#520). Serve, the CLI and
+        Workers are separate processes, so the only honest cross-process answer is a durable fact the
+        lane already writes -- the newest Case.
+        """
+
+        row = self.conn.execute("SELECT max(created_at_ms) AS latest FROM trading_cases").fetchone()
+        latest = None if row is None else row["latest"]
+        return None if latest is None else int(latest)
 
 
 __all__ = ["LaneStorage", "SignalLaneSnapshot"]

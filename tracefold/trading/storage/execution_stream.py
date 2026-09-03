@@ -35,20 +35,21 @@ def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 
-# The two reads the Runtime bridge runs every cycle: everything this profile was activated for that has
-# no disposition observation yet. Anti-joined rather than flagged, because a mutable "consumed" column
-# on an append-only ledger would be a second truth about the same fact.
+# The two reads the Runtime bridge runs every cycle: every Signal and Command for this account slot
+# that is still inside its own TTL and has no disposition observation yet. Anti-joined rather than
+# flagged, because a mutable "consumed" column on an append-only ledger would be a second truth about
+# the same fact. Expiry is the bound: until #520 these were fenced by an activation waterline instead,
+# which meant a Runtime could only be told about facts newer than the row that named it, and an
+# expired intent stayed pending until someone wrote a disposition for it.
 UNRESOLVED_TRADE_SIGNALS_SQL: Final = """
     SELECT signal.seq, signal.payload
-      FROM trading_execution_profile_activations activation
-      JOIN trading_trade_signals signal
-        ON signal.seq > activation.activated_after_signal_seq
+      FROM trading_trade_signals signal
       LEFT JOIN trading_execution_observations disposition
-        ON disposition.runtime_profile_id = activation.runtime_profile_id
-       AND disposition.execution_strategy = %s
+        ON disposition.execution_strategy = %s
+       AND disposition.account_slot = %s
        AND disposition.signal_id = signal.signal_id
        AND disposition.normalized_kind = 'signal_disposition'
-     WHERE activation.runtime_profile_id = %s
+     WHERE signal.expires_at_ns > %s
        AND disposition.event_id IS NULL
      ORDER BY signal.seq
      LIMIT %s
@@ -56,16 +57,14 @@ UNRESOLVED_TRADE_SIGNALS_SQL: Final = """
 
 UNRESOLVED_OPERATOR_INTENTS_SQL: Final = """
     SELECT command.seq, command.payload
-      FROM trading_execution_profile_activations activation
-      JOIN trading_operator_intents command
-        ON command.target_profile_id = activation.runtime_profile_id
-       AND command.seq > activation.activated_after_command_seq
+      FROM trading_operator_intents command
       LEFT JOIN trading_execution_observations disposition
-        ON disposition.runtime_profile_id = activation.runtime_profile_id
-       AND disposition.execution_strategy = %s
+        ON disposition.execution_strategy = %s
+       AND disposition.account_slot = command.account_slot
        AND disposition.command_id = command.command_id
        AND disposition.normalized_kind = 'control_disposition'
-     WHERE activation.runtime_profile_id = %s
+     WHERE command.account_slot = %s
+       AND command.expires_at_ns > %s
        AND disposition.event_id IS NULL
      ORDER BY command.seq
      LIMIT %s
@@ -74,12 +73,13 @@ UNRESOLVED_OPERATOR_INTENTS_SQL: Final = """
 
 def execution_stream_query_specs(
     *,
-    runtime_profile_id: str = "query-audit-disabled",
+    account_slot: str = "query-audit-disabled",
     execution_strategy: str = EXECUTION_STRATEGY_ID,
+    now_ns: int = 1,
 ) -> tuple[ReadQuerySpec, ...]:
     """The two bridge reads, bound, for the query-plan audit."""
 
-    params = (execution_strategy, runtime_profile_id, 100)
+    params = (execution_strategy, account_slot, now_ns, 100)
     return (
         ReadQuerySpec(
             name="trading_unresolved_trade_signals",
@@ -129,41 +129,6 @@ class PreparedExecutionObservationBatch:
 
     payload_json: str
     count: int
-
-
-@dataclass(frozen=True, slots=True)
-class ExecutionProfileActivation:
-    """One immutable Runtime activation waterline; not a fourth process contract."""
-
-    runtime_profile_id: str
-    account_slot: str
-    activated_after_signal_seq: int
-    activated_after_command_seq: int
-    mode: Literal["disabled", "paper", "live"]
-    runtime_release: str
-    config_sha256: str
-    created_at_ns: int
-
-    def __post_init__(self) -> None:
-        if _IDENTITY.fullmatch(self.runtime_profile_id) is None:
-            raise ValueError("execution_profile_identity_invalid")
-        if _IDENTITY.fullmatch(self.account_slot) is None:
-            raise ValueError("execution_account_slot_invalid")
-        if self.activated_after_signal_seq < 0 or self.activated_after_command_seq < 0:
-            raise ValueError("execution_profile_fence_invalid")
-        if (
-            not self.runtime_release
-            or len(self.runtime_release) > 128
-            or not _postgres_text_valid(self.runtime_release)
-        ):
-            raise ValueError("execution_profile_release_invalid")
-        if _SHA256.fullmatch(self.config_sha256) is None:
-            raise ValueError("execution_profile_config_invalid")
-        if self.created_at_ns <= 0:
-            raise ValueError("execution_profile_clock_invalid")
-
-    def as_kwargs(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,7 +232,6 @@ class ExecutionRuntimeState:
     """The sole durable current projection for one execution account slot."""
 
     account_slot: str
-    runtime_profile_id: str
     mode: Literal["paper", "live"]
     runtime_release: str
     config_sha256: str
@@ -281,8 +245,6 @@ class ExecutionRuntimeState:
     entries_armed: bool
     control_plane_ready: bool
     singleton_ready: bool
-    credential_ready: bool
-    activation_ready: bool
     startup_reconciled: bool
     portfolio_ready: bool
     audit_ready: bool
@@ -305,7 +267,7 @@ class ExecutionRuntimeState:
     routes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if _IDENTITY.fullmatch(self.account_slot) is None or _IDENTITY.fullmatch(self.runtime_profile_id) is None:
+        if _IDENTITY.fullmatch(self.account_slot) is None:
             raise ValueError("execution_runtime_identity_invalid")
         if self.mode not in {"paper", "live"}:
             raise ValueError("execution_runtime_mode_invalid")
@@ -326,8 +288,6 @@ class ExecutionRuntimeState:
         safe_gates = (
             self.alive,
             self.singleton_ready,
-            self.credential_ready,
-            self.activation_ready,
             self.startup_reconciled,
             self.portfolio_ready,
             not self.unexpected_exposure,
@@ -357,9 +317,9 @@ class ExecutionRuntimeState:
 
 @dataclass(frozen=True, slots=True)
 class ExecutionRuntimeControlState:
-    """One profile-keyed current control projection; history stays append-only."""
+    """One slot-keyed current control projection; history stays append-only."""
 
-    runtime_profile_id: str
+    account_slot: str
     entries_paused: bool
     emergency_halted: bool
     last_command_seq: int
@@ -367,8 +327,8 @@ class ExecutionRuntimeControlState:
     updated_at_ns: int
 
     def __post_init__(self) -> None:
-        if _IDENTITY.fullmatch(self.runtime_profile_id) is None:
-            raise ValueError("execution_profile_identity_invalid")
+        if _IDENTITY.fullmatch(self.account_slot) is None:
+            raise ValueError("execution_account_slot_invalid")
         if self.last_command_seq < 0 or self.updated_at_ns <= 0:
             raise ValueError("execution_runtime_control_state_invalid")
         if self.last_command_id is not None and _SHA256.fullmatch(self.last_command_id) is None:
@@ -411,7 +371,7 @@ def prepare_trade_signal(
 def prepare_operator_intent(
     *,
     command_id: str,
-    target_profile_id: str,
+    account_slot: str,
     action: str,
     scope: str,
     reason: str,
@@ -427,7 +387,7 @@ def prepare_operator_intent(
         {
             "seq": 1,
             "command_id": command_id,
-            "target_profile_id": target_profile_id,
+            "account_slot": account_slot,
             "action": action,
             "scope": scope,
             "reason": reason,
@@ -532,7 +492,7 @@ class ExecutionStreamStorage:
         inserted = self.conn.execute(
             """
             INSERT INTO trading_operator_intents (
-              command_id, target_profile_id, action, scope, reason, operator_identity,
+              command_id, account_slot, action, scope, reason, operator_identity,
               authentication_identity, requested_at_ns, expires_at_ns,
               confirmation_identity, market_key, direction, payload
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
@@ -541,7 +501,7 @@ class ExecutionStreamStorage:
             """,
             (
                 candidate.command_id,
-                candidate.target_profile_id,
+                candidate.account_slot,
                 candidate.action,
                 candidate.scope,
                 candidate.reason,
@@ -595,11 +555,11 @@ class ExecutionStreamStorage:
                     FROM offered
                 ), inserted AS (
                   INSERT INTO trading_execution_observations (
-                    event_id, runtime_profile_id, runtime_release, execution_strategy,
+                    event_id, account_slot, runtime_release, execution_strategy,
                     signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                     native_identity_references, summary, payload_digest, payload
                   )
-                  SELECT payload ->> 'event_id', payload ->> 'runtime_profile_id',
+                  SELECT payload ->> 'event_id', payload ->> 'account_slot',
                          payload ->> 'runtime_release', payload ->> 'execution_strategy',
                          payload ->> 'signal_id', payload ->> 'command_id',
                          payload ->> 'normalized_kind', (payload ->> 'occurred_at_ns')::bigint,
@@ -659,8 +619,8 @@ class ExecutionStreamStorage:
               SELECT value AS payload
                 FROM jsonb_array_elements(%s::jsonb)
             ), trading_eligible AS (
-              SELECT DISTINCT ON (command.target_profile_id, command.seq)
-                     command.target_profile_id AS runtime_profile_id,
+              SELECT DISTINCT ON (command.account_slot, command.seq)
+                     command.account_slot,
                      command.seq AS command_seq,
                      command.command_id,
                      command.action,
@@ -668,7 +628,7 @@ class ExecutionStreamStorage:
                 FROM offered
                 JOIN trading_operator_intents command
                   ON command.command_id = offered.payload ->> 'command_id'
-                 AND command.target_profile_id = offered.payload ->> 'runtime_profile_id'
+                 AND command.account_slot = offered.payload ->> 'account_slot'
                WHERE command.action IN ('pause_entries', 'resume_entries', 'emergency_halt', 'flatten')
                  AND (
                    (
@@ -680,10 +640,10 @@ class ExecutionStreamStorage:
                      AND offered.payload -> 'summary' ->> 'control_stage' = 'runtime_accepted'
                    )
                  )
-               ORDER BY command.target_profile_id, command.seq,
+               ORDER BY command.account_slot, command.seq,
                         (offered.payload ->> 'observed_at_ns')::bigint DESC
             )
-            SELECT runtime_profile_id, command_seq, command_id, action, observed_at_ns
+            SELECT account_slot, command_seq, command_id, action, observed_at_ns
               FROM trading_eligible
              ORDER BY command_seq, command_id
             """,
@@ -702,7 +662,7 @@ class ExecutionStreamStorage:
                        last_command_seq = %s,
                        last_command_id = %s,
                        updated_at_ns = GREATEST(updated_at_ns, %s)
-                 WHERE runtime_profile_id = %s
+                 WHERE account_slot = %s
                    AND last_command_seq < %s
                 """,
                 (
@@ -711,113 +671,47 @@ class ExecutionStreamStorage:
                     control["command_seq"],
                     control["command_id"],
                     control["observed_at_ns"],
-                    control["runtime_profile_id"],
+                    control["account_slot"],
                     control["command_seq"],
                 ),
             )
 
-    def append_execution_profile_activation(
-        self,
-        activation: ExecutionProfileActivation,
-    ) -> ExecutionProfileActivation:
-        require_transaction(self.conn, operation="append_execution_profile_activation")
-        inserted = self.conn.execute(
-            """
-            INSERT INTO trading_execution_profile_activations (
-              runtime_profile_id, account_slot, activated_after_signal_seq,
-              activated_after_command_seq, mode, runtime_release, config_sha256, created_at_ns
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (runtime_profile_id) DO NOTHING
-            RETURNING runtime_profile_id
-            """,
-            (
-                activation.runtime_profile_id,
-                activation.account_slot,
-                activation.activated_after_signal_seq,
-                activation.activated_after_command_seq,
-                activation.mode,
-                activation.runtime_release,
-                activation.config_sha256,
-                activation.created_at_ns,
-            ),
-        ).fetchone()
-        if inserted is not None:
-            self.conn.execute(
-                """
-                INSERT INTO trading_execution_runtime_control_state (
-                  runtime_profile_id, entries_paused, emergency_halted,
-                  last_command_seq, last_command_id, updated_at_ns
-                ) VALUES (%s, TRUE, FALSE, %s, NULL, %s)
-                """,
-                (
-                    activation.runtime_profile_id,
-                    activation.activated_after_command_seq,
-                    activation.created_at_ns,
-                ),
-            )
-            self._notify("activation")
-            return activation
-        row = self.conn.execute(
-            """
-            SELECT account_slot = %s
-                   AND activated_after_signal_seq = %s
-                   AND activated_after_command_seq = %s
-                   AND mode = %s
-                   AND runtime_release = %s
-                   AND config_sha256 = %s
-                   AND created_at_ns = %s AS exact
-              FROM trading_execution_profile_activations
-             WHERE runtime_profile_id = %s
-            """,
-            (
-                activation.account_slot,
-                activation.activated_after_signal_seq,
-                activation.activated_after_command_seq,
-                activation.mode,
-                activation.runtime_release,
-                activation.config_sha256,
-                activation.created_at_ns,
-                activation.runtime_profile_id,
-            ),
-        ).fetchone()
-        if row is None or not row["exact"]:
-            raise RuntimeError("execution_stream_identity_conflict")
-        return activation
-
     def unresolved_trade_signals(
         self,
         *,
-        runtime_profile_id: str,
+        account_slot: str,
         execution_strategy: str,
+        now_ns: int,
         limit: int,
     ) -> tuple[StoredExecutionPayload, ...]:
         self._validate_read_limit(limit)
+        self._validate_slot_clock(account_slot, now_ns)
         rows = self.conn.execute(
             UNRESOLVED_TRADE_SIGNALS_SQL,
-            (execution_strategy, runtime_profile_id, limit),
+            (execution_strategy, account_slot, now_ns, limit),
         ).fetchall()
-        self._require_activation(runtime_profile_id)
         return tuple((int(row["seq"]), dict(row["payload"])) for row in rows)
 
     def unresolved_operator_intents(
         self,
         *,
-        runtime_profile_id: str,
+        account_slot: str,
         execution_strategy: str,
+        now_ns: int,
         limit: int,
     ) -> tuple[StoredExecutionPayload, ...]:
         self._validate_read_limit(limit)
+        self._validate_slot_clock(account_slot, now_ns)
         rows = self.conn.execute(
             UNRESOLVED_OPERATOR_INTENTS_SQL,
-            (execution_strategy, runtime_profile_id, limit),
+            (execution_strategy, account_slot, now_ns, limit),
         ).fetchall()
-        self._require_activation(runtime_profile_id)
         return tuple((int(row["seq"]), dict(row["payload"])) for row in rows)
 
     def execution_recovery_signals(
         self,
         *,
-        runtime_profile_id: str,
+        account_slot: str,
         since_ns: int,
         limit: int,
     ) -> tuple[StoredExecutionPayload, ...]:
@@ -831,18 +725,15 @@ class ExecutionStreamStorage:
         """
 
         self._validate_read_limit(limit)
-        self._validate_recovery_window(runtime_profile_id, since_ns)
+        self._validate_recovery_window(account_slot, since_ns)
         rows = self.conn.execute(
             """
             SELECT signal.seq, signal.payload
-              FROM trading_execution_profile_activations activation
-              JOIN trading_trade_signals signal
-                ON signal.seq > activation.activated_after_signal_seq
-             WHERE activation.runtime_profile_id = %s
-               AND EXISTS (
+              FROM trading_trade_signals signal
+             WHERE EXISTS (
                  SELECT 1
                    FROM trading_execution_observations entry_fact
-                  WHERE entry_fact.runtime_profile_id = activation.runtime_profile_id
+                  WHERE entry_fact.account_slot = %s
                     AND entry_fact.signal_id = signal.signal_id
                     AND entry_fact.normalized_kind = 'order'
                     AND entry_fact.summary ->> 'leg' = 'entry'
@@ -851,14 +742,14 @@ class ExecutionStreamStorage:
                AND NOT EXISTS (
                  SELECT 1
                    FROM trading_execution_observations closed_position
-                  WHERE closed_position.runtime_profile_id = activation.runtime_profile_id
+                  WHERE closed_position.account_slot = %s
                     AND closed_position.signal_id = signal.signal_id
                     AND closed_position.normalized_kind = 'position'
                     AND closed_position.summary ->> 'status' = 'closed'
                     AND closed_position.seq = (
                       SELECT max(latest.seq)
                         FROM trading_execution_observations latest
-                       WHERE latest.runtime_profile_id = activation.runtime_profile_id
+                       WHERE latest.account_slot = closed_position.account_slot
                          AND latest.signal_id = signal.signal_id
                          AND latest.normalized_kind = 'position'
                     )
@@ -866,7 +757,7 @@ class ExecutionStreamStorage:
                AND NOT EXISTS (
                  SELECT 1
                    FROM trading_execution_observations retired_entry
-                  WHERE retired_entry.runtime_profile_id = activation.runtime_profile_id
+                  WHERE retired_entry.account_slot = %s
                     AND retired_entry.signal_id = signal.signal_id
                     AND retired_entry.normalized_kind = 'order'
                     AND retired_entry.summary ->> 'leg' = 'entry'
@@ -874,7 +765,7 @@ class ExecutionStreamStorage:
                     AND retired_entry.seq = (
                       SELECT max(latest.seq)
                         FROM trading_execution_observations latest
-                       WHERE latest.runtime_profile_id = activation.runtime_profile_id
+                       WHERE latest.account_slot = retired_entry.account_slot
                          AND latest.signal_id = signal.signal_id
                          AND latest.normalized_kind = 'order'
                          AND latest.summary ->> 'leg' = 'entry'
@@ -883,35 +774,31 @@ class ExecutionStreamStorage:
              ORDER BY signal.seq DESC
              LIMIT %s
             """,
-            (runtime_profile_id, since_ns, limit),
+            (account_slot, since_ns, account_slot, account_slot, limit),
         ).fetchall()
-        self._require_activation(runtime_profile_id)
         return tuple((int(row["seq"]), dict(row["payload"])) for row in reversed(rows))
 
     def execution_recovery_manual_entries(
         self,
         *,
-        runtime_profile_id: str,
+        account_slot: str,
         since_ns: int,
         limit: int,
     ) -> tuple[StoredExecutionPayload, ...]:
         """Read the manual entries whose durable entry order can still hold Binance exposure."""
 
         self._validate_read_limit(limit)
-        self._validate_recovery_window(runtime_profile_id, since_ns)
+        self._validate_recovery_window(account_slot, since_ns)
         rows = self.conn.execute(
             """
             SELECT command.seq, command.payload
-              FROM trading_execution_profile_activations activation
-              JOIN trading_operator_intents command
-                ON command.target_profile_id = activation.runtime_profile_id
-               AND command.seq > activation.activated_after_command_seq
-             WHERE activation.runtime_profile_id = %s
+              FROM trading_operator_intents command
+             WHERE command.account_slot = %s
                AND command.action = 'manual_entry'
                AND EXISTS (
                  SELECT 1
                    FROM trading_execution_observations entry_fact
-                  WHERE entry_fact.runtime_profile_id = activation.runtime_profile_id
+                  WHERE entry_fact.account_slot = command.account_slot
                     AND entry_fact.command_id = command.command_id
                     AND entry_fact.normalized_kind = 'order'
                     AND entry_fact.summary ->> 'leg' = 'entry'
@@ -920,14 +807,14 @@ class ExecutionStreamStorage:
                AND NOT EXISTS (
                  SELECT 1
                    FROM trading_execution_observations closed_position
-                  WHERE closed_position.runtime_profile_id = activation.runtime_profile_id
+                  WHERE closed_position.account_slot = command.account_slot
                     AND closed_position.command_id = command.command_id
                     AND closed_position.normalized_kind = 'position'
                     AND closed_position.summary ->> 'status' = 'closed'
                     AND closed_position.seq = (
                       SELECT max(latest.seq)
                         FROM trading_execution_observations latest
-                       WHERE latest.runtime_profile_id = activation.runtime_profile_id
+                       WHERE latest.account_slot = command.account_slot
                          AND latest.command_id = command.command_id
                          AND latest.normalized_kind = 'position'
                     )
@@ -935,7 +822,7 @@ class ExecutionStreamStorage:
                AND NOT EXISTS (
                  SELECT 1
                    FROM trading_execution_observations retired_entry
-                  WHERE retired_entry.runtime_profile_id = activation.runtime_profile_id
+                  WHERE retired_entry.account_slot = command.account_slot
                     AND retired_entry.command_id = command.command_id
                     AND retired_entry.normalized_kind = 'order'
                     AND retired_entry.summary ->> 'leg' = 'entry'
@@ -943,7 +830,7 @@ class ExecutionStreamStorage:
                     AND retired_entry.seq = (
                       SELECT max(latest.seq)
                         FROM trading_execution_observations latest
-                       WHERE latest.runtime_profile_id = activation.runtime_profile_id
+                       WHERE latest.account_slot = command.account_slot
                          AND latest.command_id = command.command_id
                          AND latest.normalized_kind = 'order'
                          AND latest.summary ->> 'leg' = 'entry'
@@ -952,90 +839,26 @@ class ExecutionStreamStorage:
              ORDER BY command.seq DESC
              LIMIT %s
             """,
-            (runtime_profile_id, since_ns, limit),
+            (account_slot, since_ns, limit),
         ).fetchall()
-        self._require_activation(runtime_profile_id)
         return tuple((int(row["seq"]), dict(row["payload"])) for row in reversed(rows))
 
     @staticmethod
-    def _validate_recovery_window(runtime_profile_id: str, since_ns: int) -> None:
-        if _IDENTITY.fullmatch(runtime_profile_id) is None:
-            raise ValueError("execution_profile_identity_invalid")
-        if since_ns < 0:
-            raise ValueError("execution_recovery_window_invalid")
-
-    def execution_profile_activation(self, runtime_profile_id: str) -> ExecutionProfileActivation | None:
-        if _IDENTITY.fullmatch(runtime_profile_id) is None:
-            raise ValueError("execution_profile_identity_invalid")
-        row = self.conn.execute(
-            """
-            SELECT runtime_profile_id, account_slot, activated_after_signal_seq,
-                   activated_after_command_seq, mode, runtime_release, config_sha256, created_at_ns
-              FROM trading_execution_profile_activations
-             WHERE runtime_profile_id = %s
-            """,
-            (runtime_profile_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        return ExecutionProfileActivation(
-            runtime_profile_id=str(row["runtime_profile_id"]),
-            account_slot=str(row["account_slot"]),
-            activated_after_signal_seq=int(row["activated_after_signal_seq"]),
-            activated_after_command_seq=int(row["activated_after_command_seq"]),
-            mode=row["mode"],
-            runtime_release=str(row["runtime_release"]),
-            config_sha256=str(row["config_sha256"]),
-            created_at_ns=int(row["created_at_ns"]),
-        )
-
-    def latest_execution_profile_activation(self, account_slot: str) -> ExecutionProfileActivation | None:
+    def _validate_recovery_window(account_slot: str, since_ns: int) -> None:
         if _IDENTITY.fullmatch(account_slot) is None:
             raise ValueError("execution_account_slot_invalid")
-        row = self.conn.execute(
-            """
-            SELECT runtime_profile_id, account_slot, activated_after_signal_seq,
-                   activated_after_command_seq, mode, runtime_release, config_sha256, created_at_ns
-              FROM trading_execution_profile_activations
-             WHERE account_slot = %s
-             ORDER BY created_at_ns DESC, runtime_profile_id DESC
-             LIMIT 1
-            """,
-            (account_slot,),
-        ).fetchone()
-        if row is None:
-            return None
-        return ExecutionProfileActivation(
-            runtime_profile_id=str(row["runtime_profile_id"]),
-            account_slot=str(row["account_slot"]),
-            activated_after_signal_seq=int(row["activated_after_signal_seq"]),
-            activated_after_command_seq=int(row["activated_after_command_seq"]),
-            mode=row["mode"],
-            runtime_release=str(row["runtime_release"]),
-            config_sha256=str(row["config_sha256"]),
-            created_at_ns=int(row["created_at_ns"]),
-        )
-
-    def execution_stream_fence(self) -> tuple[int, int]:
-        row = self.conn.execute(
-            """
-            SELECT COALESCE((SELECT max(seq) FROM trading_trade_signals), 0) AS signal_seq,
-                   COALESCE((SELECT max(seq) FROM trading_operator_intents), 0) AS command_seq
-            """
-        ).fetchone()
-        if row is None:
-            raise RuntimeError("execution_stream_fence_unavailable")
-        return int(row["signal_seq"]), int(row["command_seq"])
+        if since_ns < 0:
+            raise ValueError("execution_recovery_window_invalid")
 
     def execution_runtime_state(self, account_slot: str, *, for_update: bool = False) -> ExecutionRuntimeState | None:
         if _IDENTITY.fullmatch(account_slot) is None:
             raise ValueError("execution_account_slot_invalid")
         query = (
             """
-            SELECT account_slot, runtime_profile_id, mode, runtime_release, config_sha256,
+            SELECT account_slot, mode, runtime_release, config_sha256,
                    runtime_id, runtime_revision, image_digest, credential_fingerprint,
                    lifecycle_state, alive, execution_safe, entries_armed, control_plane_ready,
-                   singleton_ready, credential_ready, activation_ready, startup_reconciled,
+                   singleton_ready, startup_reconciled,
                    portfolio_ready, audit_ready, day_start_ready, unexpected_exposure, account_flat,
                    positions_count, open_orders_count, protection_status,
                    reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
@@ -1046,10 +869,10 @@ class ExecutionStreamStorage:
             """
             if for_update
             else """
-            SELECT account_slot, runtime_profile_id, mode, runtime_release, config_sha256,
+            SELECT account_slot, mode, runtime_release, config_sha256,
                    runtime_id, runtime_revision, image_digest, credential_fingerprint,
                    lifecycle_state, alive, execution_safe, entries_armed, control_plane_ready,
-                   singleton_ready, credential_ready, activation_ready, startup_reconciled,
+                   singleton_ready, startup_reconciled,
                    portfolio_ready, audit_ready, day_start_ready, unexpected_exposure, account_flat,
                    positions_count, open_orders_count, protection_status,
                    reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
@@ -1066,21 +889,20 @@ class ExecutionStreamStorage:
         self.conn.execute(
             """
             INSERT INTO trading_execution_runtime_state (
-              account_slot, runtime_profile_id, mode, runtime_release, config_sha256,
+              account_slot, mode, runtime_release, config_sha256,
               runtime_id, runtime_revision, image_digest, credential_fingerprint,
               lifecycle_state, alive, execution_safe, entries_armed, control_plane_ready,
-              singleton_ready, credential_ready, activation_ready, startup_reconciled,
+              singleton_ready, startup_reconciled,
               portfolio_ready, audit_ready, day_start_ready, unexpected_exposure, account_flat,
               positions_count, open_orders_count, protection_status,
               reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
               started_at_ns, updated_at_ns, account_snapshot, routes
             ) VALUES (
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb
             )
             ON CONFLICT (account_slot) DO UPDATE SET
-              runtime_profile_id = EXCLUDED.runtime_profile_id,
               mode = EXCLUDED.mode,
               runtime_release = EXCLUDED.runtime_release,
               config_sha256 = EXCLUDED.config_sha256,
@@ -1094,8 +916,6 @@ class ExecutionStreamStorage:
               entries_armed = EXCLUDED.entries_armed,
               control_plane_ready = EXCLUDED.control_plane_ready,
               singleton_ready = EXCLUDED.singleton_ready,
-              credential_ready = EXCLUDED.credential_ready,
-              activation_ready = EXCLUDED.activation_ready,
               startup_reconciled = EXCLUDED.startup_reconciled,
               portfolio_ready = EXCLUDED.portfolio_ready,
               audit_ready = EXCLUDED.audit_ready,
@@ -1126,7 +946,7 @@ class ExecutionStreamStorage:
             UPDATE trading_execution_runtime_state
                SET lifecycle_state = %s, alive = %s, execution_safe = %s,
                    entries_armed = %s, control_plane_ready = %s,
-                   singleton_ready = %s, credential_ready = %s, activation_ready = %s,
+                   singleton_ready = %s,
                    startup_reconciled = %s, portfolio_ready = %s, audit_ready = %s,
                    day_start_ready = %s, unexpected_exposure = %s, account_flat = %s,
                    positions_count = %s, open_orders_count = %s, protection_status = %s,
@@ -1142,8 +962,6 @@ class ExecutionStreamStorage:
                 value.entries_armed,
                 value.control_plane_ready,
                 value.singleton_ready,
-                value.credential_ready,
-                value.activation_ready,
                 value.startup_reconciled,
                 value.portfolio_ready,
                 value.audit_ready,
@@ -1168,7 +986,6 @@ class ExecutionStreamStorage:
     def _materialize_runtime_state(row: Any) -> ExecutionRuntimeState:
         return ExecutionRuntimeState(
             account_slot=str(row["account_slot"]),
-            runtime_profile_id=str(row["runtime_profile_id"]),
             mode=row["mode"],
             runtime_release=str(row["runtime_release"]),
             config_sha256=str(row["config_sha256"]),
@@ -1182,8 +999,6 @@ class ExecutionStreamStorage:
             entries_armed=bool(row["entries_armed"]),
             control_plane_ready=bool(row["control_plane_ready"]),
             singleton_ready=bool(row["singleton_ready"]),
-            credential_ready=bool(row["credential_ready"]),
-            activation_ready=bool(row["activation_ready"]),
             startup_reconciled=bool(row["startup_reconciled"]),
             portfolio_ready=bool(row["portfolio_ready"]),
             audit_ready=bool(row["audit_ready"]),
@@ -1214,7 +1029,6 @@ class ExecutionStreamStorage:
     def _runtime_state_values(cls, value: ExecutionRuntimeState) -> tuple[Any, ...]:
         return (
             value.account_slot,
-            value.runtime_profile_id,
             value.mode,
             value.runtime_release,
             value.config_sha256,
@@ -1228,8 +1042,6 @@ class ExecutionStreamStorage:
             value.entries_armed,
             value.control_plane_ready,
             value.singleton_ready,
-            value.credential_ready,
-            value.activation_ready,
             value.startup_reconciled,
             value.portfolio_ready,
             value.audit_ready,
@@ -1248,27 +1060,61 @@ class ExecutionStreamStorage:
             _dumps(list(value.routes)),
         )
 
+    def ensure_execution_runtime_control_state(
+        self,
+        account_slot: str,
+        *,
+        now_ns: int,
+    ) -> ExecutionRuntimeControlState:
+        """Return this slot's current control row, creating an unpaused one the first time.
+
+        Control is a property of the account slot, not of a deployment: a slot that was resumed stays
+        resumed across a restart, an image change or a risk-config change, and only a Command moves
+        it. Before #520 every new `profile_id` inserted a fresh `entries_paused = TRUE` row, so each
+        deploy silently disarmed entries and needed another authenticated `/resume`.
+        """
+
+        require_transaction(self.conn, operation="ensure_execution_runtime_control_state")
+        if _IDENTITY.fullmatch(account_slot) is None:
+            raise ValueError("execution_account_slot_invalid")
+        if now_ns <= 0:
+            raise ValueError("execution_runtime_control_state_invalid")
+        self.conn.execute(
+            """
+            INSERT INTO trading_execution_runtime_control_state (
+              account_slot, entries_paused, emergency_halted,
+              last_command_seq, last_command_id, updated_at_ns
+            ) VALUES (%s, FALSE, FALSE, 0, NULL, %s)
+            ON CONFLICT (account_slot) DO NOTHING
+            """,
+            (account_slot, now_ns),
+        )
+        state = self.execution_runtime_control_state(account_slot)
+        if state is None:
+            raise RuntimeError("execution_runtime_control_state_unavailable")
+        return state
+
     def execution_runtime_control_state(
         self,
-        runtime_profile_id: str,
+        account_slot: str,
     ) -> ExecutionRuntimeControlState | None:
         """Read the one current control row; startup never folds command history."""
 
-        if _IDENTITY.fullmatch(runtime_profile_id) is None:
-            raise ValueError("execution_profile_identity_invalid")
+        if _IDENTITY.fullmatch(account_slot) is None:
+            raise ValueError("execution_account_slot_invalid")
         row = self.conn.execute(
             """
-            SELECT runtime_profile_id, entries_paused, emergency_halted,
+            SELECT account_slot, entries_paused, emergency_halted,
                    last_command_seq, last_command_id, updated_at_ns
               FROM trading_execution_runtime_control_state
-             WHERE runtime_profile_id = %s
+             WHERE account_slot = %s
             """,
-            (runtime_profile_id,),
+            (account_slot,),
         ).fetchone()
         if row is None:
             return None
         return ExecutionRuntimeControlState(
-            runtime_profile_id=str(row["runtime_profile_id"]),
+            account_slot=str(row["account_slot"]),
             entries_paused=bool(row["entries_paused"]),
             emergency_halted=bool(row["emergency_halted"]),
             last_command_seq=int(row["last_command_seq"]),
@@ -1305,13 +1151,12 @@ class ExecutionStreamStorage:
         ).fetchone()
         return bool(row and row["released"])
 
-    def _require_activation(self, runtime_profile_id: str) -> None:
-        row = self.conn.execute(
-            "SELECT 1 FROM trading_execution_profile_activations WHERE runtime_profile_id = %s",
-            (runtime_profile_id,),
-        ).fetchone()
-        if row is None:
-            raise RuntimeError("execution_profile_activation_missing")
+    @staticmethod
+    def _validate_slot_clock(account_slot: str, now_ns: int) -> None:
+        if _IDENTITY.fullmatch(account_slot) is None:
+            raise ValueError("execution_account_slot_invalid")
+        if now_ns <= 0:
+            raise ValueError("execution_stream_read_clock_invalid")
 
     @staticmethod
     def _validate_read_limit(limit: int) -> None:
@@ -1338,7 +1183,6 @@ __all__ = [
     "ExecutionAccountOrder",
     "ExecutionAccountPosition",
     "ExecutionAccountSnapshot",
-    "ExecutionProfileActivation",
     "ExecutionRuntimeState",
     "ExecutionStreamStorage",
     "PreparedExecutionObservationBatch",

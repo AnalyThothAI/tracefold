@@ -17,7 +17,6 @@ from tracefold.app.execution_status import execution_readiness_projection
 from tracefold.app.trading_config import ADMISSION_VERSION, signal_lane_config
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from tracefold.trading import (
-    DecisionRuntimeV1,
     OperatorCommandError,
     canonical_sha256,
     parse_operator_command,
@@ -86,18 +85,13 @@ def get_trading_status(request: Request) -> Response:
     runtime = _authenticated_runtime(request)
     now_ms = int(time.time() * 1000)
     with runtime.repositories() as repos:
-        decision = repos.trading.decision_runtime() or DecisionRuntimeV1(
-            state="FAULTED",
-            heartbeat_at_ms=None,
-            reason="decision_runtime_missing",
-            updated_at_ms=now_ms,
-        )
+        last_case_at_ms = repos.trading.latest_case_created_at_ms()
         counts = repos.trading.runtime_summary(since_ms=now_ms - _WINDOW_MS, now_ms=now_ms)
         execution = runtime.settings.trading.execution
         execution_status = execution_readiness_projection(
             execution,
             repos.trading.execution_runtime_state(execution.account_slot),
-            repos.trading.execution_runtime_control_state(execution.profile_id),
+            repos.trading.execution_runtime_control_state(execution.account_slot),
             now_ns=now_ms * 1_000_000,
         )
     config = signal_lane_config(runtime.settings)
@@ -110,11 +104,7 @@ def get_trading_status(request: Request) -> Response:
     )
     return _etagged(
         {
-            "decision": {
-                "state": decision.state,
-                "heartbeat_at_ms": decision.heartbeat_at_ms,
-                "reason": decision.reason,
-            },
+            "decision": {"last_case_at_ms": last_case_at_ms},
             "execution": execution_status,
             "alpha": {
                 "policy_id": config.policy.policy_id,
@@ -258,11 +248,11 @@ def get_trading_signals(
 @router.get("/trading/execution/observations", response_model=_ObservationsEnvelope)
 def get_execution_observations(
     request: Request,
-    profile: Annotated[str, Query(max_length=128)] = "",
+    slot: Annotated[str, Query(max_length=128)] = "",
     kind: Annotated[str, Query(max_length=32)] = "",
     cursor: Annotated[str, Query(max_length=256)] = "",
 ) -> Response:
-    _validate_query_params(request, supported={"cursor", "kind", "profile", "token"})
+    _validate_query_params(request, supported={"cursor", "kind", "slot", "token"})
     if kind and kind not in _OBSERVATION_KINDS:
         raise ApiBadRequest("trading_observations_kind_invalid", field="kind")
     before = _cursor_pair(cursor, kind="observations", error="trading_observations_cursor_invalid")
@@ -271,7 +261,7 @@ def get_execution_observations(
     with runtime.repositories() as repos:
         rows = repos.trading.console_execution_observations(
             since_ns=(now_ms - _WINDOW_MS) * 1_000_000,
-            runtime_profile_id=profile.strip() or None,
+            account_slot=slot.strip() or None,
             normalized_kind=kind or None,
             before=before,
             limit=_ROW_LIMIT + 1,
@@ -292,11 +282,11 @@ def get_execution_observations(
 @router.get("/trading/execution/commands", response_model=_CommandsEnvelope)
 def get_operator_intents(
     request: Request,
-    profile: Annotated[str, Query(max_length=128)] = "",
+    slot: Annotated[str, Query(max_length=128)] = "",
     action: Annotated[str, Query(max_length=32)] = "",
     cursor: Annotated[str, Query(max_length=256)] = "",
 ) -> Response:
-    _validate_query_params(request, supported={"action", "cursor", "profile", "token"})
+    _validate_query_params(request, supported={"action", "cursor", "slot", "token"})
     if action and action not in _COMMAND_ACTIONS:
         raise ApiBadRequest("trading_commands_action_invalid", field="action")
     before = _cursor_pair(cursor, kind="commands", error="trading_commands_cursor_invalid")
@@ -306,7 +296,7 @@ def get_operator_intents(
     with runtime.repositories() as repos:
         rows = repos.trading.console_operator_intents(
             since_ns=(now_ms - _WINDOW_MS) * 1_000_000,
-            runtime_profile_id=profile.strip() or None,
+            account_slot=slot.strip() or None,
             action=action or None,
             before=before,
             limit=_ROW_LIMIT + 1,
@@ -360,7 +350,7 @@ async def post_operator_intent(
             parsed,
             source="http:operator-console:v1",
             source_command_id=command.request_id,
-            target_profile_id=runtime.settings.trading.execution.profile_id,
+            account_slot=runtime.settings.trading.execution.account_slot,
             operator_identity="operator-console",
             authentication_identity="http-operator-write-token:v1",
             requested_at_ns=requested_at_ns,
@@ -512,7 +502,7 @@ def _observation(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "seq": int(row["seq"]),
         "event_id": str(row["event_id"]),
-        "runtime_profile_id": str(row["runtime_profile_id"]),
+        "account_slot": str(row["account_slot"]),
         "runtime_release": str(row["runtime_release"]),
         "execution_strategy": str(row["execution_strategy"]),
         "signal_id": row.get("signal_id"),
@@ -530,7 +520,7 @@ def _command(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
     return {
         "seq": int(row["seq"]),
         "command_id": str(row["command_id"]),
-        "target_profile_id": str(row["target_profile_id"]),
+        "account_slot": str(row["account_slot"]),
         "action": str(row["action"]),
         "scope": str(row["scope"]),
         "reason": str(row["reason"]),

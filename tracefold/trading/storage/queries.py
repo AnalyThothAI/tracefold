@@ -109,7 +109,7 @@ def console_signals_statement(
 def console_execution_observations_statement(
     *,
     since_ns: int,
-    runtime_profile_id: str | None = None,
+    account_slot: str | None = None,
     normalized_kind: str | None = None,
     before: tuple[int, str] | None = None,
     limit: int,
@@ -118,9 +118,9 @@ def console_execution_observations_statement(
 
     predicates = ["observed_at_ns >= %(since)s"]
     params: dict[str, Any] = {"since": int(since_ns), "limit": int(limit)}
-    if runtime_profile_id is not None:
-        predicates.append("runtime_profile_id = %(profile)s")
-        params["profile"] = runtime_profile_id
+    if account_slot is not None:
+        predicates.append("account_slot = %(slot)s")
+        params["slot"] = account_slot
     if normalized_kind is not None:
         predicates.append("normalized_kind = %(kind)s")
         params["kind"] = normalized_kind
@@ -128,7 +128,7 @@ def console_execution_observations_statement(
         predicates.append("(observed_at_ns, event_id) < (%(before_ns)s, %(before_id)s)")
         params["before_ns"], params["before_id"] = before
     sql = f"""
-        SELECT seq, event_id, runtime_profile_id, runtime_release, execution_strategy,
+        SELECT seq, event_id, account_slot, runtime_release, execution_strategy,
                signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                native_identity_references, summary, payload_digest
           FROM trading_execution_observations
@@ -142,7 +142,7 @@ def console_execution_observations_statement(
 def console_operator_intents_statement(
     *,
     since_ns: int,
-    runtime_profile_id: str | None = None,
+    account_slot: str | None = None,
     action: str | None = None,
     before: tuple[int, str] | None = None,
     limit: int,
@@ -151,9 +151,9 @@ def console_operator_intents_statement(
 
     predicates = ["command.requested_at_ns >= %(since)s"]
     params: dict[str, Any] = {"since": int(since_ns), "limit": int(limit)}
-    if runtime_profile_id is not None:
-        predicates.append("command.target_profile_id = %(profile)s")
-        params["profile"] = runtime_profile_id
+    if account_slot is not None:
+        predicates.append("command.account_slot = %(slot)s")
+        params["slot"] = account_slot
     if action is not None:
         predicates.append("command.action = %(action)s")
         params["action"] = action
@@ -161,7 +161,7 @@ def console_operator_intents_statement(
         predicates.append("(command.requested_at_ns, command.command_id) < (%(before_ns)s, %(before_id)s)")
         params["before_ns"], params["before_id"] = before
     sql = f"""
-        SELECT command.seq, command.command_id, command.target_profile_id, command.action,
+        SELECT command.seq, command.command_id, command.account_slot, command.action,
                command.scope, command.reason, command.operator_identity,
                command.requested_at_ns, command.expires_at_ns,
                command.confirmation_identity IS NOT NULL AS confirmed,
@@ -242,14 +242,14 @@ class QueryStorage:
         self,
         *,
         since_ns: int,
-        runtime_profile_id: str | None,
+        account_slot: str | None,
         normalized_kind: str | None,
         before: tuple[int, str] | None,
         limit: int,
     ) -> list[dict[str, Any]]:
         sql, params = console_execution_observations_statement(
             since_ns=since_ns,
-            runtime_profile_id=runtime_profile_id,
+            account_slot=account_slot,
             normalized_kind=normalized_kind,
             before=before,
             limit=limit,
@@ -260,14 +260,14 @@ class QueryStorage:
         self,
         *,
         since_ns: int,
-        runtime_profile_id: str | None,
+        account_slot: str | None,
         action: str | None,
         before: tuple[int, str] | None,
         limit: int,
     ) -> list[dict[str, Any]]:
         sql, params = console_operator_intents_statement(
             since_ns=since_ns,
-            runtime_profile_id=runtime_profile_id,
+            account_slot=account_slot,
             action=action,
             before=before,
             limit=limit,
@@ -313,7 +313,7 @@ class QueryStorage:
                GROUP BY 1
             ),
             candidate AS (
-              SELECT observation.seq, observation.event_id, observation.runtime_profile_id,
+              SELECT observation.seq, observation.event_id, observation.account_slot,
                      observation.runtime_release, observation.execution_strategy,
                      observation.signal_id, observation.command_id, observation.normalized_kind,
                      observation.occurred_at_ns, observation.observed_at_ns,
@@ -351,7 +351,7 @@ class QueryStorage:
                               )
                      )
             )
-            SELECT seq, event_id, runtime_profile_id, runtime_release, execution_strategy,
+            SELECT seq, event_id, account_slot, runtime_release, execution_strategy,
                    signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                    native_identity_references, summary, payload_digest,
                    case_id, market_key, direction, signal_observed_at_ns,

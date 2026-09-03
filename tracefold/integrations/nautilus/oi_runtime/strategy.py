@@ -44,7 +44,7 @@ _AMBIGUOUS_REASONS = ("-1007", "503", "timeout", "timed out", "response unknown"
 
 def oi_strategy_config(profile: OiRuntimeProfile) -> StrategyConfig:
     claims = sorted((route.instrument_id for route in profile.routes), key=lambda item: item.value)
-    tag = hashlib.sha256(profile.profile_id.encode()).hexdigest()[:3].upper()
+    tag = hashlib.sha256(profile.client_order_namespace.encode()).hexdigest()[:3].upper()
     return StrategyConfig(
         strategy_id="OI-RUNTIME",
         order_id_tag=tag,
@@ -95,7 +95,7 @@ class OiNautilusStrategy(Strategy):
         self._request_reconciliation = request_reconciliation
         factory = audit.factory
         if (
-            factory.runtime_profile_id != profile.profile_id
+            factory.account_slot != profile.account_slot
             or factory.runtime_release != profile.runtime_release
             or factory.execution_strategy != "oi_nautilus_v1"
         ):
@@ -264,8 +264,8 @@ class OiNautilusStrategy(Strategy):
             or command.command_id in self._runtime.pending_flatten
         ):
             return
-        if command.target_profile_id != self._profile.profile_id:
-            self._observation_writer.dispose_command(command, "rejected", "profile_mismatch")
+        if command.account_slot != self._profile.account_slot:
+            self._observation_writer.dispose_command(command, "rejected", "account_slot_mismatch")
             return
         if command.expires_at_ns <= now_ns:
             self._observation_writer.dispose_command(command, "rejected", "expired")

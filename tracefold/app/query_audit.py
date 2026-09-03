@@ -245,7 +245,7 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             unfiltered=console_execution_observations_statement(since_ns=since_ns, limit=101),
             filtered=console_execution_observations_statement(
                 since_ns=since_ns,
-                runtime_profile_id="query-audit-disabled",
+                account_slot="query-audit-disabled",
                 normalized_kind="signal_disposition",
                 before=(since_ns + 1, "z" * 64),
                 limit=101,
@@ -256,7 +256,7 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             unfiltered=console_operator_intents_statement(since_ns=since_ns, limit=101),
             filtered=console_operator_intents_statement(
                 since_ns=since_ns,
-                runtime_profile_id="query-audit-disabled",
+                account_slot="query-audit-disabled",
                 action="flatten",
                 before=(since_ns + 1, "z" * 64),
                 limit=101,

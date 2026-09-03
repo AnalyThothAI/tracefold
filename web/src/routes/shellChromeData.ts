@@ -13,7 +13,7 @@ import {
   useNewsStatusWithToken,
   type NewsStatus,
 } from "@features/news/shell";
-import { useTradingStatusWithToken, type TradingStatus } from "@features/trading/shell";
+import { caseClock, useTradingStatusWithToken, type TradingStatus } from "@features/trading/shell";
 import { newsPath, newsStatusPath } from "@shared/routing/paths";
 import { searchWithOptionalPrefix } from "@shared/routing/searchParams";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -88,7 +88,7 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
       },
       navBadges: {
         tradingEnvironment: tradingStatusQuery.data
-          ? `${tradingStatusQuery.data.decision.state} · ${tradingStatusQuery.data.execution.mode}`
+          ? `${caseClock(tradingStatusQuery.data.decision.last_case_at_ms)} · ${tradingStatusQuery.data.execution.mode}`
           : undefined,
       },
       outletContext: routeContext,
@@ -137,9 +137,10 @@ export function topbarFigures(
     const execution = tradingStatus?.execution;
     return [
       {
-        label: "DECISION",
-        text: decision?.state,
-        tone: decision?.state === "FAULTED" ? "caution" : undefined,
+        // When the Signal lane last froze a Case. There is no separate Decision Plane heartbeat any
+        // more; a lane that has stopped shows as a clock that has stopped moving (#520 PR-A).
+        label: "LAST CASE",
+        text: caseClock(decision?.last_case_at_ms),
       },
       {
         label: "EXECUTION",

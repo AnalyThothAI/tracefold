@@ -227,19 +227,19 @@ def test_trading_console_audit_explains_the_statements_the_routes_execute():
         limit=101,
     )
     repository.console_execution_observations(
-        since_ns=since_ns, runtime_profile_id=None, normalized_kind=None, before=None, limit=101
+        since_ns=since_ns, account_slot=None, normalized_kind=None, before=None, limit=101
     )
     repository.console_execution_observations(
         since_ns=since_ns,
-        runtime_profile_id="query-audit-disabled",
+        account_slot="query-audit-disabled",
         normalized_kind="signal_disposition",
         before=(since_ns + 1, "z" * 64),
         limit=101,
     )
-    repository.console_operator_intents(since_ns=since_ns, runtime_profile_id=None, action=None, before=None, limit=101)
+    repository.console_operator_intents(since_ns=since_ns, account_slot=None, action=None, before=None, limit=101)
     repository.console_operator_intents(
         since_ns=since_ns,
-        runtime_profile_id="query-audit-disabled",
+        account_slot="query-audit-disabled",
         action="flatten",
         before=(since_ns + 1, "z" * 64),
         limit=101,

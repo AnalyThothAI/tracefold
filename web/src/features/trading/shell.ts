@@ -6,3 +6,6 @@
  */
 export { useTradingStatusWithToken } from "./api/tradingQueries";
 export type { TradingStatus } from "./api/tradingQueries";
+// The chrome states when the Signal lane last froze a Case, so it needs the same clock format the
+// Trading page uses. This is a pure formatter, not the page.
+export { caseClock } from "./model/tradingLabels";
