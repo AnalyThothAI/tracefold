@@ -1,9 +1,13 @@
 import { ApiError } from "@lib/api/client";
 import { ActionButton } from "@shared/ui/ActionButton";
-import { AlertDialog } from "radix-ui";
+import { Card } from "@shared/ui/Card";
 import { useState } from "react";
 
+import type { TradingExecutionCommand } from "../api/tradingQueries";
 import { useIssueTradingCommandWithToken } from "../api/tradingQueries";
+import { COMMAND_ACTION_ZH, COMMAND_STAGE_ZH, nsClock } from "../model/tradingLabels";
+
+import { TradingEmptyNote, TradingSourceLine } from "./TradingChrome";
 
 type CommandAction = "pause" | "resume" | "flatten";
 type CommandEnvelope = {
@@ -13,20 +17,33 @@ type CommandEnvelope = {
   text: string;
 };
 
+/**
+ * Block 3: the three writes, and every Command in the window with the stage the server derived.
+ *
+ * No confirmation dialog. Pause and Resume only move the control flag, Flatten only asks the Runtime to
+ * reduce-only out of what it owns, and none of the three can submit an entry — a modal in front of them
+ * taught readers that clicking through it was the dangerous act, when the dangerous act is capital already
+ * on the venue. The stage words come from `control_disposition` alone (`tracefold/trading/stages.py`):
+ * a flatten reads `recorded → completed`, and `completed` is the private reconciliation proving the slot
+ * flat, never an order the browser correlated.
+ */
 export function TradingControls({
-  accountFlatProven,
+  commands,
+  commandsFailed,
+  commandsPending,
   entriesPaused,
   mode,
   token,
 }: {
-  accountFlatProven: boolean;
+  commands: readonly TradingExecutionCommand[];
+  commandsFailed: boolean;
+  commandsPending: boolean;
   entriesPaused: boolean;
   mode: "disabled" | "paper" | "live";
   token: string;
 }) {
   const command = useIssueTradingCommandWithToken(token);
   const [reason, setReason] = useState("operator console");
-  const [pendingAction, setPendingAction] = useState<CommandAction | null>(null);
   const [retryEnvelope, setRetryEnvelope] = useState<CommandEnvelope | null>(null);
   const disabled = mode === "disabled" || !token || command.isPending;
 
@@ -54,10 +71,7 @@ export function TradingControls({
         text: envelope.text,
       },
       {
-        onSuccess: () => {
-          setRetryEnvelope(null);
-          setPendingAction(null);
-        },
+        onSuccess: () => setRetryEnvelope(null),
         onError: (error) => {
           if (error instanceof ApiError && error.status < 500) setRetryEnvelope(null);
         },
@@ -66,91 +80,83 @@ export function TradingControls({
   };
 
   return (
-    <section aria-label="执行控制" className="trading-control-panel">
-      <div className="trading-control-copy">
-        <b>执行控制</b>
-        <span>按钮只写入 Command；页面随后从 Runtime 与 venue 回执更新进度。</span>
-      </div>
-      <label className="trading-control-reason">
-        <span>操作原因</span>
-        <input maxLength={256} onChange={(event) => setReason(event.target.value)} value={reason} />
-      </label>
-      <div className="trading-control-actions">
-        <ActionButton
-          disabled={disabled || entriesPaused}
-          onClick={() => issue("pause")}
-          variant="caution"
-        >
-          Pause entries
-        </ActionButton>
-        <ActionButton
-          disabled={disabled || !entriesPaused}
-          onClick={() => setPendingAction("resume")}
-          variant="positive"
-        >
-          Resume / Arm
-        </ActionButton>
-        <ActionButton
-          disabled={disabled || accountFlatProven}
-          onClick={() => setPendingAction("flatten")}
-          variant="negative"
-        >
-          Flatten account
-        </ActionButton>
-      </div>
-      {mode === "disabled" ? (
-        <p className="trading-control-message" data-tone="caution">
-          execution.mode=disabled；控制已锁定，不会写入无 Runtime 可处理的 Command。
-        </p>
-      ) : null}
-      {command.data ? (
-        <p aria-live="polite" className="trading-control-message">
-          Command 已持久化 · {command.data.command_id.slice(0, 12)}；这不代表 Runtime
-          受理、订单或成交。
-        </p>
-      ) : null}
-      {command.isError ? (
-        <p aria-live="assertive" className="trading-control-message" data-tone="caution">
-          {command.error instanceof ApiError && command.error.status < 500
-            ? `Command 未写入 · ${command.error.code ?? command.error.message}`
-            : "提交结果未知；请先核对 Command 账本，重试会复用同一 request ID、时钟和文本。"}
-        </p>
-      ) : null}
+    <Card
+      flush
+      hint="按钮只写入 Command；进度是 Runtime 自己的 control_disposition"
+      title="执行控制"
+    >
+      <section aria-label="执行控制" className="trading-control-panel">
+        <label className="trading-control-reason">
+          <span>操作原因</span>
+          <input
+            maxLength={256}
+            onChange={(event) => setReason(event.target.value)}
+            value={reason}
+          />
+        </label>
+        <div className="trading-control-actions">
+          <ActionButton
+            disabled={disabled || entriesPaused}
+            onClick={() => issue("pause")}
+            variant="caution"
+          >
+            Pause entries
+          </ActionButton>
+          <ActionButton
+            disabled={disabled || !entriesPaused}
+            onClick={() => issue("resume")}
+            variant="positive"
+          >
+            Resume / Arm
+          </ActionButton>
+          <ActionButton disabled={disabled} onClick={() => issue("flatten")} variant="negative">
+            Flatten account
+          </ActionButton>
+        </div>
+        {mode === "disabled" ? (
+          <p className="trading-control-message" data-tone="caution">
+            execution.mode=disabled；控制已锁定，不会写入无 Runtime 可处理的 Command。
+          </p>
+        ) : null}
+        {command.data ? (
+          <p aria-live="polite" className="trading-control-message">
+            Command 已持久化 · {command.data.command_id.slice(0, 12)}；这不代表 Runtime
+            受理、订单或成交。
+          </p>
+        ) : null}
+        {command.isError ? (
+          <p aria-live="assertive" className="trading-control-message" data-tone="caution">
+            {command.error instanceof ApiError && command.error.status < 500
+              ? `Command 未写入 · ${command.error.code ?? command.error.message}`
+              : "提交结果未知；请先核对下方 Command 账本，重试会复用同一 request ID、时钟和文本。"}
+          </p>
+        ) : null}
+      </section>
 
-      <AlertDialog.Root
-        onOpenChange={(open) => {
-          if (!open) setPendingAction(null);
-        }}
-        open={pendingAction !== null}
-      >
-        <AlertDialog.Portal>
-          <AlertDialog.Overlay className="trading-confirm-overlay" />
-          <AlertDialog.Content className="trading-confirm-dialog">
-            <AlertDialog.Title>
-              {pendingAction === "flatten" ? "确认收敛全部 exposure" : "确认恢复新增 exposure"}
-            </AlertDialog.Title>
-            <AlertDialog.Description>
-              {pendingAction === "flatten"
-                ? "Flatten 会暂停开仓并让 Runtime 对其拥有的仓位执行 reduce-only 退出；只有之后的新鲜 Binance 私有对账才能证明账户已平。"
-                : "Resume 只解除控制暂停；风险、行情或对账不满足时 entries-armed 仍会保持 false。"}
-            </AlertDialog.Description>
-            <div className="trading-confirm-actions">
-              <AlertDialog.Cancel asChild>
-                <ActionButton>取消</ActionButton>
-              </AlertDialog.Cancel>
-              <AlertDialog.Action asChild>
-                <ActionButton
-                  disabled={command.isPending}
-                  onClick={() => pendingAction && issue(pendingAction)}
-                  variant={pendingAction === "flatten" ? "negative" : "positive"}
-                >
-                  {command.isPending ? "正在持久化…" : "确认写入 Command"}
-                </ActionButton>
-              </AlertDialog.Action>
-            </div>
-          </AlertDialog.Content>
-        </AlertDialog.Portal>
-      </AlertDialog.Root>
-    </section>
+      {commands.length ? (
+        <div className="trading-command-list">
+          {commands.map((item) => (
+            <article className="trading-command-row" key={item.command_id}>
+              <b>{COMMAND_ACTION_ZH[item.action] ?? item.action}</b>
+              <span>{item.reason}</span>
+              <span>{item.operator_identity}</span>
+              <span>{nsClock(item.requested_at_ns)}</span>
+              <span className="trading-stage" data-stage={item.stage}>
+                {COMMAND_STAGE_ZH[item.stage] ?? item.stage}
+              </span>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <TradingEmptyNote>{ledgerEmpty(commandsPending, commandsFailed)}</TradingEmptyNote>
+      )}
+      <TradingSourceLine path="POST /api/trading/execution/commands · GET /api/trading/executions → commands[].stage" />
+    </Card>
   );
+}
+
+function ledgerEmpty(pending: boolean, failed: boolean): string {
+  if (pending) return "正在读取 Command 账本…";
+  if (failed) return "Command 账本读取失败，不能据此断言为空。";
+  return "当前 24 小时窗口没有 Command。";
 }

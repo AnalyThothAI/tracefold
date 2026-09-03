@@ -1,83 +1,45 @@
 import { Card } from "@shared/ui/Card";
 import * as PageState from "@shared/ui/PageState";
-import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import {
   useTradingCasesWithToken,
-  useTradingCommandsWithToken,
-  useTradingObservationsWithToken,
-  useTradingSignalsWithToken,
+  useTradingExecutionsWithToken,
+  useTradingGateWithToken,
   useTradingStatusWithToken,
 } from "../api/tradingQueries";
-import {
-  ACCOUNT_FLAT_PROOF_FRESH_MS,
-  currentAccountFlatProof,
-  currentPrivateAccountFacts,
-  currentReconciliationAge,
-} from "../model/accountFlatProof";
-import {
-  currentExecutionHeartbeat,
-  EXECUTION_HEARTBEAT_FRESH_MS,
-} from "../model/executionFreshness";
-import { commandProgress, signalProgress } from "../model/executionProgress";
 import { caseStateLabel } from "../model/tradingCases";
 import { caseClock, policyReasonLabel } from "../model/tradingLabels";
 
 import { TradingAccountOverview } from "./TradingAccountOverview";
 import { TradingCaseDetail } from "./TradingCaseDetail";
-import { TradingEmptyNote, TradingShell, TradingSourceLine } from "./TradingChrome";
+import { TradingEmptyNote, TradingShell } from "./TradingChrome";
 import { TradingControls } from "./TradingControls";
-import { TradingProgress } from "./TradingProgress";
+import { TradingExecutionTable } from "./TradingExecutionTable";
+import { TradingFunnel } from "./TradingFunnel";
 
 import "./trading.css";
 
-/** Operator desk: current risk and control come first; immutable audit remains one disclosure away. */
+/**
+ * The operator desk: one page, six blocks, one endpoint each (#528 PR-2).
+ *
+ * 1 status bar and 2 account/positions read `/api/trading/status`; 3 control writes
+ * `POST /api/trading/execution/commands` and reads its Command rows back from
+ * `/api/trading/executions`; 4 today's executions is the rest of that same response; 5 funnel is
+ * `/api/trading/gate` beside `/api/trading/cases`; 6 is the Case list and its frozen evidence.
+ *
+ * The page runs no timer of its own and recomputes no freshness. `execution.facts_expire_at_ms` is the
+ * instant the server published as the end of its own projection's budget, and one comparison against it
+ * is the whole rule — the two `setTimeout` re-render clocks and the three client freshness models they
+ * drove disagreed with the server about ages it had already measured.
+ */
 export function TradingPage({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const statusQuery = useTradingStatusWithToken(token);
   const casesQuery = useTradingCasesWithToken(token);
-  const signalsQuery = useTradingSignalsWithToken(token);
-  const commandsQuery = useTradingCommandsWithToken(token);
-  const observationsQuery = useTradingObservationsWithToken(token);
+  const executionsQuery = useTradingExecutionsWithToken(token);
+  const gateQuery = useTradingGateWithToken(token);
   const status = statusQuery.data;
-  const [, setFreshnessExpiryTick] = useState(0);
-  const measuredAtMs = status?.measured_at_ms;
-  const serverPrivateFacts = Boolean(
-    status?.execution.account_flat_proven || status?.execution.current_account,
-  );
-  const reconciliationAgeMs = status?.execution.reconciliation_age_ms;
-
-  useEffect(() => {
-    if (!serverPrivateFacts || measuredAtMs == null || reconciliationAgeMs == null) return;
-    const nowMs = Date.now();
-    const expiresAtMs = measuredAtMs + ACCOUNT_FLAT_PROOF_FRESH_MS - reconciliationAgeMs;
-    if (measuredAtMs > nowMs || reconciliationAgeMs < 0 || expiresAtMs < nowMs) return;
-    const timer = window.setTimeout(
-      () => setFreshnessExpiryTick((value) => value + 1),
-      expiresAtMs - nowMs + 1,
-    );
-    return () => window.clearTimeout(timer);
-  }, [measuredAtMs, reconciliationAgeMs, serverPrivateFacts]);
-
-  const heartbeatAtNs = status?.execution.heartbeat_at_ns;
-  const serverPositiveSafety = Boolean(
-    status?.execution.alive || status?.execution.execution_safe || status?.execution.entries_armed,
-  );
-  useEffect(() => {
-    if (!serverPositiveSafety || measuredAtMs == null || heartbeatAtNs == null) return;
-    const nowMs = Date.now();
-    const heartbeatAtMs = Math.trunc(heartbeatAtNs / 1_000_000);
-    const serverAgeMs = measuredAtMs - heartbeatAtMs;
-    const expiresAtMs = measuredAtMs + EXECUTION_HEARTBEAT_FRESH_MS - serverAgeMs;
-    if (heartbeatAtMs <= 0 || serverAgeMs < 0 || measuredAtMs > nowMs || expiresAtMs < nowMs)
-      return;
-    const timer = window.setTimeout(
-      () => setFreshnessExpiryTick((value) => value + 1),
-      expiresAtMs - nowMs + 1,
-    );
-    return () => window.clearTimeout(timer);
-  }, [heartbeatAtNs, measuredAtMs, serverPositiveSafety]);
 
   if (statusQuery.isPending && !status) {
     return <PageState.Loading label="正在读取执行账户状态" layout="panel" rows={4} />;
@@ -87,54 +49,19 @@ export function TradingPage({ token }: { token: string }) {
   }
   if (!status) return null;
 
-  const accountFlatProven = currentAccountFlatProof({
-    accountFlatProven: status.execution.account_flat_proven,
-    measuredAtMs: status.measured_at_ms,
-    nowMs: Date.now(),
-    queryHealthy: !statusQuery.isError,
-    reconciliationAgeMs: status.execution.reconciliation_age_ms ?? null,
-  });
-  const executionHeartbeatCurrent = currentExecutionHeartbeat({
-    heartbeatAtNs: status.execution.heartbeat_at_ns ?? null,
-    measuredAtMs: status.measured_at_ms,
-    nowMs: Date.now(),
-    queryHealthy: !statusQuery.isError,
-  });
-  const positiveExecutionSafety =
-    status.execution.alive || status.execution.execution_safe || status.execution.entries_armed;
-  const privateAccountCurrent = currentPrivateAccountFacts({
-    measuredAtMs: status.measured_at_ms,
-    nowMs: Date.now(),
-    queryHealthy: !statusQuery.isError,
-    reconciliationAgeMs: status.execution.reconciliation_age_ms ?? null,
-  });
-  const reconciliationAgeCurrentMs = currentReconciliationAge({
-    measuredAtMs: status.measured_at_ms,
-    nowMs: Date.now(),
-    reconciliationAgeMs: status.execution.reconciliation_age_ms ?? null,
-  });
-  const currentExecution = {
-    ...status.execution,
-    account_flat_proven: accountFlatProven && executionHeartbeatCurrent,
-    alive: status.execution.alive && executionHeartbeatCurrent,
-    current_account: privateAccountCurrent ? status.execution.current_account : null,
-    entries_armed: status.execution.entries_armed && executionHeartbeatCurrent,
-    entry_block_reason:
-      positiveExecutionSafety && !executionHeartbeatCurrent
-        ? statusQuery.isError
-          ? "status_refresh_failed"
-          : "runtime_heartbeat_stale"
-        : status.execution.entry_block_reason,
-    execution_safe: status.execution.execution_safe && executionHeartbeatCurrent,
-    reconciliation_age_ms: reconciliationAgeCurrentMs,
-  };
+  /*
+   * The whole freshness rule. `facts_expire_at_ms` is an absolute instant, so this one comparison also
+   * covers a body kept from a failed refresh — there is nothing for a query-health flag to add, and no
+   * reason to re-derive a heartbeat age the server already measured. A `null` expiry is not staleness:
+   * it means there is no live projection at all (mode disabled, or no Runtime state), and every safety
+   * word below is already `false` for that reason and says so.
+   */
+  const expiresAtMs = status.execution.facts_expire_at_ms;
+  const stale = expiresAtMs != null && Date.now() > expiresAtMs;
 
   const cases = casesQuery.data?.cases ?? [];
-  const signals = signalsQuery.data?.signals ?? [];
-  const commands = commandsQuery.data?.commands ?? [];
-  const observations = observationsQuery.data?.observations ?? [];
-  const latestSignal = signals[0];
-  const latestCommand = commands[0];
+  const executions = executionsQuery.data?.executions ?? [];
+  const commands = executionsQuery.data?.commands ?? [];
   const selectedCaseId = searchParams.get("case");
   const selectedCase = selectedCaseId
     ? cases.find((item) => item.case_id === selectedCaseId)
@@ -150,11 +77,9 @@ export function TradingPage({ token }: { token: string }) {
   const failed = [
     statusQuery.isError ? "Status" : "",
     casesQuery.isError ? "Case" : "",
-    signalsQuery.isError ? "Signal" : "",
-    commandsQuery.isError ? "Command" : "",
-    observationsQuery.isError ? "Observation" : "",
+    executionsQuery.isError ? "执行" : "",
+    gateQuery.isError ? "准入台账" : "",
   ].filter(Boolean);
-  const progressWarning = observationReadWarning(observationsQuery);
 
   return (
     <TradingShell label="可操作交易台">
@@ -163,10 +88,7 @@ export function TradingPage({ token }: { token: string }) {
           <h1>Trading Desk</h1>
           <p>先回答现有 exposure 是否安全，再决定是否允许新增 exposure。</p>
         </div>
-        <div
-          className="trading-heading-aside"
-          data-tone={currentExecution.execution_safe ? undefined : "caution"}
-        >
+        <div className="trading-heading-aside" data-tone={stale ? "caution" : undefined}>
           <span>ALPHA {caseClock(status.decision.last_case_at_ms)}</span>
           <small>EXECUTION {status.execution.mode}</small>
         </div>
@@ -179,97 +101,41 @@ export function TradingPage({ token }: { token: string }) {
         onRetry={() => {
           void statusQuery.refetch();
           void casesQuery.refetch();
-          void signalsQuery.refetch();
-          void commandsQuery.refetch();
-          void observationsQuery.refetch();
+          void executionsQuery.refetch();
+          void gateQuery.refetch();
         }}
         updating={
           statusQuery.isFetching ||
           casesQuery.isFetching ||
-          signalsQuery.isFetching ||
-          commandsQuery.isFetching ||
-          observationsQuery.isFetching
+          executionsQuery.isFetching ||
+          gateQuery.isFetching
         }
       >
         <div className="trading-body">
-          <TradingAccountOverview execution={currentExecution} />
+          <TradingAccountOverview execution={status.execution} stale={stale} />
 
           <TradingControls
-            accountFlatProven={currentExecution.account_flat_proven}
+            commands={commands}
+            commandsFailed={executionsQuery.isError}
+            commandsPending={executionsQuery.isPending}
             entriesPaused={status.execution.entries_paused}
             mode={status.execution.mode}
             token={token}
           />
 
-          <Card
-            className="trading-latest-progress-card"
-            hint="persisted、Runtime、venue、fill 与 private-flat 是五个不同事实"
-            title="最近 Signal / Command"
-          >
-            {progressWarning ? (
-              <p className="trading-progress-uncertainty" data-tone="caution">
-                {progressWarning}
-              </p>
-            ) : null}
-            <div className="trading-latest-progress-grid">
-              <section>
-                <span className="trading-section-eyebrow">LATEST COMMAND</span>
-                {latestCommand ? (
-                  <>
-                    <div className="trading-progress-subject">
-                      <b>{commandActionLabel(latestCommand.action)}</b>
-                      <span>{latestCommand.reason}</span>
-                    </div>
-                    <TradingProgress progress={commandProgress(latestCommand, observations)} />
-                  </>
-                ) : (
-                  <TradingEmptyNote>
-                    {ledgerEmpty(commandsQuery.isPending, commandsQuery.isError, "Command")}
-                  </TradingEmptyNote>
-                )}
-              </section>
-              <section>
-                <span className="trading-section-eyebrow">LATEST SIGNAL</span>
-                {latestSignal ? (
-                  <>
-                    <div className="trading-progress-subject">
-                      <b>{latestSignal.direction.toUpperCase()}</b>
-                      <span>{latestSignal.market_key}</span>
-                    </div>
-                    <TradingProgress progress={signalProgress(latestSignal, observations)} />
-                  </>
-                ) : (
-                  <TradingEmptyNote>
-                    {ledgerEmpty(signalsQuery.isPending, signalsQuery.isError, "Signal")}
-                  </TradingEmptyNote>
-                )}
-              </section>
-            </div>
-          </Card>
+          <TradingExecutionTable
+            complete={executionsQuery.data?.complete ?? true}
+            failed={executionsQuery.isError}
+            pending={executionsQuery.isPending}
+            rows={executions}
+          />
 
-          <Card
-            hint="HTTP 200 只证明意图已持久化；每条进度由关联 Observation 推进"
-            title="Command 进度"
-          >
-            {commands.length ? (
-              <div className="trading-ledger-list">
-                {commands.map((item) => (
-                  <article className="trading-ledger-row" key={item.command_id}>
-                    <div>
-                      <b>{commandActionLabel(item.action)}</b>
-                      <span>{item.reason}</span>
-                    </div>
-                    <TradingProgress progress={commandProgress(item, observations)} />
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <TradingEmptyNote>
-                {ledgerEmpty(commandsQuery.isPending, commandsQuery.isError, "Command")}
-              </TradingEmptyNote>
-            )}
-            <TradingSourceLine path="GET /api/trading/execution/commands + observations → durable progress" />
-          </Card>
+          <TradingFunnel
+            cases={casesQuery.data}
+            casesFailed={casesQuery.isError}
+            gate={gateQuery.data}
+            gateFailed={gateQuery.isError}
+          />
 
           <Card
             flush
@@ -298,9 +164,12 @@ export function TradingPage({ token }: { token: string }) {
               </div>
             ) : (
               <TradingEmptyNote>
-                {ledgerEmpty(casesQuery.isPending, casesQuery.isError, "Case")}
+                {caseLedgerEmpty(casesQuery.isPending, casesQuery.isError)}
               </TradingEmptyNote>
             )}
+            {cases.length && casesQuery.data && !casesQuery.data.complete ? (
+              <TradingEmptyNote>本窗口已截断；未列出的 Case 不能解释为没有发生。</TradingEmptyNote>
+            ) : null}
             {selectedCase ? <TradingCaseDetail item={selectedCase} /> : null}
             {selectedCaseId && !selectedCase && cases.length ? (
               <TradingEmptyNote>
@@ -308,81 +177,14 @@ export function TradingPage({ token }: { token: string }) {
               </TradingEmptyNote>
             ) : null}
           </Card>
-
-          <details className="trading-advanced-audit">
-            <summary>Advanced Audit</summary>
-            <div className="trading-advanced-body">
-              <p>
-                account slot <code>{status.execution.account_slot}</code> · config{" "}
-                <code>{(status.execution.config_sha256 ?? "unavailable").slice(0, 12)}</code> ·
-                reconcile <code>{currentExecution.reconciliation_age_ms ?? "?"}ms</code>
-              </p>
-              <p>
-                runtime <code>{status.execution.runtime_release ?? "unavailable"}</code> · image{" "}
-                <code>{status.execution.image_digest ?? "unavailable"}</code> · credential{" "}
-                <code>{status.execution.credential_fingerprint ?? "unavailable"}</code>
-              </p>
-              <div className="trading-audit-list">
-                {(currentExecution.current_account?.positions ?? []).map((item) => (
-                  <article key={`position:${item.position_id}`}>
-                    <b>current_position</b>
-                    <span>{item.side}</span>
-                    <code>{item.position_id}</code>
-                  </article>
-                ))}
-                {(currentExecution.current_account?.orders ?? []).map((item) => (
-                  <article key={`order:${item.client_order_id}`}>
-                    <b>current_order</b>
-                    <span>
-                      {item.state} / {item.leg}
-                    </span>
-                    <code>{item.client_order_id}</code>
-                  </article>
-                ))}
-                {observations.map((item) => (
-                  <article key={item.event_id}>
-                    <b>{item.normalized_kind}</b>
-                    <span>seq {item.seq}</span>
-                    <code>{item.event_id}</code>
-                  </article>
-                ))}
-              </div>
-              <TradingSourceLine path="GET /api/trading/status + execution observations → identities and digests" />
-            </div>
-          </details>
         </div>
       </PageState.Stale>
     </TradingShell>
   );
 }
 
-function commandActionLabel(action: string): string {
-  return (
-    {
-      emergency_halt: "紧急停止",
-      flatten: "Flatten account",
-      manual_entry: "手动方向",
-      pause_entries: "Pause entries",
-      resume_entries: "Resume / Arm",
-    }[action] ?? action
-  );
-}
-
-function ledgerEmpty(pending: boolean, failed: boolean, owner: string): string {
-  if (pending) return `正在读取 ${owner} 账本…`;
-  if (failed) return `${owner} 账本读取失败，不能据此断言为空。`;
-  return `当前 24 小时窗口没有 ${owner}。`;
-}
-
-function observationReadWarning(query: {
-  data?: { complete: boolean };
-  isError: boolean;
-  isPending: boolean;
-}): string | null {
-  if (query.isPending) return "正在读取 Observation；persisted 之后的阶段暂时未知。";
-  if (query.isError) return "Observation 账本读取失败；不能断言 Runtime、venue、fill 或完成状态。";
-  if (query.data && !query.data.complete) {
-    return "Observation 窗口已截断；未关联到回执不能解释为尚未发生。";
-  }
-  return null;
+function caseLedgerEmpty(pending: boolean, failed: boolean): string {
+  if (pending) return "正在读取 Case 账本…";
+  if (failed) return "Case 账本读取失败，不能据此断言为空。";
+  return "当前 24 小时窗口没有 Case。";
 }

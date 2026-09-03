@@ -3,52 +3,72 @@ import { Metric, MetricRow } from "@shared/ui/Metric";
 import type { ReactNode } from "react";
 
 import type { TradingExecutionReadiness } from "../api/tradingQueries";
+import { bpsPercent, entryBlockReasonLabel, moneyLabel } from "../model/tradingLabels";
 
-export function TradingAccountOverview({ execution }: { execution: TradingExecutionReadiness }) {
+/**
+ * Blocks 1 and 2 of the desk: is the lane safe, and what is actually on the account (#528 PR-2).
+ *
+ * `stale` is the page's one freshness comparison — `Date.now() > execution.facts_expire_at_ms`, the instant
+ * the server itself published as the end of this projection's budget. Past it the four safety words are
+ * not what the response says they are, so all four read 过期 rather than the browser recomputing a
+ * heartbeat age and a reconciliation age of its own and disagreeing with the server about both.
+ */
+export function TradingAccountOverview({
+  execution,
+  stale,
+}: {
+  execution: TradingExecutionReadiness;
+  stale: boolean;
+}) {
   const account = execution.current_account;
   return (
     <div className="trading-account-overview">
       <MetricRow className="trading-safety-grid" columns={4} label="执行安全状态">
         <Metric
           eyebrow="ALIVE"
-          value={execution.alive ? "YES" : "NO"}
+          value={safety(execution.alive, stale, "YES", "NO")}
           caption="进程 / Node / event loop"
-          tone={execution.alive ? "accent" : "caution"}
+          tone={!stale && execution.alive ? "accent" : "caution"}
         />
         <Metric
           eyebrow="SAFE"
-          value={execution.execution_safe ? "YES" : "NO"}
+          value={safety(execution.execution_safe, stale, "YES", "NO")}
           caption="现有 exposure 可保护和退出"
-          tone={execution.execution_safe ? "accent" : "caution"}
+          tone={!stale && execution.execution_safe ? "accent" : "caution"}
         />
         <Metric
           eyebrow="ARMED"
-          value={execution.entries_armed ? "YES" : "NO"}
-          caption={execution.entry_block_reason ?? "允许新增 exposure"}
-          tone={execution.entries_armed ? "accent" : "caution"}
+          value={safety(execution.entries_armed, stale, "YES", "NO")}
+          caption={stale ? "事实已过期" : entryBlockReasonLabel(execution.entry_block_reason)}
+          tone={!stale && execution.entries_armed ? "accent" : "caution"}
         />
         <Metric
           eyebrow="FLAT"
-          value={execution.account_flat_proven ? "PROVEN" : "NOT PROVEN"}
+          value={safety(execution.account_flat_proven, stale, "PROVEN", "NOT PROVEN")}
           caption="新鲜 Binance 私有对账"
-          tone={execution.account_flat_proven ? "accent" : "caution"}
+          tone={!stale && execution.account_flat_proven ? "accent" : "caution"}
         />
       </MetricRow>
+      <p className="trading-routes-line">
+        Runtime 可执行市场 {execution.routes_count} 个 · 账户槽位{" "}
+        <code>{execution.account_slot}</code>
+        {stale ? " · 本次读取的事实已过期" : ""}
+      </p>
 
       <div className="trading-account-grid">
-        <Card className="trading-risk-card" title="账户与风险">
+        <Card title="账户与风险">
           <div className="trading-fact-grid">
-            <Fact label="Equity" value={money(account?.equity_usd)} />
+            <Fact label="Equity" value={moneyLabel(account?.equity_usd)} />
             <Fact
               label="当日 Drawdown"
               value={
                 account?.daily_drawdown_usd == null
                   ? "UNAVAILABLE"
-                  : `${money(account.daily_drawdown_usd)} · ${bps(account.daily_drawdown_bps)}`
+                  : `${moneyLabel(account.daily_drawdown_usd)} · ${bpsPercent(account.daily_drawdown_bps)}`
               }
               warn={Number(account?.daily_drawdown_usd ?? 0) > 0}
             />
-            <Fact label="Aggregate risk" value={money(account?.aggregate_risk_usd)} />
+            <Fact label="Aggregate risk" value={moneyLabel(account?.aggregate_risk_usd)} />
             <Fact
               label="Private reconcile age"
               value={
@@ -65,10 +85,26 @@ export function TradingAccountOverview({ execution }: { execution: TradingExecut
               value={account?.complete ? "COMPLETE" : account ? "PARTIAL" : "UNAVAILABLE"}
               warn={!account?.complete}
             />
+            <Fact
+              /*
+               * The audit the Runtime writes its own facts through. Unhealthy means the account read
+               * happened and could not be recorded, which is a different fact from a missing snapshot —
+               * so it names its own reason rather than degrading into UNAVAILABLE beside it.
+               */
+              label="审计写入"
+              value={
+                account == null
+                  ? "UNAVAILABLE"
+                  : account.audit_healthy
+                    ? "HEALTHY"
+                    : (account.audit_failure_reason ?? "UNHEALTHY")
+              }
+              warn={account != null && !account.audit_healthy}
+            />
           </div>
         </Card>
 
-        <Card className="trading-order-card" title="订单与不确定性">
+        <Card title="订单与不确定性">
           <div className="trading-fact-grid">
             <Fact label="Open" value={account?.open_orders_count ?? "—"} />
             <Fact label="Inflight" value={account?.inflight_orders_count ?? "—"} />
@@ -92,6 +128,7 @@ export function TradingAccountOverview({ execution }: { execution: TradingExecut
                   <span data-tone={order.leg === "unknown" ? "caution" : undefined}>
                     {order.leg.toUpperCase()} · Qty {order.quantity}
                   </span>
+                  <span>Trigger {order.trigger_price ?? "—"}</span>
                   <span data-tone={!order.owned ? "caution" : undefined}>
                     {order.owned ? "OWNED" : "UNCLAIMED"}
                     {order.reduce_only ? " · REDUCE ONLY" : ""}
@@ -105,11 +142,7 @@ export function TradingAccountOverview({ execution }: { execution: TradingExecut
         </Card>
       </div>
 
-      <Card
-        className="trading-position-card"
-        hint="仓位与保护逐项展示；数量完整覆盖才标记 protected"
-        title="当前仓位"
-      >
+      <Card hint="仓位与保护逐项展示；数量完整覆盖才标记 protected" title="当前仓位">
         {(account?.positions ?? []).length ? (
           <div className="trading-position-list">
             {(account?.positions ?? []).map((position) => (
@@ -127,7 +160,7 @@ export function TradingAccountOverview({ execution }: { execution: TradingExecut
                   <Fact label="Mark" value={position.mark_price ?? "UNAVAILABLE"} />
                   <Fact
                     label="Unrealized PnL"
-                    value={money(position.unrealized_pnl_usd)}
+                    value={moneyLabel(position.unrealized_pnl_usd)}
                     warn={position.unrealized_pnl_usd == null}
                   />
                 </div>
@@ -147,7 +180,7 @@ export function TradingAccountOverview({ execution }: { execution: TradingExecut
           </div>
         ) : (
           <p className="trading-empty-note">
-            {execution.account_flat_proven
+            {!stale && execution.account_flat_proven
               ? "当前账户无仓位，且新鲜 Binance 私有对账已证明账户为空。"
               : "未见当前仓位；这本身不能证明账户为空。"}
           </p>
@@ -166,18 +199,9 @@ function Fact({ label, value, warn = false }: { label: string; value: ReactNode;
   );
 }
 
-function money(value: string | null | undefined): string {
-  if (value == null) return "UNAVAILABLE";
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return "UNAVAILABLE";
-  return `${numeric < 0 ? "−" : ""}$${Math.abs(numeric).toLocaleString("en-US", {
-    maximumFractionDigits: 2,
-    minimumFractionDigits: 2,
-  })}`;
-}
-
-function bps(value: number | null | undefined): string {
-  return value == null ? "—" : `${(value / 100).toFixed(2)}%`;
+function safety(value: boolean, stale: boolean, yes: string, no: string): string {
+  if (stale) return "过期";
+  return value ? yes : no;
 }
 
 function protectionLabel(value: string): string {

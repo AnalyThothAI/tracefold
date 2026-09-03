@@ -51,8 +51,7 @@
     font-size: inherit;
   }
 
-  .trading-shell [data-tone="caution"],
-  .trading-confirm-dialog [data-tone="caution"] {
+  .trading-shell [data-tone="caution"] {
     color: var(--signal-caution);
   }
 
@@ -70,10 +69,27 @@
     box-shadow: var(--ring-panel);
   }
 
-  .trading-account-grid {
+  /* Block 1's remainder: the two Runtime identities that qualify the four words above them. */
+  .trading-routes-line {
+    margin: 0;
+    color: var(--text-subtle);
+    font-size: var(--font-size-mono-meta);
+  }
+
+  .trading-routes-line code {
+    color: var(--text-secondary);
+    font: var(--type-mono-meta);
+  }
+
+  .trading-account-grid,
+  .trading-funnel-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
+  }
+
+  .trading-funnel-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .trading-fact-grid {
@@ -107,8 +123,7 @@
 
   .trading-position-list,
   .trading-current-order-list,
-  .trading-ledger-list,
-  .trading-audit-list {
+  .trading-command-list {
     display: grid;
     gap: 8px;
   }
@@ -119,7 +134,7 @@
 
   .trading-current-order-row {
     display: grid;
-    grid-template-columns: minmax(140px, 1.3fr) auto minmax(110px, 0.8fr) minmax(110px, 0.8fr);
+    grid-template-columns: minmax(140px, 1.3fr) auto repeat(3, minmax(90px, 0.8fr));
     gap: 6px 10px;
     align-items: baseline;
     min-width: 0;
@@ -206,29 +221,19 @@
 
   .trading-control-panel {
     display: grid;
-    grid-template-columns: minmax(190px, 0.8fr) minmax(220px, 1fr) auto;
+    grid-template-columns: minmax(220px, 1fr) auto;
     gap: 10px 14px;
     align-items: end;
     min-width: 0;
-    padding: 13px 14px;
-    border-radius: var(--radius-lg);
-    background: var(--surface-panel);
-    box-shadow: var(--ring-panel);
+    padding: 12px 14px;
   }
 
-  .trading-control-copy,
   .trading-control-reason {
     display: grid;
     gap: 4px;
     min-width: 0;
   }
 
-  .trading-control-copy b {
-    color: var(--text-primary);
-    font-size: var(--font-size-meta);
-  }
-
-  .trading-control-copy span,
   .trading-control-reason span {
     color: var(--text-subtle);
     font-size: var(--font-size-mono-meta);
@@ -253,8 +258,7 @@
     box-shadow: var(--ring-control), var(--focus-halo);
   }
 
-  .trading-control-actions,
-  .trading-confirm-actions {
+  .trading-control-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
@@ -268,208 +272,135 @@
     font-size: var(--font-size-mono-meta);
   }
 
-  .trading-confirm-overlay {
-    position: fixed;
-    z-index: 90;
-    inset: 0;
-    background: var(--surface-scrim);
+  .trading-command-list {
+    padding: 0 14px 12px;
   }
 
-  .trading-confirm-dialog {
-    position: fixed;
-    z-index: 91;
-    top: 50%;
-    left: 50%;
+  .trading-command-row {
     display: grid;
-    width: min(440px, calc(100vw - 32px));
-    max-height: calc(100vh - 32px);
-    gap: 14px;
-    overflow: auto;
-    padding: 18px;
-    border-radius: var(--radius-lg);
-    outline: none;
-    background: var(--surface-panel);
-    box-shadow: var(--shadow-overlay);
-    transform: translate(-50%, -50%);
-  }
-
-  .trading-confirm-dialog h2,
-  .trading-confirm-dialog p {
-    margin: 0;
-  }
-
-  .trading-confirm-dialog h2 {
-    color: var(--text-primary);
-    font: var(--type-item-title);
-  }
-
-  .trading-confirm-dialog p {
-    color: var(--text-secondary);
-    font: var(--type-body);
-  }
-
-  .trading-latest-progress-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
-  }
-
-  .trading-progress-uncertainty {
-    margin: 0 0 10px;
-    padding: 8px 10px;
-    border-radius: var(--radius-sm);
-    background: var(--signal-caution-soft);
-    box-shadow: inset 0 0 0 1px var(--signal-caution-border);
+    grid-template-columns: minmax(120px, 0.7fr) minmax(0, 1.4fr) minmax(120px, 0.8fr) auto auto;
+    gap: 6px 12px;
+    align-items: baseline;
+    min-width: 0;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-faint);
     font-size: var(--font-size-mono-meta);
   }
 
-  .trading-latest-progress-grid > section {
-    display: grid;
-    gap: 8px;
-    min-width: 0;
-    padding: 11px 12px;
-    border-radius: var(--radius-md);
-    background: var(--surface-raised);
+  .trading-command-row:last-child {
+    border-bottom: 0;
   }
 
-  .trading-section-eyebrow {
-    color: var(--text-subtle);
-    font: var(--type-eyebrow);
-    letter-spacing: 0.09em;
-  }
-
-  .trading-progress-subject,
-  .trading-ledger-row > div:first-child {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 10px;
-    min-width: 0;
-  }
-
-  .trading-progress-subject b,
-  .trading-ledger-row b {
+  .trading-command-row b {
     color: var(--text-primary);
     font-size: var(--font-size-meta);
   }
 
-  .trading-progress-subject span,
-  .trading-ledger-row span {
+  .trading-command-row span {
     min-width: 0;
     overflow-wrap: anywhere;
     color: var(--text-subtle);
-    font-size: var(--font-size-mono-meta);
   }
 
-  .trading-progress {
-    display: grid;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .trading-progress-label {
+  /*
+   * The server's own stage word, and the only place the desk colours one. `completed` is the private
+   * reconciliation proving the slot flat and `closed` is a position with a realized number on it — those
+   * two have finished; the rest are still moving or were refused, and the caution wash says which.
+   */
+  .trading-stage {
+    justify-self: start;
+    padding: 1px 7px;
+    border-radius: var(--radius-xs);
+    box-shadow: inset 0 0 0 1px var(--border-strong);
     color: var(--text-secondary);
     font: var(--type-mono-meta);
+    white-space: nowrap;
   }
 
-  .trading-progress-steps {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 0;
-    min-width: 0;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .trading-progress-steps li {
-    position: relative;
-    display: grid;
-    grid-template-columns: 9px minmax(0, 1fr);
-    gap: 5px;
-    align-items: start;
-    min-width: 0;
-    color: var(--text-subtle);
-    font-size: var(--font-size-mono-meta);
-    line-height: 1.4;
-  }
-
-  .trading-progress-steps li::before {
-    position: absolute;
-    top: 4px;
-    right: calc(100% - 5px);
-    left: 5px;
-    height: 1px;
-    background: var(--border-strong);
-    content: "";
-  }
-
-  .trading-progress-steps li:first-child::before {
-    content: none;
-  }
-
-  .trading-progress-dot {
-    z-index: 1;
-    width: 9px;
-    height: 9px;
-    margin-top: 3px;
-    border-radius: var(--radius-pill);
-    background: var(--border-strong);
-    box-shadow: 0 0 0 2px var(--surface-panel);
-  }
-
-  .trading-progress-steps li[data-tone="complete"] {
+  .trading-stage[data-stage="completed"],
+  .trading-stage[data-stage="closed"] {
+    box-shadow: inset 0 0 0 1px var(--signal-done);
     color: var(--signal-done);
   }
 
-  .trading-progress-steps li[data-tone="complete"] .trading-progress-dot {
-    background: var(--signal-done);
-  }
-
-  .trading-progress-steps li[data-tone="current"] {
-    color: var(--text-secondary);
-    font-weight: 600;
-  }
-
-  .trading-progress-steps li[data-tone="current"] .trading-progress-dot {
-    background: var(--signal-info);
-  }
-
-  .trading-progress-steps li[data-tone="ambiguous"] {
-    color: var(--signal-caution);
-    font-weight: 600;
-  }
-
-  .trading-progress-steps li[data-tone="ambiguous"] .trading-progress-dot {
-    background: var(--signal-caution);
-  }
-
-  .trading-progress-steps li[data-tone="rejected"] {
-    color: var(--signal-alert);
-  }
-
-  .trading-progress-steps li[data-tone="rejected"] .trading-progress-dot {
-    background: var(--signal-alert);
-  }
-
-  .trading-progress-steps li[data-tone="expired"] {
+  .trading-stage[data-stage="rejected"],
+  .trading-stage[data-stage="expired"] {
+    background: var(--signal-caution-soft);
+    box-shadow: inset 0 0 0 1px var(--signal-caution-border);
     color: var(--signal-caution);
   }
 
-  .trading-progress-steps li[data-tone="expired"] .trading-progress-dot {
-    background: var(--signal-caution);
-  }
-
-  .trading-ledger-row {
+  .trading-execution-table {
     display: grid;
-    grid-template-columns: minmax(130px, 0.5fr) minmax(0, 2fr);
-    gap: 12px;
-    align-items: start;
-    padding: 10px 0;
-    border-bottom: 1px solid var(--border-faint);
+    min-width: 0;
+    overflow-x: auto;
   }
 
-  .trading-ledger-row:last-child {
+  .trading-execution-head,
+  .trading-execution-row {
+    display: grid;
+    grid-template-columns:
+      minmax(86px, 0.7fr) minmax(150px, 1.3fr) minmax(52px, 0.4fr) minmax(120px, 1fr)
+      minmax(78px, 0.6fr) minmax(74px, 0.6fr) minmax(84px, 0.6fr) minmax(78px, 0.6fr)
+      minmax(70px, 0.5fr) minmax(78px, 0.6fr) minmax(84px, 0.6fr) minmax(94px, 0.7fr);
+    gap: 4px 10px;
+    align-items: baseline;
+    min-width: 1080px;
+    padding: 7px 14px;
+    border-bottom: 1px solid var(--border-faint);
+    font-size: var(--font-size-mono-meta);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .trading-execution-head {
+    color: var(--text-subtle);
+    font: var(--type-eyebrow);
+    letter-spacing: 0.06em;
+  }
+
+  .trading-execution-row {
+    color: var(--text-secondary);
+  }
+
+  .trading-execution-row:last-child {
     border-bottom: 0;
+  }
+
+  .trading-execution-row span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .trading-count-list {
+    display: grid;
+    gap: 1px;
+    overflow: hidden;
+    margin-top: 10px;
+    border-radius: var(--radius-sm);
+    background: var(--border-faint);
+  }
+
+  .trading-count-row {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    justify-content: space-between;
+    min-width: 0;
+    padding: 6px 10px;
+    background: var(--surface-raised);
+    font-size: var(--font-size-mono-meta);
+  }
+
+  .trading-count-row small {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: var(--text-subtle);
+  }
+
+  .trading-count-row b {
+    color: var(--text-primary);
+    font: var(--type-mono-meta);
+    font-variant-numeric: tabular-nums;
   }
 
   .trading-case-list {
@@ -511,59 +442,6 @@
 
   .trading-case-card small {
     color: var(--text-subtle);
-  }
-
-  .trading-advanced-audit {
-    overflow: hidden;
-    border-radius: var(--radius-lg);
-    background: var(--surface-panel);
-    box-shadow: var(--ring-panel);
-  }
-
-  .trading-advanced-audit summary {
-    padding: 12px 14px;
-    color: var(--text-secondary);
-    font-size: var(--font-size-meta);
-    font-weight: 640;
-    cursor: pointer;
-  }
-
-  .trading-advanced-body {
-    display: grid;
-    gap: 10px;
-    border-top: 1px solid var(--border-subtle);
-  }
-
-  .trading-advanced-body > p,
-  .trading-audit-list {
-    margin: 0 14px;
-  }
-
-  .trading-advanced-body > p:first-child {
-    margin-top: 12px;
-  }
-
-  .trading-advanced-body p,
-  .trading-audit-list article {
-    color: var(--text-subtle);
-    font-size: var(--font-size-mono-meta);
-    line-height: 1.55;
-  }
-
-  .trading-advanced-body code,
-  .trading-audit-list code {
-    overflow-wrap: anywhere;
-    color: var(--text-secondary);
-    font: var(--type-mono-meta);
-  }
-
-  .trading-audit-list article {
-    display: grid;
-    grid-template-columns: minmax(100px, 0.5fr) auto minmax(0, 1fr);
-    gap: 8px;
-    align-items: baseline;
-    padding-bottom: 6px;
-    border-bottom: 1px solid var(--border-faint);
   }
 
   .trading-source-line {
@@ -653,16 +531,13 @@
     min-width: 0;
   }
 
-  @media (max-width: 980px) {
-    .trading-control-panel {
+  @media (max-width: 1279px) {
+    .trading-funnel-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
+  }
 
-    .trading-control-actions {
-      grid-column: 1 / -1;
-      justify-content: flex-start;
-    }
-
+  @media (max-width: 980px) {
     .trading-position-row {
       grid-template-columns: minmax(130px, 0.6fr) minmax(0, 1.8fr);
     }
@@ -684,20 +559,18 @@
     }
 
     .trading-account-grid,
-    .trading-latest-progress-grid,
+    .trading-funnel-grid,
     .trading-control-panel,
-    .trading-ledger-row,
+    .trading-command-row,
     .trading-position-row {
       grid-template-columns: minmax(0, 1fr);
     }
 
-    .trading-control-actions,
-    .trading-confirm-actions {
+    .trading-control-actions {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
     }
 
-    .trading-control-actions,
     .trading-protection-strip {
       grid-column: auto;
     }
@@ -707,34 +580,12 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .trading-progress-steps {
-      grid-template-columns: minmax(0, 1fr);
-      gap: 3px;
-    }
-
     .trading-current-order-row {
       grid-template-columns: minmax(0, 1fr) auto;
     }
 
-    .trading-progress-steps li::before {
-      top: -4px;
-      right: auto;
-      bottom: calc(100% - 3px);
-      left: 4px;
-      width: 1px;
-      height: auto;
-    }
-
     .trading-case-check {
       grid-template-columns: minmax(0, 1fr) auto;
-    }
-
-    .trading-audit-list article {
-      grid-template-columns: auto minmax(0, 1fr);
-    }
-
-    .trading-audit-list code {
-      grid-column: 1 / -1;
     }
   }
 }

@@ -8,45 +8,6 @@ import { CASE_STATE_ZH, bpsPercent, policyReasonLabel } from "./tradingLabels";
  * It derives nothing. Every threshold is frozen onto the Case, so the page renders what the server
  * already decided: a Case frozen last week must not be re-measured against a floor edited yesterday.
  */
-export type CaseTab = "all" | "emitted" | "no_trade" | "blocked";
-
-export const CASE_TABS: Record<CaseTab, { label: string; states: readonly string[] }> = {
-  all: { label: "全部", states: [] },
-  emitted: { label: "已发出 Signal", states: ["SIGNAL_EMITTED"] },
-  no_trade: { label: "不交易", states: ["NO_TRADE"] },
-  blocked: { label: "无法判定", states: ["BLOCKED"] },
-};
-
-const TAB_KEYS = Object.keys(CASE_TABS) as CaseTab[];
-
-export function parseCaseTab(value: string | null): CaseTab | null {
-  return value && TAB_KEYS.includes(value as CaseTab) ? (value as CaseTab) : null;
-}
-
-export function casesForTab(cases: readonly TradingCase[], tab: CaseTab): TradingCase[] {
-  const states = CASE_TABS[tab].states;
-  return states.length ? cases.filter((item) => states.includes(item.state)) : [...cases];
-}
-
-/**
- * The first tab that has rows, or `all` when nothing does.
- *
- * A fixed default of `已形成意图` on a lane that legitimately emits nothing greets every reader with an
- * empty page and teaches them the console is broken. `全部` leads the strip and therefore wins this
- * search whenever anything has rows at all — which is the intended answer, because it shows the
- * refusals beside the emissions. The search below it is what keeps that true if the strip ever gains a
- * filtered tab above `全部`. A URL that names a tab always wins: a shared link points at what its
- * author was looking at.
- */
-export function defaultCaseTab(cases: readonly TradingCase[], requested: CaseTab | null): CaseTab {
-  if (requested) return requested;
-  return TAB_KEYS.find((tab) => casesForTab(cases, tab).length > 0) ?? "all";
-}
-
-export function caseTabCount(cases: readonly TradingCase[], tab: CaseTab): number {
-  return casesForTab(cases, tab).length;
-}
-
 export type CaseFigure = {
   key: string;
   label: string;
@@ -55,10 +16,10 @@ export type CaseFigure = {
 };
 
 /**
- * The title row's figures, every one of them a durable count the server aggregated (#331).
+ * The funnel's Case figures, every one of them a durable count the server aggregated (#331).
  *
  * `0 成案` is a legitimate output of the current rules and is presented as one. What it must never be
- * presented as is "no data": the Source figure beside it says how many facts the lane actually saw.
+ * presented as is "no data": the admission figures beside it say how many facts the lane actually saw.
  */
 export function caseFigures(data: TradingCases | undefined): CaseFigure[] {
   const states = data?.state_counts_24h ?? {};

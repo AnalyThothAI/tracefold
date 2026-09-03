@@ -33,8 +33,8 @@ import "./newsOi.css";
  *
  * Bounded reads: `/api/news/status` for the push gates and 24 h counts, `/api/news/feed` filtered to the
  * deterministic lane for frames, one current-quote batch for the visible assets, and one
- * `/api/trading/gate` batch — which carries the admission configuration as well as the answers, so the
- * panel prints the digest the ledger's rows were actually filed under.
+ * `/api/trading/gate` batch for the per-frame admission verdicts. The admission *configuration* that batch
+ * also carries is printed on the Trading desk's funnel (#528 PR-2), beside the answers it filed.
  *
  * **No Intent read (#331).** The trailing column used to load `/api/trading/intents` to show a Case
  * state and an execution state beside each frame, which is three aggregates in one cell and made a failed
@@ -106,11 +106,10 @@ export function NewsOiPage({ token }: { token: string }) {
   /*
    * Independent supporting reads sit under this page and each fails on its own, so each is named on its own.
    *
-   * A *cold* failure counts, not just a stale refresh: with no admission rules read, the Candidate
-   * Gate panel has nothing to print, and four `—` tiles beside 已启用 read as "no admission rule is
-   * configured" rather than "we could not ask". The panel says so itself, and this line is what makes
-   * it visible above the fold and gives the reader a retry — `PageState.Stale` only offers one when
-   * there is a message to attach it to.
+   * A *cold* failure counts, not just a stale refresh: with no admission ledger read, every frame's
+   * capital cell says 读取失败 rather than naming a verdict, and that is a statement about the read,
+   * not about the frame. This line is what makes it visible above the fold and gives the reader a
+   * retry — `PageState.Stale` only offers one when there is a message to attach it to.
    */
   const supportingReadFailures = [gateQuery.isError ? "准入台账" : ""].filter(Boolean);
   return (
@@ -170,18 +169,7 @@ export function NewsOiPage({ token }: { token: string }) {
               />
             </MetricRow>
 
-            <div className="news-oi-columns">
-              <NewsOiGates
-                byRule={byRule ?? {}}
-                gate={gateQuery.data?.config}
-                /*
-                 * Whether the admission rules were read at all. Four `—` tiles read as "no admission
-                 * rule is configured", which is the failure mode this page must never present: an
-                 * unread threshold and an absent one are different facts.
-                 */
-                gateUnread={!gateQuery.data}
-              />
-            </div>
+            <NewsOiGates byRule={byRule ?? {}} />
 
             {/*
              * The failed request replaces the rows, never the tabs: a reader whose 解析失败 page 5xx'd has to

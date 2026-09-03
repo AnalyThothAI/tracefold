@@ -95,30 +95,19 @@ describe("NewsOiPage", () => {
     expect(screen.getByText("解析成功 97.9%")).toBeInTheDocument();
   });
 
-  it("names the admission version it read and never an Alpha threshold", async () => {
+  it("prints no threshold of its own, on either lane", async () => {
     /*
-     * #331: the panel shows the *admission* rules the ledger's rows are filed under. It shows no Alpha
-     * threshold at all, because those are frozen onto each Case and belong beside the Case that executed
-     * them — a panel printing today's configuration invited a reader to measure last week's Case with it.
+     * #528 PR-2: the admission configuration moved to the Trading desk's funnel, beside the answers it
+     * filed. It never belonged on two pages, and this one can answer 「来源发生了什么」 without it. No
+     * Alpha threshold either — those are frozen onto each Case and belong beside the Case that executed
+     * them; a panel printing today's configuration invited a reader to measure last week's Case with it.
      */
     renderOi();
-    expect(
-      await screen.findByText(/SOURCE_NATIVE · trading_admission_v6 · Alpha 阈值随案例冻结/),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/binance\.usdm · hyperliquid\.perp · hyperliquid\.xyz/),
-    ).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "来源入账 · NEWS.OI" });
+    expect(screen.queryByRole("heading", { name: "准入闸 · TRADING" })).toBeNull();
+    expect(screen.queryByText(/trading_admission_v6/)).toBeNull();
+    expect(screen.queryByText(/binance\.usdm · hyperliquid\.perp/)).toBeNull();
     expect(screen.queryByText(/min_whale_long_profit/)).toBeNull();
-  });
-
-  it("says the admission rules were unread rather than printing them as absent", async () => {
-    cleanup();
-    server.use(
-      http.get(/.*\/api\/trading\/gate$/, () => HttpResponse.json({ ok: false }, { status: 503 })),
-    );
-    renderOi();
-    expect(await screen.findByText("SOURCE_NATIVE · 准入规则未读到")).toBeInTheDocument();
-    expect(await screen.findByText(/准入台账读取失败/)).toBeInTheDocument();
   });
 
   it("stamps the research bucket from the measurement, not from a lane threshold", async () => {
@@ -519,14 +508,15 @@ describe("NewsOiPage", () => {
     expect(screen.getByText(/WIF OI Rise 6.71%/)).toBeInTheDocument();
   });
 
-  it("shows the two compact panels side by side and never merges them", async () => {
+  it("keeps one panel: what the lane did with the frames, and who owns the push", async () => {
     renderOi();
     await screen.findByRole("heading", { name: "OI 来源与准入审计" });
 
     /*
      * #458: the News half is no longer a gate. It counts what the lane did with the frames — stored and
      * unparseable — and hands the push decision to the Signal lane by name and by link. A threshold on
-     * this side is exactly the second teacher the cut removed.
+     * this side is exactly the second teacher the cut removed, and #528 PR-2 moved the capital lane's
+     * own thresholds to the desk, so there is no second panel left to disagree with.
      */
     const gates = await screen.findByRole("heading", { name: "来源入账 · NEWS.OI" });
     const gatesCard = gates.closest("article") as HTMLElement;
@@ -539,27 +529,6 @@ describe("NewsOiPage", () => {
     // The two thresholds this panel used to print, by their exact rendered form.
     expect(gatesCard).not.toHaveTextContent("> 80%");
     expect(gatesCard).not.toHaveTextContent("\u2264 2 / 4h");
-
-    /*
-     * The capital half is Admission's own configuration, read from the same batch as the answers it
-     * filed (#269/#331). It used to read the operator's `trading` settings document that News
-     * republishes — printing 持仓规模 ≥2000 万 while admission ran at 500 万 — and to show an Alpha
-     * threshold as though it were the lane's.
-     */
-    const admission = screen.getByRole("heading", { name: "准入闸 · TRADING" });
-    const admissionCard = admission.closest("article") as HTMLElement;
-    expect(within(admissionCard).getByText("≥500 万")).toBeInTheDocument(); // 5_000_000
-    // #348 retired the capital rank ceiling and the per-symbol cooldown; #458 then removed the News
-    // push rank as well, so neither panel may grow one back.
-    expect(within(admissionCard).queryByText("≤ 2")).toBeNull();
-    expect(admissionCard).not.toHaveTextContent("冷却");
-    // Source venues describe evidence provenance only; execution routing belongs to a later owner.
-    expect(admissionCard).toHaveTextContent("binance.usdm · hyperliquid.perp · hyperliquid.xyz");
-    expect(admissionCard).toHaveTextContent("只决定证据来源，不决定执行路由");
-    expect(admissionCard).not.toHaveTextContent("BINANCE_USDM");
-    expect(admissionCard).toHaveTextContent("5m");
-    expect(admissionCard).toHaveTextContent("Alpha 阈值随案例冻结");
-    expect(admissionCard).not.toHaveTextContent("≥95%");
     expect(screen.queryByRole("heading", { name: "交易地板 · TRADING" })).toBeNull();
   });
 
@@ -584,9 +553,9 @@ describe("NewsOiPage", () => {
 
   it("names the failed capital read, and offers a retry, even on a cold failure", async () => {
     /*
-     * A cold admission failure leaves the panel with nothing to print, and four `—` tiles read as "no
-     * admission rule is configured" rather than "we could not ask" — so it has to be named above the
-     * fold and retryable, not only reported inside the panel.
+     * A cold admission failure leaves every frame's capital cell with nothing to name — and 未评估 there
+     * would report a refusal the lane never made. So the failure is named above the fold and retryable,
+     * not only reported inside the row.
      */
     server.use(
       http.get(/.*\/api\/trading\/gate$/, () =>
@@ -598,8 +567,8 @@ describe("NewsOiPage", () => {
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("准入台账读取失败");
     expect(within(alert).getByRole("button", { name: "重试" })).toBeInTheDocument();
-    // And the panel says the same thing where the missing numbers are.
-    expect(screen.getByText("SOURCE_NATIVE · 准入规则未读到")).toBeInTheDocument();
+    // And the row says the same thing where the missing verdict is.
+    expect(screen.getAllByText("读取失败").length).toBeGreaterThan(0);
   });
 
   it("names why a frame has no case, instead of one 未成案 for four different facts", async () => {
