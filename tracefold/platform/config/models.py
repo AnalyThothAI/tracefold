@@ -308,8 +308,8 @@ class NewsPolicySettings(BaseModel):
     # x/twitter frames carry their own publication time; everything else is unaffected. Zero disables.
     stale_source_max_age_s: int = 12 * 60 * 60
     # #504 D2: at most `storyline_budget_max` delivered cards per final storyline key inside
-    # `storyline_budget_window_s`, exempting a corroborated escalate, a direction reversal and the `macro:*`
-    # fallback buckets. Either at 0 disables the budget. A content rule per storyline, not a reader quota.
+    # `storyline_budget_window_s`, exempting a corroborated escalate, a direction reversal and the `none`
+    # key (#509). Either at 0 disables the budget. A content rule per storyline, not a reader quota.
     storyline_budget_window_s: int = 3600
     storyline_budget_max: int = 2
 

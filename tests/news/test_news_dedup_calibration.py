@@ -167,7 +167,7 @@ def test_recall_of_the_earlier_card_into_the_shown_rows_clears_the_floor() -> No
 
 def test_the_twelve_hour_venezuela_repeat_is_shown_to_the_program() -> None:
     """The extreme case of the audit: the same Chinese headline, word for word, 12.8 h apart under
-    `macro:general`, from two different English wires. No link in the audit-day chain ever saw the first card."""
+    the `none` key, from two different English wires. No link in the audit-day chain ever saw the first card."""
 
     cards = _cards()
     by_id = {card["event_id"]: card for card in cards}

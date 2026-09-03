@@ -56,6 +56,7 @@ from pathlib import Path
 import tracefold
 import tracefold.trading
 from tracefold.app.cli.main import main as cli_main
+from tracefold.news.events.storyline import load_storyline_registry
 from tracefold.news.program.artifact import load_stable_program_artifact
 
 package_root = Path(tracefold.__file__).resolve().parent
@@ -69,6 +70,7 @@ print(
             "cwd": str(Path.cwd()),
             "cli_main_module": cli_main.__module__,
             "program_sha256": load_stable_program_artifact().program_sha256,
+            "storyline_registry_entries": len(load_storyline_registry().entries),
             "trading_root": str(Path(tracefold.trading.__file__).resolve().parent),
             "alembic_env_py": (alembic_root / "env.py").is_file(),
             "alembic_baseline_sql": (alembic_root / "current_schema_20260831_0340.sql").is_file(),
@@ -216,6 +218,9 @@ def test_wheel_ships_the_packaged_resources_the_runtime_reads(built_distribution
         f"{alembic}versions/20260903_0353_trading_execution_reference_collation.py",
     ]
     assert f"{DISTRIBUTION_NAME}/news/program/resources/registry.json" in members
+    # #509: the storyline registry is package data the Gate and Triage read on every Event, so a wheel
+    # that dropped it would fail at the first key rather than at import.
+    assert f"{DISTRIBUTION_NAME}/news/events/storyline_registry.json" in members
 
 
 def test_sdist_carries_the_flat_tree_and_no_src_directory(built_distribution: BuiltDistribution) -> None:
@@ -247,9 +252,12 @@ def test_the_checkout_is_absent_from_the_isolated_interpreter(isolated_probe: di
 
 
 def test_installed_distribution_reads_its_own_program_artifact(isolated_probe: dict[str, object]) -> None:
+    from tracefold.news.events.storyline import load_storyline_registry
     from tracefold.news.program.artifact import load_stable_program_artifact
 
     assert isolated_probe["program_sha256"] == load_stable_program_artifact().program_sha256
+    # #509: the installed wheel loads and validates the storyline registry from its own package data.
+    assert isolated_probe["storyline_registry_entries"] == len(load_storyline_registry().entries)
 
 
 def test_installed_distribution_carries_the_alembic_tree(isolated_probe: dict[str, object]) -> None:

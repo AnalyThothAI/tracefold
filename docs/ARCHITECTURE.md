@@ -991,16 +991,63 @@ tag, or a different source) re-gates it in place and it publishes once.
 `queue_priority` is `high` (AMQP priority 5) for score >= 90, watchlist hits,
 listing frames, or rate/yield macro. It is a broker scheduling hint only: it may
 be persisted and measured, but cannot enter a Predictor, `decide()`, ReaderCard
-or reader-facing importance UI. The preliminary storyline key (status bar only)
-is theme-first over the ordered lexicon `news_storyline_lexicon_v3`
-(`crypto_treasury`, `mideast_energy`, `ru_ua`, `cb_fed`, `cb_boj`, `cb_ecb`,
-`cb_boe`, `cb_boc`, `cb_rba`, `cb_rbnz`, `cb_pboc`, `rates`, `trade`,
-`china_macro`, `metals`, `us_equity_macro`, `us_macro_data`, `venezuela`;
-first match wins, central banks sit above `rates`, and `mideast_energy` and
-`ru_ua` carry Russian, Persian and Hebrew terms, #504), then the first
-A/A+ or cashtag asset; the final key is computed after Triage from the
-verdict's grounded primaries and scope, written back to `news_events`, and
-used by duplicate comparison, operator grouping, and advisory locking.
+or reader-facing importance UI.
+
+The storyline key is composed from a **code-owned registry**, not from an
+ordered pattern list (#509). `tracefold/news/events/storyline_registry.json`
+(`news_storyline_registry_v1`) holds `conflict` / `actor` / `geo` / `topic`
+entries, each with a Chinese label and literal aliases per script; `latin`
+aliases match on word boundaries and every other script matches as a substring,
+both over NFKC-normalized, case-folded text, and the longest alias at a position
+wins. An alias belongs to exactly one entry, so matching yields a *set* of
+positioned hits with no priority rule of its own. Structure is enforced at load:
+unique aliases, no structural regex syntax (a literal `.` is fine and escaped —
+`u.s.` needs it), already-normalized surface forms, `members` that name entries
+which exist, and no aliases at all on a `conflict` row. An entry may set `standalone: false`, which means "match
+me, but never be the key on your own": the hit still counts toward a conflict's
+`members` and the entry still owns its aliases, but it is skipped when the
+`actor`/`geo`/`topic` steps pick a winner. `us` is the case that needs it — a US
+dateline is not a storyline for this reader, and letting `美国` / `washington` /
+`u.s.` open a bucket put CPI, jobless claims and housing starts into one hourly
+budget. The key is then composed by one fixed rank —
+1. `asset:<SYM>` (a verdict primary the Gate grounded, scope not macro),
+2. `conflict:<id>` (an active conflict whose `members` the text names — a
+conflict owns no aliases of its own, so `hormuz`, `lebanon` and `mideast` are
+`geo` rows that keep their coverage if the war is ever set inactive),
+3. `actor:<id>`, 4. `geo:<id>`, 5. `topic:<id>`, 6. the model's own
+symbol-shaped primary, 7. a grounded tag the text actually names (#100), 8.
+`none` — with earliest mention as the tie-break inside a rank. Shuffling the
+registry cannot move a key, and adding a storyline is one row plus one
+assertion rather than a reordering of everything above it. The symbol shape
+accepts one exchange suffix (`02015.HK`, `DTE.DE`). `none` replaces the old
+`macro:<dedupe_family>` fallback: the dedupe family is a column on the Event
+row, not a storyline, and policy v12's budget exempts `none` exactly.
+
+The preliminary key (status bar and told retrieval before Triage) walks that
+rank with its first step removed: registry first, then an A/A+ or cashtag
+strong tag, then `none`. A provider tag names an *affected* asset until Triage
+names a primary, so letting it win before Triage keyed "Iran attacked another
+ship outside the Strait of Hormuz" as `asset:BTC` on the strength of a BTC tag,
+and the told ledger's exact-storyline tier then answered a war card with
+Bitcoin cards. A B+ tag never opens a preliminary storyline. The final key is
+computed after Triage from the verdict's grounded primaries and scope — where
+the asset is back on top, because the model has now named its subject against
+the Gate's grounding — written back to `news_events`, and used by duplicate
+comparison, operator grouping, and advisory locking. `STORYLINE_REGISTRY_SHA256` (the
+registry file's bytes) is written into every verdict trace as an audit field.
+It is deliberately not part of `policy_sha256` and opens no learning epoch:
+maintaining the registry is data maintenance, not a policy change.
+
+Registry changes are a hard cut with no data migration. `news_events.storyline_key`
+keeps whatever string the row was written with, so historical rows stay their own
+audit truth; nothing reads or translates the retired `theme:` / `macro:` formats.
+The one visible consequence is bounded and one-directional: the budget counts
+only delivered cards inside `storyline_budget_window_s` (1 h), so for the first
+hour after a deploy that changes key formats those rows still carry the old
+format, match no new key, and are not counted. The `recent_seen_rows` ledger the
+similarity check reads is 4 h and is unaffected — it compares headlines, not
+keys. The budget therefore errs toward releasing a card rather than withholding
+one, for one hour, once.
 
 Triage is a deep semantic-judgment **Module**. Its only hot-path generation
 **Interface** is `SemanticJudge.judge(TriageContext) -> SemanticJudgment`; the
@@ -1314,8 +1361,8 @@ already has `storyline_budget_max` (2) delivered cards inside
 similarity check reads (sent first deliveries, newest first, `settled_at_ms`
 and the card's final key). Three exemptions, all content: an `escalate` that
 survived corroboration; a bullish/bearish reversal against the newest
-delivered card on that key; and any `macro:<dedupe_family>` fallback key,
-which is not a storyline and is neither counted nor budgeted. Either knob at
+delivered card on that key; and the `none` key, which is not a storyline (the
+registry matched nothing) and is neither counted nor budgeted. Either knob at
 0 disables the budget. Two more v12 rules run before it: an eligible
 `escalate` whose code-owned `editorial.taxonomy.source_authority` is
 `unknown` and whose Event has a single member is downgraded to `push` as
@@ -1567,7 +1614,7 @@ and an unread singleton that two hot-path consumers still SELECT is how a second
 decision plane grows beside `decide()`. Policy v12 has
 no reader-global quota; its only volume rule is the per-storyline content
 budget (`storyline:<key>:budget`, #504) with the escalate, reversal and
-`macro:*` exemptions and the `throttled_by_key` observation described above.
+`none` exemptions and the `throttled_by_key` observation described above.
 
 Incidents and recovery: WSS transport/auth/protocol/idle failures, broker
 backpressure/unavailability, and Triage circuit opens are rows in

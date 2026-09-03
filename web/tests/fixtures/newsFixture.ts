@@ -435,8 +435,8 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       { count: 10, key: "magnitude3", label_zh: "重大事件", stage: "push" },
       {
         count: 9,
-        key: "storyline:theme:mideast_energy:cap3",
-        label_zh: "「中东与能源」话题 4 小时内已推 3 条",
+        key: "storyline:conflict:mideast_2026:cap3",
+        label_zh: "「美伊冲突」话题 4 小时内已推 3 条",
         stage: "throttle",
       },
       {
@@ -518,7 +518,7 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       suppressed_by_reason: { suppressed_pr_template: 8 },
       ungrounded_by_symbol_24h: { SPOT: 7, NEAR: 2 },
       throttled_24h: 9,
-      throttled_by_key: { "storyline:theme:mideast_energy:cap3": 9 },
+      throttled_by_key: { "storyline:conflict:mideast_2026:cap3": 9 },
       triage_24h: 175,
       triage_degraded_24h: 2,
       triage_degraded_by_code_24h: { news_program_route_deadline: 2 },

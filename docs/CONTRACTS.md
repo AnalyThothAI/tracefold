@@ -715,7 +715,7 @@ commits to it and the call trace no longer repeats a signature, instruction or
 demo digest. A told-only re-ask may restore
 the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `triage` is the only current stage. Current versions are
-`news_title_norm_v2`, `news_gate_v5`, `news_storyline_v3`,
+`news_title_norm_v2`, `news_gate_v5`, `news_storyline_registry_v1`,
 `news_event_evidence_v3`, `news_judgment_v2`,
 `news_semantic_program_v9` (or `news_oi_signal_v3` /
 `news_liquidation_fact_v2` for deterministic structured lanes),
@@ -803,7 +803,7 @@ than this when the provider pushed it is a replay, withheld as
 `storyline_budget_window_s` (3600) and `storyline_budget_max` (2; #504: at
 most this many delivered cards per final storyline key inside the window,
 withheld as `storyline:<key>:budget`; a corroborated `escalate`, a direction
-reversal and every `macro:*` fallback key are exempt; either key at 0 disables
+reversal and the `none` key are exempt; either key at 0 disables
 the budget).
 Trade-relevance eligibility and objective-guard ordering are code-owned, not
 operator thresholds. `direct_surface` requires direct/second-order tradability

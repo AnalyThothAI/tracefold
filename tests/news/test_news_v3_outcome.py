@@ -149,7 +149,7 @@ def test_outcome_reasons_are_chinese_never_bare_keys() -> None:
     throttled = event_outcome(
         admission="candidate",
         published_at_ms=NOW,
-        triage=_triage("throttled", throttled_by="storyline:theme:trade:seen"),
+        triage=_triage("throttled", throttled_by="storyline:topic:trade:seen"),
         delivery=None,
     )
     assert throttled.reason_zh == "重复：读者刚收到过内容高度相近的卡片"
@@ -272,9 +272,10 @@ def test_vocabulary_names_current_public_rule_codes_and_falls_back_for_unknown_c
     assert override_rule_zh("restatement") == "重复：读者已收到同一事实"
     assert throttled_by_zh("storyline:asset:BTC:seen") == "重复：读者刚收到过内容高度相近的卡片"
     assert throttled_by_zh("storyline:asset:KLAC:seen") == "重复：读者刚收到过内容高度相近的卡片"
-    assert throttled_by_zh("storyline:theme:mideast_energy:seen") == "重复：读者刚收到过内容高度相近的卡片"
-    assert throttled_by_zh("storyline:macro:general:seen") == "重复：读者刚收到过内容高度相近的卡片"
-    assert storyline_key_zh("theme:mideast_energy") == "中东与能源" and storyline_key_zh("asset:BTC") == "BTC"
+    assert throttled_by_zh("storyline:conflict:mideast_2026:seen") == "重复：读者刚收到过内容高度相近的卡片"
+    assert throttled_by_zh("storyline:none:seen") == "重复：读者刚收到过内容高度相近的卡片"
+    assert storyline_key_zh("conflict:mideast_2026") == "美伊冲突" and storyline_key_zh("asset:BTC") == "BTC"
+    assert storyline_key_zh("none") == "无线索" and storyline_key_zh("actor:boj") == "日本央行"
 
 
 def _event(**over: object) -> dict[str, object]:

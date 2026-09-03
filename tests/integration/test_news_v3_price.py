@@ -118,7 +118,7 @@ def _event(
             opened_at_ms,
             opened_at_ms + HOUR,
             admission,
-            f"asset:{symbols[0]}" if symbols else "theme:none",
+            f"asset:{symbols[0]}" if symbols else "topic:rates",
             ingest_mode,
             opened_at_ms,
             opened_at_ms,

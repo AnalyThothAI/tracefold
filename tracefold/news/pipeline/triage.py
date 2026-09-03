@@ -23,7 +23,7 @@ from ..bus import (
     TransientError,
     now_ms,
 )
-from ..events.storyline import final_storyline_key
+from ..events.storyline import STORYLINE_REGISTRY_SHA256, final_storyline_key
 from ..models import GATE_POLICY_VERSION, TRIAGE_POLICY_VERSION, json_ready
 from ..program.contracts import (
     ScoredJudgment,
@@ -774,6 +774,7 @@ class TriageConsumer:
             "program_sha256": oi_signals.program_sha256(),
             "runtime_manifest_sha": self.runtime_manifest_sha,
             "gate_policy_version": GATE_POLICY_VERSION,
+            "storyline_registry_sha256": STORYLINE_REGISTRY_SHA256,
             "evidence_version": int(card.get("evidence_version") or 0),
             "evidence_sha256": str(card.get("evidence_sha256") or ""),
             "focus_fact_id": str(card.get("focus_fact_id") or ""),
@@ -906,6 +907,7 @@ class TriageConsumer:
             "runtime_manifest_sha": self.runtime_manifest_sha,
             "policy": {"policy_version": liquidations.TRIAGE_POLICY_VERSION},
             "gate_policy_version": liquidations.ADMISSION_POLICY_VERSION,
+            "storyline_registry_sha256": STORYLINE_REGISTRY_SHA256,
             "evidence_version": int(card.get("evidence_version") or 0),
             "evidence_sha256": str(card.get("evidence_sha256") or ""),
             "focus_fact_id": str(card.get("focus_fact_id") or ""),

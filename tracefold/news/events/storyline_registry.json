@@ -1,0 +1,1042 @@
+{
+  "version": "news_storyline_registry_v1",
+  "entries": [
+    {
+      "id": "mideast_2026",
+      "kind": "conflict",
+      "label_zh": "美伊冲突",
+      "active": true,
+      "members": [
+        "iran",
+        "israel",
+        "kuwait",
+        "bahrain",
+        "uae",
+        "qatar",
+        "jordan",
+        "iraq",
+        "saudi",
+        "oman",
+        "yemen",
+        "hormuz",
+        "lebanon",
+        "mideast"
+      ],
+      "aliases": {}
+    },
+    {
+      "id": "ru_ua",
+      "kind": "conflict",
+      "label_zh": "俄乌冲突",
+      "active": true,
+      "members": [
+        "russia",
+        "ukraine"
+      ],
+      "aliases": {}
+    },
+    {
+      "id": "fed",
+      "kind": "actor",
+      "label_zh": "美联储",
+      "aliases": {
+        "latin": [
+          "fed",
+          "fomc",
+          "powell",
+          "federal reserve"
+        ],
+        "zh": [
+          "美联储"
+        ]
+      },
+      "gate": {
+        "macro": true,
+        "queue_high": true
+      }
+    },
+    {
+      "id": "boj",
+      "kind": "actor",
+      "label_zh": "日本央行",
+      "aliases": {
+        "latin": [
+          "boj",
+          "bank of japan",
+          "ueda"
+        ],
+        "zh": [
+          "日本央行",
+          "日银",
+          "植田"
+        ]
+      },
+      "gate": {
+        "macro": true
+      }
+    },
+    {
+      "id": "ecb",
+      "kind": "actor",
+      "label_zh": "欧洲央行",
+      "aliases": {
+        "latin": [
+          "ecb",
+          "european central bank",
+          "lagarde"
+        ],
+        "zh": [
+          "欧洲央行",
+          "欧央行",
+          "拉加德"
+        ]
+      },
+      "gate": {
+        "macro": true
+      }
+    },
+    {
+      "id": "boe",
+      "kind": "actor",
+      "label_zh": "英国央行",
+      "aliases": {
+        "latin": [
+          "boe",
+          "bank of england",
+          "andrew bailey"
+        ],
+        "zh": [
+          "英国央行",
+          "英央行"
+        ]
+      },
+      "gate": {
+        "macro": true
+      }
+    },
+    {
+      "id": "boc",
+      "kind": "actor",
+      "label_zh": "加拿大央行",
+      "aliases": {
+        "latin": [
+          "bank of canada",
+          "macklem"
+        ],
+        "zh": [
+          "加拿大央行"
+        ]
+      },
+      "gate": {
+        "macro": true
+      }
+    },
+    {
+      "id": "rba",
+      "kind": "actor",
+      "label_zh": "澳洲联储",
+      "aliases": {
+        "latin": [
+          "rba",
+          "reserve bank of australia",
+          "michele bullock"
+        ],
+        "zh": [
+          "澳洲联储",
+          "澳联储",
+          "澳大利亚央行"
+        ]
+      },
+      "gate": {
+        "macro": true
+      }
+    },
+    {
+      "id": "rbnz",
+      "kind": "actor",
+      "label_zh": "新西兰联储",
+      "aliases": {
+        "latin": [
+          "rbnz",
+          "reserve bank of new zealand",
+          "official cash rate"
+        ],
+        "zh": [
+          "新西兰联储",
+          "新西兰央行"
+        ]
+      },
+      "gate": {
+        "macro": true
+      }
+    },
+    {
+      "id": "pboc",
+      "kind": "actor",
+      "label_zh": "中国央行",
+      "aliases": {
+        "latin": [
+          "pboc",
+          "people's bank of china",
+          "people’s bank of china",
+          "peoples bank of china",
+          "lpr",
+          "mlf"
+        ],
+        "zh": [
+          "中国人民银行",
+          "中国央行",
+          "人民银行",
+          "贷款市场报价利率",
+          "中期借贷便利"
+        ]
+      },
+      "gate": {
+        "macro": true
+      }
+    },
+    {
+      "id": "cbr",
+      "kind": "actor",
+      "label_zh": "俄罗斯央行",
+      "aliases": {
+        "latin": [
+          "bank of russia",
+          "cbr"
+        ],
+        "zh": [
+          "俄罗斯央行"
+        ],
+        "ru": [
+          "цб рф",
+          "банк россии"
+        ]
+      },
+      "gate": {
+        "macro": true
+      }
+    },
+    {
+      "id": "bok",
+      "kind": "actor",
+      "label_zh": "韩国央行",
+      "aliases": {
+        "latin": [
+          "bank of korea"
+        ],
+        "zh": [
+          "韩国央行"
+        ]
+      },
+      "gate": {
+        "macro": true
+      }
+    },
+    {
+      "id": "us",
+      "kind": "geo",
+      "label_zh": "美国",
+      "standalone": false,
+      "aliases": {
+        "latin": [
+          "united states",
+          "u.s.",
+          "u.s",
+          "washington",
+          "pentagon",
+          "centcom",
+          "white house"
+        ],
+        "zh": [
+          "美国",
+          "五角大楼"
+        ],
+        "ru": [
+          "сша"
+        ],
+        "fa": [
+          "آمریکا"
+        ],
+        "he": [
+          "ארה\"ב"
+        ]
+      }
+    },
+    {
+      "id": "iran",
+      "kind": "geo",
+      "label_zh": "伊朗",
+      "aliases": {
+        "latin": [
+          "iran",
+          "iranian",
+          "tehran",
+          "khamenei",
+          "irgc"
+        ],
+        "zh": [
+          "伊朗",
+          "德黑兰",
+          "革命卫队"
+        ],
+        "ru": [
+          "иран",
+          "тегеран"
+        ],
+        "fa": [
+          "ایران",
+          "تهران",
+          "سپاه"
+        ],
+        "he": [
+          "איראן"
+        ]
+      }
+    },
+    {
+      "id": "hormuz",
+      "kind": "geo",
+      "label_zh": "霍尔木兹",
+      "aliases": {
+        "latin": [
+          "hormuz",
+          "strait of hormuz"
+        ],
+        "zh": [
+          "霍尔木兹"
+        ],
+        "ru": [
+          "ормуз"
+        ],
+        "fa": [
+          "هرمز"
+        ],
+        "he": [
+          "הורמוז"
+        ]
+      }
+    },
+    {
+      "id": "lebanon",
+      "kind": "geo",
+      "label_zh": "黎巴嫩",
+      "aliases": {
+        "latin": [
+          "lebanon",
+          "lebanese",
+          "beirut",
+          "hezbollah"
+        ],
+        "zh": [
+          "黎巴嫩",
+          "真主党"
+        ],
+        "ru": [
+          "хезболл"
+        ],
+        "fa": [
+          "حزب‌الله",
+          "حزب الله"
+        ],
+        "he": [
+          "חיזבאללה"
+        ]
+      }
+    },
+    {
+      "id": "mideast",
+      "kind": "geo",
+      "label_zh": "中东",
+      "aliases": {
+        "latin": [
+          "middle east"
+        ],
+        "zh": [
+          "中东"
+        ]
+      }
+    },
+    {
+      "id": "israel",
+      "kind": "geo",
+      "label_zh": "以色列",
+      "aliases": {
+        "latin": [
+          "israel",
+          "israeli",
+          "idf"
+        ],
+        "zh": [
+          "以色列"
+        ],
+        "ru": [
+          "израил"
+        ],
+        "fa": [
+          "اسرائیل"
+        ],
+        "he": [
+          "ישראל",
+          "צה\"ל"
+        ]
+      }
+    },
+    {
+      "id": "russia",
+      "kind": "geo",
+      "label_zh": "俄罗斯",
+      "aliases": {
+        "latin": [
+          "russia",
+          "russian",
+          "kremlin",
+          "putin",
+          "moscow"
+        ],
+        "zh": [
+          "俄罗斯",
+          "克里姆林宫",
+          "普京",
+          "俄军",
+          "俄国防部"
+        ],
+        "ru": [
+          "росси",
+          "рф",
+          "кремл",
+          "путин",
+          "москв",
+          "минобороны"
+        ]
+      }
+    },
+    {
+      "id": "ukraine",
+      "kind": "geo",
+      "label_zh": "乌克兰",
+      "aliases": {
+        "latin": [
+          "ukraine",
+          "ukrainian",
+          "kyiv",
+          "kiev",
+          "zelensky",
+          "zelenskiy",
+          "donbas",
+          "donetsk",
+          "kharkiv",
+          "odesa",
+          "crimea",
+          "black sea"
+        ],
+        "zh": [
+          "乌克兰",
+          "基辅",
+          "泽连斯基",
+          "克里米亚",
+          "黑海",
+          "俄乌"
+        ],
+        "ru": [
+          "украин",
+          "киев",
+          "зеленск",
+          "всу"
+        ]
+      }
+    },
+    {
+      "id": "kuwait",
+      "kind": "geo",
+      "label_zh": "科威特",
+      "aliases": {
+        "latin": [
+          "kuwait"
+        ],
+        "zh": [
+          "科威特"
+        ]
+      }
+    },
+    {
+      "id": "bahrain",
+      "kind": "geo",
+      "label_zh": "巴林",
+      "aliases": {
+        "latin": [
+          "bahrain"
+        ],
+        "zh": [
+          "巴林"
+        ]
+      }
+    },
+    {
+      "id": "uae",
+      "kind": "geo",
+      "label_zh": "阿联酋",
+      "aliases": {
+        "latin": [
+          "uae",
+          "emirates",
+          "abu dhabi",
+          "dubai"
+        ],
+        "zh": [
+          "阿联酋",
+          "迪拜"
+        ]
+      }
+    },
+    {
+      "id": "qatar",
+      "kind": "geo",
+      "label_zh": "卡塔尔",
+      "aliases": {
+        "latin": [
+          "qatar"
+        ],
+        "zh": [
+          "卡塔尔"
+        ]
+      }
+    },
+    {
+      "id": "jordan",
+      "kind": "geo",
+      "label_zh": "约旦",
+      "aliases": {
+        "latin": [
+          "jordan"
+        ],
+        "zh": [
+          "约旦"
+        ]
+      }
+    },
+    {
+      "id": "iraq",
+      "kind": "geo",
+      "label_zh": "伊拉克",
+      "aliases": {
+        "latin": [
+          "iraq",
+          "erbil",
+          "baghdad"
+        ],
+        "zh": [
+          "伊拉克",
+          "巴格达"
+        ]
+      }
+    },
+    {
+      "id": "saudi",
+      "kind": "geo",
+      "label_zh": "沙特",
+      "aliases": {
+        "latin": [
+          "saudi",
+          "aramco",
+          "riyadh"
+        ],
+        "zh": [
+          "沙特",
+          "利雅得"
+        ]
+      }
+    },
+    {
+      "id": "oman",
+      "kind": "geo",
+      "label_zh": "阿曼",
+      "aliases": {
+        "latin": [
+          "oman"
+        ],
+        "zh": [
+          "阿曼"
+        ]
+      }
+    },
+    {
+      "id": "yemen",
+      "kind": "geo",
+      "label_zh": "也门",
+      "aliases": {
+        "latin": [
+          "yemen",
+          "houthi",
+          "houthis"
+        ],
+        "zh": [
+          "也门",
+          "胡塞"
+        ],
+        "ru": [
+          "хусит"
+        ],
+        "fa": [
+          "یمن"
+        ],
+        "he": [
+          "תימן",
+          "חות'ים",
+          "חותים"
+        ]
+      }
+    },
+    {
+      "id": "china",
+      "kind": "geo",
+      "label_zh": "中国",
+      "aliases": {
+        "latin": [
+          "china",
+          "chinese",
+          "beijing"
+        ],
+        "zh": [
+          "中国",
+          "北京",
+          "中国国务院"
+        ],
+        "ru": [
+          "кита"
+        ]
+      }
+    },
+    {
+      "id": "japan",
+      "kind": "geo",
+      "label_zh": "日本",
+      "aliases": {
+        "latin": [
+          "japan",
+          "japanese",
+          "tokyo"
+        ],
+        "zh": [
+          "日本",
+          "东京"
+        ]
+      }
+    },
+    {
+      "id": "korea",
+      "kind": "geo",
+      "label_zh": "韩国",
+      "aliases": {
+        "latin": [
+          "south korea",
+          "seoul"
+        ],
+        "zh": [
+          "韩国",
+          "首尔"
+        ]
+      }
+    },
+    {
+      "id": "taiwan",
+      "kind": "geo",
+      "label_zh": "台湾",
+      "aliases": {
+        "latin": [
+          "taiwan",
+          "taiwan strait"
+        ],
+        "zh": [
+          "台湾",
+          "台海"
+        ]
+      }
+    },
+    {
+      "id": "venezuela",
+      "kind": "geo",
+      "label_zh": "委内瑞拉",
+      "aliases": {
+        "latin": [
+          "venezuela",
+          "maduro",
+          "pdvsa",
+          "caracas",
+          "orinoco"
+        ],
+        "zh": [
+          "委内瑞拉",
+          "马杜罗",
+          "加拉加斯"
+        ]
+      }
+    },
+    {
+      "id": "canada",
+      "kind": "geo",
+      "label_zh": "加拿大",
+      "aliases": {
+        "latin": [
+          "canada",
+          "canadian",
+          "ottawa"
+        ],
+        "zh": [
+          "加拿大"
+        ]
+      }
+    },
+    {
+      "id": "germany",
+      "kind": "geo",
+      "label_zh": "德国",
+      "aliases": {
+        "latin": [
+          "germany",
+          "german",
+          "berlin"
+        ],
+        "zh": [
+          "德国"
+        ],
+        "ru": [
+          "фрг",
+          "герман"
+        ]
+      }
+    },
+    {
+      "id": "eu",
+      "kind": "geo",
+      "label_zh": "欧盟",
+      "aliases": {
+        "latin": [
+          "european union",
+          "brussels",
+          "von der leyen"
+        ],
+        "zh": [
+          "欧盟",
+          "冯德莱恩"
+        ]
+      }
+    },
+    {
+      "id": "india",
+      "kind": "geo",
+      "label_zh": "印度",
+      "aliases": {
+        "latin": [
+          "india",
+          "indian",
+          "rbi",
+          "new delhi"
+        ],
+        "zh": [
+          "印度"
+        ]
+      }
+    },
+    {
+      "id": "brazil",
+      "kind": "geo",
+      "label_zh": "巴西",
+      "aliases": {
+        "latin": [
+          "brazil",
+          "brazilian",
+          "brasilia"
+        ],
+        "zh": [
+          "巴西"
+        ]
+      }
+    },
+    {
+      "id": "energy",
+      "kind": "topic",
+      "label_zh": "能源",
+      "aliases": {
+        "latin": [
+          "oil",
+          "crude",
+          "brent",
+          "wti",
+          "opec",
+          "tanker",
+          "tankers",
+          "barrel",
+          "barrels",
+          "bpd",
+          "refinery",
+          "refineries",
+          "gasoline",
+          "diesel",
+          "lng",
+          "natural gas",
+          "eia",
+          "rig count"
+        ],
+        "zh": [
+          "石油",
+          "原油",
+          "油价",
+          "布油",
+          "美油",
+          "油轮",
+          "欧佩克",
+          "天然气"
+        ],
+        "ru": [
+          "нефт",
+          "газа",
+          "газо",
+          "газпром",
+          "природного газа"
+        ]
+      },
+      "gate": {
+        "energy_context": true
+      }
+    },
+    {
+      "id": "rates",
+      "kind": "topic",
+      "label_zh": "利率与通胀数据",
+      "aliases": {
+        "latin": [
+          "treasury",
+          "treasuries",
+          "yield",
+          "yields",
+          "cpi",
+          "ppi",
+          "pce",
+          "nonfarm",
+          "payroll",
+          "payrolls",
+          "jobless",
+          "rate cut",
+          "rate hike",
+          "rate decision",
+          "jgb",
+          "bond",
+          "bonds",
+          "10-year",
+          "30-year"
+        ],
+        "zh": [
+          "收益率",
+          "国债",
+          "加息",
+          "降息",
+          "通胀",
+          "10年期",
+          "30年期"
+        ]
+      },
+      "gate": {
+        "macro": true,
+        "queue_high": true
+      }
+    },
+    {
+      "id": "macro_data",
+      "kind": "topic",
+      "label_zh": "宏观数据",
+      "aliases": {
+        "latin": [
+          "adp",
+          "jolts",
+          "ism",
+          "pmi",
+          "gdp",
+          "retail sales",
+          "durable goods",
+          "housing starts",
+          "building permits",
+          "consumer confidence",
+          "consumer sentiment",
+          "import prices",
+          "export prices",
+          "factory orders"
+        ],
+        "zh": [
+          "营建许可",
+          "新屋开工",
+          "零售销售",
+          "初请",
+          "耐用品"
+        ]
+      },
+      "gate": {
+        "macro": true
+      }
+    },
+    {
+      "id": "trade",
+      "kind": "topic",
+      "label_zh": "贸易与关税",
+      "aliases": {
+        "latin": [
+          "tariff",
+          "tariffs",
+          "trade deal",
+          "trade talks",
+          "trade war",
+          "ustr"
+        ],
+        "zh": [
+          "关税"
+        ]
+      },
+      "gate": {
+        "macro": true
+      }
+    },
+    {
+      "id": "fx",
+      "kind": "topic",
+      "label_zh": "外汇",
+      "aliases": {
+        "latin": [
+          "dollar index",
+          "dxy",
+          "greenback",
+          "usd/jpy",
+          "eur/usd",
+          "usd/cnh",
+          "usd/cny",
+          "yen carry",
+          "carry trade",
+          "fx intervention",
+          "currency intervention",
+          "forex"
+        ],
+        "zh": [
+          "美元指数",
+          "美元汇率",
+          "日元汇率",
+          "人民币汇率",
+          "汇率干预",
+          "外汇干预",
+          "套息交易"
+        ]
+      },
+      "gate": {
+        "macro": true
+      }
+    },
+    {
+      "id": "agriculture",
+      "kind": "topic",
+      "label_zh": "农产品",
+      "aliases": {
+        "latin": [
+          "soybean",
+          "soybeans",
+          "corn",
+          "wheat",
+          "cotton",
+          "sugar",
+          "palm oil",
+          "usda",
+          "crop",
+          "crops",
+          "bushel",
+          "harvest"
+        ],
+        "zh": [
+          "大豆",
+          "美豆",
+          "玉米",
+          "小麦",
+          "棉花",
+          "白糖",
+          "棕榈油",
+          "农产品",
+          "单产",
+          "收割"
+        ]
+      }
+    },
+    {
+      "id": "metals",
+      "kind": "topic",
+      "label_zh": "金属",
+      "aliases": {
+        "latin": [
+          "gold",
+          "silver",
+          "copper",
+          "xau",
+          "lme"
+        ],
+        "zh": [
+          "黄金",
+          "白银",
+          "铜价"
+        ]
+      }
+    },
+    {
+      "id": "crypto_treasury",
+      "kind": "topic",
+      "label_zh": "加密财库",
+      "aliases": {
+        "latin": [
+          "bitcoin treasury",
+          "btc treasury",
+          "crypto treasury",
+          "digital asset treasury",
+          "treasury company"
+        ],
+        "zh": [
+          "比特币储备",
+          "比特币财库",
+          "数字资产储备",
+          "加密储备"
+        ]
+      }
+    },
+    {
+      "id": "us_equity",
+      "kind": "topic",
+      "label_zh": "美股大盘",
+      "aliases": {
+        "latin": [
+          "nasdaq",
+          "s&p",
+          "s&p 500",
+          "dow jones",
+          "dow",
+          "russell 2000",
+          "wall street",
+          "stock futures",
+          "kospi"
+        ],
+        "zh": [
+          "美股",
+          "纳指",
+          "标普",
+          "道指"
+        ]
+      }
+    },
+    {
+      "id": "china_macro",
+      "kind": "topic",
+      "label_zh": "中国宏观",
+      "aliases": {
+        "zh": [
+          "社融",
+          "工业产出",
+          "工业增加值"
+        ]
+      },
+      "gate": {
+        "macro": true
+      }
+    }
+  ]
+}

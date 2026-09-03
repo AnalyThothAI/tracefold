@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Final
 
 from .artifact_identity import canonical_sha
+from .events.storyline import NO_STORYLINE_KEY
 from .models import Decision, TriageVerdict, base_symbol
 from .program.contracts import JUDGMENT_CONTRACT_VERSION, ScoredJudgment, TradeRelevanceV1
 from .similarity import max_similarity
@@ -49,7 +50,7 @@ class DecidePolicy:
     # #504 D2: the per-storyline marginal budget, which withdraws policy v7's "no storyline quota" decision. It
     # is a content rule, not a reader quota: it counts cards the reader actually received *on this storyline
     # key* inside the window, exempts a direction reversal and a corroborated `escalate`, and never touches a
-    # `macro:*` fallback bucket (which is not a storyline, just "nothing matched"). On the 2026-09-02 day the
+    # `none` key (which is not a storyline, just "the registry matched nothing"). On the 2026-09-02 day the
     # model's own novelty judgment let 225 of 355 geopolitical pushes through with >= 8 same-storyline cards
     # already in the told ledger; the p95 storyline-hour was 17 cards. Either knob at 0 switches it off.
     storyline_budget_window_s: int = 3600
@@ -262,20 +263,17 @@ def grounded_restatement(verdict: TriageVerdict, status: StorylineStatus | None)
     return not flipped
 
 
-_BUDGET_EXEMPT_PREFIX: Final = "macro:"
-
-
 def _budget_exhausted(direction: str, status: StorylineStatus, *, now_ms: int, window_ms: int, budget_max: int) -> bool:
     """True when the reader already received ``budget_max`` cards on this storyline inside the window and this
     one does not reverse the newest of them (#504 D2).
 
     Rows are newest first, so the first in-window row on the key is the latest delivered card; a bullish/bearish
-    flip against it is new information whatever the count says (same test as ``_seen_flip``). A fallback bucket
-    (``macro:<dedupe_family>``) is exempt: it is not a storyline but "no theme matched", and counting it withheld
-    Chile's GDP print behind an RBNZ decision in the 2026-09-02 replay.
+    flip against it is new information whatever the count says (same test as ``_seen_flip``). The ``none`` key
+    is exempt: it is not a storyline but "the registry matched nothing", and counting it withheld Chile's GDP
+    print behind an RBNZ decision in the 2026-09-02 replay (#509 D6).
     """
 
-    if status.key.startswith(_BUDGET_EXEMPT_PREFIX):
+    if status.key == NO_STORYLINE_KEY:
         return False
     delivered = 0
     latest_direction: str | None = None

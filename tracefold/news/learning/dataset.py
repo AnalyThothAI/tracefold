@@ -21,6 +21,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_sha
+from ..events.storyline import NO_STORYLINE_KEY
 from ..models import TRIAGE_POLICY_VERSION, TriageVerdict
 from ..program.contracts import EditorialEnvelope, ScoredJudgment, TriageContext
 from ..review.desk import (
@@ -534,7 +535,7 @@ class DevelopmentDatasetStore:
                     Receipt(
                         event_id=str(case_ref.event_id or case_ref.case_id),
                         at_ms=int(receipt_at_ms),
-                        storyline_key=str(card.get("storyline_key") or "macro:general"),
+                        storyline_key=str(card.get("storyline_key") or NO_STORYLINE_KEY),
                         magnitude=verdict.magnitude,
                         direction=verdict.direction,
                         headline_zh=verdict.headline_zh,
@@ -867,7 +868,7 @@ class DevelopmentDatasetStore:
                 "queue_priority": "normal",
                 "asset_class": "none",
                 "grounded_assets": [],
-                "storyline_key": "macro:general",
+                "storyline_key": NO_STORYLINE_KEY,
                 "opened_at_ms": case.opened_at_ms,
                 "member_count": 1,
             },

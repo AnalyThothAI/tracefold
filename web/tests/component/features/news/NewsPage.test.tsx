@@ -819,10 +819,10 @@ describe("NewsPage", () => {
       expect(within(reasons).getByText(reason.label_zh)).toBeInTheDocument();
     }
     expect(within(reasons).getByText("模型判定为噪音")).toBeInTheDocument();
-    expect(within(reasons).getByText("「中东与能源」话题 4 小时内已推 3 条")).toBeInTheDocument();
+    expect(within(reasons).getByText("「美伊冲突」话题 4 小时内已推 3 条")).toBeInTheDocument();
     expect(within(reasons).getByText("律所推广模板，规则直接拦截")).toBeInTheDocument();
     expect(
-      within(reasons).queryByText("storyline:theme:mideast_energy:cap3"),
+      within(reasons).queryByText("storyline:conflict:mideast_2026:cap3"),
     ).not.toBeInTheDocument();
     expect(within(reasons).queryByText("suppressed_pr_template")).not.toBeInTheDocument();
 

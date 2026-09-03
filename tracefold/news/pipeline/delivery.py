@@ -73,7 +73,7 @@ def _progression_from_headline(triage_row: Mapping[str, Any], verdict: Mapping[s
     """Name a prior card only when the stored retrieval evidence supports that relationship.
 
     ``progression`` currently does not carry an explicit told-ledger index. The selected ledger is relevance-ranked,
-    but broad buckets such as ``macro:general`` may also contain unrelated zero-similarity cards. We therefore show
+    but broad buckets such as a whole conflict may also contain unrelated zero-similarity cards. We therefore show
     a prior headline only for an exact-fact match or a non-zero semantic/title match; otherwise the reader sees the
     truthful ``新进展`` badge without a fabricated ``上一条`` relationship.
     """

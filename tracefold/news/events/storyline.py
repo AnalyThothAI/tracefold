@@ -1,103 +1,265 @@
-"""Storyline keys and theme lexicon (pure); the status window itself is a repository query."""
+"""Storyline keys from a code-owned registry (pure); the status window itself is a repository query.
+
+#509 replaced the ordered regex lexicon with `storyline_registry.json`: conflict / actor / geo / topic entries
+carrying literal multi-script aliases. The two behaviors the regexes could not give are the point of the change.
+First, *coverage is data*: a missing storyline is one registry row plus one assertion, not a new pattern wedged
+into an order-sensitive tuple — the v3 lexicon still dropped 26-28% of a live day into one `macro:general`
+bucket that policy v12's per-storyline budget then treated as a single storyline. Second, *the key does not
+depend on the order of the file*: 96 of 1036 pushed cards on the 2026-09-02 day matched two themes at once and
+the winner was whichever pattern happened to sit higher, so "Russia helps Iran build missiles" was Middle East
+and `\\bstrait\\b` put the Taiwan Strait there too. Matching now produces a *set* of positioned hits and the key
+is composed by a fixed rank (asset, conflict, actor, geo, topic), with earliest-mention as the deterministic
+tie-break inside a rank. Shuffling the entries cannot change a key.
+
+Aliases are literals, never patterns: `latin` matches on word boundaries and every other script matches as a
+substring, both against NFKC-normalized, case-folded text. One alias belongs to exactly one entry (asserted), so
+a hit needs no priority rule of its own. Longer aliases are tried first at each position, which is what keeps
+`bank of canada` an actor rather than the country and `цб рф` the central bank rather than the state.
+"""
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
-from typing import Final
+from dataclasses import dataclass
+from functools import cache
+from importlib import resources
+from typing import Any, Final, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..market_review.instruments import resolve_base_symbol
 
-STORYLINE_LEXICON_VERSION: Final = "news_storyline_lexicon_v3"
+STORYLINE_REGISTRY_VERSION: Final = "news_storyline_registry_v1"
+_REGISTRY_RESOURCE: Final = "storyline_registry.json"
 
-# First match wins, so the order is part of the lexicon (#504 D1). Each central bank sits above `rates` so
-# "Fed's Powell" or "RBNZ sets the Official Cash Rate" is that bank's storyline rather than the generic rate
-# bucket; `cb_boc` sits above `trade` because "Bank of Canada" names a bank before it names a country; and
-# `cb_pboc` sits above `china_macro` for the same reason. The Russian, Persian and Hebrew terms are there
-# because the 2026-09-02 audit found TASS, Fars and Israeli Telegram channels contributing 109 pushes a day
-# that all fell through to `macro:general` and so shared one budget bucket with everything else.
-THEMES: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
-    (
-        "crypto_treasury",
-        re.compile(
-            r"bitcoin treasur|btc treasur|crypto treasur|digital asset treasur|treasury (company|platform|strategy)"
-            r"|treasury bitcoin|比特币储备|比特币财库|数字资产储备|加密储备",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "mideast_energy",
-        re.compile(
-            r"hormuz|霍尔木兹|\bstrait\b|\biran|伊朗|irgc|khamenei|\boman|阿曼|opec"
-            r"|israel|hezbollah|以色列|中东|persian gulf|gulf states|gulf of oman|houthi|yemen"
-            # Russian: Iran, Israel, Hormuz, Hezbollah, Houthis, Tehran.
-            r"|иран|израил|ормуз|хезболл|хусит|тегеран"
-            # Persian: Iran, Israel, Hormuz, IRGC, Hezbollah, Yemen, Tehran.
-            r"|ایران|اسرائیل|هرمز|سپاه پاسداران|حزب‌الله|حزب الله|یمن|تهران"
-            # Hebrew: Iran, Israel, Hezbollah, Hormuz, Houthis, Yemen.
-            r"|איראן|ישראל|חיזבאללה|הורמוז|חות'ים|חותים|תימן",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "ru_ua",
-        re.compile(
-            r"ukrain|乌克兰|kyiv|\bkiev\b|基辅|zelensk|泽连斯基|kremlin|克里姆林宫|\bputin|普京"
-            r"|\brussia|俄罗斯|俄军|俄乌|donbas|donetsk|kharkiv|odesa|crimea|克里米亚|black sea|黑海"
-            # Russian: Ukraine, Russia, Kremlin, Putin, Kyiv, Zelensky, the armed forces, the defence ministry.
-            r"|украин|росси|кремл|путин|киев|зеленск|\bвсу\b|минобороны",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "cb_fed",
-        re.compile(r"\bfed\b|fomc|powell|美联储|federal reserve", re.IGNORECASE),
-    ),
-    ("cb_boj", re.compile(r"\bboj\b|bank of japan|日本央行|日银|\bueda\b|植田", re.IGNORECASE)),
-    ("cb_ecb", re.compile(r"\becb\b|european central bank|欧洲央行|欧央行|lagarde|拉加德", re.IGNORECASE)),
-    ("cb_boe", re.compile(r"\bboe\b|bank of england|英国央行|英央行|andrew bailey", re.IGNORECASE)),
-    ("cb_boc", re.compile(r"bank of canada|加拿大央行|macklem", re.IGNORECASE)),
-    (
-        "cb_rba",
-        re.compile(r"\brba\b|reserve bank of australia|澳洲联储|澳联储|澳大利亚央行|michele bullock", re.IGNORECASE),
-    ),
-    (
-        "cb_rbnz",
-        re.compile(r"\brbnz\b|reserve bank of new zealand|新西兰联储|新西兰央行|official cash rate", re.IGNORECASE),
-    ),
-    (
-        "cb_pboc",
-        re.compile(
-            r"\bpboc\b|people'?s bank of china|中国人民银行|中国央行|人民银行"
-            r"|\blpr\b|贷款市场报价利率|\bmlf\b|中期借贷便利",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "rates",
-        re.compile(
-            r"30[- ]year|10[- ]year|30年期|10年期|treasury|yields?\b|收益率|国债|jgb"
-            r"|加息|降息|rate (cut|hike|decision)|cpi|pce|nonfarm|payroll",
-            re.IGNORECASE,
-        ),
-    ),
-    ("trade", re.compile(r"tariff|关税|trade (deal|talks|war)|canada|加拿大|ustr", re.IGNORECASE)),
-    (
-        "china_macro",
-        re.compile(r"\bchina|中国|pboc|中国人民银行|国务院|社融|工业产出|工业增加值", re.IGNORECASE),
-    ),
-    ("metals", re.compile(r"\bgold\b|黄金|xau|silver|白银|copper|铜价|lme", re.IGNORECASE)),
-    ("us_equity_macro", re.compile(r"nasdaq|s&p|\bdow\b|美股|kospi|欧股|stock futures|期货", re.IGNORECASE)),
-    (
-        "us_macro_data",
-        re.compile(
-            r"housing starts|building permits|import prices|export prices|jobless claims|retail sales|durable goods"
-            r"|consumer (confidence|sentiment)|ism|pmi|gdp|营建许可|新屋开工|进口物价|零售销售|初请|耐用品",
-            re.IGNORECASE,
-        ),
-    ),
-    ("venezuela", re.compile(r"venezuela|委内瑞拉|maduro|马杜罗|pdvsa|caracas|加拉加斯", re.IGNORECASE)),
-)
+# The key for "this headline names no storyline". It replaces `macro:<dedupe_family>`: the dedupe family is a
+# column on the Event row already, and pretending it was a storyline gave policy v12's budget one enormous
+# bucket to count. `decide()` exempts exactly this key from the budget (#509 D6).
+NO_STORYLINE_KEY: Final = "none"
+
+StorylineKind = Literal["conflict", "actor", "geo", "topic"]
+_KIND_RANK: Final[dict[str, int]] = {"conflict": 0, "actor": 1, "geo": 2, "topic": 3}
+_SCRIPTS: Final = ("latin", "zh", "ru", "fa", "he")
+# Structural regex syntax. Every alias is escaped before it reaches a pattern, so this is not what makes matching
+# safe — it is what keeps the registry *data*: a row that tries to smuggle in `.*` or `(a|b)` is rejected at load.
+# `.` is deliberately not on the list: it is a literal in `u.s.` and `s&p 500`-style surface forms, `re.escape`
+# neutralizes it, and forbidding it would cost real aliases for no structural gain.
+_REGEX_METACHARACTERS: Final = frozenset("[]()|*+?{}\\^$")
+_ID_SHAPE: Final = re.compile(r"^[a-z0-9_]+$")
+
+
+class StorylineGate(BaseModel):
+    """Gate flags a registry entry carries for `events.gate` (#509 D3). PR-1 stores and validates them only."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    energy_context: bool = False
+    macro: bool = False
+    queue_high: bool = False
+
+
+class StorylineAliases(BaseModel):
+    """Literal surface forms, per script. `latin` matches on word boundaries; the rest match as substrings."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    latin: tuple[str, ...] = ()
+    zh: tuple[str, ...] = ()
+    ru: tuple[str, ...] = ()
+    fa: tuple[str, ...] = ()
+    he: tuple[str, ...] = ()
+
+    def all(self) -> tuple[tuple[str, str], ...]:
+        return tuple((script, alias) for script in _SCRIPTS for alias in getattr(self, script))
+
+
+class StorylineEntry(BaseModel):
+    """One storyline the product groups by: a war, an institution, a place, or a subject."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str
+    kind: StorylineKind
+    label_zh: str
+    aliases: StorylineAliases = StorylineAliases()
+    gate: StorylineGate | None = None
+    # False means "match this entry, but never make it the key on its own". `us` is the case that needs it: a
+    # US dateline is not a storyline for this reader, and letting `美国` / `washington` / `u.s.` open their own
+    # bucket put CPI, jobless claims and housing starts into one hourly budget — the coarse-bucket problem of
+    # #509 P3 wearing a new name. The hit still counts for a conflict's `members` intersection, and the entry
+    # still owns its aliases so nothing else can claim them.
+    standalone: bool = True
+    # Conflicts only. `active` is maintained by hand — a war does not expire on a timer (#509 risk 2) — and
+    # `members` are the geo/actor entries whose appearance means "this is that war".
+    active: bool = False
+    members: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _check(self) -> StorylineEntry:
+        if not _ID_SHAPE.match(self.id):
+            raise ValueError(f"news_storyline_registry_id_invalid:{self.id}")
+        if not self.label_zh.strip():
+            raise ValueError(f"news_storyline_registry_label_missing:{self.id}")
+        if self.kind != "conflict" and (self.active or self.members):
+            raise ValueError(f"news_storyline_registry_conflict_fields_on_non_conflict:{self.id}")
+        # A conflict is a grouping over its participants, never a matcher of its own. `hormuz`, `hezbollah` and
+        # `中东` are places; keeping them on the war row meant flipping `active` to false silently deleted their
+        # coverage instead of only stopping the merge. Every alias belongs to something that exists on its own.
+        if self.kind == "conflict" and self.aliases.all():
+            raise ValueError(f"news_storyline_registry_conflict_owns_aliases:{self.id}")
+        for _script, alias in self.aliases.all():
+            if not alias.strip():
+                raise ValueError(f"news_storyline_registry_alias_empty:{self.id}")
+            if set(alias) & _REGEX_METACHARACTERS:
+                raise ValueError(f"news_storyline_registry_alias_not_literal:{self.id}:{alias}")
+            if unicodedata.normalize("NFKC", alias).casefold() != alias:
+                raise ValueError(f"news_storyline_registry_alias_not_normalized:{self.id}:{alias}")
+        return self
+
+
+class StorylineRegistry(BaseModel):
+    """The whole registry. Order is not meaning: nothing here may depend on the order of ``entries``."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    version: str
+    entries: tuple[StorylineEntry, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _check(self) -> StorylineRegistry:
+        if self.version != STORYLINE_REGISTRY_VERSION:
+            raise ValueError(f"news_storyline_registry_version_unknown:{self.version}")
+        ids = [entry.id for entry in self.entries]
+        if len(set(ids)) != len(ids):
+            raise ValueError("news_storyline_registry_duplicate_id")
+        owner: dict[str, str] = {}
+        for entry in self.entries:
+            for _script, alias in entry.aliases.all():
+                if alias in owner:
+                    raise ValueError(f"news_storyline_registry_alias_shared:{alias}:{owner[alias]}:{entry.id}")
+                owner[alias] = entry.id
+        by_id = {entry.id: entry for entry in self.entries}
+        for entry in self.entries:
+            for member in entry.members:
+                target = by_id.get(member)
+                if target is None or target.kind not in {"geo", "actor"}:
+                    raise ValueError(f"news_storyline_registry_member_unknown:{entry.id}:{member}")
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class StorylineHit:
+    """One alias occurrence: which entry it belongs to, what kind it is, and where it starts."""
+
+    entry_id: str
+    kind: str
+    start: int
+    alias: str
+
+
+def _registry_document() -> bytes:
+    return resources.files("tracefold.news.events").joinpath(_REGISTRY_RESOURCE).read_bytes()
+
+
+@cache
+def load_storyline_registry() -> StorylineRegistry:
+    """Load and validate the packaged registry once per process."""
+
+    raw: Any = json.loads(_registry_document().decode("utf-8"))
+    return StorylineRegistry.model_validate(raw)
+
+
+def storyline_entry(entry_id: str) -> StorylineEntry | None:
+    """The registry row for one id, or ``None``. The one lookup labels and Gate flags go through."""
+
+    return _entry_index().get(entry_id)
+
+
+@cache
+def _entry_index() -> dict[str, StorylineEntry]:
+    return {entry.id: entry for entry in load_storyline_registry().entries}
+
+
+STORYLINE_REGISTRY_SHA256: Final = hashlib.sha256(_registry_document()).hexdigest()
+
+
+@cache
+def _matchers() -> tuple[tuple[re.Pattern[str], dict[str, StorylineEntry]], ...]:
+    """One compiled alternation for the word-bounded Latin aliases and one for every other script.
+
+    Alternatives are ordered longest first so the most specific alias at a position wins and consumes it:
+    `bank of canada` beats `canada`, `taiwan strait` beats `taiwan`, `中国人民银行` beats `中国`, `цб рф` beats
+    `рф`. The map from matched text back to its entry is exact because an alias belongs to one entry.
+    """
+
+    latin: dict[str, StorylineEntry] = {}
+    other: dict[str, StorylineEntry] = {}
+    for entry in load_storyline_registry().entries:
+        for script, alias in entry.aliases.all():
+            (latin if script == "latin" else other)[alias] = entry
+    out: list[tuple[re.Pattern[str], dict[str, StorylineEntry]]] = []
+    for table, template in ((latin, r"(?<![a-z0-9])(?:{})(?![a-z0-9])"), (other, r"(?:{})")):
+        if not table:
+            continue
+        alternation = "|".join(re.escape(alias) for alias in sorted(table, key=lambda a: (-len(a), a)))
+        out.append((re.compile(template.format(alternation)), table))
+    return tuple(out)
+
+
+def normalize_storyline_text(text: str) -> str:
+    """NFKC then case-fold: full-width digits, compatibility forms and every script's case are one surface."""
+
+    return unicodedata.normalize("NFKC", text).casefold()
+
+
+def match_storyline(text: str) -> tuple[StorylineHit, ...]:
+    """Every registry alias occurrence in ``text``, earliest first. Order of the registry does not reach here."""
+
+    folded = normalize_storyline_text(text)
+    hits: list[StorylineHit] = []
+    for pattern, table in _matchers():
+        for found in pattern.finditer(folded):
+            entry = table[found.group(0)]
+            hits.append(StorylineHit(entry_id=entry.id, kind=entry.kind, start=found.start(), alias=found.group(0)))
+    return tuple(sorted(hits, key=lambda hit: (hit.start, _KIND_RANK[hit.kind], hit.entry_id)))
+
+
+def registry_storyline_key(text: str) -> str | None:
+    """The registry's key for a text, or ``None`` when nothing matched.
+
+    The rank is fixed and the tie-break inside a rank is the earliest mention, so neither the file's order nor
+    the number of entries can move a key. A conflict wins over its own participants: on a war day the product
+    wants one line for the war, not one per country (#509 D2).
+    """
+
+    hits = match_storyline(text)
+    if not hits:
+        return None
+    first_seen: dict[str, int] = {}
+    for hit in hits:
+        first_seen.setdefault(hit.entry_id, hit.start)
+    conflicts: list[tuple[int, str]] = []
+    for entry in load_storyline_registry().entries:
+        if entry.kind != "conflict" or not entry.active:
+            continue
+        positions = [first_seen[name] for name in entry.members if name in first_seen]
+        if positions:
+            conflicts.append((min(positions), entry.id))
+    if conflicts:
+        return f"conflict:{min(conflicts)[1]}"
+    index = _entry_index()
+    for kind in ("actor", "geo", "topic"):
+        ranked = sorted(
+            (hit.start, hit.entry_id) for hit in hits if hit.kind == kind and index[hit.entry_id].standalone
+        )
+        if ranked:
+            return f"{kind}:{ranked[0][1]}"
+    return None
+
 
 _CL_SYMBOLS: Final = frozenset({"CL", "XYZ-CL"})
 
@@ -105,8 +267,9 @@ _CL_SYMBOLS: Final = frozenset({"CL", "XYZ-CL"})
 # A model primary is free text (`TriageAsset.symbol` is any 1-16 characters) and this fallback is reached
 # precisely when nothing grounded it, so it is the least validated string in the pipeline — and it becomes a
 # duplicate-comparison group, an advisory-lock key and a console label. Accept only something shaped like a
-# symbol; an exchange-qualified identifier we cannot group (`0001.HK`) falls through to the next step instead.
-_SYMBOL_SHAPE: Final = re.compile(r"^[A-Z0-9]{1,10}$")
+# symbol. #509 widened it by one optional exchange suffix: `02015.HK` and `DTE.DE` are exactly as groupable as
+# `NVDA`, and rejecting them sent every Hong Kong and German single-name card to the fallback bucket instead.
+_SYMBOL_SHAPE: Final = re.compile(r"^[A-Z0-9]{1,10}(\.[A-Z]{1,4})?$")
 
 
 def _symbol_in_text(symbol: str, text: str) -> bool:
@@ -123,56 +286,36 @@ def _symbol_in_text(symbol: str, text: str) -> bool:
     return re.search(rf"(?<![A-Za-z0-9]){base}(?![A-Za-z0-9])", text) is not None
 
 
-def storyline_key(
-    *,
-    title: str,
-    headline_zh: str,
-    scope: str,
-    primary_assets: Sequence[str],
-    dedupe_family: str,
-    aliases: Mapping[str, str] | None = None,
-) -> str:
-    """Asset-level key when a non-CL primary asset exists and scope is not macro; else theme; else dedupe family.
+def _asset_key(symbols: Sequence[str], aliases: Mapping[str, str] | None) -> str:
+    """``asset:<SYM>`` for the first symbol after alias resolution (#75 collapses one issuer's contracts)."""
 
-    Called twice per Event: before Triage with the Gate's grounded assets (preliminary key, status bar only) and
-    after Triage with the verdict's primary assets and scope (final key, written back to the Event and used by
-    duplicate comparison, grouping and explicit mutes).
-
-    ``aliases`` (#75) collapses the several symbols one issuer trades under before the key is formed. ``SKHY`` and
-    ``SKHX`` are both real hl.xyz contracts for SK Hynix, so keeping them apart at the venue level is right — but
-    separate ``asset:<symbol>`` groups prevent same-issuer duplicate comparison. ``None`` uses the built-in
-    seeds, which is what every pure caller and every test gets.
-    """
-
-    primaries = sorted(resolve_base_symbol(a, aliases) for a in primary_assets if a.upper() not in _CL_SYMBOLS)
-    if primaries and scope != "macro":
-        return f"asset:{primaries[0]}"
-    text = f"{title} {headline_zh}".lower()
-    for name, pattern in THEMES:
-        if pattern.search(text):
-            return f"theme:{name}"
-    return f"macro:{dedupe_family}"
+    return f"asset:{sorted(resolve_base_symbol(symbol, aliases) for symbol in symbols)[0]}"
 
 
-def preliminary_storyline_key(
-    *, title: str, grounded_assets: Sequence[str], asset_class: str, dedupe_family: str
-) -> str:
-    """Key computed before Triage (status bar only). Theme first: a geopolitical or macro headline the provider
-    tagged with BTC/CL as *affected* assets belongs to its theme until Triage names a primary; the final key
-    (``final_storyline_key``) then follows the verdict."""
+def preliminary_storyline_key(*, title: str, strong_assets: Sequence[str], asset_class: str, dedupe_family: str) -> str:
+    """Key computed before Triage, from the title alone plus the Gate's *strong* tags.
 
-    text = title.lower()
-    for name, pattern in THEMES:
-        if pattern.search(text):
-            return f"theme:{name}"
-    scope = "macro" if asset_class in {"macro", "none"} else "single_name"
-    return storyline_key(
-        title=title,
-        headline_zh="",
-        scope=scope,
-        primary_assets=grounded_assets,
-        dedupe_family=dedupe_family,
-    )
+    The rank is the final key's rank with its first step removed: `conflict:` > `actor:` > `geo:` > `topic:` >
+    `asset:<strong tag>` > `none`. The registry deliberately outranks the tag here, and only here. At Gate time
+    nothing has verified that a provider tag is what the headline is *about* — it marks an affected asset — so
+    letting it win would key "Iran attacked another ship outside the Strait of Hormuz" as `asset:BTC` on the
+    strength of a BTC tag, and the told ledger's exact-storyline tier would then answer a war card with Bitcoin
+    cards. After Triage the model has named its primaries and the evidence is real, so ``final_storyline_key``
+    puts the asset back on top.
+
+    ``strong_assets`` are ``events.gate.grounded_assets(..., strong_only=True)``: an A/A+ grade or a literal
+    ``$TICKER`` cashtag. A B+ tag may not open a preliminary storyline. ``asset_class`` still gates that last
+    step, so a frame the Gate read as macro does not mint an asset key; ``dedupe_family`` is accepted and
+    unused, because the family is a column on the Event row rather than a storyline (#509 D2)."""
+
+    key = registry_storyline_key(title)
+    if key is not None:
+        return key
+    if asset_class not in {"macro", "none"}:
+        named = [symbol for symbol in strong_assets if symbol.upper() not in _CL_SYMBOLS]
+        if named:
+            return _asset_key(named, None)
+    return NO_STORYLINE_KEY
 
 
 def final_storyline_key(
@@ -186,9 +329,17 @@ def final_storyline_key(
     aliases: Mapping[str, str] | None = None,
     degraded: bool = False,
 ) -> str:
-    """Key computed after Triage. Grounded verdict primaries win; then a theme; then the model's own primaries
-    even when the provider did not tag them; then a grounded tag that the text actually names; then
-    ``macro:<dedupe_family>``. ``aliases`` resolves symbols to one issuer first (#75); the last two steps are #100.
+    """Key computed after Triage, by the fixed #509 rank:
+
+    1. ``asset:<SYM>`` — a verdict primary the Gate grounded, when the scope is not macro;
+    2. ``conflict:<id>`` — an active conflict whose members the text names;
+    3. ``actor:<id>``, 4. ``geo:<id>``, 5. ``topic:<id>`` — earliest mention inside the kind;
+    6. the model's own symbol-shaped primary, even when the provider did not tag it (#100);
+    7. a grounded tag the text actually names (#100);
+    8. ``none`` — no storyline.
+
+    ``aliases`` resolves symbols to one issuer first (#75). ``dedupe_family`` is accepted and unused: the
+    fallback key is now ``none``, so the family stays a column instead of becoming a budget bucket (#509 D2).
 
     ``degraded`` marks a rule-baseline verdict, whose ``assets`` are empty by construction (see
     ``triage_rules.fallback_verdict``). "The model named no primary" is evidence only when a model actually
@@ -198,71 +349,53 @@ def final_storyline_key(
     card's tickers come from ``delivery.card_assets`` (verdict primaries ∩ grounded), which this does not touch."""
 
     grounded = {resolve_base_symbol(a, aliases) for a in grounded_assets}
-    primaries = [a for a in verdict_primaries if resolve_base_symbol(a, aliases) in grounded]
+    primaries = [
+        a for a in verdict_primaries if a.upper() not in _CL_SYMBOLS and resolve_base_symbol(a, aliases) in grounded
+    ]
     if primaries and scope != "macro":
-        return storyline_key(
-            title=title,
-            headline_zh=headline_zh,
-            scope=scope,
-            primary_assets=primaries,
-            dedupe_family=dedupe_family,
-            aliases=aliases,
-        )
-    themed = storyline_key(
-        title=title,
-        headline_zh=headline_zh,
-        scope="macro",
-        primary_assets=(),
-        dedupe_family=dedupe_family,
-        aliases=aliases,
-    )
-    if themed.startswith("theme:"):
-        return themed
-    # No theme matched. The model named the subject even when the provider did not tag it, and its own primary is
-    # a better bucket than an arbitrary grounded tag: OKX's listing notices all carry an `OKB` tag, so "Johnson &
-    # Johnson appears on OKX" was keyed `asset:OKB`; VeChain's upgrade vote was keyed `asset:SKHY`. 16% of the
-    # asset-keyed cards of a live day sat in a bucket that was not about them (#100).
-    named = sorted(
+        return _asset_key(primaries, aliases)
+    text = f"{title} {headline_zh}"
+    key = registry_storyline_key(text)
+    if key is not None:
+        return key
+    # Nothing in the registry matched. The model named the subject even when the provider did not tag it, and its
+    # own primary is a better bucket than an arbitrary grounded tag: OKX's listing notices all carry an `OKB` tag,
+    # so "Johnson & Johnson appears on OKX" was keyed `asset:OKB`; VeChain's upgrade vote was keyed `asset:SKHY`.
+    # 16% of the asset-keyed cards of a live day sat in a bucket that was not about them (#100).
+    named = [
         a
         for a in verdict_primaries
         if a.upper() not in _CL_SYMBOLS and _SYMBOL_SHAPE.match(a.upper().replace("XYZ-", ""))
-    )
+    ]
     if named:
-        return storyline_key(
-            title=title,
-            headline_zh=headline_zh,
-            scope="single_name",
-            primary_assets=named,
-            dedupe_family=dedupe_family,
-            aliases=aliases,
-        )
+        return _asset_key(named, aliases)
     # A model that answered and still named nothing is saying the headline has no tradable subject, so a provider
     # tag is only a storyline when the text is actually about it — the symbol appearing as its own token is the
-    # cheap evidence for that. Everything else is the dedupe-family bucket: `asset:BTC` was collecting Polish jets
+    # cheap evidence for that. Everything else has no storyline at all: `asset:BTC` was collecting Polish jets
     # scrambling and a lending protocol being drained, which polluted duplicate evidence for real BTC cards. A
     # false negative here costs a coarser group; a false positive contaminates another card's comparison set. A
     # degraded verdict is exempt: it has no `assets` to begin with, and "NVIDIA to invest $100bn" never spells
     # `NVDA`.
-    text = f"{title} {headline_zh}"
-    fallback = sorted(
-        a for a in grounded_assets if a.upper() not in _CL_SYMBOLS and (degraded or _symbol_in_text(a, text))
-    )
+    fallback = [a for a in grounded_assets if a.upper() not in _CL_SYMBOLS and (degraded or _symbol_in_text(a, text))]
     if fallback:
-        return storyline_key(
-            title=title,
-            headline_zh=headline_zh,
-            scope="single_name",
-            primary_assets=fallback,
-            dedupe_family=dedupe_family,
-            aliases=aliases,
-        )
-    return themed
+        return _asset_key(fallback, aliases)
+    return NO_STORYLINE_KEY
 
 
 __all__ = [
-    "STORYLINE_LEXICON_VERSION",
-    "THEMES",
+    "NO_STORYLINE_KEY",
+    "STORYLINE_REGISTRY_SHA256",
+    "STORYLINE_REGISTRY_VERSION",
+    "StorylineAliases",
+    "StorylineEntry",
+    "StorylineGate",
+    "StorylineHit",
+    "StorylineRegistry",
     "final_storyline_key",
+    "load_storyline_registry",
+    "match_storyline",
+    "normalize_storyline_text",
     "preliminary_storyline_key",
-    "storyline_key",
+    "registry_storyline_key",
+    "storyline_entry",
 ]

@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..events.storyline import NO_STORYLINE_KEY
 from ..models import base_symbol
 from ..reader_history import TARGETED_HISTORY_WINDOW_MS, ReaderHistorySnapshot, build_reader_history
 
@@ -175,7 +176,7 @@ def receipt_from_output(*, event_id: str, at_ms: int, output: Mapping[str, Any],
     return Receipt(
         event_id=event_id,
         at_ms=at_ms,
-        storyline_key=str(output.get("storyline_key") or "macro:general"),
+        storyline_key=str(output.get("storyline_key") or NO_STORYLINE_KEY),
         magnitude=int(verdict.get("magnitude") or 0),
         direction=str(verdict.get("direction") or "unclear"),
         headline_zh=str(verdict.get("headline_zh") or ""),

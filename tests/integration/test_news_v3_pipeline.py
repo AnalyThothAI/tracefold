@@ -2087,7 +2087,7 @@ def test_the_third_card_on_one_storyline_inside_the_budget_window_is_withheld(co
             "SELECT event_id, storyline_key FROM news_events WHERE event_id = ANY(%s)", ([first, second, third],)
         ).fetchall()
     }
-    assert set(keys.values()) == {"theme:mideast_energy"}
+    assert set(keys.values()) == {"conflict:mideast_2026"}
     # Far enough from every other test's clock that their sent cards fall outside the 4 h recent ledger.
     now_ms = 2_050_000_000_000
     with repos.transaction():
@@ -2120,9 +2120,9 @@ def test_the_third_card_on_one_storyline_inside_the_budget_window_is_withheld(co
         for row in repos.news.reader_history(event_id=third, now_ms=now_ms, include_targeted=False).recent_seen_rows
     ]
     assert [row["event_id"] for row in seen] == [second, first]
-    assert [row["storyline_key"] for row in seen] == ["theme:mideast_energy", "theme:mideast_energy"]
+    assert [row["storyline_key"] for row in seen] == ["conflict:mideast_2026", "conflict:mideast_2026"]
     assert seen[0]["at_ms"] == now_ms - 30 * 60_000 + 1
-    status = storyline_status("theme:mideast_energy", seen=seen)
+    status = storyline_status("conflict:mideast_2026", seen=seen)
     verdict = TriageVerdict(
         novelty="new_fact",
         assets=[],
@@ -2136,7 +2136,7 @@ def test_the_third_card_on_one_storyline_inside_the_budget_window_is_withheld(co
     judgment = scored_judgment(verdict)
     facts = GateFacts(grounded_assets=(), watchlist_symbols=frozenset(), admission="candidate", member_count=1)
     decision = decide(judgment, facts, status, now_ms=now_ms)
-    assert decision.final == "throttled" and decision.throttled_by == "storyline:theme:mideast_energy:budget"
+    assert decision.final == "throttled" and decision.throttled_by == "storyline:conflict:mideast_2026:budget"
     assert decision.override_rule == "trade_relevance_realtime" and decision.seen_scope == "all"
     # A reversal on the same key is not budgeted.
     reversal = scored_judgment(verdict.model_copy(update={"direction": "bullish", "headline_zh": "伊朗宣布停火"}))
@@ -2191,9 +2191,9 @@ def test_the_third_card_on_one_storyline_inside_the_budget_window_is_withheld(co
         "SELECT policy_version, final_decision, throttled_by FROM news_verdicts WHERE event_id = %s", (third,)
     ).fetchone()
     assert row is not None and row["policy_version"] == "news_triage_policy_v12"
-    assert row["final_decision"] == "throttled" and row["throttled_by"] == "storyline:theme:mideast_energy:budget"
+    assert row["final_decision"] == "throttled" and row["throttled_by"] == "storyline:conflict:mideast_2026:budget"
     pipeline = repos.news.status_snapshot(now_ms=now_ms)["pipeline"]
-    assert pipeline["throttled_by_key"]["storyline:theme:mideast_energy:budget"] == 1
+    assert pipeline["throttled_by_key"]["storyline:conflict:mideast_2026:budget"] == 1
     assert pipeline["duplicates_withheld_24h"]["all"] == 0  # a budget withhold is not a same-fact duplicate
     conn.commit()
 
