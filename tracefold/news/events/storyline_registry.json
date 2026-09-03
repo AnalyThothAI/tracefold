@@ -861,14 +861,58 @@
       "aliases": {
         "latin": [
           "dollar index",
-          "dxy"
+          "dxy",
+          "dollar",
+          "greenback",
+          "usd",
+          "yen",
+          "euro",
+          "yuan",
+          "renminbi"
         ],
         "zh": [
-          "美元指数"
+          "美元指数",
+          "美元",
+          "日元",
+          "欧元",
+          "人民币汇率"
         ]
       },
       "gate": {
         "macro": true
+      }
+    },
+    {
+      "id": "agriculture",
+      "kind": "topic",
+      "label_zh": "农产品",
+      "aliases": {
+        "latin": [
+          "soybean",
+          "soybeans",
+          "corn",
+          "wheat",
+          "cotton",
+          "sugar",
+          "palm oil",
+          "usda",
+          "crop",
+          "crops",
+          "bushel",
+          "harvest"
+        ],
+        "zh": [
+          "大豆",
+          "美豆",
+          "玉米",
+          "小麦",
+          "棉花",
+          "白糖",
+          "棕榈油",
+          "农产品",
+          "单产",
+          "收割"
+        ]
       }
     },
     {
