@@ -166,7 +166,6 @@ def _demo_observation(row: dict[str, Any]) -> DemoReceiptObservation:
         reduce_only=_summary_bool(summary, "reduce_only"),
         explicit_quantity=_summary_text(summary, "explicit_quantity"),
         source=_summary_text(summary, "source"),
-        account_flat=_summary_bool(summary, "account_flat"),
         lifecycle=_summary_text(summary, "lifecycle"),
         runtime_id=_summary_text(summary, "runtime_id"),
         runtime_revision=_summary_text(summary, "runtime_revision"),

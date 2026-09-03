@@ -296,7 +296,7 @@ async def _run_active_runtime_with_state(
         audit=audit,
         readiness=readiness,
         singleton_ready=lambda: singleton.acquired,
-        control_plane_ready=lambda: bridge is not None and bridge.connected,
+        control_plane_ready=lambda: bridge is not None and bridge.connected and bridge.inputs_ready,
         day_start=None,
         request_reconciliation=reconciliation_requests.request,
         initial_control_state=control,
@@ -349,7 +349,7 @@ async def _run_active_runtime_with_state(
             reconciliation_observed_at_ns=observed_at_ns,
         )
         strategy.reconcile_runtime(snapshot)
-        _observe_reconciliation(audit=audit, result=result)
+        reconciliation_identity = _observe_reconciliation(audit=audit, result=result, previous_identity=None)
         bridge = OiRuntimeDatabaseBridge(
             settings=settings,
             profile=profile,
@@ -425,7 +425,11 @@ async def _run_active_runtime_with_state(
                 )
                 reports = result.reports
                 observed_at_ns = result.observed_at_ns
-                _observe_reconciliation(audit=audit, result=result)
+                reconciliation_identity = _observe_reconciliation(
+                    audit=audit,
+                    result=result,
+                    previous_identity=reconciliation_identity,
+                )
                 recovery_signals, recovery_manual_entries = _load_recovery_inputs(
                     state_repos,
                     profile.profile_id,
@@ -765,11 +769,62 @@ async def _reconcile_account(
     )
 
 
+_IDENTITY_FIELDS = (
+    "instrument_id",
+    "position_id",
+    "venue_position_id",
+    "client_order_id",
+    "venue_order_id",
+    "position_side",
+    "order_side",
+    "order_status",
+    "quantity",
+)
+
+
+def _report_identity(report: Any) -> str:
+    parts = []
+    for name in _IDENTITY_FIELDS:
+        value = getattr(report, name, None)
+        if value is not None:
+            parts.append(f"{name}={getattr(value, 'value', value)}")
+    return "|".join(parts)
+
+
+def _reconciliation_identity(reports: CompleteBinanceAccountReports) -> tuple[str, ...]:
+    """What the account currently is, as the reconciliation observation would state it."""
+
+    return tuple(
+        sorted(
+            f"{group}:{_report_identity(report)}"
+            for group, values in (
+                ("position", reports.positions),
+                ("regular_order", reports.regular_orders),
+                ("algo_order", reports.algo_orders),
+            )
+            for report in values
+        )
+    )
+
+
 def _observe_reconciliation(
     *,
     audit: AuditSink,
     result: _PrivateReconciliationResult,
-) -> None:
+    previous_identity: tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    """Append an observation only when the account changed, and return the identity just seen.
+
+    A steady reconciliation that finds the same positions and orders as the last one states nothing the
+    current `trading_execution_runtime_state` row does not already carry, and it ran every twelve
+    seconds: 6996 of the ledger's 7019 rows were this heartbeat (#510 E). Current state belongs in the
+    projection; the ledger keeps the changes. Any non-steady trigger still appends, because a
+    reconciliation someone asked for is itself the fact.
+    """
+
+    identity = _reconciliation_identity(result.reports)
+    if result.triggers == ("steady",) and identity == previous_identity:
+        return identity
     reports = result.reports
     positions = reports.positions
     orders = reports.orders
@@ -814,6 +869,7 @@ def _observe_reconciliation(
             event_identity=f"binance-private:{observed_at_ns}",
         )
     )
+    return identity
 
 
 def _observe_runtime_start(*, audit: AuditSink, state: ExecutionRuntimeState) -> None:

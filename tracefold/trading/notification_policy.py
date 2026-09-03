@@ -8,11 +8,12 @@ carried, and asked `readiness` for the control stage the Runtime writes only whe
 as parameters and the renderer gates on it, so a Runtime that renames a summary key fails a test
 instead of silently emptying the queue.
 
-Frequency is part of the same statement. `reconciliation` arrives every ~30 seconds and `readiness`
-once per Runtime start, so both are *coalesced*: only the newest pending observation of that kind is
-a candidate, and at most one is sent per `NOTIFICATION_THROTTLE_MS`. Coalescing rather than deferring
-is deliberate — a suppressed observation is superseded, never queued, so a card never reports a state
-the account has already left. The remaining kinds are rare by construction and are sent one for one.
+Frequency is part of the same statement. `reconciliation` arrives whenever the account's positions or
+orders change, plus once per requested reconciliation, and `readiness` once per Runtime start, so both
+are *coalesced*: only the newest pending observation of that kind is a candidate, and at most one is
+sent per `NOTIFICATION_THROTTLE_MS`. Coalescing rather than deferring is deliberate — a suppressed
+observation is superseded, never queued, so a card never reports a state the account has already left.
+The remaining kinds are rare by construction and are sent one for one.
 """
 
 from __future__ import annotations
@@ -74,7 +75,8 @@ NOTIFICATION_POLICY: Mapping[ObservationKind, KindNotification] = {
         ),
         coalesced=True,
     ),
-    # Reconciliation runs on a timer and is flat almost always; exposure is the state worth a card.
+    # Since #510 a steady reconciliation that changed nothing appends no observation at all, so what
+    # reaches here is a change; exposure is the change worth a card.
     "reconciliation": KindNotification(
         matches=(SummaryMatch("account_flat", ("false",)),),
         coalesced=True,

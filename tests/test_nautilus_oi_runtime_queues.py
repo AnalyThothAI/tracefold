@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import Decimal
 
 import pytest
@@ -15,14 +16,13 @@ from tests.nautilus_oi_runtime_fixtures import (
     trade_signal,
 )
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import (
+    AuditAppendRejected,
     AuditSink,
     ObservationFactory,
     day_start_baseline_from_observation,
 )
-from tracefold.integrations.nautilus.oi_runtime.signal_client import (
-    ExecutionSignalClient,
-    poll_execution_inputs_once,
-)
+from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
+from tracefold.trading import ExecutionObservationV1
 
 
 def _factory() -> ObservationFactory:
@@ -109,6 +109,8 @@ def test_signal_client_consumes_commands_in_the_same_total_count_and_byte_bound(
 
 
 def test_poll_admits_operator_commands_before_signals_into_the_shared_bound() -> None:
+    """The bridge reads Commands first, and the client itself holds Signals back until it has."""
+
     signal = trade_signal()
     command = operator_intent()
     client = ExecutionSignalClient(
@@ -117,13 +119,8 @@ def test_poll_admits_operator_commands_before_signals_into_the_shared_bound() ->
         max_count=1,
     )
 
-    admitted = poll_execution_inputs_once(
-        client=client,
-        reader=SignalRows(signal),
-        command_reader=CommandRows(command),
-    )
-
-    assert admitted == (1, 0)
+    assert client.poll_commands_once(CommandRows(command)) == 1
+    assert client.poll_once(SignalRows(signal)) == 0
     assert client.next_command_nowait() == command
     assert client.next_nowait() is None
 
@@ -305,6 +302,131 @@ def test_audit_overflow_stays_unhealthy_until_a_durable_gap_is_written() -> None
     assert next_gap_batch[0].normalized_kind == "audit_gap"
     assert next_gap_batch[0].summary == {"cause": "audit_queue_overflow", "dropped_count": 1}
     assert sink.healthy is True
+
+
+def test_rejected_batch_is_quarantined_and_the_queue_behind_it_keeps_flushing() -> None:
+    """A batch the database refuses leaves the queue, names its loss, and stops blocking the rest.
+
+    This is the whole of #510 A after the CHECK itself: the rejected fill used to stay at the head and
+    be replayed every 27 seconds for six hours, and because `flush_once` re-raised, the same cycle's
+    Command read never ran either.
+    """
+
+    factory = _factory()
+    poisoned = tuple(
+        factory.create(
+            normalized_kind=kind,
+            occurred_at_ns=NOW_NS + index,
+            observed_at_ns=NOW_NS + index,
+            summary={"index": index},
+            payload={"kind": kind, "index": index},
+        )
+        for index, kind in enumerate(("fill", "position", "fill"))
+    )
+    later = factory.create(
+        normalized_kind="readiness",
+        occurred_at_ns=NOW_NS + 10,
+        observed_at_ns=NOW_NS + 10,
+        summary={"lifecycle": "started"},
+        payload={"lifecycle": "started"},
+    )
+    refused_ids = {value.event_id for value in poisoned}
+    sink = AuditSink(factory=factory, max_count=16, max_bytes=200_000)
+    for value in poisoned:
+        assert sink.offer(value) is True
+
+    written: list[ExecutionObservationV1] = []
+    refusals = 0
+
+    def writer(values: Sequence[ExecutionObservationV1]) -> None:
+        nonlocal refusals
+        if any(value.event_id in refused_ids for value in values):
+            refusals += 1
+            raise AuditAppendRejected("CheckViolation: trading_execution_observation_native_refs_check")
+        written.extend(values)
+
+    dequeued = sink.flush_once(writer)
+
+    assert refusals == 1
+    assert len(written) == 1
+    gap = written[0]
+    assert gap.normalized_kind == "audit_gap"
+    assert gap.summary == {
+        "cause": "audit_append_rejected",
+        "dropped_count": 3,
+        "first_event_id": poisoned[0].event_id,
+        "kind.fill": 2,
+        "kind.position": 1,
+    }
+    assert tuple(value.event_id for value in dequeued) == (
+        *(value.event_id for value in poisoned),
+        gap.event_id,
+    )
+    assert sink.queued_count == 0
+    assert sink.healthy is True
+
+    assert sink.offer(later) is True
+    assert sink.flush_once(writer) == (later,)
+    assert written[-1] == later
+    assert refusals == 1
+
+
+def test_a_rejected_batch_blocks_new_exposure_until_its_gap_is_durable() -> None:
+    factory = _factory()
+    value = factory.create(
+        normalized_kind="fill",
+        occurred_at_ns=NOW_NS,
+        observed_at_ns=NOW_NS,
+        summary={"leg": "entry"},
+        payload={"leg": "entry"},
+    )
+    sink = AuditSink(factory=factory, max_count=16, max_bytes=200_000)
+    assert sink.offer(value) is True
+
+    def refuse(_values: object) -> None:
+        raise AuditAppendRejected("CheckViolation: trading_execution_observation_native_refs_check")
+
+    assert sink.flush_once(refuse) == (value,)
+    assert sink.healthy is False
+    assert sink.failure_reason == "audit_append_rejected"
+    assert sink.can_accept_exposure() is False
+
+    written: list[object] = []
+    gap_batch = sink.flush_once(written.extend)
+
+    assert len(gap_batch) == 1
+    assert gap_batch[0].normalized_kind == "audit_gap"
+    assert gap_batch[0].summary["cause"] == "audit_append_rejected"
+    assert sink.healthy is True
+    assert sink.can_accept_exposure() is True
+
+
+def test_a_systemically_rejected_queue_drains_one_batch_per_pass_without_spinning() -> None:
+    factory = _factory()
+    values = tuple(
+        factory.create(
+            normalized_kind="fill",
+            occurred_at_ns=NOW_NS + index,
+            observed_at_ns=NOW_NS + index,
+            summary={"index": index},
+            payload={"index": index},
+        )
+        for index in range(2)
+    )
+    sink = AuditSink(factory=factory, max_count=1, max_bytes=200_000)
+    assert sink.offer(values[0]) is True
+
+    calls = 0
+
+    def refuse(_values: object) -> None:
+        nonlocal calls
+        calls += 1
+        raise AuditAppendRejected("CheckViolation: trading_execution_observation_native_refs_check")
+
+    assert sink.flush_once(refuse) == (values[0],)
+    assert calls == 2
+    assert sink.queued_count == 1
+    assert sink.healthy is False
 
 
 def test_audit_gap_identity_cannot_collide_across_process_restart_clocks() -> None:

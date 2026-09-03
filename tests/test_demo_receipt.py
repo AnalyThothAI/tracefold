@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from uuid import UUID
 
 import pytest
@@ -80,7 +81,6 @@ def _row(
             values.get("explicit_quantity") if isinstance(values.get("explicit_quantity"), str) else None
         ),
         source=values.get("source") if isinstance(values.get("source"), str) else None,
-        account_flat=values.get("account_flat") if isinstance(values.get("account_flat"), bool) else None,
         lifecycle=values.get("lifecycle") if isinstance(values.get("lifecycle"), str) else None,
         runtime_id=values.get("runtime_id") if isinstance(values.get("runtime_id"), str) else None,
         runtime_revision=(values.get("runtime_revision") if isinstance(values.get("runtime_revision"), str) else None),
@@ -165,12 +165,6 @@ def _observations() -> list[DemoReceiptObservation]:
             command_id=FLATTEN,
             summary={"disposition": "completed", "reason": "binance_account_flat"},
         ),
-        _row(
-            "0",
-            "reconciliation",
-            900,
-            summary={"source": "binance_private_api", "account_flat": True},
-        ),
     ]
 
 
@@ -195,7 +189,7 @@ def test_demo_receipt_accepts_private_reconciliation_as_protection_venue_receipt
             "5",
             "reconciliation",
             550,
-            summary={"source": "binance_private_api", "account_flat": False},
+            summary={"source": "binance_private_api"},
             refs=("stop-client", "stop-venue"),
         )
     )
@@ -209,6 +203,34 @@ def test_demo_receipt_accepts_private_reconciliation_as_protection_venue_receipt
     )
 
     assert "stop-venue" in receipt.venue_native_references
+
+
+def test_demo_receipt_reads_the_flat_proof_from_the_projection_not_a_heartbeat_observation() -> None:
+    """Steady reconciliation stopped appending a row per cycle in #510 PR-1.
+
+    The account being flat, and the clock that proved it, live in `trading_execution_runtime_state`,
+    which the private reconciliation refreshes every loop. Requiring a later `reconciliation`
+    observation would now make the receipt unobtainable on a flat, unchanging account.
+    """
+
+    receipt = verify_binance_demo_receipt(
+        state=_state(),
+        observations=_observations(),
+        entry_command_id=ENTRY,
+        flatten_command_id=FLATTEN,
+        now_ns=1_000,
+    )
+    assert receipt.authoritative_flat_observed_at_ns == 900
+    assert all(not event_id.startswith("0") for event_id in receipt.evidence_event_ids)
+
+    with pytest.raises(DemoReceiptError, match="binance_demo_authoritative_flat_missing"):
+        verify_binance_demo_receipt(
+            state=replace(_state(), reconciliation_observed_at_ns=799),
+            observations=_observations(),
+            entry_command_id=ENTRY,
+            flatten_command_id=FLATTEN,
+            now_ns=1_000,
+        )
 
 
 def test_demo_receipt_rejects_flat_without_a_post_fill_restart() -> None:

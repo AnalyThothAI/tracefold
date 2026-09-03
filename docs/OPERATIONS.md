@@ -134,9 +134,12 @@ active execution profile, the intent remains `awaiting_runtime`; ingress never
 interprets activation and never fabricates a terminal Runtime Observation.
 Inspect `trading commands` or `/api/trading/execution/commands` for the command disposition and
 `trading observations` for later Runtime facts. The only valid evidence ladder
-is: intent recorded, Runtime accepted, order accepted, fill observed, fresh
-Binance account-flat reconciliation. Never infer a later stage from an earlier
-one, from Decision `RUNNING`, or from Runtime readiness.
+is: intent recorded, Runtime accepted, order accepted, fill observed, and
+`account_flat=true` on the current execution projection within its
+`reconciliation_age_ms` budget. Never infer a later stage from an earlier one,
+from Decision `RUNNING`, or from Runtime readiness. Do not read flatness out of
+the observation ledger: an unchanged steady reconciliation appends no row
+(#510).
 
 The browser reads use the bootstrap token, but Command writes use the separate
 mode-`0600` `trading_console_write_token` created by `tracefold init`. Paste
@@ -1498,7 +1501,7 @@ snapshot.
 ## Migrations
 
 Alembic has one root, baseline `20260831_0340`, and current head
-`20260903_0352`. A fresh PostgreSQL 18 database applies baseline, `0341`, the
+`20260903_0353`. A fresh PostgreSQL 18 database applies baseline, `0341`, the
 additive `0342` notification delivery ledger, the additive `0343` current
 execution Runtime projection/indexes, and the destructive `0344` News
 open-interest push cut, followed by the `0345` Runtime exposure projection
@@ -1509,7 +1512,11 @@ then the additive `0349` bounded current account read projection, and the
 additive `0350` `pg_trgm` pin plus `title_similarity` told-trace reason for the
 News reader-history title-similarity band, then the additive `0351` (program v9
 judgment CHECK, blind review drafts) and `0352` (triage policy v12 judgment
-CHECK, #504) constraint rewrites, in order. This
+CHECK, #504) constraint rewrites, and finally the `0353` rewrite of
+`trading_execution_string_array_valid` to order `native_identity_references` by
+code point (`COLLATE "C"`) instead of the database default collation, so the
+CHECK accepts the mixed-case Nautilus identities the contract produces (#510),
+in order. This
 source may merge or deploy only after the supported pre-cut database
 is advanced to the old terminal revision with its recorded image, backed up,
 and put through the #449 stopped-writer role catalog cut while retaining the
@@ -1618,7 +1625,7 @@ extra field, invalid identity, unverified snapshot, nonzero or unobserved queue
 count, a Git mismatch, an image/runtime-manifest mismatch or schema-object
 inventory drift before deleting anything.
 
-After deployment, require Alembic head `20260903_0352`; zero rows in every cleared
+After deployment, require Alembic head `20260903_0353`; zero rows in every cleared
 owner except the single new `news_learning_artifacts(kind='epoch_reset')` row
 and fresh singleton rows in `news_ingest_state` and
 `news_learning_retention_state`;

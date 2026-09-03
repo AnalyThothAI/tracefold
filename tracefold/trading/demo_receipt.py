@@ -29,7 +29,6 @@ class DemoReceiptObservation:
     reduce_only: bool | None = None
     explicit_quantity: str | None = None
     source: str | None = None
-    account_flat: bool | None = None
     lifecycle: str | None = None
     runtime_id: str | None = None
     runtime_revision: str | None = None
@@ -132,19 +131,13 @@ def verify_binance_demo_receipt(
         predicate=lambda row: row.disposition == "completed" and row.reason == "binance_account_flat",
         reason="binance_demo_flatten_not_completed",
     )
-    reconciliations = [
-        row
-        for row in observations
-        if row.runtime_profile_id == state.runtime_profile_id
-        and row.normalized_kind == "reconciliation"
-        and row.source == "binance_private_api"
-    ]
-    final_reconciliation = _require(
-        reconciliations,
-        kind="reconciliation",
-        predicate=lambda row: row.observed_at_ns >= flat.observed_at_ns and row.account_flat is True,
-        reason="binance_demo_authoritative_flat_missing",
-    )
+    # The flat proof is the current projection, not the newest `reconciliation` observation. Steady
+    # reconciliation stopped appending an observation per cycle in #510 PR-1, so after the account went
+    # flat and stayed flat there is no later row to find - and there never needed to be one:
+    # `trading_execution_runtime_state` carries `account_flat` and the clock that proved it, written by
+    # the same reconciliation, and this function already required `state.account_flat` above.
+    if state.reconciliation_observed_at_ns < flat.observed_at_ns:
+        raise DemoReceiptError("binance_demo_authoritative_flat_missing")
     starts = sorted(
         (
             row
@@ -188,7 +181,6 @@ def verify_binance_demo_receipt(
         protection_accepted,
         exit_order,
         flat,
-        final_reconciliation,
     )
     return BinanceDemoReceipt(
         mode="paper",
@@ -206,7 +198,7 @@ def verify_binance_demo_receipt(
         venue_native_references=tuple(
             sorted({reference for row in evidence for reference in row.native_identity_references})
         ),
-        authoritative_flat_observed_at_ns=final_reconciliation.observed_at_ns,
+        authoritative_flat_observed_at_ns=state.reconciliation_observed_at_ns,
     )
 
 

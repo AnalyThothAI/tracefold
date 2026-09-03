@@ -13,6 +13,7 @@ from decimal import Decimal
 from functools import partial
 from threading import Event, Lock
 
+import psycopg
 import pytest
 
 from tests.nautilus_oi_runtime_fixtures import NOW_NS, oi_profile
@@ -21,6 +22,7 @@ from tracefold.app.nautilus import oi_runtime as oi_runtime_module
 from tracefold.app.nautilus.oi_runtime import (
     OiRuntimeDatabaseBridge,
     execution_stream_channel,
+    flush_audit_once,
     load_or_record_day_start,
     load_runtime_control_state,
     load_unresolved_operator_intents,
@@ -264,6 +266,130 @@ def _stop_bridge(bridge: OiRuntimeDatabaseBridge) -> None:
     bridge.stop()
     bridge.join(2.0)
     assert bridge.connected is False
+
+
+# The `20260903_0353` downgrade body: `trading_execution_string_array_valid` as production ran it on
+# 2026-09-02, ordering `native_identity_references` under the database default collation. The test
+# below restores it inside its own throwaway clone so the refusal PostgreSQL actually raises - a real
+# `CheckViolation`, on the real constraint - drives the whole quarantine path.
+_PRE_0353_STRING_ARRAY_VALID = """
+CREATE OR REPLACE FUNCTION public.trading_execution_string_array_valid(value jsonb) RETURNS boolean
+    LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+    AS $$
+          SELECT jsonb_typeof(value) = 'array'
+             AND jsonb_array_length(value) <= 16
+             AND octet_length(value::text) <= 4096
+             AND NOT EXISTS (
+               SELECT 1 FROM jsonb_array_elements(value) item
+                WHERE jsonb_typeof(item) <> 'string' OR char_length(item #>> '{}') NOT BETWEEN 1 AND 256
+             )
+             AND value = COALESCE(
+               (SELECT jsonb_agg(item ORDER BY item #>> '{}') FROM jsonb_array_elements(value) item),
+               '[]'::jsonb
+             )
+             AND jsonb_array_length(value) = (
+               SELECT count(DISTINCT item) FROM jsonb_array_elements(value) item
+             )
+        $$
+"""
+
+_NAUTILUS_SHAPED_REFERENCES = (
+    "462066006",
+    "61742419",
+    "UNIUSDT-PERP.BINANCE-OI-RUNTIME-02A27DC240DF",
+    "tf0065f6482c5577533ba696da631582",
+)
+
+
+def test_a_database_refused_batch_is_quarantined_and_leaves_a_durable_audit_gap() -> None:
+    """The real refusal, the real recovery: PostgreSQL says no, the ledger says what it lost.
+
+    Running the pre-`0353` function makes the database reject the exact fill shape that stopped
+    production on 2026-09-02. What is being proved here is everything a fake writer cannot: that
+    psycopg raises an `IntegrityError` the App writer catches, that the aborted transaction leaves the
+    session usable, that the `audit_gap` lands durably in the same flush, and that the Signal whose
+    disposition was refused stops being pending instead of hanging forever.
+    """
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repos = repositories_for_connection(conn)
+        repo = TradingRepository(conn)
+        _activate(repo)
+        _append_signal(repo, suffix="1")
+
+        profile = oi_profile()
+        factory = ObservationFactory(profile.profile_id, profile.runtime_release, "oi_nautilus_v1")
+        audit = AuditSink(factory=factory)
+        signals = ExecutionSignalClient(
+            runtime_profile_id=profile.profile_id,
+            execution_strategy="oi_nautilus_v1",
+        )
+        assert signals.poll_once(partial(load_unresolved_trade_signals, repos)) == 1
+        signal = signals.next_nowait()
+        assert signal is not None
+        assert signals.pending_ids == {signal.signal_id}
+
+        fill = factory.create(
+            normalized_kind="fill",
+            occurred_at_ns=NOW_NS,
+            observed_at_ns=NOW_NS,
+            native_identity_references=_NAUTILUS_SHAPED_REFERENCES,
+            summary={"leg": "entry", "last_quantity": "3"},
+            payload={"leg": "entry"},
+        )
+        disposition = factory.create(
+            normalized_kind="signal_disposition",
+            signal_id=signal.signal_id,
+            occurred_at_ns=NOW_NS + 1,
+            observed_at_ns=NOW_NS + 1,
+            native_identity_references=_NAUTILUS_SHAPED_REFERENCES,
+            summary={"disposition": "accepted"},
+            payload={"disposition": "accepted"},
+        )
+        assert audit.offer(fill) is True
+        assert audit.offer(disposition) is True
+
+        head_definition = conn.execute(
+            "SELECT pg_get_functiondef("
+            "'public.trading_execution_string_array_valid(jsonb)'::regprocedure) AS definition"
+        ).fetchone()
+        assert head_definition is not None
+        assert 'COLLATE "C"' in head_definition["definition"]
+        conn.execute(_PRE_0353_STRING_ARRAY_VALID)
+        with pytest.raises(psycopg.errors.CheckViolation) as refused, conn.transaction():
+            repo.append_execution_observations(prepare_execution_observations((fill,)))
+        assert refused.value.diag.constraint_name == "trading_execution_observation_native_refs_check"
+
+        assert flush_audit_once(repos=repos, audit=audit, signals=signals) == 3
+
+        assert signals.pending_ids == set()
+        assert audit.queued_count == 0
+        assert audit.healthy is True
+        rows = conn.execute(
+            "SELECT event_id, normalized_kind, summary FROM trading_execution_observations ORDER BY seq"
+        ).fetchall()
+        assert [row["normalized_kind"] for row in rows] == ["audit_gap"]
+        assert rows[0]["summary"] == {
+            "cause": "audit_append_rejected",
+            "dropped_count": 2,
+            "first_event_id": fill.event_id,
+            "kind.fill": 1,
+            "kind.signal_disposition": 1,
+        }
+
+        # Head restores code-point ordering, and the same fill is admitted unchanged.
+        conn.execute(head_definition["definition"])
+        assert audit.offer(fill) is True
+        assert flush_audit_once(repos=repos, audit=audit, signals=signals) == 1
+        stored = conn.execute(
+            "SELECT native_identity_references FROM trading_execution_observations WHERE event_id = %s",
+            (fill.event_id,),
+        ).fetchone()
+        assert stored is not None
+        assert stored["native_identity_references"] == list(_NAUTILUS_SHAPED_REFERENCES)
+    finally:
+        conn.close()
 
 
 def test_listen_is_wake_only_and_poll_repairs_before_and_after_notifications() -> None:

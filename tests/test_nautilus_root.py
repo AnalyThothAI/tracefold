@@ -401,6 +401,7 @@ def test_reconciliation_observation_preserves_native_ids_and_flat_proof() -> Non
             observed_at_ns=1_000,
             duration_ns=2_000_000,
         ),
+        previous_identity=None,
     )
 
     observation = audit.flush_once(lambda _values: None)[0]
@@ -417,6 +418,75 @@ def test_reconciliation_observation_preserves_native_ids_and_flat_proof() -> Non
         "native_refs_truncated": False,
     }
     assert observation.native_identity_references == ("12345", "BTCUSDT-PERP.BINANCE", "tf-client")
+
+
+def test_a_steady_reconciliation_that_changed_nothing_stays_out_of_the_ledger() -> None:
+    """Current account state belongs in the projection; the ledger only carries the changes.
+
+    The steady heartbeat wrote one observation every twelve seconds and was 6996 of the 7019 rows in
+    the observation table (#510 E). The projection already carries `account_flat`, the counts, and
+    `reconciliation_observed_at_ns`, refreshed every loop.
+    """
+
+    audit = AuditSink(
+        factory=ObservationFactory(
+            runtime_profile_id="oi-paper-profile",
+            runtime_release="nautilus-1.231.0+oi-v1",
+            execution_strategy="oi_nautilus_v1",
+        )
+    )
+    position = SimpleNamespace(
+        instrument_id=SimpleNamespace(value="UNIUSDT-PERP.BINANCE"),
+        quantity=SimpleNamespace(value="3"),
+    )
+    stop = SimpleNamespace(
+        client_order_id=SimpleNamespace(value="tf0065f6482c5577533ba696da631582"),
+        venue_order_id=SimpleNamespace(value="61742419"),
+        instrument_id=SimpleNamespace(value="UNIUSDT-PERP.BINANCE"),
+        order_status=SimpleNamespace(value="ACCEPTED"),
+    )
+
+    def steady(reports: CompleteBinanceAccountReports, observed_at_ns: int) -> _PrivateReconciliationResult:
+        return _PrivateReconciliationResult(
+            reports=reports,
+            triggers=("steady",),
+            observed_at_ns=observed_at_ns,
+            duration_ns=2_000_000,
+        )
+
+    held = _complete_reports(positions=(position,), algo_orders=(stop,))
+    first = _observe_reconciliation(audit=audit, result=steady(held, 1_000), previous_identity=None)
+    second = _observe_reconciliation(audit=audit, result=steady(held, 2_000), previous_identity=first)
+    third = _observe_reconciliation(audit=audit, result=steady(held, 3_000), previous_identity=second)
+
+    assert first == second == third
+    assert audit.queued_count == 1
+
+    flat = _complete_reports()
+    fourth = _observe_reconciliation(audit=audit, result=steady(flat, 4_000), previous_identity=third)
+
+    assert fourth != third
+    assert audit.queued_count == 2
+
+    _observe_reconciliation(audit=audit, result=steady(flat, 5_000), previous_identity=fourth)
+
+    assert audit.queued_count == 2
+
+    _observe_reconciliation(
+        audit=audit,
+        result=_PrivateReconciliationResult(
+            reports=flat,
+            triggers=("unexpected_exposure",),
+            observed_at_ns=6_000,
+            duration_ns=2_000_000,
+        ),
+        previous_identity=fourth,
+    )
+
+    assert audit.queued_count == 3
+    observed = audit.flush_once(lambda _values: None)
+    assert [value.summary["trigger"] for value in observed] == ["steady", "steady", "unexpected_exposure"]
+    assert [value.summary["positions"] for value in observed] == [1, 0, 0]
 
 
 def test_runtime_start_receipt_binds_exact_runtime_image_config_and_credentials() -> None:
@@ -477,9 +547,10 @@ def test_the_notification_predicate_reads_the_summaries_these_writers_actually_p
     )
     position = SimpleNamespace(instrument_id=SimpleNamespace(value="BTCUSDT-PERP.BINANCE"))
 
-    _observe_reconciliation(
+    flat_identity = _observe_reconciliation(
         audit=audit,
         result=_PrivateReconciliationResult(_complete_reports(), ("steady",), 1_000, 1_000_000),
+        previous_identity=None,
     )
     _observe_reconciliation(
         audit=audit,
@@ -489,6 +560,7 @@ def test_the_notification_predicate_reads_the_summaries_these_writers_actually_p
             2_000,
             1_000_000,
         ),
+        previous_identity=flat_identity,
     )
     _observe_runtime_start(audit=audit, state=state)
     flat, unflat, started = audit.flush_once(lambda _values: None)

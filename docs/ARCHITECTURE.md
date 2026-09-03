@@ -2008,9 +2008,14 @@ projection; additive `20260902_0350` pins the
 `pg_trgm` extension and admits the `title_similarity` retrieval reason into the
 `news_verdicts` told trace CHECK for the reader-history title-similarity band
 (#491); additive `20260902_0351` opens the judgment CHECK to program v9 and
-admits blind review drafts (#501); and additive `20260903_0352`, the current
-single head, opens the same CHECK's model, OI and degraded branches to
-`news_triage_policy_v12` (#504).
+admits blind review drafts (#501); additive `20260903_0352` opens the same
+CHECK's model, OI and degraded branches to `news_triage_policy_v12` (#504); and
+`20260903_0353`, the current single head, replaces
+`trading_execution_string_array_valid`'s default-collation ordering with
+`COLLATE "C"`, so the observation CHECK orders `native_identity_references` the
+way `ExecutionObservationV1` sorts them and a fill that mixes upper-case Binance
+identities with lower-case `tf...` client order ids is no longer rejected
+(#510).
 
 Every new schema change is again a normal linear, immutable, forward-only
 revision after the baseline. Exact-image replacement requires source, image,
@@ -2115,6 +2120,27 @@ stage the App root accepted only `disabled` and constructed no TradingNode; it
 introduced no old `TradeIntent` consumer, legacy lifecycle bridge, or dual
 writer.
 
+#510 PR-1 separates the two ways a durable append can fail. A connection or
+timeout error keeps its batch at the head and retries it, unchanged. An
+integrity refusal — CHECK, unique, foreign key, NOT NULL — is a verdict no
+retry can change, so the batch leaves the queue and one `audit_gap` observation
+with `cause=audit_append_rejected` records how many events were lost, the first
+`event_id`, and the count per `normalized_kind`; the sink stays unhealthy, and
+so `entries_armed` stays false, until that gap is itself durable. A quarantined
+`signal_disposition` or `control_disposition` still resolves its Signal or
+Command, because the Runtime lost the audit fact, not the input. The App-side
+writer is the only place that knows psycopg and translates
+`psycopg.errors.IntegrityError` into the sink's own `AuditAppendRejected`. The
+bridge cycle runs its Command read, Signal read and audit flush as three
+independent steps in that order, and only a lost connection still aborts the
+cycle, so an unwritable ledger can no longer stop an operator from flattening.
+A repeating cause is logged once, not once per 27-second cycle. While a Command
+or Signal read is failing the bridge reports `control_plane_ready` false, so
+`entries_armed` goes false: a Runtime that has stopped consuming its inputs must
+not stay armed to open exposure it could then never be told to unwind. That is
+an entry gate, not a safety gate — `execution_safe` is unchanged and existing
+exposure keeps its protection — and the first successful read clears it.
+
 #433-D adds one closed operator-control path without adding another execution
 owner. Workers alone exposes `POST /telegram/control` on its loopback probe;
 the Telegram secret header and both configured chat/user allowlists must pass
@@ -2147,7 +2173,7 @@ exits, or reconciliation. Delivery is at-least-once across the send/receipt cras
 window, so a duplicate message is allowed. Which observation is notifiable, and how
 often, is stated once in `tracefold.trading.notification_policy`: the read carries it
 into SQL as parameters and the renderer gates on it. `reconciliation` and `readiness`
-arrive on a timer, so they coalesce to the newest pending observation of that kind and
+can arrive in bursts, so they coalesce to the newest pending observation of that kind and
 send at most one per half hour; a superseded observation is dropped rather than queued,
 because a card reporting a position the account has already left is worse than no card.
 Every other notifiable kind is delivered one for one. HTTP/CLI/React command and
@@ -2166,7 +2192,15 @@ complete private Binance flat report and starts paused; a current profile rolls
 forward without one and reclaims exposure from its durable entry-order facts. Signals and manual entries share
 the same fixed-risk 1x path. Private reconciliation, Runtime start, order,
 fill, protection, exit and flat facts remain append-only Observations, while
-one generation-fenced row is the current readiness/status projection.
+one generation-fenced row is the current readiness/status projection. Since
+#510 PR-1 a `steady` reconciliation appends nothing when it finds the same
+positions, regular orders and Algo orders as the previous one: unchanged
+current state is what the projection is for, and that heartbeat was 6996 of the
+ledger's 7019 rows. Any other trigger, and any change to those three identity
+sets, still appends. The projection's `account_flat` and
+`reconciliation_observed_at_ns`, refreshed every 0.5-second loop, are therefore
+the only account-freshness and flat proof; no reader folds the observation
+window to obtain one.
 
 #475 PR-0 binds the exact pre-change Runtime owner matrix and concurrency
 measurements in
