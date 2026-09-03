@@ -636,7 +636,7 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
        -> exact normalized source-contract classification and durable event_kind
        -> same-kind exact fingerprint / MinHash 32x4 LSH near-duplicate + strong-fact veto
        -> Event new|member (dedupe_family window) -> Gate (provider-graded grounded_assets,
-          macro/energy lexicon, PR-template veto, low-signal switch) -> preliminary
+          registry macro/energy flags, PR-template veto, low-signal switch) -> preliminary
           storyline key; a stronger later member re-gates a suppressed Event
        -> publish event.<dedupe_family>.<queue_priority> for every admitted candidate,
           listing, OI or liquidation Event; unsupported_market is a named held
@@ -964,6 +964,15 @@ functions and keep no Strategy name table of their own: grounded assets are the
 provider's grade B+/A/A+ coin tags plus any literal `$TICKER` cashtag (the
 provider already resolved Bitcoin -> BTC, Home Depot -> HD); `CL`/`XYZ-CL` is
 grounded only in energy context and a short stop-list drops English-word tags.
+The Gate keeps no word list of its own either (#509 PR-2): the energy context
+for `CL`, the `macro_lexicon` fact behind `asset_class=macro`, and the
+queue-order subset are the `gate.energy_context` / `gate.macro` /
+`gate.queue_high` flags on the storyline registry rows the text matched, read
+through `events.gate.gate_lexicon_flags`. The v5 regexes that used to sit in
+`gate.py` are deleted, so "energy" and "macro" mean the same thing to the Gate
+and to the storyline key instead of two lists disagreeing about `iranian`, 沙特,
+`barrels` and every central bank outside the Fed. Adding a word is a registry
+row; `gate.queue_high` rows are a subset of the `gate.macro` ones.
 Existence on a venue is deliberately not a condition: #75 shipped that filter
 behind a flag and the dry-run killed it — every tag the provider had itself
 mapped to a venue was already listed, and the ones it would have removed were
@@ -989,17 +998,18 @@ candidate (#72). A member that
 joins a suppressed Event with stronger evidence (score >= 80, an A/A+ grounded
 tag, or a different source) re-gates it in place and it publishes once.
 `queue_priority` is `high` (AMQP priority 5) for score >= 90, watchlist hits,
-listing frames, or rate/yield macro. It is a broker scheduling hint only: it may
-be persisted and measured, but cannot enter a Predictor, `decide()`, ReaderCard
-or reader-facing importance UI.
+listing frames, or a registry hit flagged `gate.queue_high` (the rates topic and
+the Fed). It is a broker scheduling hint only: it may be persisted and measured,
+but cannot enter a Predictor, `decide()`, ReaderCard or reader-facing importance
+UI.
 
 The storyline key is composed from a **code-owned registry**, not from an
 ordered pattern list (#509). `tracefold/news/events/storyline_registry.json`
 (`news_storyline_registry_v1`) holds `conflict` / `actor` / `geo` / `topic`
-entries, each with a Chinese label and literal aliases per script; `latin`
-aliases match on word boundaries and every other script matches as a substring,
-both over NFKC-normalized, case-folded text, and the longest alias at a position
-wins. An alias belongs to exactly one entry, so matching yields a *set* of
+entries, each with a Chinese label, literal aliases per script and the optional
+Gate flags above; `latin` aliases match on word boundaries and every other
+script matches as a substring, both over NFKC-normalized, case-folded text, and
+the longest alias at a position wins. An alias belongs to exactly one entry, so matching yields a *set* of
 positioned hits with no priority rule of its own. Structure is enforced at load:
 unique aliases, no structural regex syntax (a literal `.` is fine and escaped —
 `u.s.` needs it), already-normalized surface forms, `members` that name entries

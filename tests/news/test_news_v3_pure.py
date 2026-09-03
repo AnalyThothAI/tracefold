@@ -25,7 +25,7 @@ from tracefold.news.delivery import (
 )
 from tracefold.news.eval.replay import replay_hits
 from tracefold.news.events.facts import FactUnit, extract_fact_units
-from tracefold.news.events.gate import GateInput, evaluate_gate, grounded_assets
+from tracefold.news.events.gate import GateInput, evaluate_gate, gate_lexicon_flags, grounded_assets
 from tracefold.news.events.minhash import BANDS, band_keys, estimate_jaccard, minhash_signature
 from tracefold.news.events.storyline import (
     NO_STORYLINE_KEY,
@@ -408,6 +408,113 @@ def test_gate_admission_rules() -> None:
         )
     )
     assert watch.admission == "candidate" and watch.watchlist_hits == ("BTC",) and watch.queue_priority == "high"
+    # #509 PR-2: the energy context a bare `CL` tag needs is `gate.energy_context` on the storyline registry, so
+    # a tanker attack in the Strait grounds crude through `tanker` / `hormuz` / `iran` rather than through a
+    # regex kept next to this policy.
+    hormuz = evaluate_gate(
+        GateInput(
+            title="Iran attacks tanker outside Strait of Hormuz",
+            engine_type="news",
+            **{**base, "coins": ({"symbol": "CL"}, {"symbol": "XYZ-CL"})},
+        )
+    )
+    assert hormuz.energy_lexicon and hormuz.grounded_assets == ("CL", "XYZ-CL")
+    assert hormuz.asset_class == "equity_or_commodity"
+    # A hurricane over the Gulf is not energy context by itself: `gulf` and `mexico` are the v3 traps the
+    # registry refuses, and v5's bare `energy` went with them. The subject has to be named.
+    gulf = evaluate_gate(
+        GateInput(
+            title="Hurricane shuts Gulf of Mexico platforms",
+            engine_type="news",
+            **{**base, "coins": ({"symbol": "CL"},)},
+        )
+    )
+    assert not gulf.energy_lexicon and gulf.grounded_assets == () and gulf.asset_class == "none"
+    rigs = evaluate_gate(
+        GateInput(
+            title="Hurricane shuts Gulf of Mexico oil platforms",
+            engine_type="news",
+            **{**base, "coins": ({"symbol": "CL"},)},
+        )
+    )
+    assert rigs.energy_lexicon and rigs.grounded_assets == ("CL",)
+    # Central banks are `gate.macro` but only the Fed and the rates topic are `gate.queue_high`: v5 had no
+    # entry for the RBNZ at all, and its un-bounded `rate|fed` high-priority pattern promoted anything.
+    rbnz = evaluate_gate(
+        GateInput(title="Reserve Bank of New Zealand Sets Official Cash Rate at 2.75%", engine_type="news", **base)
+    )
+    assert rbnz.macro_lexicon and rbnz.asset_class == "macro" and rbnz.queue_priority == "normal"
+    powell = evaluate_gate(
+        GateInput(title="Fed's Powell says policy is well positioned for now", engine_type="news", **base)
+    )
+    assert powell.macro_lexicon and powell.asset_class == "macro" and powell.queue_priority == "high"
+    # v5 read `treasury` and the `rate` inside "accelerate" here, and filed a corporate raise as high-priority
+    # macro. `bitcoin treasury` is the longer alias and it belongs to a crypto topic that carries no Gate flag.
+    treasury_company = evaluate_gate(
+        GateInput(
+            title="Capital B raises $8.8M from Adam Back to accelerate its bitcoin treasury",
+            engine_type="news",
+            **base,
+        )
+    )
+    assert not treasury_company.macro_lexicon and treasury_company.queue_priority == "normal"
+
+
+def test_gate_lexicon_flags_are_registry_data_with_one_owner() -> None:
+    """#509 D3: `gate.py` keeps no word list; `energy` / `macro` / `queue_high` are flags on registry rows.
+
+    The v5 Gate and the v3 storyline lexicon were two vocabularies for the same words and they disagreed: the
+    Gate knew `iran` but not `iranian` or 沙特, `pboc` but no other central bank outside a bare 央行, and its
+    high-priority pattern had no word boundaries, so "accelerate" and "corporate" were rate news. One list now
+    answers both questions, and the three things that could still go wrong are asserted here."""
+
+    from tracefold.news.events import gate as gate_module
+
+    assert not [
+        name
+        for name in ("ENERGY_LEXICON", "MACRO_LEXICON", "GATE_LEXICON_VERSION", "_HIGH_PRIORITY_MACRO")
+        if hasattr(gate_module, name)
+    ]
+    flags = {entry.id: entry.gate for entry in load_storyline_registry().entries if entry.gate is not None}
+    energy = {name for name, gate in flags.items() if gate.energy_context}
+    macro = {name for name, gate in flags.items() if gate.macro}
+    queue_high = {name for name, gate in flags.items() if gate.queue_high}
+    # `evaluate_gate` drops v5's `macro and <high-priority pattern>` conjunction, which is only correct while
+    # every queue_high row is also a macro row.
+    assert queue_high <= macro and queue_high == {"fed", "rates"}
+    assert energy == {"energy", "hormuz", "iran", "iraq", "kuwait", "oman", "qatar", "saudi", "uae", "yemen"}
+    assert macro == {
+        "boc",
+        "boe",
+        "boj",
+        "bok",
+        "cbr",
+        "china_macro",
+        "ecb",
+        "fed",
+        "fx",
+        "macro_data",
+        "pboc",
+        "rba",
+        "rbnz",
+        "rates",
+        "trade",
+    }
+    # Coverage v5 did not have (the #509 P1 words): every central bank, the Gulf states in Chinese, and the
+    # inflected forms a word-boundary regex missed.
+    assert gate_lexicon_flags("Bank of Canada mulls tariff shock as Macklem readies rate decision").macro
+    assert gate_lexicon_flags("ADP employment change misses estimates").macro
+    assert gate_lexicon_flags("ТАСС: ЦБ РФ снизил ключевую ставку").macro
+    assert gate_lexicon_flags("沙特重返国际债市，发行美元计价伊斯兰债券。").energy
+    assert gate_lexicon_flags("U.S. Military Attacked Two Iranian Government Tankers").energy
+    assert gate_lexicon_flags("US can swap Venezuela barrels to refill SPR").energy
+    # Background vocabulary v5 counted as a subject. A company called Energy is not the energy market, a
+    # sales pipeline is not a pipeline, and a bare 央行 is not a central bank taking a decision (PR-1).
+    assert not gate_lexicon_flags("Eos Energy Shares Up 14.8% Premarket").energy
+    assert not gate_lexicon_flags("9% chance Trump renames the strait.").energy
+    assert not gate_lexicon_flags("HPE's pipeline remains multiples of its backlog").energy
+    assert gate_lexicon_flags("Ukrainian drones hit the Druzhba oil pipeline").energy
+    assert not gate_lexicon_flags("施罗德投资上调黄金评级，认为央行强力购金构成结构性支撑").macro
 
 
 # ---------------------------------------------------------------- storyline
@@ -476,6 +583,10 @@ def test_storyline_registry_rejects_a_row_that_is_not_data() -> None:
         {"entries": [{**base["entries"][0], "aliases": {"latin": ["Iran"]}}]},
         {"entries": [{**base["entries"][0], "kind": "topic", "members": ["iran"]}]},
         {"entries": [{**base["entries"][0], "surprise": 1}]},
+        # A conflict owns no aliases, so it is never a hit and a Gate flag on it is data nothing can read.
+        {"entries": [base["entries"][0], {**base["entries"][1], "gate": {"macro": True}}]},
+        # `evaluate_gate` reads `queue_high` alone, which is only the v5 rule while queue_high implies macro.
+        {"entries": [{**base["entries"][0], "gate": {"queue_high": True}}]},
     ):
         with pytest.raises(ValueError):
             StorylineRegistry.model_validate(base | broken)

@@ -291,6 +291,9 @@
         "he": [
           "איראן"
         ]
+      },
+      "gate": {
+        "energy_context": true
       }
     },
     {
@@ -314,6 +317,9 @@
         "he": [
           "הורמוז"
         ]
+      },
+      "gate": {
+        "energy_context": true
       }
     },
     {
@@ -456,6 +462,9 @@
         "zh": [
           "科威特"
         ]
+      },
+      "gate": {
+        "energy_context": true
       }
     },
     {
@@ -486,6 +495,9 @@
           "阿联酋",
           "迪拜"
         ]
+      },
+      "gate": {
+        "energy_context": true
       }
     },
     {
@@ -499,6 +511,9 @@
         "zh": [
           "卡塔尔"
         ]
+      },
+      "gate": {
+        "energy_context": true
       }
     },
     {
@@ -528,6 +543,9 @@
           "伊拉克",
           "巴格达"
         ]
+      },
+      "gate": {
+        "energy_context": true
       }
     },
     {
@@ -544,6 +562,9 @@
           "沙特",
           "利雅得"
         ]
+      },
+      "gate": {
+        "energy_context": true
       }
     },
     {
@@ -557,6 +578,9 @@
         "zh": [
           "阿曼"
         ]
+      },
+      "gate": {
+        "energy_context": true
       }
     },
     {
@@ -567,11 +591,13 @@
         "latin": [
           "yemen",
           "houthi",
-          "houthis"
+          "houthis",
+          "red sea"
         ],
         "zh": [
           "也门",
-          "胡塞"
+          "胡塞",
+          "红海"
         ],
         "ru": [
           "хусит"
@@ -584,6 +610,9 @@
           "חות'ים",
           "חותים"
         ]
+      },
+      "gate": {
+        "energy_context": true
       }
     },
     {
@@ -775,7 +804,17 @@
           "lng",
           "natural gas",
           "eia",
-          "rig count"
+          "rig count",
+          "refiner",
+          "refiners",
+          "refining",
+          "shale",
+          "novorossiysk",
+          "energy prices",
+          "energy infrastructure",
+          "energy secretary",
+          "oil pipeline",
+          "gas pipeline"
         ],
         "zh": [
           "石油",
@@ -785,7 +824,10 @@
           "美油",
           "油轮",
           "欧佩克",
-          "天然气"
+          "天然气",
+          "新罗西斯克",
+          "能源价格",
+          "能源基础设施"
         ],
         "ru": [
           "нефт",
@@ -819,6 +861,11 @@
           "rate cut",
           "rate hike",
           "rate decision",
+          "rate cuts",
+          "rate hikes",
+          "rate decisions",
+          "interest rate",
+          "interest rates",
           "jgb",
           "bond",
           "bonds",
@@ -859,14 +906,21 @@
           "consumer sentiment",
           "import prices",
           "export prices",
-          "factory orders"
+          "factory orders",
+          "unemployment",
+          "stagflation",
+          "recession"
         ],
         "zh": [
           "营建许可",
           "新屋开工",
           "零售销售",
           "初请",
-          "耐用品"
+          "耐用品",
+          "非农",
+          "失业率",
+          "滞胀",
+          "进口物价"
         ]
       },
       "gate": {

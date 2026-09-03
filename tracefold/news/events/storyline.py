@@ -111,6 +111,15 @@ class StorylineEntry(BaseModel):
         # coverage instead of only stopping the merge. Every alias belongs to something that exists on its own.
         if self.kind == "conflict" and self.aliases.all():
             raise ValueError(f"news_storyline_registry_conflict_owns_aliases:{self.id}")
+        # A conflict owns no aliases, so it is never in a `match_storyline` hit and a Gate flag on it would be
+        # data the Gate can never read. Refusing it at load keeps "flag a row, the Gate reads it" true.
+        if self.kind == "conflict" and self.gate is not None:
+            raise ValueError(f"news_storyline_registry_conflict_carries_gate:{self.id}")
+        # `evaluate_gate` reads `queue_high` alone where v5 asked for `macro and <high-priority pattern>`. That
+        # is only the same rule while every queue_high row is a macro row, so the registry, not a comment,
+        # carries the condition.
+        if self.gate is not None and self.gate.queue_high and not self.gate.macro:
+            raise ValueError(f"news_storyline_registry_queue_high_without_macro:{self.id}")
         for _script, alias in self.aliases.all():
             if not alias.strip():
                 raise ValueError(f"news_storyline_registry_alias_empty:{self.id}")
