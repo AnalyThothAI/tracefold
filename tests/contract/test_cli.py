@@ -389,6 +389,19 @@ class CliTests(unittest.TestCase):
                     "api_key_file": str(home / ".tracefold" / "binance_usdm_api_key"),
                     "api_secret_file": str(home / ".tracefold" / "binance_usdm_api_secret"),
                 },
+                # #510 E: the Runtime risk gap policy is operator-owned and not a secret. Every value
+                # here is inside the profile `config_sha256` the activation fence checks.
+                "risk": {
+                    "risk_fraction_per_trade": 0.01,
+                    "max_risk_per_trade_usd": 10.0,
+                    "max_total_risk_usd": 25.0,
+                    "max_positions": 1,
+                    "max_leverage": 1,
+                    "max_daily_loss_usd": 25.0,
+                    "stop_distance_bps": 100,
+                    "reconciliation_interval_seconds": 5.0,
+                    "market_stale_after_seconds": 5.0,
+                },
             },
         )
         self.assertNotIn("private-strategy-alpha", stdout.getvalue())

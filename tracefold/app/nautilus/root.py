@@ -8,7 +8,6 @@ import time
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext, suppress
 from dataclasses import asdict, dataclass, replace
-from decimal import Decimal
 from threading import Lock
 from typing import Any, Literal
 from uuid import uuid4
@@ -31,14 +30,15 @@ from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.instruments import CryptoPerpetual
 
 from tracefold.app.nautilus.oi_runtime import (
+    RUNTIME_HEARTBEAT_INTERVAL_NS,
     OiRuntimeDatabaseBridge,
-    OiRuntimeReadiness,
+    RuntimeStateProjector,
+    load_recovery_inputs,
     load_runtime_control_state,
 )
 from tracefold.app.nautilus.oi_runtime import run_nautilus as run_disabled_runtime
 from tracefold.app.nautilus.probe import create_nautilus_probe_app
 from tracefold.app.nautilus.reconciliation import (
-    account_reports_are_flat,
     build_runtime_reconciliation_snapshot,
     reconcile_reports_into_cache,
 )
@@ -68,28 +68,15 @@ from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrate
 from tracefold.platform.config.models import Settings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.runtime_identity import runtime_identity
-from tracefold.trading import EXECUTION_STRATEGY_ID, OperatorIntentV1, TradeSignalV1, canonical_sha256
-from tracefold.trading.storage.execution_stream import (
-    MAX_EXECUTION_READ_BATCH,
-    ExecutionProfileActivation,
-    ExecutionRuntimeState,
-    materialize_operator_intents,
-    materialize_trade_signals,
-)
+from tracefold.trading import EXECUTION_STRATEGY_ID, canonical_sha256
+from tracefold.trading.storage.execution_stream import ExecutionProfileActivation, ExecutionRuntimeState
 
 _RUNTIME_RELEASE = "nautilus-1.231.0+oi-v1"
 _EXECUTION_STRATEGY = EXECUTION_STRATEGY_ID
 _INTERNAL_PORT = 8767
 _STOP_TIMEOUT_SECONDS = 20.0
 _START_TIMEOUT_SECONDS = 90.0
-_HEARTBEAT_INTERVAL_SECONDS = 0.5
-_HEARTBEAT_INTERVAL_NS = int(_HEARTBEAT_INTERVAL_SECONDS * 1_000_000_000)
-# Recovery reads the durable entry-order facts that can still hold Binance exposure. Seven days
-# is the widest gap this single-host deployment can be down and still find its own position on
-# the venue; older entries cannot be open because a Signal's TTL and this account slot's
-# activation fence have both long since retired them.
-_RECOVERY_ENTRY_FACT_WINDOW_NS = 7 * 24 * 60 * 60 * 1_000_000_000
-_DEFAULT_STOP_DISTANCE_BPS = 100
+_HEARTBEAT_INTERVAL_SECONDS = RUNTIME_HEARTBEAT_INTERVAL_NS / 1_000_000_000
 _BINANCE_USDM_ACCOUNT_ID = AccountId("BINANCE-USDT_FUTURES-master")
 
 
@@ -167,49 +154,13 @@ class _PrivateReconciliationRequests:
         return reasons
 
 
-class _RuntimeStateProjector:
-    """One persistent repository-session owner for the current Runtime row."""
-
-    def __init__(self, repos: RepositorySession) -> None:
-        self._repos = repos
-        self.current: ExecutionRuntimeState | None = None
-
-    def start(self, state: ExecutionRuntimeState) -> ExecutionRuntimeState:
-        if self.current is not None:
-            raise RuntimeError("oi_runtime_projection_already_started")
-        with self._repos.transaction():
-            self._repos.trading.put_execution_runtime_state(state)
-        self.current = state
-        return state
-
-    def publish(self, candidate: ExecutionRuntimeState) -> ExecutionRuntimeState:
-        current = self.current
-        if current is None:
-            raise RuntimeError("oi_runtime_projection_not_started")
-        semantic_change = self._semantic(candidate) != self._semantic(current)
-        heartbeat_due = candidate.heartbeat_at_ns - current.heartbeat_at_ns >= _HEARTBEAT_INTERVAL_NS
-        if not semantic_change and not heartbeat_due:
-            return current
-        with self._repos.transaction():
-            if not self._repos.trading.update_execution_runtime_state(candidate):
-                raise RuntimeError("oi_runtime_generation_lost")
-        self.current = candidate
-        return candidate
-
-    @staticmethod
-    def _semantic(state: ExecutionRuntimeState) -> dict[str, Any]:
-        values = asdict(state)
-        values.pop("heartbeat_at_ns")
-        values.pop("updated_at_ns")
-        return values
-
-
-def run_nautilus(settings: Settings) -> OiRuntimeReadiness | None:
+def run_nautilus(settings: Settings) -> None:
     """Run disabled without a node, or supervise the configured paper/live node."""
 
     execution = settings.trading.execution
     if execution.mode == "disabled":
-        return run_disabled_runtime(_disabled_profile(settings))
+        run_disabled_runtime(_disabled_profile(settings))
+        return
     credentials = _read_credentials(settings)
     credential_fingerprint = canonical_sha256(
         {
@@ -235,11 +186,11 @@ def run_nautilus(settings: Settings) -> OiRuntimeReadiness | None:
                     credentials=credentials,
                     credential_fingerprint=credential_fingerprint,
                     singleton=singleton,
+                    repos=singleton_repos,
                 )
             )
         finally:
             singleton.release()
-    return None
 
 
 async def _run_active_runtime(
@@ -248,32 +199,25 @@ async def _run_active_runtime(
     credentials: BinanceRuntimeCredentials,
     credential_fingerprint: str,
     singleton: AccountSlotSingleton,
+    repos: RepositorySession,
 ) -> None:
-    routes = await _discover_routes(settings.trading.execution.mode, credentials)
+    """Own Binance, Nautilus and the in-memory picture; do no PostgreSQL work once the loop starts.
+
+    Startup is sequential and reads what it needs on the session that already exists to hold the
+    account-slot advisory lock. From `bridge.start()` the bridge thread is this process's only
+    PostgreSQL caller: two connections instead of three, and no synchronous statement on the thread
+    that also runs every Nautilus order and position callback (#510 E).
+    """
+
+    execution = settings.trading.execution
+    routes = await _discover_routes(
+        execution.mode,
+        credentials,
+        stop_distance_bps=execution.risk.stop_distance_bps,
+    )
     profile = _active_profile(settings, routes)
-    with postgres_connection(settings, application_name="tracefold_nautilus_state") as state_conn:
-        state_repos = repositories_for_connection(state_conn)
-        await _run_active_runtime_with_state(
-            settings=settings,
-            credentials=credentials,
-            credential_fingerprint=credential_fingerprint,
-            singleton=singleton,
-            profile=profile,
-            state_repos=state_repos,
-        )
-
-
-async def _run_active_runtime_with_state(
-    *,
-    settings: Settings,
-    credentials: BinanceRuntimeCredentials,
-    credential_fingerprint: str,
-    singleton: AccountSlotSingleton,
-    profile: OiRuntimeProfile,
-    state_repos: RepositorySession,
-) -> None:
-    existing_activation = _preflight_profile(state_repos, profile)
-    control = load_runtime_control_state(state_repos, profile.profile_id) if existing_activation is not None else None
+    existing_activation = _preflight_profile(repos, profile)
+    control = load_runtime_control_state(repos, profile.profile_id) if existing_activation is not None else None
     signals = ExecutionSignalClient(
         runtime_profile_id=profile.profile_id,
         execution_strategy=_EXECUTION_STRATEGY,
@@ -290,6 +234,7 @@ async def _run_active_runtime_with_state(
     runtime_wake = asyncio.Event()
     reconciliation_requests = _PrivateReconciliationRequests(loop=loop, wake=runtime_wake)
     bridge: OiRuntimeDatabaseBridge | None = None
+    projector: RuntimeStateProjector | None = None
 
     def dispatch_pump_on_loop(pump: Callable[[], None]) -> None:
         """The timer's only job: hand its pump to the thread that owns Runtime state (#510 F)."""
@@ -326,7 +271,6 @@ async def _run_active_runtime_with_state(
     installed_signals = _install_signal_handlers(loop, request_stop)
     node_task = asyncio.create_task(node.run_async(), name="oi-nautilus-node")
     probe_task = asyncio.create_task(server.serve(), name="oi-nautilus-probe")
-    projector = _RuntimeStateProjector(state_repos)
     try:
         await _await_node_started(node=node, node_task=node_task)
         client = single_binance_execution_client(node.kernel.exec_engine)
@@ -336,36 +280,25 @@ async def _run_active_runtime_with_state(
         reports = result.reports
         observed_at_ns = result.observed_at_ns
         activation = _activate_profile(
-            repos=state_repos,
+            repos=repos,
             profile=profile,
             existing=existing_activation,
-            account_flat=account_reports_are_flat(reports),
+            account_flat=reports.account_flat,
             created_at_ns=observed_at_ns,
         )
-        recovery_signals, recovery_manual_entries = _load_recovery_inputs(
-            state_repos,
-            profile.profile_id,
-            observed_at_ns,
-        )
+        recovery_inputs = load_recovery_inputs(repos, profile.profile_id, observed_at_ns)
         readiness.activate()
-        snapshot = build_runtime_reconciliation_snapshot(
-            profile=profile,
-            signals=recovery_signals,
-            manual_entries=recovery_manual_entries,
-            cache=node.cache,
-            account_observed_at_ns=observed_at_ns,
-            reconciliation_observed_at_ns=observed_at_ns,
+        strategy.reconcile_runtime(
+            build_runtime_reconciliation_snapshot(
+                profile=profile,
+                signals=recovery_inputs[0],
+                manual_entries=recovery_inputs[1],
+                cache=node.cache,
+                account_observed_at_ns=observed_at_ns,
+                reconciliation_observed_at_ns=observed_at_ns,
+            )
         )
-        strategy.reconcile_runtime(snapshot)
         reconciliation_identity = _observe_reconciliation(audit=audit, result=result, previous_identity=None)
-        bridge = OiRuntimeDatabaseBridge(
-            settings=settings,
-            profile=profile,
-            signals=signals,
-            audit=audit,
-            update_day_start=strategy.update_day_start,
-        )
-        bridge.start()
         started_at_ns = time.time_ns()
         identity = runtime_identity()
         state = ExecutionRuntimeState(
@@ -391,7 +324,7 @@ async def _run_active_runtime_with_state(
             audit_ready=False,
             day_start_ready=False,
             unexpected_exposure=False,
-            account_flat=account_reports_are_flat(reports),
+            account_flat=reports.account_flat,
             positions_count=len(reports.positions),
             open_orders_count=len(reports.orders),
             protection_status="unknown" if reports.positions else "not_applicable",
@@ -407,7 +340,22 @@ async def _run_active_runtime_with_state(
             routes=tuple(sorted(route.market_key for route in profile.routes)),
         )
         _observe_runtime_start(audit=audit, state=state)
-        projector.start(state)
+        projector = RuntimeStateProjector(
+            initial=state,
+            activation=activation,
+            recovery_inputs=recovery_inputs,
+        )
+        projector.start(repos)
+        bridge = OiRuntimeDatabaseBridge(
+            settings=settings,
+            profile=profile,
+            signals=signals,
+            audit=audit,
+            update_day_start=strategy.update_day_start,
+            singleton=singleton,
+            projector=projector,
+        )
+        bridge.start()
         reconciliation_interval = profile.risk.reconciliation_interval_seconds
         next_reconciliation = loop.time() + reconciliation_interval
         while not stop.is_set():
@@ -420,7 +368,9 @@ async def _run_active_runtime_with_state(
                 raise RuntimeError("oi_runtime_probe_returned")
             if bridge.fatal_error is not None:
                 raise RuntimeError("oi_runtime_database_bridge_failed") from bridge.fatal_error
-            if not singleton.check():
+            # The heartbeat that proves the lock's session is alive runs on the bridge thread now;
+            # this is the same fail-closed read, taken from memory.
+            if not singleton.acquired:
                 raise RuntimeError("oi_runtime_account_slot_lost")
             now_ns = time.time_ns()
             # The same function the entry path's `NautilusRiskFacts` uses, so the day-start baseline
@@ -454,11 +404,7 @@ async def _run_active_runtime_with_state(
                     result=result,
                     previous_identity=reconciliation_identity,
                 )
-                recovery_signals, recovery_manual_entries = _load_recovery_inputs(
-                    state_repos,
-                    profile.profile_id,
-                    observed_at_ns,
-                )
+                recovery_signals, recovery_manual_entries = bridge.recovery_inputs()
                 strategy.reconcile_runtime(
                     build_runtime_reconciliation_snapshot(
                         profile=profile,
@@ -473,8 +419,7 @@ async def _run_active_runtime_with_state(
             strategy_readiness = strategy.readiness()
             portfolio_ready = bool(node.portfolio.initialized)
             audit_ready = audit.can_accept_exposure() and bridge.connected
-            latest = state_repos.trading.latest_execution_profile_activation(profile.account_slot)
-            activation_current = latest == activation
+            activation_current = bridge.activation_current
             execution_safe = bool(strategy_readiness.execution_safe and activation_current)
             entries_armed = bool(strategy_readiness.entries_armed and execution_safe)
             entry_block_reason = _entry_block_reason(
@@ -483,61 +428,63 @@ async def _run_active_runtime_with_state(
                 strategy_reason=strategy_readiness.entry_block_reason,
             )
             positions_count = len(reports.positions)
-            current_state = projector.current
-            if current_state is None:
-                raise RuntimeError("oi_runtime_projection_not_started")
-            state = projector.publish(
-                replace(
-                    current_state,
-                    lifecycle_state="running",
-                    alive=True,
-                    execution_safe=execution_safe,
-                    entries_armed=entries_armed,
-                    control_plane_ready=strategy_readiness.control_plane_ready,
-                    singleton_ready=singleton.acquired,
-                    activation_ready=activation_current,
-                    startup_reconciled=strategy_readiness.startup_reconciled,
-                    portfolio_ready=portfolio_ready,
-                    audit_ready=audit_ready,
-                    day_start_ready=strategy_readiness.day_start_ready,
-                    unexpected_exposure=strategy_readiness.unexpected_exposure,
-                    account_flat=account_reports_are_flat(reports),
+            state = replace(
+                state,
+                lifecycle_state="running",
+                alive=True,
+                execution_safe=execution_safe,
+                entries_armed=entries_armed,
+                control_plane_ready=strategy_readiness.control_plane_ready,
+                singleton_ready=singleton.acquired,
+                activation_ready=activation_current,
+                startup_reconciled=strategy_readiness.startup_reconciled,
+                portfolio_ready=portfolio_ready,
+                audit_ready=audit_ready,
+                day_start_ready=strategy_readiness.day_start_ready,
+                unexpected_exposure=strategy_readiness.unexpected_exposure,
+                account_flat=reports.account_flat,
+                positions_count=positions_count,
+                open_orders_count=len(reports.orders),
+                protection_status=strategy.protection_status(
                     positions_count=positions_count,
-                    open_orders_count=len(reports.orders),
-                    protection_status=strategy.protection_status(
-                        positions_count=positions_count,
-                        unexpected_exposure=strategy_readiness.unexpected_exposure,
-                    ),
-                    reconciliation_observed_at_ns=strategy_readiness.reconciliation_observed_at_ns,
-                    heartbeat_at_ns=now_ns,
-                    entry_block_reason=entry_block_reason,
-                    updated_at_ns=now_ns,
-                    account_snapshot=strategy.account_snapshot(projected_at_ns=now_ns),
-                )
+                    unexpected_exposure=strategy_readiness.unexpected_exposure,
+                ),
+                reconciliation_observed_at_ns=strategy_readiness.reconciliation_observed_at_ns,
+                heartbeat_at_ns=now_ns,
+                entry_block_reason=entry_block_reason,
+                updated_at_ns=now_ns,
+                account_snapshot=strategy.account_snapshot(projected_at_ns=now_ns),
             )
+            projector.offer(state)
             probe.publish(_probe_payload(state))
             with suppress(TimeoutError):
                 await asyncio.wait_for(runtime_wake.wait(), timeout=_HEARTBEAT_INTERVAL_SECONDS)
     finally:
         server.should_exit = True
+        if projector is not None and singleton.acquired:
+            written = projector.current
+            stopped_at_ns = max(time.time_ns(), written.heartbeat_at_ns)
+            projector.offer(
+                replace(
+                    written,
+                    lifecycle_state="stopped",
+                    alive=False,
+                    execution_safe=False,
+                    entries_armed=False,
+                    control_plane_ready=False,
+                    heartbeat_at_ns=stopped_at_ns,
+                    entry_block_reason="runtime_stopped",
+                    updated_at_ns=stopped_at_ns,
+                )
+            )
+            if bridge is None:
+                # Nothing ever started the thread that owns the writes, so the startup session is
+                # still the only one open and this is still the shutdown path, not the loop.
+                with suppress(Exception):
+                    projector.write_once(repos)
+        # The bridge drains one last projection write before it closes its session.
         if bridge is not None:
             bridge.stop()
-        stopped_state = projector.current
-        if stopped_state is not None and singleton.acquired:
-            stopped_at_ns = max(time.time_ns(), stopped_state.heartbeat_at_ns)
-            stopped = replace(
-                stopped_state,
-                lifecycle_state="stopped",
-                alive=False,
-                execution_safe=False,
-                entries_armed=False,
-                control_plane_ready=False,
-                heartbeat_at_ns=stopped_at_ns,
-                entry_block_reason="runtime_stopped",
-                updated_at_ns=stopped_at_ns,
-            )
-            with suppress(Exception):
-                projector.publish(stopped)
         if node.is_running():
             with suppress(Exception):
                 await asyncio.wait_for(node.stop_async(), timeout=_STOP_TIMEOUT_SECONDS)
@@ -567,17 +514,16 @@ def _disabled_profile(settings: Settings) -> OiRuntimeProfile:
         account_id=_BINANCE_USDM_ACCOUNT_ID,
         runtime_release=_RUNTIME_RELEASE,
         config_sha256=canonical_sha256(identity),
-        credential_namespace=f"tracefold:{execution.profile_id}:disabled",
         cache_namespace=f"tracefold:{execution.profile_id}:disabled",
         client_order_namespace=f"tracefold:{execution.profile_id}:disabled",
         routes=(),
-        risk=_risk_limits(),
+        risk=_risk_limits(settings),
     )
 
 
 def _active_profile(settings: Settings, routes: tuple[OiInstrumentRoute, ...]) -> OiRuntimeProfile:
     execution = settings.trading.execution
-    risk = _risk_limits()
+    risk = _risk_limits(settings)
     config_sha256 = canonical_sha256(
         {
             "config_version": "oi_binance_usdm_v1",
@@ -587,7 +533,7 @@ def _active_profile(settings: Settings, routes: tuple[OiInstrumentRoute, ...]) -
             "account_id": _BINANCE_USDM_ACCOUNT_ID.value,
             "runtime_release": _RUNTIME_RELEASE,
             "route_rule": "binance_usdm_trading_usdt_perpetual_v1",
-            "stop_distance_bps": _DEFAULT_STOP_DISTANCE_BPS,
+            "stop_distance_bps": execution.risk.stop_distance_bps,
             "risk": {key: str(value) for key, value in asdict(risk).items()},
         }
     )
@@ -599,7 +545,6 @@ def _active_profile(settings: Settings, routes: tuple[OiInstrumentRoute, ...]) -
         account_id=_BINANCE_USDM_ACCOUNT_ID,
         runtime_release=_RUNTIME_RELEASE,
         config_sha256=config_sha256,
-        credential_namespace=namespace,
         cache_namespace=namespace,
         client_order_namespace=namespace,
         routes=routes,
@@ -631,24 +576,32 @@ def _build_active_node(
     return node
 
 
-def _risk_limits() -> OiRiskLimits:
-    """One private-reconciliation period; `OiRiskLimits` derives both account clocks from it."""
+def _risk_limits(settings: Settings) -> OiRiskLimits:
+    """The operator's risk section, as the Runtime's gap policy (#510 E).
 
+    These were literals here, which put them outside the `config_sha256` activation fence: an operator
+    could not see them with `tracefold config` and a change to any of them did not require a new
+    profile. `reconciliation_interval_seconds` stays the single input both account clocks derive from.
+    """
+
+    risk = settings.trading.execution.risk
     return OiRiskLimits(
-        risk_fraction_per_trade=Decimal("0.01"),
-        max_risk_per_trade_usd=Decimal("10"),
-        max_total_risk_usd=Decimal("25"),
-        max_positions=1,
-        max_leverage=1,
-        max_daily_loss_usd=Decimal("25"),
-        market_stale_after_ns=5_000_000_000,
-        reconciliation_interval_ns=5_000_000_000,
+        risk_fraction_per_trade=risk.risk_fraction_per_trade,
+        max_risk_per_trade_usd=risk.max_risk_per_trade_usd,
+        max_total_risk_usd=risk.max_total_risk_usd,
+        max_positions=risk.max_positions,
+        max_leverage=risk.max_leverage,
+        max_daily_loss_usd=risk.max_daily_loss_usd,
+        market_stale_after_ns=int(risk.market_stale_after_seconds * 1_000_000_000),
+        reconciliation_interval_ns=int(risk.reconciliation_interval_seconds * 1_000_000_000),
     )
 
 
 async def _discover_routes(
     mode: str,
     credentials: BinanceRuntimeCredentials,
+    *,
+    stop_distance_bps: int,
 ) -> tuple[OiInstrumentRoute, ...]:
     environment = BinanceEnvironment.DEMO if mode == "paper" else BinanceEnvironment.LIVE
     clock = LiveClock()
@@ -679,7 +632,7 @@ async def _discover_routes(
             route = OiInstrumentRoute(
                 market_key=market_key,
                 instrument_id=instrument.id,
-                stop_distance_bps=_DEFAULT_STOP_DISTANCE_BPS,
+                stop_distance_bps=stop_distance_bps,
             )
         except ValueError as exc:
             if str(exc) == "oi_runtime_market_key_invalid":
@@ -736,33 +689,6 @@ def _activate_profile(
     if repos.trading.latest_execution_profile_activation(profile.account_slot) != activation:
         raise RuntimeError("oi_runtime_activation_not_current")
     return activation
-
-
-def _load_recovery_inputs(
-    repos: RepositorySession,
-    profile_id: str,
-    observed_at_ns: int,
-) -> tuple[tuple[TradeSignalV1, ...], tuple[OperatorIntentV1, ...]]:
-    """Read the durable entry identities that can still hold Binance exposure."""
-
-    since_ns = max(0, observed_at_ns - _RECOVERY_ENTRY_FACT_WINDOW_NS)
-    signal_rows = repos.trading.execution_recovery_signals(
-        runtime_profile_id=profile_id,
-        since_ns=since_ns,
-        limit=MAX_EXECUTION_READ_BATCH,
-    )
-    command_rows = repos.trading.execution_recovery_manual_entries(
-        runtime_profile_id=profile_id,
-        since_ns=since_ns,
-        limit=MAX_EXECUTION_READ_BATCH,
-    )
-    if (
-        len(signal_rows) == MAX_EXECUTION_READ_BATCH
-        or len(command_rows) == MAX_EXECUTION_READ_BATCH
-        or len(signal_rows) + len(command_rows) > MAX_EXECUTION_READ_BATCH
-    ):
-        raise RuntimeError("oi_runtime_recovery_history_overflow")
-    return materialize_trade_signals(signal_rows), materialize_operator_intents(command_rows)
 
 
 async def _reconcile_account(
@@ -834,11 +760,10 @@ def _observe_reconciliation(
 ) -> tuple[str, ...]:
     """Append an observation only when the account changed, and return the identity just seen.
 
-    A steady reconciliation that finds the same positions and orders as the last one states nothing the
-    current `trading_execution_runtime_state` row does not already carry, and it ran every twelve
-    seconds: 6996 of the ledger's 7019 rows were this heartbeat (#510 E). Current state belongs in the
-    projection; the ledger keeps the changes. Any non-steady trigger still appends, because a
-    reconciliation someone asked for is itself the fact.
+    A steady scan that finds the same positions and orders states nothing the current projection row
+    does not already carry; it was 6996 of the ledger's 7019 rows (#510 E). Current state belongs in
+    the projection and the ledger keeps the changes, but any non-steady trigger still appends, because
+    a reconciliation someone asked for is itself the fact.
     """
 
     identity = _reconciliation_identity(result.reports)
@@ -855,7 +780,7 @@ def _observe_reconciliation(
             if value is not None:
                 references.add(str(getattr(value, "value", value)))
     bounded_references = tuple(sorted(references)[:16])
-    account_flat = account_reports_are_flat(reports)
+    account_flat = reports.account_flat
     audit.offer(
         audit.factory.create(
             normalized_kind="reconciliation",

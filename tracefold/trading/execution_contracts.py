@@ -13,9 +13,16 @@ from typing import Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-_SHA256_PATTERN = r"^[0-9a-f]{64}$"
-_IDENTITY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,127}$"
+# The three identity shapes every durable Trading fact and every Runtime identity is checked
+# against, stated once. They were re-typed in the Runtime config, the storage adapter and here, so a
+# tightened bound could pass one side and be refused by the other (#510 E).
+SHA256_PATTERN = r"^[0-9a-f]{64}$"
+IDENTITY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,127}$"
 MARKET_KEY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$"
+# What one durable Observation append may carry. The Runtime's in-memory flush has to stop at the
+# same numbers the durable writer accepts, or a batch it assembles is refused on arrival.
+MAX_OBSERVATION_APPEND_BATCH = 128
+MAX_OBSERVATION_APPEND_BYTES = 1_048_576
 _METADATA_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _MAX_METADATA_ENTRIES = 16
 _MAX_METADATA_BYTES = 2_048
@@ -49,7 +56,9 @@ class _FrozenContract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False, strict=True)
 
 
-def _postgres_text_valid(value: str) -> bool:
+def postgres_text_valid(value: str) -> bool:
+    """Text PostgreSQL will actually store: no NUL, encodable as UTF-8."""
+
     if "\x00" in value:
         return False
     try:
@@ -75,7 +84,7 @@ def _validate_metadata(value: object) -> dict[str, MetadataScalar]:
             raise ValueError("execution_metadata_invalid")
         if type(item) not in (str, int, bool):
             raise ValueError("execution_metadata_invalid")
-        if isinstance(item, str) and (len(item) > _MAX_METADATA_STRING_LENGTH or not _postgres_text_valid(item)):
+        if isinstance(item, str) and (len(item) > _MAX_METADATA_STRING_LENGTH or not postgres_text_valid(item)):
             raise ValueError("execution_metadata_invalid")
         if type(item) is int and not -(2**63) <= item < 2**63:
             raise ValueError("execution_metadata_invalid")
@@ -89,20 +98,20 @@ class TradeSignalV1(_FrozenContract):
 
     signal_version: Literal["trade_signal_v1"] = "trade_signal_v1"
     seq: int = Field(ge=1)
-    signal_id: str = Field(pattern=_SHA256_PATTERN)
+    signal_id: str = Field(pattern=SHA256_PATTERN)
     case_id: str = Field(min_length=1, max_length=128)
-    alpha_contract_sha256: str = Field(pattern=_SHA256_PATTERN)
+    alpha_contract_sha256: str = Field(pattern=SHA256_PATTERN)
     market_key: str = Field(pattern=MARKET_KEY_PATTERN)
     direction: Literal["long", "short"]
     observed_at_ns: int = Field(gt=0)
     expires_at_ns: int = Field(gt=0)
-    evidence_sha256: str = Field(pattern=_SHA256_PATTERN)
+    evidence_sha256: str = Field(pattern=SHA256_PATTERN)
     alpha_metadata: dict[str, MetadataScalar] = Field(default_factory=dict)
 
     @field_validator("case_id")
     @classmethod
     def validate_case_id(cls, value: str) -> str:
-        if not _postgres_text_valid(value):
+        if not postgres_text_valid(value):
             raise ValueError("trade_signal_case_invalid")
         return value
 
@@ -123,8 +132,8 @@ class OperatorIntentV1(_FrozenContract):
 
     intent_version: Literal["operator_intent_v1"] = "operator_intent_v1"
     seq: int = Field(ge=1)
-    command_id: str = Field(pattern=_SHA256_PATTERN)
-    target_profile_id: str = Field(pattern=_IDENTITY_PATTERN)
+    command_id: str = Field(pattern=SHA256_PATTERN)
+    target_profile_id: str = Field(pattern=IDENTITY_PATTERN)
     action: ExecutionAction
     scope: str = Field(min_length=1, max_length=128)
     reason: str = Field(min_length=1, max_length=256)
@@ -132,14 +141,14 @@ class OperatorIntentV1(_FrozenContract):
     authentication_identity: str = Field(min_length=1, max_length=256)
     requested_at_ns: int = Field(gt=0)
     expires_at_ns: int = Field(gt=0)
-    confirmation_identity: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    confirmation_identity: str | None = Field(default=None, pattern=SHA256_PATTERN)
     market_key: str | None = Field(default=None, pattern=MARKET_KEY_PATTERN)
     direction: Literal["long", "short"] | None = None
 
     @field_validator("scope", "reason", "operator_identity", "authentication_identity")
     @classmethod
     def validate_text_fields(cls, value: str) -> str:
-        if not _postgres_text_valid(value):
+        if not postgres_text_valid(value):
             raise ValueError("operator_intent_text_invalid")
         return value
 
@@ -164,23 +173,23 @@ class ExecutionObservationV1(_FrozenContract):
     """A bounded append-only audit projection of a native Runtime event."""
 
     observation_version: Literal["execution_observation_v1"] = "execution_observation_v1"
-    event_id: str = Field(pattern=_SHA256_PATTERN)
-    runtime_profile_id: str = Field(pattern=_IDENTITY_PATTERN)
+    event_id: str = Field(pattern=SHA256_PATTERN)
+    runtime_profile_id: str = Field(pattern=IDENTITY_PATTERN)
     runtime_release: str = Field(min_length=1, max_length=128)
-    execution_strategy: str = Field(pattern=_IDENTITY_PATTERN)
-    signal_id: str | None = Field(default=None, pattern=_SHA256_PATTERN)
-    command_id: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    execution_strategy: str = Field(pattern=IDENTITY_PATTERN)
+    signal_id: str | None = Field(default=None, pattern=SHA256_PATTERN)
+    command_id: str | None = Field(default=None, pattern=SHA256_PATTERN)
     normalized_kind: ObservationKind
     occurred_at_ns: int = Field(gt=0)
     observed_at_ns: int = Field(gt=0)
     native_identity_references: tuple[str, ...] = Field(default=(), max_length=16)
     summary: dict[str, MetadataScalar] = Field(default_factory=dict)
-    payload_digest: str = Field(pattern=_SHA256_PATTERN)
+    payload_digest: str = Field(pattern=SHA256_PATTERN)
 
     @field_validator("runtime_release")
     @classmethod
     def validate_runtime_release(cls, value: str) -> str:
-        if not _postgres_text_valid(value):
+        if not postgres_text_valid(value):
             raise ValueError("execution_observation_release_invalid")
         return value
 
@@ -192,7 +201,7 @@ class ExecutionObservationV1(_FrozenContract):
         value = tuple(value)
         if value != tuple(sorted(value)) or len(set(value)) != len(value):
             raise ValueError("execution_observation_native_identity_invalid")
-        if any(not item or len(item) > 256 or not _postgres_text_valid(item) for item in value):
+        if any(not item or len(item) > 256 or not postgres_text_valid(item) for item in value):
             raise ValueError("execution_observation_native_identity_invalid")
         if _jsonb_text_size(value) > 4_096:
             raise ValueError("execution_observation_native_identity_invalid")
@@ -220,4 +229,14 @@ class ExecutionObservationV1(_FrozenContract):
         return self
 
 
-__all__ = ["MARKET_KEY_PATTERN", "ExecutionObservationV1", "OperatorIntentV1", "TradeSignalV1"]
+__all__ = [
+    "IDENTITY_PATTERN",
+    "MARKET_KEY_PATTERN",
+    "MAX_OBSERVATION_APPEND_BATCH",
+    "MAX_OBSERVATION_APPEND_BYTES",
+    "SHA256_PATTERN",
+    "ExecutionObservationV1",
+    "OperatorIntentV1",
+    "TradeSignalV1",
+    "postgres_text_valid",
+]

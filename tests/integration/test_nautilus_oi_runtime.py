@@ -9,9 +9,11 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from decimal import Decimal
 from functools import partial
 from threading import Event, Lock
+from uuid import uuid4
 
 import psycopg
 import pytest
@@ -21,6 +23,7 @@ from tests.postgres_test_utils import connect_postgres_test, postgres_settings_s
 from tracefold.app.nautilus import oi_runtime as oi_runtime_module
 from tracefold.app.nautilus.oi_runtime import (
     OiRuntimeDatabaseBridge,
+    RuntimeStateProjector,
     execution_stream_channel,
     flush_audit_once,
     load_or_record_day_start,
@@ -43,6 +46,7 @@ from tracefold.platform.config.models import Settings
 from tracefold.trading import ExecutionObservationV1
 from tracefold.trading.storage.execution_stream import (
     ExecutionProfileActivation,
+    ExecutionRuntimeState,
     PreparedOperatorIntent,
     prepare_execution_observations,
     prepare_operator_intent,
@@ -235,6 +239,74 @@ def _append_input_burst(repo: TradingRepository, *, size: int) -> None:
             )
 
 
+def _bridge_singleton() -> AccountSlotSingleton:
+    """The lock the bridge heartbeats; these tests are about the stream session, not the lock."""
+
+    singleton = AccountSlotSingleton(
+        account_slot="binance_usdm_primary",
+        try_acquire=lambda _slot: True,
+        release=lambda _slot: True,
+        heartbeat=lambda: True,
+    )
+    assert singleton.acquire() is True
+    return singleton
+
+
+def _bridge_projector() -> RuntimeStateProjector:
+    """A projector with nothing offered: `write_once` is a no-op until the loop offers a row."""
+
+    return RuntimeStateProjector(
+        initial=_runtime_state(),
+        activation=ExecutionProfileActivation(
+            runtime_profile_id="oi-paper-profile",
+            account_slot="binance_usdm_primary",
+            activated_after_signal_seq=0,
+            activated_after_command_seq=0,
+            mode="paper",
+            runtime_release="nautilus-1.231.0+oi-v1",
+            config_sha256="a" * 64,
+            created_at_ns=NOW_NS,
+        ),
+        recovery_inputs=((), ()),
+    )
+
+
+def _runtime_state() -> ExecutionRuntimeState:
+    return ExecutionRuntimeState(
+        account_slot="binance_usdm_primary",
+        runtime_profile_id="oi-paper-profile",
+        mode="paper",
+        runtime_release="nautilus-1.231.0+oi-v1",
+        config_sha256="a" * 64,
+        runtime_id=uuid4(),
+        runtime_revision="b" * 40,
+        image_digest="unversioned",
+        credential_fingerprint="d" * 64,
+        lifecycle_state="starting",
+        alive=True,
+        execution_safe=False,
+        entries_armed=False,
+        control_plane_ready=False,
+        singleton_ready=True,
+        credential_ready=True,
+        activation_ready=True,
+        startup_reconciled=False,
+        portfolio_ready=False,
+        audit_ready=False,
+        day_start_ready=False,
+        unexpected_exposure=False,
+        account_flat=True,
+        positions_count=0,
+        open_orders_count=0,
+        protection_status="not_applicable",
+        reconciliation_observed_at_ns=NOW_NS,
+        heartbeat_at_ns=NOW_NS,
+        entry_block_reason="runtime_starting",
+        started_at_ns=NOW_NS,
+        updated_at_ns=NOW_NS,
+    )
+
+
 def _runtime_bridge(signals: ExecutionSignalClient, *, poll_seconds: float = 0.2) -> OiRuntimeDatabaseBridge:
     profile = oi_profile()
     return OiRuntimeDatabaseBridge(
@@ -243,6 +315,8 @@ def _runtime_bridge(signals: ExecutionSignalClient, *, poll_seconds: float = 0.2
         signals=signals,
         audit=AuditSink(factory=ObservationFactory(profile.profile_id, profile.runtime_release, "oi_nautilus_v1")),
         update_day_start=lambda _baseline: None,
+        singleton=_bridge_singleton(),
+        projector=_bridge_projector(),
         poll_seconds=poll_seconds,
     )
 
@@ -735,7 +809,7 @@ def test_account_slot_lock_is_single_session_and_loss_fails_closed() -> None:
         assert second.acquire() is False
         first_conn.close()
         assert first.check() is False
-        assert first.lost is True
+        assert first.acquired is False
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline and not second.acquire():
             time.sleep(0.01)
@@ -876,6 +950,9 @@ def test_replayed_database_signal_reaches_one_economic_entry_in_pinned_nautilus_
     assert receipt["admitted"] == 1
     assert receipt["replay_admitted"] == 0
     assert receipt["pending"] == []
+    # #510 PR-5b. One admitted entry, one quote stream: `on_start` subscribes nothing, and this
+    # profile's catalogue is what the admission opened a stream out of.
+    assert receipt["quote_subscriptions"] == 1
     economic_entries = [order for order in receipt["orders"] if not order["reduce_only"]]
     active_protections = [order for order in receipt["orders"] if order["reduce_only"]]
     assert len(economic_entries) == 1
@@ -940,9 +1017,15 @@ def test_authenticated_webhook_to_postgres_to_nautilus_command_observation_proce
         "pending_commands": [],
         "positions_count": 0,
         "protection_status": "not_applicable",
+        # #510 PR-5b: a control Command opens no market-data stream, and neither does `on_start` -
+        # before this change it subscribed every route in the catalogue at startup.
+        "quote_subscribe_calls": 0,
+        "quote_subscriptions": 0,
+        "quote_unsubscribe_calls": 0,
         "recovered": True,
         "recovered_seeds": 0,
         "recovery_signals": 0,
+        "route_catalogue": 1,
         "unexpected_exposure": False,
     }
 
@@ -1000,6 +1083,8 @@ def test_cold_cache_restart_reclaims_position_and_stop_from_durable_entry_facts(
     assert receipt["positions_count"] == 1
     assert receipt["protection_status"] == "protected"
     assert receipt["open_position_quantity"] == "0.049"
+    # #510 PR-5b. A position reclaimed at startup still needs a mark, so recovery opens its stream.
+    assert receipt["quote_subscriptions"] == 1
     economic_entries = [
         order for order in receipt["orders"] if not order["reduce_only"] and order["client_order_id"].startswith("tf")
     ]
@@ -1121,3 +1206,88 @@ def test_stopped_out_identity_does_not_reclaim_a_new_position_on_the_same_route(
     assert len(closes) == 1, receipt
     assert closes[0]["status"] == "FILLED"
     assert receipt["positions_count"] == 0, receipt
+
+
+def test_the_bridge_thread_owns_the_projection_write_and_the_account_slot_heartbeat() -> None:
+    """#510 PR-5b. Real PostgreSQL: the trading event loop keeps no session of its own.
+
+    Production ran the generation-fenced projection write, the activation currency read and the
+    account-slot heartbeat synchronously on the trading event loop, over a third connection, every
+    500 ms, on the same thread as every Nautilus order callback and with no statement timeout
+    (#510 E). This starts only the bridge and proves the row still moves.
+    """
+
+    writer = connect_postgres_test(read_only=False)
+    lock_conn = connect_postgres_test(read_only=False)
+    bridge: OiRuntimeDatabaseBridge | None = None
+    try:
+        repo = TradingRepository(writer)
+        _activate(repo)
+        lock_repo = TradingRepository(lock_conn)
+        singleton = AccountSlotSingleton(
+            account_slot="binance_usdm_primary",
+            try_acquire=lock_repo.try_acquire_execution_account_slot,
+            release=lock_repo.release_execution_account_slot,
+            heartbeat=lambda: bool(lock_conn.execute("SELECT 1 AS alive").fetchone()["alive"]),
+        )
+        assert singleton.acquire() is True
+
+        projector = _bridge_projector()
+        # The composition root's startup session inserts the row this generation owns.
+        projector.start(repositories_for_connection(writer))
+        profile = oi_profile()
+        signals = ExecutionSignalClient(
+            runtime_profile_id=profile.profile_id,
+            execution_strategy="oi_nautilus_v1",
+        )
+        bridge = OiRuntimeDatabaseBridge(
+            settings=Settings(ws_token="510-pr5b", storage=postgres_settings_storage()),
+            profile=profile,
+            signals=signals,
+            audit=AuditSink(factory=ObservationFactory(profile.profile_id, profile.runtime_release, "oi_nautilus_v1")),
+            update_day_start=lambda _baseline: None,
+            singleton=singleton,
+            projector=projector,
+        )
+        bridge.start()
+        _wait_for_bridge(bridge, lambda: bridge.connected)
+        _wait_for_bridge(bridge, lambda: projector.activation_current)
+
+        started = projector.current
+        running = replace(
+            started,
+            lifecycle_state="running",
+            heartbeat_at_ns=started.heartbeat_at_ns + 1,
+            updated_at_ns=started.updated_at_ns + 1,
+        )
+        projector.offer(running)
+        _wait_for_bridge(bridge, lambda: projector.current == running)
+
+        row = writer.execute(
+            """
+            SELECT lifecycle_state
+              FROM trading_execution_runtime_state
+             WHERE runtime_profile_id = 'oi-paper-profile'
+            """
+        ).fetchone()
+        assert row == {"lifecycle_state": "running"}
+        sessions = writer.execute(
+            """
+            SELECT application_name, count(*) AS n
+              FROM pg_stat_activity
+             WHERE datname = current_database()
+               AND application_name LIKE 'tracefold_nautilus%'
+             GROUP BY application_name
+            """
+        ).fetchall()
+        assert sessions == [{"application_name": "tracefold_nautilus_stream", "n": 1}]
+
+        # The heartbeat that notices a dead lock session also runs on this thread.
+        lock_conn.close()
+        _wait_for_bridge(bridge, lambda: singleton.acquired is False)
+    finally:
+        if bridge is not None:
+            _stop_bridge(bridge)
+        if not lock_conn.closed:
+            lock_conn.close()
+        writer.close()

@@ -28,9 +28,11 @@ from nautilus_trader.config import (
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.model.identifiers import AccountId, ClientId, InstrumentId, TraderId
 
-_IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,127}$")
-_MARKET_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+from tracefold.trading import IDENTITY_PATTERN, MARKET_KEY_PATTERN, SHA256_PATTERN
+
+_IDENTITY = re.compile(IDENTITY_PATTERN)
+_MARKET_KEY = re.compile(MARKET_KEY_PATTERN)
+_SHA256 = re.compile(SHA256_PATTERN)
 
 RuntimeMode = Literal["disabled", "paper", "live"]
 
@@ -58,12 +60,10 @@ class OiInstrumentRoute:
 
 
 # How much older than one private-reconciliation period the account and reconciliation clocks may be
-# before an entry is refused. They are multiples of the period rather than free numbers because the
-# period is what moves them: the account clock is only ever as fresh as the last scan, so any budget
-# at or below one period is expired for part of every cycle by construction. Two periods tolerates one
-# missed scan, three tolerates two, and both still refuse a Runtime that has genuinely stopped
-# reconciling. Production ran `account_stale_after_ns` at exactly one period and refused an entry at
-# the tail of every cycle (#510 B).
+# before an entry is refused. They are multiples of the period, not free numbers: the account clock is
+# only ever as fresh as the last scan, so any budget at or below one period is expired for part of
+# every cycle by construction (#510 B). Two periods tolerates one missed scan, three tolerates two,
+# and both still refuse a Runtime that has genuinely stopped reconciling.
 _ACCOUNT_STALE_PERIODS = 2
 _RECONCILIATION_STALE_PERIODS = 3
 
@@ -122,7 +122,6 @@ class OiRuntimeProfile:
     account_id: AccountId
     runtime_release: str
     config_sha256: str
-    credential_namespace: str
     cache_namespace: str
     client_order_namespace: str
     routes: tuple[OiInstrumentRoute, ...]
@@ -134,7 +133,6 @@ class OiRuntimeProfile:
         for value, reason in (
             (self.profile_id, "oi_runtime_profile_invalid"),
             (self.account_slot, "oi_runtime_account_slot_invalid"),
-            (self.credential_namespace, "oi_runtime_credential_namespace_invalid"),
             (self.cache_namespace, "oi_runtime_cache_namespace_invalid"),
             (self.client_order_namespace, "oi_runtime_client_namespace_invalid"),
         ):

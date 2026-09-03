@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Container
 from dataclasses import dataclass, field
 from decimal import Decimal
 from threading import Lock
 from typing import Any, Literal
 
 from nautilus_trader.model.enums import OrderSide, OrderType
-from nautilus_trader.model.identifiers import ClientOrderId, PositionId
+from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId, PositionId
 
 from tracefold.trading import OperatorIntentV1, TradeSignalV1
 
@@ -24,6 +25,11 @@ PrivateReconciliationReason = Literal[
 PRIVATE_RECONCILIATION_REASONS = frozenset(
     {"unknown_outcome", "protection_ambiguity", "flatten_pending", "unexpected_exposure"}
 )
+# How long an entry may keep a freshly opened quote subscription alive while waiting for the venue's
+# first tick. Binance closed the WebSocket with 1008 `Too many requests` when the Runtime subscribed
+# to all ~500 routed perpetuals at start, so a stream is opened per admitted entry instead (#510 E).
+# Two seconds is inside every Signal TTL and is spent as retries, never as a blocked event loop.
+QUOTE_WARMUP_NS = 2_000_000_000
 
 
 def deterministic_client_order_id(
@@ -157,10 +163,6 @@ class RuntimeReadiness:
     def halt_for_unexpected_exposure(self) -> None:
         with self._lock:
             self._unexpected_exposure = True
-
-    def reconciliation_failed(self) -> None:
-        with self._lock:
-            self._startup_reconciled = False
 
     def facts_clock(self) -> tuple[int, int]:
         with self._lock:
@@ -301,6 +303,9 @@ class RuntimeExecutionState:
     # converges the whole account slot, so these have no entry identity to hang off.
     unclaimed_flatten_orders: dict[PositionId, Any] = field(default_factory=dict)
     unclaimed_flatten_attempts: dict[PositionId, int] = field(default_factory=dict)
+    # Instrument -> the clock at which this Runtime asked the venue for its quotes. Only the event
+    # loop touches it, like every other field here.
+    quote_subscriptions: dict[InstrumentId, int] = field(default_factory=dict)
     unexpected_exposure_reconciliation_requested: bool = False
 
     @classmethod
@@ -331,6 +336,38 @@ class RuntimeExecutionState:
         if identity is None or identity[1] != "entry":
             return None
         return identity[0]
+
+
+def unowned_cache_exposure(
+    *,
+    cache: Any,
+    account_id: Any,
+    strategy_id: Any,
+    owned_order_ids: Container[ClientOrderId],
+    owned_position_ids: Container[PositionId],
+) -> tuple[frozenset[ClientOrderId], frozenset[PositionId]]:
+    """Open/in-flight orders and open positions on this account slot that this Runtime does not own.
+
+    One scan and one definition of "ours": the identity is in this Runtime's own map and Nautilus
+    agrees the strategy holding it is this one. The same question was asked in four places - the risk
+    facts, both recovery paths, and the operator projection - and each had drifted its own way about
+    in-flight orders and the strategy check (#510 E).
+    """
+
+    orders = frozenset(
+        order.client_order_id
+        for order in (
+            *cache.orders_open(account_id=account_id),
+            *cache.orders_inflight(account_id=account_id),
+        )
+        if order.client_order_id not in owned_order_ids or order.strategy_id != strategy_id
+    )
+    positions = frozenset(
+        position.id
+        for position in cache.positions_open(account_id=account_id)
+        if position.id not in owned_position_ids or position.strategy_id != strategy_id
+    )
+    return orders, positions
 
 
 def entry_order_valid(
@@ -410,6 +447,7 @@ def order_for_event(state: ExecutionState, client_order_id: ClientOrderId, leg: 
 
 __all__ = [
     "PRIVATE_RECONCILIATION_REASONS",
+    "QUOTE_WARMUP_NS",
     "ExecutionState",
     "PrivateReconciliationReason",
     "RecoveredExecutionSeed",
@@ -426,4 +464,5 @@ __all__ = [
     "exit_order_valid",
     "order_for_event",
     "protection_leg",
+    "unowned_cache_exposure",
 ]

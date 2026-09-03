@@ -57,7 +57,6 @@ def oi_profile(mode: RuntimeMode = "paper") -> OiRuntimeProfile:
         account_id=ACCOUNT_ID,
         runtime_release="nautilus-1.231.0+oi-v1",
         config_sha256="a" * 64,
-        credential_namespace=f"binance-usdm-{mode}",
         cache_namespace=f"oi-{mode}-cache",
         client_order_namespace=f"oi-{mode}-orders",
         routes=routes,
@@ -153,6 +152,16 @@ class RecordingOiStrategy(OiNautilusStrategy):
         self.submitted: list[tuple[Any, Any, Any]] = []
         self.canceled: list[Any] = []
         self.queried: list[Any] = []
+        self.subscribed: list[Any] = []
+        self.unsubscribed: list[Any] = []
+
+    def subscribe_quote_ticks(self, instrument_id: Any, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        self.subscribed.append(instrument_id)
+
+    def unsubscribe_quote_ticks(self, instrument_id: Any, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        self.unsubscribed.append(instrument_id)
 
     def submit_order(self, order: Any, position_id: Any = None, client_id: Any = None, params: Any = None) -> None:
         del params
@@ -199,8 +208,10 @@ def registered_oi_strategy(
     cache: Cache | None = None,
     mark_reconciled: bool = True,
     initial_control_state: RuntimeControlSnapshot | None = _RESUMED_CONTROL_STATE,
+    profile: OiRuntimeProfile | None = None,
+    with_quote: bool = True,
 ) -> SimpleNamespace:
-    profile = oi_profile()
+    profile = profile or oi_profile()
     selected_signals = signal_client or ExecutionSignalClient(
         runtime_profile_id=profile.profile_id,
         execution_strategy="oi_nautilus_v1",
@@ -251,7 +262,7 @@ def registered_oi_strategy(
     instrument = TestInstrumentProvider.btcusdt_perp_binance()
     if selected_cache.instrument(instrument.id) is None:
         selected_cache.add_instrument(instrument)
-    if selected_cache.quote_tick(instrument.id) is None:
+    if with_quote and selected_cache.quote_tick(instrument.id) is None:
         selected_cache.add_quote_tick(
             TestDataStubs.quote_tick(
                 instrument=instrument,

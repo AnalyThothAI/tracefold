@@ -113,7 +113,7 @@ def test_current_production_wiring_has_one_input_reconciliation_and_projection_o
     strategy_source = (ROOT / "tracefold/integrations/nautilus/oi_runtime/strategy.py").read_text(encoding="utf-8")
     lifecycle_source = "\n".join(
         (ROOT / f"tracefold/integrations/nautilus/oi_runtime/{name}.py").read_text(encoding="utf-8")
-        for name in ("entry", "exit", "protection", "recovery", "strategy")
+        for name in ("entry", "exit", "protection", "quotes", "recovery", "strategy")
     )
     diagnostic_source = (ROOT / "tests/integration/test_nautilus_runtime_input_diagnostic.py").read_text(
         encoding="utf-8"
@@ -146,11 +146,36 @@ def test_current_production_wiring_has_one_input_reconciliation_and_projection_o
     assert "poll_execution_inputs_once" not in signal_client_source
     assert "flush_audit_once(" in bridge_source
     assert "load_or_record_day_start(" in bridge_source
-    assert "for route in self._profile.routes:\n            self.subscribe_quote_ticks" in strategy_source
     assert "reports = await load_complete_binance_account_reports(client)" in root_source
-    assert root_source.count('application_name="tracefold_nautilus_state"') == 1
-    assert "class _RuntimeStateProjector:" in root_source
-    assert "self._repos.trading.update_execution_runtime_state(candidate)" in root_source
+    # #510 PR-5b. Two connections, and once the bridge thread is up it owns both of them: the
+    # singleton session it heartbeats and the stream session it reads, writes and projects on. The
+    # event loop keeps Binance and Nautilus and reads the rest from memory.
+    assert root_source.count('application_name="tracefold_nautilus_singleton"') == 1
+    assert "tracefold_nautilus_state" not in root_source
+    assert bridge_source.count('application_name="tracefold_nautilus_stream"') == 1
+    assert bridge_source.count("SET statement_timeout") == 1
+    assert "class RuntimeStateProjector:" in bridge_source
+    assert "repos.trading.update_execution_runtime_state(candidate)" in bridge_source
+    assert "update_execution_runtime_state" not in root_source
+    assert 'self._step("projection"' in bridge_source
+    assert '"activation",' in bridge_source
+    assert '"recovery",' in bridge_source
+    assert "self._singleton.check()" in bridge_source
+    assert "singleton.check()" not in root_source
+    assert "if not singleton.acquired:" in root_source
+    assert "activation_current = bridge.activation_current" in root_source
+    assert "projector.offer(state)" in root_source
+    # Startup, on the session that already exists to hold the account-slot lock; never in the loop.
+    assert root_source.count("latest_execution_profile_activation") == 2
+    assert root_source.count("load_recovery_inputs(") == 1
+    # #510 PR-5b. One quote stream per instrument an execution actually needs, opened by the
+    # admission that needs it, not ~500 at `on_start` until Binance answers 1008.
+    assert "self.subscribe_quote_ticks" not in strategy_source
+    assert "class QuoteStreamCoordinator:" in (ROOT / "tracefold/integrations/nautilus/oi_runtime/quotes.py").read_text(
+        encoding="utf-8"
+    )
+    assert "self._quotes.ensure(route.instrument_id, now_ns)" in lifecycle_source
+    assert "self._quotes.release(state.route.instrument_id)" in lifecycle_source
     assert 'triggers=("startup",)' in root_source
     assert 'reconciliation_triggers.add("steady")' in root_source
     for reason in ("unknown_outcome", "protection_ambiguity", "flatten_pending"):
@@ -177,6 +202,7 @@ def test_pr_d_strategy_is_a_router_and_private_nautilus_calls_have_one_compatibi
         "entry.py": "EntryCoordinator",
         "protection.py": "ProtectionCoordinator",
         "exit.py": "ExitCoordinator",
+        "quotes.py": "QuoteStreamCoordinator",
         "recovery.py": "RecoveryCoordinator",
         "state.py": "RuntimeExecutionState",
         "observations.py": "RuntimeObservationWriter",

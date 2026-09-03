@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from tracefold.app.nautilus.reconciliation import account_reports_are_flat, reconcile_reports_into_cache
+from tracefold.app.nautilus.reconciliation import reconcile_reports_into_cache
 from tracefold.integrations.nautilus.oi_runtime.nautilus_1231_binance_compat import (
     CompleteBinanceAccountReports,
     load_complete_binance_account_reports,
@@ -53,8 +53,8 @@ def test_complete_private_report_keeps_positions_regular_and_algo_orders_distinc
         algo_orders=(client.algo,),
     )
     assert reports.orders == (client.regular, client.algo)
-    assert account_reports_are_flat(reports) is False
-    assert account_reports_are_flat(CompleteBinanceAccountReports((), (), ())) is True
+    assert reports.account_flat is False
+    assert CompleteBinanceAccountReports((), (), ()).account_flat is True
     assert client._active_symbols_cache is None
 
 

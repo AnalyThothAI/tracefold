@@ -21,6 +21,7 @@ from .entry import EntryCoordinator
 from .exit import ExitCoordinator
 from .observations import AuditBackpressure, RuntimeObservationWriter
 from .protection import ProtectionCoordinator
+from .quotes import QuoteStreamCoordinator
 from .recovery import RecoveryCoordinator
 from .risk import DayStartBaseline
 from .signal_client import ExecutionSignalClient
@@ -62,13 +63,11 @@ class OiNautilusStrategy(Strategy):
         signals: ExecutionSignalClient,
         audit: AuditSink,
         readiness: RuntimeReadiness,
-        # Whoever owns the one thread allowed to mutate `RuntimeExecutionState`. Measured on the
-        # pinned `nautilus-trader` 1.231.0 with a real `TradingNode`: `on_start` and every
-        # order/position callback run on the asyncio event-loop thread, while a `LiveClock` timer
-        # callback runs on a Rust-owned thread `threading.enumerate()` does not even list
-        # (`tests/integration/test_nautilus_live_clock_threads.py`, #510 F). The live composition
-        # root therefore passes `loop.call_soon_threadsafe`; a `BacktestEngine` has one thread and no
-        # loop, and passes direct invocation, which is the same statement about that engine.
+        # Whoever owns the one thread allowed to mutate `RuntimeExecutionState`. On the pinned
+        # `nautilus-trader` 1.231.0 the order/position callbacks run on the asyncio event loop while a
+        # `LiveClock` timer runs on a Rust-owned thread `threading.enumerate()` does not list
+        # (`tests/integration/test_nautilus_live_clock_threads.py`, #510 F), so the live root passes
+        # `loop.call_soon_threadsafe`; a single-threaded `BacktestEngine` passes direct invocation.
         dispatch_pump: Callable[[Callable[[], None]], None],
         singleton_ready: Any,
         control_plane_ready: Callable[[], bool],
@@ -102,6 +101,7 @@ class OiNautilusStrategy(Strategy):
         ):
             raise ValueError("oi_runtime_audit_identity_invalid")
         self._runtime = RuntimeExecutionState.from_control_snapshot(initial_control_state)
+        self._quotes = QuoteStreamCoordinator(engine=self, state=self._runtime)
         self._account_projector = RuntimeAccountProjector(engine=self, profile=profile, state=self._runtime)
         self._observation_writer = RuntimeObservationWriter(
             audit=audit,
@@ -124,6 +124,7 @@ class OiNautilusStrategy(Strategy):
             readiness=readiness,
             observations=self._observation_writer,
             exits=self._exits,
+            quotes=self._quotes,
             request_reconciliation=request_reconciliation,
         )
         self._recovery = RecoveryCoordinator(
@@ -133,6 +134,7 @@ class OiNautilusStrategy(Strategy):
             readiness=readiness,
             protection=self._protection,
             exits=self._exits,
+            quotes=self._quotes,
             request_reconciliation=request_reconciliation,
         )
         self._entry = EntryCoordinator(
@@ -141,6 +143,7 @@ class OiNautilusStrategy(Strategy):
             state=self._runtime,
             readiness=readiness,
             observations=self._observation_writer,
+            quotes=self._quotes,
             current_day_start=self._current_day_start,
             readiness_snapshot=self.readiness,
             verify_owned_exposure=self._recovery.verify_owned_exposure,
@@ -148,8 +151,8 @@ class OiNautilusStrategy(Strategy):
         )
 
     def on_start(self) -> None:
-        for route in self._profile.routes:
-            self.subscribe_quote_ticks(route.instrument_id)
+        """Start the input pump and nothing else; quotes are subscribed per admitted entry (#510 E)."""
+
         self.clock.set_timer(
             name=f"{self.id}:OI-PUMP",
             interval=timedelta(milliseconds=_PUMP_INTERVAL_MS),
@@ -161,8 +164,13 @@ class OiNautilusStrategy(Strategy):
         timer_name = f"{self.id}:OI-PUMP"
         if timer_name in self.clock.timer_names:
             self.clock.cancel_timer(timer_name)
-        for route in self._profile.routes:
-            self.unsubscribe_quote_ticks(route.instrument_id)
+        self._quotes.release_all()
+
+    @property
+    def quote_subscriptions(self) -> frozenset[Any]:
+        """Which instruments this Runtime is currently paying the venue to stream."""
+
+        return self._quotes.subscribed
 
     def on_timer(self, _event: object) -> None:
         """Hand the pump to the callback thread; live, this one is not it.
@@ -196,6 +204,7 @@ class OiNautilusStrategy(Strategy):
         self._entry.query_aged()
         self._exits.retry_failed()
         self._recovery.verify_owned_exposure()
+        self._quotes.sweep(int(self.clock.timestamp_ns()))
 
     def readiness(self) -> RuntimeReadinessSnapshot:
         return self._readiness.snapshot(

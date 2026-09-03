@@ -13,8 +13,10 @@ from tracefold.trading import TradeSignalV1
 
 from .config import OiInstrumentRoute, OiRuntimeProfile
 from .observations import RuntimeObservationWriter
+from .quotes import QuoteStreamCoordinator
 from .risk import DayStartBaseline, NautilusRiskFacts, OiFuturesRiskPolicy, fixed_risk_quantity
 from .state import (
+    QUOTE_WARMUP_NS,
     ExecutionState,
     PrivateReconciliationReason,
     RuntimeEntryRequest,
@@ -41,6 +43,7 @@ class EntryCoordinator:
         state: RuntimeExecutionState,
         readiness: RuntimeReadiness,
         observations: RuntimeObservationWriter,
+        quotes: QuoteStreamCoordinator,
         current_day_start: Callable[[], DayStartBaseline | None],
         readiness_snapshot: Callable[[], RuntimeReadinessSnapshot],
         verify_owned_exposure: Callable[[], bool],
@@ -51,6 +54,7 @@ class EntryCoordinator:
         self._state = state
         self._readiness = readiness
         self._observations = observations
+        self._quotes = quotes
         self._current_day_start = current_day_start
         self._readiness_snapshot = readiness_snapshot
         self._verify_owned_exposure = verify_owned_exposure
@@ -105,10 +109,18 @@ class EntryCoordinator:
         if day_start is None:
             self._observations.dispose_entry(request, "day_start_baseline_missing")
             return
+        # Admission passed, so this instrument is now worth a market-data stream. The first tick can
+        # be up to a round trip away; the wait is spent as redeliveries of an unresolved Signal, never
+        # as a blocked event loop, and it is bounded well inside the Signal's TTL (#510 E).
+        subscribed_at_ns = self._quotes.ensure(route.instrument_id, now_ns)
         instrument = self._engine.cache.instrument(route.instrument_id)
         quote = self._engine.cache.quote_tick(route.instrument_id)
         if instrument is None or quote is None:
-            self._observations.dispose_entry(request, "instrument_or_market_missing")
+            warming_up = quote is None and instrument is not None and now_ns - subscribed_at_ns <= QUOTE_WARMUP_NS
+            self._observations.dispose_entry(
+                request,
+                "market_subscription_pending" if warming_up else "instrument_or_market_missing",
+            )
             return
         account_clock, reconciliation_clock = self._readiness.facts_clock()
         try:
@@ -303,11 +315,11 @@ class EntryCoordinator:
             self._engine.query_order(state.entry_order, client_id=ClientId("BINANCE"))
             state.submitted_at_ns = now_ns
 
-    @staticmethod
-    def known_terminal(state: ExecutionState) -> None:
+    def known_terminal(self, state: ExecutionState) -> None:
         state.entry_query_pending = False
         if state.position_quantity <= 0:
             state.active = False
+            self._quotes.release(state.route.instrument_id)
 
     @staticmethod
     def accepted(state: ExecutionState) -> None:

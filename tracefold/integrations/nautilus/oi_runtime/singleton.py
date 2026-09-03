@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from threading import Event, Lock
+from threading import Lock
 
 
 class AccountSlotSingleton:
@@ -29,11 +29,6 @@ class AccountSlotSingleton:
     def acquired(self) -> bool:
         with self._lock:
             return self._acquired and not self._lost
-
-    @property
-    def lost(self) -> bool:
-        with self._lock:
-            return self._lost
 
     def acquire(self) -> bool:
         with self._lock:
@@ -70,17 +65,4 @@ class AccountSlotSingleton:
         return released
 
 
-def run_singleton_monitor(
-    singleton: AccountSlotSingleton,
-    *,
-    stop: Event,
-    interval_seconds: float = 1.0,
-) -> None:
-    if interval_seconds <= 0:
-        raise ValueError("oi_runtime_singleton_interval_invalid")
-    while not stop.wait(interval_seconds):
-        if not singleton.check():
-            return
-
-
-__all__ = ["AccountSlotSingleton", "run_singleton_monitor"]
+__all__ = ["AccountSlotSingleton"]
