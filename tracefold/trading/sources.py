@@ -5,8 +5,9 @@ module owns whether the row is a usable market fact at all. Keeping the rule her
 is deliberate: the admission ledger and the check must be the same code, or the ledger eventually
 describes a filter the lane no longer applies.
 
-It fails closed on everything it cannot prove. A symbol that canonicalises to nothing, a missing rank,
-an unknown direction, a retired upstream generation — each is a named rejection, never a default.
+It fails closed on everything it cannot prove. A symbol that canonicalises to nothing, a missing clock,
+an unknown direction — each is a named rejection, never a default. Nothing here reads an upstream
+judge, Program, policy or cohort: since #510 there is no such field on the row to read.
 
 **Age is not one of these rules.** `normalize_oi_source` answers "is this a usable fact", which is a
 property of the row. Whether it is fresh enough to open a Case is Admission's, with its own budget.
@@ -17,8 +18,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Any
-
-from pydantic import ValidationError
 
 from .contracts import (
     OiCandidateRow,
@@ -63,12 +62,12 @@ def _int(value: Any, default: int | None = None) -> int | None:
 def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejected:
     """One projected telemetry fact, or a named source-contract failure. No clock, no policy (#264).
 
-    This is the **source** stage and nothing else: is the row a usable, live, current-generation OI
-    fact at all? The liquidity floor, the deny list, freshness and idempotency belong to Admission,
-    and they used to be here as well as in News's SELECT — which is how the same threshold came to be
-    executed in three places and a rejection came to be indistinguishable from a row that never
-    existed. (A rank ceiling and a per-symbol cooldown were on that list until #348 retired both, and
-    #458 then removed the rank itself along with the News push rule that spent it.)
+    This is the **source** stage and nothing else: is the row a usable, live OI fact at all? The
+    liquidity floor, the deny list, freshness and idempotency belong to Admission, and they used to be
+    here as well as in News's SELECT — which is how the same threshold came to be executed in three
+    places and a rejection came to be indistinguishable from a row that never existed. (A rank ceiling
+    and a per-symbol cooldown were on that list until #348 retired both, and #458 then removed the rank
+    itself along with the News push rule that spent it.)
     """
 
     symbol = canonical_base_symbol(row.get("symbol"))
@@ -79,14 +78,6 @@ def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejecte
     # admission answer; discovering it after bars are fetched would fault the shared Workers process.
     if _PERPETUAL_BASE_SYMBOL.fullmatch(symbol) is None:
         return SourceRejected(rule="market_key_invalid", symbol=symbol)
-    provider_symbol = str(row.get("provider_symbol") or "").strip().upper()
-    if not provider_symbol:
-        return SourceRejected(rule="provider_symbol_missing", symbol=symbol)
-    if canonical_base_symbol(provider_symbol) != symbol:
-        return SourceRejected(rule="provider_symbol_mismatch", symbol=symbol)
-    # The reader's push/drop is carried onto the candidate as audit and is not an admission (#264): its
-    # rule is `whale_oi_ratio > 80%`, and gating capital on it meant a reader policy edit opened or
-    # closed the trading lane without anyone deciding that it should.
     if str(row.get("ingest_mode") or "") != "live":
         return SourceRejected(rule="not_live_ingest", symbol=symbol)
 
@@ -94,9 +85,10 @@ def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejecte
     if observed is None:
         return SourceRejected(rule="observed_at_missing", symbol=symbol)
 
-    verdict_at = _int(row.get("verdict_created_at_ms"))
-    if verdict_at is None:
-        return SourceRejected(rule="verdict_time_missing", symbol=symbol)
+    # The Case freezes both clocks, so a row that cannot say when it became readable cannot be frozen.
+    available = _int(row.get("available_at_ms"))
+    if available is None:
+        return SourceRejected(rule="available_at_missing", symbol=symbol)
 
     measurements = {
         "oi_change_bps": _int(row.get("oi_change_bps")),
@@ -112,53 +104,31 @@ def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejecte
     if direction not in ("rise", "fall"):
         return SourceRejected(rule="oi_direction_unknown", symbol=symbol)
 
-    try:
-        source_rule = row["source_rule"]
-    except KeyError:
-        return SourceRejected(rule="source_rule_missing", symbol=symbol)
-    if not isinstance(source_rule, str) or not source_rule.strip():
-        return SourceRejected(rule="source_rule_missing", symbol=symbol)
-
+    # The provider's own venue text decides which book this frame is a claim about, including whether
+    # it is Hyperliquid's `hl.xyz` builder DEX. It used to be inferred from an `XYZ-` prefix on a title
+    # token the projection carried alongside the fact; the ledger's own `symbol` is already canonical,
+    # so the venue field is the only thing that can answer this, and it is the field that means it.
     raw_venue = str(row.get("venue") or "").strip().lower()
     venue = normalize_source_venue(raw_venue) or raw_venue
-    if venue == "hyperliquid.perp" and provider_symbol.startswith("XYZ-"):
-        venue = "hyperliquid.xyz"
-    try:
-        return OiTradeCandidate(
-            event_id=str(row.get("event_id") or ""),
-            observed_at_ms=observed,
-            verdict_created_at_ms=verdict_at,
-            base_symbol=symbol,
-            venue=venue,
-            oi_direction=direction,
-            oi_change_bps=measurements["oi_change_bps"],
-            oi_value_usd=measurements["oi_value_usd"],
-            whale_long_profit_bps=measurements["whale_long_profit_bps"],
-            whale_oi_ratio_bps=measurements["whale_oi_ratio_bps"],
-            final_decision=str(row.get("final_decision") or ""),
-            source_rule=source_rule,
-            metric_version=str(row.get("metric_version") or ""),
-            # Carried, never defaulted. A frame whose measurement window the provider contract could
-            # not prove reaches the policy as `None`, and the policy refuses it by name (#265).
-            source_strategy_id=(str(row["source_strategy_id"]) if row.get("source_strategy_id") else None),
-            source_contract_version=(
-                str(row["source_contract_version"]) if row.get("source_contract_version") else None
-            ),
-            measurement_window_ms=_int(row.get("measurement_window_ms")),
-            learning_epoch=str(row.get("learning_epoch") or ""),
-            program_version=str(row.get("program_version") or ""),
-            program_sha256=str(row.get("program_sha256") or ""),
-            policy_version=str(row.get("policy_version") or ""),
-            judgment_contract_version=str(row.get("judgment_contract_version") or ""),
-            judgment_origin=str(row.get("judgment_origin") or ""),
-            judgment_sha256=str(row.get("judgment_sha256") or ""),
-            runtime_manifest_sha=str(row.get("runtime_manifest_sha") or ""),
-        )
-    except ValidationError:
-        # The Program, policy and editorial origin are `Literal`s on the candidate, so a row from a
-        # retired generation lands here rather than being frozen into a manifest claiming to be
-        # current.
-        return SourceRejected(rule="generation_invalid", symbol=symbol)
+    return OiTradeCandidate(
+        event_id=str(row.get("event_id") or ""),
+        metric_version=str(row.get("metric_version") or ""),
+        source_item_id=str(row.get("source_item_id") or ""),
+        observed_at_ms=observed,
+        available_at_ms=available,
+        base_symbol=symbol,
+        venue=venue,
+        oi_direction=direction,
+        oi_change_bps=measurements["oi_change_bps"],
+        oi_value_usd=measurements["oi_value_usd"],
+        whale_long_profit_bps=measurements["whale_long_profit_bps"],
+        whale_oi_ratio_bps=measurements["whale_oi_ratio_bps"],
+        # Carried, never defaulted. A frame whose measurement window the provider contract could
+        # not prove reaches the policy as `None`, and the policy refuses it by name (#265).
+        source_strategy_id=(str(row["source_strategy_id"]) if row.get("source_strategy_id") else None),
+        source_contract_version=(str(row["source_contract_version"]) if row.get("source_contract_version") else None),
+        measurement_window_ms=_int(row.get("measurement_window_ms")),
+    )
 
 
 __all__ = ["SourceRejected", "normalize_oi_source", "normalize_source_venue"]

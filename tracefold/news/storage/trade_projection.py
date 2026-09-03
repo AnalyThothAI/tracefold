@@ -6,20 +6,22 @@ model here would coerce values PostgreSQL already typed and turn a nullable LEFT
 different value. Nothing outside this module may add, rename or retype a key without editing them,
 which is what makes the App-side mapper break at type-check time instead of at 03:00 in a runner.
 
-They say nothing about *trade* eligibility: freshness, rank and the liquidity floor live in the
-Signal lane's own pure rules. This side owns generation identity, the point-in-time boundaries and
-the deterministic order.
+They say nothing about *trade* eligibility: freshness, the venue rule and the liquidity floor live in
+the Signal lane's own pure rules. This side owns the point-in-time boundaries and the deterministic
+order, and nothing about the editorial pipeline that runs beside the OI ledger (#510).
 """
 
 from __future__ import annotations
 
-# S608 exemption below interpolates only the code-owned projection row cap; all query values stay bound.
 from collections.abc import Sequence
 from typing import Any, TypedDict
 
 # Bump when a key is added, removed or retyped below — and when what a key *means* changes without the
 # key moving. The consumer's mapper is versioned against it, so neither a silently widened projection
 # nor a silently re-scoped one can reach Trading unnoticed.
+#
+# Entries below v14 describe the verdict-derived OI read and are kept as the contract's history: the
+# joins, pins and freeze checks several of them argue for no longer exist. v14 is the current shape.
 #
 # v2 (#211): the two candidate reads return the *newest* rows in the window rather than the oldest.
 # Trading's scan horizon grew from `max_age x 3` to `max_age + max(lookback)` so a legal counterpart is
@@ -61,7 +63,17 @@ from typing import Any, TypedDict
 # the universe of News facts that should have reached that Gate.
 # v13 (#433-C review): publish the immutable title token consumed by the OI parser so the App seam can
 # distinguish Hyperliquid's `XYZ-` builder-DEX market from the main perpetual book.
-NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v13"
+#
+# v14 (#510 PR-4): the OI reads are the numeric ledger and nothing else. `news_oi_signals` already holds
+# the deterministic measurements, the source Item, the frame's venue, both clocks and the provider's
+# measurement contract, so the verdict join, the learning-epoch join, the six `trace` equalities that
+# re-proved the ledger against the verdict's own copy of it, the `split_part(title)` provider token and
+# the four News version literals are gone. `news_items.first_ingest_mode` is the one column the Item
+# still owes this projection. The frame reaches Trading without passing through the editorial pipeline,
+# the active learning arm or the Program identity, which is what makes a News policy or Program move
+# stop being a Trading contract change. The builder-DEX distinction now rides on `source_venue`, the
+# provider's own field, rather than on a title token: `symbol` in this ledger is already canonical.
+NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v14"
 
 # One read's ceiling per lane. The consumer's widest configured horizon is `max_age + max(lookback)` —
 # 65 minutes at the shipped configuration — and the measured live rate through these exact predicates
@@ -69,55 +81,20 @@ NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v13"
 # roughly twenty times the volume it has to carry. It is still a ceiling, not a promise: a lane that
 # comes back with exactly this many rows was truncated, and the funnel's `oi_rows` / `news_rows`
 # counters are where that shows.
-# The epoch a projection row belongs to is the epoch of the deployment that produced it (#314). Joining
-# through the active agent keeps that true after a rollback, where "the newest epoch row" would name a
-# bundle this process is not running.
-_CURRENT_EPOCH_JOIN = """
-              JOIN news_learning_epochs epoch
-                ON epoch.bundle_sha = (
-                  SELECT stable_sha FROM news_review_active_agent_v1
-                   ORDER BY created_at_ms DESC LIMIT 1
-                )
-               AND e.opened_at_ms >= epoch.starts_at_ms
-               AND v.created_at_ms >= epoch.starts_at_ms"""
-
 TRADE_PROJECTION_ROW_LIMIT = 256
 
 
 class OiTradeProjectionRow(TypedDict):
-    """One parsed deterministic OI telemetry fact, with its rank-ledger row and the frame's venue.
+    """One row of the deterministic OI ledger, with the ingest mode of the Item it was parsed from.
 
-    `final_decision` and `source_rule` are the reader's own judgment of the same frame. They are here so
-    a capital decision can be traced to the verdict beside it, and for no other purpose: since #264 the
-    reader's push/drop no longer decides whether Trading can see the fact.
+    Sixteen keys and no judgment: `news_oi_signals` is the fact, and whether the fact may reach capital
+    is the Signal lane's own question. `metric_version` is half the row's primary key, so the pair
+    `(event_id, metric_version)` is the durable source identity a consumer files its answer under.
     """
 
     event_id: str
-    source_item_id: str
-    verdict_created_at_ms: int
-    final_decision: str
-    # `evaluate_oi`'s non-empty named rule from the current canonical judgment atom.
-    source_rule: str
-    learning_epoch: str
-    program_version: str
-    program_sha256: str
-    policy_version: str
-    judgment_contract_version: str
-    judgment_origin: str
-    judgment_sha256: str
-    runtime_manifest_sha: str
     metric_version: str
-    # What the provider proves about the measurement, not about the market (#265). Nullable together:
-    # a `NULL` window means unproven, and it is the answer a consumer must act on rather than default.
-    # `whale_long_profit_bps` is the provider's own `Whale Long Profit N%` and nothing more — not an
-    # account count, not a total unrealised PnL, and not "every smart-money account is in profit".
-    source_strategy_id: str | None
-    source_contract_version: str | None
-    measurement_window_ms: int | None
-    # The leading token the deterministic OI parser consumed, before it canonicalised `XYZ-UNITREE`
-    # to the issuer identity `UNITREE`. The App seam needs the source-native spelling to select the
-    # matching Hyperliquid builder-DEX candle key without binding Trading to News's Item schema.
-    provider_symbol: str
+    source_item_id: str
     symbol: str
     direction: str
     oi_change_bps: int
@@ -125,9 +102,18 @@ class OiTradeProjectionRow(TypedDict):
     whale_long_profit_bps: int
     whale_oi_ratio_bps: int
     observed_at_ms: int
-    source_available_at_ms: int
+    # When the ledger row became durable, which is the earliest instant any consumer could have read it.
+    available_at_ms: int
     ingest_mode: str
-    # LEFT JOIN on the leader Item, then a JSON member: absent frames and untagged frames both read None.
+    # What the provider proves about the measurement, not about the market (#265). Nullable together:
+    # a `NULL` window means unproven, and it is the answer a consumer must act on rather than default.
+    # `whale_long_profit_bps` is the provider's own `Whale Long Profit N%` and nothing more — not an
+    # account count, not a total unrealised PnL, and not "every smart-money account is in profit".
+    source_strategy_id: str | None
+    source_contract_version: str | None
+    measurement_window_ms: int | None
+    # The provider's own venue text, as the ledger froze it. Nullable: a frame whose provider metadata
+    # carried no source is still a fact, and the consumer refuses it by name rather than guessing.
     venue: str | None
 
 
@@ -175,7 +161,7 @@ class TradeFixedWindowOiSourceRow(TypedDict):
     source_venue: str | None
     observed_at_ms: int
     available_at_ms: int
-    verdict_created_at_ms: int
+    created_at_ms: int
 
 
 class TradeProjectionStorage:
@@ -225,97 +211,54 @@ class TradeProjectionStorage:
         until_created_at_ms: int,
         limit: int = TRADE_PROJECTION_ROW_LIMIT,
     ) -> list[OiTradeProjectionRow]:
-        """Every current-generation, live, successfully parsed OI fact in the window (#264).
+        """Every OI fact this metric version persisted in the window, and the ingest mode behind it.
 
-        What this read proves is that the *fact* is trustworthy: it was parsed by this generation's
-        deterministic judge, under the executable Program/policy identity, from a live ingest. What it
-        deliberately no longer decides is whether the fact may reach capital. Two rules used to live in
-        this SELECT and do not any more:
+        The read is one ledger and one Item column (#510). It used to reach the same numbers through the
+        editorial pipeline: the triage verdict for the frame, six `jsonb` equalities re-proving that the
+        verdict's copy of the measurements still matched the ledger's, the currently active learning
+        arm's epoch, four News version literals, and the leader Item's title split on whitespace for the
+        provider token. Every one of those was upstream of the numbers rather than part of them, so a
+        News policy bump — `news_triage_policy_v11` to `v12` in #504 — silently stopped Trading's
+        projection and forced an edit to Trading's own contract. `news_oi_signals` is where the parser
+        writes the fact; this reads the fact.
 
-        * `final_decision IN ('push','escalate')` made the reader's product policy the capital lane's
-          entry. The reader's rule is `whale_oi_ratio > 80%`; the strategy #265 targets needs `> 50%`,
-          so five of the seven qualifying frames in the last seven days were dropped here and Trading
-          never saw them. The column is still selected, as audit, beside `source_rule`.
-        * `rank_in_window <= N` and `oi_value_usd >= N` were Trading's own thresholds executed in News's
-          SQL. A row filtered out here is indistinguishable from a row that never existed, which is what
-          made `oi_rows = 0` unable to say *why*. `oi_value_usd` moved to the Trading Candidate Gate,
-          which records a named reason per source instead; the rank is gone entirely with #458's cut of
-          the News notification rule that spent it.
+        What this read proves is only that the fact exists and where it came from. It decides nothing
+        about eligibility: `ingest_mode`, the liquidity floor, freshness and the venue rule are all the
+        Signal lane's, with a named durable answer each, which is what keeps `oi_rows = 0` answerable.
 
-        `venue` comes from the Item's own `provider_metadata.source` rather than the ledger, which does
-        not store it. That field is the single strongest discriminator the OI research measured
-        (Hyperliquid +1.35% vs Binance -0.26% at 4 h), so a projection that dropped it would leave the
-        trading lane unable to test its best-supported hypothesis.
-
-        Newest first at the limit (#211). The consumer reads a window wide enough to hold an hour of
-        attachable context, and every row it can act on *now* is at the recent end of it. Truncating
-        the far end drops rows that could only ever have been superseded context; truncating the near
-        end would drop the triggers.
+        The window is on `created_at_ms` — when the ledger row became durable — because that, not the
+        provider's observation clock, is when a scan could first have seen it. Newest first at the limit
+        (#211): every row a consumer can act on *now* is at the recent end of a window wide enough to
+        hold an hour of superseded context, so truncating the far end costs context and truncating the
+        near end would cost the triggers.
         """
 
         rows = self.conn.execute(
-            f"""
-            SELECT v.event_id,
-                   s.source_item_id,
-                   v.created_at_ms          AS verdict_created_at_ms,
-                   v.final_decision,
-                   v.trace #>> '{{judgment,rule}}' AS source_rule,
-                   epoch.epoch_id           AS learning_epoch,
-                   v.program_version,
-                   v.program_sha256,
-                   v.policy_version,
-                   v.judgment_contract_version,
-                   v.judgment_origin,
-                   v.scored_judgment_sha256 AS judgment_sha256,
-                   v.runtime_manifest_sha,
+            """
+            SELECT s.event_id,
                    s.metric_version,
+                   s.source_item_id,
+                   s.symbol,
+                   s.direction,
+                   s.oi_change_bps,
+                   s.oi_value_usd,
+                   s.whale_long_profit_bps,
+                   s.whale_oi_ratio_bps,
+                   s.observed_at_ms,
+                   s.available_at_ms,
+                   i.first_ingest_mode AS ingest_mode,
                    s.source_strategy_id,
                    s.source_contract_version,
                    s.measurement_window_ms,
-                   split_part(btrim(i.title), ' ', 1) AS provider_symbol,
-                   v.trace #>> '{{judgment,signal,symbol}}' AS symbol,
-                   v.trace #>> '{{judgment,signal,direction}}' AS direction,
-                   (v.trace #>> '{{judgment,signal,oi_change_bps}}')::bigint AS oi_change_bps,
-                   (v.trace #>> '{{judgment,signal,oi_value_usd}}')::bigint AS oi_value_usd,
-                   (v.trace #>> '{{judgment,signal,whale_long_profit_bps}}')::bigint AS whale_long_profit_bps,
-                   (v.trace #>> '{{judgment,signal,whale_oi_ratio_bps}}')::bigint AS whale_oi_ratio_bps,
-                   s.observed_at_ms,
-                   s.available_at_ms AS source_available_at_ms,
-                   i.first_ingest_mode AS ingest_mode,
                    s.source_venue AS venue
-              FROM news_verdicts v
-              JOIN news_oi_signals s
-                ON s.event_id = v.event_id AND s.metric_version = %s
-               AND v.trace #> '{{judgment,signal}}' = jsonb_build_object(
-                     'symbol', s.symbol,
-                     'direction', s.direction,
-                     'oi_change_bps', s.oi_change_bps,
-                     'oi_value_usd', s.oi_value_usd,
-                     'whale_long_profit_bps', s.whale_long_profit_bps,
-                     'whale_oi_ratio_bps', s.whale_oi_ratio_bps
-                   )
-               AND v.trace #>> '{{oi_signal,source_strategy_id}}' IS NOT DISTINCT FROM s.source_strategy_id
-               AND v.trace #>> '{{oi_signal,source_contract_version}}' IS NOT DISTINCT FROM s.source_contract_version
-               AND (v.trace #>> '{{oi_signal,measurement_window_ms}}')::bigint
-                     IS NOT DISTINCT FROM s.measurement_window_ms
+              FROM news_oi_signals s
               JOIN news_items i ON i.item_id = s.source_item_id
-              JOIN news_events e ON e.event_id = v.event_id{_CURRENT_EPOCH_JOIN}
-             WHERE v.stage = 'triage'
-               AND v.judgment_contract_version = 'news_judgment_v2'
-               AND v.judgment_origin = 'oi'
-               AND v.program_version = 'news_oi_signal_v3'
-               AND v.policy_version = 'news_triage_policy_v12'
-               AND v.editorial IS NULL
-               AND v.program_sha256 ~ '^[0-9a-f]{{64}}$'
-               AND v.scored_judgment_sha256 IS NOT NULL
-               AND v.runtime_manifest_sha IS NOT NULL
-               AND v.degraded = false
-               AND e.ingest_mode = 'live'
-               AND v.created_at_ms > %s
-               AND v.created_at_ms <= %s
-             ORDER BY v.created_at_ms DESC, v.event_id DESC
+             WHERE s.metric_version = %s
+               AND s.created_at_ms > %s
+               AND s.created_at_ms <= %s
+             ORDER BY s.created_at_ms DESC, s.event_id DESC
              LIMIT %s
-            """,  # noqa: S608
+            """,
             (
                 metric_version,
                 int(after_created_at_ms),
@@ -335,69 +278,39 @@ class TradeProjectionStorage:
         available_at_or_before_ms: int,
         limit: int = TRADE_PROJECTION_ROW_LIMIT,
     ) -> list[OiTradeProjectionRow]:
-        """Freeze sources known by the batch end and durably available by its capture clock (#377)."""
+        """Freeze sources observed in the batch window and durable by its capture clock (#377).
+
+        The same ledger the live read takes (#510). The two used to differ only in their window and in
+        nothing else that mattered, yet both carried the verdict join, so a News identity move broke
+        replay and the live lane in one step.
+        """
 
         rows = self.conn.execute(
             """
-            SELECT v.event_id,
-                   s.source_item_id,
-                   v.created_at_ms          AS verdict_created_at_ms,
-                   v.final_decision,
-                   v.trace #>> '{judgment,rule}' AS source_rule,
-                   s.learning_epoch,
-                   v.program_version,
-                   v.program_sha256,
-                   v.policy_version,
-                   v.judgment_contract_version,
-                   v.judgment_origin,
-                   v.scored_judgment_sha256 AS judgment_sha256,
-                   v.runtime_manifest_sha,
+            SELECT s.event_id,
                    s.metric_version,
+                   s.source_item_id,
+                   s.symbol,
+                   s.direction,
+                   s.oi_change_bps,
+                   s.oi_value_usd,
+                   s.whale_long_profit_bps,
+                   s.whale_oi_ratio_bps,
+                   s.observed_at_ms,
+                   s.available_at_ms,
+                   i.first_ingest_mode AS ingest_mode,
                    s.source_strategy_id,
                    s.source_contract_version,
                    s.measurement_window_ms,
-                   split_part(btrim(i.title), ' ', 1) AS provider_symbol,
-                   v.trace #>> '{judgment,signal,symbol}' AS symbol,
-                   v.trace #>> '{judgment,signal,direction}' AS direction,
-                   (v.trace #>> '{judgment,signal,oi_change_bps}')::bigint AS oi_change_bps,
-                   (v.trace #>> '{judgment,signal,oi_value_usd}')::bigint AS oi_value_usd,
-                   (v.trace #>> '{judgment,signal,whale_long_profit_bps}')::bigint AS whale_long_profit_bps,
-                   (v.trace #>> '{judgment,signal,whale_oi_ratio_bps}')::bigint AS whale_oi_ratio_bps,
-                   s.observed_at_ms,
-                   s.available_at_ms AS source_available_at_ms,
-                   i.first_ingest_mode AS ingest_mode,
                    s.source_venue AS venue
-              FROM news_verdicts v
-              JOIN news_oi_signals s
-                ON s.event_id = v.event_id AND s.metric_version = %s
-               AND v.trace #> '{judgment,signal}' = jsonb_build_object(
-                     'symbol', s.symbol,
-                     'direction', s.direction,
-                     'oi_change_bps', s.oi_change_bps,
-                     'oi_value_usd', s.oi_value_usd,
-                     'whale_long_profit_bps', s.whale_long_profit_bps,
-                     'whale_oi_ratio_bps', s.whale_oi_ratio_bps
-                   )
-               AND v.trace #>> '{oi_signal,source_strategy_id}' IS NOT DISTINCT FROM s.source_strategy_id
-               AND v.trace #>> '{oi_signal,source_contract_version}' IS NOT DISTINCT FROM s.source_contract_version
-               AND (v.trace #>> '{oi_signal,measurement_window_ms}')::bigint
-                     IS NOT DISTINCT FROM s.measurement_window_ms
+              FROM news_oi_signals s
               JOIN news_items i ON i.item_id = s.source_item_id
-             WHERE v.stage = 'triage'
-               AND v.judgment_contract_version = 'news_judgment_v2'
-               AND v.judgment_origin = 'oi'
-               AND v.program_version = 'news_oi_signal_v3'
-               AND v.policy_version = 'news_triage_policy_v12'
-               AND v.editorial IS NULL
-               AND v.program_sha256 ~ '^[0-9a-f]{64}$'
-               AND v.scored_judgment_sha256 IS NOT NULL
-               AND v.runtime_manifest_sha IS NOT NULL
-               AND v.degraded = false
+             WHERE s.metric_version = %s
                AND s.available_at_ms <= %s
                AND s.observed_at_ms >= %s
                AND s.observed_at_ms < %s
-               AND v.created_at_ms <= %s
-             ORDER BY s.observed_at_ms, v.event_id
+               AND s.created_at_ms <= %s
+             ORDER BY s.observed_at_ms, s.event_id
              LIMIT %s
             """,
             (
@@ -427,39 +340,14 @@ class TradeProjectionStorage:
         rows = self.conn.execute(
             """
             WITH sources AS (
-              SELECT v.event_id, s.metric_version, s.observed_at_ms,
-                     v.trace #>> '{judgment,signal,symbol}' AS symbol,
-                     s.source_venue
-                FROM news_verdicts v
-                JOIN news_oi_signals s
-                  ON s.event_id = v.event_id AND s.metric_version = %(metric)s
-                 AND v.trace #> '{judgment,signal}' = jsonb_build_object(
-                       'symbol', s.symbol,
-                       'direction', s.direction,
-                       'oi_change_bps', s.oi_change_bps,
-                       'oi_value_usd', s.oi_value_usd,
-                       'whale_long_profit_bps', s.whale_long_profit_bps,
-                       'whale_oi_ratio_bps', s.whale_oi_ratio_bps
-                     )
-                 AND v.trace #>> '{oi_signal,source_strategy_id}' IS NOT DISTINCT FROM s.source_strategy_id
-                 AND v.trace #>> '{oi_signal,source_contract_version}' IS NOT DISTINCT FROM s.source_contract_version
-                 AND (v.trace #>> '{oi_signal,measurement_window_ms}')::bigint
-                       IS NOT DISTINCT FROM s.measurement_window_ms
-               WHERE v.stage = 'triage'
-                 AND v.judgment_contract_version = 'news_judgment_v2'
-                 AND v.judgment_origin = 'oi'
-                 AND v.program_version = 'news_oi_signal_v3'
-                 AND v.policy_version = 'news_triage_policy_v12'
-                 AND v.editorial IS NULL
-                 AND v.program_sha256 ~ '^[0-9a-f]{64}$'
-                 AND v.scored_judgment_sha256 IS NOT NULL
-                 AND v.runtime_manifest_sha IS NOT NULL
-                 AND v.degraded = false
+              SELECT s.event_id, s.metric_version, s.observed_at_ms, s.symbol, s.source_venue
+                FROM news_oi_signals s
+               WHERE s.metric_version = %(metric)s
                  AND s.available_at_ms <= %(available)s
                  AND s.observed_at_ms >= %(start)s
                  AND s.observed_at_ms < %(end)s
-                 AND v.created_at_ms <= %(known)s
-               ORDER BY s.observed_at_ms, v.event_id
+                 AND s.created_at_ms <= %(known)s
+               ORDER BY s.observed_at_ms, s.event_id
                LIMIT %(source_limit)s
             )
             SELECT source.event_id, source.metric_version,
@@ -480,7 +368,7 @@ class TradeProjectionStorage:
                            ('hyperliquid', 'hl.perp', 'hyperliquid.perp') THEN 'hl.perp'
                          ELSE ''
                        END
-                   AND event.base_symbol = regexp_replace(upper(btrim(source.symbol)), '^XYZ-', '')
+                   AND event.base_symbol = upper(btrim(source.symbol))
                    AND event.observed_at_ms <= source.observed_at_ms
                  ORDER BY event.venue, event.venue_symbol, event.observed_at_ms DESC
               ) historical ON historical.status = 'trading' AND historical.instrument_class = 'crypto'
@@ -528,39 +416,13 @@ class TradeProjectionStorage:
 
         rows = self.conn.execute(
             """
-            SELECT v.event_id, s.metric_version, s.source_venue,
-                   s.observed_at_ms, s.available_at_ms,
-                   v.created_at_ms AS verdict_created_at_ms
-              FROM news_verdicts v
-              JOIN news_oi_signals s
-                ON s.event_id = v.event_id AND s.metric_version = %s
-               AND v.trace #> '{judgment,signal}' = jsonb_build_object(
-                     'symbol', s.symbol,
-                     'direction', s.direction,
-                     'oi_change_bps', s.oi_change_bps,
-                     'oi_value_usd', s.oi_value_usd,
-                     'whale_long_profit_bps', s.whale_long_profit_bps,
-                     'whale_oi_ratio_bps', s.whale_oi_ratio_bps
-                   )
-               AND v.trace #>> '{oi_signal,source_strategy_id}' IS NOT DISTINCT FROM s.source_strategy_id
-               AND v.trace #>> '{oi_signal,source_contract_version}' IS NOT DISTINCT FROM s.source_contract_version
-               AND (v.trace #>> '{oi_signal,measurement_window_ms}')::bigint
-                     IS NOT DISTINCT FROM s.measurement_window_ms
-              JOIN news_events e ON e.event_id = v.event_id
-             WHERE v.stage = 'triage'
-               AND v.judgment_contract_version = 'news_judgment_v2'
-               AND v.judgment_origin = 'oi'
-               AND v.program_version = 'news_oi_signal_v3'
-               AND v.policy_version = 'news_triage_policy_v12'
-               AND v.editorial IS NULL
-               AND v.program_sha256 ~ '^[0-9a-f]{64}$'
-               AND v.scored_judgment_sha256 IS NOT NULL
-               AND v.runtime_manifest_sha IS NOT NULL
-               AND v.degraded = false
-               AND e.ingest_mode = 'live'
+            SELECT s.event_id, s.metric_version, s.source_venue,
+                   s.observed_at_ms, s.available_at_ms, s.created_at_ms
+              FROM news_oi_signals s
+             WHERE s.metric_version = %s
                AND s.observed_at_ms >= %s AND s.observed_at_ms < %s
-               AND s.available_at_ms <= %s AND v.created_at_ms <= %s
-             ORDER BY s.observed_at_ms, v.event_id
+               AND s.available_at_ms <= %s AND s.created_at_ms <= %s
+             ORDER BY s.observed_at_ms, s.event_id
              LIMIT %s
             """,
             (
@@ -579,7 +441,7 @@ class TradeProjectionStorage:
                 source_venue=None if row["source_venue"] is None else str(row["source_venue"]),
                 observed_at_ms=int(row["observed_at_ms"]),
                 available_at_ms=int(row["available_at_ms"]),
-                verdict_created_at_ms=int(row["verdict_created_at_ms"]),
+                created_at_ms=int(row["created_at_ms"]),
             )
             for row in rows
         ]
@@ -709,23 +571,8 @@ def _oi_projection_row(row: Any) -> OiTradeProjectionRow:
 
     return OiTradeProjectionRow(
         event_id=row["event_id"],
-        source_item_id=row["source_item_id"],
-        verdict_created_at_ms=row["verdict_created_at_ms"],
-        final_decision=row["final_decision"],
-        source_rule=row["source_rule"],
-        learning_epoch=row["learning_epoch"],
-        program_version=row["program_version"],
-        program_sha256=row["program_sha256"],
-        policy_version=row["policy_version"],
-        judgment_contract_version=row["judgment_contract_version"],
-        judgment_origin=row["judgment_origin"],
-        judgment_sha256=row["judgment_sha256"],
-        runtime_manifest_sha=row["runtime_manifest_sha"],
         metric_version=row["metric_version"],
-        source_strategy_id=row["source_strategy_id"],
-        source_contract_version=row["source_contract_version"],
-        measurement_window_ms=row["measurement_window_ms"],
-        provider_symbol=row["provider_symbol"],
+        source_item_id=row["source_item_id"],
         symbol=row["symbol"],
         direction=row["direction"],
         oi_change_bps=row["oi_change_bps"],
@@ -733,7 +580,10 @@ def _oi_projection_row(row: Any) -> OiTradeProjectionRow:
         whale_long_profit_bps=row["whale_long_profit_bps"],
         whale_oi_ratio_bps=row["whale_oi_ratio_bps"],
         observed_at_ms=row["observed_at_ms"],
-        source_available_at_ms=row["source_available_at_ms"],
+        available_at_ms=row["available_at_ms"],
         ingest_mode=row["ingest_mode"],
+        source_strategy_id=row["source_strategy_id"],
+        source_contract_version=row["source_contract_version"],
+        measurement_window_ms=row["measurement_window_ms"],
         venue=row["venue"],
     )

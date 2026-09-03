@@ -51,6 +51,9 @@ EXECUTION_PATH = {
 }
 BANNED_FRAMEWORKS = {"autogen", "crewai", "deepagents", "dspy", "langchain", "langgraph", "langsmith"}
 BANNED_CAPABILITIES = {"boto3", "httpx", "os", "pathlib", "requests", "shutil", "socket", "subprocess"}
+# Any `news_`-prefixed name at all: the tables, the version pins, the trace keys. Trading may not
+# spell one, in SQL, in a `Literal`, in a reason string or in a comment.
+NEWS_NAME_RE = re.compile(r"\bnews_[a-z0-9_]+", re.I)
 WRITE_SQL_TABLE_RE = re.compile(r"\b(?:DELETE\s+FROM|INSERT\s+INTO|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)", re.I)
 SQL_TABLE_RE = re.compile(r"\b(?:DELETE\s+FROM|INSERT\s+INTO|FROM|JOIN|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)", re.I)
 _SQL_KEYWORDS = {
@@ -190,6 +193,25 @@ def test_trading_sql_reads_and_writes_only_trading_tables() -> None:
     assert offenders == []
 
 
+def test_trading_names_no_news_identity_anywhere_in_its_source() -> None:
+    """#510 PR-4. A News version bump must not be able to reach this package.
+
+    `news_oi_signal_v3`, `news_triage_policy_v12` and `news_judgment_v2` were `Literal`s on the
+    candidate contract, re-checked in the Signal lane and executed a third time in News's SELECT, so
+    #504's policy v11 -> v12 bump could only ship by editing Trading. Nothing upstream calls itself is
+    a Trading rule: the measurements, the two clocks and the venue are, and none of them is spelled
+    `news_`. The scan is over raw source rather than string constants because a pin restated in a
+    comment is the same coupling one edit later.
+    """
+
+    offenders = [
+        f"{path.relative_to(ROOT)}:{match.group(0)}"
+        for path in _trading_sources()
+        for match in NEWS_NAME_RE.finditer(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == []
+
+
 def test_news_never_reads_or_writes_a_trading_table() -> None:
     offenders = [
         str(path.relative_to(ROOT))
@@ -292,19 +314,34 @@ def test_enabled_signal_wiring_fault_propagates(monkeypatch: pytest.MonkeyPatch)
     from tracefold.app.workers.wiring import trading as wiring
     from tracefold.platform.config.models import Settings
 
-    def fail_generation(_settings: Settings) -> object:
-        raise RuntimeError("generation_wiring_fault")
+    def fail_config(_settings: Settings) -> object:
+        raise RuntimeError("signal_lane_wiring_fault")
 
     class Database:
         def heavy_business(self) -> object:
             return object()
 
-    monkeypatch.setattr(wiring, "active_arm_manifest", fail_generation)
-    with pytest.raises(RuntimeError, match="generation_wiring_fault"):
+    monkeypatch.setattr(wiring, "signal_lane_config", fail_config)
+    with pytest.raises(RuntimeError, match="signal_lane_wiring_fault"):
         wiring._wire_signal_lane(  # type: ignore[arg-type]
             settings=Settings(trading={"enabled": True}),
             db=Database(),
         )
+
+
+def test_enabled_signal_wiring_reads_no_news_learning_arm() -> None:
+    """#510 PR-4: the seam hands the lane a projection reader, not a News cohort label."""
+
+    import inspect
+
+    from tracefold.app.workers.wiring import trading as wiring
+    from tracefold.trading.signal_lane import SignalLane
+
+    assert "news_generation" not in inspect.signature(SignalLane.__init__).parameters
+    modules = _imports(SRC / "app/workers/wiring/trading.py")
+    assert "tracefold.app.learning_runtime.active_arm_manifest" not in modules
+    assert not any("learning" in module for module in modules)
+    assert not hasattr(wiring, "epoch_id_for_bundle")
 
 
 def test_workers_declares_one_signal_task_and_app_owns_its_loop() -> None:

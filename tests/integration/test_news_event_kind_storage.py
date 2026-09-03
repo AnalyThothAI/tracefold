@@ -299,7 +299,8 @@ def test_oi_trade_projection_requires_one_canonical_signal_and_source_identity(c
             until_created_at_ms=NOW,
         )
 
-    assert [(row["symbol"], row["source_rule"]) for row in projected()] == [("BTC", "stored")]
+    # The verdict exists beside the frame and decides nothing here: the ledger row is the projection.
+    assert [(row["symbol"], row["ingest_mode"], row["venue"]) for row in projected()] == [("BTC", "live", "binance")]
     catalog_rows = news.trade_evidence_catalog_rows(
         metric_version=OI_METRIC_VERSION,
         start_observed_at_ms=NOW,
@@ -318,29 +319,17 @@ def test_oi_trade_projection_requires_one_canonical_signal_and_source_identity(c
         limit=20,
     )
     assert [(row["event_id"], row["source_venue"]) for row in source_rows] == [("projection-oi-event", "binance")]
-    conn.execute("UPDATE news_events SET ingest_mode = 'recovery' WHERE event_id = 'projection-oi-event'")
-    assert (
-        news.trade_fixed_window_oi_sources(
-            metric_version=OI_METRIC_VERSION,
-            start_observed_at_ms=NOW,
-            end_observed_at_ms=NOW + 1,
-            drain_cutoff_ms=NOW,
-            limit=20,
-        )
-        == []
-    )
-    conn.execute("UPDATE news_events SET ingest_mode = 'live' WHERE event_id = 'projection-oi-event'")
-    # The freeze check binds the verdict's frozen judgment to the ledger row field by field. #458 removed
-    # its `rank_in_window` leg with the column; the six measurements and the three source-contract fields
-    # it still binds have to keep failing closed when the ledger and the verdict disagree.
+    # Ingest provenance is published, never filtered here (#510): the Signal lane refuses a recovery
+    # frame by name, and a read that dropped it would make "no rows" and "no eligible rows" the same
+    # absence again. The mode is the Item's, because the Item is what the parser read.
+    conn.execute("UPDATE news_items SET first_ingest_mode = 'recovery' WHERE item_id = 'projection-oi-item'")
+    assert [row["ingest_mode"] for row in projected()] == ["recovery"]
+    conn.execute("UPDATE news_items SET first_ingest_mode = 'live' WHERE item_id = 'projection-oi-item'")
+    # The ledger is the fact. The verdict keeps its own copy of these numbers and the projection no
+    # longer re-proves one against the other: six `jsonb` equalities that could only ever disagree by
+    # someone editing the ledger by hand cost the whole read its independence from the editorial lane.
     conn.execute("UPDATE news_oi_signals SET oi_value_usd = oi_value_usd + 1 WHERE event_id = 'projection-oi-event'")
-    assert projected() == []
-    conn.execute(
-        "UPDATE news_oi_signals SET oi_value_usd = oi_value_usd - 1, "
-        "source_strategy_id = '1019', source_contract_version = 'opennews_oi_source_v1', "
-        "measurement_window_ms = 300000 WHERE event_id = 'projection-oi-event'"
-    )
-    assert projected() == []
+    assert [row["oi_value_usd"] for row in projected()] == [32_170_001]
 
 
 def test_item_redelivery_unions_full_strategy_tuples_and_preserves_first_metadata(conn) -> None:

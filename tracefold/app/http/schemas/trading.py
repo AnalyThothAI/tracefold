@@ -130,6 +130,12 @@ class TradingStatusData(ExactApiSchema):
     measured_at_ms: int
 
 
+# Every key any writer has ever put in `evidence`, because the admission ledger keeps rows for 90 days.
+# `source_decision`, `source_rule`, `blacklist_reason`, `cooldown_ms`, `since_close_ms`, `limit` and
+# `live_exchange_id` have no writer left — the first two went with the News judgment fields in #510 —
+# and they stay declared because this model forbids extras and stored rows still carry them. A row
+# written before a rule retired must keep rendering; that is what makes the ledger a ledger. The note
+# is a comment rather than a docstring so it does not become a public OpenAPI description.
 class TradingGateEvidenceData(ExactApiSchema):
     venue: str = ""
     oi_change_bps: int | None = None

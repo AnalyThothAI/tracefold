@@ -9,7 +9,7 @@ from typing import Final
 # `source_observed_at_ms` so a restarted runner re-reading a backlog cannot move yesterday's frames
 # into today's total, and a Case has no such backlog because it is created once. #460 asked whether
 # to collapse the two; they answer different questions and the third "24 h" figure on the console
-# (`news_items.observed_at_ms`) is News's own table across a bounded-context boundary.
+# (the Item observation clock) is News's own table across a bounded-context boundary.
 TRADING_STATUS_CASE_COUNTS_SQL: Final = """
     SELECT
       count(*) FILTER (WHERE created_at_ms >= %(since)s) AS cases_24h,

@@ -17,13 +17,11 @@ from typing import Any
 
 from loguru import logger
 
-from tracefold.app.learning_runtime import active_arm_manifest
 from tracefold.app.trading_config import signal_lane_config
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.wiring.database import WorkerNewsColdDatabase, WorkerTradingDatabase
 from tracefold.app.workers.wiring.news_to_trading import news_oi_sources
 from tracefold.integrations.venues import fetch_binance_candles, fetch_hyperliquid_candles
-from tracefold.news.learning.contracts import epoch_id_for_bundle
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.runtime_identity import runtime_identity
@@ -78,10 +76,6 @@ def _wire_signal_lane(
         config=signal_lane_config(settings),
         bars=_source_native_bars,
         oi_projection=read_news_oi_projection,
-        # The one place that may tell Trading which News generation is running (#314). Trading
-        # holds no News literal and reads no News table; this seam derives the label from the same
-        # stable arm the News workers appoint, so the two cannot drift.
-        news_generation=epoch_id_for_bundle(active_arm_manifest(settings).bundle_sha),
         release_revision=runtime_identity().runtime_revision,
         telemetry=telemetry,
     )

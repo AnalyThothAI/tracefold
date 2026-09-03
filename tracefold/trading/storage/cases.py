@@ -26,7 +26,7 @@ class CaseStorage:
               capital_disposition, capital_reason
             ) VALUES (
               %s, 'restore:RESTORE', 'news', 'restore-source', '[]'::jsonb,
-              '{"restore":"case","manifest_version":"trading_manifest_v10","market_key":"crypto:perp:RESTORE:USDT"}'::jsonb,
+              '{"restore":"case","manifest_version":"trading_manifest_v11","market_key":"crypto:perp:RESTORE:USDT"}'::jsonb,
               %s, 'SIGNAL_EMITTED', 'long', 'restore_drill',
               10, 10, 10, 'restore_strategy', 'restore_v1', %s, 'not_applicable', NULL
             )

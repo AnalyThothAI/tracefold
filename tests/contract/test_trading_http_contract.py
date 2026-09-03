@@ -54,7 +54,7 @@ class _Trading:
                 "trigger_kind": "oi",
                 "primary_source_key": "oi:evt-sol:oi_signal_v1",
                 "manifest": {
-                    "manifest_version": "trading_manifest_v10",
+                    "manifest_version": "trading_manifest_v11",
                     "market_key": "crypto:perp:SOL:USDT",
                     "primary_trigger": {"venue": "binance.usdm"},
                     "policy_config": {"min_oi_change_bps": 500},
