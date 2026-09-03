@@ -11,35 +11,111 @@ import psycopg
 from nautilus_trader.backtest.config import BacktestEngineConfig
 from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.config import LoggingConfig
-from nautilus_trader.model.enums import AccountType, OmsType
-from nautilus_trader.model.identifiers import TraderId
+from nautilus_trader.model.enums import AccountType, OmsType, OrderSide, TriggerType
+from nautilus_trader.model.identifiers import ClientOrderId, PositionId, TraderId
 from nautilus_trader.model.objects import Money
+from nautilus_trader.model.position import Position
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
+from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from psycopg.rows import dict_row
 
-from tests.nautilus_oi_runtime_fixtures import NOW_NS, oi_profile
+from tests.nautilus_oi_runtime_fixtures import ACCOUNT_ID, NOW_NS, oi_profile
 from tracefold.app.nautilus.oi_runtime import (
     flush_audit_once,
     load_unresolved_operator_intents,
     load_unresolved_trade_signals,
 )
+from tracefold.app.nautilus.reconciliation import build_runtime_reconciliation_snapshot
+from tracefold.app.nautilus.root import _load_recovery_inputs
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
+from tracefold.integrations.nautilus.oi_runtime.config import OiRuntimeProfile
 from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.state import (
     RuntimeControlSnapshot,
     RuntimeReadiness,
     RuntimeReconciliationSnapshot,
+    deterministic_client_order_id,
+    protection_leg,
 )
 from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrategy
+
+_COLD_QUANTITY = Decimal("0.049")
+_COLD_ENTRY_PRICE = Decimal(10_000)
+
+
+def _seed_cold_cache(
+    *,
+    engine: BacktestEngine,
+    strategy: OiNautilusStrategy,
+    profile: OiRuntimeProfile,
+    instrument: object,
+    entry_id: str | None,
+) -> None:
+    """Reproduce a Cache reconciled from Binance private reports after a restart.
+
+    `LiveExecutionEngine._reconcile_order_report` adds reclaimed orders without a position index,
+    and the filled entry market order is in no Binance report at all, so a cold Cache holds only the
+    synthesised position and the resting stop.
+    """
+
+    # The NETTING position identity Nautilus itself derives; the risk engine rejects any other.
+    position_id = PositionId(f"{instrument.id}-{strategy.id}")
+    external = strategy.order_factory.market(
+        instrument_id=instrument.id,
+        order_side=OrderSide.BUY,
+        quantity=instrument.make_qty(_COLD_QUANTITY),
+        client_order_id=ClientOrderId("EXTERNAL-COLD-ENTRY"),
+    )
+    engine.cache.add_order(external)
+    external.apply(TestEventStubs.order_submitted(external, account_id=ACCOUNT_ID, ts_event=NOW_NS - 2))
+    engine.cache.update_order(external)
+    fill = TestEventStubs.order_filled(
+        order=external,
+        instrument=instrument,
+        strategy_id=strategy.id,
+        account_id=ACCOUNT_ID,
+        position_id=position_id,
+        last_qty=instrument.make_qty(_COLD_QUANTITY),
+        last_px=instrument.make_price(_COLD_ENTRY_PRICE),
+        commission=Money(0, instrument.quote_currency),
+        ts_event=NOW_NS - 1,
+    )
+    external.apply(fill)
+    engine.cache.update_order(external)
+    engine.cache.add_position(Position(instrument, fill), OmsType.NETTING)
+    if entry_id is None:
+        return
+    stop = strategy.order_factory.stop_market(
+        instrument_id=instrument.id,
+        order_side=OrderSide.SELL,
+        quantity=instrument.make_qty(_COLD_QUANTITY),
+        trigger_price=instrument.make_price(Decimal("9800")),
+        trigger_type=TriggerType.LAST_PRICE,
+        reduce_only=True,
+        client_order_id=deterministic_client_order_id(
+            namespace=profile.client_order_namespace,
+            profile_id=profile.profile_id,
+            entry_id=entry_id,
+            leg=protection_leg(1, _COLD_QUANTITY),
+        ),
+    )
+    # `BacktestEngine.run` replays every cached open order through the matching engine, which
+    # rejects a reduce-only order it cannot bind to a position. Binance holds this stop instead, so
+    # the index is a harness detail; the unbound cold-Cache shape is covered by the unit seam.
+    engine.cache.add_order(stop, position_id=position_id)
+    stop.apply(TestEventStubs.order_submitted(stop, account_id=ACCOUNT_ID, ts_event=NOW_NS - 1))
+    engine.cache.update_order(stop)
+    stop.apply(TestEventStubs.order_accepted(stop, account_id=ACCOUNT_ID, ts_event=NOW_NS - 1))
+    engine.cache.update_order(stop)
 
 
 def main() -> None:
     dsn = sys.argv[1]
     mode = sys.argv[2] if len(sys.argv) > 2 else "signal"
-    if mode not in {"command", "signal", "signal_replay"}:
+    if mode not in {"command", "signal", "signal_replay", "cold_recovery", "cold_unclaimed"}:
         raise ValueError("nautilus_process_fixture_mode_invalid")
     conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
     try:
@@ -50,14 +126,16 @@ def main() -> None:
         repos = repositories_for_connection(conn)
         admitted = (
             signals.poll_once(partial(load_unresolved_trade_signals, repos))
-            if mode in {"signal", "signal_replay"}
+            if mode in {"signal", "signal_replay", "cold_recovery", "cold_unclaimed"}
             else 0
         )
         replay_admitted = (
             signals.poll_once(partial(load_unresolved_trade_signals, repos)) if mode == "signal_replay" else None
         )
         admitted_commands = (
-            signals.poll_commands_once(partial(load_unresolved_operator_intents, repos)) if mode == "command" else 0
+            signals.poll_commands_once(partial(load_unresolved_operator_intents, repos))
+            if mode in {"command", "cold_unclaimed"}
+            else 0
         )
         profile = oi_profile()
         factory = ObservationFactory(profile.profile_id, profile.runtime_release, "oi_nautilus_v1")
@@ -110,13 +188,32 @@ def main() -> None:
             ]
         )
         engine.add_strategy(strategy)
-        strategy.reconcile_runtime(
-            RuntimeReconciliationSnapshot(
+        if mode in {"cold_recovery", "cold_unclaimed"}:
+            recovery_signals, recovery_manual_entries = _load_recovery_inputs(repos, profile.profile_id, NOW_NS)
+            _seed_cold_cache(
+                engine=engine,
+                strategy=strategy,
+                profile=profile,
+                instrument=instrument,
+                entry_id=recovery_signals[0].signal_id if recovery_signals else None,
+            )
+            snapshot = build_runtime_reconciliation_snapshot(
+                profile=profile,
+                signals=recovery_signals,
+                manual_entries=recovery_manual_entries,
+                cache=engine.cache,
+                account_observed_at_ns=NOW_NS,
+                reconciliation_observed_at_ns=NOW_NS,
+            )
+            recovered = strategy.reconcile_runtime(snapshot)
+        else:
+            recovery_signals = ()
+            snapshot = RuntimeReconciliationSnapshot(
                 runtime_profile_id=profile.profile_id,
                 account_observed_at_ns=NOW_NS,
                 reconciliation_observed_at_ns=NOW_NS,
             )
-        )
+            recovered = strategy.reconcile_runtime(snapshot)
         engine.run()
         flushed = flush_audit_once(
             repos=repos,
@@ -125,17 +222,30 @@ def main() -> None:
         )
         orders = engine.cache.orders(strategy_id=strategy.id)
         positions = engine.cache.positions_open(strategy_id=strategy.id)
+        readiness_snapshot = strategy.readiness()
         print(
             json.dumps(
                 {
                     "admitted": admitted,
+                    "recovered": recovered,
+                    "recovered_seeds": len(snapshot.executions),
+                    "recovery_signals": len(recovery_signals),
+                    "execution_safe": readiness_snapshot.execution_safe,
+                    "unexpected_exposure": readiness_snapshot.unexpected_exposure,
+                    "positions_count": len(positions),
+                    "protection_status": strategy.protection_status(
+                        positions_count=len(positions),
+                        unexpected_exposure=readiness_snapshot.unexpected_exposure,
+                    ),
                     **({"replay_admitted": replay_admitted} if replay_admitted is not None else {}),
                     "admitted_commands": admitted_commands,
                     "orders": [
                         {
                             "client_order_id": order.client_order_id.value,
                             "order_type": order.order_type.name,
+                            "quantity": str(order.quantity),
                             "reduce_only": order.is_reduce_only,
+                            "side": order.side.name,
                             "status": order.status.name,
                         }
                         for order in orders

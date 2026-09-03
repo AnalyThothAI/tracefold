@@ -180,6 +180,24 @@ def test_new_profile_activation_requires_authoritative_binance_flat() -> None:
     assert trading.appended == []
 
 
+def test_rolling_restart_of_an_existing_profile_does_not_require_binance_flat() -> None:
+    """#510 PR-3. Only a cold transition to a new profile needs a proven flat account."""
+
+    existing = _activation()
+    trading = _Trading(existing)
+
+    activation = _activate_profile(
+        repos=_repos(trading),
+        profile=oi_profile(),
+        existing=existing,
+        account_flat=False,
+        created_at_ns=200,
+    )
+
+    assert activation == existing
+    assert trading.appended == []
+
+
 def test_new_profile_activation_records_the_current_stream_fence() -> None:
     trading = _Trading()
 

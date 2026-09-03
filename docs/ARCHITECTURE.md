@@ -2105,8 +2105,8 @@ PostgreSQL polling, Observation batches, daily-start baseline recovery, and the
 account-slot advisory-lock monitor stay outside that callback. Binance USD-M
 paper and live configurations share the same Strategy/Risk/OMS/reconciliation
 code and differ only by cold profile, credential/cache/client-order identity,
-and `DEMO` versus `LIVE` environment. Restart reconciliation reclaims only
-durable deterministic Order/Position identities present in Nautilus Cache;
+and `DEMO` versus `LIVE` environment. Restart reconciliation reclaims ownership
+from durable entry-order facts rather than from Nautilus Cache survival;
 unowned exposure halts admission. Protection replacement keeps the old stop
 until the new fixed-quantity reduce-only stop is accepted, while a failed or
 ambiguous protection result initiates a deterministic full flatten. Audit
@@ -2134,7 +2134,7 @@ Commands and Signals share one bounded Runtime input, with Commands admitted
 and handled first. Queue pressure evicts only volatile Signal admission so a
 durable Command can be scanned; PostgreSQL replays that unresolved Signal.
 Pause blocks only new entries; halt is sticky, rejects resume, and does not
-mean flatten; flatten pauses entries, touches only Runtime-owned exposure, and
+mean flatten; flatten pauses entries, converges the whole account slot, and
 does not complete until a later fresh Binance-account reconciliation proves
 flat. The Strategy callback reaches only Cache/Portfolio and in-memory queues.
 PostgreSQL polling/audit and Telegram I/O remain background work. The optional
@@ -2162,9 +2162,8 @@ outside the current Runtime projection uses short connections. The projection
 owner keeps one autocommit session but opens transactions only around individual
 reads or writes, never around provider I/O. One immutable activation fence binds
 mode, Runtime release and config digest. A new profile requires a
-complete private Binance flat report and starts paused; a current profile may
-roll forward and reclaim only durable unresolved or nonterminal deterministic
-order/position identities from Nautilus Cache. Signals and manual entries share
+complete private Binance flat report and starts paused; a current profile rolls
+forward without one and reclaims exposure from its durable entry-order facts. Signals and manual entries share
 the same fixed-risk 1x path. Private reconciliation, Runtime start, order,
 fill, protection, exit and flat facts remain append-only Observations, while
 one generation-fenced row is the current readiness/status projection.
@@ -2269,6 +2268,32 @@ locks controls, Live resume/flatten require typed second confirmation, and raw
 identities remain in `Advanced Audit`. The responsive card layout deletes the
 retired Capital/Binding/Authority/Lifecycle wide-table presentation rather than
 keeping a second legacy surface.
+
+#510 PR-3 moves restart recovery off Nautilus Cache survival. Cache is process
+memory and the Binance private proof carries only open orders and position risk,
+so a restart while in a position has no filled entry market order to key off and
+the old Cache-keyed seed was always empty. Recovery now reads this profile's
+durable `order`/`leg=entry` Observations inside a seven-day window, regenerates
+the deterministic entry/stop/exit client order ids from each identity, and
+claims the reconciled exposure: an open position on that identity's routed
+instrument with the same direction, and the resting orders whose client order id
+equals its deterministic stop/exit id. Because that position match is by
+instrument and direction alone, the read admits an identity only while its own
+facts leave exposure possible: its latest `position` fact must not be `closed`
+and its latest entry-order fact must not be `canceled`/`rejected`/`denied`/
+`expired`. A stopped-out identity would otherwise adopt an unrelated position on
+the same route. A stop or exit reclaimed from the Binance
+report carries no Cache position index, so ownership is proven by that
+deterministic identity and the order's own shape, not by a Cache back-reference.
+Exposure no identity claims stays unowned: `execution_safe=false`,
+`entries_armed=false`, and the current account projection still lists its
+instrument, side and quantity with `owned=false` so the operator can see it.
+`/flatten account` therefore converges the whole account slot — a deterministic
+reduce-only exit for every owned position, a reduce-only market close bounded to
+three attempts for every unowned one, and a cancel for every remaining resting
+order. Ownership constrains only new exposure. `complete_from_reconciliation`
+still requires the later Binance private flat proof, and
+`oi_runtime_cold_transition_requires_binance_flat` still gates a new profile.
 
 **Trigger and context are different types.** A trigger is the one persisted
 fact that starts an evaluation and fixes its cutoff. Context may enrich that

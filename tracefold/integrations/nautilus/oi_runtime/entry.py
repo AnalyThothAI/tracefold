@@ -167,9 +167,11 @@ class EntryCoordinator:
         execution = ExecutionState(
             entry=request,
             route=route,
+            entry_client_order_id=client_order_id,
             entry_order=order,
             submitted_at_ns=now_ns,
             disposition_reason="accepted",
+            entry_query_pending=True,
         )
         self._state.executions[request.entry_id] = execution
         try:
@@ -223,6 +225,7 @@ class EntryCoordinator:
         execution = ExecutionState(
             entry=request,
             route=route,
+            entry_client_order_id=order.client_order_id,
             entry_order=order,
             submitted_at_ns=now_ns,
             disposition_reason="replayed_query_first",
@@ -292,7 +295,7 @@ class EntryCoordinator:
     def query_aged(self) -> None:
         now_ns = int(self._engine.clock.timestamp_ns())
         for state in self._state.executions.values():
-            if not state.entry_query_pending or state.entry_order.is_closed:
+            if not state.entry_query_pending or state.entry_order is None or state.entry_order.is_closed:
                 state.entry_query_pending = False
                 continue
             if now_ns - state.submitted_at_ns < _AMBIGUOUS_QUERY_AFTER_NS:

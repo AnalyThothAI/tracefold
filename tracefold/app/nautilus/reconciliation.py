@@ -5,9 +5,10 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from nautilus_trader.model.identifiers import ClientOrderId
+from nautilus_trader.model.enums import PositionSide
+from nautilus_trader.model.identifiers import ClientOrderId, PositionId
 
-from tracefold.integrations.nautilus.oi_runtime.config import OiRuntimeProfile
+from tracefold.integrations.nautilus.oi_runtime.config import OiInstrumentRoute, OiRuntimeProfile
 from tracefold.integrations.nautilus.oi_runtime.nautilus_1231_binance_compat import CompleteBinanceAccountReports
 from tracefold.integrations.nautilus.oi_runtime.state import (
     RecoveredExecutionSeed,
@@ -41,16 +42,28 @@ def build_runtime_reconciliation_snapshot(
     account_observed_at_ns: int,
     reconciliation_observed_at_ns: int,
 ) -> RuntimeReconciliationSnapshot:
-    """Match durable Signal identities to current Nautilus orders and positions."""
+    """Rebuild ownership from durable entry identities and the reconciled Binance reports.
+
+    Nautilus Cache is process memory and the Binance private proof only carries open orders and
+    position risk, so a restart while in a position has no filled entry market order to key off.
+    Ownership is therefore proven by the durable entry identity: the deterministic client order ids
+    it generates claim the resting stop/exit orders, and an open position on that identity's routed
+    instrument with the same direction is the position it opened. Anything left over stays unowned.
+    """
 
     orders = tuple(cache.orders(account_id=profile.account_id))
+    routes = {route.market_key: route for route in profile.routes}
     subjects = [RuntimeEntryRequest.from_signal(signal) for signal in signals]
     subjects.extend(RuntimeEntryRequest.from_manual_command(command) for command in manual_entries)
     identities = tuple(request.entry_id for request in subjects)
     if len(identities) != len(set(identities)):
         raise RuntimeError("oi_runtime_recovery_identity_ambiguous")
+    open_positions = tuple(cache.positions_open(account_id=profile.account_id))
+    claimed: set[PositionId] = set()
     seeds: list[RecoveredExecutionSeed] = []
-    for request in subjects:
+    # Newest identity first: one instrument carries at most one active execution, so when two
+    # durable entries could claim the same position the most recent one is the one that opened it.
+    for request in reversed(subjects):
         entry_id = deterministic_client_order_id(
             namespace=profile.client_order_namespace,
             profile_id=profile.profile_id,
@@ -58,14 +71,22 @@ def build_runtime_reconciliation_snapshot(
             leg="entry",
         )
         entry = cache.order(entry_id)
-        if entry is None:
-            continue
-        position = cache.position_for_order(entry_id)
-        position_id = None if position is None or not position.is_open else position.id
-        protections = _recovered_protections(profile=profile, request=request, orders=orders)
-        exit_id, exit_generation = _recovered_exit(profile=profile, request=request, orders=orders)
-        if entry.is_closed and position_id is None and not protections and exit_id is None:
-            continue
+        route = routes.get(request.market_key)
+        position_id = _matched_position(
+            positions=open_positions,
+            route=route,
+            direction=request.direction,
+            claimed=claimed,
+        )
+        if position_id is None:
+            if entry is None or entry.is_closed:
+                continue
+            protections: tuple[RecoveredProtectionSeed, ...] = ()
+            exit_id, exit_generation = None, 0
+        else:
+            claimed.add(position_id)
+            protections = _recovered_protections(profile=profile, request=request, orders=orders)
+            exit_id, exit_generation = _recovered_exit(profile=profile, request=request, orders=orders)
         seeds.append(
             RecoveredExecutionSeed(
                 entry=request,
@@ -76,12 +97,30 @@ def build_runtime_reconciliation_snapshot(
                 exit_generation=exit_generation,
             )
         )
+    seeds.reverse()
     return RuntimeReconciliationSnapshot(
         runtime_profile_id=profile.profile_id,
         account_observed_at_ns=account_observed_at_ns,
         reconciliation_observed_at_ns=reconciliation_observed_at_ns,
         executions=tuple(seeds),
     )
+
+
+def _matched_position(
+    *,
+    positions: tuple[Any, ...],
+    route: OiInstrumentRoute | None,
+    direction: str,
+    claimed: set[PositionId],
+) -> PositionId | None:
+    if route is None:
+        return None
+    side = PositionSide.LONG if direction == "long" else PositionSide.SHORT
+    for position in positions:
+        if position.id in claimed or position.instrument_id != route.instrument_id or position.side != side:
+            continue
+        return position.id
+    return None
 
 
 def _recovered_protections(

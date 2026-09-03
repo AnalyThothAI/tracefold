@@ -735,13 +735,20 @@ class ExecutionStreamStorage:
         self,
         *,
         runtime_profile_id: str,
+        since_ns: int,
         limit: int,
     ) -> tuple[StoredExecutionPayload, ...]:
-        """Read the activation-bounded identities used to reclaim current Cache state."""
+        """Read the Signals whose durable entry order can still hold Binance exposure.
+
+        An identity is a recovery candidate only while its own facts leave that possible: it
+        submitted an entry order inside the window, its latest position fact is not `closed`, and
+        its latest entry-order fact is not terminal. A stopped-out identity is excluded here
+        because `_matched_position` claims by instrument and direction alone, and a retired
+        identity would otherwise adopt an unrelated position on the same route.
+        """
 
         self._validate_read_limit(limit)
-        if _IDENTITY.fullmatch(runtime_profile_id) is None:
-            raise ValueError("execution_profile_identity_invalid")
+        self._validate_recovery_window(runtime_profile_id, since_ns)
         rows = self.conn.execute(
             """
             SELECT signal.seq, signal.payload
@@ -749,53 +756,51 @@ class ExecutionStreamStorage:
               JOIN trading_trade_signals signal
                 ON signal.seq > activation.activated_after_signal_seq
              WHERE activation.runtime_profile_id = %s
-               AND (
-                 NOT EXISTS (
-                   SELECT 1
-                     FROM trading_execution_observations disposition
-                    WHERE disposition.runtime_profile_id = activation.runtime_profile_id
-                      AND disposition.signal_id = signal.signal_id
-                      AND disposition.normalized_kind = 'signal_disposition'
-                 )
-                 OR EXISTS (
-                   SELECT 1
-                     FROM trading_execution_observations position_fact
-                    WHERE position_fact.runtime_profile_id = activation.runtime_profile_id
-                      AND position_fact.signal_id = signal.signal_id
-                      AND position_fact.normalized_kind = 'position'
-                      AND position_fact.seq = (
-                        SELECT max(latest_position.seq)
-                          FROM trading_execution_observations latest_position
-                         WHERE latest_position.runtime_profile_id = activation.runtime_profile_id
-                           AND latest_position.signal_id = signal.signal_id
-                           AND latest_position.normalized_kind = 'position'
-                      )
-                      AND position_fact.summary ->> 'status' <> 'closed'
-                 )
-                 OR (
-                   NOT EXISTS (
-                     SELECT 1
-                       FROM trading_execution_observations any_position
-                      WHERE any_position.runtime_profile_id = activation.runtime_profile_id
-                        AND any_position.signal_id = signal.signal_id
-                        AND any_position.normalized_kind = 'position'
-                   )
-                   AND (
-                     SELECT entry_fact.summary ->> 'status'
-                       FROM trading_execution_observations entry_fact
-                      WHERE entry_fact.runtime_profile_id = activation.runtime_profile_id
-                        AND entry_fact.signal_id = signal.signal_id
-                        AND entry_fact.normalized_kind = 'order'
-                        AND entry_fact.summary ->> 'leg' = 'entry'
-                      ORDER BY entry_fact.seq DESC
-                      LIMIT 1
-                   ) NOT IN ('canceled', 'rejected', 'denied', 'expired')
-                 )
+               AND EXISTS (
+                 SELECT 1
+                   FROM trading_execution_observations entry_fact
+                  WHERE entry_fact.runtime_profile_id = activation.runtime_profile_id
+                    AND entry_fact.signal_id = signal.signal_id
+                    AND entry_fact.normalized_kind = 'order'
+                    AND entry_fact.summary ->> 'leg' = 'entry'
+                    AND entry_fact.observed_at_ns >= %s
+               )
+               AND NOT EXISTS (
+                 SELECT 1
+                   FROM trading_execution_observations closed_position
+                  WHERE closed_position.runtime_profile_id = activation.runtime_profile_id
+                    AND closed_position.signal_id = signal.signal_id
+                    AND closed_position.normalized_kind = 'position'
+                    AND closed_position.summary ->> 'status' = 'closed'
+                    AND closed_position.seq = (
+                      SELECT max(latest.seq)
+                        FROM trading_execution_observations latest
+                       WHERE latest.runtime_profile_id = activation.runtime_profile_id
+                         AND latest.signal_id = signal.signal_id
+                         AND latest.normalized_kind = 'position'
+                    )
+               )
+               AND NOT EXISTS (
+                 SELECT 1
+                   FROM trading_execution_observations retired_entry
+                  WHERE retired_entry.runtime_profile_id = activation.runtime_profile_id
+                    AND retired_entry.signal_id = signal.signal_id
+                    AND retired_entry.normalized_kind = 'order'
+                    AND retired_entry.summary ->> 'leg' = 'entry'
+                    AND retired_entry.summary ->> 'status' IN ('canceled', 'rejected', 'denied', 'expired')
+                    AND retired_entry.seq = (
+                      SELECT max(latest.seq)
+                        FROM trading_execution_observations latest
+                       WHERE latest.runtime_profile_id = activation.runtime_profile_id
+                         AND latest.signal_id = signal.signal_id
+                         AND latest.normalized_kind = 'order'
+                         AND latest.summary ->> 'leg' = 'entry'
+                    )
                )
              ORDER BY signal.seq DESC
              LIMIT %s
             """,
-            (runtime_profile_id, limit),
+            (runtime_profile_id, since_ns, limit),
         ).fetchall()
         self._require_activation(runtime_profile_id)
         return tuple((int(row["seq"]), dict(row["payload"])) for row in reversed(rows))
@@ -804,13 +809,13 @@ class ExecutionStreamStorage:
         self,
         *,
         runtime_profile_id: str,
+        since_ns: int,
         limit: int,
     ) -> tuple[StoredExecutionPayload, ...]:
-        """Read activation-bounded manual entries needed to reclaim current Cache state."""
+        """Read the manual entries whose durable entry order can still hold Binance exposure."""
 
         self._validate_read_limit(limit)
-        if _IDENTITY.fullmatch(runtime_profile_id) is None:
-            raise ValueError("execution_profile_identity_invalid")
+        self._validate_recovery_window(runtime_profile_id, since_ns)
         rows = self.conn.execute(
             """
             SELECT command.seq, command.payload
@@ -820,56 +825,61 @@ class ExecutionStreamStorage:
                AND command.seq > activation.activated_after_command_seq
              WHERE activation.runtime_profile_id = %s
                AND command.action = 'manual_entry'
-               AND (
-                 NOT EXISTS (
-                   SELECT 1
-                     FROM trading_execution_observations disposition
-                    WHERE disposition.runtime_profile_id = activation.runtime_profile_id
-                      AND disposition.command_id = command.command_id
-                      AND disposition.normalized_kind = 'control_disposition'
-                 )
-                 OR EXISTS (
-                   SELECT 1
-                     FROM trading_execution_observations position_fact
-                    WHERE position_fact.runtime_profile_id = activation.runtime_profile_id
-                      AND position_fact.command_id = command.command_id
-                      AND position_fact.normalized_kind = 'position'
-                      AND position_fact.seq = (
-                        SELECT max(latest_position.seq)
-                          FROM trading_execution_observations latest_position
-                         WHERE latest_position.runtime_profile_id = activation.runtime_profile_id
-                           AND latest_position.command_id = command.command_id
-                           AND latest_position.normalized_kind = 'position'
-                      )
-                      AND position_fact.summary ->> 'status' <> 'closed'
-                 )
-                 OR (
-                   NOT EXISTS (
-                     SELECT 1
-                       FROM trading_execution_observations any_position
-                      WHERE any_position.runtime_profile_id = activation.runtime_profile_id
-                        AND any_position.command_id = command.command_id
-                        AND any_position.normalized_kind = 'position'
-                   )
-                   AND (
-                     SELECT entry_fact.summary ->> 'status'
-                       FROM trading_execution_observations entry_fact
-                      WHERE entry_fact.runtime_profile_id = activation.runtime_profile_id
-                        AND entry_fact.command_id = command.command_id
-                        AND entry_fact.normalized_kind = 'order'
-                        AND entry_fact.summary ->> 'leg' = 'entry'
-                      ORDER BY entry_fact.seq DESC
-                      LIMIT 1
-                   ) NOT IN ('canceled', 'rejected', 'denied', 'expired')
-                 )
+               AND EXISTS (
+                 SELECT 1
+                   FROM trading_execution_observations entry_fact
+                  WHERE entry_fact.runtime_profile_id = activation.runtime_profile_id
+                    AND entry_fact.command_id = command.command_id
+                    AND entry_fact.normalized_kind = 'order'
+                    AND entry_fact.summary ->> 'leg' = 'entry'
+                    AND entry_fact.observed_at_ns >= %s
+               )
+               AND NOT EXISTS (
+                 SELECT 1
+                   FROM trading_execution_observations closed_position
+                  WHERE closed_position.runtime_profile_id = activation.runtime_profile_id
+                    AND closed_position.command_id = command.command_id
+                    AND closed_position.normalized_kind = 'position'
+                    AND closed_position.summary ->> 'status' = 'closed'
+                    AND closed_position.seq = (
+                      SELECT max(latest.seq)
+                        FROM trading_execution_observations latest
+                       WHERE latest.runtime_profile_id = activation.runtime_profile_id
+                         AND latest.command_id = command.command_id
+                         AND latest.normalized_kind = 'position'
+                    )
+               )
+               AND NOT EXISTS (
+                 SELECT 1
+                   FROM trading_execution_observations retired_entry
+                  WHERE retired_entry.runtime_profile_id = activation.runtime_profile_id
+                    AND retired_entry.command_id = command.command_id
+                    AND retired_entry.normalized_kind = 'order'
+                    AND retired_entry.summary ->> 'leg' = 'entry'
+                    AND retired_entry.summary ->> 'status' IN ('canceled', 'rejected', 'denied', 'expired')
+                    AND retired_entry.seq = (
+                      SELECT max(latest.seq)
+                        FROM trading_execution_observations latest
+                       WHERE latest.runtime_profile_id = activation.runtime_profile_id
+                         AND latest.command_id = command.command_id
+                         AND latest.normalized_kind = 'order'
+                         AND latest.summary ->> 'leg' = 'entry'
+                    )
                )
              ORDER BY command.seq DESC
              LIMIT %s
             """,
-            (runtime_profile_id, limit),
+            (runtime_profile_id, since_ns, limit),
         ).fetchall()
         self._require_activation(runtime_profile_id)
         return tuple((int(row["seq"]), dict(row["payload"])) for row in reversed(rows))
+
+    @staticmethod
+    def _validate_recovery_window(runtime_profile_id: str, since_ns: int) -> None:
+        if _IDENTITY.fullmatch(runtime_profile_id) is None:
+            raise ValueError("execution_profile_identity_invalid")
+        if since_ns < 0:
+            raise ValueError("execution_recovery_window_invalid")
 
     def execution_profile_activation(self, runtime_profile_id: str) -> ExecutionProfileActivation | None:
         if _IDENTITY.fullmatch(runtime_profile_id) is None:

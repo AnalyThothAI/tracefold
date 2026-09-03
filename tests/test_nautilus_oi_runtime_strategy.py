@@ -23,6 +23,7 @@ from tests.nautilus_oi_runtime_fixtures import (
     registered_oi_strategy,
     trade_signal,
 )
+from tracefold.app.nautilus.reconciliation import build_runtime_reconciliation_snapshot
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
@@ -33,6 +34,7 @@ from tracefold.integrations.nautilus.oi_runtime.state import (
     RuntimeEntryRequest,
     RuntimeReconciliationSnapshot,
     deterministic_client_order_id,
+    protection_leg,
 )
 
 
@@ -1283,3 +1285,222 @@ def test_callback_module_has_no_postgres_or_telegram_io() -> None:
     assert "psycopg" not in source
     assert "repositories" not in source
     assert "telegram" not in source
+
+
+def _cold_position(context: SimpleNamespace, *, quantity: str = "0.05") -> PositionId:
+    """A position Nautilus synthesised from the Binance report, with no cached entry order."""
+
+    external = context.strategy.order_factory.market(
+        instrument_id=context.instrument.id,
+        order_side=OrderSide.BUY,
+        quantity=context.instrument.make_qty(Decimal(quantity)),
+        client_order_id=ClientOrderId("EXTERNAL-COLD-ENTRY"),
+    )
+    context.cache.add_order(external)
+    external.apply(TestEventStubs.order_submitted(external, account_id=ACCOUNT_ID, ts_event=NOW_NS - 2))
+    context.cache.update_order(external)
+    position_id = PositionId(f"{context.instrument.id}-{context.strategy.id}")
+    fill = TestEventStubs.order_filled(
+        order=external,
+        instrument=context.instrument,
+        strategy_id=context.strategy.id,
+        account_id=ACCOUNT_ID,
+        position_id=position_id,
+        last_qty=context.instrument.make_qty(Decimal(quantity)),
+        last_px=context.instrument.make_price(Decimal("10000")),
+        commission=Money(0, context.instrument.quote_currency),
+        ts_event=NOW_NS - 1,
+    )
+    external.apply(fill)
+    context.cache.update_order(external)
+    context.cache.add_position(Position(context.instrument, fill), OmsType.NETTING)
+    return position_id
+
+
+def _cold_stop(context: SimpleNamespace, entry_id: str, *, quantity: str = "0.05") -> object:
+    """A reduce-only stop reclaimed from the Binance open-order report, with no position index."""
+
+    stop = context.strategy.order_factory.stop_market(
+        instrument_id=context.instrument.id,
+        order_side=OrderSide.SELL,
+        quantity=context.instrument.make_qty(Decimal(quantity)),
+        trigger_price=context.instrument.make_price(Decimal("9800")),
+        trigger_type=TriggerType.LAST_PRICE,
+        reduce_only=True,
+        client_order_id=deterministic_client_order_id(
+            namespace=context.profile.client_order_namespace,
+            profile_id=context.profile.profile_id,
+            entry_id=entry_id,
+            leg=protection_leg(1, Decimal(quantity)),
+        ),
+    )
+    context.cache.add_order(stop)
+    stop.apply(TestEventStubs.order_submitted(stop, account_id=ACCOUNT_ID, ts_event=NOW_NS - 1))
+    context.cache.update_order(stop)
+    stop.apply(TestEventStubs.order_accepted(stop, account_id=ACCOUNT_ID, ts_event=NOW_NS))
+    context.cache.update_order(stop)
+    return stop
+
+
+def test_cold_cache_restart_reclaims_position_and_stop_without_a_cached_entry_order() -> None:
+    """#510 PR-3. The filled entry market order is in no Binance report and no restarted Cache."""
+
+    signal = trade_signal()
+    context = registered_oi_strategy(values=(signal,), mark_reconciled=False)
+    position_id = _cold_position(context)
+    stop = _cold_stop(context, signal.signal_id)
+
+    snapshot = build_runtime_reconciliation_snapshot(
+        profile=context.profile,
+        signals=(signal,),
+        cache=context.cache,
+        account_observed_at_ns=NOW_NS,
+        reconciliation_observed_at_ns=NOW_NS,
+    )
+
+    assert len(snapshot.executions) == 1
+    seed = snapshot.executions[0]
+    assert seed.position_id == position_id
+    assert [value.client_order_id for value in seed.protections] == [stop.client_order_id]
+    assert context.strategy.reconcile_runtime(snapshot) is True
+
+    readiness = context.strategy.readiness()
+    assert readiness.unexpected_exposure is False
+    assert readiness.execution_safe is True
+    assert context.strategy.protection_status(positions_count=1, unexpected_exposure=False) == "protected"
+
+    context.strategy.on_timer(None)
+
+    assert context.strategy.submitted == []
+    written: list[object] = []
+    context.audit.flush_once(written.extend)
+    assert [value.summary["disposition"] for value in written if value.normalized_kind == "signal_disposition"] == [
+        "recovered"
+    ]
+
+
+def test_cold_recovery_without_a_durable_entry_fact_stays_unclaimed_and_visible() -> None:
+    """#510 PR-3. Unmatched exposure halts, but the operator still sees what it is."""
+
+    context = registered_oi_strategy(mark_reconciled=False)
+    position_id = _cold_position(context)
+
+    snapshot = build_runtime_reconciliation_snapshot(
+        profile=context.profile,
+        signals=(),
+        cache=context.cache,
+        account_observed_at_ns=NOW_NS,
+        reconciliation_observed_at_ns=NOW_NS,
+    )
+
+    assert snapshot.executions == ()
+    assert context.strategy.reconcile_runtime(snapshot) is False
+
+    readiness = context.strategy.readiness()
+    assert readiness.unexpected_exposure is True
+    assert readiness.execution_safe is False
+    assert readiness.entries_armed is False
+    assert readiness.startup_reconciled is True
+    account = context.strategy.account_snapshot(projected_at_ns=NOW_NS)
+    assert [(row.instrument_id, row.side, row.quantity, row.owned) for row in account.positions] == [
+        (context.instrument.id.value, "long", "0.05", False)
+    ]
+    assert position_id.value == account.positions[0].position_id
+
+
+def test_flatten_account_closes_a_position_no_durable_entry_identity_claims() -> None:
+    """#510 PR-3. Ownership constrains new exposure only; flatten converges the whole slot."""
+
+    context = registered_oi_strategy(mark_reconciled=False)
+    position_id = _cold_position(context)
+    stray = _cold_stop(context, "unowned-entry")
+    assert (
+        context.strategy.reconcile_runtime(
+            build_runtime_reconciliation_snapshot(
+                profile=context.profile,
+                signals=(),
+                cache=context.cache,
+                account_observed_at_ns=NOW_NS,
+                reconciliation_observed_at_ns=NOW_NS,
+            )
+        )
+        is False
+    )
+    flatten = operator_intent(command_id="9" * 64, action="flatten", scope="account")
+    context.signals.poll_commands_once(CommandRows(flatten))
+
+    context.strategy.on_timer(None)
+
+    assert len(context.strategy.submitted) == 1
+    close, close_position_id, _client = context.strategy.submitted[0]
+    assert close_position_id == position_id
+    assert close.order_type == OrderType.MARKET
+    assert close.is_reduce_only is True
+    assert close.side == OrderSide.SELL
+    assert close.quantity.as_decimal() == Decimal("0.05")
+    assert context.strategy.canceled == [stray]
+
+    context.strategy.on_timer(None)
+
+    assert len(context.strategy.submitted) == 1
+
+    written: list[object] = []
+    context.audit.flush_once(written.extend)
+    unclaimed = [value for value in written if value.summary.get("leg") == "unclaimed_flatten"]
+    assert len(unclaimed) == 1
+    assert unclaimed[0].command_id == flatten.command_id
+    assert unclaimed[0].summary["instrument_id"] == context.instrument.id.value
+    assert unclaimed[0].summary["side"] == "long"
+    assert unclaimed[0].summary["quantity"] == "0.050"
+
+
+def test_flatten_account_completes_once_the_private_reports_prove_flat() -> None:
+    """#510 PR-3. `complete_from_reconciliation` still needs the Binance flat proof."""
+
+    context = registered_oi_strategy(mark_reconciled=False)
+    _cold_position(context)
+    flatten = operator_intent(command_id="9" * 64, action="flatten", scope="account", requested_at_ns=NOW_NS - 1)
+    context.signals.poll_commands_once(CommandRows(flatten))
+    context.strategy.on_timer(None)
+    assert context.strategy.control_state().flatten_pending == (flatten.command_id,)
+
+    position = context.cache.positions_open(account_id=ACCOUNT_ID)[0]
+    close = context.strategy.submitted[0][0]
+    context.cache.add_order(close, position_id=position.id, client_id=ClientId("BINANCE"))
+    close.apply(TestEventStubs.order_submitted(close, account_id=ACCOUNT_ID, ts_event=NOW_NS + 1))
+    context.cache.update_order(close)
+    fill = TestEventStubs.order_filled(
+        order=close,
+        instrument=context.instrument,
+        strategy_id=context.strategy.id,
+        account_id=ACCOUNT_ID,
+        position_id=position.id,
+        last_qty=context.instrument.make_qty(Decimal("0.05")),
+        last_px=context.instrument.make_price(Decimal("10000")),
+        commission=Money(0, context.instrument.quote_currency),
+        ts_event=NOW_NS + 2,
+    )
+    close.apply(fill)
+    context.cache.update_order(close)
+    position.apply(fill)
+    context.cache.update_position(position)
+    assert context.cache.positions_open(account_id=ACCOUNT_ID) == []
+
+    assert (
+        context.strategy.reconcile_runtime(
+            build_runtime_reconciliation_snapshot(
+                profile=context.profile,
+                signals=(),
+                cache=context.cache,
+                account_observed_at_ns=NOW_NS + 3,
+                reconciliation_observed_at_ns=NOW_NS + 3,
+            )
+        )
+        is True
+    )
+
+    assert context.strategy.control_state().flatten_pending == ()
+    written: list[object] = []
+    context.audit.flush_once(written.extend)
+    completed = [value for value in written if value.normalized_kind == "control_disposition"]
+    assert [value.summary for value in completed] == [{"disposition": "completed", "reason": "binance_account_flat"}]

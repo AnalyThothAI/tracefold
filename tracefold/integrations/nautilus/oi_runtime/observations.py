@@ -222,6 +222,36 @@ class RuntimeObservationWriter:
             )
         )
 
+    def unclaimed_flatten_order(self, *, command_id: str, position: Any, order: Any) -> None:
+        """Record the reduce-only close of exposure no durable entry identity claims."""
+
+        occurred_at_ns = int(order.ts_init)
+        self._audit.offer(
+            self._factory.create(
+                normalized_kind="order",
+                command_id=command_id,
+                occurred_at_ns=occurred_at_ns,
+                observed_at_ns=max(occurred_at_ns, self._timestamp_ns()),
+                native_identity_references=(order.client_order_id.value, position.id.value),
+                summary={
+                    "leg": "unclaimed_flatten",
+                    "status": "submitted",
+                    "instrument_id": position.instrument_id.value,
+                    "side": "long" if position.is_long else "short",
+                    "quantity": str(order.quantity),
+                },
+                payload={
+                    "client_order_id": order.client_order_id.value,
+                    "position_id": position.id.value,
+                    "instrument_id": position.instrument_id.value,
+                    "leg": "unclaimed_flatten",
+                    "status": "submitted",
+                    "quantity": str(order.quantity),
+                },
+                event_identity=f"unclaimed_flatten:{order.client_order_id.value}",
+            )
+        )
+
     def flatten_accepted(self, command_id: str) -> bool:
         now_ns = self._timestamp_ns()
         return self._audit.offer(

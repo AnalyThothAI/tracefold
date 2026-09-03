@@ -35,9 +35,10 @@ from tracefold.integrations.nautilus.oi_runtime.signal_client import (
     wait_for_execution_stream_wake,
 )
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
-from tracefold.integrations.nautilus.oi_runtime.state import RuntimeControlSnapshot
+from tracefold.integrations.nautilus.oi_runtime.state import RuntimeControlSnapshot, deterministic_client_order_id
 from tracefold.integrations.telegram_control import TelegramControlWebhook
 from tracefold.platform.config.models import Settings
+from tracefold.trading import ExecutionObservationV1
 from tracefold.trading.storage.execution_stream import (
     ExecutionProfileActivation,
     PreparedOperatorIntent,
@@ -120,6 +121,59 @@ def _append_command(repo: TradingRepository, *, suffix: str, action: str) -> Pre
 
 def _sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _append_entry_order_fact(repo: TradingRepository, *, signal_id: str, observed_at_ns: int = NOW_NS) -> None:
+    """Write the durable `order`/`leg=entry` fact a restart reclaims ownership from."""
+
+    observation = ExecutionObservationV1.model_validate(
+        {
+            "event_id": _sha(f"entry-order:{signal_id}"),
+            "runtime_profile_id": "oi-paper-profile",
+            "runtime_release": "nautilus-1.231.0+oi-v1",
+            "execution_strategy": "oi_nautilus_v1",
+            "signal_id": signal_id,
+            "command_id": None,
+            "normalized_kind": "order",
+            "occurred_at_ns": observed_at_ns,
+            "observed_at_ns": observed_at_ns,
+            "native_identity_references": (
+                deterministic_client_order_id(
+                    namespace=oi_profile().client_order_namespace,
+                    profile_id="oi-paper-profile",
+                    entry_id=signal_id,
+                    leg="entry",
+                ).value,
+            ),
+            "summary": {"leg": "entry", "status": "submitted"},
+            "payload_digest": _sha(f"entry-order-payload:{signal_id}"),
+        }
+    )
+    with repo.conn.transaction():
+        repo.append_execution_observations(prepare_execution_observations((observation,)))
+
+
+def _append_closed_position_fact(repo: TradingRepository, *, signal_id: str) -> None:
+    """Write the `position`/`closed` fact that retires an identity from recovery."""
+
+    observation = ExecutionObservationV1.model_validate(
+        {
+            "event_id": _sha(f"closed-position:{signal_id}"),
+            "runtime_profile_id": "oi-paper-profile",
+            "runtime_release": "nautilus-1.231.0+oi-v1",
+            "execution_strategy": "oi_nautilus_v1",
+            "signal_id": signal_id,
+            "command_id": None,
+            "normalized_kind": "position",
+            "occurred_at_ns": NOW_NS,
+            "observed_at_ns": NOW_NS,
+            "native_identity_references": (),
+            "summary": {"status": "closed", "quantity": "0"},
+            "payload_digest": _sha(f"closed-position-payload:{signal_id}"),
+        }
+    )
+    with repo.conn.transaction():
+        repo.append_execution_observations(prepare_execution_observations((observation,)))
 
 
 def _append_input_burst(repo: TradingRepository, *, size: int) -> None:
@@ -634,13 +688,17 @@ def test_real_postgres_signal_to_pinned_nautilus_callback_to_observation_process
     assert entry == {
         "client_order_id": entry["client_order_id"],
         "order_type": "MARKET",
+        "quantity": "0.049",
         "reduce_only": False,
+        "side": "BUY",
         "status": "FILLED",
     }
     assert protection == {
         "client_order_id": protection["client_order_id"],
         "order_type": "STOP_MARKET",
+        "quantity": "0.049",
         "reduce_only": True,
+        "side": "SELL",
         "status": "ACCEPTED",
     }
     assert entry["client_order_id"].startswith("tf")
@@ -748,11 +806,18 @@ def test_authenticated_webhook_to_postgres_to_nautilus_command_observation_proce
         "admitted": 0,
         "admitted_commands": 1,
         "control": {"emergency_halted": False, "entries_paused": True, "flatten_pending": []},
+        "execution_safe": True,
         "flushed": 1,
         "open_position_quantity": None,
         "orders": [],
         "pending": [],
         "pending_commands": [],
+        "positions_count": 0,
+        "protection_status": "not_applicable",
+        "recovered": True,
+        "recovered_seeds": 0,
+        "recovery_signals": 0,
+        "unexpected_exposure": False,
     }
 
     verify = connect_postgres_test(read_only=False)
@@ -775,3 +840,158 @@ def test_authenticated_webhook_to_postgres_to_nautilus_command_observation_proce
         }
     finally:
         verify.close()
+
+
+def test_cold_cache_restart_reclaims_position_and_stop_from_durable_entry_facts(
+    postgres_clone_dsn: str,
+) -> None:
+    """#510 PR-3. Nautilus Cache is process memory and Binance never reports a filled entry."""
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        _activate(repo)
+        _append_signal(repo)
+        _append_entry_order_fact(repo, signal_id="1" * 64)
+    finally:
+        conn.close()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "tests.helpers.nautilus_oi_runtime_process", postgres_clone_dsn, "cold_recovery"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert receipt["recovery_signals"] == 1, receipt
+    assert receipt["recovered_seeds"] == 1, receipt
+    assert receipt["recovered"] is True, receipt
+    assert receipt["unexpected_exposure"] is False, receipt
+    assert receipt["execution_safe"] is True
+    assert receipt["positions_count"] == 1
+    assert receipt["protection_status"] == "protected"
+    assert receipt["open_position_quantity"] == "0.049"
+    economic_entries = [
+        order for order in receipt["orders"] if not order["reduce_only"] and order["client_order_id"].startswith("tf")
+    ]
+    protections = [order for order in receipt["orders"] if order["order_type"] == "STOP_MARKET"]
+    assert economic_entries == []
+    assert len(protections) == 1
+
+    verify = connect_postgres_test(read_only=False)
+    try:
+        dispositions = verify.execute(
+            """
+            SELECT summary ->> 'disposition' AS disposition
+              FROM trading_execution_observations
+             WHERE runtime_profile_id = 'oi-paper-profile'
+               AND normalized_kind = 'signal_disposition'
+            """
+        ).fetchall()
+        assert [row["disposition"] for row in dispositions] == ["recovered"]
+    finally:
+        verify.close()
+
+
+def test_position_without_durable_entry_facts_halts_and_flatten_account_closes_it(
+    postgres_clone_dsn: str,
+) -> None:
+    """#510 PR-3. Ownership only constrains new exposure; flatten converges the whole slot."""
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        _activate(repo)
+        _append_command(repo, suffix="b", action="flatten")
+    finally:
+        conn.close()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "tests.helpers.nautilus_oi_runtime_process", postgres_clone_dsn, "cold_unclaimed"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert receipt["recovery_signals"] == 0, receipt
+    assert receipt["recovered_seeds"] == 0, receipt
+    assert receipt["recovered"] is False, receipt
+    assert receipt["unexpected_exposure"] is True, receipt
+    assert receipt["execution_safe"] is False, receipt
+    assert receipt["admitted_commands"] == 1, receipt
+    closes = [
+        order
+        for order in receipt["orders"]
+        if order["reduce_only"] and order["order_type"] == "MARKET" and not order["client_order_id"].startswith("tf")
+    ]
+    assert len(closes) == 1, receipt
+    assert closes[0]["side"] == "SELL"
+    assert closes[0]["quantity"] == "0.049"
+    assert closes[0]["status"] == "FILLED"
+    assert receipt["positions_count"] == 0, receipt
+    assert receipt["open_position_quantity"] is None, receipt
+
+    verify = connect_postgres_test(read_only=False)
+    try:
+        rows = verify.execute(
+            """
+            SELECT summary
+              FROM trading_execution_observations
+             WHERE runtime_profile_id = 'oi-paper-profile'
+               AND normalized_kind = 'order'
+            """
+        ).fetchall()
+        assert [row["summary"]["leg"] for row in rows] == ["unclaimed_flatten"]
+        assert rows[0]["summary"]["side"] == "long"
+        assert rows[0]["summary"]["quantity"] == "0.049"
+    finally:
+        verify.close()
+
+
+def test_stopped_out_identity_does_not_reclaim_a_new_position_on_the_same_route(
+    postgres_clone_dsn: str,
+) -> None:
+    """#510 PR-3. `_matched_position` claims by instrument and direction, so the read must retire
+    an identity whose own position fact says closed; otherwise a hand-opened position on the same
+    route would be adopted as Runtime-owned instead of halting."""
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        _activate(repo)
+        _append_signal(repo)
+        _append_entry_order_fact(repo, signal_id="1" * 64)
+        _append_closed_position_fact(repo, signal_id="1" * 64)
+        _append_command(repo, suffix="b", action="flatten")
+    finally:
+        conn.close()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "tests.helpers.nautilus_oi_runtime_process", postgres_clone_dsn, "cold_unclaimed"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert receipt["recovery_signals"] == 0, receipt
+    assert receipt["recovered_seeds"] == 0, receipt
+    assert receipt["recovered"] is False, receipt
+    assert receipt["unexpected_exposure"] is True, receipt
+    assert receipt["execution_safe"] is False, receipt
+    closes = [
+        order
+        for order in receipt["orders"]
+        if order["reduce_only"] and order["order_type"] == "MARKET" and not order["client_order_id"].startswith("tf")
+    ]
+    assert len(closes) == 1, receipt
+    assert closes[0]["status"] == "FILLED"
+    assert receipt["positions_count"] == 0, receipt
