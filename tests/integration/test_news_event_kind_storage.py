@@ -594,3 +594,66 @@ def test_terminal_delivery_without_a_verdict_is_held_in_both_row_and_tab_partiti
     assert row["outcome"]["kind"] == "delivery_failed"
     assert {event["event_id"] for event in held["events"]} == {"terminal-event"}
     assert all_rows["counts"] == {"total": 1, "pushed": 0, "held": 1, "pending": 0}
+
+
+def test_oi_frame_whose_provider_clock_ran_ahead_stores_on_the_first_attempt(conn) -> None:
+    """#544 F2P. The exchange stamped this frame 250 ms after this host's clock says it arrived.
+
+    Before `20260904_0362` the ledger refused the row, `_store_frame` did not classify
+    `psycopg.errors.CheckViolation`, and the whole News Workers process exited on it — seven times in
+    six hours in production on 2026-09-04. The three columns are three recorded facts and nothing
+    orders them: `observed_at_ms` is the provider's own publication stamp, `available_at_ms` is when
+    this host could first read the frame, `created_at_ms` is when the row was written. The frame is
+    stored exactly as measured; no clamp rewrites the provider's stamp into the host's.
+    """
+
+    repos = repositories_for_connection(conn)
+    news = repos.news
+    signal = OiSignal(
+        symbol="BTC",
+        direction="rise",
+        oi_change_bps=455,
+        oi_value_usd=32_170_000,
+        whale_long_profit_bps=8_021,
+        whale_oi_ratio_bps=10_071,
+    )
+    with repos.transaction():
+        _item(news, "ahead-oi-item")
+        _event(news, "ahead-oi-event", "ahead-oi-item", "oi")
+        news.insert_oi_signal(
+            event_id="ahead-oi-event",
+            metric_version=OI_METRIC_VERSION,
+            symbol=signal.symbol,
+            direction=signal.direction,
+            oi_change_bps=signal.oi_change_bps,
+            oi_value_usd=signal.oi_value_usd,
+            whale_long_profit_bps=signal.whale_long_profit_bps,
+            whale_oi_ratio_bps=signal.whale_oi_ratio_bps,
+            observed_at_ms=NOW + 250,
+            now_ms=NOW,
+            source_item_id="ahead-oi-item",
+            source_venue="binance",
+        )
+
+    stored = news.oi_signal(event_id="ahead-oi-event", metric_version=OI_METRIC_VERSION)
+    assert stored is not None
+    assert (stored["observed_at_ms"], stored["available_at_ms"]) == (NOW + 250, NOW)
+
+    # And the two host stamps are no longer ordered against each other either, which is the second
+    # shape the same refusal took in production. Written at the table because one `now_ms` feeds both.
+    with repos.transaction():
+        conn.execute(
+            """
+            INSERT INTO news_oi_signals (
+              event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd,
+              whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, created_at_ms,
+              source_item_id, source_venue, available_at_ms, learning_epoch
+            ) VALUES (%s, 'oi_clock_probe_v1', 'BTC', 'rise', 455, 32170000, 8021, 10071,
+                      %s, %s, %s, 'binance', %s, 'unproven')
+            """,
+            ("ahead-oi-event", NOW, NOW + 240, "ahead-oi-item", NOW),
+        )
+
+    probe = news.oi_signal(event_id="ahead-oi-event", metric_version="oi_clock_probe_v1")
+    assert probe is not None
+    assert probe["available_at_ms"] == NOW

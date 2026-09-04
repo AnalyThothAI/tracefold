@@ -36,7 +36,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260904_0361"
+HEAD = "20260904_0362"
 
 
 def _config():
@@ -118,6 +118,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260904_0361",
         "20260904_0360",
         "20260903_0359",
         "20260903_0358",
@@ -140,28 +141,29 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260901_0341",
         BASELINE,
     ]
-    assert revisions[0].down_revision == "20260904_0360"
-    assert revisions[1].down_revision == "20260903_0359"
-    assert revisions[2].down_revision == "20260903_0358"
-    assert revisions[3].down_revision == "20260903_0357"
-    assert revisions[4].down_revision == "20260903_0356"
-    assert revisions[5].down_revision == "20260903_0355"
-    assert revisions[6].down_revision == "20260903_0354"
-    assert revisions[7].down_revision == "20260903_0353"
-    assert revisions[8].down_revision == "20260903_0352"
-    assert revisions[9].down_revision == "20260902_0351"
-    assert revisions[10].down_revision == "20260902_0350"
-    assert revisions[11].down_revision == "20260902_0349"
-    assert revisions[12].down_revision == "20260902_0348"
-    assert revisions[13].down_revision == "20260901_0347"
-    assert revisions[14].down_revision == "20260901_0346"
-    assert revisions[15].down_revision == "20260901_0345"
-    assert revisions[16].down_revision == "20260901_0344"
-    assert revisions[17].down_revision == "20260901_0343"
-    assert revisions[18].down_revision == "20260901_0342"
-    assert revisions[19].down_revision == "20260901_0341"
-    assert revisions[20].down_revision == BASELINE
-    assert revisions[21].down_revision is None
+    assert revisions[0].down_revision == "20260904_0361"
+    assert revisions[1].down_revision == "20260904_0360"
+    assert revisions[2].down_revision == "20260903_0359"
+    assert revisions[3].down_revision == "20260903_0358"
+    assert revisions[4].down_revision == "20260903_0357"
+    assert revisions[5].down_revision == "20260903_0356"
+    assert revisions[6].down_revision == "20260903_0355"
+    assert revisions[7].down_revision == "20260903_0354"
+    assert revisions[8].down_revision == "20260903_0353"
+    assert revisions[9].down_revision == "20260903_0352"
+    assert revisions[10].down_revision == "20260902_0351"
+    assert revisions[11].down_revision == "20260902_0350"
+    assert revisions[12].down_revision == "20260902_0349"
+    assert revisions[13].down_revision == "20260902_0348"
+    assert revisions[14].down_revision == "20260901_0347"
+    assert revisions[15].down_revision == "20260901_0346"
+    assert revisions[16].down_revision == "20260901_0345"
+    assert revisions[17].down_revision == "20260901_0344"
+    assert revisions[18].down_revision == "20260901_0343"
+    assert revisions[19].down_revision == "20260901_0342"
+    assert revisions[20].down_revision == "20260901_0341"
+    assert revisions[21].down_revision == BASELINE
+    assert revisions[22].down_revision is None
     assert sorted(path.name for path in VERSIONS.glob("*.py")) == [
         "20260831_0340_baseline.py",
         "20260901_0341_trading_signal_hard_cut.py",
@@ -185,6 +187,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260903_0359_drop_trading_notification_deliveries.py",
         "20260904_0360_trading_lane_gate_cut.py",
         "20260904_0361_trading_runtime_identity_cut.py",
+        "20260904_0362_news_oi_clock_check_cut.py",
     ]
 
 
@@ -216,9 +219,10 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    # `20260904_0361` deletes the Runtime projection's identity columns, so it is the first refusal
-    # the walk to base meets; `20260903_0357`, which deletes the unread execution digests, is still
-    # behind it.
+    # `20260904_0362` deletes a rule rather than data, so it reverses and the walk continues past it;
+    # `20260904_0361` deletes the Runtime projection's identity columns and is the first refusal the
+    # walk to base meets; `20260903_0357`, which deletes the unread execution digests, is still behind
+    # it. One transaction covers the whole walk, so 0362's re-added CHECK rolls back with the refusal.
     with pytest.raises(RuntimeError, match="20260904_0361 deletes the Runtime projection"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
@@ -1225,3 +1229,50 @@ def test_runtime_identity_cut_drops_the_columns_and_rewrites_the_observation_pay
         assert repo.execution_runtime_state(slot) == rewritten
     finally:
         conn.close()
+
+
+def test_oi_clock_check_cut_removes_the_one_rule_and_leaves_the_rest_of_the_ledger() -> None:
+    """#544. `20260904_0362` deletes exactly one CHECK and touches nothing else on the frame ledger.
+
+    The rule it deletes ordered the provider's own `observed_at_ms` against this host's
+    `available_at_ms`, which is not a property of the data — the exchange clock is free to run ahead —
+    and PostgreSQL enforced it by refusing the insert, which the Triage handler does not classify and
+    the Workers process therefore died on. The catalog is the whole proof for the revision; that a
+    frame stamped ahead of the host now stores on its first attempt is proven at the repository seam.
+    """
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260904_0361")
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        before = _oi_signal_checks(conn)
+        assert "news_oi_signals_available_clock_check" in before
+
+        command.upgrade(config, "head")
+        after = _oi_signal_checks(conn)
+
+        assert before - after == {"news_oi_signals_available_clock_check"}
+        assert after - before == set()
+        # The rules that state what a frame *is* stay: the direction vocabulary, the epoch identity and
+        # the all-or-nothing source contract are not clock assumptions.
+        assert {
+            "news_oi_signals_direction_check",
+            "news_oi_signals_learning_epoch_nonempty",
+            "news_oi_signals_source_contract_check",
+        } <= after
+    finally:
+        conn.close()
+
+
+def _oi_signal_checks(conn) -> set[str]:
+    return {
+        str(row["conname"])
+        for row in conn.execute(
+            """
+            SELECT con.conname FROM pg_constraint con
+             WHERE con.contype = 'c' AND con.conrelid = 'public.news_oi_signals'::regclass
+            """
+        ).fetchall()
+    }

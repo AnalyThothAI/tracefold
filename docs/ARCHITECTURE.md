@@ -280,6 +280,12 @@ retired `source_contract_unverified` value. An OI signal row is derived read-mod
 not a second material fact source. At insertion it freezes the exact source Item,
 source venue, actual availability clock, and learning epoch; evidence capture never
 reconstructs those fields from a later Event leader or the currently active epoch.
+Its three timestamps are three separately recorded facts and no rule orders them:
+`observed_at_ms` is the provider's own publication stamp carried unmodified from
+`news_items.published_at_ms` through `news_events.opened_at_ms` and arriving at
+second granularity, `available_at_ms` is when this host could first read the
+frame, and `created_at_ms` is when the row was written. An exchange clock ahead
+of this host's is recorded as measured rather than clamped or refused (#544).
 OpenNews's raw `coins` annotation remains
 source evidence in `news_items.provider_metadata`; the Gate derives the bounded
 `grounded_assets` from it. `news_event_assets` is the durable Event-market
@@ -2109,7 +2115,12 @@ PR-3); and destructive `20260904_0361` deletes the Runtime identity ceremony —
 `runtime_release`, `config_sha256`, `runtime_revision`, `image_digest`,
 `credential_fingerprint` and `lifecycle_state` on the projection, and
 `runtime_release` on the observation ledger as a column and as a stored payload
-key (#537 PR-4). `20260904_0361` is the current single head.
+key (#537 PR-4); and `20260904_0362` deletes
+`news_oi_signals_available_clock_check`, which ordered the provider's own
+`observed_at_ms` against this host's `available_at_ms` and `created_at_ms` and so
+made a frame whose exchange clock ran a few hundred milliseconds ahead an
+unstorable row and a dead Workers process (#544). `20260904_0362` is the current
+single head.
 
 Every new schema change is again a normal linear, immutable, forward-only
 revision after the baseline. Exact-image replacement requires source, image,
@@ -2170,7 +2181,11 @@ validates its JSON. `20260903_0357` deleted the CHECKs that restated those rules
 in SQL, because two statements of one rule can disagree and did — the collation
 incident of 2026-09-02 (#510 PR-1). The database keeps what only it can know:
 primary keys, foreign keys, NOT NULL, the enumerated value sets, the identity
-regexes, the clock inequalities and the append-only triggers.
+regexes, the append-only triggers, and the clock inequalities that order two
+stamps taken from *one* clock. It does not order stamps from different clocks:
+`20260904_0362` deleted the one CHECK that did, because a provider's exchange
+clock running ahead of this host's is a fact about the world and not a corrupt
+row (#544).
 
 ### The one live path
 
@@ -2674,8 +2689,9 @@ counted now.
 one writer, idempotent by `event_id`, rebuildable by re-parsing the Item, and
 cascade-deleted with it. It is also the entire News surface the Trading Signal
 lane consumes (#510), joined only to the source Item for its ingest mode. `rank_in_window` was dropped from it in migration
-`20260901_0344` with the rule that computed it. The following `20260901_0345`
-is the current head. Two consequences of judging
+`20260901_0344` with the rule that computed it, and
+`news_oi_signals_available_clock_check` in `20260904_0362` with the clock
+assumption that wrote it (#544). Two consequences of judging
 these frames rather than suppressing them are deliberate and worth stating:
 every 1019 frame carries a verdict, so `news.retention` keeps its Item for 365
 days instead of purging at 30 (~70k small rows a year), and every frame is
