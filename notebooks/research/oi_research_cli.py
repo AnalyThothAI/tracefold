@@ -1,39 +1,49 @@
-"""``tracefold trading oi-corpus`` and ``tracefold trading oi-replay``: #459 Stage A, offline.
+"""#459 Stage A, offline: seal a Binance open-interest corpus, then score one pre-registered rule.
+
+```yaml
+channel: A  # A live read-only | B frozen artifact | C committed snapshot
+purpose: "Collect a 29-day Binance USD-M open-interest window that can never be served again, and
+  replay the one pre-registered #459 rule over it on the symbols its originating probe never saw.
+  It does not choose a rule: the pre-registration in `oi_replay.py` is fixed before the corpus is read."
+window: "The corpus fixes its own window on the first `oi-corpus pull` and reuses it on every resume,
+  so a pull that dies at 90% cannot slide it. `manifest.json` records it; the replay receipt quotes
+  the corpus `manifest_sha256` it ran on."
+identity: "SOURCE_FEATURE_DISCOVERY_CORPUS_V1_SEALED / SOURCE_FEATURE_DISCOVERY_REPLAY_V1; every raw
+  payload is content-addressed and re-hashed on read, and the receipt names the corpus digest."
+safety: "Reads public Binance USD-M REST endpoints only -- no credential, no venue write, no order.
+  Writes only under the operator's own corpus directory (default `~/.tracefold/research/oi_corpus`)
+  and the receipt path. Never opens PostgreSQL and never imports a service storage module."
+```
 
 Two commands, never one. #377 forbids a collector that also scores: the corpus is a fact about what
 Binance served in a window it will not serve again, and the replay is a claim about a rule -- folding
 them together means every re-scoring silently re-collects, and no receipt can name the data it ran on.
 
-This is the app seam, so it is where the three owners meet: the provider walk from
-`integrations.venues.open_interest_history`, the sealed format from `trading.research.oi_corpus`, and
-the pre-registered rule from `trading.research.oi_replay`. Neither business module reaches the
-network, and neither owns an argument parser.
+Run:
 
-Nothing here touches PostgreSQL, the broker, or capital. The corpus lives under `~/.tracefold`.
+    uv run python notebooks/research/oi_research_cli.py oi-corpus pull [--out DIR] [--days 29]
+    uv run python notebooks/research/oi_research_cli.py oi-corpus seal [--out DIR]
+    uv run python notebooks/research/oi_research_cli.py oi-replay [--corpus DIR] [--out RECEIPT]
+
+Until #537 PR-1 these were `tracefold trading oi-corpus|oi-replay`. They were the only callers of
+`tracefold/trading/research/` and `integrations/venues/open_interest_history.py`, and research code
+in the service package is what that PR deleted: this script is the same three owners composed here
+instead -- the provider walk from `open_interest_history.py`, the sealed format from `oi_corpus.py`,
+and the pre-registered rule from `oi_replay.py`.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
+import sys
 import time
 from pathlib import Path
-from typing import Any
 
-from tracefold.integrations.venues.open_interest_history import (
-    CANDLE_WEIGHT_PER_MIN,
-    OPEN_INTEREST_REQUESTS_PER_MIN,
-    Budget,
-    OpenInterestHistoryError,
-    fetch_candle_history,
-    fetch_open_interest_history,
-    fetch_usdt_perpetuals,
-    history_client,
-)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# By name, not through the package: `tracefold.trading.research` is not a declared business
-# interface, and naming what this seam uses is what keeps the boundary checkable.
-from tracefold.trading.research.oi_corpus import (
+from oi_corpus import (
     SymbolRecord,
     append_progress,
     dated_corpus_dir,
@@ -44,32 +54,55 @@ from tracefold.trading.research.oi_corpus import (
     window_now,
     write_payload,
 )
-from tracefold.trading.research.oi_replay import render_table, run_replay
+from oi_replay import render_table, run_replay
+from open_interest_history import (
+    CANDLE_WEIGHT_PER_MIN,
+    OPEN_INTEREST_REQUESTS_PER_MIN,
+    Budget,
+    OpenInterestHistoryError,
+    fetch_candle_history,
+    fetch_open_interest_history,
+    fetch_usdt_perpetuals,
+    history_client,
+)
 
 
-def handle_trading_oi_corpus(args: Any) -> tuple[int, dict[str, Any]]:
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="oi_research_cli.py", description=__doc__.splitlines()[0])
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    corpus = commands.add_parser("oi-corpus", help="pull or re-seal the sealed Binance open-interest corpus (#459)")
+    corpus.add_argument("corpus_action", choices=("pull", "seal"))
+    corpus.add_argument("--out", default=None, help="corpus directory (default: a dated one under ~/.tracefold)")
+    corpus.add_argument("--days", type=int, default=29, help="window length; Binance keeps 30")
+    corpus.add_argument("--symbols", nargs="*", default=None, help="restrict the universe, for a smoke pull")
+    corpus.add_argument("--concurrency", type=int, default=8)
+
+    replay = commands.add_parser("oi-replay", help="score the pre-registered #459 rule over a sealed corpus")
+    replay.add_argument("--corpus", default=None, help="corpus directory (default: a dated one under ~/.tracefold)")
+    replay.add_argument("--out", default=None, help="receipt path (default: <corpus>/replay_receipt.json)")
+    replay.add_argument("--trials", type=int, default=2_000, help="permutation draws")
+    return parser
+
+
+def handle_oi_corpus(args: argparse.Namespace) -> dict[str, object]:
     now_ms = int(time.time() * 1000)
     corpus_dir = Path(args.out) if args.out else dated_corpus_dir(now_ms=now_ms)
     corpus_dir.mkdir(parents=True, exist_ok=True)
 
     if args.corpus_action == "seal":
         manifest = seal(corpus_dir, now_ms=now_ms)
-        return 0, {
-            "corpus": str(corpus_dir),
-            "coverage": manifest["coverage"],
-            "manifest_sha256": manifest["manifest_sha256"],
-        }
-
-    manifest = asyncio.run(
-        _pull(
-            corpus_dir,
-            days=int(args.days),
-            symbols=tuple(args.symbols) if args.symbols else None,
-            concurrency=int(args.concurrency),
-            now_ms=now_ms,
+    else:
+        manifest = asyncio.run(
+            _pull(
+                corpus_dir,
+                days=int(args.days),
+                symbols=tuple(args.symbols) if args.symbols else None,
+                concurrency=int(args.concurrency),
+                now_ms=now_ms,
+            )
         )
-    )
-    return 0, {
+    return {
         "corpus": str(corpus_dir),
         "coverage": manifest["coverage"],
         "manifest_sha256": manifest["manifest_sha256"],
@@ -83,7 +116,7 @@ async def _pull(
     symbols: tuple[str, ...] | None,
     concurrency: int,
     now_ms: int,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     raw_root = corpus_dir / "raw"
     raw_root.mkdir(parents=True, exist_ok=True)
     window = fix_window(corpus_dir, window_now(days=days, now_ms=now_ms))
@@ -181,7 +214,7 @@ async def _pull(
     return manifest
 
 
-def handle_trading_oi_replay(args: Any) -> tuple[int, dict[str, Any]]:
+def handle_oi_replay(args: argparse.Namespace) -> dict[str, object]:
     now_ms = int(time.time() * 1000)
     corpus_dir = Path(args.corpus) if args.corpus else dated_corpus_dir(now_ms=now_ms)
     out_path = Path(args.out) if args.out else corpus_dir / "replay_receipt.json"
@@ -193,11 +226,19 @@ def handle_trading_oi_replay(args: Any) -> tuple[int, dict[str, Any]]:
         f"baseline (every holdout bar): 4H net {report['baseline_mean_net_4h_bps']} bps · "
         f"4H hold {report['baseline_mean_hold_4h_bps']} bps · stopped {report['baseline_stop_rate']}"
     )
-    return 0, {
+    return {
         "receipt": str(out_path),
         "corpus_manifest_sha256": report["corpus_manifest_sha256"],
         "verdict": report["verdict"],
     }
 
 
-__all__ = ["handle_trading_oi_corpus", "handle_trading_oi_replay"]
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    payload = handle_oi_corpus(args) if args.command == "oi-corpus" else handle_oi_replay(args)
+    print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

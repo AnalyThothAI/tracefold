@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
-from .oi_corpus import FIVE_MIN_MS, HOUR_MS, read_payload
+from oi_corpus import FIVE_MIN_MS, HOUR_MS, read_payload
 
 BARS_PER_HOUR: Final = 12
 HOLD_BARS: Final = 4 * BARS_PER_HOUR

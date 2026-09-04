@@ -248,6 +248,12 @@ class CliTests(unittest.TestCase):
             ["news", "corpus", "freeze"],
             ["news", "validate-candidate"],
             ["trading", "refresh-capabilities"],
+            # #537 PR-1: the #459 Stage A corpus and replay left the service package. They are research
+            # scripts under `notebooks/research/`, so the CLI refuses them the way it refuses every
+            # other retired command rather than keeping a parser branch nothing behind it can serve.
+            ["trading", "oi-corpus", "pull"],
+            ["trading", "oi-corpus", "seal"],
+            ["trading", "oi-replay"],
         ):
             with self.assertRaises(SystemExit):
                 parser.parse_args(command)

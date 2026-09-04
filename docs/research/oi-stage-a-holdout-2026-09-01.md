@@ -3,8 +3,10 @@
 **Verdict: `NO_CANDIDATE`.** Stage B is not built.
 
 `oi-stage-a-replay-receipt-2026-09-01.json` beside this file is the machine receipt. It is reproduced
-by `tracefold trading oi-replay` over the sealed corpus
-`035cba5f63c30926d9f84d11e22f8b3230011276573d68ba5fb2a0e92517d738`.
+by `uv run python notebooks/research/oi_research_cli.py oi-replay` over the sealed corpus
+`035cba5f63c30926d9f84d11e22f8b3230011276573d68ba5fb2a0e92517d738`. That command was
+`tracefold trading oi-replay` when this receipt was produced; #537 PR-1 moved the replay out of the
+service package unchanged, so the same code scores the same corpus to the same digest.
 
 ## What was tested
 

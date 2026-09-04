@@ -4,18 +4,27 @@ The replay's answer is a number an issue gets closed on, so what these pin is no
 four ways it could quietly lie: reading a feature that was not observable at entry, letting a gap in
 the provider's series shift a lookback, filling a stop better than the market would, and reporting a
 corpus payload that no longer hashes to what the manifest sealed.
+
+Research self-tests, deliberately outside `tests/` (#537 PR-1). The code they cover is not part of the
+service and the fixed CI job set does not collect it -- `testpaths = ["tests"]`. Run them beside the
+scripts, before quoting a receipt they produced:
+
+    uv run python -m pytest notebooks/research/test_oi_research.py
 """
 
 from __future__ import annotations
 
 import gzip
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from tracefold.trading.research.oi_corpus import (
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from oi_corpus import (
     FIVE_MIN_MS,
     CorpusError,
     CorpusWindow,
@@ -23,7 +32,7 @@ from tracefold.trading.research.oi_corpus import (
     seal,
     window_now,
 )
-from tracefold.trading.research.oi_replay import (
+from oi_replay import (
     BARS_PER_HOUR,
     COST_BPS,
     HOLD_BARS,
@@ -174,7 +183,7 @@ def test_the_permutation_is_reproducible_from_its_seed() -> None:
 def _write_corpus(tmp_path: Path, *, bars: int, contracts: list[float], closes: list[float]) -> Path:
     """A one-symbol corpus written through the real sealing path, then read back by the replay."""
 
-    from tracefold.trading.research import oi_corpus
+    import oi_corpus
 
     corpus = tmp_path / "corpus"
     (corpus / "raw").mkdir(parents=True)
@@ -283,7 +292,7 @@ def test_a_hole_in_the_provider_series_makes_its_dependants_unmeasured(tmp_path:
     symbols whose data is worst -- so the feature is `None` and the rule refuses the bar instead.
     """
 
-    from tracefold.trading.research import oi_corpus
+    import oi_corpus
 
     bars = BARS_PER_HOUR * 3 + HOLD_BARS
     corpus = _write_corpus(tmp_path, bars=bars, contracts=[100.0] * bars, closes=[10.0] * bars)

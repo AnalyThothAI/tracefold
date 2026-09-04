@@ -12,9 +12,11 @@ on. That is the whole reason this file exists as a format rather than as a scrip
   as one.
 * `progress.jsonl` is appended and fsynced per symbol, which is what makes the resume possible.
 
-No network and no argparse live here: the provider walk is
-`tracefold.integrations.venues.open_interest_history`, and the operator command is
-`tracefold trading oi-corpus`.
+No network and no argparse live here: the provider walk is `open_interest_history.py` beside this
+file, and the operator command is `uv run python notebooks/research/oi_research_cli.py oi-corpus`.
+
+Research, not a service module (#537 PR-1). Nothing under `tracefold/` imports it; it reads and
+writes only the operator's own corpus directory.
 """
 
 from __future__ import annotations

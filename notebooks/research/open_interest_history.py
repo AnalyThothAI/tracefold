@@ -1,9 +1,11 @@
 """Binance USD-M open-interest and candle *history*, for the one-shot research corpus (#459 Stage A).
 
-Separate from `candles.py` because the constraints are different in kind. That module fetches one
-recent window per Event on the live Price Review path; this one walks 29 days for every USDT
-perpetual on the exchange -- about 12,600 requests -- and the failure it must avoid is not a slow
-Event but an IP ban partway through a window Binance will not serve again.
+Separate from the service's `tracefold.integrations.venues.candles` because the constraints are
+different in kind. That module fetches one recent window per Event on the live Price Review path;
+this one walks 29 days for every USDT perpetual on the exchange -- about 12,600 requests -- and the
+failure it must avoid is not a slow Event but an IP ban partway through a window Binance will not
+serve again. It served one research corpus and nothing on the live path ever called it, so #537 PR-1
+moved it here with the corpus it feeds.
 
 Two endpoints, two independent Binance limiters, so each gets its own budget:
 
