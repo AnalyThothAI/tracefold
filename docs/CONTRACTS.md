@@ -327,16 +327,16 @@ product lane.
 ## Operator lifecycle
 
 The fresh-clone operator contract is `make up`. It preflights `uv`, Docker,
-Compose, `curl`, an authenticated GitHub CLI, a 3.13 project interpreter, host
-clock drift, and daemon access; runs idempotent initialization; builds the
-frontend and backend image; performs fresh-volume role bootstrap; runs the
-one-shot migration; starts Serve and Workers; and waits for required health and
-console boundaries. Execution credentials are never a deployment prerequisite:
-the profile-gated Nautilus Runtime has its own image and its own
-`make runtime-build` / `runtime-up` / `runtime-restart` / `runtime-down` /
-`runtime-logs` / `runtime-status` lifecycle, and `make up` never names it. A
-repeated invocation preserves config, passwords, and named-volume data,
-including across `make down`.
+Compose, `curl`, an authenticated GitHub CLI, a 3.13 project interpreter, and
+daemon access; runs idempotent initialization; builds the frontend and backend
+image; performs fresh-volume role bootstrap; runs the one-shot migration; starts
+Serve and Workers; and waits for required health and console boundaries.
+Execution credentials are never a deployment prerequisite: the profile-gated
+Nautilus Runtime has its own image and its own `make runtime-build` /
+`runtime-up` / `runtime-restart` / `runtime-down` / `runtime-logs` /
+`runtime-status` lifecycle, and `make up` never names it. A repeated invocation
+preserves config, passwords, and named-volume data, including across
+`make down`.
 
 `make status` is `make status-app` followed by `make runtime-status`, and fails
 non-zero when PostgreSQL, RabbitMQ, migration, Serve, Workers, either required

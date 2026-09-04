@@ -518,8 +518,7 @@ forgotten `export`.
 
 `.python-version` pins the project interpreter to 3.13, the image's interpreter
 and the one the locked cp313 `nautilus_trader` wheel is built for; `make
-preflight` asserts it and also checks host clock drift against the venue's own
-clock, because Binance rejects a signed request outside `recvWindow`.
+preflight` asserts it.
 
 The Binance execution runtime is deployed separately, from its own
 `tracefold-runtime:<sha>` image: `make runtime-build` (gated build),
