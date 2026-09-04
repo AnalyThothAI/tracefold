@@ -99,6 +99,16 @@ class CandidateRegistry:
             ),
         )
 
+    def is_taxonomy_only(self, candidate: CandidateManifest) -> bool:
+        """Whether this candidate rewrites the taxonomy instruction and nothing else (#548).
+
+        Read off the registered write-set and the running stable artifact, the same two documents
+        `validate` re-applies to derive the candidate's Program identity — so the class of a candidate is
+        a fact about its bytes rather than a flag on its manifest.
+        """
+
+        return self._prompt_candidate(candidate).patch.is_taxonomy_only(load_stable_program_artifact())
+
     def validate(self, candidate: CandidateManifest) -> GepaObjectivePlan:
         if self._stable.program_version != LEARNING_PROGRAM_VERSION:
             raise ValueError("news_learning_program_v1_unsupported")

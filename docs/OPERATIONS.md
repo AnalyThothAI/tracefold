@@ -1208,7 +1208,9 @@ Diagnose News in this order:
    the generator is audit, never permission.
    Production promotion additionally requires a
    future temporal validation dataset, blind pairwise review, a sealed 24 h shadow
-   observation, and then `release canary arm`; inspect with `canary status`
+   observation, and then `release canary arm` — except for a taxonomy-only
+   candidate, whose holdout PASS promotes directly because shadow and canary
+   both measure reader-facing samples it cannot move; inspect with `canary status`
    and use `canary trip` immediately on a schema/artifact/quality guardrail
    breach. Selector `news_canary_selector_v2` includes queue-high Events, excludes recovery/listing/
    telemetry, and trips on selector, eligibility-profile, rolling-profile or
@@ -1301,6 +1303,20 @@ For the taxonomy Gold → Candidate workflow (#501 PR-D, drafter routes #534):
    through `release register`, offline and holdout, where an instruction that
    only fit the selection set is refused. The run never registers, releases or
    promotes the Candidate.
+5. A *taxonomy-only* candidate — `event_semantics_instruction` and
+   `reader_card_instruction` byte-identical to the parent Stable, only
+   `taxonomy_instruction` different — is judged on that evidence instead of on
+   blind pairwise judgments, because both arms hand the reviewer the identical
+   card: `news learning freeze --role validation --candidate ...` projects the
+   same accepted Gold the development freeze does and publishes
+   `counts.primary_cluster_n`, and `news learning evaluate --stage
+   offline|holdout --live-program` passes when `taxonomy_overall` is strictly
+   above Stable with no negative axis delta (a holdout PASS advances straight to
+   promotion), fails on any axis regression, and is UNKNOWN with empty Gold or
+   fewer than `primary_clusters_min` Gold-bearing clusters. `--live-program` is
+   required for this class — recordings are addressed by whole-program SHA, so a
+   replay misses every Predictor — and without it the command fails closed with
+   `news_release_taxonomy_only_requires_live_program`.
 
 Taxonomy scoring is subject-code set F1 plus exact event family, change state
 and assertion status, folded into the existing semantics/novelty component.

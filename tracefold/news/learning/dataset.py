@@ -44,7 +44,7 @@ from .evaluation_history import ArmState, EvaluationReaderHistory, Receipt
 from .ledger import LearningLedger
 from .profile import _PROFILE, TRUSTED_ROOT_SHA
 from .projection import _connected_fact_clusters
-from .taxonomy_metric import calibrate_taxonomy, summarize_taxonomy
+from .taxonomy_metric import accepted_taxonomy_gold, calibrate_taxonomy, summarize_taxonomy
 
 DATASET_VERSION: Literal["news_learning_dataset_v3"] = "news_learning_dataset_v3"
 # A window whose tail is still settling is not closed: the outcome loop keeps writing prices for minutes
@@ -703,6 +703,7 @@ class DevelopmentDatasetStore:
 
     def _dataset_counts(self, spec: DatasetSpec, cases: Sequence[DatasetCaseRef]) -> dict[str, Any]:
         reviews = self._ledger.reviews_by_id([case.review_id for case in cases])
+        gold: set[str] = set()
         boundary: set[str] = set()
         retention: set[str] = set()
         negative: set[str] = set()
@@ -736,6 +737,8 @@ class DevelopmentDatasetStore:
                 negative.add(case.cluster_id)
             if case.should_push in {"must_push", "must_hold"} or dimensions.get("factual_fidelity") == "fail":
                 safety.add(case.cluster_id)
+            if accepted_taxonomy_gold(review) is not None:
+                gold.add(case.cluster_id)
             strata.add(case.stratum)
             days.add(case.opened_at_ms // 86_400_000)
         # A release cohort is the whole runtime bundle. Mixing model bindings or retrieval identity into a
@@ -748,7 +751,7 @@ class DevelopmentDatasetStore:
             policy_version=TRIAGE_POLICY_VERSION,
             bundle_sha=self._stable.bundle_sha,
         )
-        return {
+        counts: dict[str, Any] = {
             "case_n": len(cases),
             "independent_cluster_n": len({case.cluster_id for case in cases}),
             "boundary_cluster_n": len(boundary),
@@ -773,6 +776,14 @@ class DevelopmentDatasetStore:
             },
             "window_duration_hours": round((spec.window.to_ms - spec.window.from_ms) / 3_600_000, 3),
         }
+        if spec.role == "validation":
+            # The holdout's primary sampling unit, published where the profile's `primary_clusters_min`
+            # can be read against it (#548). One vote per connected fact cluster, the same population
+            # `summarize_taxonomy` reduces the evaluated arms to — and unlike the Objective Plan's
+            # optimizer population it does not ask for a *recorded* Stable answer, because a holdout runs
+            # both arms live and an operator-reported miss has no recorded one.
+            counts["primary_cluster_n"] = len(gold)
+        return counts
 
     def _seed_receipts(self, from_ms: int, *, epoch_started_at_ms: int) -> tuple[dict[str, Any], ...]:
         """The 48 h receipt source the first cases replay against.

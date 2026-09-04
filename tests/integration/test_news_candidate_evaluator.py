@@ -4,8 +4,8 @@ import asyncio
 import hashlib
 import json
 import uuid
-from collections import Counter
-from collections.abc import Mapping
+from collections import Counter, deque
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -31,6 +31,7 @@ from tracefold.news.learning.evaluate import (
 from tracefold.news.learning.evaluate import (
     CandidateEvaluator as _CandidateEvaluator,
 )
+from tracefold.news.learning.evaluation_history import ArmState
 from tracefold.news.learning.ledger import LearningLedger
 from tracefold.news.learning.objective import (
     DevelopmentEpisode,
@@ -38,6 +39,7 @@ from tracefold.news.learning.objective import (
     build_gepa_objective_plan,
 )
 from tracefold.news.learning.optimizer import objective_summary as objective_plan_summary
+from tracefold.news.learning.profile import _PROFILE
 from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
@@ -344,12 +346,17 @@ def _observed_judgment_fields(verdict: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object]) -> ProgramTrace:
+def _trace(
+    arm: ArmManifest,
+    context: TriageContext,
+    verdict: dict[str, object],
+    editorial: EditorialEnvelope | None = None,
+) -> ProgramTrace:
     context_sha = _sha(context.model_dump(mode="json"))
     semantics = {key: value for key, value in verdict.items() if key not in {"headline_zh", "why_zh"}}
     semantics["relevance"] = _relevance().model_dump(mode="json")
     card = {key: verdict[key] for key in ("headline_zh", "why_zh")}
-    editorial = _editorial()
+    editorial = editorial or _editorial()
     runtime_model_sha = _sha({"provider": "fixture-provider", "model": "fixture-model"})
     runtime_binding_sha = _sha(
         {
@@ -461,6 +468,11 @@ class _StaticJudge:
         self.unstable = unstable
         self.calls: list[TriageContext] = []
 
+    def _editorial_for(self, context: TriageContext) -> EditorialEnvelope:
+        """The editorial this arm answers with. One hook, so a taxonomy-varying arm is not a second judge."""
+
+        return _editorial()
+
     async def judge(self, context: TriageContext) -> SemanticJudgment:
         self.calls.append(context)
         verdict = _verdict()
@@ -468,10 +480,11 @@ class _StaticJudge:
             verdict["headline_zh"] = "候选：DRAM 合约价续涨"
         if self.candidate and self.unstable and len(self.calls) == 3:
             verdict.update(magnitude=0)
-        trace = _trace(self.arm, context, verdict)
+        editorial = self._editorial_for(context)
+        trace = _trace(self.arm, context, verdict, editorial)
         return SemanticJudgment(
             verdict=verdict,
-            editorial=_editorial(),
+            editorial=editorial,
             program_version=self.arm.program_version,
             program_sha256=self.arm.program_sha256,
             trace=trace,
@@ -620,6 +633,73 @@ class _SyntheticFallbackJudge(_StaticJudge):
         )
 
 
+# What every fixture arm answers, and what `_rubric()` accepts as Gold: an arm that changes nothing is
+# exact, so any delta below is one the test asked for.
+_STABLE_ARM_AXES: Mapping[str, str] = {
+    "event_family": "regulatory_legal",
+    "change_state": "reported",
+    "assertion_status": "claimed",
+}
+
+
+class _TaxonomyArmJudge(_StaticJudge):
+    """One arm whose taxonomy answer is chosen per case, so a taxonomy-only delta is observable.
+
+    Everything else — verdict, relevance, card — stays what `_StaticJudge` answers, which is the whole
+    point of the class under test: the two arms are byte-identical everywhere a reader can see.
+    """
+
+    def __init__(
+        self,
+        arm: ArmManifest,
+        *,
+        axes_by_title: Mapping[str, Mapping[str, str]] | None = None,
+        default_axes: Mapping[str, str] | None = None,
+        candidate: bool = False,
+    ) -> None:
+        super().__init__(arm, candidate=candidate)
+        self._axes_by_title = {title: dict(axes) for title, axes in (axes_by_title or {}).items()}
+        self._default_axes = dict(default_axes or _STABLE_ARM_AXES)
+
+    def _editorial_for(self, context: TriageContext) -> EditorialEnvelope:
+        axes = {**self._default_axes, **self._axes_by_title.get(context.evidence.title, {})}
+        return EditorialEnvelope.issue(
+            relevance=_relevance(),
+            taxonomy=news_taxonomy(**axes, source_authority="reputable_secondary"),
+        )
+
+
+def _gold_axes(store: DevelopmentDatasetStore, cases: Sequence[Any]) -> dict[str, dict[str, str]]:
+    """The accepted Gold of every frozen case, keyed by the evidence title an arm actually sees."""
+
+    axes: dict[str, dict[str, str]] = {}
+    for case in cases:
+        loaded = store.load_case(case)
+        gold = dict(dict(dict(loaded["review"]).get("payload") or {}).get("taxonomy") or {})
+        title = store.build_context(loaded, ArmState(deque())).evidence.title
+        axes[title] = {axis: str(gold[axis]) for axis in _STABLE_ARM_AXES}
+    return axes
+
+
+def _taxonomy_judges(
+    stable: ArmManifest,
+    candidate: ArmManifest,
+    *,
+    stable_axes_by_title: Mapping[str, Mapping[str, str]] | None = None,
+    candidate_axes_by_title: Mapping[str, Mapping[str, str]] | None = None,
+    candidate_default_axes: Mapping[str, str] | None = None,
+) -> dict[tuple[str, str], _StaticJudge]:
+    return {
+        ("stable", stable.bundle_sha): _TaxonomyArmJudge(stable, axes_by_title=stable_axes_by_title),
+        ("candidate", candidate.bundle_sha): _TaxonomyArmJudge(
+            candidate,
+            axes_by_title=candidate_axes_by_title,
+            default_axes=candidate_default_axes,
+            candidate=True,
+        ),
+    }
+
+
 def _static_judges(
     stable: ArmManifest,
     candidate: ArmManifest | None = None,
@@ -705,6 +785,7 @@ def _program_candidate(
     target_dimensions: tuple[str, ...] | None = None,
     projection_root: str | None = None,
     variant: str = "",
+    registered_at_ms: int = NOW,
 ) -> CandidateManifest:
     base = load_stable_program_artifact()
     registered = prompt or _prompt_candidate(
@@ -749,7 +830,7 @@ def _program_candidate(
         # equality: a candidate that declares anything else was optimized against a different corpus.
         "optimizer_cluster_ids": optimizer_cluster_ids or plan.optimizer_cluster_ids or (cluster_id,),
         "generator_kind": generator_kind,
-        "registered_at_ms": NOW,
+        "registered_at_ms": registered_at_ms,
         "declared_target_dimensions": target_dimensions or plan.target_dimensions or ("why_support",),
         "guardrails": ("must_push_recall", "reader_load"),
         "program_parent_sha256": stable.program_sha256,
@@ -794,7 +875,14 @@ def _persist_prompt_candidate(
     return address
 
 
-def _insert_validation_dataset(conn, *, development, candidate: CandidateManifest) -> str:
+def _insert_validation_dataset(
+    conn,
+    *,
+    development,
+    candidate: CandidateManifest,
+    window_duration_hours: float = 6.0,
+    eligible_event_n: int = 1,
+) -> str:
     payload = {
         "dataset_version": "news_learning_dataset_v3",
         "role": "validation",
@@ -811,8 +899,8 @@ def _insert_validation_dataset(conn, *, development, candidate: CandidateManifes
         "seed_receipts": list(development.seed_receipts),
         "counts": {
             **development.counts,
-            "window_duration_hours": 6.0,
-            "eligible_event_n": 1,
+            "window_duration_hours": window_duration_hours,
+            "eligible_event_n": eligible_event_n,
         },
         "hashes": dict(development.hashes),
     }
@@ -824,6 +912,32 @@ def _insert_validation_dataset(conn, *, development, candidate: CandidateManifes
         (artifact_sha, candidate.candidate_sha, json.dumps(payload, sort_keys=True), NOW),
     )
     return artifact_sha
+
+
+def _register_candidate_row(conn, *, candidate: CandidateManifest, at_ms: int) -> None:
+    """Stage the `candidate` row `news release register` writes, at the instant it registered.
+
+    Registration and the holdout freeze are two commands run minutes or days apart; inside one test the
+    release plane would otherwise stamp both with the same clock, and a window that must open *after*
+    registration and close *before* settlement then has no room to exist.
+    """
+
+    payload = {
+        "candidate_sha": candidate.candidate_sha,
+        "proposal_sha": candidate.proposal_receipt.registration_receipt_sha,
+        "manifest": candidate.model_dump(mode="json"),
+    }
+    conn.execute(
+        "INSERT INTO news_learning_artifacts "
+        "(artifact_sha, kind, parent_sha, payload, created_by, created_at_ms) "
+        "VALUES (%s, 'candidate', %s, %s::jsonb, 'test', %s)",
+        (
+            _sha({"kind": "candidate", "payload": payload}),
+            candidate.parent_stable_sha,
+            json.dumps(payload, sort_keys=True),
+            at_ms,
+        ),
+    )
 
 
 def _insert_stage_pass(conn, *, candidate_sha: str, stage: str) -> None:
@@ -3678,3 +3792,351 @@ def test_an_epoch_label_claimed_by_another_bundle_fails_the_startup_barrier(conn
             program_sha256=stable.program_sha256,
             now_ms=NOW + 1,
         )
+
+
+def _taxonomy_only_candidate(
+    conn,
+    *,
+    stable: ArmManifest,
+    development_sha: str,
+    cluster_id: str,
+    variant: str = "",
+    registered_at_ms: int = NOW,
+) -> CandidateManifest:
+    """A candidate whose EventSemantics and ReaderCard are the parent's byte for byte (#548)."""
+
+    base = load_stable_program_artifact()
+    return _program_candidate(
+        conn,
+        stable=stable,
+        development_sha=development_sha,
+        cluster_id=cluster_id,
+        registered_at_ms=registered_at_ms,
+        prompt=_prompt_candidate(
+            conn,
+            development_sha=development_sha,
+            stable=stable,
+            patch=PromptPatchV1(
+                event_semantics_instruction=base.event_semantics_instruction,
+                taxonomy_instruction=(
+                    f"{base.taxonomy_instruction}\nPrefer the narrower subject code{variant} when both apply."
+                ),
+                reader_card_instruction=base.reader_card_instruction,
+            ),
+        ),
+    )
+
+
+def _miss_rubric(event_family: str) -> EventRubricSubmission:
+    return EventRubricSubmission.model_validate(
+        _rubric().model_dump(mode="json")
+        | {
+            "taxonomy": news_taxonomy(
+                event_family=event_family,
+                change_state="reported",
+                assertion_status="claimed",
+                source_authority="reputable_secondary",
+            ).model_dump(mode="json")
+        }
+    )
+
+
+def _reviewed_misses(conn, *, total: int, stable_wrong: int) -> None:
+    """Independent reviewed facts, `stable_wrong` of which carry Gold the fixture Stable arm gets wrong."""
+
+    desk = ReviewDesk(conn, now_ms=NOW)
+    for index in range(total):
+        with repositories_for_connection(conn).transaction():
+            desk.submit(
+                None,
+                ExternalMissSubmission(
+                    source_url=f"https://example.test/miss/{index}",
+                    title=f"Independent material missed fact number {index}",
+                    occurred_at_ms=NOW - (index + 1) * 60_000,
+                    rubric=_miss_rubric("product_service_change" if index < stable_wrong else "regulatory_legal"),
+                ),
+                principal=PRINCIPAL,
+                idempotency_key=str(uuid.uuid4()),
+            )
+
+
+def _holdout_request(*, development_sha: str, validation_sha: str, candidate_sha: str) -> EvaluationRequest:
+    return EvaluationRequest(
+        development_dataset_sha=development_sha,
+        validation_dataset_sha=validation_sha,
+        candidate_sha=candidate_sha,
+        stage="holdout",
+    )
+
+
+def test_a_taxonomy_only_holdout_is_decided_by_its_per_axis_evidence(conn) -> None:
+    """#548: the blind-pairwise holdout is vacuous for a candidate no reader can see, so the axes decide.
+
+    Both arms render the identical card here — same verdict, same relevance, same headline and why — which
+    is exactly what a taxonomy-only write-set guarantees in production. A blind reviewer comparing them
+    reports a coin flip, so the pairwise endpoint returned `unknown` forever. What the arms do differ on
+    is the accepted Gold they match, and this test drives that difference in both directions on one
+    corpus: an arm that matches Gold everywhere, and an arm that breaks an axis Stable had right.
+    """
+
+    _reviewed_misses(conn, total=24, stable_wrong=12)
+    _accepted_compilable_event(conn)
+    stable = _arm()
+    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        bootstrap._datasets.freeze_dataset(
+            DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
+        )
+    )
+    cluster_n = 24 + len(_COMPILABLE_CORPUS)
+    assert development.counts["independent_cluster_n"] == cluster_n
+    gold_axes = _gold_axes(bootstrap._datasets, development.cases)
+
+    improving = _taxonomy_only_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+    )
+    validation_sha = _insert_validation_dataset(
+        conn,
+        development=development,
+        candidate=improving,
+        window_duration_hours=24.0,
+        eligible_event_n=200,
+    )
+    _insert_stage_pass(conn, candidate_sha=improving.candidate_sha, stage="offline")
+    report = asyncio.run(
+        CandidateEvaluator(
+            conn,
+            stable=stable,
+            judges=_taxonomy_judges(stable, improving.candidate_arm, candidate_axes_by_title=gold_axes),
+            candidate_catalog=(improving,),
+        ).evaluate(
+            _holdout_request(
+                development_sha=development.artifact_sha,
+                validation_sha=validation_sha,
+                candidate_sha=improving.candidate_sha,
+            )
+        )
+    )
+    primary = report.evidence["primary"]
+    assert primary["endpoint"] == "taxonomy_axis_evidence"
+    assert primary["primary_cluster_n"] == cluster_n >= _PROFILE["validation"]["primary_clusters_min"]
+    assert primary["taxonomy_overall_delta"] > 0
+    assert primary["regressed_axes"] == []
+    assert report.evidence["taxonomy"]["candidate"]["taxonomy_overall"] == 1.0
+    # No pairwise judgment exists and none is demanded; the only thing still short is the development
+    # corpus this fixture deliberately keeps thin, which is a coverage floor and not a holdout endpoint.
+    assert not [code for code in report.evidence["blockers"] if not code.startswith("development_")]
+    assert report.evidence["failures"] == []
+
+    regressing = _taxonomy_only_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+        variant=" and the stated one",
+    )
+    regressing_validation_sha = _insert_validation_dataset(
+        conn,
+        development=development,
+        candidate=regressing,
+        window_duration_hours=24.0,
+        eligible_event_n=200,
+    )
+    _insert_stage_pass(conn, candidate_sha=regressing.candidate_sha, stage="offline")
+    regressed = asyncio.run(
+        CandidateEvaluator(
+            conn,
+            stable=stable,
+            judges=_taxonomy_judges(
+                stable,
+                regressing.candidate_arm,
+                candidate_default_axes={**_STABLE_ARM_AXES, "change_state": "announced"},
+            ),
+            candidate_catalog=(regressing,),
+        ).evaluate(
+            _holdout_request(
+                development_sha=development.artifact_sha,
+                validation_sha=regressing_validation_sha,
+                candidate_sha=regressing.candidate_sha,
+            )
+        )
+    )
+    assert regressed.gate_outcome == "fail"
+    assert regressed.recommended_action == "reject"
+    assert "candidate_taxonomy_axis_regression" in regressed.evidence["failures"]
+    assert regressed.evidence["primary"]["regressed_axes"] == [
+        "change_state_accuracy",
+        "four_axis_exact_accuracy",
+    ]
+
+
+def test_a_thin_taxonomy_only_holdout_is_unknown_and_a_reader_facing_one_still_needs_pairwise(conn) -> None:
+    """#548: the profile's `primary_clusters_min` now counts Gold-bearing clusters, and only for this class."""
+
+    _accepted_compilable_event(conn)
+    stable = _arm()
+    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        bootstrap._datasets.freeze_dataset(
+            DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
+        )
+    )
+    gold_axes = _gold_axes(bootstrap._datasets, development.cases)
+    taxonomy_only = _taxonomy_only_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+    )
+    validation_sha = _insert_validation_dataset(
+        conn,
+        development=development,
+        candidate=taxonomy_only,
+        window_duration_hours=24.0,
+        eligible_event_n=200,
+    )
+    _insert_stage_pass(conn, candidate_sha=taxonomy_only.candidate_sha, stage="offline")
+    report = asyncio.run(
+        CandidateEvaluator(
+            conn,
+            stable=stable,
+            judges=_taxonomy_judges(stable, taxonomy_only.candidate_arm, candidate_axes_by_title=gold_axes),
+            candidate_catalog=(taxonomy_only,),
+        ).evaluate(
+            _holdout_request(
+                development_sha=development.artifact_sha,
+                validation_sha=validation_sha,
+                candidate_sha=taxonomy_only.candidate_sha,
+            )
+        )
+    )
+    assert report.evidence["primary"]["primary_cluster_n"] == len(_COMPILABLE_CORPUS)
+    assert report.evidence["primary"]["taxonomy_overall_delta"] > 0
+    assert "validation_primary_review_insufficient" in report.evidence["blockers"]
+    assert report.gate_outcome == "unknown"
+    assert report.recommended_action == "hold"
+
+    # P2P: the same corpus and the same absence of pairwise judgments, for a candidate that also rewrites
+    # ReaderCard. Nothing about its holdout changes.
+    reader_facing = _program_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+    )
+    reader_facing_validation_sha = _insert_validation_dataset(
+        conn,
+        development=development,
+        candidate=reader_facing,
+        window_duration_hours=24.0,
+        eligible_event_n=200,
+    )
+    _insert_stage_pass(conn, candidate_sha=reader_facing.candidate_sha, stage="offline")
+    pairwise = asyncio.run(
+        CandidateEvaluator(
+            conn,
+            stable=stable,
+            judges=_static_judges(stable, reader_facing.candidate_arm),
+            candidate_catalog=(reader_facing,),
+        ).evaluate(
+            _holdout_request(
+                development_sha=development.artifact_sha,
+                validation_sha=reader_facing_validation_sha,
+                candidate_sha=reader_facing.candidate_sha,
+            )
+        )
+    )
+    assert pairwise.evidence["primary"]["endpoint"] == "blind_net_preference"
+    assert pairwise.evidence["primary"]["planned_cluster_n"] == len(_COMPILABLE_CORPUS)
+    assert "validation_primary_review_insufficient" in pairwise.evidence["blockers"]
+    assert pairwise.gate_outcome == "unknown"
+
+
+def test_a_taxonomy_only_candidate_refuses_a_replayed_evaluation(conn) -> None:
+    """#548: recordings are addressed by whole-program SHA, so this class misses on all three Predictors.
+
+    A replay miss is not evidence; it is the absence of a run. The old behaviour published one as an
+    `unknown` blocker, which for this class would be the only outcome it could ever have.
+    """
+
+    _accepted_compilable_event(conn)
+    stable = _arm()
+    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        bootstrap._datasets.freeze_dataset(
+            DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
+        )
+    )
+    candidate = _taxonomy_only_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+    )
+    judges = {
+        ("stable", stable.bundle_sha): _StaticJudge(stable),
+        ("candidate", candidate.candidate_arm.bundle_sha): _AlwaysUnavailableJudge(
+            candidate.candidate_arm, recording_missing=True
+        ),
+    }
+    with pytest.raises(ValueError, match="news_release_taxonomy_only_requires_live_program"):
+        asyncio.run(
+            CandidateEvaluator(
+                conn,
+                stable=stable,
+                judges=judges,
+                candidate_catalog=(candidate,),
+            ).evaluate(
+                EvaluationRequest(
+                    development_dataset_sha=development.artifact_sha,
+                    candidate_sha=candidate.candidate_sha,
+                    stage="offline",
+                )
+            )
+        )
+
+
+def test_a_validation_freeze_publishes_its_gold_bearing_primary_clusters(conn) -> None:
+    """#548: the holdout of a taxonomy-only candidate projects Gold, so the freeze counts Gold clusters."""
+
+    _accepted_compilable_event(conn)
+    _reviewed_misses(conn, total=4, stable_wrong=2)
+    stable = _arm()
+    registered_at_ms = NOW - 5 * 3_600_000
+    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        bootstrap._datasets.freeze_dataset(
+            DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
+        )
+    )
+    candidate = _taxonomy_only_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+        registered_at_ms=registered_at_ms,
+    )
+    _register_candidate_row(conn, candidate=candidate, at_ms=registered_at_ms)
+    evaluator = CandidateEvaluator(conn, stable=stable, judges={}, candidate_catalog=(candidate,))
+    admitted = evaluator._registry.admit_for_validation(candidate.candidate_sha)
+    assert admitted.registered_at_ms == registered_at_ms
+    validation = asyncio.run(
+        evaluator._datasets.freeze_dataset(
+            DatasetSpec(
+                role="validation",
+                observation_ref=candidate.candidate_sha,
+                window=ClosedWindow(from_ms=NOW - 4 * 3_600_000, to_ms=NOW),
+            ),
+            admitted=admitted,
+        )
+    )
+    cluster_n = 4 + len(_COMPILABLE_CORPUS)
+    # The same projection the development freeze runs — every accepted review in the window — reported as
+    # the holdout's own primary sampling unit rather than as an optimizer population.
+    assert validation.counts["case_n"] == cluster_n
+    assert validation.counts["primary_cluster_n"] == cluster_n
+    assert "optimizer_cluster_n" in development.counts
+    assert "primary_cluster_n" not in development.counts

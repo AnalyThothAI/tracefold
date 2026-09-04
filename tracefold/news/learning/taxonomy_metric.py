@@ -40,6 +40,21 @@ class TaxonomyComparison:
         return self.score == 1.0
 
 
+def accepted_taxonomy_gold(review: Mapping[str, Any]) -> ModelTaxonomyV1 | None:
+    """The four model-owned axes one accepted review carries, or None when it carries no valid Gold.
+
+    One reader, because two places ask the same question of the same column: the freeze counts the
+    Gold-bearing connected fact clusters a holdout can be judged on, and the evaluator scores them.
+    """
+
+    taxonomy = dict(dict(review.get("payload") or {}).get("taxonomy") or {})
+    axes = {field: taxonomy[field] for field in ModelTaxonomyV1.model_fields if field in taxonomy}
+    try:
+        return ModelTaxonomyV1.model_validate(axes)
+    except ValueError:
+        return None
+
+
 def _subject_f1(gold: frozenset[str], predicted: frozenset[str]) -> float:
     if not gold and not predicted:
         return 1.0
@@ -232,6 +247,7 @@ __all__ = [
     "TAXONOMY_AXES",
     "TAXONOMY_TARGET_DIMENSIONS",
     "TaxonomyComparison",
+    "accepted_taxonomy_gold",
     "calibrate_taxonomy",
     "compare_taxonomy",
     "summarize_taxonomy",

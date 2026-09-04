@@ -34,7 +34,6 @@ from ..review.desk import (
     REVIEW_RUBRIC_VERSION,
 )
 from ..storage.root import NewsRepository
-from ..taxonomy import ModelTaxonomyV1
 from .contracts import (
     LEARNING_PROFILE_ID,
     ArmManifest,
@@ -70,7 +69,7 @@ from .projection import (
     _program_cost_by_predictor,
     _program_metric,
 )
-from .taxonomy_metric import summarize_taxonomy
+from .taxonomy_metric import accepted_taxonomy_gold, summarize_taxonomy
 
 # Re-exported, not restated. A second literal here would be one more copy of the identity #193 exists to
 # stop duplicating — and since #314 there is no literal to copy: the value is computed from the code the
@@ -99,12 +98,8 @@ def _output_taxonomy(output: Mapping[str, Any]) -> Mapping[str, Any] | None:
 
 
 def _review_taxonomy(review: Mapping[str, Any]) -> dict[str, Any] | None:
-    taxonomy = dict(dict(review.get("payload") or {}).get("taxonomy") or {})
-    model_axes = {field: taxonomy[field] for field in ModelTaxonomyV1.model_fields if field in taxonomy}
-    try:
-        return ModelTaxonomyV1.model_validate(model_axes).model_dump(mode="json")
-    except ValueError:
-        return None
+    gold = accepted_taxonomy_gold(review)
+    return None if gold is None else gold.model_dump(mode="json")
 
 
 def _taxonomy_release_evidence(
@@ -156,6 +151,80 @@ def _taxonomy_release_evidence(
         "delta": delta,
         "regressed_axes": regressed_axes,
     }
+
+
+def _taxonomy_primary_result(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """The held-out primary of a taxonomy-only candidate: the per-axis evidence already computed (#548).
+
+    The blind-pairwise endpoint measures nothing for this class. Taxonomy enters neither the verdict, the
+    ReaderCard nor the delivery decision, so both arms hand the blind reviewer the identical card and the
+    net preference is zero by construction. What the two arms *do* differ on is the scalar the GEPA metric
+    optimizes, over the same one-vote-per-connected-fact-cluster population — so that is the primary, and
+    there is no second scorer: `summarize_taxonomy` produced both summaries.
+    """
+
+    delta = dict(evidence["delta"])
+    return {
+        "endpoint": "taxonomy_axis_evidence",
+        "primary_cluster_n": int(evidence["stable"]["cluster_n"]),
+        "candidate_cluster_n": int(evidence["candidate"]["cluster_n"]),
+        "stable_taxonomy_overall": evidence["stable"]["taxonomy_overall"],
+        "candidate_taxonomy_overall": evidence["candidate"]["taxonomy_overall"],
+        "taxonomy_overall_delta": delta.get("taxonomy_overall"),
+        "axis_delta": {axis: delta.get(axis) for axis in _TAXONOMY_RELEASE_AXES},
+        "regressed_axes": list(evidence["regressed_axes"]),
+    }
+
+
+def _taxonomy_only_release_codes(
+    evidence: Mapping[str, Any],
+    *,
+    stage: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The blockers and failures a taxonomy-only candidate's held-out primary produces (#548).
+
+    Pass is strictly above Stable on `taxonomy_overall` with no axis below it; any axis regression is a
+    FAIL; empty Gold, or fewer Gold-bearing clusters than the profile's `primary_clusters_min`, is
+    UNKNOWN. No threshold here is new: the empty blocker and the per-axis rule are #501's, and the cluster
+    floor is the same `validation.primary_clusters_min` the pairwise holdout reads — counted now over
+    Gold-bearing connected fact clusters, which is the sampling unit this class actually has.
+    """
+
+    blockers: list[str] = []
+    failures: list[str] = []
+    cluster_n = int(evidence["stable"]["cluster_n"])
+    if not cluster_n:
+        blockers.append("taxonomy_release_evidence_empty")
+    elif stage == "holdout" and cluster_n < int(_PROFILE["validation"]["primary_clusters_min"]):
+        blockers.append("validation_primary_review_insufficient")
+    if evidence["regressed_axes"]:
+        failures.append("candidate_taxonomy_axis_regression")
+    overall = evidence["delta"]["taxonomy_overall"]
+    if overall is None or float(overall) <= 0:
+        blockers.append("taxonomy_overall_not_improved")
+    return tuple(blockers), tuple(failures)
+
+
+def _next_stage(stage: str, outcome: str, *, taxonomy_only: bool) -> tuple[str, str]:
+    """The stage a sealed report recommends next, and the action that reaches it.
+
+    A taxonomy-only holdout PASS advances straight to promotion. Shadow and canary measure reader-facing
+    samples — canary needs eight assigned Events whose cards a reader saw — and this class changes no card
+    a reader can see, so both stages would spend a production window to observe an identical distribution
+    (#548). Every other candidate keeps shadow then canary.
+    """
+
+    if outcome == "fail":
+        return "none", "rollback" if stage == "canary" else "reject"
+    if outcome != "pass":
+        return "none", "hold"
+    if stage == "offline":
+        return "holdout", "advance"
+    if stage == "holdout":
+        return "promotion" if taxonomy_only else "shadow", "advance"
+    if stage == "shadow":
+        return "canary", "advance"
+    return "promotion", "advance"
 
 
 class EvaluationRequest(BaseModel):
@@ -290,6 +359,7 @@ class CandidateEvaluator:
         candidate = self._registry.load(request.candidate_sha)
         candidate_plan = self._registry.validate(candidate)
         self._registry.persist(candidate)
+        taxonomy_only = self._registry.is_taxonomy_only(candidate)
         prior_stage = {"holdout": "offline", "shadow": "holdout", "canary": "shadow"}.get(request.stage)
         if prior_stage and not self._registry.has_passed_stage(candidate.candidate_sha, prior_stage):
             raise ValueError(f"news_learning_prior_{prior_stage}_evidence_not_passed")
@@ -342,6 +412,12 @@ class CandidateEvaluator:
                         candidate=candidate,
                     )
                 except RecordReplayMiss as exc:
+                    # Recordings are addressed by whole-program `program_sha256`, so a taxonomy-only
+                    # candidate misses on all three Predictors however small its write-set is (#548). That
+                    # is not evidence of anything, and per-Predictor keying would be a second recording
+                    # identity: this class runs both arms live or it does not run.
+                    if taxonomy_only:
+                        raise ValueError("news_release_taxonomy_only_requires_live_program") from exc
                     observations = []
                     execution_errors.append(str(exc))
             if observations:
@@ -388,6 +464,7 @@ class CandidateEvaluator:
                 **development.counts,
                 **development_split_profile_counts(candidate_plan),
             },
+            taxonomy_only=taxonomy_only,
         )
         if observation_manifest_sha:
             evidence["observation_manifest_sha"] = observation_manifest_sha
@@ -402,19 +479,7 @@ class CandidateEvaluator:
             if execution_errors or not existing or bool(evidence.get("execution_incomplete"))
             else "complete"
         )
-        if outcome == "pass":
-            if request.stage == "offline":
-                next_stage, action = "holdout", "advance"
-            elif request.stage == "holdout":
-                next_stage, action = "shadow", "advance"
-            elif request.stage == "shadow":
-                next_stage, action = "canary", "advance"
-            else:
-                next_stage, action = "promotion", "advance"
-        elif outcome == "fail":
-            next_stage, action = "none", "reject" if request.stage != "canary" else "rollback"
-        else:
-            next_stage, action = "none", "hold"
+        next_stage, action = _next_stage(request.stage, outcome, taxonomy_only=taxonomy_only)
         report_payload = {
             "run_sha": run_sha,
             "run_state": run_state,
@@ -1156,6 +1221,7 @@ class CandidateEvaluator:
         execution_errors: Sequence[str],
         observation_dimensions: Mapping[str, Any] | None,
         development_profile_counts: Mapping[str, Any],
+        taxonomy_only: bool,
     ) -> dict[str, Any]:
         blockers: list[str] = []
         failures: list[str] = []
@@ -1289,10 +1355,17 @@ class CandidateEvaluator:
         taxonomy_evidence: dict[str, Any] | None = None
         if request.stage in {"offline", "holdout"}:
             taxonomy_evidence = _taxonomy_release_evidence(observations, reviews)
-            if not int(taxonomy_evidence["stable"]["cluster_n"]):
-                blockers.append("taxonomy_release_evidence_empty")
-            if taxonomy_evidence["regressed_axes"]:
-                failures.append("candidate_taxonomy_axis_regression")
+            if taxonomy_only:
+                taxonomy_blockers, taxonomy_failures = _taxonomy_only_release_codes(
+                    taxonomy_evidence, stage=request.stage
+                )
+                blockers.extend(taxonomy_blockers)
+                failures.extend(taxonomy_failures)
+            else:
+                if not int(taxonomy_evidence["stable"]["cluster_n"]):
+                    blockers.append("taxonomy_release_evidence_empty")
+                if taxonomy_evidence["regressed_axes"]:
+                    failures.append("candidate_taxonomy_axis_regression")
         if critical_regressions:
             failures.append("must_push_regression")
         if candidate_only_errors and request.stage in {"offline", "holdout"}:
@@ -1365,8 +1438,13 @@ class CandidateEvaluator:
         # quota. A candidate that correctly recognizes more distinct facts must
         # not fail merely because an hour happened to contain many real events.
 
-        primary = self._primary_result(run_sha, candidate, observations)
-        if request.stage == "offline":
+        if taxonomy_only and taxonomy_evidence is not None:
+            taxonomy_primary = True
+            primary = _taxonomy_primary_result(taxonomy_evidence)
+        else:
+            taxonomy_primary = False
+            primary = self._primary_result(run_sha, candidate, observations)
+        if request.stage == "offline" and not taxonomy_primary:
             if int(primary.get("planned_cluster_n") or 0) == 0:
                 blockers.append("development_pairwise_review_empty")
             elif int(primary.get("resolved_cluster_n") or 0) < int(primary["planned_cluster_n"]):
@@ -1383,20 +1461,25 @@ class CandidateEvaluator:
                 blockers.append("validation_duration_insufficient")
             if int(val.get("eligible_event_n") or 0) < 200:
                 blockers.append("validation_eligible_events_insufficient")
-            planned_n = int(primary.get("planned_cluster_n") or 0)
-            resolved_n = int(primary.get("resolved_cluster_n") or 0)
-            review_budget_used = int(primary.get("review_budget_used") or 0)
-            review_budget_max = int(_PROFILE["validation"]["max_review_budget"])
-            if planned_n < int(_PROFILE["validation"]["primary_clusters_min"]):
-                blockers.append("validation_primary_review_insufficient")
-            elif resolved_n < planned_n:
-                blockers.append(
-                    "validation_review_budget_exhausted"
-                    if review_budget_used >= review_budget_max
-                    else "validation_primary_review_incomplete"
-                )
-            elif not primary.get("interval_95") or float(primary["interval_95"]["lower"]) <= 0:
-                blockers.append("validation_primary_interval_crosses_zero")
+            # Pairwise judgments, the review budget that buys them and the interval they support are the
+            # holdout's primary only when the two arms can render a blind reviewer different cards. A
+            # taxonomy-only candidate cannot, and its Gold-bearing cluster floor was already read against
+            # the same `primary_clusters_min` above (#548).
+            if not taxonomy_primary:
+                planned_n = int(primary.get("planned_cluster_n") or 0)
+                resolved_n = int(primary.get("resolved_cluster_n") or 0)
+                review_budget_used = int(primary.get("review_budget_used") or 0)
+                review_budget_max = int(_PROFILE["validation"]["max_review_budget"])
+                if planned_n < int(_PROFILE["validation"]["primary_clusters_min"]):
+                    blockers.append("validation_primary_review_insufficient")
+                elif resolved_n < planned_n:
+                    blockers.append(
+                        "validation_review_budget_exhausted"
+                        if review_budget_used >= review_budget_max
+                        else "validation_primary_review_incomplete"
+                    )
+                elif not primary.get("interval_95") or float(primary["interval_95"]["lower"]) <= 0:
+                    blockers.append("validation_primary_interval_crosses_zero")
         elif request.stage in {"shadow", "canary"}:
             if observation_hours is None or observation_hours < 24:
                 blockers.append(f"{request.stage}_duration_insufficient")
