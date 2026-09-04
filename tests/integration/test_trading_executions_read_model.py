@@ -52,16 +52,16 @@ def _seed_signal() -> None:
                 """
                 INSERT INTO trading_cases (
                   case_id, underlying_key, trigger_kind, primary_source_key,
-                  supplemental_source_keys, manifest, manifest_sha256, state,
+                  manifest, manifest_sha256, state,
                   policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
-                  updated_at_ms, strategy_id, strategy_version, strategy_config_digest
+                  updated_at_ms
                 ) VALUES (
-                  'case-1', 'crypto:BTC', 'oi', 'runtime-source:case-1', '[]'::jsonb,
+                  'case-1', 'crypto:BTC', 'oi', 'runtime-source:case-1',
                   '{"test":"executions"}'::jsonb, %s, 'SIGNAL_EMITTED', 'long',
-                  'executions_read_model', 1, 1, 1, 1, 'executions_read_model', 'v1', %s
+                  'executions_read_model', 1, 1, 1, 1
                 )
                 """,
-                ("4" * 64, "5" * 64),
+                ("4" * 64,),
             )
             repo.append_trade_signal(prepared)
     finally:

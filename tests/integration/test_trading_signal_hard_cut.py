@@ -20,26 +20,31 @@ from tests.postgres_test_utils import (
 )
 from tracefold.platform.postgres.client import connect_postgres
 from tracefold.platform.postgres.migrations import alembic_config, latest_migration_version
-from tracefold.trading.storage.execution_stream import PreparedTradeSignal, prepare_trade_signal
+from tracefold.trading.contracts import EXECUTION_STRATEGY_ID
+from tracefold.trading.storage.execution_stream import (
+    PreparedTradeSignal,
+    materialize_trade_signals,
+    prepare_trade_signal,
+)
 from tracefold.trading.storage.root import TradingRepository
 
 pytestmark = [pytest.mark.integration, pytest.mark.migration]
 
 
 def _insert_case(conn: Any, *, case_id: str, state: str) -> None:
-    """Insert one Case against the current schema, which has no capital columns (`20260903_0355`)."""
+    """Insert one Case against the current schema: no capital columns (`0355`), no strategy identity,
+    no lease, no attempt counter and no supplemental source keys (`0360`)."""
 
     conn.execute(
         """
         INSERT INTO trading_cases (
           case_id, underlying_key, trigger_kind, primary_source_key,
-          supplemental_source_keys, manifest, manifest_sha256, state,
+          manifest, manifest_sha256, state,
           policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
-          updated_at_ms, strategy_id, strategy_version, strategy_config_digest
+          updated_at_ms
         ) VALUES (
-          %s, %s, 'news', %s, '[]'::jsonb, '{"test":"signal-hard-cut"}'::jsonb,
-          %s, %s, %s, 'test_fixture', 1, 1, 1, 1,
-          'signal_hard_cut_fixture', 'v1', %s
+          %s, %s, 'news', %s, '{"test":"signal-hard-cut"}'::jsonb,
+          %s, %s, %s, 'test_fixture', 1, 1, 1, 1
         )
         """,
         (
@@ -49,7 +54,6 @@ def _insert_case(conn: Any, *, case_id: str, state: str) -> None:
             "a" * 64,
             state,
             "long" if state == "SIGNAL_EMITTED" else "no_trade",
-            "b" * 64,
         ),
     )
 
@@ -96,7 +100,6 @@ def _signal(
         direction="long",
         observed_at_ns=1_000,
         expires_at_ns=expires_at_ns,
-        alpha_metadata={"policy_rule": "test"},
     )
 
 
@@ -393,18 +396,20 @@ def test_0355_leaves_one_owner_for_each_closed_trading_vocabulary(postgres_clone
 
 
 def _insert_gate_decision(conn: Any, *, source_key: str, status: str, stage: str) -> None:
+    """One admission row at head: the source key is the whole key, and the rulebook is evidence (`0360`)."""
+
     conn.execute(
         """
         INSERT INTO trading_candidate_gate_decisions (
-          source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
+          source_key, trigger_kind, underlying_key,
           source_observed_at_ms, status, stage, reason, retryable, evidence, case_id,
-          first_evaluated_at_ms, last_evaluated_at_ms, attempt_count, release_revision
+          first_evaluated_at_ms, last_evaluated_at_ms, attempt_count
         ) VALUES (
-          %s, 'trading_admission_v8', %s, 'oi', 'crypto:RETIRED',
-          1, %s, %s, 'test_fixture', false, '{}'::jsonb, NULL, 1, 1, 1, 'test'
+          %s, 'oi', 'crypto:RETIRED',
+          1, %s, %s, 'test_fixture', false, '{"gate_version":"trading_admission_v9"}'::jsonb, NULL, 1, 1, 1
         )
         """,
-        (source_key, "c" * 64, status, stage),
+        (source_key, status, stage),
     )
 
 
@@ -642,3 +647,180 @@ def test_0347_drops_every_retired_execution_table_and_only_its_own_functions(
     assert tables.isdisjoint(_DROPPED_TABLES)
     assert functions.isdisjoint(_DROPPED_FUNCTIONS)
     assert set(_KEPT_FUNCTIONS) <= functions
+
+
+# Every column `20260904_0360` drops, by the table it sat on. Written out rather than imported from
+# the revision, because this is the assertion that they are gone.
+_DROPPED_LANE_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("trading_cases", "attempt_count"),
+    ("trading_cases", "lease_expires_at_ms"),
+    ("trading_cases", "supplemental_source_keys"),
+    ("trading_cases", "strategy_id"),
+    ("trading_cases", "strategy_version"),
+    ("trading_cases", "strategy_config_digest"),
+    ("trading_candidate_gate_decisions", "gate_version"),
+    ("trading_candidate_gate_decisions", "gate_config_digest"),
+    ("trading_candidate_gate_decisions", "release_revision"),
+    ("trading_trade_signals", "alpha_metadata"),
+    ("trading_execution_runtime_state", "routes"),
+)
+
+
+def test_0360_drops_the_unread_lane_columns_and_keys_admission_by_the_source(
+    postgres_clone_dsn: str,
+) -> None:
+    """At head: eleven columns gone, one admission row per source, and the reads still have indexes."""
+
+    del postgres_clone_dsn
+    conn = connect_postgres_test(read_only=False)
+    try:
+        columns = {
+            (str(row["table_name"]), str(row["column_name"]))
+            for row in conn.execute(
+                "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public'"
+            ).fetchall()
+        }
+        primary_key = {
+            str(row["attname"])
+            for row in conn.execute(
+                """
+                SELECT a.attname
+                  FROM pg_index i
+                  JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+                 WHERE i.indrelid = 'public.trading_candidate_gate_decisions'::regclass AND i.indisprimary
+                """
+            ).fetchall()
+        }
+        indexes = {
+            str(row["indexname"])
+            for row in conn.execute(
+                "SELECT indexname FROM pg_indexes WHERE tablename = 'trading_candidate_gate_decisions'"
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+    assert columns.isdisjoint(_DROPPED_LANE_COLUMNS)
+    assert ("trading_execution_runtime_state", "routes_count") in columns
+    assert primary_key == {"source_key"}
+    # The expiry sweep and the retention purge read `source_observed_at_ms`; the 24 h window read
+    # scans it in frame order. Neither index named a dropped column, so both survive the cut.
+    assert {"ix_trading_candidate_gate_open", "ix_trading_candidate_gate_observed"} <= indexes
+
+
+@contextmanager
+def _at_0359(postgres_server_dsn: str) -> Iterator[tuple[str, Any]]:
+    """One database at the revision before the lane cut."""
+
+    with temporary_unmigrated_postgres_database(postgres_server_dsn) as dsn:
+        prepare_test_migration_database(dsn)
+        config = alembic_config()
+        config.attributes["database_url"] = postgres_migration_test_dsn(dsn)
+        with news_genesis_test_evidence():
+            command.upgrade(config, "20260903_0359")
+        with connect_postgres(dsn) as conn:
+            yield dsn, conn
+
+
+def test_0360_keeps_the_answer_the_console_showed_and_rewrites_the_signal_payload(
+    postgres_server_dsn: str,
+) -> None:
+    """Two rows for one source collapse to the one every reader already picked, and the Signal survives.
+
+    The collapse is the part with a choice in it. A source evaluated under two configurations had two
+    rows, and every reader answered "what happened to this frame" with `CASE_CREATED` first and the
+    newest evaluation second. The migration keeps exactly that row, so the ledger after the cut says
+    what the console said before it.
+
+    The payload rewrite is the part with a contract in it: `TradeSignalV1` forbids extra keys, so a
+    stored payload that still carried `alpha_metadata` would stop materialising at all.
+    """
+
+    with _at_0359(postgres_server_dsn) as (dsn, conn):
+        with conn.transaction():
+            conn.execute(
+                """
+                INSERT INTO trading_cases (
+                  case_id, underlying_key, trigger_kind, primary_source_key,
+                  supplemental_source_keys, manifest, manifest_sha256, state,
+                  policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
+                  updated_at_ms, strategy_id, strategy_version, strategy_config_digest
+                ) VALUES (
+                  'cut-case', 'crypto:CUT', 'oi', 'oi:cut:v1', '[]'::jsonb,
+                  '{"test":"lane-cut"}'::jsonb, %s, 'SIGNAL_EMITTED', 'long', 'test_fixture',
+                  1, 1, 1, 1, 'lane_cut_fixture', 'v1', %s
+                )
+                """,
+                ("a" * 64, "b" * 64),
+            )
+            conn.execute(
+                """
+                INSERT INTO trading_trade_signals (
+                  signal_id, case_id, market_key, direction,
+                  observed_at_ns, expires_at_ns, alpha_metadata, payload
+                ) VALUES (%s, 'cut-case', 'crypto:perp:CUT:USDT', 'long', 1000, 10000,
+                          '{"policy_rule":"smart_money_momentum_long"}'::jsonb, %s::jsonb)
+                """,
+                (
+                    "c" * 64,
+                    json.dumps(
+                        {
+                            "signal_version": "trade_signal_v1",
+                            "signal_id": "c" * 64,
+                            "case_id": "cut-case",
+                            "market_key": "crypto:perp:CUT:USDT",
+                            "direction": "long",
+                            "observed_at_ns": 1_000,
+                            "expires_at_ns": 10_000,
+                            "alpha_metadata": {"policy_rule": "smart_money_momentum_long"},
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                ),
+            )
+            for digest, status, stage, reason, case_id, evaluated in (
+                ("d" * 64, "CASE_CREATED", "freeze", "case_created", "cut-case", 10),
+                ("e" * 64, "REJECTED", "eligibility", "already_consumed", None, 20),
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO trading_candidate_gate_decisions (
+                      source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
+                      source_observed_at_ms, status, stage, reason, retryable, evidence, case_id,
+                      first_evaluated_at_ms, last_evaluated_at_ms, attempt_count, release_revision
+                    ) VALUES (
+                      'oi:cut:v1', 'trading_admission_v8', %s, 'oi', 'crypto:CUT',
+                      1, %s, %s, %s, false, '{"venue":"binance.usdm"}'::jsonb, %s, 1, %s, 1, 'test'
+                    )
+                    """,
+                    (digest, status, stage, reason, case_id, evaluated),
+                )
+
+        config = alembic_config()
+        config.attributes["database_url"] = postgres_migration_test_dsn(dsn)
+        with news_genesis_test_evidence():
+            command.upgrade(config, latest_migration_version())
+
+        rows = conn.execute(
+            "SELECT source_key, status, reason, evidence, case_id FROM trading_candidate_gate_decisions"
+        ).fetchall()
+        assert [(str(row["status"]), str(row["reason"]), str(row["case_id"])) for row in rows] == [
+            ("CASE_CREATED", "case_created", "cut-case")
+        ]
+        assert dict(rows[0]["evidence"]) == {
+            "venue": "binance.usdm",
+            "gate_version": "trading_admission_v8",
+            "gate_config_digest": "d" * 64,
+        }
+
+        stored = TradingRepository(conn).unresolved_trade_signals(
+            account_slot="binance_usdm_primary",
+            execution_strategy=EXECUTION_STRATEGY_ID,
+            now_ns=1,
+            limit=10,
+        )
+        # The contract forbids extra keys, so this materialises only because the payload lost the one
+        # `alpha_metadata` key every Signal ever carried.
+        assert [signal.signal_id for signal in materialize_trade_signals(stored)] == ["c" * 64]
+        assert "alpha_metadata" not in stored[0][1]

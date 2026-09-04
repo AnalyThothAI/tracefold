@@ -57,8 +57,7 @@ def console_cases_statement(
     sql = f"""
         SELECT case_id, underlying_key, trigger_kind, primary_source_key, manifest,
                manifest_sha256, state, policy_decision, policy_reason, policy_checks,
-               observed_at_ms, created_at_ms AS case_created_at_ms, decided_at_ms,
-               strategy_id, strategy_version, strategy_config_digest
+               observed_at_ms, created_at_ms AS case_created_at_ms, decided_at_ms
           FROM trading_cases
          WHERE {" AND ".join(predicates)}
          ORDER BY created_at_ms DESC, case_id DESC
@@ -86,7 +85,7 @@ def console_signals_statement(
         params["before_ns"], params["before_id"] = before
     sql = f"""
         SELECT seq, signal_id, case_id, market_key, direction,
-               observed_at_ns, expires_at_ns, alpha_metadata
+               observed_at_ns, expires_at_ns
           FROM trading_trade_signals
          WHERE {" AND ".join(predicates)}
          ORDER BY observed_at_ns DESC, signal_id DESC

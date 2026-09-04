@@ -28,7 +28,10 @@ from .state import (
 )
 
 _AMBIGUOUS_QUERY_AFTER_NS = 5_000_000_000
-_MAX_ENTRY_DRIFT_BPS = Decimal(25)
+# Sizing pads the executable side of the book by this much before it divides the risk budget by a
+# price, so a market order that fills through a thin top of book is still inside the frozen risk. It
+# is not a drift *gate* and never was one — nothing here compares a fill to it (#537 PR-3).
+_ENTRY_PRICE_PAD_BPS = Decimal(25)
 _MAX_SPREAD_BPS = Decimal(30)
 
 
@@ -154,10 +157,9 @@ class EntryCoordinator:
             baseline=day_start,
             now_ns=now_ns,
             requested_risk_usd=requested_risk,
-            requested_leverage=self._profile.risk.max_leverage,
             candidate_is_new_position=True,
         )
-        if decision.action in {"deny", "halt"}:
+        if decision.action == "refuse":
             self._observations.dispose_entry(request, decision.reason)
             return
         quantity = self._sized_quantity(
@@ -277,7 +279,7 @@ class EntryCoordinator:
         if spread_bps > _MAX_SPREAD_BPS:
             return "spread_limit"
         executable_price = ask if request.direction == "long" else bid
-        price = executable_price * (Decimal(1) + _MAX_ENTRY_DRIFT_BPS / Decimal(10_000))
+        price = executable_price * (Decimal(1) + _ENTRY_PRICE_PAD_BPS / Decimal(10_000))
         existing_notional = (
             facts.gross_position_notional_usd + facts.open_order_notional_usd + facts.inflight_order_notional_usd
         )
@@ -293,15 +295,13 @@ class EntryCoordinator:
             )
         except ValueError as exc:
             return str(exc)
+        # `fixed_risk_quantity` divides the risk budget by the padded price, clamps the result to the
+        # leverage headroom and floors it to `size_increment`, so re-checking either ceiling here could
+        # only ever pass: rounding *down* cannot cross a ceiling. What remains are the venue's own
+        # minimums, which sizing does not know (#537 PR-3).
         quantity = instrument.make_qty(raw_quantity)
         if quantity.as_decimal() <= 0:
             return "quantity_below_increment"
-        quantity_notional = quantity.as_decimal() * price
-        stop_fraction = Decimal(route.stop_distance_bps) / Decimal(10_000)
-        if quantity_notional * stop_fraction > allowed_risk_usd:
-            return "quantity_exceeds_risk_after_rounding"
-        if existing_notional + quantity_notional > facts.equity_usd * self._profile.risk.max_leverage:
-            return "quantity_exceeds_leverage_after_rounding"
         if instrument.min_quantity is not None and quantity < instrument.min_quantity:
             return "quantity_below_minimum"
         if instrument.min_notional is not None and quantity.as_decimal() * price < instrument.min_notional.as_decimal():

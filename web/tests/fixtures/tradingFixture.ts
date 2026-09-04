@@ -13,7 +13,7 @@ import type {
 } from "@features/trading/api/tradingQueries";
 
 export const TRADING_NOW_MS = Date.parse("2026-08-25T12:00:00Z");
-export const ALPHA_POLICY_ID = "source_native_oi_smart_money_long_v4";
+export const ALPHA_POLICY_ID = "source_native_oi_smart_money_long_v5";
 
 /**
  * The desk's fixtures, in the shapes the real endpoints return.
@@ -370,9 +370,10 @@ export function tradingGateDecisionFixture(
     case_id: null,
     event_id: "evt-oi-storj",
     gate_attempt_count: 1,
-    gate_config_digest: "c".repeat(64),
     gate_evidence: gateEvidence({
       floor: 5_000_000,
+      gate_config_digest: "c".repeat(64),
+      gate_version: "trading_admission_v9",
       market_key: "crypto:perp:STORJ:USDT",
       oi_value_usd: 3_190_000,
     }),
@@ -382,7 +383,6 @@ export function tradingGateDecisionFixture(
     gate_retryable: false,
     gate_stage: "eligibility",
     gate_status: "REJECTED",
-    gate_version: "trading_admission_v6",
     source_key: "oi:evt-oi-storj:oi_signal_v1",
     source_observed_at_ms: TRADING_NOW_MS - 120_000,
     trigger_kind: "oi",
@@ -397,7 +397,7 @@ export function tradingGateConfigFixture(): TradingGate["config"] {
     max_age_ms: 300_000,
     min_oi_value_usd: 5_000_000,
     source_venues: ["binance.usdm", "hyperliquid.perp", "hyperliquid.xyz"],
-    version: "trading_admission_v6",
+    version: "trading_admission_v9",
   };
 }
 

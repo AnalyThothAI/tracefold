@@ -50,7 +50,6 @@ def _seed_and_summarize(dsn: str) -> dict[str, Any]:
         direction="long",
         observed_at_ns=1_000,
         expires_at_ns=10_000,
-        alpha_metadata={"restore": True},
     )
     requested_at_ns = time.time_ns()
     command = prepare_operator_intent(

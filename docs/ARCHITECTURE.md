@@ -400,8 +400,8 @@ tracefold.trading
   contracts.py        App-facing values plus the Source/Case/Decision vocabulary
   execution_contracts.py  engine-neutral Signal/OperatorIntent/Observation transport values
   admission.py        the one place a Source is admitted, and its closed reason set
-  sources.py          one projected OI row -> one typed Source, or a named failure
-  policy.py           `source_native_oi_smart_money_long_v4`: pure, long-only, frozen evidence
+  sources.py          one projected OI row -> one typed Source, plus the one supported-venue table
+  policy.py           `source_native_oi_smart_money_long_v5`: pure, long-only, frozen evidence
   market_context.py   the price window a Case is frozen against
   storage/            Case/Signal/current reads plus active execution transport/state behind one repository
 
@@ -2075,7 +2075,8 @@ CHECK's model, OI and degraded branches to `news_triage_policy_v12` (#504); and
 way `ExecutionObservationV1` sorts them and a fill that mixes upper-case Binance
 identities with lower-case `tf...` client order ids is no longer rejected;
 additive `20260903_0354` publishes each Runtime's executable `market_key`
-catalogue on `trading_execution_runtime_state.routes`;
+catalogue on `trading_execution_runtime_state.routes` (superseded by
+`20260904_0360`, which keeps only its size);
 destructive `20260903_0355` drops the six dead `trading_cases`
 columns and narrows the Case state and admission status/stage CHECKs to the
 values a writer can reach, refusing to run while a stored row still holds a
@@ -2087,8 +2088,15 @@ makes the contract the only validator — every JSON-shape CHECK and the four
 `payload_digest` / `alpha_contract_sha256` / `evidence_sha256` digests, the
 `confirmation_identity` column and the five readiness booleans (#520 PR-C); and
 and additive `20260903_0358` opens the judgment CHECK's model, OI and degraded
-branches to `news_triage_policy_v13` (#523). `20260903_0359` is the current
-single head.
+branches to `news_triage_policy_v13` (#523); `20260903_0359` drops the
+notification delivery ledger and the index that fed it (#528 PR-1); and
+destructive `20260904_0360` deletes the lane columns no rule reads — the Case's
+lease, attempt counter, empty supplemental keys and three restated policy
+identity columns, the admission ledger's write-only `release_revision`, and the
+Signal ledger's `alpha_metadata` — narrows the admission primary key to
+`(source_key)` with the rulebook moved into `evidence`, and replaces the Runtime
+projection's `routes` array with the `routes_count` every reader rendered (#537
+PR-3). `20260904_0360` is the current single head.
 
 Every new schema change is again a normal linear, immutable, forward-only
 revision after the baseline. Exact-image replacement requires source, image,
@@ -2177,39 +2185,48 @@ second database, or in-memory correctness ledger.
 ### Admission
 
 Admission owns source contract, supported source venue, freshness, the
-liquidity floor, market context, same-underlying Case identity,
-executable-market presence, and the per-turn freeze bound. It records one
-`(source_key, gate_version, gate_config_digest)` decision in
-`trading_candidate_gate_decisions` — the admission ledger — so the console can
-explain why a Source did not become a Case. The scan re-reads a bounded overlap
-and relies on durable source identity rather than an in-memory cursor. A
-terminal row keeps its status, stage, reason, evidence and case link; only the
-two evaluation counters move, so "the scanner re-read this source 40 times" and
-"the answer changed" stay distinguishable.
+liquidity floor, market context and source idempotency. It records one decision
+per `source_key` in `trading_candidate_gate_decisions` — the admission ledger —
+so the console can explain why a Source did not become a Case. The scan window
+is exactly the admission window (`max_age_ms`): a frame outside it has one
+possible answer, `trigger_stale`, and the ledger already holds it. A terminal
+row keeps its status, stage, reason, evidence and case link; only the two
+evaluation counters move, so "the scanner re-read this source 40 times" and "the
+answer changed" stay distinguishable.
+
+The closed refusal vocabulary is `source_contract_invalid`, `source_not_live`,
+`venue_unresolved`, `oi_value_below_floor`, `trigger_stale`,
+`market_data_unavailable`, `market_data_invalid`, `already_consumed`, and
+`case_created` for the admission itself. Everything the lane does not own is
+answered by the owner that can act on it: routability by the Runtime's
+`instrument_unmapped` disposition, one undecided Case per issuer by the
+`ux_trading_case_in_flight_underlying` partial unique index, and one Case per
+source by `trading_cases_primary_source_key_unique` — both of which surface here
+as `freeze:already_consumed`, because the insert is what refused. There is no
+per-turn freeze budget: the lane freezes every admissible frame in the turn.
+
+The rulebook that produced a row travels in its `evidence` (`gate_version`,
+`gate_config_digest`) rather than in the row's key. A version bump therefore
+advances the one row about that source instead of opening a second one beside
+it, which is what the ledger always did in practice and what every reader had to
+re-derive with a `DISTINCT ON`. Retention is 90 days, purged in bounded batches
+by the same turn.
 
 Source venue chooses only the public bars used as evidence. It does not select
 an execution route, and it is the whole of the evidence for Hyperliquid's
-`hl.xyz` builder DEX. Nothing in Admission reads an upstream judge, Program,
-policy or learning cohort.
-
-Admission selects no venue, instrument, account or route, but it does read one
-Runtime fact: the `market_key` catalogue each configured Runtime publishes on
-`trading_execution_runtime_state.routes`. A market absent from every published
-catalogue is `REJECTED/instrument_unmapped` at the eligibility stage, because
-the lane freezes one Case per turn and spending it on a market no Runtime can
-reach both wastes the turn and defers a market that can. When no catalogue is
-published at all — execution disabled, or no Runtime started yet — there is
-nothing to read and admission applies no routability rule.
-
-Changing a threshold does not rewrite history: `gate_config_digest` is half the
-key, so an edit starts a new row and the old one records what the old rule
-decided. Retention is 90 days, purged in bounded batches by the same turn.
+`hl.xyz` builder DEX. The supported venues, the provider family that answers
+each one's public reads, and that venue's own spelling of a market are one table
+in `tracefold/trading/sources.py`; the admission digest, the telemetry
+vocabulary and the Workers bar fetcher all read it. Nothing in Admission reads
+an upstream judge, Program, policy or learning cohort.
 
 ### The Case and its manifest
 
 Cases freeze source identity, cutoff, the price window, a venue-neutral
 `market_key`, and the exact policy identity, version, typed config and config
-digest. `policy_checks` records every condition the policy executed —
+digest — all of them inside the `manifest` jsonb, which is the copy the lane
+compares before it decides, the copy `/api/trading/cases` renders, and the only
+copy there is. `policy_checks` records every condition the policy executed —
 threshold, operator, measured value, pass/fail — so a Case decided a week ago is
 explained without today's configuration.
 
@@ -2223,7 +2240,12 @@ judgment, Program, policy or cohort identity on it. A restart re-runs the exact
 policy identity the Case froze rather than comparing the Case with today's
 thresholds; a Case naming a retired identity is `BLOCKED /
 policy_identity_retired` and is never re-decided, and a Case frozen under an
-earlier manifest version is `BLOCKED / manifest_invalid` on its next claim.
+earlier manifest version is `BLOCKED / manifest_invalid` on its next claim. The
+third block reason is `source_stale`: one clock over a Case, the Source's own
+`observed_at_ms + max_age_ms`, which also bounds the Signal's TTL. A claim is
+`run_id` on a Case still in `PENDING` or `RUNNING`, and that predicate on the
+terminal transition — not a lease, and not an attempt counter — is what stops
+two runs settling one Case twice.
 
 **Trigger and context are different types.** A trigger is the one persisted
 fact that starts an evaluation and fixes its cutoff. Context may enrich that
@@ -2233,8 +2255,11 @@ notification channel being reachable. News push is the only such channel that
 exists; #528 deleted the Trading one, which had never been enabled.
 
 Production runs exactly one pure policy,
-`source_native_oi_smart_money_long_v4`: deterministic, long-only, code-owned
-thresholds, answering `long` or `no_trade` only. It cannot express a
+`source_native_oi_smart_money_long_v5`: deterministic, long-only, code-owned
+thresholds, answering `long` or `no_trade` only. V5 is V4 without
+`min_whale_long_profit_bps`, a threshold every admitted frame in the ledger
+passed by two orders of magnitude; the measurement stays frozen on the Case,
+because it is data about the frame rather than a rule. It cannot express a
 permission, an execution environment or a venue. `long` produces a
 `TradeSignalV1`; the Signal grants no execution authority.
 
@@ -2479,6 +2504,14 @@ projection carrying current equity, drawdown, aggregate fixed-stop risk,
 position PnL, protection coverage and open/in-flight/unknown-order rows. It is
 not an execution contract, durable ledger, reconciliation owner, risk gate, OMS
 or alternate account truth.
+
+The admission ledger holds one row per `source_key`, so the frame table a reader
+scrolls and the distributions printed above it are the same rows: both are plain
+scans of `trading_candidate_gate_decisions`, where each used to be a
+`DISTINCT ON` over a key that could hold two rows for one frame. The Runtime
+projection publishes `routes_count`, not the catalogue itself — the count is
+what `/api/trading/status` renders, and the catalogue's one rule belongs to the
+process that can act on it.
 
 Every product statistic is a bounded aggregation over durable rows. Signal
 latency is computed from durable source, Case and Signal timestamps; execution

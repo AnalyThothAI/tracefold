@@ -122,9 +122,10 @@ CURRENT_TERMINAL_STATES: Final[frozenset[CaseState]] = frozenset(
     {CaseState.NO_TRADE, CaseState.SIGNAL_EMITTED, CaseState.BLOCKED}
 )
 
-# Decision could not safely run; Policy stays `not_run` and no Signal is emitted.
+# Decision could not safely run; Policy stays `not_run` and no Signal is emitted. `source_stale` is
+# the only clock here: a second budget measured from the Case's own creation could not expire before
+# it at any `max_age_ms` an operator would set, so it never decided anything (#537 PR-3).
 DecisionBlockReason = Literal[
-    "case_stale",
     "manifest_invalid",
     "policy_identity_retired",
     "source_stale",

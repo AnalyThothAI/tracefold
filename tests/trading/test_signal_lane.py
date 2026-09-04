@@ -14,8 +14,8 @@ from tracefold.app.trading_config import signal_lane_config
 from tracefold.app.workers.wiring import trading as trading_wiring
 from tracefold.integrations.venues import fetch_binance_candles
 from tracefold.platform.config.models import Settings
-from tracefold.trading.admission import AdmissionConfig
-from tracefold.trading.contracts import Bar, CaseState, OiCandidateRow, TradingCaseManifest
+from tracefold.trading.admission import ADMISSION_VERSION, AdmissionConfig
+from tracefold.trading.contracts import Bar, CaseState, OiCandidateRow, TradingCaseManifest, canonical_sha256
 from tracefold.trading.policy import ALPHA_POLICY
 from tracefold.trading.signal_lane import SignalLane, SignalLaneConfig
 from tracefold.trading.sources import SourceRejected, normalize_oi_source
@@ -58,7 +58,7 @@ def _bars(cutoff: int = NOW - 60_000) -> tuple[Bar, ...]:
 class FakeTrading:
     def __init__(self, rows: Sequence[OiCandidateRow]) -> None:
         self.rows = tuple(rows)
-        self.snapshot = SignalLaneSnapshot(frozenset(), frozenset())
+        self.snapshot = SignalLaneSnapshot(frozenset())
         self.cases: dict[str, dict[str, Any]] = {}
         self.claimable: list[str] = []
         self.signals: list[PreparedTradeSignal] = []
@@ -137,12 +137,12 @@ def _lane(
     trading: FakeTrading,
     *,
     settings_noise: object | None = None,
-    expected_symbol: str = "BTC",
+    expected_symbol: str | None = "BTC",
 ) -> SignalLane:
     del settings_noise
 
     async def bars(candidate: Any, _start: int, _end: int) -> Sequence[Bar]:
-        assert candidate.base_symbol == expected_symbol
+        assert expected_symbol is None or candidate.base_symbol == expected_symbol
         return _bars(candidate.observed_at_ms)
 
     async def projection(_metric: str, _after: int, _until: int) -> Sequence[OiCandidateRow]:
@@ -153,7 +153,6 @@ def _lane(
         config=SignalLaneConfig(admission=AdmissionConfig(), policy=ALPHA_POLICY),
         bars=bars,
         oi_projection=projection,
-        release_revision="test-release",
         clock=lambda: NOW,
     )
 
@@ -247,18 +246,38 @@ def test_no_trade_writes_no_signal() -> None:
     assert next(iter(trading.cases.values()))["state"] is CaseState.NO_TRADE
 
 
-def test_duplicate_source_and_busy_market_do_not_create_duplicate_signal() -> None:
+def test_a_source_that_already_has_a_case_does_not_create_a_second_one() -> None:
+    """The one idempotency rule the lane still executes, and the only one it needs.
+
+    A second Case for the same *issuer* is refused by `ux_trading_case_in_flight_underlying` inside the
+    insert, so the lane no longer restates it as `underlying_busy` — a reason that never once fired in
+    the ledger, because the lane decides every Case it freezes in the turn that freezes it (#537 PR-3).
+    """
+
     consumed = FakeTrading((_row(),))
-    consumed.snapshot = SignalLaneSnapshot(frozenset({"oi:evt-1:oi_signal_v1"}), frozenset())
-    busy = FakeTrading((_row(),))
-    busy.snapshot = SignalLaneSnapshot(frozenset(), frozenset({"crypto:BTC"}))
+    consumed.snapshot = SignalLaneSnapshot(frozenset({"oi:evt-1:oi_signal_v1"}))
 
     asyncio.run(_lane(consumed).advance())
-    asyncio.run(_lane(busy).advance())
 
-    assert consumed.cases == busy.cases == {}
+    assert consumed.cases == {}
     assert {row["reason"] for row in consumed.admission} == {"already_consumed"}
-    assert {row["reason"] for row in busy.admission} == {"underlying_busy"}
+
+
+def test_every_admissible_frame_in_the_turn_is_frozen() -> None:
+    """No per-turn freeze budget: the budget existed to protect a route catalogue read that is gone.
+
+    Two issuers in one scan window used to cost two turns, and the loser carried
+    `lane_capacity_exhausted` — an admission refusal about the lane's own bookkeeping rather than about
+    the frame (#537 PR-3).
+    """
+
+    trading = FakeTrading((_row(), _row(event_id="evt-2", symbol="SOL", source_item_id="source-2")))
+
+    turn = asyncio.run(_lane(trading, expected_symbol=None).advance())
+
+    assert turn.cases_created == 2
+    assert {value["manifest"].base_symbol for value in trading.cases.values()} == {"BTC", "SOL"}
+    assert [row["reason"] for row in trading.admission if row["reason"] != "case_created"] == []
 
 
 def test_unknown_source_venue_is_rejected_without_provider_or_case() -> None:
@@ -339,7 +358,9 @@ def test_a_source_without_its_durable_clock_is_rejected_before_market_data() -> 
 
     assert trading.cases == {}
     assert trading.admission[0]["reason"] == "source_contract_invalid"
-    assert trading.admission[0]["evidence"] == {"rule": "available_at_missing"}
+    # The rulebook that answered rides in `evidence` beside the rule that refused (#537 PR-3).
+    assert trading.admission[0]["evidence"]["rule"] == "available_at_missing"
+    assert trading.admission[0]["evidence"]["gate_version"] == ADMISSION_VERSION
 
 
 def test_the_frozen_case_carries_no_upstream_judgment_program_or_cohort_identity() -> None:
@@ -409,7 +430,9 @@ def test_invalid_market_key_is_durably_rejected_without_faulting_workers() -> No
     assert (turn.cases_created, turn.signals_emitted) == (0, 0)
     assert trading.cases == {}
     assert trading.admission[0]["reason"] == "source_contract_invalid"
-    assert trading.admission[0]["evidence"] == {"rule": "market_key_invalid"}
+    # The rulebook that answered rides in `evidence` beside the rule that refused (#537 PR-3).
+    assert trading.admission[0]["evidence"]["rule"] == "market_key_invalid"
+    assert trading.admission[0]["evidence"]["gate_version"] == ADMISSION_VERSION
 
 
 def test_repository_fault_propagates_out_of_the_turn() -> None:
@@ -423,3 +446,60 @@ def test_repository_fault_propagates_out_of_the_turn() -> None:
         asyncio.run(_lane(trading).advance())
 
     assert trading.signals == []
+
+
+@pytest.mark.parametrize(
+    ("age_ms", "expected_reason", "expected_cases"),
+    ((AdmissionConfig().max_age_ms - 1, "case_created", 1), (AdmissionConfig().max_age_ms + 1, "trigger_stale", 0)),
+    ids=("inside-the-window", "past-the-window"),
+)
+def test_the_scan_horizon_is_exactly_the_admission_window(
+    age_ms: int,
+    expected_reason: str,
+    expected_cases: int,
+) -> None:
+    """#537 PR-3 F2P. One window, not three.
+
+    `scan_horizon_ms` was `max_age_ms * 3`, so every turn re-read two windows of frames whose only
+    possible answer was the one already stored: the median frame was evaluated 439 times before the
+    expiry sweep closed it. A frame one millisecond inside the window is admitted; one millisecond
+    outside it is `trigger_stale`, and that is the whole of what the horizon has to reach.
+    """
+
+    config = SignalLaneConfig(admission=AdmissionConfig(), policy=ALPHA_POLICY)
+    assert config.scan_horizon_ms == config.admission.max_age_ms
+
+    trading = FakeTrading((_row(observed_at_ms=NOW - age_ms, available_at_ms=NOW - age_ms),))
+
+    turn = asyncio.run(_lane(trading).advance())
+
+    assert turn.cases_created == expected_cases
+    assert [row["reason"] for row in trading.admission] == [expected_reason]
+
+
+def test_the_v5_policy_digest_no_longer_carries_the_profit_threshold() -> None:
+    """#537 PR-3. A rule that passed on 310 of 310 admitted frames is not a rule.
+
+    The measurement stays on the Case — the manifest freezes it and the console renders it — because
+    it is data about the frame. What is gone is the key in the identity every Case is decided under.
+    """
+
+    assert ALPHA_POLICY.policy_id == "source_native_oi_smart_money_long_v5"
+    assert "min_whale_long_profit_bps" not in ALPHA_POLICY.config_snapshot
+    assert ALPHA_POLICY.config_digest == canonical_sha256(ALPHA_POLICY.config_snapshot)
+
+    trading = FakeTrading((_row(whale_long_profit_bps=0),))
+    turn = asyncio.run(_lane(trading).advance())
+
+    assert turn.signals_emitted == 1
+    manifest = next(iter(trading.cases.values()))["manifest"]
+    assert manifest.policy_id == "source_native_oi_smart_money_long_v5"
+    assert manifest.contexts.oi.whale_long_profit_bps == 0
+    assert [check.check for check in ALPHA_POLICY.decide(manifest.contexts).checks] == [
+        "source_measurement_window_ms",
+        "oi_direction",
+        "oi_change_bps",
+        "whale_oi_ratio_bps",
+        "pre_move_bps",
+        "pre_move_bps",
+    ]

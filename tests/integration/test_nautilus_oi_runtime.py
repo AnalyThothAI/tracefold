@@ -80,16 +80,15 @@ def _append_signal(repo: TradingRepository, *, suffix: str = "1") -> None:
             """
             INSERT INTO trading_cases (
               case_id, underlying_key, trigger_kind, primary_source_key,
-              supplemental_source_keys, manifest, manifest_sha256, state,
+              manifest, manifest_sha256, state,
               policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
-              updated_at_ms, strategy_id, strategy_version, strategy_config_digest
+              updated_at_ms
             ) VALUES (
-              %s, %s, 'oi', %s, '[]'::jsonb, '{"test":"nautilus-runtime"}'::jsonb,
-              %s, 'SIGNAL_EMITTED', 'long', 'nautilus_runtime_fixture', 1, 1, 1, 1,
-              'nautilus_runtime_fixture', 'v1', %s
+              %s, %s, 'oi', %s, '{"test":"nautilus-runtime"}'::jsonb,
+              %s, 'SIGNAL_EMITTED', 'long', 'nautilus_runtime_fixture', 1, 1, 1, 1
             )
             """,
-            (case_id, f"runtime:{case_id}", f"runtime-source:{case_id}", "4" * 64, "5" * 64),
+            (case_id, f"runtime:{case_id}", f"runtime-source:{case_id}", "4" * 64),
         )
         repo.append_trade_signal(prepared)
 
@@ -175,14 +174,12 @@ def _append_input_burst(repo: TradingRepository, *, size: int) -> None:
                 """
                 INSERT INTO trading_cases (
                   case_id, underlying_key, trigger_kind, primary_source_key,
-                  supplemental_source_keys, manifest, manifest_sha256, state,
+                  manifest, manifest_sha256, state,
                   policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
-                  updated_at_ms, strategy_id, strategy_version, strategy_config_digest
+                  updated_at_ms
                 ) VALUES (
-                  %s, %s, 'oi', %s, '[]'::jsonb, '{"test":"475-pra"}'::jsonb,
-                  %s, 'SIGNAL_EMITTED', 'long', '475-pra', 1, 1, 1, 1,
-                  'source_native_oi_smart_money_long_v4', 'source_native_oi_smart_money_long_v4',
-                  %s
+                  %s, %s, 'oi', %s, '{"test":"475-pra"}'::jsonb,
+                  %s, 'SIGNAL_EMITTED', 'long', '475-pra', 1, 1, 1, 1
                 )
                 """,
                 (
@@ -190,7 +187,6 @@ def _append_input_burst(repo: TradingRepository, *, size: int) -> None:
                     f"runtime:{case_id}",
                     f"runtime-source:{case_id}",
                     _sha(f"manifest:{index}"),
-                    "5" * 64,
                 ),
             )
             repo.append_trade_signal(

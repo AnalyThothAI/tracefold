@@ -376,8 +376,8 @@ the route components into the eager shell chunk.
   when there is one. The bare chip was the same shape for "below the liquidity
   floor", "no native perp at the venue whose OI moved" and "the lane never
   evaluated this frame"; the last of those is not a refusal and keeps the bare
-  chip, because a frame with no ledger row under any `gate_version` has not been
-  declined by anything.
+  chip, because a frame with no admission row at all has not been declined by
+  anything.
 
   The Event detail carries a 成案 badge from the same feature. It renders nothing
   at all for a model-lane Event: only the deterministic OI lane's source key

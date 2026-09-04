@@ -447,6 +447,40 @@ def test_runtime_start_receipt_binds_exact_runtime_image_config_and_credentials(
     assert observation.summary["credential_fingerprint"] == state.credential_fingerprint
 
 
+def test_a_full_audit_sink_does_not_stop_the_runtime_from_starting() -> None:
+    """#537 PR-3. The start receipt raised when `offer` refused, and `offer` cannot refuse here.
+
+    The sink is empty at start, so the guard could only ever fire if the very first observation
+    overflowed a bound it cannot reach. Keeping it meant a Runtime that failed to start over a
+    telemetry write. The observation is still offered; the process no longer depends on it.
+    """
+
+    audit = AuditSink(
+        factory=ObservationFactory(
+            account_slot="binance_usdm_primary",
+            runtime_release="nautilus-1.231.0+oi-v1",
+            execution_strategy="oi_nautilus_v1",
+        ),
+        max_count=1,
+    )
+    state: Any = SimpleNamespace(
+        started_at_ns=1_000,
+        runtime_id="11111111-1111-4111-8111-111111111111",
+        mode="paper",
+        runtime_revision="a" * 40,
+        image_digest="sha256:" + "b" * 64,
+        config_sha256="c" * 64,
+        credential_fingerprint="d" * 64,
+        account_slot="binance_usdm_primary",
+    )
+    _observe_runtime_start(audit=audit, state=state)
+
+    # The bound is spent, so a second start receipt is dropped and recorded as a gap — and returns.
+    _observe_runtime_start(audit=audit, state=SimpleNamespace(**{**vars(state), "runtime_id": "2" * 8}))
+
+    assert audit.healthy is False
+
+
 def _settings_with_risk(**overrides: Any) -> Settings:
     return Settings(trading={"execution": {"mode": "paper", "risk": overrides}})
 

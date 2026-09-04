@@ -1,4 +1,4 @@
-"""The one production Alpha policy: `source_native_oi_smart_money_long_v4`.
+"""The one production Alpha policy: `source_native_oi_smart_money_long_v5`.
 
 Pure, deterministic, long-only, and the whole of what decides a Case. It answers `long` or `no_trade`
 and nothing else — no permission, no execution environment, no venue. The result is an engine-neutral
@@ -10,13 +10,18 @@ about which rules decided a row, so a changed rulebook takes a new id rather tha
 There is no `allow_short`, pinned or otherwise: a `fall` frame is refused by `not_oi_rise` before any
 side exists and no other path produces one, so the key's only effect would be on the digest.
 
-The template this implements is three conditions on one frame:
+The template this implements is two conditions on one frame:
 
     5-minute OI rise  >= 5%
     smart-money / OI  >  50%
-    profit metric     >  0
 
 plus a confirmed price direction and a chasing ceiling above it.
+
+**The template's third condition is gone, and its absence is the v5 identity.** `whale_long_profit_bps
+> 0` passed on 310 of 310 admitted frames — the provider's own floor for the metric is far above zero
+— so it added a key to the digest and a check to every Case and refused nothing (#537 PR-3). The
+measurement itself is still frozen on the Case and still rendered: it is data about the frame, and
+deleting a rule that never fires does not delete what it read.
 
 **The OI floor is 5% by operator decision, not by measurement.** The template's own number is 10%,
 which starves this lane. Lowering it bought throughput for a lane whose purpose is receipts; it did
@@ -52,7 +57,7 @@ from .contracts import (
     canonical_sha256,
 )
 
-ALPHA_POLICY_ID: Final = "source_native_oi_smart_money_long_v4"
+ALPHA_POLICY_ID: Final = "source_native_oi_smart_money_long_v5"
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,9 +76,6 @@ class AlphaPolicyConfig:
     min_oi_change_bps: int = 500
     # Strictly above. 5000 bps is exactly half and does not qualify.
     min_whale_oi_ratio_bps: int = 5_000
-    # Strictly above. The provider's own `Whale Long Profit N%` percentage — not an account count and
-    # not a dollar PnL.
-    min_whale_long_profit_bps: int = 0
     # Direction confirmation only. Zero, and stated as zero rather than inherited from a shared band.
     min_price_move_bps: int = 0
     # Above the measured 6-12% loss bucket's floor. See the module docstring.
@@ -86,7 +88,6 @@ class AlphaPolicyConfig:
             "measurement_window_ms": self.measurement_window_ms,
             "min_oi_change_bps": self.min_oi_change_bps,
             "min_price_move_bps": self.min_price_move_bps,
-            "min_whale_long_profit_bps": self.min_whale_long_profit_bps,
             "min_whale_oi_ratio_bps": self.min_whale_oi_ratio_bps,
         }
 
@@ -114,7 +115,7 @@ class AlphaPolicy:
     def decide(self, context: FrozenPolicyContext) -> AlphaDecision:
         """Frozen numbers in, one named answer plus its evidence out. No clock, no read, no model.
 
-        The order is the order an operator reads the template in — source, then the three conditions,
+        The order is the order an operator reads the template in — source, then the two conditions,
         then the price confirmation — so the reason a Case carries is the first thing about it that
         failed rather than whichever rule happened to be written first. Checks accumulate as they are
         executed, so a refusal carries the rules that passed before it as well as the one that did not.
@@ -175,15 +176,6 @@ class AlphaPolicy:
             oi.whale_oi_ratio_bps > config.min_whale_oi_ratio_bps,
         ):
             return refuse("smart_money_ratio_below_or_equal_floor")
-        if not record(
-            "whale_long_profit_bps",
-            ">",
-            config.min_whale_long_profit_bps,
-            oi.whale_long_profit_bps,
-            oi.whale_long_profit_bps > config.min_whale_long_profit_bps,
-        ):
-            return refuse("smart_money_profit_not_positive")
-
         pre_move = context.market.pre_move_bps
         # A missing pre-move is not "no confirmation", it is "no evidence", and both refuse. Admission
         # already deferred every frame with no candle at all, so reaching here with `None` means the
@@ -210,10 +202,12 @@ class AlphaPolicy:
         return AlphaDecision(
             decision="long",
             rule="smart_money_momentum_long",
+            # Only the rules that decided it. The frame's other measurements stay on the manifest,
+            # where a reader can see them without the sentence claiming they were conditions.
             setup=(
                 f"{config.measurement_window_ms // 60_000}m 持仓上升 "
                 f"{oi.oi_change_bps / 100:.2f}%，鲸鱼占比 {oi.whale_oi_ratio_bps / 100:.2f}%，"
-                f"盈利指标 {oi.whale_long_profit_bps / 100:.2f}%，价格已确认方向 {confirmed / 100:.2f}%"
+                f"价格已确认方向 {confirmed / 100:.2f}%"
             ),
             invalidation="价格跌破冻结止损，或持仓时限到期",
             checks=tuple(checks),

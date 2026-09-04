@@ -268,7 +268,7 @@ with no version and no frozen evidence. Unknown retired keys fail strict
 settings validation. The Signal lane's poll cadence is App-owned and the
 Nautilus cadence is code-owned.
 
-The one production policy, `source_native_oi_smart_money_long_v4`, is
+The one production policy, `source_native_oi_smart_money_long_v5`, is
 code-owned and frozen onto every Case it decides, together with the per-check
 evidence (`policy_checks`: threshold, operator, measured value, pass/fail).
 It answers `long` or `no_trade` only; it cannot express a permission, an
@@ -288,7 +288,12 @@ writes only `trading_operator_intents`, append-only
 the generation-fenced `0343` current Runtime projection. `20260903_0359` dropped
 the `0342` notification delivery ledger and the partial observation index that
 fed it: the channel was never assembled in production and the ledger held zero
-rows. `20260903_0356` dropped the profile
+rows. `20260904_0360` dropped the Case's lease, attempt counter, always-empty
+supplemental source keys and three restated policy identity columns, the
+admission ledger's write-only `release_revision`, and the Signal ledger's
+`alpha_metadata`; it narrowed the admission primary key to `(source_key)` with
+`gate_version` / `gate_config_digest` moved into `evidence`, and replaced the
+Runtime projection's `routes` array with `routes_count` (#537 PR-3). `20260903_0356` dropped the profile
 activation ledger and the Decision Plane heartbeat with it, and renamed both
 execution identity columns to `account_slot`; `20260903_0357` dropped every
 JSON-shape CHECK on those tables, the four `trading_*` functions behind them,
@@ -1161,9 +1166,10 @@ Runtime facts, and status carries readiness plus bounded totals.
   fresh private flat proof.
 - `GET /api/trading/gate` — the Source/Admission aggregate over a bounded
   24-hour window: the admission `config` its rows were filed under, then per
-  Source the status, stage, named reason, retryability, version/config digest,
-  frozen evidence, timestamps, attempt count, and the linked `case_id` when one
-  exists. It publishes no Case state and no execution state.
+  Source the status, stage, named reason, retryability, frozen evidence (which
+  carries the `gate_version` and `gate_config_digest` that decided the row),
+  timestamps, attempt count, and the linked `case_id` when one exists. It
+  publishes no Case state and no execution state.
 - `GET /api/trading/gate/{event_id}` — one deterministic OI Source's admission
   answer, joined only by `oi:{event_id}:{metric_version}`. Joining by symbol and
   time would record a link the ledger does not have.
@@ -1621,9 +1627,11 @@ claim, and one naming a retired policy identity is `BLOCKED /
 policy_identity_retired`.
 
 The HTTP shape uses `trigger_kind`, never the retired `case_kind`. A Case
-projection carries `policy_id` and `policy_version` — the read model is where
-the storage columns `strategy_id` / `strategy_version` meet the product word,
-rather than a rename migration over historical rows.
+projection carries `policy_id`, `policy_version` and `policy_config_digest` read
+from the frozen `manifest`, which is the copy the lane itself compares before it
+decides. They are nullable for the same reason every other manifest-derived
+field is: the manifest is the only writer of them, and a Case whose manifest
+names no policy must render as that rather than 500 the route (#532).
 The typed liquidation ledger is not cascade-owned by `news_items`; raw Item
 retention cannot delete the normalized replay fact.
 [ADR 0002](adr/0002-trading-execution-owner-hard-cuts.md) records the retired

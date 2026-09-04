@@ -207,14 +207,12 @@ def _append_workload(
                 """
                 INSERT INTO trading_cases (
                   case_id, underlying_key, trigger_kind, primary_source_key,
-                  supplemental_source_keys, manifest, manifest_sha256, state,
+                  manifest, manifest_sha256, state,
                   policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
-                  updated_at_ms, strategy_id, strategy_version, strategy_config_digest
+                  updated_at_ms
                 ) VALUES (
-                  %s, %s, 'oi', %s, '[]'::jsonb, '{"diagnostic":"475-runtime-input"}'::jsonb,
-                  %s, 'SIGNAL_EMITTED', 'long', 'runtime_input_diagnostic', %s, %s, %s, %s,
-                  'source_native_oi_smart_money_long_v4', 'source_native_oi_smart_money_long_v4',
-                  %s
+                  %s, %s, 'oi', %s, '{"diagnostic":"475-runtime-input"}'::jsonb,
+                  %s, 'SIGNAL_EMITTED', 'long', 'runtime_input_diagnostic', %s, %s, %s, %s
                 )
                 """,
                 (
@@ -226,7 +224,6 @@ def _append_workload(
                     now_ns // 1_000_000,
                     now_ns // 1_000_000,
                     now_ns // 1_000_000,
-                    "b" * 64,
                 ),
             )
             repo.append_trade_signal(

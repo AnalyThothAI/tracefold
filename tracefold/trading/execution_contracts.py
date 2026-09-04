@@ -93,7 +93,12 @@ def _validate_metadata(value: object) -> dict[str, MetadataScalar]:
 
 
 class TradeSignalV1(_FrozenContract):
-    """A time-bounded Alpha conclusion; never an order or capital instruction."""
+    """A time-bounded Alpha conclusion; never an order or capital instruction.
+
+    It carried a bounded metadata map too, and every Signal ever written carried the same one key in
+    it: the policy rule, which the Case that emitted the Signal already records as `policy_reason`
+    with the checks behind it. One fact, one place (#537 PR-3).
+    """
 
     signal_version: Literal["trade_signal_v1"] = "trade_signal_v1"
     seq: int = Field(ge=1)
@@ -103,7 +108,6 @@ class TradeSignalV1(_FrozenContract):
     direction: Literal["long", "short"]
     observed_at_ns: int = Field(gt=0)
     expires_at_ns: int = Field(gt=0)
-    alpha_metadata: dict[str, MetadataScalar] = Field(default_factory=dict)
 
     @field_validator("case_id")
     @classmethod
@@ -111,11 +115,6 @@ class TradeSignalV1(_FrozenContract):
         if not postgres_text_valid(value):
             raise ValueError("trade_signal_case_invalid")
         return value
-
-    @field_validator("alpha_metadata", mode="before")
-    @classmethod
-    def validate_alpha_metadata(cls, value: object) -> dict[str, MetadataScalar]:
-        return _validate_metadata(value)
 
     @model_validator(mode="after")
     def validate_clock(self) -> Self:

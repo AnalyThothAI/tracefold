@@ -27,6 +27,10 @@ RETRYABLE_ENTRY_REASONS: Final[frozenset[str]] = frozenset(
         "market_subscription_pending",
         "oi_runtime_account_missing",
         "oi_runtime_account_balance_missing",
+        # The same clock family as `account_stale`, answered by the same private reconciliation. It was
+        # terminal while its two siblings were retryable, so which of the three a Runtime happened to
+        # notice first decided whether the Signal got another delivery (#537 PR-3).
+        "reconciliation_stale",
     }
 )
 

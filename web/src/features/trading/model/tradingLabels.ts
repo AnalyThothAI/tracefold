@@ -12,10 +12,9 @@ export const CASE_STATE_ZH: Record<string, string> = {
  *
  * Every one of these is a *system* fact, never an opinion about the trade: an opinion ends in `NO_TRADE`
  * with its frozen checks attached. A catch-all covering a PostgreSQL timeout and a real refusal alike is
- * deliberately absent — a blocked Case must name which of the four it is.
+ * deliberately absent — a blocked Case must name which of the three it is.
  */
 export const BLOCKED_REASON_ZH: Record<string, string> = {
-  case_stale: "案例超过判定时限",
   manifest_invalid: "冻结清单无法解析",
   policy_identity_retired: "该案例的策略身份已退役",
   source_stale: "来源事实已过时",
@@ -28,7 +27,6 @@ export const POLICY_RULE_ZH: Record<string, string> = {
   price_direction_not_confirmed: "价格方向未确认",
   smart_money_momentum_long: "聪明钱动量 · 做多",
   smart_money_oi_change_below_floor: "持仓变动低于地板",
-  smart_money_profit_not_positive: "盈利指标不为正",
   smart_money_ratio_below_or_equal_floor: "鲸鱼占比未超过地板",
   source_window_mismatch: "测量窗口不可证",
 };
@@ -47,10 +45,11 @@ export function policyReasonLabel(reason: string | null | undefined): string {
  * makes; a stored id with no entry here still renders as itself, which is what an operator greps anyway.
  */
 export const POLICY_ZH: Record<string, string> = {
-  source_native_oi_smart_money_long_v4: "来源原生 OI × 聪明钱 · 做多",
+  source_native_oi_smart_money_long_v5: "来源原生 OI × 聪明钱 · 做多",
 };
 
-export function policyLabel(policyId: string): string {
+export function policyLabel(policyId: string | null | undefined): string {
+  if (!policyId) return "—";
   return POLICY_ZH[policyId] ?? policyId;
 }
 
@@ -107,9 +106,7 @@ export const SIGNAL_DISPOSITION_ZH: Record<string, string> = {
   protection_unproven: "已有敞口未证明受保护",
   // The risk policy's halts and denials.
   account_stale: "账户快照已过期",
-  aggregate_risk_limit: "总风险已达上限",
   daily_loss_limit: "当日亏损已达上限",
-  leverage_limit: "杠杆超限",
   market_stale: "行情已过期",
   position_limit: "持仓数已达上限",
   risk_non_positive: "可用风险预算不为正",
@@ -117,8 +114,6 @@ export const SIGNAL_DISPOSITION_ZH: Record<string, string> = {
   notional_below_minimum: "名义金额低于最小值",
   quantity_below_increment: "数量低于最小变动",
   quantity_below_minimum: "数量低于最小值",
-  quantity_exceeds_leverage_after_rounding: "取整后超出杠杆上限",
-  quantity_exceeds_risk_after_rounding: "取整后超出风险预算",
   spread_limit: "点差超限",
   // Facts the entry path could not read at all.
   oi_runtime_account_balance_missing: "账户余额不可读",
@@ -188,24 +183,16 @@ export const EXIT_REASON_ZH: Record<string, string> = {
  * The raw key stays on screen beside the Chinese for the same reason `policy_reason` does: it is the
  * string an operator greps, and the two vocabularies must not drift into synonyms. A key with no entry
  * here renders as itself — a missing translation is a gap in this table, not a reason to hide a refusal.
+ *
+ * Exactly the pairs a writer can still emit. #537 PR-3 deleted the four eligibility rules that never
+ * fired or never mattered — the issuer-busy defer, the same-underlying merge, the per-turn freeze
+ * budget and the lane's own route-catalogue check — and #348 retired four before them. A 90-day-old
+ * row that still carries one renders under its own key, which is what the fallback above is for.
  */
 export const GATE_REASON_ZH: Record<string, string> = {
   "eligibility:already_consumed": "同一来源已成案",
-  // No configured Runtime lists this market, so a Case would only ever be refused later.
-  "eligibility:instrument_unmapped": "运行时目录里没有这个市场",
-  "eligibility:blacklisted": "标的在拒绝名单",
-  "eligibility:lane_capacity_exhausted": "本轮成案预算已满",
   "eligibility:oi_value_below_floor": "持仓额低于流动性地板",
-  "eligibility:superseded_by_newer_trigger": "被同标的更新的帧合并",
-  "eligibility:underlying_busy": "该标的已被占用",
   "eligibility:trigger_stale": "帧已过触发时效",
-  // Retired by #348 and kept only to read the ledger's 90-day history. `lane_capacity_exhausted`
-  // survives as a current answer but no longer means a daily quota: the lane's bound is one live
-  // thesis, so the label above says that instead.
-  "eligibility:active_underlying": "该标的已有在场仓位（旧）",
-  "eligibility:case_in_flight": "该标的已有未决案例（旧）",
-  "eligibility:cooldown": "标的冷却期内（旧）",
-  "eligibility:rank_above_limit": "窗口内名次超限（旧）",
   "freeze:already_consumed": "同一来源已成案",
   "freeze:case_created": "已开案",
   "market_context:market_data_invalid": "截面无可用收盘价",

@@ -41,15 +41,6 @@ class PriceWindow:
     lookback_ms: int = DEFAULT_PRE_MOVE_LOOKBACK_MS
     bar_gap_tolerance_ms: int = DEFAULT_BAR_GAP_TOLERANCE_MS
 
-    def as_dict(self) -> dict[str, int]:
-        return {
-            "lookback_ms": self.lookback_ms,
-            "bar_gap_tolerance_ms": self.bar_gap_tolerance_ms,
-        }
-
-
-DEFAULT_PRICE_WINDOW = PriceWindow()
-
 
 def select_bar(bars: Sequence[Bar], *, target_ms: int, gap_tolerance_ms: int) -> Bar | None:
     """The last bar closed at or before `target_ms`, or None when the nearest one is too far back.
@@ -86,9 +77,13 @@ def pre_move_bps(
     bars: Sequence[Bar],
     *,
     anchor_at_ms: int,
-    window: PriceWindow = DEFAULT_PRICE_WINDOW,
+    window: PriceWindow,
 ) -> int | None:
-    """The realised move over the lookback ending at the trigger. None when either end is missing."""
+    """The realised move over the lookback ending at the trigger. None when either end is missing.
+
+    The window is the caller's, always: the lane executes the operator's configured one, and a default
+    here would let a call site measure a different lookback than the Case records.
+    """
 
     start = select_bar(bars, target_ms=anchor_at_ms - window.lookback_ms, gap_tolerance_ms=window.bar_gap_tolerance_ms)
     end = select_bar(bars, target_ms=anchor_at_ms, gap_tolerance_ms=window.bar_gap_tolerance_ms)
@@ -100,7 +95,6 @@ def pre_move_bps(
 __all__ = [
     "DEFAULT_BAR_GAP_TOLERANCE_MS",
     "DEFAULT_PRE_MOVE_LOOKBACK_MS",
-    "DEFAULT_PRICE_WINDOW",
     "PriceWindow",
     "move_bps",
     "pre_move_bps",

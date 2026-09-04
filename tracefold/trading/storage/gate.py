@@ -1,10 +1,15 @@
 """Persistence for the candidate admission ledger.
 
-One row per `(source_key, gate_version, gate_config_digest)`. The monotonic transition lives in the
-`ON CONFLICT` clause rather than in the runner, because the runner is not an authority across a
-restart, a second process or two turns racing on the same overlap window: a `DEFERRED` row may move to
-any terminal state, a terminal row may only have its evaluation counters bumped, and there is no
-statement here that can move one back.
+**One row per `source_key`.** It was one row per `(source_key, gate_version, gate_config_digest)`, on
+the promise that a new rulebook re-decides every source rather than inheriting an answer from a rule
+that is gone. The ledger never did that — across the v6 to v8 window every frame still had exactly one
+row — and the promise cost every reader a `DISTINCT ON` and a "which of these two rows is *the*
+answer" rule (#537 PR-3). The rulebook that decided a row now travels in its `evidence`.
+
+The monotonic transition lives in the `ON CONFLICT` clause rather than in the runner, because the
+runner is not an authority across a restart, a second process or two turns racing on the same window:
+a `DEFERRED` row may move to any terminal state, a terminal row may only have its evaluation counters
+bumped, and there is no statement here that can move one back.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ from .execution_stream import _dumps
 _PURGE_BATCH = 500
 
 _GATE_DECISION_COLUMNS = """
-    source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
+    source_key, trigger_kind, underlying_key,
     source_observed_at_ms, status, stage, reason, retryable, evidence, case_id,
     first_evaluated_at_ms, last_evaluated_at_ms, attempt_count
 """
@@ -28,47 +33,19 @@ GATE_DECISION_FOR_SOURCE_KEY_SQL: Final = f"""
     SELECT {_GATE_DECISION_COLUMNS}
       FROM trading_candidate_gate_decisions
      WHERE source_key = %s
-     ORDER BY (status = 'CASE_CREATED') DESC, last_evaluated_at_ms DESC, gate_config_digest
-     LIMIT 1
 """  # noqa: S608 -- a module-owned column list; the source key stays bound
-LATEST_GATE_DECISION_PER_SOURCE_SQL: Final = f"""
-    SELECT DISTINCT ON (source_key)
-           {_GATE_DECISION_COLUMNS}
+# One admission answer per source in the window, newest frame first. The primary key is the source
+# key, so the table itself is the dedup: one index scan in frame order with a limit, where this used
+# to be a full-window `DISTINCT ON` materialised and re-sorted so the two orderings could disagree.
+GATE_DECISIONS_SINCE_SQL: Final = f"""
+    SELECT {_GATE_DECISION_COLUMNS}
       FROM trading_candidate_gate_decisions
      WHERE trigger_kind = %s AND source_observed_at_ms >= %s
-     ORDER BY source_key, (status = 'CASE_CREATED') DESC, last_evaluated_at_ms DESC
-"""  # noqa: S608 -- a module-owned column list; both predicates stay bound
+     ORDER BY source_observed_at_ms DESC, source_key
+     LIMIT %s
+"""  # noqa: S608 -- a module-owned column list; every predicate stays bound
 
 
-def gate_decisions_since_sql() -> str:
-    """The dedup set re-sorted into frame order.
-
-    The subquery and the outer sort are both deliberate: the dedup has to order by `source_key` and the
-    table has to arrive in frame order, so the read materialises the whole window's dedup set. Flattening
-    it into one `DISTINCT ON` with the limit inside would plan a read that can stop early, which is not
-    the read this route runs.
-    """
-
-    return f"""
-        SELECT {_GATE_DECISION_COLUMNS}
-          FROM ({LATEST_GATE_DECISION_PER_SOURCE_SQL}) latest
-         ORDER BY source_observed_at_ms DESC, source_key
-         LIMIT %s
-    """  # noqa: S608 -- the interpolated subquery and column list are module-owned constants
-
-
-# One row per source, whatever configurations have looked at it.
-#
-# The table deliberately keeps a row per `(source_key, gate_version, gate_config_digest)` — that is what
-# stops a threshold edit from rewriting the record of what the previous threshold decided. But a report
-# that groups over the raw table counts a frame once per configuration that ever saw it, so after any
-# edit the "upstream frames" total stops being a frame count and one frame can appear under two
-# different statuses at once.
-#
-# `CASE_CREATED` wins over recency, and that ordering is the whole subtlety. A source that produced a
-# case under one configuration is re-read under the next one and refused as `already_consumed`, which
-# is correct as an admission answer and wrong as *the* answer about the frame: it did become a case,
-# and a report that showed the newer row would forget it.
 class CandidateGateStorage:
     conn: Any
 
@@ -76,8 +53,6 @@ class CandidateGateStorage:
         self,
         *,
         source_key: str,
-        gate_version: str,
-        gate_config_digest: str,
         trigger_kind: str,
         underlying_key: str | None,
         source_observed_at_ms: int,
@@ -87,14 +62,14 @@ class CandidateGateStorage:
         retryable: bool,
         evidence: Mapping[str, Any],
         case_id: str | None,
-        release_revision: str,
         now_ms: int,
     ) -> None:
         """Write or advance one admission decision. Re-evaluation never appends and never regresses.
 
         A terminal row keeps its status, stage, reason, evidence and case link; only
         `last_evaluated_at_ms` and `attempt_count` move. That is what makes "the scanner re-read this
-        source 40 times" and "the answer changed" distinguishable in the ledger.
+        source 40 times" and "the answer changed" distinguishable in the ledger. The stored `evidence`
+        therefore keeps naming the rulebook that *decided* the row, not the one that last looked at it.
 
         The clock is the one answer that closes a row *without* replacing what it was waiting on. The
         scanner re-reads its whole overlap window every couple of seconds, so a row deferred on an
@@ -113,11 +88,11 @@ class CandidateGateStorage:
         self.conn.execute(
             """
             INSERT INTO trading_candidate_gate_decisions (
-              source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
+              source_key, trigger_kind, underlying_key,
               source_observed_at_ms, status, stage, reason, retryable, evidence, case_id,
-              first_evaluated_at_ms, last_evaluated_at_ms, attempt_count, release_revision
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, 1, %s)
-            ON CONFLICT (source_key, gate_version, gate_config_digest) DO UPDATE
+              first_evaluated_at_ms, last_evaluated_at_ms, attempt_count
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, 1)
+            ON CONFLICT (source_key) DO UPDATE
                SET last_evaluated_at_ms = EXCLUDED.last_evaluated_at_ms,
                    attempt_count = trading_candidate_gate_decisions.attempt_count + 1,
                    status = CASE WHEN trading_candidate_gate_decisions.status = 'DEFERRED'
@@ -135,15 +110,10 @@ class CandidateGateStorage:
                                    THEN EXCLUDED.evidence ELSE trading_candidate_gate_decisions.evidence END,
                    case_id = CASE WHEN trading_candidate_gate_decisions.status = 'DEFERRED'
                                    AND NOT (EXCLUDED.status = 'EXPIRED' AND EXCLUDED.reason = 'trigger_stale')
-                                  THEN EXCLUDED.case_id ELSE trading_candidate_gate_decisions.case_id END,
-                   release_revision = CASE WHEN trading_candidate_gate_decisions.status = 'DEFERRED'
-                                           THEN EXCLUDED.release_revision
-                                           ELSE trading_candidate_gate_decisions.release_revision END
+                                  THEN EXCLUDED.case_id ELSE trading_candidate_gate_decisions.case_id END
             """,
             (
                 source_key,
-                gate_version,
-                gate_config_digest,
                 trigger_kind,
                 underlying_key,
                 int(source_observed_at_ms),
@@ -155,7 +125,6 @@ class CandidateGateStorage:
                 case_id,
                 int(now_ms),
                 int(now_ms),
-                release_revision,
             ),
         )
 
@@ -164,9 +133,8 @@ class CandidateGateStorage:
 
         A `DEFERRED` row promises that a later scan could answer differently. Once the frame is past the
         trigger budget that promise is false, and leaving the row open would make the ledger's open set
-        grow without bound while claiming work is still pending. Deliberately not scoped to one
-        `gate_config_digest`: a threshold edit starts new rows, and the rows written under the previous
-        digest still need closing.
+        grow without bound while claiming work is still pending. This is also the only writer the lane
+        has for a frame that has left its scan window, now that the window is exactly `max_age_ms`.
 
         `stage` and `reason` are left exactly as the gate wrote them: only a `stage:reason` pair some
         rule can emit is legal, the read model aggregates on those pairs, and the status alone already
@@ -205,14 +173,7 @@ class CandidateGateStorage:
         return int(cursor.rowcount or 0)
 
     def gate_decision_for_source_key(self, *, source_key: str) -> dict[str, Any] | None:
-        """The one admission answer for one source, across every configuration that has seen it.
-
-        A source evaluated under two configurations has two rows, and the console asks "what happened
-        to this frame". `CASE_CREATED` is that answer whenever one exists — a source that produced a
-        case is re-read under the next configuration and refused as `already_consumed`, and showing
-        that newer row would report a refusal for a frame that is linked to a live case. Otherwise the
-        most recent decision wins.
-        """
+        """The admission answer for one source. There is exactly one, by primary key."""
 
         row = self.conn.execute(GATE_DECISION_FOR_SOURCE_KEY_SQL, (source_key,)).fetchone()
         return dict(row) if row is not None else None
@@ -226,19 +187,12 @@ class CandidateGateStorage:
         one bar. Rows of another kind stay durable evidence, queryable by source key or by SQL, and are
         deliberately not console numbers.
 
-        The same one-row-per-source rule the counts use, so the table a reader scrolls and the
-        distribution above it cannot disagree: a frame two configurations have looked at appears once,
-        and `CASE_CREATED` is that appearance whenever one exists.
-
         Ordered by the *frame's* observation time rather than by evaluation time, because that is the
         order the frame table itself is in — a row here has to line up with the frame on the same line.
         Bounded, and the caller reports the truncation rather than quietly showing a short page.
         """
 
-        rows = self.conn.execute(
-            gate_decisions_since_sql(),
-            (trigger_kind, int(since_ms), int(limit)),
-        ).fetchall()
+        rows = self.conn.execute(GATE_DECISIONS_SINCE_SQL, (trigger_kind, int(since_ms), int(limit))).fetchall()
         return [dict(row) for row in rows]
 
     def gate_decision_counts(self, *, since_ms: int, trigger_kind: str = "oi") -> dict[str, dict[str, int]]:
@@ -249,18 +203,25 @@ class CandidateGateStorage:
         one of the console's "24 h" figures that does not key on a creation time; collapsing it onto
         one would reintroduce that bug.
 
-        One row per *source*, not per stored row: grouping the raw table counts a frame once per
-        configuration that ever looked at it, so one threshold edit turns the "upstream frames" total
-        into something that is not a frame count.
+        One row per *source* is the table's own key, so this counts stored rows directly.
         """
 
         status_rows = self.conn.execute(
-            f"SELECT status, count(*) AS n FROM ({LATEST_GATE_DECISION_PER_SOURCE_SQL}) latest GROUP BY status",  # noqa: S608
+            """
+            SELECT status, count(*) AS n
+              FROM trading_candidate_gate_decisions
+             WHERE trigger_kind = %s AND source_observed_at_ms >= %s
+             GROUP BY status
+            """,
             (trigger_kind, int(since_ms)),
         ).fetchall()
         reason_rows = self.conn.execute(
-            f"SELECT stage, reason, count(*) AS n "  # noqa: S608
-            f"FROM ({LATEST_GATE_DECISION_PER_SOURCE_SQL}) latest GROUP BY stage, reason",
+            """
+            SELECT stage, reason, count(*) AS n
+              FROM trading_candidate_gate_decisions
+             WHERE trigger_kind = %s AND source_observed_at_ms >= %s
+             GROUP BY stage, reason
+            """,
             (trigger_kind, int(since_ms)),
         ).fetchall()
         return {
@@ -277,13 +238,14 @@ class CandidateGateStorage:
         """
 
         row = self.conn.execute(
-            f"""
+            """
             SELECT max(source_observed_at_ms) AS latest_source_at_ms,
                    max(source_observed_at_ms) FILTER (WHERE status = 'CASE_CREATED')
                      AS latest_gate_eligible_at_ms
-              FROM ({LATEST_GATE_DECISION_PER_SOURCE_SQL}) latest
-            """,  # noqa: S608
-            (trigger_kind, 0),
+              FROM trading_candidate_gate_decisions
+             WHERE trigger_kind = %s
+            """,
+            (trigger_kind,),
         ).fetchone()
         if row is None:
             return {"latest_source_at_ms": None, "latest_gate_eligible_at_ms": None}
@@ -314,8 +276,7 @@ class CandidateGateStorage:
 
 
 __all__ = [
+    "GATE_DECISIONS_SINCE_SQL",
     "GATE_DECISION_FOR_SOURCE_KEY_SQL",
-    "LATEST_GATE_DECISION_PER_SOURCE_SQL",
     "CandidateGateStorage",
-    "gate_decisions_since_sql",
 ]

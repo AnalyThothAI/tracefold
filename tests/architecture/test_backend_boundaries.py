@@ -170,6 +170,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.triage_rules",
         "tracefold.trading.signal_lane",
         "tracefold.trading.contracts",
+        # #537 PR-3: the one table of supported source venues. The bar fetcher at this seam reads
+        # which provider family answers a venue and how that venue spells the market off it, rather
+        # than keeping a fourth copy of that mapping.
+        "tracefold.trading.sources",
         # #472: which execution observation is worth an operator card is a Trading judgment, so the
         # notifier reads the policy rather than restating it. The renderer had its own copy of that
         # predicate and it drifted from both the SQL and the Runtime for the life of the feature.

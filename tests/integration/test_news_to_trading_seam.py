@@ -26,6 +26,7 @@ from tracefold.news.bus import RK_RAW_LIVE, BusMessage, new_trace_id, now_ms
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.triage import TriageConsumer
 from tracefold.news.storage.trade_projection import NEWS_TRADE_PROJECTION_VERSION
+from tracefold.trading.admission import ADMISSION_VERSION
 from tracefold.trading.contracts import Bar, CaseState, OiCandidateRow
 from tracefold.trading.signal_lane import BAR_INTERVAL_MS, SignalLane, SignalLaneConfig
 from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
@@ -216,7 +217,6 @@ def test_news_frame_mapper_and_signal_lane_commit_one_current_pair(clean: Any) -
         config=SignalLaneConfig(),
         bars=bars,
         oi_projection=_news_projection(NewsDatabase(conn)),
-        release_revision="test-release",
         clock=now_ms,
     )
     first = asyncio.run(lane.advance())
@@ -355,7 +355,6 @@ def test_numeric_oi_ledger_alone_freezes_a_case_and_emits_a_signal(clean: Any) -
         config=SignalLaneConfig(),
         bars=bars,
         oi_projection=_news_projection(NewsDatabase(conn)),
-        release_revision="test-release",
         clock=now_ms,
     )
     turn = asyncio.run(lane.advance())
@@ -400,7 +399,7 @@ def _publish_runtime_catalogue(conn: Any, *market_keys: str) -> None:
                 entry_block_reason=None,
                 started_at_ns=1_900,
                 updated_at_ns=2_100,
-                routes=tuple(sorted(market_keys)),
+                routes_count=len(set(market_keys)),
             )
         )
     conn.commit()
@@ -419,18 +418,19 @@ def _seam_lane(conn: Any) -> SignalLane:
         config=SignalLaneConfig(),
         bars=bars,
         oi_projection=_news_projection(NewsDatabase(conn)),
-        release_revision="test-release",
         clock=now_ms,
     )
 
 
-def test_a_market_the_runtime_cannot_execute_never_spends_the_turns_one_case_freeze(clean: Any) -> None:
-    """#510 PR-2 F2P. The lane freezes one Case per turn; an unlistable market used to win it.
+def test_the_lane_admits_a_market_no_runtime_lists_and_the_runtime_is_the_one_catalogue(clean: Any) -> None:
+    """#537 PR-3 F2P. Routability is answered once, by the process that can act on it.
 
-    On 2026-09-02 three of six Signals were emitted for markets Binance USD-M does not list. Each
-    froze a Case, emitted a Signal, and came back `instrument_unmapped` from the Runtime, while a
-    listed market behind it was deferred as `lane_capacity_exhausted`. Here the unlisted frame is the
-    newer one, so before the cut it took the freeze and BTC waited a turn.
+    The lane used to read every Runtime's published catalogue and refuse an absent market as
+    `eligibility:instrument_unmapped`, one scan behind the Runtime's own `instrument_unmapped`
+    disposition and needing a "no catalogue published" special case that no other read had. Both frames
+    now reach a Case; the Runtime refuses the one it cannot route, by name, on the entry path.
+
+    The freeze budget went with it: two issuers in one window are two Cases in one turn.
     """
 
     conn = clean
@@ -447,41 +447,75 @@ def test_a_market_the_runtime_cannot_execute_never_spends_the_turns_one_case_fre
         str(row["source_key"]): dict(row)
         for row in conn.execute("SELECT * FROM trading_candidate_gate_decisions").fetchall()
     }
-    cases = [dict(row) for row in conn.execute("SELECT * FROM trading_cases").fetchall()]
-    unlisted = decisions["oi:absent-evt:oi_signal_v1"]
+    cases = {str(row["underlying_key"]) for row in conn.execute("SELECT underlying_key FROM trading_cases").fetchall()}
 
     assert turn.sources == 2
-    assert (unlisted["status"], unlisted["stage"], unlisted["reason"]) == (
-        "REJECTED",
-        "eligibility",
-        "instrument_unmapped",
-    )
-    assert unlisted["retryable"] is False
-    assert unlisted["evidence"]["market_key"] == "crypto:perp:DELL:USDT"
-    assert unlisted["gate_version"] == "trading_admission_v8"
-    assert unlisted["case_id"] is None
-    # The one freeze went to the market a Runtime can actually reach.
-    assert [row["underlying_key"] for row in cases] == ["crypto:BTC"]
-    assert turn.cases_created == 1
-    assert [
+    assert turn.cases_created == 2
+    assert cases == {"crypto:BTC", "crypto:DELL"}
+    assert {value["reason"] for value in decisions.values()} == {"case_created"}
+    assert decisions["oi:absent-evt:oi_signal_v1"]["case_id"] is not None
+    # The rulebook that decided each row rides in `evidence` now, not in two key columns.
+    assert decisions["oi:absent-evt:oi_signal_v1"]["evidence"]["gate_version"] == ADMISSION_VERSION
+    assert set(decisions["oi:absent-evt:oi_signal_v1"]).isdisjoint({"gate_version", "gate_config_digest"})
+    assert {
         str(row["market_key"]) for row in conn.execute("SELECT market_key FROM trading_trade_signals").fetchall()
-    ] == ["crypto:perp:BTC:USDT"]
+    } == {"crypto:perp:BTC:USDT", "crypto:perp:DELL:USDT"}
+    # What the Runtime publishes about its catalogue is its size, which is all `/status` renders.
+    assert conn.execute("SELECT routes_count FROM trading_execution_runtime_state").fetchone()["routes_count"] == 1
 
 
-def test_no_published_catalogue_admits_every_market_exactly_as_before(clean: Any) -> None:
-    """Execution disabled, or no Runtime started yet: the Signal is a notification card, not an order."""
+def test_one_source_key_is_one_admission_row_whatever_configuration_saw_it(clean: Any) -> None:
+    """#537 PR-3 F2P. The admission key is the source, so a re-decision advances the row it has.
+
+    It used to be `(source_key, gate_version, gate_config_digest)`, on the promise that a threshold
+    edit re-decides every source in a second row. The ledger never held two rows for one frame, and
+    every reader paid for the possibility with a `DISTINCT ON` and a rule for which row was the answer.
+    """
 
     conn = clean
-    _numeric_oi_fact(
-        conn, event_id="absent-evt", item_id="absent-item", observed_at_ms=now_ms() - 30_000, symbol="DELL"
-    )
-    conn.commit()
-    assert conn.execute("SELECT count(*) AS n FROM trading_execution_runtime_state").fetchone()["n"] == 0
-
-    turn = asyncio.run(_seam_lane(conn).advance())
-
-    reasons = {
-        str(row["reason"]) for row in conn.execute("SELECT reason FROM trading_candidate_gate_decisions").fetchall()
+    repos = repositories_for_connection(conn)
+    row = {
+        "source_key": "oi:key-collapse:oi_signal_v1",
+        "trigger_kind": "oi",
+        "underlying_key": "crypto:BTC",
+        "source_observed_at_ms": now_ms(),
+        "status": "DEFERRED",
+        "stage": "market_context",
+        "reason": "market_data_unavailable",
+        "retryable": True,
+        "case_id": None,
     }
-    assert turn.cases_created == 1
-    assert reasons == {"case_created"}
+    with repos.transaction():
+        repos.trading.record_gate_decision(
+            **row, evidence={"gate_config_digest": "a" * 64, "venue": "binance.usdm"}, now_ms=now_ms()
+        )
+    with repos.transaction():
+        repos.trading.record_gate_decision(
+            **{
+                **row,
+                "status": "REJECTED",
+                "stage": "eligibility",
+                "reason": "oi_value_below_floor",
+                "retryable": False,
+            },
+            evidence={"gate_config_digest": "b" * 64, "floor": 20_000_000},
+            now_ms=now_ms() + 1_000,
+        )
+    conn.commit()
+
+    stored = [
+        dict(value)
+        for value in conn.execute("SELECT * FROM trading_candidate_gate_decisions ORDER BY source_key").fetchall()
+    ]
+
+    assert len(stored) == 1
+    assert (stored[0]["status"], stored[0]["reason"], stored[0]["attempt_count"]) == (
+        "REJECTED",
+        "oi_value_below_floor",
+        2,
+    )
+    # The terminal answer's own evidence, including the configuration that reached it.
+    assert stored[0]["evidence"] == {"gate_config_digest": "b" * 64, "floor": 20_000_000}
+    assert repos.trading.gate_decision_for_source_key(source_key=row["source_key"])["reason"] == (
+        "oi_value_below_floor"
+    )

@@ -46,7 +46,6 @@ def _prepare_signal(*, suffix: str, case_id: str | None = None, **updates: objec
         "direction": "long",
         "observed_at_ns": 1_000,
         "expires_at_ns": 10_000,
-        "alpha_metadata": {"policy": "oi-v1"},
     }
     values.update(updates)
     return prepare_trade_signal(**values)
@@ -60,17 +59,16 @@ def _append_signal(repo: TradingRepository, prepared: PreparedTradeSignal) -> di
         """
         INSERT INTO trading_cases (
           case_id, underlying_key, trigger_kind, primary_source_key,
-          supplemental_source_keys, manifest, manifest_sha256, state,
+          manifest, manifest_sha256, state,
           policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
-          updated_at_ms, strategy_id, strategy_version, strategy_config_digest
+          updated_at_ms
         ) VALUES (
-          %s, %s, 'oi', %s, '[]'::jsonb, '{"test":"execution-stream"}'::jsonb,
-          %s, 'SIGNAL_EMITTED', 'long', 'execution_stream_fixture', 1, 1, 1, 1,
-          'execution_stream_fixture', 'v1', %s
+          %s, %s, 'oi', %s, '{"test":"execution-stream"}'::jsonb,
+          %s, 'SIGNAL_EMITTED', 'long', 'execution_stream_fixture', 1, 1, 1, 1
         )
         ON CONFLICT DO NOTHING
         """,
-        (case_id, f"stream:{case_id}", f"stream-source:{case_id}", "e" * 64, "f" * 64),
+        (case_id, f"stream:{case_id}", f"stream-source:{case_id}", "e" * 64),
     )
     return repo.append_trade_signal(prepared)
 
@@ -557,7 +555,7 @@ def test_runtime_state_is_single_generation_per_account_slot() -> None:
             unknown_orders_count=0,
             complete=True,
         ),
-        routes=("crypto:perp:BTC:USDT", "crypto:perp:ETH:USDT"),
+        routes_count=2,
     )
 
     conn = connect_postgres_test(read_only=False)
@@ -587,20 +585,15 @@ def test_runtime_state_is_single_generation_per_account_slot() -> None:
         )
         with conn.transaction():
             assert repo.update_execution_runtime_state(stopped) is True
-        # The catalogue is generation identity, not heartbeat state: the update statement never
-        # names it and the row keeps what the insert published (#510 PR-2).
+        # The catalogue's size is generation identity, not heartbeat state: the update statement
+        # never names it and the row keeps what the insert published (#510 PR-2). It is a count
+        # rather than the keys themselves because the count is all any reader rendered, and the
+        # catalogue's one rule belongs to the Runtime that can act on it (#537 PR-3).
         assert repo.execution_runtime_state("binance_usdm_primary") == stopped
-        assert repo.execution_runtime_state("binance_usdm_primary").routes == running.routes
+        assert repo.execution_runtime_state("binance_usdm_primary").routes_count == 2
 
-        # The catalogue's shape is the projection's own rule now: unsorted, duplicated and
-        # malformed market keys are refused before a statement is ever built (#520 PR-C).
-        for invalid_routes in (
-            ("crypto:perp:ETH:USDT", "crypto:perp:BTC:USDT"),
-            ("crypto:perp:BTC:USDT", "crypto:perp:BTC:USDT"),
-            ("crypto perp BTC",),
-        ):
-            with pytest.raises(ValueError, match="execution_runtime_routes_invalid"):
-                replace(running, routes=invalid_routes)
+        with pytest.raises(ValueError, match="execution_runtime_routes_invalid"):
+            replace(running, routes_count=-1)
     finally:
         conn.close()
 
@@ -848,7 +841,7 @@ def test_the_contract_is_the_only_json_bound_and_it_holds_at_the_exact_edges() -
     assert len(json.dumps(references, ensure_ascii=False).encode("utf-8")) == 4_096
     assert len(json.dumps(oversized_references, ensure_ascii=False).encode("utf-8")) == 4_097
 
-    signal = _prepare_signal(suffix="3", alpha_metadata=metadata)
+    signal = _prepare_signal(suffix="3")
     observation = _observation(
         event="4",
         kind="risk",
@@ -857,7 +850,7 @@ def test_the_contract_is_the_only_json_bound_and_it_holds_at_the_exact_edges() -
     )
     observation_batch = prepare_execution_observations((observation,))
     with pytest.raises(ValidationError, match="execution_metadata_invalid"):
-        _prepare_signal(suffix="5", alpha_metadata=oversized_metadata)
+        _observation(event="5", kind="risk", summary=oversized_metadata)
     with pytest.raises(ValidationError, match="execution_observation_native_identity_invalid"):
         _observation(event="6", kind="risk", native_identity_references=oversized_references)
     with pytest.raises(ValidationError, match="execution_observation_native_identity_invalid"):
@@ -874,14 +867,14 @@ def test_the_contract_is_the_only_json_bound_and_it_holds_at_the_exact_edges() -
 
         stored = conn.execute(
             """
-            SELECT (SELECT alpha_metadata FROM trading_trade_signals WHERE signal_id = %s) AS alpha_metadata,
+            SELECT (SELECT summary FROM trading_execution_observations WHERE event_id = %s) AS summary,
                    (SELECT native_identity_references FROM trading_execution_observations
                      WHERE event_id = %s) AS native_identity_references
             """,
-            (signal.value.signal_id, observation.event_id),
+            (observation.event_id, observation.event_id),
         ).fetchone()
         assert stored is not None
-        assert stored["alpha_metadata"] == metadata
+        assert stored["summary"] == metadata
         assert stored["native_identity_references"] == list(references)
     finally:
         conn.close()
@@ -969,10 +962,10 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
                 """
                 INSERT INTO trading_trade_signals (
                   signal_id, case_id, market_key, direction,
-                  observed_at_ns, expires_at_ns, alpha_metadata, payload
+                  observed_at_ns, expires_at_ns, payload
                 )
                 SELECT %s, case_id, market_key, 'sideways',
-                       observed_at_ns, expires_at_ns, alpha_metadata, payload
+                       observed_at_ns, expires_at_ns, payload
                   FROM trading_trade_signals WHERE signal_id = %s
                 """,
                 ("d" * 64, signal.value.signal_id),
@@ -983,10 +976,10 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
                 """
                 INSERT INTO trading_trade_signals (
                   signal_id, case_id, market_key, direction,
-                  observed_at_ns, expires_at_ns, alpha_metadata, payload
+                  observed_at_ns, expires_at_ns, payload
                 )
                 SELECT %s, case_id, market_key, direction,
-                       observed_at_ns, observed_at_ns, alpha_metadata, payload
+                       observed_at_ns, observed_at_ns, payload
                   FROM trading_trade_signals WHERE signal_id = %s
                 """,
                 ("e" * 64, signal.value.signal_id),

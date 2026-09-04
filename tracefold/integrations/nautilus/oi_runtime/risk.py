@@ -14,7 +14,11 @@ from nautilus_trader.model.identifiers import AccountId, ClientOrderId, Instrume
 from .config import OiRiskLimits
 from .state import unowned_cache_exposure
 
-RiskAction = Literal["allow", "deny", "reduce", "halt"]
+# Two answers, because the caller only ever asked one question: may this entry be submitted? `halt`
+# and `deny` were the same branch on the entry path, and `reduce` was `allow` with a smaller number
+# the caller was already going to size from. The reason word carries the difference, and it is the
+# word the disposition observation records (#537 PR-3).
+RiskAction = Literal["allow", "refuse"]
 
 
 def decimal_value(value: Any) -> Decimal:
@@ -242,25 +246,29 @@ class OiFuturesRiskPolicy:
         baseline: DayStartBaseline,
         now_ns: int,
         requested_risk_usd: Decimal,
-        requested_leverage: int,
         candidate_is_new_position: bool,
     ) -> RiskDecision:
+        """The first named refusal, or the risk budget this entry may spend.
+
+        There is no leverage refusal here. The one caller passed `max_leverage` itself as the request,
+        so `requested > max` compared a number with itself; leverage is a *sizing* clamp and
+        `fixed_risk_quantity` is where it is applied (#537 PR-3).
+        """
+
         if facts.unexpected_exposure:
-            return RiskDecision("halt", "unexpected_exposure")
+            return RiskDecision("refuse", "unexpected_exposure")
         if now_ns - facts.market_observed_at_ns > self.limits.market_stale_after_ns:
-            return RiskDecision("halt", "market_stale")
+            return RiskDecision("refuse", "market_stale")
         if now_ns - facts.account_observed_at_ns > self.limits.account_stale_after_ns:
-            return RiskDecision("halt", "account_stale")
+            return RiskDecision("refuse", "account_stale")
         if now_ns - facts.reconciliation_observed_at_ns > self.limits.reconciliation_stale_after_ns:
-            return RiskDecision("halt", "reconciliation_stale")
+            return RiskDecision("refuse", "reconciliation_stale")
         if baseline.equity_usd - facts.equity_usd >= self.limits.max_daily_loss_usd:
-            return RiskDecision("halt", "daily_loss_limit")
-        if requested_leverage > self.limits.max_leverage:
-            return RiskDecision("deny", "leverage_limit")
+            return RiskDecision("refuse", "daily_loss_limit")
         if candidate_is_new_position and facts.current_positions >= self.limits.max_positions:
-            return RiskDecision("deny", "position_limit")
+            return RiskDecision("refuse", "position_limit")
         if requested_risk_usd <= 0:
-            return RiskDecision("deny", "risk_non_positive")
+            return RiskDecision("refuse", "risk_non_positive")
 
         per_trade = min(
             requested_risk_usd,
@@ -268,11 +276,13 @@ class OiFuturesRiskPolicy:
             self.limits.max_risk_per_trade_usd,
         )
         remaining = self.limits.max_total_risk_usd - facts.aggregate_risk_usd
+        # A budget smaller than the request is the answer, not a second verdict: the entry is sized
+        # from `allowed_risk_usd` either way, and the caller treated `reduce` and `allow` as one path.
+        # Only an exhausted budget refuses, and under `max_positions = 1` that is a configuration with
+        # no room for a first trade rather than a portfolio that filled up.
         allowed = min(per_trade, remaining)
         if allowed <= 0:
-            return RiskDecision("deny", "aggregate_risk_limit")
-        if allowed < requested_risk_usd:
-            return RiskDecision("reduce", "risk_reduced", allowed)
+            return RiskDecision("refuse", "risk_non_positive")
         return RiskDecision("allow", "risk_allowed", allowed)
 
 

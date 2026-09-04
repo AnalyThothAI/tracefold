@@ -89,6 +89,8 @@ export function tradingAdmissionCellCopy(lookup: TradingAdmissionLookup): Tradin
 const GATE_EVIDENCE_ZH: Record<string, string> = {
   age_ms: "帧龄 ms",
   floor: "地板",
+  gate_config_digest: "准入配置摘要",
+  gate_version: "准入版本",
   market_key: "市场",
   max_age_ms: "上限 ms",
   oi_value_usd: "持仓额",
@@ -116,10 +118,6 @@ export function tradingAdmissionTraceEntries(
     ["首次评估", caseClock(decision.gate_first_evaluated_at_ms)],
     ["最近评估", caseClock(decision.gate_last_evaluated_at_ms)],
     ["评估次数", String(decision.gate_attempt_count ?? "—")],
-    [
-      "准入版本",
-      `${decision.gate_version ?? "—"} · ${(decision.gate_config_digest ?? "").slice(0, 12)}`,
-    ],
     ["案例", decision.case_id ?? "未开案"],
   ];
   const evidence = decision.gate_evidence ?? {};
