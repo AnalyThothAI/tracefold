@@ -16,16 +16,11 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.workers.wiring.database import WorkerNewsDatabase
-from tracefold.app.workers.wiring.news_to_trading import (
-    MAPPED_NEWS_PROJECTION_VERSION,
-    news_oi_sources,
-    to_oi_candidate_row,
-)
+from tracefold.app.workers.wiring.news_to_trading import news_oi_sources, to_oi_candidate_row
 from tracefold.news import OI_METRIC_VERSION
 from tracefold.news.bus import RK_RAW_LIVE, BusMessage, new_trace_id, now_ms
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.triage import TriageConsumer
-from tracefold.news.storage.trade_projection import NEWS_TRADE_PROJECTION_VERSION
 from tracefold.trading.admission import ADMISSION_VERSION
 from tracefold.trading.contracts import Bar, CaseState, OiCandidateRow
 from tracefold.trading.signal_lane import BAR_INTERVAL_MS, SignalLane, SignalLaneConfig
@@ -203,7 +198,6 @@ def test_news_frame_mapper_and_signal_lane_commit_one_current_pair(clean: Any) -
     # The live read and the evidence read answer the same ledger through the same sixteen keys (#510).
     assert [dict(row) for row in evidence_rows] == [dict(rows[0])]
     assert dict(to_oi_candidate_row(rows[0])) == dict(rows[0])
-    assert MAPPED_NEWS_PROJECTION_VERSION == NEWS_TRADE_PROJECTION_VERSION
 
     async def bars(_candidate: Any, start: int, end: int) -> list[Bar]:
         aligned = (start // BAR_INTERVAL_MS) * BAR_INTERVAL_MS
@@ -214,7 +208,7 @@ def test_news_frame_mapper_and_signal_lane_commit_one_current_pair(clean: Any) -
 
     lane = SignalLane(
         db=TradingDatabase(conn),
-        config=SignalLaneConfig(),
+        config=SignalLaneConfig(oi_metric_version="oi_signal_v1"),
         bars=bars,
         oi_projection=_news_projection(NewsDatabase(conn)),
         clock=now_ms,
@@ -352,7 +346,7 @@ def test_numeric_oi_ledger_alone_freezes_a_case_and_emits_a_signal(clean: Any) -
 
     lane = SignalLane(
         db=TradingDatabase(conn),
-        config=SignalLaneConfig(),
+        config=SignalLaneConfig(oi_metric_version="oi_signal_v1"),
         bars=bars,
         oi_projection=_news_projection(NewsDatabase(conn)),
         clock=now_ms,
@@ -378,13 +372,7 @@ def _publish_runtime_catalogue(conn: Any, *market_keys: str) -> None:
             ExecutionRuntimeState(
                 account_slot="binance_usdm_primary",
                 mode="paper",
-                runtime_release="nautilus-1.231.0+oi-v1",
-                config_sha256="a" * 64,
                 runtime_id=UUID("33333333-3333-4333-8333-333333333333"),
-                runtime_revision="b" * 40,
-                image_digest="sha256:" + "c" * 64,
-                credential_fingerprint="d" * 64,
-                lifecycle_state="running",
                 alive=True,
                 execution_safe=True,
                 entries_armed=True,
@@ -415,7 +403,7 @@ def _seam_lane(conn: Any) -> SignalLane:
 
     return SignalLane(
         db=TradingDatabase(conn),
-        config=SignalLaneConfig(),
+        config=SignalLaneConfig(oi_metric_version="oi_signal_v1"),
         bars=bars,
         oi_projection=_news_projection(NewsDatabase(conn)),
         clock=now_ms,

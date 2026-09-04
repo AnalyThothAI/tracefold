@@ -28,13 +28,16 @@ from nautilus_trader.config import (
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.model.identifiers import AccountId, ClientId, InstrumentId, TraderId
 
-from tracefold.trading import IDENTITY_PATTERN, MARKET_KEY_PATTERN, SHA256_PATTERN
+from tracefold.trading import IDENTITY_PATTERN, MARKET_KEY_PATTERN
 
 _IDENTITY = re.compile(IDENTITY_PATTERN)
 _MARKET_KEY = re.compile(MARKET_KEY_PATTERN)
-_SHA256 = re.compile(SHA256_PATTERN)
 
-RuntimeMode = Literal["disabled", "paper", "live"]
+# What a Runtime that is actually going to trade can be, and the whole set including the one that is
+# not. Keeping them apart is what lets the composition root's single `disabled` return narrow the
+# mode once, instead of re-proving downstream that a live path is not disabled (#537 PR-4).
+ActiveRuntimeMode = Literal["paper", "live"]
+RuntimeMode = Literal["disabled"] | ActiveRuntimeMode
 
 
 class _SecretValue(str):
@@ -116,16 +119,14 @@ class OiRiskLimits:
 class OiRuntimeProfile:
     """The account slot this Runtime executes for, and the policy it executes under.
 
-    `account_slot` plus `mode` is the whole execution identity (#520). `runtime_release` and
-    `config_sha256` are still carried, and still land on the durable projection and on every
-    observation, but they name what is running rather than gate whether it may run.
+    `account_slot` plus `mode` is the whole execution identity (#520), and now it is the only one:
+    `runtime_release` and `config_sha256` rode along on the projection and on every observation
+    naming what was running, and no reader ever named either (#537 PR-4).
     """
 
     mode: RuntimeMode
     account_slot: str
     account_id: AccountId
-    runtime_release: str
-    config_sha256: str
     cache_namespace: str
     client_order_namespace: str
     routes: tuple[OiInstrumentRoute, ...]
@@ -141,10 +142,6 @@ class OiRuntimeProfile:
         ):
             if _IDENTITY.fullmatch(value) is None:
                 raise ValueError(reason)
-        if not self.runtime_release or len(self.runtime_release) > 128 or "\x00" in self.runtime_release:
-            raise ValueError("oi_runtime_release_invalid")
-        if _SHA256.fullmatch(self.config_sha256) is None:
-            raise ValueError("oi_runtime_config_identity_invalid")
         market_keys = tuple(route.market_key for route in self.routes)
         instrument_ids = tuple(route.instrument_id for route in self.routes)
         if len(market_keys) != len(set(market_keys)) or len(instrument_ids) != len(set(instrument_ids)):
@@ -169,9 +166,25 @@ def _trader_id(profile: OiRuntimeProfile) -> TraderId:
 
 
 def _instance_id(profile: OiRuntimeProfile) -> UUID4:
-    digest = hashlib.sha256(f"tracefold:oi-runtime:{profile.cache_namespace}:{profile.config_sha256}".encode()).digest()
+    """Stable per account slot and mode, which is what the Cache namespace already carries.
+
+    It was derived from the whole configuration digest instead, so every risk-limit edit gave the
+    same Runtime a new Nautilus instance id and therefore a new Cache namespace (#537 PR-4).
+    """
+
+    digest = hashlib.sha256(f"tracefold:oi-runtime:{profile.account_slot}:{profile.mode}".encode()).digest()
     value = uuid.UUID(bytes=digest[:16], version=4)
     return UUID4.from_str(str(value))
+
+
+def binance_environment(mode: ActiveRuntimeMode) -> BinanceEnvironment:
+    """The one place `paper` becomes Binance's demo environment and `live` becomes production.
+
+    The catalogue discovery in the composition root carried a second copy of this ternary, so the
+    two could have disagreed about which venue a Runtime was about to trade on (#537 PR-4).
+    """
+
+    return BinanceEnvironment.DEMO if mode == "paper" else BinanceEnvironment.LIVE
 
 
 def build_oi_node_config(
@@ -182,7 +195,7 @@ def build_oi_node_config(
 
     if profile.mode == "disabled":
         raise ValueError("oi_runtime_disabled_has_no_node")
-    environment = BinanceEnvironment.DEMO if profile.mode == "paper" else BinanceEnvironment.LIVE
+    environment = binance_environment(profile.mode)
     instrument_ids = frozenset(route.instrument_id for route in profile.routes)
     provider = BinanceInstrumentProviderConfig(
         load_ids=instrument_ids,
@@ -248,10 +261,12 @@ def build_oi_node_config(
 
 
 __all__ = [
+    "ActiveRuntimeMode",
     "BinanceRuntimeCredentials",
     "OiInstrumentRoute",
     "OiRiskLimits",
     "OiRuntimeProfile",
     "RuntimeMode",
+    "binance_environment",
     "build_oi_node_config",
 ]

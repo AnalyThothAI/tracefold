@@ -1,4 +1,4 @@
-"""PostgreSQL bridge plus the disabled half of the OI Runtime composition seam."""
+"""The PostgreSQL bridge and read seam for the OI Runtime."""
 
 from __future__ import annotations
 
@@ -24,16 +24,11 @@ from tracefold.integrations.nautilus.oi_runtime.audit_sink import (
 )
 from tracefold.integrations.nautilus.oi_runtime.config import OiRuntimeProfile
 from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
-from tracefold.integrations.nautilus.oi_runtime.signal_client import (
-    ExecutionSignalClient,
-    install_execution_stream_listener,
-    wait_for_execution_stream_wake,
-)
+from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.integrations.nautilus.oi_runtime.state import RuntimeControlSnapshot
 from tracefold.trading import ExecutionObservationV1, OperatorIntentV1, TradeSignalV1
 from tracefold.trading.storage.execution_stream import (
-    EXECUTION_STREAM_NOTIFY_CHANNEL,
     MAX_EXECUTION_READ_BATCH,
     ExecutionRuntimeState,
     materialize_execution_observation,
@@ -244,14 +239,20 @@ class OiRuntimeDatabaseBridge:
                     self._settings, application_name="tracefold_nautilus_stream", long_lived=True
                 ) as repos:
                     repos.conn.execute(f"SET statement_timeout = {_STATEMENT_TIMEOUT_MS}")
-                    install_execution_stream_listener(repos.conn, channel=execution_stream_channel())
                     with self._lock:
                         self._connected = True
                     while not self._stop.is_set():
                         self._cycle(repos)
                         if self._stop.is_set():
                             break
-                        wait_for_execution_stream_wake(repos.conn, self._poll_seconds)
+                        # The indexed anti-join in `_cycle` is the correctness path and it is
+                        # complete on its own: a Signal or Command is unresolved until a disposition
+                        # exists, so a poll that lands late reads exactly what a poll that landed
+                        # early would have. A `LISTEN` wake beside it was a second delivery path
+                        # that could only ever make this one arrive sooner, and it cost an
+                        # autocommit session, a channel name and a `pg_notify` on three appends
+                        # (#537 PR-4).
+                        self._stop.wait(self._poll_seconds)
                     # The composition root offers its `stopped` row on the way out; this connection is
                     # the only one that can still write it.
                     self._step("projection", lambda: self._projector.write_once(repos))
@@ -366,18 +367,6 @@ class OiRuntimeDatabaseBridge:
         return True
 
 
-def run_nautilus(profile: OiRuntimeProfile) -> None:
-    """Refuse to build a node for a disabled profile, and refuse an active one outright.
-
-    A disabled Runtime has no readiness to report: it never opens a session, never projects a row and
-    never answers a probe. The readiness value this used to return had exactly one caller, which
-    discarded it (#510 E).
-    """
-
-    if profile.mode != "disabled":
-        raise RuntimeError("oi_runtime_active_profile_requires_composition_root")
-
-
 def load_unresolved_trade_signals(
     repos: RepositorySession,
     account_slot: str,
@@ -414,12 +403,6 @@ def load_unresolved_operator_intents(
         limit=limit,
     )
     return materialize_operator_intents(rows)
-
-
-def execution_stream_channel() -> str:
-    """Return the Trading-owned LISTEN wake channel to the PostgreSQL adapter."""
-
-    return EXECUTION_STREAM_NOTIFY_CHANNEL
 
 
 def load_runtime_control_state(
@@ -506,5 +489,4 @@ __all__ = [
     "OiRuntimeDatabaseBridge",
     "RuntimeStateProjector",
     "load_recovery_inputs",
-    "run_nautilus",
 ]

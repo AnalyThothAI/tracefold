@@ -93,11 +93,7 @@ class OiNautilusStrategy(Strategy):
         self._day_start_lock = Lock()
         self._request_reconciliation = request_reconciliation
         factory = audit.factory
-        if (
-            factory.account_slot != profile.account_slot
-            or factory.runtime_release != profile.runtime_release
-            or factory.execution_strategy != "oi_nautilus_v1"
-        ):
+        if factory.account_slot != profile.account_slot or factory.execution_strategy != "oi_nautilus_v1":
             raise ValueError("oi_runtime_audit_identity_invalid")
         self._runtime = RuntimeExecutionState.from_control_snapshot(initial_control_state)
         self._quotes = QuoteStreamCoordinator(engine=self, state=self._runtime)

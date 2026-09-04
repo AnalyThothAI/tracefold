@@ -53,9 +53,11 @@ still running in that mode.
 Active safety additionally requires exactly one current account-slot owner,
 secure non-empty credential files, startup reconciliation, initialized
 Portfolio, no unexpected exposure, a fresh heartbeat, and the configured
-account slot and mode. `runtime_release`, `config_sha256`, `image_digest` and
-`credential_fingerprint` are reported as evidence of what is running; none of
-them gates a start. Durable audit, current control,
+account slot and mode. `tracefold trading status` and `/api/trading/status`
+report what the Runtime is doing and nothing about which build is doing it: the
+release string, configuration digest, image digest, deployment revision,
+credential fingerprint and lifecycle state were written on every heartbeat and
+read by no page and no command, and `20260904_0361` deleted all six. Durable audit, current control,
 day-start baseline, pause, and halt govern `entries_armed` without taking away
 existing-exposure safety. Serve and Workers never receive Binance secrets.
 
@@ -87,9 +89,10 @@ tuning.
 Quote streams are opened per admitted entry rather than for the whole route
 catalogue, so an operator reading Nautilus logs should expect one market-data
 stream per live thesis and none at rest. The nine risk numbers under
-`trading.execution.risk` are operator-owned and move `config_sha256`, which is
-reported on the projection and on the Runtime's start Observation; editing one
-needs a restart and nothing else.
+`trading.execution.risk` are operator-owned and reach the Runtime as the gap
+policy it enforces; editing one needs a restart and nothing else, and moves
+neither the account slot, the client order namespace nor the Nautilus instance
+id, which is derived from `account_slot:mode`.
 
 **A runtime replacement is a restart, and a product deploy is not one.**
 Changing the runtime image, the release or any `trading.execution.*` value does

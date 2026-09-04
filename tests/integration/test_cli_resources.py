@@ -20,6 +20,7 @@ import yaml
 from tests.contract.test_cli import write_runtime_config
 from tests.postgres_test_utils import postgres_migration_test_dsn
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
+from tracefold.app.http.schemas.trading import TradingExecutionReadinessData
 from tracefold.cli import main
 
 pytestmark = pytest.mark.integration
@@ -67,12 +68,6 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
         "execution_safe": False,
         "entries_armed": False,
         "entry_block_reason": "disabled",
-        "runtime_release": None,
-        "config_sha256": None,
-        "runtime_revision": None,
-        "image_digest": None,
-        "credential_fingerprint": None,
-        "lifecycle_state": None,
         "heartbeat_at_ns": None,
         "reconciliation_observed_at_ns": None,
         "reconciliation_age_ms": None,
@@ -90,6 +85,11 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
         "current_account": None,
     }
     assert set(data["counts"]) == {"cases_24h", "signals_24h"}
+    # #537 PR-4. The CLI and `/api/trading/status` render the one projection, so this is also the
+    # HTTP execution block: `execution_readiness_projection` is the only producer either calls, and
+    # neither of them can grow an identity field the other does not have.
+    assert set(data["execution"]) == set(TradingExecutionReadinessData.model_fields)
+    assert TradingExecutionReadinessData.model_validate(data["execution"]).model_dump() == data["execution"]
 
 
 def test_trading_issue_records_idempotent_intent_without_interpreting_activation(

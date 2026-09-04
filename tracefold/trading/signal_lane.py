@@ -86,7 +86,10 @@ def market_key(base_symbol: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class SignalLaneConfig:
-    oi_metric_version: str = "oi_signal_v1"
+    # The upstream metric contract this lane keys its source identities on. It has no default: the
+    # App composition seam is the only construction site and it always passes the value, so a literal
+    # here was a second copy of a constant this package may not import (#537 PR-4).
+    oi_metric_version: str
     admission: AdmissionConfig = field(default_factory=AdmissionConfig)
     price_window: PriceWindow = field(default_factory=PriceWindow)
     policy: AlphaPolicy = field(default_factory=lambda: ALPHA_POLICY)

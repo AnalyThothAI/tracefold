@@ -52,7 +52,6 @@ def _observation(**updates: object) -> ExecutionObservationV1:
         "observation_version": "execution_observation_v1",
         "event_id": "f" * 64,
         "account_slot": "binance-usdm-demo-v1",
-        "runtime_release": "sha256:" + "1" * 64,
         "execution_strategy": "oi_nautilus_v1",
         "signal_id": "a" * 64,
         "command_id": None,
@@ -105,7 +104,6 @@ def test_json_bounds_use_postgres_jsonb_text_bytes_at_exact_edges() -> None:
         (_signal, {"case_id": "case\x00id"}, "trade_signal_case_invalid"),
         (_observation, {"summary": {"note": "bad\x00value"}}, "execution_metadata_invalid"),
         (_intent, {"reason": "bad\x00reason"}, "operator_intent_text_invalid"),
-        (_observation, {"runtime_release": "bad\x00release"}, "execution_observation_release_invalid"),
         (
             _observation,
             {"native_identity_references": ("bad\x00reference",)},

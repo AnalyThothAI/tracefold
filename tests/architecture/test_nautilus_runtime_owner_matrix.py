@@ -122,13 +122,13 @@ def test_current_production_wiring_has_one_input_reconciliation_and_projection_o
     assert root_source.count("OiRuntimeDatabaseBridge(") == 1
     assert "run_signal_poll_loop" not in root_source
     assert "def run_signal_poll_loop(" not in signal_client_source
-    assert bridge_source.count("install_execution_stream_listener(") == 1
-    assert bridge_source.count("wait_for_execution_stream_wake(") == 1
-    assert (
-        "install_execution_stream_listener(repos.conn, channel=execution_stream_channel())\n"
-        "                    with self._lock:\n"
-        "                        self._connected = True"
-    ) in bridge_source
+    # #537 PR-4. One delivery path: the indexed anti-join in `_cycle`, on a fixed interval. The
+    # `LISTEN`/`NOTIFY` wake that sat beside it could only make an already-complete read arrive
+    # sooner, and it cost an autocommit session, a channel name and a `pg_notify` on three appends.
+    for deleted in ("conn.notifies(", "install_execution_stream_listener", "wait_for_execution_stream_wake"):
+        assert deleted not in bridge_source
+        assert deleted not in signal_client_source
+    assert bridge_source.count("self._stop.wait(self._poll_seconds)") == 2
     # #520 PR-B: no readiness gate hangs off the input reads any more. An entry request can only
     # arrive through them, so a Runtime whose reads are failing has nothing to admit.
     assert "control_plane_ready" not in root_source
@@ -185,7 +185,6 @@ def test_current_production_wiring_has_one_input_reconciliation_and_projection_o
     assert "class _MeasuredRuntimeBridge(OiRuntimeDatabaseBridge):" in diagnostic_source
     assert "super()._cycle(repos)" in diagnostic_source
     assert "before_commit=lambda _bridge=bridge: _wait_until_next_cycle_finishes(_bridge)" in diagnostic_source
-    assert "install_execution_stream_listener" not in diagnostic_source
     assert '"tracefold_oi_runtime_input_diagnostic_v1"' in diagnostic_source
     assert "oi_runtime_input_diagnostic_dirty_worktree" in diagnostic_source
     assert "artifacts/scheduled/oi-runtime-input-diagnostic.json" in diagnostic_source

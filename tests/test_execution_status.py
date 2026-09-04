@@ -41,13 +41,7 @@ def _state(*, heartbeat_at_ns: int = 10_000_000_000) -> ExecutionRuntimeState:
     return ExecutionRuntimeState(
         account_slot="binance_usdm_primary",
         mode="paper",
-        runtime_release="nautilus-1.231.0+oi-v1",
-        config_sha256="a" * 64,
         runtime_id=UUID("11111111-1111-4111-8111-111111111111"),
-        runtime_revision="b" * 40,
-        image_digest="sha256:" + "c" * 64,
-        credential_fingerprint="d" * 64,
-        lifecycle_state="running",
         alive=True,
         execution_safe=True,
         entries_armed=True,
@@ -84,20 +78,54 @@ def test_disabled_execution_never_projects_a_stale_runtime_as_ready() -> None:
     assert projection["execution_safe"] is False
     assert projection["entries_armed"] is False
     assert projection["entry_block_reason"] == "disabled"
-    assert projection["runtime_release"] is None
+    assert projection["heartbeat_at_ns"] is None
 
 
-def test_active_execution_projects_exact_runtime_gates_and_identity() -> None:
+def test_active_execution_projects_exact_runtime_gates_and_no_identity_ceremony() -> None:
     projection = execution_readiness_projection(_execution(), _state(), _control(), now_ns=10_000_000_000)
 
     assert projection["alive"] is True
     assert projection["execution_safe"] is True
     assert projection["entries_armed"] is True
     assert projection["entry_block_reason"] is None
-    assert projection["runtime_release"] == "nautilus-1.231.0+oi-v1"
-    assert projection["credential_fingerprint"] == "d" * 64
     assert projection["reconciliation_age_ms"] == 1_000
     assert projection["account_flat_proven"] is True
+    # #537 PR-4. What an operator acts on, and nothing about what build produced it. The six identity
+    # facts below were written on every heartbeat and read only into this JSON, where no page and no
+    # command ever named one.
+    assert set(projection).isdisjoint(
+        {
+            "runtime_release",
+            "config_sha256",
+            "runtime_revision",
+            "image_digest",
+            "credential_fingerprint",
+            "lifecycle_state",
+        }
+    )
+    assert set(projection) == {
+        "mode",
+        "account_slot",
+        "alive",
+        "execution_safe",
+        "entries_armed",
+        "entry_block_reason",
+        "heartbeat_at_ns",
+        "reconciliation_observed_at_ns",
+        "reconciliation_age_ms",
+        "startup_reconciled",
+        "entries_paused",
+        "emergency_halted",
+        "unexpected_exposure",
+        "account_flat",
+        "account_flat_proven",
+        "positions_count",
+        "open_orders_count",
+        "protection_status",
+        "routes_count",
+        "facts_expire_at_ms",
+        "current_account",
+    }
 
 
 def test_flat_proof_requires_a_fresh_private_reconciliation() -> None:

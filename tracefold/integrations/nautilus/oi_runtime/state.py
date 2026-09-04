@@ -44,8 +44,16 @@ def deterministic_client_order_id(
     return ClientOrderId(f"tf{digest[:30]}")
 
 
-def protection_leg(generation: int, quantity: Decimal) -> str:
-    return f"protection:{generation}:{format(quantity.normalize(), 'f')}"
+def protection_leg(generation: int) -> str:
+    """The replacement counter is the whole leg: it advances on every stop this execution submits.
+
+    The quantity rode along in it and could not add uniqueness -- `_submit_stop` increments the
+    generation before it derives the id, so two stops never share one -- while it made the id
+    underivable from anything but an order already in hand. Recovery therefore had to hash 128
+    candidate legs per cached order to find out which generation that order was (#537 PR-4).
+    """
+
+    return f"protection:{generation}"
 
 
 def exit_leg(generation: int) -> str:

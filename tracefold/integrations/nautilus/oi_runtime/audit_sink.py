@@ -6,10 +6,10 @@ import hashlib
 import json
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from threading import Lock
-from typing import Any
+from typing import Any, Literal
 
 from tracefold.trading import (
     MAX_OBSERVATION_APPEND_BATCH,
@@ -25,7 +25,6 @@ _DEFAULT_MAX_BYTES = 4 * 1_048_576
 # the two numbers used to be re-typed on both sides of the seam (#510 E).
 _FLUSH_COUNT = MAX_OBSERVATION_APPEND_BATCH
 _FLUSH_BYTES = MAX_OBSERVATION_APPEND_BYTES
-_EQUITY_SCALE = Decimal(1_000_000)
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -39,7 +38,6 @@ def _sha256(value: object) -> str:
 @dataclass(frozen=True, slots=True)
 class ObservationFactory:
     account_slot: str
-    runtime_release: str
     execution_strategy: str
 
     def create(
@@ -62,7 +60,6 @@ class ObservationFactory:
         event_id = fixed_event_id or _sha256(
             {
                 "account_slot": self.account_slot,
-                "release": self.runtime_release,
                 "strategy": self.execution_strategy,
                 "kind": normalized_kind,
                 "signal": signal_id,
@@ -76,7 +73,6 @@ class ObservationFactory:
             {
                 "event_id": event_id,
                 "account_slot": self.account_slot,
-                "runtime_release": self.runtime_release,
                 "execution_strategy": self.execution_strategy,
                 "signal_id": signal_id,
                 "command_id": command_id,
@@ -97,14 +93,14 @@ class ObservationFactory:
     ) -> tuple[DayStartBaseline, ExecutionObservationV1]:
         if not equity_usd.is_finite() or equity_usd <= 0:
             raise ValueError("oi_runtime_day_start_equity_precision_invalid")
-        scaled = equity_usd * _EQUITY_SCALE
+        # One encoding of one number. The scaled-integer copy beside it could only ever be written
+        # when it was exactly representable, so every row that had it also had the decimal, and the
+        # reader below had to decide which of two encodings of the same equity to believe (#537 PR-4).
         summary: dict[str, str | int] = {
             "risk_fact": "day_start_equity",
             "utc_day": utc_day,
             "equity_usd_decimal": format(equity_usd, "f"),
         }
-        if scaled == scaled.to_integral_value():
-            summary["equity_usd_micros"] = int(scaled)
         event_identity = f"day-start:{utc_day}"
         fixed_event_id = self.day_start_event_id(utc_day)
         observation = self.create(
@@ -145,19 +141,13 @@ def day_start_baseline_from_observation(observation: ExecutionObservationV1) -> 
         raise ValueError("oi_runtime_day_start_observation_invalid")
     utc_day = summary.get("utc_day")
     decimal_value = summary.get("equity_usd_decimal")
-    micros = summary.get("equity_usd_micros")
-    if not isinstance(utc_day, str):
+    if not isinstance(utc_day, str) or not isinstance(decimal_value, str):
         raise ValueError("oi_runtime_day_start_observation_invalid")
-    if isinstance(decimal_value, str):
-        try:
-            equity_usd = Decimal(decimal_value)
-        except ArithmeticError as exc:
-            raise ValueError("oi_runtime_day_start_observation_invalid") from exc
-        if not equity_usd.is_finite() or equity_usd <= 0 or format(equity_usd, "f") != decimal_value:
-            raise ValueError("oi_runtime_day_start_observation_invalid")
-    elif type(micros) is int and micros > 0:
-        equity_usd = Decimal(micros) / _EQUITY_SCALE
-    else:
+    try:
+        equity_usd = Decimal(decimal_value)
+    except ArithmeticError as exc:
+        raise ValueError("oi_runtime_day_start_observation_invalid") from exc
+    if not equity_usd.is_finite() or equity_usd <= 0 or format(equity_usd, "f") != decimal_value:
         raise ValueError("oi_runtime_day_start_observation_invalid")
     return DayStartBaseline(
         utc_day=utc_day,
@@ -165,6 +155,50 @@ def day_start_baseline_from_observation(observation: ExecutionObservationV1) -> 
         recorded_at_ns=observation.occurred_at_ns,
         event_id=observation.event_id,
     )
+
+
+type AuditGapCause = Literal["audit_identity_conflict", "audit_append_rejected", "audit_queue_overflow"]
+
+
+@dataclass(slots=True)
+class _AuditGap:
+    """One cause of audit loss, accumulating until the record that names it is durable.
+
+    There were three near-identical copies of this: one per cause, each with its own five counters,
+    its own sequence, its own `_enqueue_*_when_room` and its own summary shape, so an overflow record
+    said `dropped_count` while an identity conflict said `conflict_count` and only one of the three
+    named the first event id it lost. They are one fact with three causes (#537 PR-4).
+    """
+
+    cause: AuditGapCause
+    sequence: int = 0
+    dropped_count: int = 0
+    first_event_id: str | None = None
+    kind_counts: dict[str, int] = field(default_factory=dict)
+    started_at_ns: int = 0
+    last_observed_at_ns: int = 0
+    pending_event_id: str | None = None
+
+    @property
+    def outstanding(self) -> bool:
+        """Some loss this cause explains is not yet durably recorded."""
+
+        return self.dropped_count > 0 or self.pending_event_id is not None
+
+    def record(self, value: ExecutionObservationV1) -> None:
+        if self.dropped_count == 0:
+            self.first_event_id = value.event_id
+            self.started_at_ns = value.occurred_at_ns
+        self.dropped_count += 1
+        self.last_observed_at_ns = max(self.last_observed_at_ns, value.observed_at_ns)
+        self.kind_counts[value.normalized_kind] = self.kind_counts.get(value.normalized_kind, 0) + 1
+
+    def settled(self) -> None:
+        self.dropped_count = 0
+        self.first_event_id = None
+        self.kind_counts = {}
+        self.started_at_ns = 0
+        self.last_observed_at_ns = 0
 
 
 class AuditAppendRejected(Exception):
@@ -196,24 +230,14 @@ class AuditSink:
         self._bytes = 0
         self._healthy = True
         self._failure_reason: str | None = None
-        self._gap_sequence = 0
-        self._gap_dropped_count = 0
-        self._gap_started_at_ns = 0
-        self._gap_last_observed_at_ns = 0
-        self._gap_event_id: str | None = None
-        self._conflict_sequence = 0
-        self._conflict_count = 0
-        self._conflict_first_event_id: str | None = None
-        self._conflict_started_at_ns = 0
-        self._conflict_last_observed_at_ns = 0
-        self._conflict_gap_event_id: str | None = None
-        self._rejected_sequence = 0
-        self._rejected_count = 0
-        self._rejected_first_event_id: str | None = None
-        self._rejected_kind_counts: dict[str, int] = {}
-        self._rejected_started_at_ns = 0
-        self._rejected_last_observed_at_ns = 0
-        self._rejected_gap_event_id: str | None = None
+        # Ordered by how much they say about the ledger: a conflicting identity is a contradiction,
+        # a refused batch is a verdict, an overflow is pressure. `failure_reason` reports the first
+        # one still outstanding.
+        self._gaps: tuple[_AuditGap, ...] = (
+            _AuditGap("audit_identity_conflict"),
+            _AuditGap("audit_append_rejected"),
+            _AuditGap("audit_queue_overflow"),
+        )
         self._lock = Lock()
 
     @property
@@ -252,24 +276,12 @@ class AuditSink:
                     continue
                 if queued == value:
                     return True
-                self._healthy = False
-                self._failure_reason = "audit_identity_conflict"
-                if self._conflict_count == 0:
-                    self._conflict_first_event_id = value.event_id
-                    self._conflict_started_at_ns = value.occurred_at_ns
-                self._conflict_count += 1
-                self._conflict_last_observed_at_ns = max(
-                    self._conflict_last_observed_at_ns,
-                    value.observed_at_ns,
-                )
+                self._gap("audit_identity_conflict").record(value)
+                self._republish_health()
                 return False
             if len(self._values) >= self._max_count or self._bytes + size > self._max_bytes:
-                self._healthy = False
-                self._failure_reason = "audit_queue_overflow"
-                if self._gap_dropped_count == 0:
-                    self._gap_started_at_ns = value.occurred_at_ns
-                self._gap_dropped_count += 1
-                self._gap_last_observed_at_ns = max(self._gap_last_observed_at_ns, value.observed_at_ns)
+                self._gap("audit_queue_overflow").record(value)
+                self._republish_health()
                 return False
             self._values.append((value, size))
             self._bytes += size
@@ -318,9 +330,7 @@ class AuditSink:
 
     def _next_batch(self) -> list[ExecutionObservationV1]:
         with self._lock:
-            self._enqueue_gap_when_room()
-            self._enqueue_conflict_gap_when_room()
-            self._enqueue_rejected_gap_when_room()
+            self._enqueue_gaps_when_room()
             batch: list[ExecutionObservationV1] = []
             batch_bytes = 0
             for value, size in self._values:
@@ -333,15 +343,10 @@ class AuditSink:
     def _settle(self, batch: Sequence[ExecutionObservationV1]) -> None:
         event_ids = self._drop(batch)
         with self._lock:
-            if self._gap_event_id is not None and self._gap_event_id in event_ids:
-                self._gap_event_id = None
-            if self._conflict_gap_event_id is not None and self._conflict_gap_event_id in event_ids:
-                self._conflict_gap_event_id = None
-            if self._rejected_gap_event_id is not None and self._rejected_gap_event_id in event_ids:
-                self._rejected_gap_event_id = None
-            self._enqueue_gap_when_room()
-            self._enqueue_conflict_gap_when_room()
-            self._enqueue_rejected_gap_when_room()
+            for gap in self._gaps:
+                if gap.pending_event_id is not None and gap.pending_event_id in event_ids:
+                    gap.pending_event_id = None
+            self._enqueue_gaps_when_room()
             self._republish_health()
 
     def _quarantine(self, batch: Sequence[ExecutionObservationV1]) -> None:
@@ -349,19 +354,10 @@ class AuditSink:
 
         self._drop(batch)
         with self._lock:
-            if self._rejected_count == 0:
-                self._rejected_first_event_id = batch[0].event_id
-                self._rejected_started_at_ns = batch[0].occurred_at_ns
-            self._rejected_count += len(batch)
-            self._rejected_last_observed_at_ns = max(
-                self._rejected_last_observed_at_ns,
-                *(value.observed_at_ns for value in batch),
-            )
+            rejected = self._gap("audit_append_rejected")
             for value in batch:
-                self._rejected_kind_counts[value.normalized_kind] = (
-                    self._rejected_kind_counts.get(value.normalized_kind, 0) + 1
-                )
-            self._enqueue_rejected_gap_when_room()
+                rejected.record(value)
+            self._enqueue_gaps_when_room()
             self._republish_health()
 
     def _drop(self, batch: Sequence[ExecutionObservationV1]) -> tuple[str, ...]:
@@ -374,134 +370,63 @@ class AuditSink:
                 self._bytes -= size
         return event_ids
 
+    def _gap(self, cause: AuditGapCause) -> _AuditGap:
+        for gap in self._gaps:
+            if gap.cause == cause:
+                return gap
+        raise RuntimeError("oi_runtime_audit_gap_cause_unknown")
+
     def _republish_health(self) -> None:
         """Unhealthy exactly while some loss of audit truth is not yet durably recorded."""
 
-        if self._conflict_count > 0 or self._conflict_gap_event_id is not None:
-            self._healthy = False
-            self._failure_reason = "audit_identity_conflict"
-        elif self._rejected_count > 0 or self._rejected_gap_event_id is not None:
-            self._healthy = False
-            self._failure_reason = "audit_append_rejected"
-        elif self._gap_dropped_count == 0 and self._gap_event_id is None:
-            self._healthy = True
-            self._failure_reason = None
-        else:
-            self._healthy = False
-            self._failure_reason = "audit_queue_overflow"
+        outstanding = next((gap for gap in self._gaps if gap.outstanding), None)
+        self._healthy = outstanding is None
+        self._failure_reason = None if outstanding is None else outstanding.cause
 
-    def _enqueue_gap_when_room(self) -> None:
-        if self._gap_dropped_count == 0 or self._gap_event_id is not None:
-            return
-        self._gap_sequence += 1
-        value = self.factory.create(
-            normalized_kind="audit_gap",
-            occurred_at_ns=self._gap_started_at_ns,
-            observed_at_ns=self._gap_last_observed_at_ns,
-            summary={
-                "cause": "audit_queue_overflow",
-                "dropped_count": self._gap_dropped_count,
-            },
-            payload={
-                "cause": "audit_queue_overflow",
-                "dropped_count": self._gap_dropped_count,
-                "gap_sequence": self._gap_sequence,
-            },
-            event_identity=(
-                f"queue-overflow:{self._gap_sequence}:{self._gap_started_at_ns}:"
-                f"{self._gap_last_observed_at_ns}:{self._gap_dropped_count}"
-            ),
-        )
-        size = len(value.model_dump_json().encode())
-        if len(self._values) >= self._max_count or self._bytes + size > self._max_bytes:
-            return
-        self._values.append((value, size))
-        self._bytes += size
-        self._gap_event_id = value.event_id
-        self._gap_dropped_count = 0
-        self._gap_started_at_ns = 0
-        self._gap_last_observed_at_ns = 0
-
-    def _enqueue_conflict_gap_when_room(self) -> None:
-        if self._conflict_count == 0 or self._conflict_gap_event_id is not None:
-            return
-        self._conflict_sequence += 1
-        value = self.factory.create(
-            normalized_kind="audit_gap",
-            occurred_at_ns=self._conflict_started_at_ns,
-            observed_at_ns=self._conflict_last_observed_at_ns,
-            summary={
-                "cause": "audit_identity_conflict",
-                "conflict_count": self._conflict_count,
-            },
-            payload={
-                "cause": "audit_identity_conflict",
-                "conflict_count": self._conflict_count,
-                "conflict_sequence": self._conflict_sequence,
-                "first_event_id": self._conflict_first_event_id,
-            },
-            event_identity=(
-                f"identity-conflict:{self._conflict_sequence}:{self._conflict_first_event_id}:"
-                f"{self._conflict_started_at_ns}:{self._conflict_last_observed_at_ns}:{self._conflict_count}"
-            ),
-        )
-        size = len(value.model_dump_json().encode())
-        if len(self._values) >= self._max_count or self._bytes + size > self._max_bytes:
-            return
-        self._values.append((value, size))
-        self._bytes += size
-        self._conflict_gap_event_id = value.event_id
-        self._conflict_count = 0
-        self._conflict_first_event_id = None
-        self._conflict_started_at_ns = 0
-        self._conflict_last_observed_at_ns = 0
-
-    def _enqueue_rejected_gap_when_room(self) -> None:
-        """Name what the ledger lost: how many, the first identity, and which kinds.
+    def _enqueue_gaps_when_room(self) -> None:
+        """Name what the ledger lost: the cause, how many, the first identity, and which kinds.
 
         `ExecutionObservationV1` allows a summary of 16 keys and 2048 bytes. Three fixed keys plus
         the ten-value `normalized_kind` vocabulary is 13 keys of short names and integers, so this
         summary cannot itself be refused by the contract the gap record exists to report on.
         """
 
-        if self._rejected_count == 0 or self._rejected_gap_event_id is not None:
-            return
-        self._rejected_sequence += 1
-        kind_counts = dict(sorted(self._rejected_kind_counts.items()))
-        summary: dict[str, str | int | bool] = {
-            "cause": "audit_append_rejected",
-            "dropped_count": self._rejected_count,
-            "first_event_id": self._rejected_first_event_id or "",
-        }
-        summary.update((f"kind.{kind}", count) for kind, count in kind_counts.items())
-        value = self.factory.create(
-            normalized_kind="audit_gap",
-            occurred_at_ns=self._rejected_started_at_ns,
-            observed_at_ns=self._rejected_last_observed_at_ns,
-            summary=summary,
-            payload={
-                "cause": "audit_append_rejected",
-                "dropped_count": self._rejected_count,
-                "first_event_id": self._rejected_first_event_id,
-                "kind_counts": kind_counts,
-                "gap_sequence": self._rejected_sequence,
-            },
-            event_identity=(
-                f"append-rejected:{self._rejected_sequence}:{self._rejected_first_event_id}:"
-                f"{self._rejected_started_at_ns}:{self._rejected_last_observed_at_ns}:{self._rejected_count}"
-            ),
-        )
-        size = len(value.model_dump_json().encode())
-        if len(self._values) >= self._max_count or self._bytes + size > self._max_bytes:
-            return
-        self._values.append((value, size))
-        self._bytes += size
-        self._rejected_gap_event_id = value.event_id
-        self._rejected_count = 0
-        self._rejected_first_event_id = None
-        self._rejected_kind_counts = {}
-        self._rejected_started_at_ns = 0
-        self._rejected_last_observed_at_ns = 0
+        for gap in self._gaps:
+            if gap.dropped_count == 0 or gap.pending_event_id is not None:
+                continue
+            gap.sequence += 1
+            kind_counts = dict(sorted(gap.kind_counts.items()))
+            summary: dict[str, str | int | bool] = {
+                "cause": gap.cause,
+                "dropped_count": gap.dropped_count,
+                "first_event_id": gap.first_event_id or "",
+            }
+            summary.update((f"kind.{kind}", count) for kind, count in kind_counts.items())
+            value = self.factory.create(
+                normalized_kind="audit_gap",
+                occurred_at_ns=gap.started_at_ns,
+                observed_at_ns=gap.last_observed_at_ns,
+                summary=summary,
+                payload={
+                    "cause": gap.cause,
+                    "dropped_count": gap.dropped_count,
+                    "first_event_id": gap.first_event_id,
+                    "kind_counts": kind_counts,
+                    "gap_sequence": gap.sequence,
+                },
+                event_identity=(
+                    f"{gap.cause}:{gap.sequence}:{gap.first_event_id}:"
+                    f"{gap.started_at_ns}:{gap.last_observed_at_ns}:{gap.dropped_count}"
+                ),
+            )
+            size = len(value.model_dump_json().encode())
+            if len(self._values) >= self._max_count or self._bytes + size > self._max_bytes:
+                gap.sequence -= 1
+                continue
+            self._values.append((value, size))
+            self._bytes += size
+            gap.pending_event_id = value.event_id
+            gap.settled()
 
 
 __all__ = [

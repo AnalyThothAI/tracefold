@@ -5808,10 +5808,6 @@
             "title": "Occurred At Ns",
             "type": "integer"
           },
-          "runtime_release": {
-            "title": "Runtime Release",
-            "type": "string"
-          },
           "seq": {
             "title": "Seq",
             "type": "integer"
@@ -5837,7 +5833,6 @@
           "seq",
           "event_id",
           "account_slot",
-          "runtime_release",
           "execution_strategy",
           "normalized_kind",
           "occurred_at_ns",
@@ -6077,28 +6072,6 @@
             "title": "Alive",
             "type": "boolean"
           },
-          "config_sha256": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Config Sha256"
-          },
-          "credential_fingerprint": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Credential Fingerprint"
-          },
           "current_account": {
             "anyOf": [
               {
@@ -6160,35 +6133,6 @@
             ],
             "title": "Heartbeat At Ns"
           },
-          "image_digest": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Image Digest"
-          },
-          "lifecycle_state": {
-            "anyOf": [
-              {
-                "enum": [
-                  "starting",
-                  "running",
-                  "stopping",
-                  "stopped",
-                  "failed"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Lifecycle State"
-          },
           "mode": {
             "enum": [
               "disabled",
@@ -6249,28 +6193,6 @@
             "minimum": 0.0,
             "title": "Routes Count",
             "type": "integer"
-          },
-          "runtime_release": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Runtime Release"
-          },
-          "runtime_revision": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Runtime Revision"
           },
           "startup_reconciled": {
             "default": false,

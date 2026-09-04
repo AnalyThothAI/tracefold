@@ -258,12 +258,20 @@ def test_status_keeps_execution_truthfully_disabled(client: tuple[TestClient, _T
         "entry_block_reason": "disabled",
     }
     assert {key: data["execution"][key] for key in expected} == expected
-    assert data["execution"]["runtime_release"] is None
     assert data["execution"]["startup_reconciled"] is False
     assert data["execution"]["account_flat"] is False
     assert {"singleton_ready", "portfolio_ready", "control_plane_ready", "audit_ready", "day_start_ready"}.isdisjoint(
         data["execution"]
     )
+    # #537 PR-4: the six identity facts nothing rendered are gone too.
+    assert {
+        "runtime_release",
+        "config_sha256",
+        "runtime_revision",
+        "image_digest",
+        "credential_fingerprint",
+        "lifecycle_state",
+    }.isdisjoint(data["execution"])
     assert data["execution"]["routes_count"] == 0
     assert data["execution"]["facts_expire_at_ms"] is None
     assert data["counts"] == {"cases_24h": 1, "signals_24h": 1}

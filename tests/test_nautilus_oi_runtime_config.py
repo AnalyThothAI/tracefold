@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from decimal import Decimal
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -13,12 +14,12 @@ from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
 from nautilus_trader.model.identifiers import AccountId
 
 from tests.nautilus_oi_runtime_fixtures import NOW_NS, oi_profile
-from tracefold.app.nautilus.oi_runtime import run_nautilus
-from tracefold.app.nautilus.root import _build_active_node
+from tracefold.app.nautilus.root import _build_active_node, _discover_routes
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.config import (
     BinanceRuntimeCredentials,
     RuntimeMode,
+    binance_environment,
     build_oi_node_config,
 )
 from tracefold.integrations.nautilus.oi_runtime.nautilus_1231_binance_compat import (
@@ -64,16 +65,22 @@ def test_paper_and_live_change_only_cold_identity_and_binance_environment(
     assert config.cache.use_instance_id is True
 
 
-def test_disabled_helper_constructs_no_node_and_rejects_active_profiles() -> None:
-    profile = oi_profile("disabled")
-
-    # #510 E. A disabled Runtime reports nothing: it opens no session, projects no row and answers
-    # no probe. The readiness value this returned had one caller, which discarded it.
-    assert run_nautilus(profile) is None
+def test_disabled_profile_builds_no_node() -> None:
+    # #537 PR-4. A disabled Runtime is a branch in `run_nautilus`, not a second profile carried to a
+    # second `run_nautilus` that asserted the profile was disabled and returned. Building a node out
+    # of one is the only refusal left, and it is the one that matters.
     with pytest.raises(ValueError, match="oi_runtime_disabled_has_no_node"):
-        build_oi_node_config(profile, BinanceRuntimeCredentials(api_key="x", api_secret="y"))
-    with pytest.raises(RuntimeError, match="oi_runtime_active_profile_requires_composition_root"):
-        run_nautilus(oi_profile("paper"))
+        build_oi_node_config(oi_profile("disabled"), BinanceRuntimeCredentials(api_key="x", api_secret="y"))
+
+
+def test_binance_environment_is_the_single_paper_to_demo_decision() -> None:
+    # #537 PR-4. The composition root's catalogue discovery carried a second copy of this ternary;
+    # both callers now read it here, so no path can disagree about which venue it is trading on.
+    assert binance_environment("paper") is BinanceEnvironment.DEMO
+    assert binance_environment("live") is BinanceEnvironment.LIVE
+    root_source = (Path(_discover_routes.__code__.co_filename)).read_text(encoding="utf-8")
+    assert root_source.count("BinanceEnvironment.") == 0
+    assert "environment=binance_environment(mode)" in root_source
 
 
 def test_unknown_mode_fails_closed_instead_of_falling_through_to_live() -> None:
@@ -115,7 +122,6 @@ def test_canonical_root_builds_one_real_binance_execution_client() -> None:
         audit=AuditSink(
             factory=ObservationFactory(
                 account_slot=profile.account_slot,
-                runtime_release=profile.runtime_release,
                 execution_strategy="oi_nautilus_v1",
             )
         ),

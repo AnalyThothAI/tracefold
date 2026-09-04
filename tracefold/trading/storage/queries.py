@@ -116,7 +116,7 @@ def console_execution_observations_statement(
         predicates.append("(observed_at_ns, event_id) < (%(before_ns)s, %(before_id)s)")
         params["before_ns"], params["before_id"] = before
     sql = f"""
-        SELECT seq, event_id, account_slot, runtime_release, execution_strategy,
+        SELECT seq, event_id, account_slot, execution_strategy,
                signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                native_identity_references, summary
           FROM trading_execution_observations

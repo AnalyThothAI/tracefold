@@ -5,6 +5,8 @@ because the rows *are* the SELECT lists — naming the columns is the whole cont
 model here would coerce values PostgreSQL already typed and turn a nullable LEFT JOIN column into a
 different value. Nothing outside this module may add, rename or retype a key without editing them,
 which is what makes the App-side mapper break at type-check time instead of at 03:00 in a runner.
+A version string sat above them for thirteen revisions, restating in prose what the `TypedDict`s
+already state in types, and it was never compared with anything in production (#537 PR-4).
 
 They say nothing about *trade* eligibility: freshness, the venue rule and the liquidity floor live in
 the Signal lane's own pure rules. This side owns the point-in-time boundaries and the deterministic
@@ -15,65 +17,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import Any, TypedDict
-
-# Bump when a key is added, removed or retyped below — and when what a key *means* changes without the
-# key moving. The consumer's mapper is versioned against it, so neither a silently widened projection
-# nor a silently re-scoped one can reach Trading unnoticed.
-#
-# Entries below v14 describe the verdict-derived OI read and are kept as the contract's history: the
-# joins, pins and freeze checks several of them argue for no longer exist. v14 is the current shape.
-#
-# v2 (#211): the two candidate reads return the *newest* rows in the window rather than the oldest.
-# Trading's scan horizon grew from `max_age x 3` to `max_age + max(lookback)` so a legal counterpart is
-# actually visible, and with an ascending `LIMIT` a busy hour of that wider window would have been
-# answered entirely with its oldest rows — spending the whole budget on context and returning none of
-# the fresh triggers the scan exists to find.
-#
-# v6 (#264): the OI read stops being "the OI verdicts the reader pushed" and becomes "the OI facts this
-# generation parsed and persisted". `final_decision` and the deterministic rule are still selected — a
-# capital decision must be traceable to the judgment beside it — but they no longer decide *visibility*,
-# and the two Trading thresholds the SELECT used to execute (`max_rank_in_window`, `min_oi_value_usd`)
-# are gone from the signature. Measured over the seven days this table has existed, the reader's own
-# `whale_oi_ratio > 80%` push rule admitted 2 of the 7 frames that meet the target strategy's
-# conditions; the other 5 — TUT 15.48%/54.24% among them — were `drop` and never reached Trading at all.
-#
-# v10 (#458): that reader rule is gone entirely and every frame arrives as `stored` / `drop`, so this
-# read is now the only judgment of an OI frame there is. Two consequences here. The pin moves to
-# `news_oi_signal_v3`, which means frames judged by the old rule stop projecting — deliberately: their
-# `program_sha256` attests thresholds that no longer exist. And the freeze check loses its
-# `rank_in_window` leg with the column, keeping the six measurements and the three source-contract
-# fields it still binds verdict-to-ledger.
-#
-# v7 (#265): the OI read publishes what the provider proves about *how* the frame was measured —
-# `source_strategy_id`, `source_contract_version`, `measurement_window_ms` — beside the four numbers it
-# measured. All three are nullable together, and `NULL` is the contract: it means the interval could not
-# be proven for this frame and a consumer must refuse it rather than assume five minutes.
-#
-# v9 (#331): the editorial-verdict and liquidation reads are gone. Editorial News no longer triggers
-# automatic capital and there is no online liquidation consumer, so publishing either was a projection
-# nothing read — and an invitation for the Signal lane to grow a second trigger by accident. The OI
-# read and the instrument reads are what remains.
-# v10 (#369): OI carries its typed judgment identity directly.  The retired
-# synthetic Editorial envelope is neither read nor reconstructed.
-# v11 (#377): the OI ledger freezes its source Item, venue, availability clock and learning epoch at
-# insertion. Evidence capture no longer reconstructs an old frame from a mutable Event leader or the
-# currently active learning bundle.
-# v12 (#377): evidence capture and fixed-window verification publish bounded bulk catalogue/source
-# projections. App no longer runs one catalogue query per source or treats Trading's Gate ledger as
-# the universe of News facts that should have reached that Gate.
-# v13 (#433-C review): publish the immutable title token consumed by the OI parser so the App seam can
-# distinguish Hyperliquid's `XYZ-` builder-DEX market from the main perpetual book.
-#
-# v14 (#510 PR-4): the OI reads are the numeric ledger and nothing else. `news_oi_signals` already holds
-# the deterministic measurements, the source Item, the frame's venue, both clocks and the provider's
-# measurement contract, so the verdict join, the learning-epoch join, the six `trace` equalities that
-# re-proved the ledger against the verdict's own copy of it, the `split_part(title)` provider token and
-# the four News version literals are gone. `news_items.first_ingest_mode` is the one column the Item
-# still owes this projection. The frame reaches Trading without passing through the editorial pipeline,
-# the active learning arm or the Program identity, which is what makes a News policy or Program move
-# stop being a Trading contract change. The builder-DEX distinction now rides on `source_venue`, the
-# provider's own field, rather than on a title token: `symbol` in this ledger is already canonical.
-NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v14"
 
 # One read's ceiling per lane. The consumer's widest configured horizon is `max_age + max(lookback)` —
 # 65 minutes at the shipped configuration — and the measured live rate through these exact predicates

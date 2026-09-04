@@ -12,7 +12,6 @@ from collections.abc import Callable
 from dataclasses import replace
 from decimal import Decimal
 from functools import partial
-from threading import Event, Lock
 from uuid import uuid4
 
 import psycopg
@@ -20,11 +19,9 @@ import pytest
 
 from tests.nautilus_oi_runtime_fixtures import NOW_NS, oi_profile
 from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
-from tracefold.app.nautilus import oi_runtime as oi_runtime_module
 from tracefold.app.nautilus.oi_runtime import (
     OiRuntimeDatabaseBridge,
     RuntimeStateProjector,
-    execution_stream_channel,
     flush_audit_once,
     load_or_record_day_start,
     load_runtime_control_state,
@@ -34,11 +31,7 @@ from tracefold.app.nautilus.oi_runtime import (
 from tracefold.app.operator_control import persist_operator_intent
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
-from tracefold.integrations.nautilus.oi_runtime.signal_client import (
-    ExecutionSignalClient,
-    install_execution_stream_listener,
-    wait_for_execution_stream_wake,
-)
+from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.integrations.nautilus.oi_runtime.state import RuntimeControlSnapshot, deterministic_client_order_id
 from tracefold.platform.config.models import Settings
@@ -123,7 +116,6 @@ def _append_entry_order_fact(repo: TradingRepository, *, signal_id: str, observe
         {
             "event_id": _sha(f"entry-order:{signal_id}"),
             "account_slot": _ACCOUNT_SLOT,
-            "runtime_release": "nautilus-1.231.0+oi-v1",
             "execution_strategy": "oi_nautilus_v1",
             "signal_id": signal_id,
             "command_id": None,
@@ -151,7 +143,6 @@ def _append_closed_position_fact(repo: TradingRepository, *, signal_id: str) -> 
         {
             "event_id": _sha(f"closed-position:{signal_id}"),
             "account_slot": _ACCOUNT_SLOT,
-            "runtime_release": "nautilus-1.231.0+oi-v1",
             "execution_strategy": "oi_nautilus_v1",
             "signal_id": signal_id,
             "command_id": None,
@@ -239,13 +230,7 @@ def _runtime_state() -> ExecutionRuntimeState:
     return ExecutionRuntimeState(
         account_slot="binance_usdm_primary",
         mode="paper",
-        runtime_release="nautilus-1.231.0+oi-v1",
-        config_sha256="a" * 64,
         runtime_id=uuid4(),
-        runtime_revision="b" * 40,
-        image_digest="unversioned",
-        credential_fingerprint="d" * 64,
-        lifecycle_state="starting",
         alive=True,
         execution_safe=False,
         entries_armed=False,
@@ -269,7 +254,7 @@ def _runtime_bridge(signals: ExecutionSignalClient, *, poll_seconds: float = 0.2
         settings=Settings(ws_token="475-pra", storage=postgres_settings_storage()),
         profile=profile,
         signals=signals,
-        audit=AuditSink(factory=ObservationFactory(profile.account_slot, profile.runtime_release, "oi_nautilus_v1")),
+        audit=AuditSink(factory=ObservationFactory(profile.account_slot, "oi_nautilus_v1")),
         update_day_start=lambda _baseline: None,
         singleton=_bridge_singleton(),
         projector=_bridge_projector(),
@@ -326,7 +311,7 @@ def test_a_database_refused_batch_is_quarantined_and_leaves_a_durable_audit_gap(
         _append_signal(repo, suffix="1")
 
         profile = oi_profile()
-        factory = ObservationFactory(profile.account_slot, profile.runtime_release, "oi_nautilus_v1")
+        factory = ObservationFactory(profile.account_slot, "oi_nautilus_v1")
         audit = AuditSink(factory=factory)
         signals = ExecutionSignalClient(
             account_slot=profile.account_slot,
@@ -410,51 +395,43 @@ def test_a_database_refused_batch_is_quarantined_and_leaves_a_durable_audit_gap(
         conn.close()
 
 
-def test_listen_is_wake_only_and_poll_repairs_before_and_after_notifications() -> None:
-    listener = connect_postgres_test(read_only=False)
+def test_a_signal_with_no_notification_is_consumed_within_one_poll() -> None:
+    """#537 PR-4. The indexed anti-join is the whole delivery path.
+
+    A Signal is unresolved until a disposition observation exists, so this read is complete on its
+    own: nothing about the append has to tell the reader it happened. The `LISTEN`/`NOTIFY` wake that
+    used to sit beside it could only make an already-correct read arrive sooner, and it cost an
+    autocommit session, a channel-name regex and a `pg_notify` on all three append paths.
+    """
+
+    reader_conn = connect_postgres_test(read_only=False)
     writer = connect_postgres_test(read_only=False)
     try:
-        listener_repos = repositories_for_connection(listener)
+        reader_repos = repositories_for_connection(reader_conn)
         writer_repo = TradingRepository(writer)
         _control_row(writer_repo)
-        client = ExecutionSignalClient(
-            account_slot=_ACCOUNT_SLOT,
-            execution_strategy="oi_nautilus_v1",
-        )
-        reader = partial(load_unresolved_trade_signals, listener_repos)
-        install_execution_stream_listener(listener, channel=execution_stream_channel())
+        client = ExecutionSignalClient(account_slot=_ACCOUNT_SLOT, execution_strategy="oi_nautilus_v1")
+        reader = partial(load_unresolved_trade_signals, reader_repos)
+        command_reader = partial(load_unresolved_operator_intents, reader_repos)
 
         assert client.poll_once(reader) == 0
         _append_signal(writer_repo)
-        assert wait_for_execution_stream_wake(listener, 2.0) is True
+        # No notification was sent and none is listened for; the very next poll finds the Signal.
         assert client.poll_once(reader) == 1
         assert client.next_nowait() is not None
-        # A timeout is still followed by the same correctness poll; no notification is required.
-        assert wait_for_execution_stream_wake(listener, 0.01) is False
+        # And it stays consumed: an unresolved read is idempotent, so a repeat poll admits nothing.
         assert client.poll_once(reader) == 0
         command = _append_command(writer_repo, suffix="7", action="pause_entries")
-        command_reader = partial(load_unresolved_operator_intents, listener_repos)
-        assert wait_for_execution_stream_wake(listener, 2.0) is True
         assert client.poll_commands_once(command_reader) == 1
         assert client.next_command_nowait() == command.value
     finally:
-        listener.close()
+        reader_conn.close()
         writer.close()
 
 
-def test_production_bridge_owns_listener_and_normal_wake_latency(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_production_bridge_delivers_within_one_poll_interval_on_one_session() -> None:
     writer = connect_postgres_test(read_only=False)
     bridge: OiRuntimeDatabaseBridge | None = None
-    installed = Event()
-    original_install = oi_runtime_module.install_execution_stream_listener
-
-    def observe_install(conn: object, *, channel: str) -> None:
-        original_install(conn, channel=channel)
-        installed.set()
-
-    monkeypatch.setattr(oi_runtime_module, "install_execution_stream_listener", observe_install)
     try:
         repo = TradingRepository(writer)
         _control_row(repo)
@@ -464,7 +441,6 @@ def test_production_bridge_owns_listener_and_normal_wake_latency(
         )
         bridge = _runtime_bridge(signals)
         bridge.start()
-        assert installed.wait(2.0)
         _wait_for_bridge(bridge, lambda: bridge.connected)
 
         latencies: list[float] = []
@@ -476,7 +452,9 @@ def test_production_bridge_owns_listener_and_normal_wake_latency(
             latencies.append(time.perf_counter() - started)
 
         p95_seconds = sorted(latencies)[math.ceil(0.95 * len(latencies)) - 1]
-        assert p95_seconds <= 0.25
+        # One poll interval (200 ms) plus one cycle, and far inside the 60-second Signal TTL. It was
+        # a `NOTIFY` wake with the same poll behind it as repair (#537 PR-4).
+        assert p95_seconds <= 0.6
         row = writer.execute(
             """
             SELECT count(*) AS n
@@ -492,45 +470,7 @@ def test_production_bridge_owns_listener_and_normal_wake_latency(
         writer.close()
 
 
-def test_production_bridge_repairs_when_every_wake_is_discarded(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    writer = connect_postgres_test(read_only=False)
-    bridge: OiRuntimeDatabaseBridge | None = None
-    waiting = Event()
-
-    def discard_wake(_conn: object, timeout_seconds: float) -> bool:
-        waiting.set()
-        time.sleep(timeout_seconds)
-        return False
-
-    monkeypatch.setattr(oi_runtime_module, "wait_for_execution_stream_wake", discard_wake)
-    try:
-        repo = TradingRepository(writer)
-        _control_row(repo)
-        signals = ExecutionSignalClient(
-            account_slot=_ACCOUNT_SLOT,
-            execution_strategy="oi_nautilus_v1",
-        )
-        bridge = _runtime_bridge(signals)
-        bridge.start()
-        assert waiting.wait(2.0)
-
-        started = time.perf_counter()
-        _append_signal(repo, suffix="7")
-        _wait_for_bridge(bridge, lambda: signals.queued_count == 1)
-        repaired_seconds = time.perf_counter() - started
-
-        assert repaired_seconds >= 0.15
-        assert repaired_seconds < 20.0  # one third of the 60-second Signal TTL
-        assert len(signals.pending_ids) == 1
-    finally:
-        if bridge is not None:
-            _stop_bridge(bridge)
-        writer.close()
-
-
-def test_production_bridge_100_pair_burst_is_bounded_and_duplicate_wakes_do_not_duplicate_pending() -> None:
+def test_production_bridge_100_pair_burst_is_bounded_and_repeat_polls_do_not_duplicate_pending() -> None:
     writer = connect_postgres_test(read_only=False)
     bridge: OiRuntimeDatabaseBridge | None = None
     try:
@@ -546,9 +486,9 @@ def test_production_bridge_100_pair_burst_is_bounded_and_duplicate_wakes_do_not_
 
         _append_input_burst(repo, size=100)
         _wait_for_bridge(bridge, lambda: signals.queued_count == 200)
-        for _ in range(10):
-            writer.execute("NOTIFY trading_execution_stream")
-        time.sleep(0.25)
+        # Several more poll cycles over the same unresolved rows: the in-process pending set is what
+        # keeps a redelivery from becoming a second queued input.
+        time.sleep(1.0)
 
         assert signals.queued_count == 200
         assert signals.queued_command_count == 100
@@ -569,26 +509,9 @@ def test_production_bridge_100_pair_burst_is_bounded_and_duplicate_wakes_do_not_
         writer.close()
 
 
-def test_production_bridge_reconnect_reinstalls_listener_before_consuming(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_production_bridge_reconnect_resumes_consuming_on_a_new_session() -> None:
     writer = connect_postgres_test(read_only=False)
     bridge: OiRuntimeDatabaseBridge | None = None
-    install_lock = Lock()
-    install_count = 0
-    original_install = oi_runtime_module.install_execution_stream_listener
-
-    def observe_install(conn: object, *, channel: str) -> None:
-        nonlocal install_count
-        original_install(conn, channel=channel)
-        with install_lock:
-            install_count += 1
-
-    def listener_installs() -> int:
-        with install_lock:
-            return install_count
-
-    monkeypatch.setattr(oi_runtime_module, "install_execution_stream_listener", observe_install)
     try:
         repo = TradingRepository(writer)
         _control_row(repo)
@@ -598,7 +521,7 @@ def test_production_bridge_reconnect_reinstalls_listener_before_consuming(
         )
         bridge = _runtime_bridge(signals)
         bridge.start()
-        _wait_for_bridge(bridge, lambda: listener_installs() == 1 and bridge.connected)
+        _wait_for_bridge(bridge, lambda: bridge.connected)
         row = writer.execute(
             """
             SELECT pg_terminate_backend(pid) AS terminated
@@ -609,7 +532,8 @@ def test_production_bridge_reconnect_reinstalls_listener_before_consuming(
         ).fetchone()
         assert row == {"terminated": True}
 
-        _wait_for_bridge(bridge, lambda: listener_installs() >= 2 and bridge.connected)
+        _wait_for_bridge(bridge, lambda: not bridge.connected)
+        _wait_for_bridge(bridge, lambda: bridge.connected)
         _append_signal(repo, suffix="8")
         _wait_for_bridge(bridge, lambda: signals.queued_count == 1)
         assert signals.next_nowait() is not None
@@ -624,7 +548,7 @@ def test_restart_control_state_reads_current_pause_resume_and_sticky_halt_projec
     try:
         repo = TradingRepository(conn)
         _control_row(repo)
-        factory = ObservationFactory(_ACCOUNT_SLOT, "runtime-test", "oi_nautilus_v1")
+        factory = ObservationFactory(_ACCOUNT_SLOT, "oi_nautilus_v1")
         actions = ("pause_entries", "resume_entries", "emergency_halt")
         for suffix, action in zip(("4", "5", "6"), actions, strict=True):
             prepared = _append_command(repo, suffix=suffix, action=action)
@@ -654,7 +578,7 @@ def test_current_control_projection_is_idempotent_and_never_regresses_on_out_of_
     try:
         repo = TradingRepository(conn)
         _control_row(repo)
-        factory = ObservationFactory(_ACCOUNT_SLOT, "runtime-test", "oi_nautilus_v1")
+        factory = ObservationFactory(_ACCOUNT_SLOT, "oi_nautilus_v1")
         resume = _append_command(repo, suffix="7", action="resume_entries")
         pause = _append_command(repo, suffix="8", action="pause_entries")
 
@@ -780,7 +704,6 @@ def test_day_start_baseline_is_append_only_and_restart_reads_original_equity() -
         profile = oi_profile()
         factory = ObservationFactory(
             account_slot=profile.account_slot,
-            runtime_release=profile.runtime_release,
             execution_strategy="oi_nautilus_v1",
         )
         first = load_or_record_day_start(
@@ -1051,7 +974,7 @@ def test_rolling_restart_after_an_identity_change_keeps_control_state_and_needs_
 ) -> None:
     """#520 PR-A. A deploy that changes the release or the risk config is a restart, not a new identity.
 
-    On 2026-09-03 this was 58 crash loops: `config_sha256` moved, `_preflight_profile` refused with
+    On 2026-09-03 this was 58 crash loops: the configuration digest moved, `_preflight_profile` refused with
     `oi_runtime_profile_identity_changed`, and the only way out was a new `profile_id`, a flat account
     and a fresh `/resume`. The account slot is the identity, so the same slot restarts into whatever
     control state the operator last set, while holding a position.
@@ -1065,7 +988,7 @@ def test_rolling_restart_after_an_identity_change_keeps_control_state_and_needs_
         _append_entry_order_fact(repo, signal_id="1" * 64)
         # The operator resumed entries on the previous generation; a restart must not undo that.
         resume = _append_command(repo, suffix="7", action="resume_entries")
-        factory = ObservationFactory(_ACCOUNT_SLOT, "nautilus-1.231.0+oi-v1", "oi_nautilus_v1")
+        factory = ObservationFactory(_ACCOUNT_SLOT, "oi_nautilus_v1")
         with conn.transaction():
             repo.append_execution_observations(
                 prepare_execution_observations(
@@ -1263,9 +1186,7 @@ def test_the_bridge_thread_owns_the_projection_write_and_the_account_slot_heartb
             settings=Settings(ws_token="510-pr5b", storage=postgres_settings_storage()),
             profile=profile,
             signals=signals,
-            audit=AuditSink(
-                factory=ObservationFactory(profile.account_slot, profile.runtime_release, "oi_nautilus_v1")
-            ),
+            audit=AuditSink(factory=ObservationFactory(profile.account_slot, "oi_nautilus_v1")),
             update_day_start=lambda _baseline: None,
             singleton=singleton,
             projector=projector,
@@ -1276,7 +1197,7 @@ def test_the_bridge_thread_owns_the_projection_write_and_the_account_slot_heartb
         started = projector.current
         running = replace(
             started,
-            lifecycle_state="running",
+            entry_block_reason="reconciliation_stale",
             heartbeat_at_ns=started.heartbeat_at_ns + 1,
             updated_at_ns=started.updated_at_ns + 1,
         )
@@ -1285,12 +1206,12 @@ def test_the_bridge_thread_owns_the_projection_write_and_the_account_slot_heartb
 
         row = writer.execute(
             """
-            SELECT lifecycle_state
+            SELECT entry_block_reason
               FROM trading_execution_runtime_state
              WHERE account_slot = 'binance_usdm_primary'
             """
         ).fetchone()
-        assert row == {"lifecycle_state": "running"}
+        assert row == {"entry_block_reason": "reconciliation_stale"}
         sessions = writer.execute(
             """
             SELECT application_name, count(*) AS n

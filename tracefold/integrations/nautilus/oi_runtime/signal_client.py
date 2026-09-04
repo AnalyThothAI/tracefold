@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-import re
 from collections import deque
 from collections.abc import Callable, Sequence
 from threading import Lock
-from typing import Any
 
 from tracefold.trading import OperatorIntentV1, TradeSignalV1
 
 _DEFAULT_MAX_COUNT = 256
 _DEFAULT_MAX_BYTES = 1_048_576
-_POSTGRES_CHANNEL = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 
 type SignalReader = Callable[[str, str, int], Sequence[TradeSignalV1]]
 type CommandReader = Callable[[str, str, int], Sequence[OperatorIntentV1]]
@@ -215,25 +212,4 @@ class ExecutionSignalClient:
             self._bytes += size
 
 
-def install_execution_stream_listener(conn: Any, *, channel: str) -> None:
-    """LISTEN is a wake hint; every wake and timeout is followed by an indexed poll."""
-
-    if not bool(getattr(conn, "autocommit", False)):
-        raise RuntimeError("oi_runtime_listener_requires_autocommit")
-    if _POSTGRES_CHANNEL.fullmatch(channel) is None:
-        raise ValueError("oi_runtime_listener_channel_invalid")
-    conn.execute(f"LISTEN {channel}")
-
-
-def wait_for_execution_stream_wake(conn: Any, timeout_seconds: float) -> bool:
-    if timeout_seconds <= 0:
-        raise ValueError("oi_runtime_poll_interval_invalid")
-    notification = next(conn.notifies(timeout=timeout_seconds, stop_after=1), None)
-    return notification is not None
-
-
-__all__ = [
-    "ExecutionSignalClient",
-    "install_execution_stream_listener",
-    "wait_for_execution_stream_wake",
-]
+__all__ = ["ExecutionSignalClient"]

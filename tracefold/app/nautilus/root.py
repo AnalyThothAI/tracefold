@@ -7,12 +7,13 @@ import signal
 import time
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext, suppress
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from threading import Lock
-from typing import Any, Literal
+from typing import Any
 from uuid import uuid4
 
 import uvicorn
+from loguru import logger
 from nautilus_trader.adapters.binance import (
     BINANCE,
     BinanceAccountType,
@@ -21,7 +22,6 @@ from nautilus_trader.adapters.binance import (
     BinanceLiveDataClientFactory,
     BinanceLiveExecClientFactory,
 )
-from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
 from nautilus_trader.adapters.binance.factories import get_cached_binance_http_client
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.live.node import TradingNode
@@ -36,7 +36,6 @@ from tracefold.app.nautilus.oi_runtime import (
     load_recovery_inputs,
     load_runtime_control_state,
 )
-from tracefold.app.nautilus.oi_runtime import run_nautilus as run_disabled_runtime
 from tracefold.app.nautilus.probe import create_nautilus_probe_app
 from tracefold.app.nautilus.reconciliation import (
     build_runtime_reconciliation_snapshot,
@@ -45,10 +44,12 @@ from tracefold.app.nautilus.reconciliation import (
 from tracefold.app.repository_session import RepositorySession, postgres_connection, repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.config import (
+    ActiveRuntimeMode,
     BinanceRuntimeCredentials,
     OiInstrumentRoute,
     OiRiskLimits,
     OiRuntimeProfile,
+    binance_environment,
     build_oi_node_config,
 )
 from tracefold.integrations.nautilus.oi_runtime.nautilus_1231_binance_compat import (
@@ -69,11 +70,9 @@ from tracefold.platform.config.models import Settings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.postgres.client import postgres_health_check
 from tracefold.platform.postgres.migrations import latest_migration_version
-from tracefold.platform.runtime_identity import runtime_identity
-from tracefold.trading import EXECUTION_STRATEGY_ID, canonical_sha256
+from tracefold.trading import EXECUTION_STRATEGY_ID
 from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
 
-_RUNTIME_RELEASE = "nautilus-1.231.0+oi-v1"
 _EXECUTION_STRATEGY = EXECUTION_STRATEGY_ID
 _INTERNAL_PORT = 8767
 _STOP_TIMEOUT_SECONDS = 20.0
@@ -88,7 +87,7 @@ class _ProbeState:
     lock: Lock
 
     @classmethod
-    def starting(cls, profile: OiRuntimeProfile, credential_fingerprint: str) -> _ProbeState:
+    def starting(cls, profile: OiRuntimeProfile) -> _ProbeState:
         return cls(
             payload={
                 "ok": False,
@@ -98,13 +97,13 @@ class _ProbeState:
                 "entry_block_reason": "runtime_starting",
                 "mode": profile.mode,
                 "account_slot": profile.account_slot,
-                "runtime_release": profile.runtime_release,
-                "config_sha256": profile.config_sha256,
-                "credential_fingerprint": credential_fingerprint,
                 "startup_reconciled": False,
                 "unexpected_exposure": False,
                 "account_flat": False,
-                "reconciliation_observed_at_ns": 0,
+                "positions_count": 0,
+                "open_orders_count": 0,
+                "protection_status": "unknown",
+                "heartbeat_at_ns": 0,
             },
             lock=Lock(),
         )
@@ -150,20 +149,20 @@ class _PrivateReconciliationRequests:
 
 
 def run_nautilus(settings: Settings) -> None:
-    """Run disabled without a node, or supervise the configured paper/live node."""
+    """Supervise the configured paper/live node, or say why there is nothing to supervise.
+
+    A disabled Runtime used to travel to the same place by a longer road: a whole `OiRuntimeProfile`
+    with a synthetic config digest and empty routes, handed to a second `run_nautilus` whose only job
+    was to assert the profile was disabled and return. Disabled means there is no account slot to
+    own, no node to build and no readiness to report, and that is one branch (#537 PR-4).
+    """
 
     execution = settings.trading.execution
     if execution.mode == "disabled":
-        run_disabled_runtime(_disabled_profile(settings))
+        logger.info("Execution runtime disabled by configuration; no Binance node is built")
         return
+    mode = execution.mode
     credentials = _read_credentials(settings)
-    credential_fingerprint = canonical_sha256(
-        {
-            "identity_version": "binance_usdm_api_key_v1",
-            "account_slot": execution.account_slot,
-            "api_key": credentials.api_key,
-        }
-    )
     with postgres_connection(settings, application_name="tracefold_nautilus_singleton", long_lived=True) as conn:
         _require_current_schema(conn)
         singleton_repos = repositories_for_connection(conn)
@@ -179,8 +178,8 @@ def run_nautilus(settings: Settings) -> None:
             asyncio.run(
                 _run_active_runtime(
                     settings=settings,
+                    mode=mode,
                     credentials=credentials,
-                    credential_fingerprint=credential_fingerprint,
                     singleton=singleton,
                     repos=singleton_repos,
                 )
@@ -212,8 +211,8 @@ def _require_current_schema(conn: Any) -> None:
 async def _run_active_runtime(
     *,
     settings: Settings,
+    mode: ActiveRuntimeMode,
     credentials: BinanceRuntimeCredentials,
-    credential_fingerprint: str,
     singleton: AccountSlotSingleton,
     repos: RepositorySession,
 ) -> None:
@@ -227,11 +226,11 @@ async def _run_active_runtime(
 
     execution = settings.trading.execution
     routes = await _discover_routes(
-        execution.mode,
+        mode,
         credentials,
         stop_distance_bps=execution.risk.stop_distance_bps,
     )
-    profile = _active_profile(settings, routes)
+    profile = _active_profile(settings, mode, routes)
     # Control state belongs to the account slot and outlives this process: a slot the operator
     # resumed is still resumed after a restart, a new image or a risk-config change (#520 PR-A).
     control = load_runtime_control_state(repos, profile.account_slot, now_ns=time.time_ns())
@@ -242,7 +241,6 @@ async def _run_active_runtime(
     audit = AuditSink(
         factory=ObservationFactory(
             account_slot=profile.account_slot,
-            runtime_release=profile.runtime_release,
             execution_strategy=_EXECUTION_STRATEGY,
         )
     )
@@ -276,7 +274,7 @@ async def _run_active_runtime(
         loop=loop,
     )
     route_instrument_ids = frozenset(route.instrument_id for route in profile.routes)
-    probe = _ProbeState.starting(profile, credential_fingerprint)
+    probe = _ProbeState.starting(profile)
     server = _probe_server(probe.readiness)
     stop = asyncio.Event()
 
@@ -308,17 +306,10 @@ async def _run_active_runtime(
         )
         reconciliation_identity = _observe_reconciliation(audit=audit, result=result, previous_identity=None)
         started_at_ns = time.time_ns()
-        identity = runtime_identity()
         state = ExecutionRuntimeState(
             account_slot=profile.account_slot,
-            mode=_active_mode(profile),
-            runtime_release=profile.runtime_release,
-            config_sha256=profile.config_sha256,
+            mode=mode,
             runtime_id=uuid4(),
-            runtime_revision=identity.runtime_revision,
-            image_digest=identity.image_digest,
-            credential_fingerprint=credential_fingerprint,
-            lifecycle_state="starting",
             alive=True,
             execution_safe=False,
             entries_armed=False,
@@ -341,7 +332,6 @@ async def _run_active_runtime(
             # publishing the list so the Signal lane could pre-refuse a market was the second (#537).
             routes_count=len(profile.routes),
         )
-        _observe_runtime_start(audit=audit, state=state)
         projector = RuntimeStateProjector(initial=state, recovery_inputs=recovery_inputs)
         projector.start(repos)
         bridge = OiRuntimeDatabaseBridge(
@@ -421,7 +411,6 @@ async def _run_active_runtime(
             positions_count = len(reports.positions)
             state = replace(
                 state,
-                lifecycle_state="running",
                 alive=True,
                 execution_safe=strategy_readiness.execution_safe,
                 entries_armed=strategy_readiness.entries_armed,
@@ -452,7 +441,6 @@ async def _run_active_runtime(
             projector.offer(
                 replace(
                     written,
-                    lifecycle_state="stopped",
                     alive=False,
                     execution_safe=False,
                     entries_armed=False,
@@ -483,63 +471,28 @@ async def _run_active_runtime(
         node.dispose()
 
 
-def _disabled_profile(settings: Settings) -> OiRuntimeProfile:
+def _active_profile(
+    settings: Settings,
+    mode: ActiveRuntimeMode,
+    routes: tuple[OiInstrumentRoute, ...],
+) -> OiRuntimeProfile:
     execution = settings.trading.execution
-    identity = {
-        "mode": execution.mode,
-        "account_slot": execution.account_slot,
-        "runtime_release": _RUNTIME_RELEASE,
-    }
-    return OiRuntimeProfile(
-        mode="disabled",
-        account_slot=execution.account_slot,
-        account_id=_BINANCE_USDM_ACCOUNT_ID,
-        runtime_release=_RUNTIME_RELEASE,
-        config_sha256=canonical_sha256(identity),
-        cache_namespace=f"tracefold:{execution.account_slot}:disabled",
-        client_order_namespace=f"tracefold:{execution.account_slot}:disabled",
-        routes=(),
-        risk=_risk_limits(settings),
-    )
-
-
-def _active_profile(settings: Settings, routes: tuple[OiInstrumentRoute, ...]) -> OiRuntimeProfile:
-    execution = settings.trading.execution
-    risk = _risk_limits(settings)
-    config_sha256 = canonical_sha256(
-        {
-            "config_version": "oi_binance_usdm_v1",
-            "mode": execution.mode,
-            "account_slot": execution.account_slot,
-            "account_id": _BINANCE_USDM_ACCOUNT_ID.value,
-            "runtime_release": _RUNTIME_RELEASE,
-            "route_rule": "binance_usdm_trading_usdt_perpetual_v1",
-            "stop_distance_bps": execution.risk.stop_distance_bps,
-            "risk": {key: str(value) for key, value in asdict(risk).items()},
-        }
-    )
     # Every deterministic client order id this Runtime can claim lives under this namespace, so the
-    # account slot and the mode are what a restart rebuilds ownership from (#520 PR-A).
-    namespace = f"tracefold:{execution.account_slot}:{execution.mode}"
+    # account slot and the mode are what a restart rebuilds ownership from (#520 PR-A). The digest of
+    # the whole configuration that used to sit beside it named nothing a reader could act on: no page
+    # rendered it, no command took it, and the one mechanism that consumed it -- the Nautilus instance
+    # id -- only needs to be stable per account slot and mode, which the namespace already is
+    # (#537 PR-4).
+    namespace = f"tracefold:{execution.account_slot}:{mode}"
     return OiRuntimeProfile(
-        mode=execution.mode,
+        mode=mode,
         account_slot=execution.account_slot,
         account_id=_BINANCE_USDM_ACCOUNT_ID,
-        runtime_release=_RUNTIME_RELEASE,
-        config_sha256=config_sha256,
         cache_namespace=namespace,
         client_order_namespace=namespace,
         routes=routes,
-        risk=risk,
+        risk=_risk_limits(settings),
     )
-
-
-def _active_mode(profile: OiRuntimeProfile) -> Literal["paper", "live"]:
-    if profile.mode == "paper":
-        return "paper"
-    if profile.mode == "live":
-        return "live"
-    raise RuntimeError("oi_runtime_active_mode_invalid")
 
 
 def _build_active_node(
@@ -580,19 +533,18 @@ def _risk_limits(settings: Settings) -> OiRiskLimits:
 
 
 async def _discover_routes(
-    mode: str,
+    mode: ActiveRuntimeMode,
     credentials: BinanceRuntimeCredentials,
     *,
     stop_distance_bps: int,
 ) -> tuple[OiInstrumentRoute, ...]:
-    environment = BinanceEnvironment.DEMO if mode == "paper" else BinanceEnvironment.LIVE
     clock = LiveClock()
     client = get_cached_binance_http_client(
         clock=clock,
         account_type=BinanceAccountType.USDT_FUTURES,
         api_key=credentials.api_key,
         api_secret=credentials.api_secret,
-        environment=environment,
+        environment=binance_environment(mode),
     )
     provider = BinanceFuturesInstrumentProvider(
         client=client,
@@ -753,37 +705,6 @@ def _observe_reconciliation(
     return identity
 
 
-def _observe_runtime_start(*, audit: AuditSink, state: ExecutionRuntimeState) -> None:
-    audit.offer(
-        audit.factory.create(
-            normalized_kind="readiness",
-            occurred_at_ns=state.started_at_ns,
-            observed_at_ns=state.started_at_ns,
-            summary={
-                "lifecycle": "started",
-                "runtime_id": str(state.runtime_id),
-                "mode": state.mode,
-                "runtime_revision": state.runtime_revision,
-                "image_digest": state.image_digest,
-                "config_sha256": state.config_sha256,
-                "credential_fingerprint": state.credential_fingerprint,
-                "account_slot": state.account_slot,
-            },
-            payload={
-                "lifecycle": "started",
-                "runtime_id": str(state.runtime_id),
-                "mode": state.mode,
-                "runtime_revision": state.runtime_revision,
-                "image_digest": state.image_digest,
-                "config_sha256": state.config_sha256,
-                "credential_fingerprint": state.credential_fingerprint,
-                "account_slot": state.account_slot,
-            },
-            event_identity=f"runtime-start:{state.runtime_id}",
-        )
-    )
-
-
 async def _await_node_started(*, node: TradingNode, node_task: asyncio.Task[None]) -> None:
     deadline = asyncio.get_running_loop().time() + _START_TIMEOUT_SECONDS
     while not node.trader.is_running:
@@ -804,18 +725,12 @@ def _probe_payload(state: ExecutionRuntimeState) -> dict[str, Any]:
         "entry_block_reason": state.entry_block_reason,
         "mode": state.mode,
         "account_slot": state.account_slot,
-        "runtime_release": state.runtime_release,
-        "config_sha256": state.config_sha256,
-        "runtime_revision": state.runtime_revision,
-        "image_digest": state.image_digest,
-        "credential_fingerprint": state.credential_fingerprint,
         "startup_reconciled": state.startup_reconciled,
         "unexpected_exposure": state.unexpected_exposure,
         "account_flat": state.account_flat,
         "positions_count": state.positions_count,
         "open_orders_count": state.open_orders_count,
         "protection_status": state.protection_status,
-        "reconciliation_observed_at_ns": state.reconciliation_observed_at_ns,
         "heartbeat_at_ns": state.heartbeat_at_ns,
     }
 

@@ -2096,7 +2096,11 @@ identity columns, the admission ledger's write-only `release_revision`, and the
 Signal ledger's `alpha_metadata` — narrows the admission primary key to
 `(source_key)` with the rulebook moved into `evidence`, and replaces the Runtime
 projection's `routes` array with the `routes_count` every reader rendered (#537
-PR-3). `20260904_0360` is the current single head.
+PR-3); and destructive `20260904_0361` deletes the Runtime identity ceremony —
+`runtime_release`, `config_sha256`, `runtime_revision`, `image_digest`,
+`credential_fingerprint` and `lifecycle_state` on the projection, and
+`runtime_release` on the observation ledger as a column and as a stored payload
+key (#537 PR-4). `20260904_0361` is the current single head.
 
 Every new schema change is again a normal linear, immutable, forward-only
 revision after the baseline. Exact-image replacement requires source, image,
@@ -2274,10 +2278,13 @@ Canonical up/deploy/status derives the execution Compose profile from operator
 config: disabled stops Nautilus, while paper or live starts exactly one Binance
 USD-M TradingNode. **`account_slot` plus `mode` is the whole execution
 identity.** A session advisory lock owns the account slot and is the only thing
-that decides who may execute for it; `runtime_release`, `config_sha256`,
-`image_digest` and `credential_fingerprint` ride on the durable projection and
-on every Observation as evidence of what is running, never as a gate on whether
-it may run. A restart after a code, image or risk-config change is a restart:
+that decides who may execute for it, and `runtime_id` fences the generation that
+owns the durable projection row. The projection states what the Runtime is
+doing, not what build is doing it: `runtime_release`, `config_sha256`,
+`runtime_revision`, `image_digest`, `credential_fingerprint` and
+`lifecycle_state` were written on every heartbeat and read by nothing but the
+`/status` JSON, and `20260904_0361` deleted all six along with the release
+string on every Observation. A restart after a code, image or risk-config change is a restart:
 the Runtime does not need a new name, does not require a flat account, and does
 not reset control state. `mode: disabled` is the switch that means "do not
 trade".
@@ -2309,9 +2316,10 @@ carries `risk_fraction_per_trade`, `max_risk_per_trade_usd`,
 `max_total_risk_usd`, `max_positions`, `max_leverage`, `max_daily_loss_usd`,
 `stop_distance_bps`, `reconciliation_interval_seconds` and
 `market_stale_after_seconds`, each with a pydantic bound that states why it is
-where it is. `tracefold config` prints them and they are inside `config_sha256`,
-which lands on the durable projection and on the Runtime's start Observation, so
-a deploy can be told apart from the one before it. The stop
+where it is. `tracefold config` prints them, and they reach the Runtime as its
+`OiRiskLimits` gap policy and nowhere else: an edit changes what the Runtime
+enforces without renaming the account slot, the client order namespace or the
+Nautilus instance id, which is derived from `account_slot:mode`. The stop
 distance stays a Runtime number: the Nautilus Strategy places and replaces the
 stop, and neither the Case nor the Signal carries it.
 
@@ -2412,6 +2420,14 @@ handled first; queue pressure evicts only volatile Signal admission, because
 PostgreSQL replays an unresolved Signal and a dropped Command is gone. The
 Strategy callback reaches only Cache, Portfolio and in-memory queues;
 PostgreSQL polling, audit and Telegram I/O are background work.
+
+**One delivery path.** The bridge's 200 ms indexed anti-join is the whole
+transport: a Signal or Command is unresolved until a disposition observation
+exists, so the read is complete on its own and a poll that lands late reads what
+an early one would have. The `LISTEN`/`NOTIFY` wake that used to sit beside it
+could only make an already-correct read arrive sooner, at the cost of an
+autocommit session, a channel-name regex and a `pg_notify` on all three append
+paths; #537 PR-4 deleted it and kept the poll.
 
 **Timer callbacks are not on the event loop.** Measured against a real
 `TradingNode` on the pinned `nautilus-trader` 1.231.0 in
@@ -2569,8 +2585,11 @@ A deployment with `execution.mode=disabled` requires no execution credential and
 `make runtime-status` rejects a leftover Nautilus process. `make up`,
 `make deploy-image` and `make status` always require PostgreSQL, migration,
 Serve, Workers and Web. For `paper|live`, `make status` additionally requires one
-healthy Nautilus runtime whose credentials, singleton, Portfolio, audit, startup
-reconciliation and heartbeat match the durable current projection. The runtime
+healthy Nautilus container whose `/readyz` answers: the operator facts the
+Runtime derives — `execution_safe`, `entries_armed` and why not,
+`startup_reconciled`, `unexpected_exposure`, `account_flat`, the position and
+order counts and the protection status. It states nothing about which build is
+answering, because nothing acts on that (#537 PR-4). The runtime
 is deployed by its own `make runtime-*` targets from its own
 `tracefold-runtime:<sha>` image, so a News, Serve or Workers deploy neither stops
 nor recreates the process that owns exposure (#537 PR-2). Decision starts `STARTING`, advances to `RUNNING`

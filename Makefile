@@ -842,7 +842,7 @@ runtime-down: preflight ## stop and remove the execution runtime container
 runtime-logs: preflight ## tail the execution runtime log
 	@COMPOSE_PROFILES=execution docker compose logs -f --tail=100 nautilus
 
-runtime-status: preflight ## report the execution runtime container, health, and readiness identity
+runtime-status: preflight ## report the execution runtime container, health, and operator readiness
 	@set -eu; \
 		runtime_config=$$($(TRACEFOLD) config); \
 		trading_enabled=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_ENABLED)); \

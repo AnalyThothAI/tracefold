@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.identifiers import ClientOrderId, PositionId
@@ -16,10 +16,20 @@ from tracefold.integrations.nautilus.oi_runtime.state import (
     RuntimeEntryRequest,
     RuntimeReconciliationSnapshot,
     deterministic_client_order_id,
+    exit_leg,
+    protection_leg,
 )
 from tracefold.trading import OperatorIntentV1, TradeSignalV1
 
+# How far a single execution's stop and exit replacement chains are followed when ownership is
+# rebuilt. It bounds one candidate map, derived per durable entry identity before any cached order is
+# read; matching the account's N cached orders against it is then N dict lookups. It used to bound a
+# loop *inside* the scan over those orders, so every reconciliation derived 128 client order ids per
+# cached order to discover which generation that order was -- a discovery the map now makes once,
+# because a protection leg is its generation and nothing else (#537 PR-4).
 _MAX_RECOVERY_GENERATIONS = 128
+
+type _RecoveryLeg = tuple[Literal["protection", "exit"], int]
 
 
 def reconcile_reports_into_cache(*, engine: Any, reports: CompleteBinanceAccountReports) -> None:
@@ -80,8 +90,11 @@ def build_runtime_reconciliation_snapshot(
             exit_id, exit_generation = None, 0
         else:
             claimed.add(position_id)
-            protections = _recovered_protections(profile=profile, request=request, orders=orders)
-            exit_id, exit_generation = _recovered_exit(profile=profile, request=request, orders=orders)
+            protections, exit_id, exit_generation = _recovered_legs(
+                profile=profile,
+                request=request,
+                orders=orders,
+            )
         seeds.append(
             RecoveredExecutionSeed(
                 entry=request,
@@ -118,26 +131,57 @@ def _matched_position(
     return None
 
 
-def _recovered_protections(
+def _recovery_legs(*, profile: OiRuntimeProfile, entry_id: str) -> dict[ClientOrderId, _RecoveryLeg]:
+    """Every stop and exit id this entry identity could have claimed, keyed by client order id."""
+
+    legs: dict[ClientOrderId, _RecoveryLeg] = {}
+    for generation in range(_MAX_RECOVERY_GENERATIONS + 1):
+        legs[
+            deterministic_client_order_id(
+                namespace=profile.client_order_namespace,
+                entry_id=entry_id,
+                leg=exit_leg(generation),
+            )
+        ] = ("exit", generation)
+        if generation == 0:
+            continue
+        legs[
+            deterministic_client_order_id(
+                namespace=profile.client_order_namespace,
+                entry_id=entry_id,
+                leg=protection_leg(generation),
+            )
+        ] = ("protection", generation)
+    return legs
+
+
+def _recovered_legs(
     *,
     profile: OiRuntimeProfile,
     request: RuntimeEntryRequest,
     orders: tuple[Any, ...],
-) -> tuple[RecoveredProtectionSeed, ...]:
-    matched: list[tuple[int, Any]] = []
+) -> tuple[tuple[RecoveredProtectionSeed, ...], ClientOrderId | None, int]:
+    """One pass over the account's cached orders, claiming this identity's stops and its exit."""
+
+    legs = _recovery_legs(profile=profile, entry_id=request.entry_id)
+    protections: list[tuple[int, Any]] = []
+    exit_id: ClientOrderId | None = None
+    exit_generation = 0
     for order in orders:
-        quantity = Decimal(str(order.quantity))
-        for generation in range(1, _MAX_RECOVERY_GENERATIONS + 1):
-            expected = deterministic_client_order_id(
-                namespace=profile.client_order_namespace,
-                entry_id=request.entry_id,
-                leg=f"protection:{generation}:{format(quantity.normalize(), 'f')}",
-            )
-            if order.client_order_id == expected:
-                matched.append((generation, order))
-                break
-    if not matched:
-        return ()
+        claim = legs.get(order.client_order_id)
+        if claim is None:
+            continue
+        kind, generation = claim
+        if kind == "protection":
+            protections.append((generation, order))
+        elif exit_id is None or generation > exit_generation:
+            exit_id, exit_generation = order.client_order_id, generation
+    return _protection_seeds(protections), exit_id, exit_generation
+
+
+def _protection_seeds(matched: list[tuple[int, Any]]) -> tuple[RecoveredProtectionSeed, ...]:
+    """The live stop is the newest open generation; every other open one is on its way out."""
+
     highest_open_generation = max(
         (generation for generation, order in matched if order.is_open),
         default=-1,
@@ -153,25 +197,6 @@ def _recovered_protections(
         for generation, order in sorted(matched, key=lambda item: item[0])
         if not order.is_closed
     )
-
-
-def _recovered_exit(
-    *,
-    profile: OiRuntimeProfile,
-    request: RuntimeEntryRequest,
-    orders: tuple[Any, ...],
-) -> tuple[ClientOrderId | None, int]:
-    by_id = {order.client_order_id: order for order in orders}
-    for generation in range(_MAX_RECOVERY_GENERATIONS, -1, -1):
-        leg = "exit" if generation == 0 else f"exit:{generation}"
-        expected = deterministic_client_order_id(
-            namespace=profile.client_order_namespace,
-            entry_id=request.entry_id,
-            leg=leg,
-        )
-        if expected in by_id:
-            return expected, generation
-    return None, 0
 
 
 __all__ = [

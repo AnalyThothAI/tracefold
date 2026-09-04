@@ -150,7 +150,7 @@ def _lane(
 
     return SignalLane(
         db=FakeDb(trading),  # type: ignore[arg-type]
-        config=SignalLaneConfig(admission=AdmissionConfig(), policy=ALPHA_POLICY),
+        config=SignalLaneConfig(oi_metric_version="oi_signal_v1", admission=AdmissionConfig(), policy=ALPHA_POLICY),
         bars=bars,
         oi_projection=projection,
         clock=lambda: NOW,
@@ -466,7 +466,7 @@ def test_the_scan_horizon_is_exactly_the_admission_window(
     outside it is `trigger_stale`, and that is the whole of what the horizon has to reach.
     """
 
-    config = SignalLaneConfig(admission=AdmissionConfig(), policy=ALPHA_POLICY)
+    config = SignalLaneConfig(oi_metric_version="oi_signal_v1", admission=AdmissionConfig(), policy=ALPHA_POLICY)
     assert config.scan_horizon_ms == config.admission.max_age_ms
 
     trading = FakeTrading((_row(observed_at_ms=NOW - age_ms, available_at_ms=NOW - age_ms),))
