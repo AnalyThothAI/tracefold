@@ -125,3 +125,47 @@ def test_complete_profile_reports_halves_and_taxonomy_support_without_a_calibrat
         "product_service_change": 100,
         "other": 100,
     }
+
+
+def test_readiness_summarizes_cluster_representatives_when_member_gold_differs() -> None:
+    """#534: media members of one fact carry different accepted Gold; readiness summarizes the elected one.
+
+    The freeze already summarizes one representative per connected fact cluster, so a corpus it sealed must
+    not make `news learning readiness` fail closed on `news_taxonomy_summary_cluster_conflict`.
+    """
+
+    shadowed = _episode(1, target=True)
+    elected = _episode(2, target=False).model_copy(update={"cluster_id": shadowed.cluster_id})
+    other = _episode(3, target=True)
+    episodes = (shadowed, elected, other)
+    plan = build_gepa_objective_plan(episodes)
+
+    report = build_readiness_report(plan, episodes=episodes, identity={"dataset": "test"}, coverage={})
+
+    assert report["corpus"]["case_n"] == 3
+    assert report["taxonomy_gold"]["cluster_n"] == 2
+    assert report["taxonomy_gold"]["cluster_n"] == len(plan.optimizer_cluster_ids)
+    # The elected member's Gold, not the shadowed member's, is the one the summary supports.
+    assert report["taxonomy_gold"]["support"]["event_family"] == {"other": 1, "product_service_change": 1}
+    shadowed_case = _case(plan, shadowed.case_id)
+    assert shadowed_case.disposition == "excluded"
+    assert shadowed_case.reason == "cluster_representative_shadowed"
+    assert shadowed.case_id in plan.excluded_case_ids
+    assert {case["case_id"] for case in report["case_dispositions"]} == {episode.case_id for episode in episodes}
+
+
+def test_readiness_never_summarizes_two_representatives_of_one_cluster() -> None:
+    """Two conflicting representatives cannot exist: election is by cluster, so the summary sees one each."""
+
+    episodes = tuple(
+        _episode(index, target=index % 2 == 1).model_copy(update={"cluster_id": f"cluster-{index % 3}"})
+        for index in range(1, 10)
+    )
+    plan = build_gepa_objective_plan(episodes)
+
+    report = build_readiness_report(plan, episodes=episodes, identity={"dataset": "test"}, coverage={})
+
+    assert len(plan.optimizer_case_ids) == len(plan.optimizer_cluster_ids) == 3
+    assert report["taxonomy_gold"]["cluster_n"] == 3
+    assert report["objective"]["excluded_case_n"] == 6
+    assert dict(plan.exclusion_reasons) == {"cluster_representative_shadowed": 6}
