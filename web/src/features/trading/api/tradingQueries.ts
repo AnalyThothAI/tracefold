@@ -10,8 +10,6 @@ export type TradingExecutionReadiness = TradingSchemas["TradingExecutionReadines
 export type TradingCases = TradingSchemas["TradingCasesData"];
 export type TradingCase = TradingSchemas["TradingCaseData"];
 export type TradingPolicyCheck = TradingSchemas["TradingPolicyCheckData"];
-export type TradingSignals = TradingSchemas["TradingSignalsData"];
-export type TradingSignal = TradingSchemas["TradingSignalData"];
 export type TradingExecutions = TradingSchemas["TradingExecutionsData"];
 export type TradingExecutionRow = TradingSchemas["TradingExecutionRowData"];
 export type TradingExecutionCommand = TradingSchemas["TradingExecutionCommandRowData"];
@@ -19,7 +17,6 @@ export type TradingOperatorCommandReceipt = TradingSchemas["TradingOperatorComma
 export type TradingGate = TradingSchemas["TradingGateData"];
 export type TradingGateSource = TradingSchemas["TradingGateSourceData"];
 export type TradingGateDecision = TradingSchemas["TradingGateDecisionData"];
-export type TradingGateConfig = TradingSchemas["TradingGateConfigData"];
 
 export const TRADING_REFETCH_MS = 15_000;
 
@@ -47,22 +44,6 @@ export const useTradingCasesWithToken = (token: string, underlying?: string) =>
         await getApi<TradingCases>("/api/trading/cases", {
           etagKey: `trading-cases:${underlying ?? "all"}`,
           params: underlying ? { underlying } : undefined,
-          token,
-        })
-      ).data,
-    refetchInterval: TRADING_REFETCH_MS,
-    staleTime: 5_000,
-  });
-
-export const useTradingSignalsWithToken = (token: string, market?: string) =>
-  useQuery({
-    enabled: Boolean(token),
-    queryKey: queryKeys.tradingSignals(market ?? ""),
-    queryFn: async () =>
-      (
-        await getApi<TradingSignals>("/api/trading/signals", {
-          etagKey: `trading-signals:${market ?? "all"}`,
-          params: market ? { market } : undefined,
           token,
         })
       ).data,
@@ -120,6 +101,13 @@ export const useIssueTradingCommandWithToken = (token: string) => {
   });
 };
 
+/**
+ * The admission ledger, read by `/news/oi` alone (#537 D4).
+ *
+ * The desk read it too until #537 PR-5, downloading up to 400 `decisions[]` every 15 s to render a
+ * status count list and a card of thresholds beside them. The frame table on `/news/oi` is the one
+ * surface that joins a row of this to something — the OI frame on the same line.
+ */
 export const useTradingGateWithToken = (token: string) =>
   useQuery({
     enabled: Boolean(token),

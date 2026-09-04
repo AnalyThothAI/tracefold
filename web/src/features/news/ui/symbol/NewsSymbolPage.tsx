@@ -1,4 +1,3 @@
-import { TradingSymbolSection } from "@features/trading";
 import { routeReferrerFromState } from "@shared/routing/routeReferrer";
 import * as PageState from "@shared/ui/PageState";
 import { RouteBackLink } from "@shared/ui/RouteBackLink";
@@ -144,7 +143,6 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
          * same numbers — and the OI/price quadrant it led with was `oi_momentum_v1`'s entry rule, which
          * no policy reads any more. The Case's own frozen checks are rendered where the Case lives.
          */}
-        <TradingSymbolSection base={normalized} token={token} />
 
         <NewsSymbolEvents
           error={feedQuery.isError && !feedQuery.data ? feedQuery.error : null}

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from tracefold.news import OI_METRIC_VERSION as NEWS_OI_METRIC_VERSION
 from tracefold.platform.config.models import Settings
-from tracefold.trading.admission import ADMISSION_VERSION, AdmissionConfig
+from tracefold.trading.admission import AdmissionConfig
 from tracefold.trading.market_context import PriceWindow
 from tracefold.trading.policy import ALPHA_POLICY
 from tracefold.trading.signal_lane import SIGNAL_TTL_MS, SignalLaneConfig
@@ -39,5 +39,7 @@ def signal_lane_config(settings: Settings) -> SignalLaneConfig:
 # `trading_admission_config` and `trading_alpha_policy` were here until #460: one-line readers for
 # `signal_lane_config(settings).admission` and `.policy`, written for the replay command that no longer
 # exists. Every current caller wants the whole frozen object, and an accessor whose only job is to hand
-# back one of its fields is a second name for the same rule.
-__all__ = ["ADMISSION_VERSION", "signal_lane_config"]
+# back one of its fields is a second name for the same rule. `ADMISSION_VERSION` was re-exported here
+# for `GET /api/trading/gate`'s `config` block; the ledger's own `evidence` names the rulebook that
+# decided each row, so the running configuration is no longer a response field (#537 PR-5).
+__all__ = ["signal_lane_config"]

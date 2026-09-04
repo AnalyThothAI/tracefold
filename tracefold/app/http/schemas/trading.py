@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import Field
 
@@ -51,10 +51,15 @@ class TradingExecutionOrderData(ExactApiSchema):
 
 
 class TradingExecutionAccountData(ExactApiSchema):
-    observed_at_ns: int
-    market_observed_at_ns: int | None = None
+    """What the account holds, as the Runtime's own private reconciliation last saw it.
+
+    Its two observation clocks, the day-start equity baseline and the `truncated` flag were published
+    beside these and rendered nowhere: the desk ages the whole projection against `facts_expire_at_ms`,
+    reads the drawdown the Runtime already measured against that baseline, and a truncated snapshot is
+    already not `complete` (#537 PR-5).
+    """
+
     equity_usd: str | None = None
-    day_start_equity_usd: str | None = None
     daily_drawdown_usd: str | None = None
     daily_drawdown_bps: int | None = None
     aggregate_risk_usd: str | None = None
@@ -64,29 +69,32 @@ class TradingExecutionAccountData(ExactApiSchema):
     inflight_orders_count: int = Field(ge=0)
     unknown_orders_count: int = Field(ge=0)
     complete: bool
-    truncated: bool = False
     audit_healthy: bool = True
     audit_failure_reason: str | None = None
 
 
 class TradingExecutionReadinessData(ExactApiSchema):
+    """One field per operator question, and the CLI `tracefold trading status` block is this same dict.
+
+    The two raw observation clocks (`heartbeat_at_ns`, `reconciliation_observed_at_ns`) went with the
+    ages derived from them: the desk compares `facts_expire_at_ms` against its own clock and prints
+    `reconciliation_age_ms`, both already measured here. `positions_count` / `open_orders_count` said
+    what `current_account` carries row by row, and raw `account_flat` said what the venue had not yet
+    proven -- `account_flat_proven` is the answer an operator acts on (#537 PR-5).
+    """
+
     mode: Literal["disabled", "paper", "live"]
     account_slot: str
     alive: bool
     execution_safe: bool
     entries_armed: bool
     entry_block_reason: str | None = None
-    heartbeat_at_ns: int | None = None
-    reconciliation_observed_at_ns: int | None = None
     reconciliation_age_ms: int | None = None
     startup_reconciled: bool = False
     entries_paused: bool = True
     emergency_halted: bool = False
     unexpected_exposure: bool = False
-    account_flat: bool = False
     account_flat_proven: bool = False
-    positions_count: int = Field(default=0, ge=0)
-    open_orders_count: int = Field(default=0, ge=0)
     protection_status: Literal["not_applicable", "protected", "pending", "unprotected", "unknown"] = "unknown"
     routes_count: int = Field(default=0, ge=0)
     # The instant this projection stops being current: the earlier of the heartbeat and private
@@ -95,34 +103,22 @@ class TradingExecutionReadinessData(ExactApiSchema):
     current_account: TradingExecutionAccountData | None = None
 
 
-class TradingRuntimeCountsData(ExactApiSchema):
-    cases_24h: int = 0
-    signals_24h: int = 0
-
-
 class TradingStatusData(ExactApiSchema):
+    """The desk's RISK block, and nothing beside it.
+
+    `counts` carried a `cases_24h` and a `signals_24h` that cost two `count(*)` on every 15 s poll of
+    every route and were rendered only in the chrome figures #537 PR-5 deleted. The window and the
+    measurement clock went with them: this projection publishes the instant it expires, which is the
+    only clock a reader compares (#537 PR-5).
+    """
+
     decision: TradingDecisionRuntimeData
     execution: TradingExecutionReadinessData
-    counts: TradingRuntimeCountsData
-    window_hours: int
-    measured_at_ms: int
-
-
-class TradingGateConfigData(ExactApiSchema):
-    version: str
-    config_digest: str
-    max_age_ms: int
-    min_oi_value_usd: int
-    source_venues: list[str]
 
 
 class TradingGateDecisionData(ExactApiSchema):
     source_key: str
     event_id: str | None = None
-    underlying_key: str | None = None
-    base_symbol: str = ""
-    trigger_kind: str
-    source_observed_at_ms: int
     gate_status: GateStatus | None = None
     gate_stage: GateStage | None = None
     gate_reason: str | None = None
@@ -139,15 +135,18 @@ class TradingGateDecisionData(ExactApiSchema):
 
 
 class TradingGateData(ExactApiSchema):
-    config: TradingGateConfigData
+    """The admission ledger `/news/oi` joins each OI frame against (#537 D4).
+
+    The running admission configuration was published here as `config` and the ledger's two extreme
+    clocks as `latest_source_at_ms` / `latest_gate_eligible_at_ms`; the second pair cost an unbounded
+    scan of the 90-day ledger on every 15 s poll for one card hint. Both are gone with the desk's own
+    read of this route (#537 PR-5).
+    """
+
     decisions: list[TradingGateDecisionData] = Field(default_factory=list)
     status_counts_24h: dict[str, int] = Field(default_factory=dict)
     reason_counts_24h: dict[str, int] = Field(default_factory=dict)
-    latest_source_at_ms: int | None = None
-    latest_gate_eligible_at_ms: int | None = None
     complete: bool
-    window_hours: int
-    measured_at_ms: int
 
 
 class TradingGateSourceData(ExactApiSchema):
@@ -165,109 +164,47 @@ class TradingPolicyCheckData(ExactApiSchema):
 
 
 class TradingCaseData(ExactApiSchema):
+    """One frozen Case, as the drawer behind `?case=<id>` renders it.
+
+    The four measured OI numbers here were a second copy of what `policy_checks` already carries with
+    the threshold each was measured against, `policy_version` a second copy of `policy_id`, and
+    `policy_decision` a required Literal over a nullable column -- exactly the shape that turned a
+    stored `NULL` into a 500 on a read route (#532, #537 PR-5). `state` and `policy_reason` are the
+    terminal answer; `base_symbol` is the identity the drawer titles itself with.
+    """
+
     case_id: str
     event_id: str | None = None
-    underlying_key: str
     base_symbol: str
     market_key: str | None = None
-    source_venue: str | None = None
-    trigger_kind: str
     manifest_version: str | None = None
     # The manifest's own policy identity. Nullable because the manifest is the only writer of it and a
     # Case whose manifest names no policy must render as that, not 500 the route (#532, #537 PR-3).
     policy_id: str | None = None
-    policy_version: str | None = None
     policy_config_digest: str | None = None
     policy_config: dict[str, str] = Field(default_factory=dict)
     policy_checks: list[TradingPolicyCheckData] = Field(default_factory=list)
     state: str
-    policy_decision: Literal["long", "no_trade", "not_run"]
     policy_reason: str | None = None
     mark_price: str | None = None
     pre_move_bps: int | None = None
-    oi_change_bps: int | None = None
-    oi_value_usd: int | None = None
-    whale_oi_ratio_bps: int | None = None
-    whale_long_profit_bps: int | None = None
     observed_at_ms: int
     created_at_ms: int
     decided_at_ms: int | None = None
 
 
 class TradingCasesData(ExactApiSchema):
+    """One bounded page of Cases plus the two durable 24 h distributions.
+
+    There is no `next_cursor` and no cursor parameter: the desk opens one Case at a time from
+    `?case=<id>` and renders one 24 h count card, and no reader ever asked for a second page (#537 PR-5).
+    """
+
     cases: list[TradingCaseData] = Field(default_factory=list)
     state_counts_24h: dict[str, int] = Field(default_factory=dict)
     reason_counts_24h: dict[str, int] = Field(default_factory=dict)
     complete: bool
-    next_cursor: str | None = None
     window_hours: int
-    measured_at_ms: int
-
-
-class TradingSignalData(ExactApiSchema):
-    seq: int
-    signal_id: str
-    case_id: str
-    market_key: str
-    direction: Literal["long", "short"]
-    observed_at_ns: int
-    expires_at_ns: int
-    expired: bool
-
-
-class TradingSignalsData(ExactApiSchema):
-    signals: list[TradingSignalData] = Field(default_factory=list)
-    complete: bool
-    next_cursor: str | None = None
-    window_hours: int
-    measured_at_ms: int
-
-
-class TradingExecutionObservationData(ExactApiSchema):
-    seq: int
-    event_id: str
-    account_slot: str
-    execution_strategy: str
-    signal_id: str | None = None
-    command_id: str | None = None
-    normalized_kind: str
-    occurred_at_ns: int
-    observed_at_ns: int
-    native_identity_references: list[str] = Field(default_factory=list)
-    summary: dict[str, Any] = Field(default_factory=dict)
-
-
-class TradingExecutionObservationsData(ExactApiSchema):
-    observations: list[TradingExecutionObservationData] = Field(default_factory=list)
-    complete: bool
-    next_cursor: str | None = None
-    window_hours: int
-    measured_at_ms: int
-
-
-class TradingOperatorIntentData(ExactApiSchema):
-    seq: int
-    command_id: str
-    account_slot: str
-    action: Literal["pause_entries", "resume_entries", "emergency_halt", "flatten", "manual_entry"]
-    scope: str
-    reason: str
-    operator_identity: str
-    requested_at_ns: int
-    expires_at_ns: int
-    expired: bool
-    market_key: str | None = None
-    direction: Literal["long", "short"] | None = None
-    disposition: str | None = None
-    disposition_reason: str | None = None
-
-
-class TradingOperatorIntentsData(ExactApiSchema):
-    commands: list[TradingOperatorIntentData] = Field(default_factory=list)
-    complete: bool
-    next_cursor: str | None = None
-    window_hours: int
-    measured_at_ms: int
 
 
 class TradingExecutionRowData(ExactApiSchema):
@@ -275,7 +212,13 @@ class TradingExecutionRowData(ExactApiSchema):
 
     `entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,
     or the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so
-    `case_id` is absent on those rows rather than invented.
+    `case_id` is absent on those rows rather than invented; the desk links the ones that have one to
+    the Case drawer.
+
+    `order_status`, `position_status` and the `accepted` / `rejected` split are the inputs `stage` is
+    derived from, and `stage` is what the table renders: publishing all four let a reader compare a
+    venue word against the server's own answer about the same row (#537 PR-5). `last_observed_at_ns`
+    was a second clock beside `observed_at_ns` that no column printed.
     """
 
     source: Literal["signal", "manual"]
@@ -284,28 +227,27 @@ class TradingExecutionRowData(ExactApiSchema):
     market_key: str
     direction: Literal["long", "short"]
     observed_at_ns: int
-    disposition: Literal["accepted", "rejected"] | None = None
     disposition_reason: str | None = None
-    order_status: str | None = None
     fill_quantity: str | None = None
     fill_avg_price: str | None = None
     stop_trigger_price: str | None = None
-    position_status: str | None = None
     exit_price: str | None = None
     realized_pnl_usd: str | None = None
     exit_reason: Literal["stop_filled", "flatten", "unclaimed_flatten"] | None = None
     stage: ExecutionStage
-    last_observed_at_ns: int
 
 
 class TradingExecutionCommandRowData(ExactApiSchema):
-    """One operator Command's progress, read from its `control_disposition` alone."""
+    """One operator Command's progress, read from its `control_disposition` alone.
+
+    Action, stage and clock: the ACT block's ledger rows. `operator_identity` is the constant
+    `operator-console` for every browser write and `reason` is the text the same operator just typed
+    into the field above the ledger (#537 PR-5).
+    """
 
     command_id: str
     action: Literal["pause_entries", "resume_entries", "emergency_halt", "flatten", "manual_entry"]
-    reason: str
     requested_at_ns: int
-    operator_identity: str
     stage: CommandStage
 
 
@@ -313,8 +255,6 @@ class TradingExecutionsData(ExactApiSchema):
     executions: list[TradingExecutionRowData] = Field(default_factory=list)
     commands: list[TradingExecutionCommandRowData] = Field(default_factory=list)
     complete: bool
-    window_hours: int
-    measured_at_ms: int
 
 
 class TradingOperatorCommandRequestData(ExactApiSchema):

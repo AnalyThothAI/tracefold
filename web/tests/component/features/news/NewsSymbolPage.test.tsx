@@ -9,12 +9,6 @@ import {
   newsStatusFixture,
   newsSymbolFixture,
 } from "@tests/fixtures/newsFixture";
-import {
-  tradingCaseFixture,
-  tradingCasesFixture,
-  tradingCasesForUnderlying,
-  tradingSignalsForMarket,
-} from "@tests/fixtures/tradingFixture";
 import { server } from "@tests/msw/server";
 import { HttpResponse, http } from "msw";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -51,18 +45,6 @@ describe("NewsSymbolPage", () => {
        * read had failed — silently, because the failure surfaced only as `data === undefined` and both
        * sections rendered their empty copy. A test that means to see that state now says so.
        */
-      http.get(/.*\/api\/trading\/signals.*/, ({ request }) =>
-        HttpResponse.json({
-          ok: true,
-          data: tradingSignalsForMarket(new URL(request.url).searchParams.get("market")),
-        }),
-      ),
-      http.get(/.*\/api\/trading\/cases.*/, ({ request }) =>
-        HttpResponse.json({
-          ok: true,
-          data: tradingCasesForUnderlying(new URL(request.url).searchParams.get("underlying")),
-        }),
-      ),
     );
   });
 
@@ -241,92 +223,27 @@ describe("NewsSymbolPage", () => {
     expect(cell).not.toHaveTextContent("0.00%");
   });
 
-  /*
-   * #282's acceptance asks for three tokens with three different right answers, and the failure mode it is
-   * guarding against is a panel filling a gap in with something plausible. #331 moved the answer to the
-   * aggregate that owns it: the 交易视角 quadrant panel is gone with the quadrant itself, and 资本复盘
-   * renders the Case rows the server decided rather than re-deriving a verdict in the browser.
-   */
-  it("renders the Cases the server decided for this token, and never invents one", async () => {
+  it("carries no Trading section and asks the Trading lane for nothing", async () => {
+    /*
+     * #537 PR-5. `TradingSymbolSection` was a second Case list here, reading `/api/trading/cases`
+     * filtered to this token and `/api/trading/signals` filtered to its market. The desk renders both
+     * ledgers already — one row per entry with its whole venue outcome — and #282's three-token
+     * acceptance is about this page not filling a gap in with something plausible, which a section
+     * that is not here cannot do.
+     */
+    const tradingReads: string[] = [];
     server.use(
-      http.get(/.*\/api\/trading\/cases.*/, ({ request }) =>
-        HttpResponse.json({
-          ok: true,
-          data: tradingCasesForUnderlying(new URL(request.url).searchParams.get("underlying")),
-        }),
-      ),
-    );
-    renderSymbol("/news/symbols/HYPE", "HYPE");
-
-    expect(await screen.findByText("Alpha 复盘 · Case → Signal")).toBeInTheDocument();
-    expect(await screen.findByText("不交易")).toBeInTheDocument();
-    expect(screen.getByText("鲸鱼占比未超过地板")).toBeInTheDocument();
-    expect(screen.getByText("未发出")).toBeInTheDocument();
-    // No quadrant, and no threshold comparison recomputed here: the frozen checks live with the Case.
-    expect(screen.queryByText("buildup_up")).not.toBeInTheDocument();
-    expect(screen.queryByText("过地板")).not.toBeInTheDocument();
-  });
-
-  it("says a token the lane never opened a case for has no Case, not a refusal", async () => {
-    server.use(
-      http.get(/.*\/api\/trading\/cases.*/, () =>
-        HttpResponse.json({ ok: true, data: tradingCasesFixture({ cases: [] }) }),
-      ),
-    );
-    renderSymbol();
-
-    expect(await screen.findByText("当前窗口没有这个代币的 Case。")).toBeInTheDocument();
-    expect(screen.queryByText("过地板")).not.toBeInTheDocument();
-  });
-
-  it("distinguishes an unreadable capital ledger from an empty one", async () => {
-    server.use(
-      http.get(/.*\/api\/trading\/cases.*/, () =>
-        HttpResponse.json({ ok: false }, { status: 503 }),
-      ),
-    );
-    renderSymbol();
-
-    expect(
-      await screen.findByText("Alpha Case 账本本轮不可用；不能据此断言没有案例。"),
-    ).toBeInTheDocument();
-  });
-
-  it("keeps an unreadable Signal ledger distinct from a Case with no Signal", async () => {
-    let signalReads = 0;
-    server.use(
-      http.get(/.*\/api\/trading\/cases.*/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: tradingCasesFixture({
-            cases: [
-              tradingCaseFixture({
-                policy_decision: "long",
-                policy_reason: "signal_emitted",
-                state: "SIGNAL_EMITTED",
-              }),
-            ],
-          }),
-        }),
-      ),
-      http.get(/.*\/api\/trading\/signals.*/, () => {
-        signalReads += 1;
-        return signalReads === 1
-          ? HttpResponse.json({ ok: false }, { status: 503 })
-          : HttpResponse.json({ ok: true, data: tradingSignalsForMarket("crypto:perp:HYPE:USDT") });
+      http.get(/.*\/api\/trading\/.*/, ({ request }) => {
+        tradingReads.push(new URL(request.url).pathname);
+        return HttpResponse.json({ ok: false, error: "unexpected_trading_read" }, { status: 500 });
       }),
     );
     renderSymbol("/news/symbols/HYPE", "HYPE");
 
-    expect(
-      await screen.findByText("Signal 账本本轮不可用；不能据此断言未发出 Signal。"),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("未发出")).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "重试" }));
-
-    expect(await screen.findByText("未发出")).toBeInTheDocument();
-    expect(signalReads).toBe(2);
+    expect(await screen.findByRole("heading", { name: /HYPE/ })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("正在读取…")).not.toBeInTheDocument());
+    expect(screen.queryByText("Alpha 复盘 · Case → Signal")).not.toBeInTheDocument();
+    expect(tradingReads).toEqual([]);
   });
 
   it("prints this window's counts once, in the identity band the artifact puts them in", async () => {

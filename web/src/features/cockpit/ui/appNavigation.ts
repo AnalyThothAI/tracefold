@@ -3,8 +3,6 @@ import { EventStreamIcon, TelemetryPulseIcon, TradeFlowIcon } from "@shared/ui/i
 import type { LucideIcon } from "lucide-react";
 
 export type AppNavigationItem = {
-  /** Alpha decision state and explicit execution mode beside the Trading destination. */
-  badge?: "tradingEnvironment";
   children?: AppNavigationItem[];
   /** Which count from `AppNavigationCounts` this destination shows, if any. */
   count?: "events" | "oiFrames";
@@ -61,14 +59,12 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
       },
       {
         /*
-         * A word, not a volume, and still only one of them after #460 folded Alpha 判定's slot into this
-         * destination. Inheriting that slot's `count: "cases"` was tried and reverted: the row is 204px,
-         * the badge already spends ~85px of it, and `交易` — a `flex: 1` label with `text-overflow:
-         * ellipsis` — came out as a single clipped glyph beside the badge's clock and mode. The count is the
-         * lesser of the two here anyway: "is any of this real money" is what a reader needs before
-         * opening it, and `CASES 24H` is the first figure on the page itself.
+         * No count and no badge. Inheriting Alpha 判定's `count: "cases"` was tried and reverted in #460
+         * — the row is 204px and `交易`, a `flex: 1` label with `text-overflow: ellipsis`, came out as a
+         * single clipped glyph beside it. The `tradingEnvironment` badge that replaced it printed the
+         * lane's last-Case clock and execution mode, and paying for it meant every News route polling
+         * `/api/trading/status` every 15 s for two words the desk itself states (#537 PR-5).
          */
-        badge: "tradingEnvironment",
         icon: TradeFlowIcon,
         isActive: (pathname) => pathname === "/trading",
         label: "交易",

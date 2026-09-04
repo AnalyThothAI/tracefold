@@ -51,10 +51,6 @@ class _Trading:
     def latest_case_created_at_ms(self) -> int:
         return NOW
 
-    def runtime_summary(self, **kwargs: Any) -> dict[str, int]:
-        self.calls.append(("runtime_summary", kwargs))
-        return {"cases_24h": 1, "signals_24h": 1}
-
     def execution_runtime_state(self, _account_slot: str) -> None:
         return None
 
@@ -98,20 +94,6 @@ class _Trading:
 
     def case_reason_counts(self, **kwargs: Any) -> dict[str, int]:
         return {"smart_money_long": 1}
-
-    def console_signals(self, **kwargs: Any) -> list[dict[str, Any]]:
-        self.calls.append(("console_signals", kwargs))
-        return [
-            {
-                "seq": 1,
-                "signal_id": "c" * 64,
-                "case_id": "case-sol",
-                "market_key": "crypto:perp:SOL:USDT",
-                "direction": "long",
-                "observed_at_ns": NOW * 1_000_000,
-                "expires_at_ns": (NOW + 180_000) * 1_000_000,
-            }
-        ]
 
     def console_executions(self, **kwargs: Any) -> list[dict[str, Any]]:
         self.calls.append(("console_executions", kwargs))
@@ -174,10 +156,6 @@ class _Trading:
             },
         ]
 
-    def console_execution_observations(self, **kwargs: Any) -> list[dict[str, Any]]:
-        self.calls.append(("console_execution_observations", kwargs))
-        return []
-
     def console_operator_intents(self, **kwargs: Any) -> list[dict[str, Any]]:
         self.calls.append(("console_operator_intents", kwargs))
         return [
@@ -198,16 +176,12 @@ class _Trading:
             }
         ]
 
-    def gate_decisions_since(self, **kwargs: Any) -> list[dict[str, Any]]:
-        self.calls.append(("gate_decisions_since", kwargs))
-        return [_GATE_ROW]
-
     def candidate_admission_report(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("candidate_admission_report", kwargs))
         return {
-            "candidate_counts_24h": {},
-            "candidate_reasons_24h": {},
-            "latest_source_at_ms": None,
-            "latest_gate_eligible_at_ms": None,
+            "decisions": [_GATE_ROW],
+            "candidate_counts_24h": {"REJECTED": 1},
+            "candidate_reasons_24h": {"venue:instrument_unmapped": 1},
         }
 
     def gate_decision_for_source_key(self, **kwargs: Any) -> dict[str, Any] | None:
@@ -248,6 +222,7 @@ def test_status_keeps_execution_truthfully_disabled(client: tuple[TestClient, _T
     api, _ = client
     data = api.get("/api/trading/status", params={"token": TOKEN}).json()["data"]
 
+    assert set(data) == {"decision", "execution"}
     assert data["decision"] == {"last_case_at_ms": NOW}
     expected = {
         "mode": "disabled",
@@ -259,7 +234,6 @@ def test_status_keeps_execution_truthfully_disabled(client: tuple[TestClient, _T
     }
     assert {key: data["execution"][key] for key in expected} == expected
     assert data["execution"]["startup_reconciled"] is False
-    assert data["execution"]["account_flat"] is False
     assert {"singleton_ready", "portfolio_ready", "control_plane_ready", "audit_ready", "day_start_ready"}.isdisjoint(
         data["execution"]
     )
@@ -274,28 +248,71 @@ def test_status_keeps_execution_truthfully_disabled(client: tuple[TestClient, _T
     }.isdisjoint(data["execution"])
     assert data["execution"]["routes_count"] == 0
     assert data["execution"]["facts_expire_at_ms"] is None
-    assert data["counts"] == {"cases_24h": 1, "signals_24h": 1}
     # #528: the four counts nothing rendered are gone, and so is the whole `alpha` block -- the
     # policy identity is on every Case row that used it.
     assert "alpha" not in data
     assert "capital" not in data and "bindings" not in data and "budget" not in data
 
 
-def test_case_and_signal_are_separate_durable_aggregates(client: tuple[TestClient, _Trading]) -> None:
+def test_status_publishes_one_field_per_operator_question(client: tuple[TestClient, _Trading]) -> None:
+    """#537 PR-5. Every raw fact whose derived answer is published beside it is gone.
+
+    The two observation clocks were the input to `facts_expire_at_ms` and `reconciliation_age_ms`, the
+    two readiness counts said what `current_account` carries row by row, raw `account_flat` said what
+    the venue had not proven, and the two 24 h counts cost a `count(*)` per table on every poll of
+    every route for chrome figures that no longer exist.
+    """
+
+    api, trading = client
+    data = api.get("/api/trading/status", params={"token": TOKEN}).json()["data"]
+
+    assert {
+        "heartbeat_at_ns",
+        "reconciliation_observed_at_ns",
+        "positions_count",
+        "open_orders_count",
+        "account_flat",
+    }.isdisjoint(data["execution"])
+    assert "counts" not in data and "window_hours" not in data and "measured_at_ms" not in data
+    assert [name for name, _ in trading.calls] == []
+
+
+def test_case_reads_its_policy_identity_off_the_manifest(client: tuple[TestClient, _Trading]) -> None:
     api, _ = client
     case = api.get("/api/trading/cases", params={"token": TOKEN}).json()["data"]["cases"][0]
-    signal = api.get("/api/trading/signals", params={"token": TOKEN}).json()["data"]["signals"][0]
 
     assert case["state"] == "SIGNAL_EMITTED"
-    assert case["market_key"] == signal["market_key"] == "crypto:perp:SOL:USDT"
-    assert signal["case_id"] == case["case_id"]
+    assert case["market_key"] == "crypto:perp:SOL:USDT"
+    assert case["base_symbol"] == "SOL"
     # #537 PR-3: the desk's policy identity is read from the manifest the lane froze, which is the copy
     # `_decide_one` compares before it decides anything. The three columns beside it are gone.
-    assert case["policy_id"] == case["policy_version"] == "source_native_oi_smart_money_long_v5"
+    assert case["policy_id"] == "source_native_oi_smart_money_long_v5"
     assert case["policy_config_digest"] == "b" * 64
-    for forbidden in ("quantity", "notional", "leverage", "account", "route", "order"):
-        assert forbidden not in signal
-    assert "alpha_metadata" not in signal
+    # #537 PR-5. `policy_decision` was a required Literal over a nullable column -- the exact shape
+    # that turns a stored NULL into a 500 (#532) -- and the four measured OI numbers were a second
+    # copy of what `policy_checks` carries beside the threshold each was measured against.
+    assert {
+        "underlying_key",
+        "source_venue",
+        "trigger_kind",
+        "policy_version",
+        "policy_decision",
+        "oi_change_bps",
+        "oi_value_usd",
+        "whale_oi_ratio_bps",
+        "whale_long_profit_bps",
+    }.isdisjoint(case)
+
+
+def test_cases_page_has_no_cursor_to_follow(client: tuple[TestClient, _Trading]) -> None:
+    """#537 PR-5. The desk opens one Case from `?case=<id>`; it never asked for a second page."""
+
+    api, _ = client
+    response = api.get("/api/trading/cases", params={"token": TOKEN})
+    data = response.json()["data"]
+
+    assert set(data) == {"cases", "state_counts_24h", "reason_counts_24h", "complete", "window_hours"}
+    assert api.get("/api/trading/cases", params={"token": TOKEN, "cursor": "anything"}).status_code == 400
 
 
 def test_gate_renders_a_stored_evidence_key_no_schema_enumerates(client: tuple[TestClient, _Trading]) -> None:
@@ -319,23 +336,25 @@ def test_gate_renders_a_stored_evidence_key_no_schema_enumerates(client: tuple[T
     assert "gate_config_digest" not in decisions[0]
 
 
-def test_observations_are_empty_while_runtime_is_disabled(client: tuple[TestClient, _Trading]) -> None:
-    api, _ = client
-    data = api.get("/api/trading/execution/observations", params={"token": TOKEN}).json()["data"]
-    assert data["observations"] == []
-    assert data["complete"] is True
+def test_gate_is_the_admission_ledger_and_not_the_running_configuration(
+    client: tuple[TestClient, _Trading],
+) -> None:
+    """#537 PR-5. `/news/oi` reads the answers; it never read the thresholds or the two clocks.
 
+    `latest_source_at_ms` / `latest_gate_eligible_at_ms` cost an unbounded scan of the 90-day ledger
+    on every 15 s poll for one card hint, and the four decision fields below had no reader anywhere.
+    The whole response is now one bounded page plus the two durable distributions, read in one call.
+    """
 
-def test_commands_are_read_only_authenticated_intent_projections(client: tuple[TestClient, _Trading]) -> None:
-    api, _ = client
-    data = api.get("/api/trading/execution/commands", params={"token": TOKEN}).json()["data"]
-    command = data["commands"][0]
+    api, trading = client
+    data = api.get("/api/trading/gate", params={"token": TOKEN}).json()["data"]
 
-    assert command["action"] == "pause_entries"
-    assert command["disposition"] == "accepted"
-    assert command["expired"] is False
-    for forbidden in ("authentication_identity", "confirmation_identity", "quantity", "leverage"):
-        assert forbidden not in command
+    assert set(data) == {"decisions", "status_counts_24h", "reason_counts_24h", "complete"}
+    assert data["status_counts_24h"] == {"REJECTED": 1}
+    assert data["reason_counts_24h"] == {"venue:instrument_unmapped": 1}
+    assert {"underlying_key", "base_symbol", "trigger_kind", "source_observed_at_ms"}.isdisjoint(data["decisions"][0])
+    assert [name for name, _ in trading.calls] == ["candidate_admission_report"]
+    assert trading.calls[0][1]["limit"] == 401
 
 
 def test_console_command_post_records_only_an_intent(
@@ -505,23 +524,21 @@ def test_retired_execution_routes_are_absent_and_current_routes_are_authenticate
     api, _ = client
     for path in ("/api/trading/intents", "/api/trading/capabilities", "/api/trading/evidence"):
         assert api.get(path, params={"token": TOKEN}).status_code == 404
-    for path in (
-        "/api/trading/cases",
-        "/api/trading/signals",
-        "/api/trading/execution/commands",
-        "/api/trading/execution/observations",
-        "/api/trading/executions",
-    ):
+    # #537 PR-5. The Signal list and the two raw execution projections nothing in the browser called.
+    for path in ("/api/trading/signals", "/api/trading/execution/observations"):
+        assert api.get(path, params={"token": TOKEN}).status_code == 404
+    assert api.get("/api/trading/execution/commands", params={"token": TOKEN}).status_code == 405
+    for path in ("/api/trading/cases", "/api/trading/executions", "/api/trading/gate"):
         assert api.get(path).status_code == 401
 
 
-def test_filters_and_cursors_fail_closed(client: tuple[TestClient, _Trading]) -> None:
+def test_case_filters_fail_closed(client: tuple[TestClient, _Trading]) -> None:
     api, trading = client
     assert api.get("/api/trading/cases", params={"token": TOKEN, "state": "emitted"}).status_code == 200
     case_call = next(kwargs for name, kwargs in trading.calls if name == "console_cases")
     assert case_call["states"] == ("SIGNAL_EMITTED",)
     assert api.get("/api/trading/cases", params={"token": TOKEN, "state": "OPEN"}).status_code == 400
-    assert api.get("/api/trading/signals", params={"token": TOKEN, "cursor": "broken"}).status_code == 400
+    assert api.get("/api/trading/cases", params={"token": TOKEN, "underlying": "not a symbol"}).status_code == 400
 
 
 def test_executions_is_one_row_per_entry_identity_with_a_backend_derived_stage(
@@ -537,14 +554,12 @@ def test_executions_is_one_row_per_entry_identity_with_a_backend_derived_stage(
     assert closed["entry_id"] == "c" * 64
     assert closed["case_id"] == "case-sol"
     assert closed["stage"] == "closed"
-    assert closed["disposition"] == "accepted"
     assert closed["disposition_reason"] == "accepted"
     assert closed["exit_price"] == "9805.5"
     assert closed["realized_pnl_usd"] == "-9.53"
     assert closed["exit_reason"] == "stop_filled"
     assert closed["stop_trigger_price"] == "9800"
     assert refused["stage"] == "rejected"
-    assert refused["disposition"] == "rejected"
     assert refused["disposition_reason"] == "entries_paused"
     assert refused["realized_pnl_usd"] is None
 
@@ -553,22 +568,26 @@ def test_executions_is_one_row_per_entry_identity_with_a_backend_derived_stage(
     assert manual["entry_id"] == "e" * 64
     assert manual["case_id"] is None
     assert manual["stage"] == "closed"
-    assert manual["disposition"] == "accepted"
     assert manual["exit_reason"] == "flatten"
     assert manual["realized_pnl_usd"] == "-1.11984726"
 
+    # #537 PR-5. `stage` is the one word the table renders; the venue's own `order_status` and
+    # `position_status` are what it is derived from, and the `accepted` / `rejected` split beside it
+    # said what `ordered` and `rejected` already say. `last_observed_at_ns` was a second clock.
+    assert {"disposition", "order_status", "position_status", "last_observed_at_ns"}.isdisjoint(closed)
+
     # The Command rows come from the same window, and their stage reads the disposition alone.
+    # Action, stage and clock: `operator_identity` is the constant `operator-console` for every
+    # browser write and `reason` is the text the operator typed into the field above the ledger.
     assert data["commands"] == [
         {
             "command_id": "f" * 64,
             "action": "pause_entries",
-            "reason": "operator investigation",
             "requested_at_ns": NOW * 1_000_000,
-            "operator_identity": "telegram:user:7001",
             "stage": "accepted",
         }
     ]
+    assert set(data) == {"executions", "commands", "complete"}
     assert data["complete"] is True
-    assert data["window_hours"] == 24
     executions_call = next(kwargs for name, kwargs in trading.calls if name == "console_executions")
     assert executions_call["limit"] == 101

@@ -13,7 +13,6 @@ import {
   useNewsStatusWithToken,
   type NewsStatus,
 } from "@features/news/shell";
-import { caseClock, useTradingStatusWithToken, type TradingStatus } from "@features/trading/shell";
 import { newsPath, newsStatusPath } from "@shared/routing/paths";
 import { searchWithOptionalPrefix } from "@shared/routing/searchParams";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -47,8 +46,6 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
   // The same query key the feed header and the status route use, so React Query serves all three from one
   // poll. The sidebar shows the 24 h intake behind the Event feed.
   const newsStatusQuery = useNewsStatusWithToken(session.token);
-  /* The shared Alpha/execution status read gives every route the same explicit disabled-mode badge. */
-  const tradingStatusQuery = useTradingStatusWithToken(session.token);
   const status = statusQuery.data?.data ?? null;
   const token = session.token;
   const routeContext: ShellRouteContext = {
@@ -68,13 +65,14 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
   return {
     cockpitShellProps: {
       /*
-       * The three reads the frame itself owns. A route's own query is not folded in: it polls every few
+       * The two reads the frame itself owns. A route's own query is not folded in: it polls every few
        * seconds, and a line that reappeared on every poll would stop meaning "still loading".
+       *
+       * `/api/trading/status` was a third, on every News route, for a sidebar badge and two topbar
+       * figures. It made every reader of the Event feed poll the execution Runtime's readiness every
+       * 15 s to render a clock and the word `paper` (#537 PR-5).
        */
-      busy:
-        statusQuery.isPending || newsStatusQuery.isPending || tradingStatusQuery.isPending
-          ? Boolean(token)
-          : false,
+      busy: statusQuery.isPending || newsStatusQuery.isPending ? Boolean(token) : false,
       navCounts: {
         /*
          * No `cases` here since #460. The count existed for Alpha 判定's slot; that page is gone, and
@@ -86,18 +84,13 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
         // leads with. Received, not pushed — the destination is the whole lane, not its output.
         oiFrames: newsStatusQuery.data?.pipeline?.telemetry_received_24h,
       },
-      navBadges: {
-        tradingEnvironment: tradingStatusQuery.data
-          ? `${caseClock(tradingStatusQuery.data.decision.last_case_at_ms)} · ${tradingStatusQuery.data.execution.mode}`
-          : undefined,
-      },
       outletContext: routeContext,
       topbar: {
         health: healthLamp(newsStatusQuery.data, newsStatusQuery.isError),
         // The visual contract makes the topbar a route context strip. Every value is an already-served
         // material fact from the two status reads this shell shares with the pages; switching routes never
         // starts a new request or asks the browser to invent a KPI.
-        figures: topbarFigures(location.pathname, newsStatusQuery.data, tradingStatusQuery.data),
+        figures: topbarFigures(location.pathname, newsStatusQuery.data),
         search: {
           onSubmitQuery: submitTopbarSearch,
           query: currentSearchQuery,
@@ -125,34 +118,17 @@ export function topbarNewsSearchParams(searchText: string): URLSearchParams {
   return next;
 }
 
-/** The two or three facts that identify the surface at a glance, using only status fields already in cache. */
-export function topbarFigures(
-  pathname: string,
-  newsStatus?: NewsStatus,
-  tradingStatus?: TradingStatus,
-  nowMs = Date.now(),
-): CockpitTopbarFigure[] {
-  if (pathname === "/trading") {
-    const decision = tradingStatus?.decision;
-    const execution = tradingStatus?.execution;
-    return [
-      {
-        // When the Signal lane last froze a Case. There is no separate Decision Plane heartbeat any
-        // more; a lane that has stopped shows as a clock that has stopped moving (#520 PR-A).
-        label: "LAST CASE",
-        text: caseClock(decision?.last_case_at_ms),
-      },
-      {
-        label: "EXECUTION",
-        text: execution?.mode,
-        tone: execution?.execution_safe ? undefined : "caution",
-      },
-      {
-        label: "SIGNALS 24H",
-        value: tradingStatus?.counts.signals_24h,
-      },
-    ];
-  }
+/**
+ * The two facts that identify the surface at a glance, using only status fields already in cache.
+ *
+ * Every one of them comes from the News pipeline status this shell already polls. The three Trading
+ * figures that were here — the lane's last Case clock, the execution mode and the 24 h Signal count —
+ * are the first three things `/trading` states on the page itself, and printing them in the frame is
+ * what made every News route poll `/api/trading/status` every 15 s (#537 PR-5). `/trading` therefore
+ * carries no chrome figure: the desk is a page about one thing, and the frame does not restate it.
+ */
+export function topbarFigures(pathname: string, newsStatus?: NewsStatus): CockpitTopbarFigure[] {
+  if (pathname === "/trading") return [];
 
   if (pathname === "/news/oi") {
     // Parsed, not pushed (#458). The lane has no push decision of its own any more, and a chrome figure
@@ -163,7 +139,6 @@ export function topbarFigures(
         tone: "accent",
         value: newsStatus?.pipeline.telemetry_parsed_24h,
       },
-      oiDailyFigure(tradingStatus, nowMs),
     ];
   }
 
@@ -188,18 +163,6 @@ export function topbarFigures(
     { label: "PUSHED 24H", tone: "accent", value: newsStatus?.delivery.sent_24h },
     { label: "E2E P95", text: loadedDuration(newsStatus?.delivery.e2e_p95_ms) },
   ];
-}
-
-function oiDailyFigure(
-  tradingStatus: TradingStatus | undefined,
-  _nowMs: number,
-): CockpitTopbarFigure {
-  if (!tradingStatus) return { label: "24h 成案 · Signal", text: undefined };
-
-  return {
-    label: "24h 成案 · Signal",
-    text: `${tradingStatus.counts.cases_24h} · ${tradingStatus.counts.signals_24h}`,
-  };
 }
 
 function loadedDuration(value: number | null | undefined): string | undefined {

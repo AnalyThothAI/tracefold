@@ -28,7 +28,9 @@ const oiArchetype = {
   path: "/news/oi",
   ready: (page: Page) => page.locator(".news-oi-row").first(),
   settled: (page: Page) => page.locator(".news-oi-policy").first(),
-  topbarFigure: "7 · 1",
+  // #537 PR-5 deleted the `24h 成案 · Signal` figure beside it: it read `/api/trading/status` from
+  // every News route to print two counts the Trading desk owns.
+  topbarFigure: "139",
 } as const;
 
 const tradingArchetype = {
@@ -41,8 +43,9 @@ const tradingArchetype = {
 /*
  * The state `/news/alpha` used to own (#460): one Case open, with the frozen check table and the frozen
  * config beneath it. Kept as its own archetype rather than folded into `trading` because the two are
- * different pictures — a status page of six ledgers, and that page with a document expanded inside one
- * of them — and a single baseline could only hold one of them.
+ * different pictures — the three-block desk, and that desk with the Case drawer open above it — and a
+ * single baseline could only hold one of them. `?case=<id>` is the link `TradingCaseBadge` and the OI
+ * frame table publish, so this is also the deep-link arrival (#537 PR-5).
  */
 const tradingCaseArchetype = {
   name: "trading-case",
@@ -130,7 +133,7 @@ test("writes an operator command in one click and claims only persistence", asyn
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoNestedHorizontalOverflow(page, [
     ".trading-safety-grid",
-    ".trading-account-overview",
+    ".trading-risk",
     ".trading-control-panel",
     ".trading-position-row",
     ".trading-command-row",
@@ -149,8 +152,6 @@ test("keeps execution truth distinct across unsafe, protected, flat, and expired
     current_account: null,
     entry_block_reason: "reconciliation_stale",
     execution_safe: false,
-    open_orders_count: 0,
-    positions_count: 0,
     protection_status: "unknown",
   });
   await page.goto("/trading?browser-state=alive-unsafe");
@@ -214,7 +215,6 @@ test("keeps execution truth distinct across unsafe, protected, flat, and expired
     executions: [tradingExecutionRowFixture()],
   });
   options.tradingExecution = tradingLiveExecutionFixture({
-    account_flat: true,
     account_flat_proven: true,
     current_account: tradingCurrentAccountFixture({
       aggregate_risk_usd: "0",
@@ -224,8 +224,6 @@ test("keeps execution truth distinct across unsafe, protected, flat, and expired
       positions: [],
       unknown_orders_count: 0,
     }),
-    open_orders_count: 0,
-    positions_count: 0,
     protection_status: "not_applicable",
   });
   await page.goto("/trading?browser-state=flat-proven");
@@ -241,7 +239,6 @@ test("keeps execution truth distinct across unsafe, protected, flat, and expired
    * this test fixed above.
    */
   options.tradingExecution = tradingLiveExecutionFixture({
-    account_flat: true,
     account_flat_proven: true,
     entries_armed: true,
     entries_paused: false,
@@ -330,11 +327,10 @@ async function expectTradingOverflowContract(page: Page) {
   await expectNoNestedHorizontalOverflow(page, [
     ".center-column",
     ".trading-safety-grid",
-    ".trading-account-overview",
+    ".trading-risk",
     ".trading-control-panel",
-    ".trading-funnel-grid",
-    ".trading-case-list",
-    ".trading-case-card",
+    ".trading-order-counts",
+    ".trading-execution-table",
     ".trading-command-row",
   ]);
 }

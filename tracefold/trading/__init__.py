@@ -38,7 +38,6 @@ from .stages import (
     ExecutionStage,
     command_stage,
     execution_stage,
-    signal_disposition,
 )
 from .storage.execution_stream import (
     ExecutionAccountOrder,
@@ -79,5 +78,4 @@ __all__ = [
     "postgres_text_valid",
     "prepare_execution_observations",
     "prepare_parsed_operator_intent",
-    "signal_disposition",
 ]

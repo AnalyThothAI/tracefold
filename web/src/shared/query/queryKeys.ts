@@ -54,7 +54,6 @@ export const queryKeys = {
   // feed page a reader is scrolled into.
   tradingStatus: () => ["trading-status"] as const,
   tradingCases: (underlying: string) => ["trading-cases", underlying] as const,
-  tradingSignals: (market: string) => ["trading-signals", market] as const,
   // #528 PR-2: one key for the folded execution read model — the desk's Signal rows and Command rows
   // arrive in the same response, so they cannot disagree about the window they describe.
   tradingExecutions: () => ["trading-executions"] as const,

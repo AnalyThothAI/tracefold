@@ -152,7 +152,7 @@ def _smoke(conn: Any) -> dict[str, bool]:
     repos = repositories_for_connection(conn)
     evidence = repos.news.latest_evidence_snapshot(_CURRENT_EVENT_ID)
     delivery = repos.news.delivery(event_id=_CURRENT_EVENT_ID, kind="first")
-    case = repos.trading.case(case_id=_CASE_ID)
+    case = repos.trading.restore_drill_case(case_id=_CASE_ID)
     commands = materialize_operator_intents(
         repos.trading.unresolved_operator_intents(
             account_slot=_ACCOUNT_SLOT,

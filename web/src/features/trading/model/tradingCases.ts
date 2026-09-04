@@ -16,7 +16,7 @@ export type CaseFigure = {
 };
 
 /**
- * The funnel's Case figures, every one of them a durable count the server aggregated (#331).
+ * The desk's one Case card, every figure a durable count the server aggregated (#331).
  *
  * `0 成案` is a legitimate output of the current rules and is presented as one. What it must never be
  * presented as is "no data": the admission figures beside it say how many facts the lane actually saw.
@@ -50,7 +50,7 @@ export function caseReasonRows(data: TradingCases | undefined): Array<[string, n
     .slice(0, 8);
 }
 
-export function caseStateLabel(item: TradingCase): string {
+function caseStateLabel(item: TradingCase): string {
   return CASE_STATE_ZH[item.state] ?? item.state;
 }
 

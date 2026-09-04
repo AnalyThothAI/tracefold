@@ -10,17 +10,20 @@ from tracefold.platform.postgres.audit import (
     postgres_query_specs,
 )
 from tracefold.trading.storage.execution_stream import execution_stream_query_specs
-from tracefold.trading.storage.gate import GATE_DECISION_FOR_SOURCE_KEY_SQL, GATE_DECISIONS_SINCE_SQL
+from tracefold.trading.storage.gate import (
+    GATE_DECISION_COUNTS_SQL,
+    GATE_DECISION_FOR_SOURCE_KEY_SQL,
+    GATE_DECISIONS_SINCE_SQL,
+)
+from tracefold.trading.storage.lane import LATEST_CASE_CREATED_AT_SQL
 from tracefold.trading.storage.queries import (
     TRADING_CASE_COUNTS_SQL,
     TRADING_CASE_REASON_COUNTS_SQL,
-    TRADING_STATUS_CASE_COUNTS_SQL,
-    TRADING_STATUS_SIGNAL_COUNTS_SQL,
     console_cases_statement,
-    console_execution_observations_statement,
     console_executions_statement,
     console_operator_intents_statement,
-    console_signals_statement,
+    observation_ledger_statement,
+    signal_ledger_statement,
 )
 
 from .workers.runtime import workers_runtime_read_query
@@ -67,35 +70,28 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_status_delivery_1h",
         "news_status_learning_retention",
     ),
-    "/api/trading/status": ("trading_status_case_counts", "trading_status_signal_counts"),
-    # Each console read is registered twice, because the route plans two statements: the first page
-    # with no filter, and the filtered page a reader gets once they narrow or scroll. Certifying only
-    # one of them certifies a plan the route does not always execute.
+    # One statement over `trading_cases`, where the two 24 h `count(*)` scans this route also ran on
+    # every 15 s poll were rendered nowhere the desk still has (#537 PR-5).
+    "/api/trading/status": ("trading_status_latest_case",),
+    # The Case read is registered twice, because the route plans two statements: the first page with
+    # no filter, and the filtered page a reader gets once they narrow. Certifying only one of them
+    # certifies a plan the route does not always execute.
     "/api/trading/cases": (
         "trading_console_cases",
         "trading_console_cases_filtered",
         "trading_case_counts",
         "trading_case_reason_counts",
     ),
-    "/api/trading/signals": ("trading_console_signals", "trading_console_signals_filtered"),
-    "/api/trading/execution/observations": (
-        "trading_console_observations",
-        "trading_console_observations_filtered",
-    ),
-    "/api/trading/execution/commands": (
-        "trading_console_commands",
-        "trading_console_commands_filtered",
-    ),
-    # #528 PR-1. The desk table plans two statements: its own per-Signal fold, and the unfiltered
-    # first page of the Command read it renders beside it -- the same builder the Command route runs.
+    # #528 PR-1. The desk table plans two statements: its own per-entry fold, and the unfiltered
+    # window of the Command ledger it renders beside it.
     "/api/trading/executions": (
         "trading_console_executions",
         "trading_console_commands",
     ),
     "/api/trading/gate/{event_id}": ("trading_gate_decision_for_source_key",),
     # #269. The same admission ledger the event endpoint reads one row of, for a whole window — bounded
-    # by 24 h and a hard row limit, like the two beside it.
-    "/api/trading/gate": ("trading_gate_decisions_since",),
+    # by 24 h and a hard row limit — plus the one grouped pass that answers both 24 h distributions.
+    "/api/trading/gate": ("trading_gate_decisions_since", "trading_gate_decision_counts"),
 }
 
 PUBLIC_NO_SQL_ROUTES = frozenset(
@@ -130,10 +126,6 @@ def query_audit_catalog(
         # input is. Both SQL statements are built by FeedStorage's own production statement builder.
         "news_feed_asset_search_counts",
         "news_feed_text_search_counts",
-        # Status counts are aggregates over a 24 h window plus the exceptional open/unexpired rows.
-        # Their returned row is not the input bound; the production WHERE clauses are.
-        "trading_status_case_counts",
-        "trading_status_signal_counts",
     }
     aggregate_input_queries = {query.name for query in queries if query.amplification_basis == "aggregate_input"}
     if aggregate_input_queries - allowed_aggregate_input_queries:
@@ -169,11 +161,15 @@ def _default_news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
 
 
 def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
-    """The bounded Signal console reads, built by the production statement builders.
+    """The bounded Signal reads, built by the production statement builders.
 
     Every console spec below calls the same builder `QueryStorage` runs, once with no optional
     predicate and once with all of them, so both plans the route can execute are certified and neither
     can drift away from an audited copy.
+
+    The two ledger reads at the end belong to no public route: `tracefold trading signals` and
+    `tracefold trading observations` are their only callers since #537 PR-5 deleted the `GET` routes
+    that were. They stay audited because they still run against production data.
     """
 
     since_ms = int(now_ms) - 24 * 3_600_000
@@ -181,17 +177,11 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
     executions_sql, executions_params = console_executions_statement(since_ns=since_ns, limit=101)
     return (
         ReadQuerySpec(
-            name="trading_status_case_counts",
-            sql=TRADING_STATUS_CASE_COUNTS_SQL,
-            params={"since": since_ms},
-            amplification_basis="aggregate_input",
-            max_read_return_amplification=20.0,
-        ),
-        ReadQuerySpec(
-            name="trading_status_signal_counts",
-            sql=TRADING_STATUS_SIGNAL_COUNTS_SQL,
-            params={"since": since_ms * 1_000_000},
-            amplification_basis="aggregate_input",
+            # The Decision Plane's liveness: one index-only probe of the newest Case, and the whole
+            # of what `GET /api/trading/status` still asks `trading_cases` (#537 PR-5).
+            name="trading_status_latest_case",
+            sql=LATEST_CASE_CREATED_AT_SQL,
+            params=(),
             max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
@@ -210,6 +200,13 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             params=("oi", since_ms, 401),
             max_read_return_amplification=20.0,
         ),
+        ReadQuerySpec(
+            # Both 24 h distributions from one grouped pass over the same window (#537 PR-5).
+            name="trading_gate_decision_counts",
+            sql=GATE_DECISION_COUNTS_SQL,
+            params=("oi", since_ms),
+            max_read_return_amplification=20.0,
+        ),
         *_console_specs(
             name="trading_console_cases",
             unfiltered=console_cases_statement(since_ms=since_ms, limit=101),
@@ -217,7 +214,6 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                 since_ms=since_ms,
                 underlying_key="crypto:BTC",
                 states=("SIGNAL_EMITTED", "NO_TRADE"),
-                before=(since_ms + 1, "z" * 32),
                 limit=101,
             ),
         ),
@@ -233,27 +229,6 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             params=(since_ms,),
             max_read_return_amplification=20.0,
         ),
-        *_console_specs(
-            name="trading_console_signals",
-            unfiltered=console_signals_statement(since_ns=since_ns, limit=101),
-            filtered=console_signals_statement(
-                since_ns=since_ns,
-                market_key="crypto:perp:BTC:USDT",
-                before=(since_ns + 1, "z" * 64),
-                limit=101,
-            ),
-        ),
-        *_console_specs(
-            name="trading_console_observations",
-            unfiltered=console_execution_observations_statement(since_ns=since_ns, limit=101),
-            filtered=console_execution_observations_statement(
-                since_ns=since_ns,
-                account_slot="query-audit-disabled",
-                normalized_kind="signal_disposition",
-                before=(since_ns + 1, "z" * 64),
-                limit=101,
-            ),
-        ),
         ReadQuerySpec(
             # #528 PR-1. One plan, not two: the desk table takes no filter. The fold reads every
             # observation of the Signals in its own window, so its input is the join rather than the
@@ -266,13 +241,14 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         *_console_specs(
             name="trading_console_commands",
             unfiltered=console_operator_intents_statement(since_ns=since_ns, limit=101),
-            filtered=console_operator_intents_statement(
-                since_ns=since_ns,
-                account_slot="query-audit-disabled",
-                action="flatten",
-                before=(since_ns + 1, "z" * 64),
-                limit=101,
-            ),
+            filtered=console_operator_intents_statement(since_ns=since_ns, action="flatten", limit=101),
+        ),
+        *(
+            ReadQuerySpec(name=name, sql=sql, params=params, max_read_return_amplification=20.0)
+            for name, (sql, params) in (
+                ("trading_signal_ledger", signal_ledger_statement(since_ns=since_ns, limit=101)),
+                ("trading_observation_ledger", observation_ledger_statement(since_ns=since_ns, limit=101)),
+            )
         ),
     )
 

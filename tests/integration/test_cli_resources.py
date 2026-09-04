@@ -61,6 +61,9 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
     assert set(data["decision"]) == {"last_case_at_ms"}
     # #528 deleted the `alpha` block: the frozen policy identity is on every Case row it decided.
     assert "alpha" not in data
+    # #537 PR-5 deleted the `counts` block with it: two `count(*)` per call for figures the console
+    # chrome no longer has. What is left is the whole of what an operator acts on.
+    assert set(data) == {"decision", "execution"}
     assert data["execution"] == {
         "mode": "disabled",
         "account_slot": "binance_usdm_primary",
@@ -68,23 +71,17 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
         "execution_safe": False,
         "entries_armed": False,
         "entry_block_reason": "disabled",
-        "heartbeat_at_ns": None,
-        "reconciliation_observed_at_ns": None,
         "reconciliation_age_ms": None,
         "startup_reconciled": False,
         "entries_paused": True,
         "emergency_halted": False,
         "unexpected_exposure": False,
-        "account_flat": False,
         "account_flat_proven": False,
-        "positions_count": 0,
-        "open_orders_count": 0,
         "protection_status": "unknown",
         "routes_count": 0,
         "facts_expire_at_ms": None,
         "current_account": None,
     }
-    assert set(data["counts"]) == {"cases_24h", "signals_24h"}
     # #537 PR-4. The CLI and `/api/trading/status` render the one projection, so this is also the
     # HTTP execution block: `execution_readiness_projection` is the only producer either calls, and
     # neither of them can grow an identity field the other does not have.

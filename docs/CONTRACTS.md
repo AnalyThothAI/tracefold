@@ -394,7 +394,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
 | News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, four-layer status, bounded quotes, and one symbol's identity |
-| Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/signals`, `/api/trading/execution/observations`, `/api/trading/execution/commands`, `/api/trading/executions`, `/api/trading/gate`, `/api/trading/gate/{event_id}` | one owner per durable aggregate: Alpha and current execution/account readiness, frozen Case decisions, engine-neutral Signals, append-only Runtime Observations, authenticated operator intents, and the Source-admission ledger. GET reads all aggregates; the same commands path has the sole bounded POST append |
+| Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/executions`, `/api/trading/gate`, `/api/trading/gate/{event_id}`, `POST /api/trading/execution/commands` | one owner per question the console asks: current execution/account readiness, frozen Case decisions, the folded per-entry execution table with its Command ledger, and the Source-admission ledger. Five GETs and one bounded POST append. #537 PR-5 deleted `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections — three more public shapes over the ledgers `/api/trading/executions` already reads folded, none of them called by any browser surface, and all three still readable through `tracefold trading signals \| observations \| commands` |
 
 The public API is exactly these routes plus `/healthz`, `/readyz`, and
 `/metrics`. The retired GMGN-lane routes (`/ws`, `/api/recent`,
@@ -1016,8 +1016,9 @@ four-hour outcome message. Destructive `0347` drops the twenty-two execution
 tables `0341` had frozen read-only, and the thirteen functions only their
 triggers, defaults and CHECKs called; their 390 archived rows were dumped to
 `~/.tracefold/backups` first. `0348` hard-cuts Runtime readiness into liveness,
-existing-exposure safety, and new-entry admission while adding the profile-keyed
-current control projection. `0349` adds the bounded nullable Runtime-owned
+existing-exposure safety, and new-entry admission while adding the
+account-slot-keyed current control projection (`0356` re-keyed it off the
+profile it was written with). `0349` adds the bounded nullable Runtime-owned
 current account JSON projection without changing any append-only ledger.
 Additive `0350` pins the `pg_trgm` extension and admits the `title_similarity`
 retrieval reason into the `news_verdicts` told trace CHECK for the
@@ -1088,49 +1089,63 @@ reader/writer.
 Alpha evidence, a Signal carries the engine-neutral handoff, Observations carry
 Runtime facts, and status carries readiness plus bounded totals.
 
-- `GET /api/trading/status` — `decision`, `execution`, and `counts`. #528
-  deleted the `alpha` block: the frozen policy identity, version, digest and
-  config are on every Case row that was decided under them, which is where a
-  reader can act on them. Decision exposes state/heartbeat/reason;
-  execution exposes mode and account slot, independent `alive`,
-  `execution_safe`, and `entries_armed` facts, `entry_block_reason`, control,
-  position/open-order counts, protection status, flatness,
-  heartbeat and reconciliation age. #537 PR-4 deleted the six identity fields
-  beside them — `runtime_release`, `config_sha256`, `runtime_revision`,
-  `image_digest`, `credential_fingerprint` and `lifecycle_state` — which named
-  the build rather than what it was doing and which no page or command read. `current_account` is the replaceable
+- `GET /api/trading/status` — `decision` and `execution`, and one field per
+  operator question. #528 deleted the `alpha` block: the frozen policy identity,
+  version, digest and config are on every Case row that was decided under them,
+  which is where a reader can act on them. Decision exposes the lane's last
+  frozen Case as its only durable liveness; execution exposes mode and account
+  slot, independent `alive`, `execution_safe`, and `entries_armed` facts,
+  `entry_block_reason`, the two operator control flags, protection status,
+  `account_flat_proven`, and `reconciliation_age_ms`. #537 PR-4 deleted the six
+  identity fields beside them — `runtime_release`, `config_sha256`,
+  `runtime_revision`, `image_digest`, `credential_fingerprint` and
+  `lifecycle_state` — which named the build rather than what it was doing and
+  which no page or command read. #537 PR-5 deleted every remaining raw fact
+  whose derived answer is published beside it: `heartbeat_at_ns` and
+  `reconciliation_observed_at_ns` are the two clocks `facts_expire_at_ms` and
+  `reconciliation_age_ms` are measured from, `positions_count` and
+  `open_orders_count` said what `current_account` carries row by row, and raw
+  `account_flat` said what the venue had not yet proven. The `counts` block went
+  with them: `cases_24h` and `signals_24h` cost one `count(*)` per table on
+  every 15 s poll of every route, for chrome figures the console no longer has.
+  **The CLI block is this projection.** `tracefold trading status` renders the
+  same dict from the same `execution_readiness_projection`, so neither surface
+  can grow a field the other does not have. `current_account` is the replaceable
   Runtime-owned read model for current equity, day-start/drawdown, aggregate
   risk, bounded position/protection rows, and bounded open/in-flight order rows
   including ownership uncertainty. It is neither an append-only audit ledger
   nor an OMS owner. `account_flat_proven=true` additionally requires the Runtime
   heartbeat, existing-exposure safety, and the complete Binance private
   reconciliation to remain inside its 10-second freshness budget; empty or
-  partial `current_account` rows never prove flat. Nautilus `/readyz` means
+  partial `current_account` rows never prove flat. That read model publishes
+  what the account holds and not the clocks it was read on: `observed_at_ns`,
+  `market_observed_at_ns`, `day_start_equity_usd` and `truncated` went in #537
+  PR-5, because `facts_expire_at_ms` is derived from the first two,
+  `daily_drawdown_usd` was already measured against the baseline, and a
+  truncated snapshot is exactly one that is not `complete`. Nautilus `/readyz` means
   `alive && execution_safe`; it remains green when only new entries are paused
   or otherwise blocked. `routes_count` is how many `market_key`s this Runtime
   generation can reach, and `facts_expire_at_ms` is the instant this projection
   stops being current — the earlier of the heartbeat and private-reconciliation
   freshness budgets — so a reader compares one instant against its own clock
   instead of running a timer per rule. Serve reads no secret file and constructs
-  no provider client. `counts` is exactly `cases_24h` and `signals_24h`, each a
-  bounded 24-hour aggregation on its own time index; #528 deleted
-  `no_trade_24h`, `blocked_24h`, `cases_open` and `signals_unexpired`, which no
-  surface rendered and which each cost the read an unbounded `OR` arm.
+  no provider client.
 - `GET /api/trading/cases?underlying={base|crypto:BASE}&state={open|no_trade|blocked|emitted}`
-  — the Case/Decision aggregate. Each Case carries its raw `state`, its terminal
-  `policy_decision` / `policy_reason`, the frozen `policy_config` and
-  `policy_checks` (check, operator, threshold, measured, passed) it was decided
-  on, the frame's own measurements, venue-neutral `market_key`, and timestamps.
-  Bounded to 100 rows with an opaque cursor.
-- `GET /api/trading/signals?market={market_key}` — immutable `TradeSignalV1`
-  rows newest first, with TTL/expiry and opaque pagination. It publishes no
-  account, route, quantity, leverage, order, or execution state.
-- `GET /api/trading/execution/observations` — append-only normalized Runtime
-  observations. An empty result is not evidence of execution or flatness, and
-  neither is the newest `reconciliation` row: an unchanged steady reconciliation
-  appends nothing (#510). Flatness is proven only by `account_flat` on the
-  current `GET /api/trading/status` execution projection, inside its
-  `reconciliation_age_ms` freshness budget.
+  — the Case/Decision aggregate, and the drawer behind `/trading?case=<id>`.
+  Each Case carries its raw `state`, its terminal `policy_reason`, the frozen
+  `policy_config` and `policy_checks` (check, operator, threshold, measured,
+  passed) it was decided on, its policy identity read off the manifest,
+  venue-neutral `market_key`, `base_symbol`, and timestamps, beside the two
+  durable 24 h distributions `state_counts_24h` and `reason_counts_24h`.
+  Bounded to 100 rows with a `complete` flag and **no cursor**: the response
+  published a `next_cursor` no reader ever sent back (#537 PR-5). The nine
+  fields deleted with it had no reader anywhere — `underlying_key` (the row
+  publishes `base_symbol`), `source_venue`, `trigger_kind`, `policy_version` (a
+  second copy of `policy_id`), the four measured OI numbers `policy_checks`
+  already carries beside the threshold each was measured against, and
+  `policy_decision`, a required `Literal` over a nullable column, which is
+  exactly the shape that turns a stored `NULL` into a 500 on a read route
+  (#532).
 - `GET /api/trading/executions` — the desk table (#528 PR-1, PR-3). One row per
   entry identity in a bounded 24-hour window: a `TradeSignalV1`, or a
   `manual_entry` Command, which is the identity the Runtime correlates that
@@ -1139,24 +1154,26 @@ Runtime facts, and status carries readiness plus bounded totals.
   observations: `source ∈ {signal, manual}`, `entry_id` (the `signal_id` or the
   `command_id`), `case_id` (absent on a manual entry, which has no Case),
   `market_key`, `direction`, `observed_at_ns` (the Signal's, or the Command's
-  `requested_at_ns`), `disposition` (`accepted | rejected`) and its raw
-  `disposition_reason`, entry `order_status`, `fill_quantity`, `fill_avg_price`,
-  `stop_trigger_price`, `position_status`, `exit_price`, `realized_pnl_usd`,
-  `exit_reason`, `last_observed_at_ns`, and a backend-derived
+  `requested_at_ns`), the raw `disposition_reason`, `fill_quantity`,
+  `fill_avg_price`, `stop_trigger_price`, `exit_price`, `realized_pnl_usd`,
+  `exit_reason`, and a backend-derived
   `stage ∈ {pending, rejected, expired, ordered, filled, protected, closed}`.
+  `stage` is the one word derived from the venue's own `order_status` and
+  `position_status`, which are its inputs and not published beside it, and the
+  `accepted | rejected` split that was published said what `ordered` and
+  `rejected` already say about the same row (#537 PR-5); `last_observed_at_ns`
+  was a second clock beside `observed_at_ns` that no column printed.
   The same response carries `commands[]`, one row per operator Command in the
   same window — a manual entry appears there too, as the instruction record —
-  with `stage ∈ {recorded, accepted, rejected, completed, expired}` read from
+  as exactly `command_id`, `action`, `requested_at_ns` and
+  `stage ∈ {recorded, accepted, rejected, completed, expired}` read from
   its `control_disposition` alone — `completed` only on a flatten whose
-  disposition reason is `binance_account_flat`. No venue observation is attached
-  to a Command row: a flatten converges the whole account slot, so the orders it
-  produces belong to the exposure, not to the Command. Bounded to 100 entry rows
-  with a `complete` flag and no cursor.
-- `GET /api/trading/execution/commands?profile={profile}&action={action}` —
-  authenticated `OperatorIntentV1` facts, expiry, confirmation presence, and
-  any final disposition, newest first with opaque pagination. It never returns
-  authentication material. A row, HTTP 200, or `awaiting_runtime` is not an
-  order, fill, or flat receipt.
+  disposition reason is `binance_account_flat`. `reason` repeated the text the
+  operator typed into the field above the ledger and `operator_identity` was the
+  constant `operator-console` on every row a browser wrote. No venue observation
+  is attached to a Command row: a flatten converges the whole account slot, so
+  the orders it produces belong to the exposure, not to the Command. Bounded to
+  100 entry rows with a `complete` flag and no cursor.
 - `POST /api/trading/execution/commands` — the sole browser write. It requires
   the session `ws_token` in `Authorization: Bearer` plus
   `application/json`, rejects query-token auth,
@@ -1171,11 +1188,19 @@ Runtime facts, and status carries readiness plus bounded totals.
   may establish acceptance, order, fill, completion, expiry, rejection, or a
   fresh private flat proof.
 - `GET /api/trading/gate` — the Source/Admission aggregate over a bounded
-  24-hour window: the admission `config` its rows were filed under, then per
-  Source the status, stage, named reason, retryability, frozen evidence (which
-  carries the `gate_version` and `gate_config_digest` that decided the row),
-  timestamps, attempt count, and the linked `case_id` when one exists. It
-  publishes no Case state and no execution state.
+  24-hour window, read by `/news/oi` alone: per Source the status, stage, named
+  reason, retryability, frozen evidence (which carries the `gate_version` and
+  `gate_config_digest` that decided the row), timestamps, attempt count, and the
+  linked `case_id` when one exists, beside `status_counts_24h`,
+  `reason_counts_24h` and `complete`. It publishes no Case state and no
+  execution state. #537 PR-5 deleted the running admission `config` — the
+  rulebook that decided a row travels in that row's own `evidence` — and
+  `latest_source_at_ms` / `latest_gate_eligible_at_ms`, whose two clocks cost an
+  unbounded scan of the 90-day ledger on every 15 s poll for one card hint. Four
+  decision fields went with them for having no reader anywhere:
+  `underlying_key`, `base_symbol`, `trigger_kind` and `source_observed_at_ms`.
+  The whole response is two statements now: one bounded index scan in frame
+  order, and one `GROUPING SETS` pass that answers both distributions.
 - `GET /api/trading/gate/{event_id}` — one deterministic OI Source's admission
   answer, joined only by `oi:{event_id}:{metric_version}`. Joining by symbol and
   time would record a link the ledger does not have.
@@ -1601,12 +1626,19 @@ code and the number already replayed. `purge` is the only command that removes
 evidence.
 
 The `trading` family has no direct provider-execution command. `trading status`
-reports the Decision state/heartbeat, exact Alpha identity/digests, configured
-execution profile, current Runtime identity/readiness/flatness projection, and
-bounded 24-hour Case/Signal counts. It never infers protection, PnL, or fees.
-`trading cases [--state] [--limit]` lists the Case ledger;
+renders exactly the `decision` and `execution` blocks
+`GET /api/trading/status` publishes, from the same
+`execution_readiness_projection`: when the lane last froze a Case, and the
+configured execution mode and account slot beside this Runtime's readiness,
+block reason, control flags, proven flatness and current account read model. One
+projection, so the CLI and the desk cannot be told two different things about
+the same instant (#537 PR-4, PR-5). It never infers protection, PnL, or fees.
+`trading cases [--state] [--limit]` lists the Case ledger through the same
+bounded projection the HTTP route reads;
 `trading signals [--limit]` lists engine-neutral `TradeSignalV1` rows; and
-`trading observations [--limit]` lists append-only Runtime observations;
+`trading observations [--limit]` lists append-only Runtime observations —
+those two ledgers have no HTTP route since #537 PR-5, and this is where an
+operator reads them;
 `trading commands [--action] [--limit]` lists authenticated operator intents
 and their final disposition when present. `trading issue TEXT --request-id ID
 --requested-at-ns NS` is the one local OS-authenticated writer: callers preserve

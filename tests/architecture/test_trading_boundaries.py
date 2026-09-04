@@ -323,7 +323,6 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
         "postgres_text_valid",
         "prepare_execution_observations",
         "prepare_parsed_operator_intent",
-        "signal_disposition",
     ]
     assert "TradingRepository" not in trading.__dict__
     assert "CapitalLane" not in trading.__dict__

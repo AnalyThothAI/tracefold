@@ -123,41 +123,37 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_status_delivery_1h",
         "news_status_learning_retention",
     )
-    # #510 PR-5a: each console read is certified twice, unfiltered and filtered, because the route
-    # plans both and the audit must not certify a statement the route does not execute.
-    assert catalog.query_routes["/api/trading/signals"] == (
-        "trading_console_signals",
-        "trading_console_signals_filtered",
+    # #510 PR-5a: a console read the route plans two ways is certified twice, because the audit must
+    # not certify a statement the route does not execute. #537 PR-5 deleted the three GET routes that
+    # had the other three pairs, so the Case read is the last one with an optional predicate.
+    assert catalog.query_routes["/api/trading/cases"] == (
+        "trading_console_cases",
+        "trading_console_cases_filtered",
+        "trading_case_counts",
+        "trading_case_reason_counts",
     )
-    assert catalog.query_routes["/api/trading/execution/observations"] == (
-        "trading_console_observations",
-        "trading_console_observations_filtered",
-    )
-    assert catalog.query_routes["/api/trading/execution/commands"] == (
-        "trading_console_commands",
-        "trading_console_commands_filtered",
-    )
+    assert "/api/trading/signals" not in catalog.query_routes
+    assert "/api/trading/execution/observations" not in catalog.query_routes
+    # The Command path is a write now and only a write: its GET went with the other two (#537 PR-5).
+    assert "/api/trading/execution/commands" not in catalog.query_routes
+    # The two CLI-only ledger reads stay audited without belonging to a public route.
+    assert {"trading_signal_ledger", "trading_observation_ledger"} <= {query.name for query in catalog.queries}
     assert not any(
         route.startswith(("/api/news/stories", "/api/news/brief", "/api/news/sources"))
         for route in catalog.query_routes
     )
-    assert [query.name for query in catalog.queries if query.amplification_basis == "aggregate_input"] == [
-        "trading_status_case_counts",
-        "trading_status_signal_counts",
-    ]
+    assert [query.name for query in catalog.queries if query.amplification_basis == "aggregate_input"] == []
 
 
-def test_trading_status_aggregates_bound_input_before_filtering() -> None:
-    """#528 dropped the four unrendered counts, and with them the unbounded `OR` arm each needed."""
+def test_trading_status_asks_trading_cases_for_one_indexed_row() -> None:
+    """#537 PR-5. The route's two 24 h `count(*)` scans are gone; its liveness probe is not."""
 
     queries = {query.name: query for query in query_audit_catalog(now_ms=123_456).queries}
-    case_query = queries["trading_status_case_counts"]
-    signal_query = queries["trading_status_signal_counts"]
+    latest = queries["trading_status_latest_case"]
 
-    assert re.search(r"WHERE\s+created_at_ms\s*>=\s*%\(since\)s\s*$", case_query.sql.strip(), re.IGNORECASE)
-    assert re.search(r"WHERE\s+observed_at_ns\s*>=\s*%\(since\)s\s*$", signal_query.sql.strip(), re.IGNORECASE)
-    assert case_query.params == {"since": -86_276_544}
-    assert signal_query.params == {"since": -86_276_544_000_000}
+    assert latest.sql.strip() == "SELECT max(created_at_ms) AS latest FROM trading_cases"
+    assert latest.params == ()
+    assert {"trading_status_case_counts", "trading_status_signal_counts"}.isdisjoint(queries)
 
 
 def test_default_news_query_specs_cover_every_news_route_query():
@@ -170,8 +166,6 @@ def test_default_news_query_specs_cover_every_news_route_query():
     assert [query.name for query in catalog.queries if query.amplification_basis == "aggregate_input"] == [
         "news_feed_asset_search_counts",
         "news_feed_text_search_counts",
-        "trading_status_case_counts",
-        "trading_status_signal_counts",
     ]
 
 
@@ -206,39 +200,17 @@ def test_trading_console_audit_explains_the_statements_the_routes_execute():
     conn = RecordingStatementConn()
     repository = TradingRepository(conn)
 
-    repository.console_cases(since_ms=since_ms, underlying_key=None, states=(), before=None, limit=101)
+    repository.console_cases(since_ms=since_ms, underlying_key=None, states=(), limit=101)
     repository.console_cases(
         since_ms=since_ms,
         underlying_key="crypto:BTC",
         states=("SIGNAL_EMITTED", "NO_TRADE"),
-        before=(since_ms + 1, "z" * 32),
         limit=101,
     )
-    repository.console_signals(since_ns=since_ns, market_key=None, before=None, limit=101)
-    repository.console_signals(
-        since_ns=since_ns,
-        market_key="crypto:perp:BTC:USDT",
-        before=(since_ns + 1, "z" * 64),
-        limit=101,
-    )
-    repository.console_execution_observations(
-        since_ns=since_ns, account_slot=None, normalized_kind=None, before=None, limit=101
-    )
-    repository.console_execution_observations(
-        since_ns=since_ns,
-        account_slot="query-audit-disabled",
-        normalized_kind="signal_disposition",
-        before=(since_ns + 1, "z" * 64),
-        limit=101,
-    )
-    repository.console_operator_intents(since_ns=since_ns, account_slot=None, action=None, before=None, limit=101)
-    repository.console_operator_intents(
-        since_ns=since_ns,
-        account_slot="query-audit-disabled",
-        action="flatten",
-        before=(since_ns + 1, "z" * 64),
-        limit=101,
-    )
+    repository.console_operator_intents(since_ns=since_ns, action=None, limit=101)
+    repository.console_operator_intents(since_ns=since_ns, action="flatten", limit=101)
+    repository.signal_ledger(since_ns=since_ns, limit=101)
+    repository.observation_ledger(since_ns=since_ns, limit=101)
 
     executed = conn.statements
     audited = [
@@ -246,12 +218,10 @@ def test_trading_console_audit_explains_the_statements_the_routes_execute():
         for name in (
             "trading_console_cases",
             "trading_console_cases_filtered",
-            "trading_console_signals",
-            "trading_console_signals_filtered",
-            "trading_console_observations",
-            "trading_console_observations_filtered",
             "trading_console_commands",
             "trading_console_commands_filtered",
+            "trading_signal_ledger",
+            "trading_observation_ledger",
         )
     ]
     assert executed == audited
@@ -259,7 +229,9 @@ def test_trading_console_audit_explains_the_statements_the_routes_execute():
     assert audited[0][0] != audited[1][0]
     assert "underlying_key = %(underlying)s" in audited[1][0]
     assert "state = ANY(%(states)s)" in audited[1][0]
-    assert "(created_at_ms, case_id) < (%(before_ms)s, %(before_id)s)" in audited[1][0]
+    # #537 PR-5: no keyset predicate anywhere. `/api/trading/cases` published a `next_cursor` no
+    # reader ever sent back, and the three routes whose cursors were followed are gone.
+    assert all("before_ms" not in sql and "before_ns" not in sql for sql, _ in audited)
 
 
 def test_query_audit_covers_every_public_openapi_route():

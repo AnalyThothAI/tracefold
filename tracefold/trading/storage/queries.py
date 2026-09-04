@@ -1,8 +1,13 @@
-"""Bounded read projections for Cases, Signals, Observations, and readiness.
+"""Bounded read projections for Cases, Signals, Observations, and executions.
 
-Each console page is one statement builder plus the method that runs it. The query-plan audit calls the
-same builder with representative predicates, so what it EXPLAINs is the statement the route executes
-rather than a copy of it that an edit can leave behind (`docs/MIGRATIONS.md`, database standard 3).
+Each page is one statement builder plus the method that runs it. The query-plan audit calls the same
+builder with representative predicates, so what it EXPLAINs is the statement the route executes rather
+than a copy of it that an edit can leave behind (`docs/MIGRATIONS.md`, database standard 3).
+
+The `console_` prefix names a statement one of the four browser routes runs. `signal_ledger` and
+`observation_ledger` lost it with the two `GET` routes that were their only browser readers: they are
+`tracefold trading signals | observations` now, and each takes exactly the window and bound that
+caller passes rather than the market, slot, kind and cursor predicates no caller ever set (#537 PR-5).
 """
 
 from __future__ import annotations
@@ -14,18 +19,9 @@ from typing import Any
 # runner re-reading a backlog cannot move yesterday's frames into today's total; a Case is created
 # once and has no such backlog.
 #
-# Two numbers, both rendered. `no_trade_24h`, `blocked_24h`, `cases_open` and `signals_unexpired`
-# were four more counts on the same two tables that no surface ever printed (#528).
-TRADING_STATUS_CASE_COUNTS_SQL = """
-    SELECT count(*) AS cases_24h
-      FROM trading_cases
-     WHERE created_at_ms >= %(since)s
-"""
-TRADING_STATUS_SIGNAL_COUNTS_SQL = """
-    SELECT count(*) AS signals_24h
-      FROM trading_trade_signals
-     WHERE observed_at_ns >= %(since)s
-"""
+# `/api/trading/status` carried two more counts beside these -- one `count(*)` over `trading_cases`
+# and one over `trading_trade_signals`, on every 15 s poll of every route -- and the only surface that
+# ever printed them was the chrome figure strip #537 PR-5 deleted.
 TRADING_CASE_COUNTS_SQL = "SELECT state, count(*) AS n FROM trading_cases WHERE created_at_ms >= %s GROUP BY state"
 TRADING_CASE_REASON_COUNTS_SQL = (
     "SELECT coalesce(policy_reason, 'undecided') AS reason, count(*) AS n "
@@ -38,10 +34,13 @@ def console_cases_statement(
     since_ms: int,
     underlying_key: str | None = None,
     states: tuple[str, ...] = (),
-    before: tuple[int, str] | None = None,
     limit: int,
 ) -> tuple[str, dict[str, Any]]:
-    """`GET /api/trading/cases`, with whichever of its three optional predicates the caller sent."""
+    """`GET /api/trading/cases`, with whichever of its two optional predicates the caller sent.
+
+    There is no keyset predicate any more: the response published a `next_cursor` no reader ever sent
+    back, and the desk opens one Case from `?case=<id>` rather than paging a list (#537 PR-5).
+    """
 
     predicates = ["created_at_ms >= %(since)s"]
     params: dict[str, Any] = {"since": int(since_ms), "limit": int(limit)}
@@ -51,9 +50,6 @@ def console_cases_statement(
     if states:
         predicates.append("state = ANY(%(states)s)")
         params["states"] = list(states)
-    if before is not None:
-        predicates.append("(created_at_ms, case_id) < (%(before_ms)s, %(before_id)s)")
-        params["before_ms"], params["before_id"] = before
     sql = f"""
         SELECT case_id, underlying_key, trigger_kind, primary_source_key, manifest,
                manifest_sha256, state, policy_decision, policy_reason, policy_checks,
@@ -66,65 +62,33 @@ def console_cases_statement(
     return sql, params
 
 
-def console_signals_statement(
-    *,
-    since_ns: int,
-    market_key: str | None = None,
-    before: tuple[int, str] | None = None,
-    limit: int,
-) -> tuple[str, dict[str, Any]]:
-    """`GET /api/trading/signals`."""
+def signal_ledger_statement(*, since_ns: int, limit: int) -> tuple[str, dict[str, Any]]:
+    """`tracefold trading signals`: one bounded window of the engine-neutral Signal ledger."""
 
-    predicates = ["observed_at_ns >= %(since)s"]
-    params: dict[str, Any] = {"since": int(since_ns), "limit": int(limit)}
-    if market_key is not None:
-        predicates.append("market_key = %(market_key)s")
-        params["market_key"] = market_key
-    if before is not None:
-        predicates.append("(observed_at_ns, signal_id) < (%(before_ns)s, %(before_id)s)")
-        params["before_ns"], params["before_id"] = before
-    sql = f"""
+    sql = """
         SELECT seq, signal_id, case_id, market_key, direction,
                observed_at_ns, expires_at_ns
           FROM trading_trade_signals
-         WHERE {" AND ".join(predicates)}
+         WHERE observed_at_ns >= %(since)s
          ORDER BY observed_at_ns DESC, signal_id DESC
          LIMIT %(limit)s
-    """  # noqa: S608 -- predicates are fixed fragments; all values remain bound
-    return sql, params
+    """
+    return sql, {"since": int(since_ns), "limit": int(limit)}
 
 
-def console_execution_observations_statement(
-    *,
-    since_ns: int,
-    account_slot: str | None = None,
-    normalized_kind: str | None = None,
-    before: tuple[int, str] | None = None,
-    limit: int,
-) -> tuple[str, dict[str, Any]]:
-    """`GET /api/trading/execution/observations`."""
+def observation_ledger_statement(*, since_ns: int, limit: int) -> tuple[str, dict[str, Any]]:
+    """`tracefold trading observations`: one bounded window of the append-only Runtime stream."""
 
-    predicates = ["observed_at_ns >= %(since)s"]
-    params: dict[str, Any] = {"since": int(since_ns), "limit": int(limit)}
-    if account_slot is not None:
-        predicates.append("account_slot = %(slot)s")
-        params["slot"] = account_slot
-    if normalized_kind is not None:
-        predicates.append("normalized_kind = %(kind)s")
-        params["kind"] = normalized_kind
-    if before is not None:
-        predicates.append("(observed_at_ns, event_id) < (%(before_ns)s, %(before_id)s)")
-        params["before_ns"], params["before_id"] = before
-    sql = f"""
+    sql = """
         SELECT seq, event_id, account_slot, execution_strategy,
                signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                native_identity_references, summary
           FROM trading_execution_observations
-         WHERE {" AND ".join(predicates)}
+         WHERE observed_at_ns >= %(since)s
          ORDER BY observed_at_ns DESC, event_id DESC
          LIMIT %(limit)s
-    """  # noqa: S608 -- predicates are fixed fragments; all values remain bound
-    return sql, params
+    """
+    return sql, {"since": int(since_ns), "limit": int(limit)}
 
 
 def console_executions_statement(*, since_ns: int, limit: int) -> tuple[str, dict[str, Any]]:
@@ -247,24 +211,21 @@ def console_executions_statement(*, since_ns: int, limit: int) -> tuple[str, dic
 def console_operator_intents_statement(
     *,
     since_ns: int,
-    account_slot: str | None = None,
     action: str | None = None,
-    before: tuple[int, str] | None = None,
     limit: int,
 ) -> tuple[str, dict[str, Any]]:
-    """`GET /api/trading/execution/commands`, each Command beside its disposition observation."""
+    """The Command ledger beside each Command's disposition observation.
+
+    `GET /api/trading/executions` runs it unfiltered for the desk's ACT block; `tracefold trading
+    commands --action` is the one caller that narrows it. The account-slot and cursor predicates went
+    with the `GET /api/trading/execution/commands` route nothing in the browser called (#537 PR-5).
+    """
 
     predicates = ["command.requested_at_ns >= %(since)s"]
     params: dict[str, Any] = {"since": int(since_ns), "limit": int(limit)}
-    if account_slot is not None:
-        predicates.append("command.account_slot = %(slot)s")
-        params["slot"] = account_slot
     if action is not None:
         predicates.append("command.action = %(action)s")
         params["action"] = action
-    if before is not None:
-        predicates.append("(command.requested_at_ns, command.command_id) < (%(before_ns)s, %(before_id)s)")
-        params["before_ns"], params["before_id"] = before
     sql = f"""
         SELECT command.seq, command.command_id, command.account_slot, command.action,
                command.scope, command.reason, command.operator_identity,
@@ -286,17 +247,6 @@ def console_operator_intents_statement(
 class QueryStorage:
     conn: Any
 
-    def runtime_summary(self, *, since_ms: int) -> dict[str, int]:
-        case_row = self.conn.execute(TRADING_STATUS_CASE_COUNTS_SQL, {"since": int(since_ms)}).fetchone()
-        signal_row = self.conn.execute(
-            TRADING_STATUS_SIGNAL_COUNTS_SQL,
-            {"since": int(since_ms) * 1_000_000},
-        ).fetchone()
-        return {
-            "cases_24h": int((case_row or {}).get("cases_24h") or 0),
-            "signals_24h": int((signal_row or {}).get("signals_24h") or 0),
-        }
-
     def case_counts(self, *, since_ms: int) -> dict[str, int]:
         rows = self.conn.execute(TRADING_CASE_COUNTS_SQL, (int(since_ms),)).fetchall()
         return {str(row["state"]): int(row["n"]) for row in rows}
@@ -311,68 +261,32 @@ class QueryStorage:
         since_ms: int,
         underlying_key: str | None,
         states: tuple[str, ...],
-        before: tuple[int, str] | None,
         limit: int,
     ) -> list[dict[str, Any]]:
         sql, params = console_cases_statement(
             since_ms=since_ms,
             underlying_key=underlying_key,
             states=states,
-            before=before,
             limit=limit,
         )
         return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
 
-    def console_signals(
-        self,
-        *,
-        since_ns: int,
-        market_key: str | None,
-        before: tuple[int, str] | None,
-        limit: int,
-    ) -> list[dict[str, Any]]:
-        sql, params = console_signals_statement(
-            since_ns=since_ns,
-            market_key=market_key,
-            before=before,
-            limit=limit,
-        )
+    def signal_ledger(self, *, since_ns: int, limit: int) -> list[dict[str, Any]]:
+        sql, params = signal_ledger_statement(since_ns=since_ns, limit=limit)
         return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
 
-    def console_execution_observations(
-        self,
-        *,
-        since_ns: int,
-        account_slot: str | None,
-        normalized_kind: str | None,
-        before: tuple[int, str] | None,
-        limit: int,
-    ) -> list[dict[str, Any]]:
-        sql, params = console_execution_observations_statement(
-            since_ns=since_ns,
-            account_slot=account_slot,
-            normalized_kind=normalized_kind,
-            before=before,
-            limit=limit,
-        )
+    def observation_ledger(self, *, since_ns: int, limit: int) -> list[dict[str, Any]]:
+        sql, params = observation_ledger_statement(since_ns=since_ns, limit=limit)
         return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
 
     def console_operator_intents(
         self,
         *,
         since_ns: int,
-        account_slot: str | None,
         action: str | None,
-        before: tuple[int, str] | None,
         limit: int,
     ) -> list[dict[str, Any]]:
-        sql, params = console_operator_intents_statement(
-            since_ns=since_ns,
-            account_slot=account_slot,
-            action=action,
-            before=before,
-            limit=limit,
-        )
+        sql, params = console_operator_intents_statement(since_ns=since_ns, action=action, limit=limit)
         return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
 
     def console_executions(self, *, since_ns: int, limit: int) -> list[dict[str, Any]]:
@@ -383,12 +297,10 @@ class QueryStorage:
 __all__ = [
     "TRADING_CASE_COUNTS_SQL",
     "TRADING_CASE_REASON_COUNTS_SQL",
-    "TRADING_STATUS_CASE_COUNTS_SQL",
-    "TRADING_STATUS_SIGNAL_COUNTS_SQL",
     "QueryStorage",
     "console_cases_statement",
-    "console_execution_observations_statement",
     "console_executions_statement",
     "console_operator_intents_statement",
-    "console_signals_statement",
+    "observation_ledger_statement",
+    "signal_ledger_statement",
 ]

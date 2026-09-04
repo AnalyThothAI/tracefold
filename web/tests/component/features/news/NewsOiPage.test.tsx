@@ -598,14 +598,12 @@ describe("NewsOiPage", () => {
             decisions: [
               tradingGateDecisionFixture(),
               tradingGateDecisionFixture({
-                base_symbol: "NVDA",
                 event_id: "evt-oi-nvda",
                 gate_evidence: gateEvidence({ venue: "binance" }),
                 gate_reason: "venue_unresolved",
                 gate_stage: "venue",
                 gate_status: "REJECTED",
                 source_key: "oi:evt-oi-nvda:oi_signal_v1",
-                underlying_key: "stock:NVDA",
               }),
             ],
           }),

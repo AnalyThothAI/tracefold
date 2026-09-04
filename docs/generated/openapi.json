@@ -369,52 +369,6 @@
         "title": "ApiEnvelope[TradingCasesData]",
         "type": "object"
       },
-      "ApiEnvelope_TradingExecutionObservationsData_": {
-        "additionalProperties": false,
-        "properties": {
-          "data": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TradingExecutionObservationsData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Field"
-          },
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "ApiEnvelope[TradingExecutionObservationsData]",
-        "type": "object"
-      },
       "ApiEnvelope_TradingExecutionsData_": {
         "additionalProperties": false,
         "properties": {
@@ -597,98 +551,6 @@
           "ok"
         ],
         "title": "ApiEnvelope[TradingOperatorCommandReceiptData]",
-        "type": "object"
-      },
-      "ApiEnvelope_TradingOperatorIntentsData_": {
-        "additionalProperties": false,
-        "properties": {
-          "data": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TradingOperatorIntentsData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Field"
-          },
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "ApiEnvelope[TradingOperatorIntentsData]",
-        "type": "object"
-      },
-      "ApiEnvelope_TradingSignalsData_": {
-        "additionalProperties": false,
-        "properties": {
-          "data": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TradingSignalsData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Field"
-          },
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "ApiEnvelope[TradingSignalsData]",
         "type": "object"
       },
       "ApiEnvelope_TradingStatusData_": {
@@ -5263,6 +5125,7 @@
       },
       "TradingCaseData": {
         "additionalProperties": false,
+        "description": "One frozen Case, as the drawer behind `?case=<id>` renders it.\n\nThe four measured OI numbers here were a second copy of what `policy_checks` already carries with\nthe threshold each was measured against, `policy_version` a second copy of `policy_id`, and\n`policy_decision` a required Literal over a nullable column -- exactly the shape that turned a\nstored `NULL` into a 500 on a read route (#532, #537 PR-5). `state` and `policy_reason` are the\nterminal answer; `base_symbol` is the identity the drawer titles itself with.",
         "properties": {
           "base_symbol": {
             "title": "Base Symbol",
@@ -5335,28 +5198,6 @@
             "title": "Observed At Ms",
             "type": "integer"
           },
-          "oi_change_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Oi Change Bps"
-          },
-          "oi_value_usd": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Oi Value Usd"
-          },
           "policy_checks": {
             "items": {
               "$ref": "#/components/schemas/TradingPolicyCheckData"
@@ -5382,15 +5223,6 @@
             ],
             "title": "Policy Config Digest"
           },
-          "policy_decision": {
-            "enum": [
-              "long",
-              "no_trade",
-              "not_run"
-            ],
-            "title": "Policy Decision",
-            "type": "string"
-          },
           "policy_id": {
             "anyOf": [
               {
@@ -5413,17 +5245,6 @@
             ],
             "title": "Policy Reason"
           },
-          "policy_version": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Policy Version"
-          },
           "pre_move_bps": {
             "anyOf": [
               {
@@ -5435,59 +5256,15 @@
             ],
             "title": "Pre Move Bps"
           },
-          "source_venue": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Venue"
-          },
           "state": {
             "title": "State",
             "type": "string"
-          },
-          "trigger_kind": {
-            "title": "Trigger Kind",
-            "type": "string"
-          },
-          "underlying_key": {
-            "title": "Underlying Key",
-            "type": "string"
-          },
-          "whale_long_profit_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Whale Long Profit Bps"
-          },
-          "whale_oi_ratio_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Whale Oi Ratio Bps"
           }
         },
         "required": [
           "case_id",
-          "underlying_key",
           "base_symbol",
-          "trigger_kind",
           "state",
-          "policy_decision",
           "observed_at_ms",
           "created_at_ms"
         ],
@@ -5496,6 +5273,7 @@
       },
       "TradingCasesData": {
         "additionalProperties": false,
+        "description": "One bounded page of Cases plus the two durable 24 h distributions.\n\nThere is no `next_cursor` and no cursor parameter: the desk opens one Case at a time from\n`?case=<id>` and renders one 24 h count card, and no reader ever asked for a second page (#537 PR-5).",
         "properties": {
           "cases": {
             "items": {
@@ -5507,21 +5285,6 @@
           "complete": {
             "title": "Complete",
             "type": "boolean"
-          },
-          "measured_at_ms": {
-            "title": "Measured At Ms",
-            "type": "integer"
-          },
-          "next_cursor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Next Cursor"
           },
           "reason_counts_24h": {
             "additionalProperties": {
@@ -5544,8 +5307,7 @@
         },
         "required": [
           "complete",
-          "window_hours",
-          "measured_at_ms"
+          "window_hours"
         ],
         "title": "TradingCasesData",
         "type": "object"
@@ -5571,6 +5333,7 @@
       },
       "TradingExecutionAccountData": {
         "additionalProperties": false,
+        "description": "What the account holds, as the Runtime's own private reconciliation last saw it.\n\nIts two observation clocks, the day-start equity baseline and the `truncated` flag were published\nbeside these and rendered nowhere: the desk ages the whole projection against `facts_expire_at_ms`,\nreads the drawdown the Runtime already measured against that baseline, and a truncated snapshot is\nalready not `complete` (#537 PR-5).",
         "properties": {
           "aggregate_risk_usd": {
             "anyOf": [
@@ -5625,17 +5388,6 @@
             ],
             "title": "Daily Drawdown Usd"
           },
-          "day_start_equity_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Day Start Equity Usd"
-          },
           "equity_usd": {
             "anyOf": [
               {
@@ -5650,21 +5402,6 @@
           "inflight_orders_count": {
             "minimum": 0.0,
             "title": "Inflight Orders Count",
-            "type": "integer"
-          },
-          "market_observed_at_ns": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Market Observed At Ns"
-          },
-          "observed_at_ns": {
-            "title": "Observed At Ns",
             "type": "integer"
           },
           "open_orders_count": {
@@ -5688,11 +5425,6 @@
             "title": "Positions",
             "type": "array"
           },
-          "truncated": {
-            "default": false,
-            "title": "Truncated",
-            "type": "boolean"
-          },
           "unknown_orders_count": {
             "minimum": 0.0,
             "title": "Unknown Orders Count",
@@ -5700,7 +5432,6 @@
           }
         },
         "required": [
-          "observed_at_ns",
           "open_orders_count",
           "inflight_orders_count",
           "unknown_orders_count",
@@ -5711,7 +5442,7 @@
       },
       "TradingExecutionCommandRowData": {
         "additionalProperties": false,
-        "description": "One operator Command's progress, read from its `control_disposition` alone.",
+        "description": "One operator Command's progress, read from its `control_disposition` alone.\n\nAction, stage and clock: the ACT block's ledger rows. `operator_identity` is the constant\n`operator-console` for every browser write and `reason` is the text the same operator just typed\ninto the field above the ledger (#537 PR-5).",
         "properties": {
           "action": {
             "enum": [
@@ -5726,14 +5457,6 @@
           },
           "command_id": {
             "title": "Command Id",
-            "type": "string"
-          },
-          "operator_identity": {
-            "title": "Operator Identity",
-            "type": "string"
-          },
-          "reason": {
-            "title": "Reason",
             "type": "string"
           },
           "requested_at_ns": {
@@ -5755,132 +5478,10 @@
         "required": [
           "command_id",
           "action",
-          "reason",
           "requested_at_ns",
-          "operator_identity",
           "stage"
         ],
         "title": "TradingExecutionCommandRowData",
-        "type": "object"
-      },
-      "TradingExecutionObservationData": {
-        "additionalProperties": false,
-        "properties": {
-          "account_slot": {
-            "title": "Account Slot",
-            "type": "string"
-          },
-          "command_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Command Id"
-          },
-          "event_id": {
-            "title": "Event Id",
-            "type": "string"
-          },
-          "execution_strategy": {
-            "title": "Execution Strategy",
-            "type": "string"
-          },
-          "native_identity_references": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Native Identity References",
-            "type": "array"
-          },
-          "normalized_kind": {
-            "title": "Normalized Kind",
-            "type": "string"
-          },
-          "observed_at_ns": {
-            "title": "Observed At Ns",
-            "type": "integer"
-          },
-          "occurred_at_ns": {
-            "title": "Occurred At Ns",
-            "type": "integer"
-          },
-          "seq": {
-            "title": "Seq",
-            "type": "integer"
-          },
-          "signal_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Signal Id"
-          },
-          "summary": {
-            "additionalProperties": true,
-            "title": "Summary",
-            "type": "object"
-          }
-        },
-        "required": [
-          "seq",
-          "event_id",
-          "account_slot",
-          "execution_strategy",
-          "normalized_kind",
-          "occurred_at_ns",
-          "observed_at_ns"
-        ],
-        "title": "TradingExecutionObservationData",
-        "type": "object"
-      },
-      "TradingExecutionObservationsData": {
-        "additionalProperties": false,
-        "properties": {
-          "complete": {
-            "title": "Complete",
-            "type": "boolean"
-          },
-          "measured_at_ms": {
-            "title": "Measured At Ms",
-            "type": "integer"
-          },
-          "next_cursor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Next Cursor"
-          },
-          "observations": {
-            "items": {
-              "$ref": "#/components/schemas/TradingExecutionObservationData"
-            },
-            "title": "Observations",
-            "type": "array"
-          },
-          "window_hours": {
-            "title": "Window Hours",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "complete",
-          "window_hours",
-          "measured_at_ms"
-        ],
-        "title": "TradingExecutionObservationsData",
         "type": "object"
       },
       "TradingExecutionOrderData": {
@@ -6053,12 +5654,8 @@
       },
       "TradingExecutionReadinessData": {
         "additionalProperties": false,
+        "description": "One field per operator question, and the CLI `tracefold trading status` block is this same dict.\n\nThe two raw observation clocks (`heartbeat_at_ns`, `reconciliation_observed_at_ns`) went with the\nages derived from them: the desk compares `facts_expire_at_ms` against its own clock and prints\n`reconciliation_age_ms`, both already measured here. `positions_count` / `open_orders_count` said\nwhat `current_account` carries row by row, and raw `account_flat` said what the venue had not yet\nproven -- `account_flat_proven` is the answer an operator acts on (#537 PR-5).",
         "properties": {
-          "account_flat": {
-            "default": false,
-            "title": "Account Flat",
-            "type": "boolean"
-          },
           "account_flat_proven": {
             "default": false,
             "title": "Account Flat Proven",
@@ -6122,17 +5719,6 @@
             ],
             "title": "Facts Expire At Ms"
           },
-          "heartbeat_at_ns": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Heartbeat At Ns"
-          },
           "mode": {
             "enum": [
               "disabled",
@@ -6141,18 +5727,6 @@
             ],
             "title": "Mode",
             "type": "string"
-          },
-          "open_orders_count": {
-            "default": 0,
-            "minimum": 0.0,
-            "title": "Open Orders Count",
-            "type": "integer"
-          },
-          "positions_count": {
-            "default": 0,
-            "minimum": 0.0,
-            "title": "Positions Count",
-            "type": "integer"
           },
           "protection_status": {
             "default": "unknown",
@@ -6176,17 +5750,6 @@
               }
             ],
             "title": "Reconciliation Age Ms"
-          },
-          "reconciliation_observed_at_ns": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reconciliation Observed At Ns"
           },
           "routes_count": {
             "default": 0,
@@ -6217,7 +5780,7 @@
       },
       "TradingExecutionRowData": {
         "additionalProperties": false,
-        "description": "One entry identity's whole execution, folded from its own observations (#528 PR-1, PR-3).\n\n`entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,\nor the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so\n`case_id` is absent on those rows rather than invented.",
+        "description": "One entry identity's whole execution, folded from its own observations (#528 PR-1, PR-3).\n\n`entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,\nor the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so\n`case_id` is absent on those rows rather than invented; the desk links the ones that have one to\nthe Case drawer.\n\n`order_status`, `position_status` and the `accepted` / `rejected` split are the inputs `stage` is\nderived from, and `stage` is what the table renders: publishing all four let a reader compare a\nvenue word against the server's own answer about the same row (#537 PR-5). `last_observed_at_ns`\nwas a second clock beside `observed_at_ns` that no column printed.",
         "properties": {
           "case_id": {
             "anyOf": [
@@ -6237,21 +5800,6 @@
             ],
             "title": "Direction",
             "type": "string"
-          },
-          "disposition": {
-            "anyOf": [
-              {
-                "enum": [
-                  "accepted",
-                  "rejected"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Disposition"
           },
           "disposition_reason": {
             "anyOf": [
@@ -6317,10 +5865,6 @@
             ],
             "title": "Fill Quantity"
           },
-          "last_observed_at_ns": {
-            "title": "Last Observed At Ns",
-            "type": "integer"
-          },
           "market_key": {
             "title": "Market Key",
             "type": "string"
@@ -6328,28 +5872,6 @@
           "observed_at_ns": {
             "title": "Observed At Ns",
             "type": "integer"
-          },
-          "order_status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Order Status"
-          },
-          "position_status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Position Status"
           },
           "realized_pnl_usd": {
             "anyOf": [
@@ -6401,8 +5923,7 @@
           "market_key",
           "direction",
           "observed_at_ns",
-          "stage",
-          "last_observed_at_ns"
+          "stage"
         ],
         "title": "TradingExecutionRowData",
         "type": "object"
@@ -6427,70 +5948,21 @@
             },
             "title": "Executions",
             "type": "array"
-          },
-          "measured_at_ms": {
-            "title": "Measured At Ms",
-            "type": "integer"
-          },
-          "window_hours": {
-            "title": "Window Hours",
-            "type": "integer"
           }
         },
         "required": [
-          "complete",
-          "window_hours",
-          "measured_at_ms"
+          "complete"
         ],
         "title": "TradingExecutionsData",
         "type": "object"
       },
-      "TradingGateConfigData": {
-        "additionalProperties": false,
-        "properties": {
-          "config_digest": {
-            "title": "Config Digest",
-            "type": "string"
-          },
-          "max_age_ms": {
-            "title": "Max Age Ms",
-            "type": "integer"
-          },
-          "min_oi_value_usd": {
-            "title": "Min Oi Value Usd",
-            "type": "integer"
-          },
-          "source_venues": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Source Venues",
-            "type": "array"
-          },
-          "version": {
-            "title": "Version",
-            "type": "string"
-          }
-        },
-        "required": [
-          "version",
-          "config_digest",
-          "max_age_ms",
-          "min_oi_value_usd",
-          "source_venues"
-        ],
-        "title": "TradingGateConfigData",
-        "type": "object"
-      },
       "TradingGateData": {
         "additionalProperties": false,
+        "description": "The admission ledger `/news/oi` joins each OI frame against (#537 D4).\n\nThe running admission configuration was published here as `config` and the ledger's two extreme\nclocks as `latest_source_at_ms` / `latest_gate_eligible_at_ms`; the second pair cost an unbounded\nscan of the 90-day ledger on every 15 s poll for one card hint. Both are gone with the desk's own\nread of this route (#537 PR-5).",
         "properties": {
           "complete": {
             "title": "Complete",
             "type": "boolean"
-          },
-          "config": {
-            "$ref": "#/components/schemas/TradingGateConfigData"
           },
           "decisions": {
             "items": {
@@ -6498,32 +5970,6 @@
             },
             "title": "Decisions",
             "type": "array"
-          },
-          "latest_gate_eligible_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Latest Gate Eligible At Ms"
-          },
-          "latest_source_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Latest Source At Ms"
-          },
-          "measured_at_ms": {
-            "title": "Measured At Ms",
-            "type": "integer"
           },
           "reason_counts_24h": {
             "additionalProperties": {
@@ -6538,17 +5984,10 @@
             },
             "title": "Status Counts 24H",
             "type": "object"
-          },
-          "window_hours": {
-            "title": "Window Hours",
-            "type": "integer"
           }
         },
         "required": [
-          "config",
-          "complete",
-          "window_hours",
-          "measured_at_ms"
+          "complete"
         ],
         "title": "TradingGateData",
         "type": "object"
@@ -6556,11 +5995,6 @@
       "TradingGateDecisionData": {
         "additionalProperties": false,
         "properties": {
-          "base_symbol": {
-            "default": "",
-            "title": "Base Symbol",
-            "type": "string"
-          },
           "case_id": {
             "anyOf": [
               {
@@ -6702,31 +6136,10 @@
           "source_key": {
             "title": "Source Key",
             "type": "string"
-          },
-          "source_observed_at_ms": {
-            "title": "Source Observed At Ms",
-            "type": "integer"
-          },
-          "trigger_kind": {
-            "title": "Trigger Kind",
-            "type": "string"
-          },
-          "underlying_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Underlying Key"
           }
         },
         "required": [
-          "source_key",
-          "trigger_kind",
-          "source_observed_at_ms"
+          "source_key"
         ],
         "title": "TradingGateDecisionData",
         "type": "object"
@@ -6807,162 +6220,6 @@
         "title": "TradingOperatorCommandReceiptData",
         "type": "object"
       },
-      "TradingOperatorIntentData": {
-        "additionalProperties": false,
-        "properties": {
-          "account_slot": {
-            "title": "Account Slot",
-            "type": "string"
-          },
-          "action": {
-            "enum": [
-              "pause_entries",
-              "resume_entries",
-              "emergency_halt",
-              "flatten",
-              "manual_entry"
-            ],
-            "title": "Action",
-            "type": "string"
-          },
-          "command_id": {
-            "title": "Command Id",
-            "type": "string"
-          },
-          "direction": {
-            "anyOf": [
-              {
-                "enum": [
-                  "long",
-                  "short"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Direction"
-          },
-          "disposition": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Disposition"
-          },
-          "disposition_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Disposition Reason"
-          },
-          "expired": {
-            "title": "Expired",
-            "type": "boolean"
-          },
-          "expires_at_ns": {
-            "title": "Expires At Ns",
-            "type": "integer"
-          },
-          "market_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Market Key"
-          },
-          "operator_identity": {
-            "title": "Operator Identity",
-            "type": "string"
-          },
-          "reason": {
-            "title": "Reason",
-            "type": "string"
-          },
-          "requested_at_ns": {
-            "title": "Requested At Ns",
-            "type": "integer"
-          },
-          "scope": {
-            "title": "Scope",
-            "type": "string"
-          },
-          "seq": {
-            "title": "Seq",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "seq",
-          "command_id",
-          "account_slot",
-          "action",
-          "scope",
-          "reason",
-          "operator_identity",
-          "requested_at_ns",
-          "expires_at_ns",
-          "expired"
-        ],
-        "title": "TradingOperatorIntentData",
-        "type": "object"
-      },
-      "TradingOperatorIntentsData": {
-        "additionalProperties": false,
-        "properties": {
-          "commands": {
-            "items": {
-              "$ref": "#/components/schemas/TradingOperatorIntentData"
-            },
-            "title": "Commands",
-            "type": "array"
-          },
-          "complete": {
-            "title": "Complete",
-            "type": "boolean"
-          },
-          "measured_at_ms": {
-            "title": "Measured At Ms",
-            "type": "integer"
-          },
-          "next_cursor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Next Cursor"
-          },
-          "window_hours": {
-            "title": "Window Hours",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "complete",
-          "window_hours",
-          "measured_at_ms"
-        ],
-        "title": "TradingOperatorIntentsData",
-        "type": "object"
-      },
       "TradingPolicyCheckData": {
         "additionalProperties": false,
         "properties": {
@@ -7003,145 +6260,20 @@
         "title": "TradingPolicyCheckData",
         "type": "object"
       },
-      "TradingRuntimeCountsData": {
-        "additionalProperties": false,
-        "properties": {
-          "cases_24h": {
-            "default": 0,
-            "title": "Cases 24H",
-            "type": "integer"
-          },
-          "signals_24h": {
-            "default": 0,
-            "title": "Signals 24H",
-            "type": "integer"
-          }
-        },
-        "title": "TradingRuntimeCountsData",
-        "type": "object"
-      },
-      "TradingSignalData": {
-        "additionalProperties": false,
-        "properties": {
-          "case_id": {
-            "title": "Case Id",
-            "type": "string"
-          },
-          "direction": {
-            "enum": [
-              "long",
-              "short"
-            ],
-            "title": "Direction",
-            "type": "string"
-          },
-          "expired": {
-            "title": "Expired",
-            "type": "boolean"
-          },
-          "expires_at_ns": {
-            "title": "Expires At Ns",
-            "type": "integer"
-          },
-          "market_key": {
-            "title": "Market Key",
-            "type": "string"
-          },
-          "observed_at_ns": {
-            "title": "Observed At Ns",
-            "type": "integer"
-          },
-          "seq": {
-            "title": "Seq",
-            "type": "integer"
-          },
-          "signal_id": {
-            "title": "Signal Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "seq",
-          "signal_id",
-          "case_id",
-          "market_key",
-          "direction",
-          "observed_at_ns",
-          "expires_at_ns",
-          "expired"
-        ],
-        "title": "TradingSignalData",
-        "type": "object"
-      },
-      "TradingSignalsData": {
-        "additionalProperties": false,
-        "properties": {
-          "complete": {
-            "title": "Complete",
-            "type": "boolean"
-          },
-          "measured_at_ms": {
-            "title": "Measured At Ms",
-            "type": "integer"
-          },
-          "next_cursor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Next Cursor"
-          },
-          "signals": {
-            "items": {
-              "$ref": "#/components/schemas/TradingSignalData"
-            },
-            "title": "Signals",
-            "type": "array"
-          },
-          "window_hours": {
-            "title": "Window Hours",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "complete",
-          "window_hours",
-          "measured_at_ms"
-        ],
-        "title": "TradingSignalsData",
-        "type": "object"
-      },
       "TradingStatusData": {
         "additionalProperties": false,
+        "description": "The desk's RISK block, and nothing beside it.\n\n`counts` carried a `cases_24h` and a `signals_24h` that cost two `count(*)` on every 15 s poll of\nevery route and were rendered only in the chrome figures #537 PR-5 deleted. The window and the\nmeasurement clock went with them: this projection publishes the instant it expires, which is the\nonly clock a reader compares (#537 PR-5).",
         "properties": {
-          "counts": {
-            "$ref": "#/components/schemas/TradingRuntimeCountsData"
-          },
           "decision": {
             "$ref": "#/components/schemas/TradingDecisionRuntimeData"
           },
           "execution": {
             "$ref": "#/components/schemas/TradingExecutionReadinessData"
-          },
-          "measured_at_ms": {
-            "title": "Measured At Ms",
-            "type": "integer"
-          },
-          "window_hours": {
-            "title": "Window Hours",
-            "type": "integer"
           }
         },
         "required": [
           "decision",
-          "execution",
-          "counts",
-          "window_hours",
-          "measured_at_ms"
+          "execution"
         ],
         "title": "TradingStatusData",
         "type": "object"
@@ -7753,17 +6885,6 @@
               "title": "State",
               "type": "string"
             }
-          },
-          {
-            "in": "query",
-            "name": "cursor",
-            "required": false,
-            "schema": {
-              "default": "",
-              "maxLength": 256,
-              "title": "Cursor",
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -7795,70 +6916,6 @@
       }
     },
     "/api/trading/execution/commands": {
-      "get": {
-        "operationId": "get_operator_intents_api_trading_execution_commands_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "slot",
-            "required": false,
-            "schema": {
-              "default": "",
-              "maxLength": 128,
-              "title": "Slot",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "action",
-            "required": false,
-            "schema": {
-              "default": "",
-              "maxLength": 32,
-              "title": "Action",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "cursor",
-            "required": false,
-            "schema": {
-              "default": "",
-              "maxLength": 256,
-              "title": "Cursor",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_TradingOperatorIntentsData_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Operator Intents",
-        "tags": [
-          "api"
-        ]
-      },
       "post": {
         "description": "Persist one bounded console intent; Runtime and venue outcomes remain separate facts.",
         "operationId": "post_operator_intent_api_trading_execution_commands_post",
@@ -7874,7 +6931,7 @@
                     "type": "string"
                   },
                   "requested_at_ms": {
-                    "exclusiveMinimum": 0,
+                    "exclusiveMinimum": 0.0,
                     "title": "Requested At Ms",
                     "type": "integer"
                   },
@@ -7910,72 +6967,6 @@
           }
         },
         "summary": "Post Operator Intent",
-        "tags": [
-          "api"
-        ]
-      }
-    },
-    "/api/trading/execution/observations": {
-      "get": {
-        "operationId": "get_execution_observations_api_trading_execution_observations_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "slot",
-            "required": false,
-            "schema": {
-              "default": "",
-              "maxLength": 128,
-              "title": "Slot",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "kind",
-            "required": false,
-            "schema": {
-              "default": "",
-              "maxLength": 32,
-              "title": "Kind",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "cursor",
-            "required": false,
-            "schema": {
-              "default": "",
-              "maxLength": 256,
-              "title": "Cursor",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_TradingExecutionObservationsData_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Execution Observations",
         "tags": [
           "api"
         ]
@@ -8061,61 +7052,6 @@
           }
         },
         "summary": "Get Trading Gate Source",
-        "tags": [
-          "api"
-        ]
-      }
-    },
-    "/api/trading/signals": {
-      "get": {
-        "operationId": "get_trading_signals_api_trading_signals_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "market",
-            "required": false,
-            "schema": {
-              "default": "",
-              "maxLength": 128,
-              "title": "Market",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "cursor",
-            "required": false,
-            "schema": {
-              "default": "",
-              "maxLength": 256,
-              "title": "Cursor",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_TradingSignalsData_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Trading Signals",
         "tags": [
           "api"
         ]

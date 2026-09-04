@@ -101,6 +101,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.trading.policy",
         "tracefold.trading.storage.queries",
         "tracefold.trading.storage.gate",
+        # #537 PR-5. `GET /api/trading/status` runs exactly one statement over `trading_cases` -- the
+        # lane's own liveness probe -- and the query-plan audit registers the production constant
+        # rather than a copy of the SQL that an edit can leave behind.
+        "tracefold.trading.storage.lane",
     ),
     "app.http": (
         "tracefold.news.health",

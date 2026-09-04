@@ -7,8 +7,6 @@ import type {
   TradingExecutions,
   TradingGate,
   TradingGateDecision,
-  TradingSignal,
-  TradingSignals,
   TradingStatus,
 } from "@features/trading/api/tradingQueries";
 
@@ -24,15 +22,10 @@ export const ALPHA_POLICY_ID = "source_native_oi_smart_money_long_v5";
  */
 export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): TradingStatus {
   return {
-    counts: {
-      cases_24h: 7,
-      signals_24h: 1,
-    },
     decision: {
       last_case_at_ms: TRADING_NOW_MS - 1_000,
     },
     execution: {
-      account_flat: false,
       account_flat_proven: false,
       account_slot: "binance_usdm_primary",
       alive: false,
@@ -43,15 +36,11 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
       execution_safe: false,
       facts_expire_at_ms: null,
       mode: "disabled",
-      open_orders_count: 0,
-      positions_count: 0,
       protection_status: "unknown",
       routes_count: 0,
       startup_reconciled: false,
       unexpected_exposure: false,
     },
-    measured_at_ms: TRADING_NOW_MS,
-    window_hours: 24,
     ...overrides,
   };
 }
@@ -74,10 +63,7 @@ export function tradingLiveExecutionFixture(
     entry_block_reason: "entries_paused",
     execution_safe: true,
     facts_expire_at_ms: TRADING_NOW_MS + 5_000,
-    heartbeat_at_ns: TRADING_NOW_MS * 1_000_000,
     mode: "paper",
-    open_orders_count: 1,
-    positions_count: 1,
     protection_status: "protected",
     reconciliation_age_ms: 1_000,
     routes_count: 12,
@@ -95,11 +81,8 @@ export function tradingCurrentAccountFixture(
     complete: true,
     daily_drawdown_bps: 25,
     daily_drawdown_usd: "2.50",
-    day_start_equity_usd: "1000",
     equity_usd: "997.50",
     inflight_orders_count: 0,
-    market_observed_at_ns: TRADING_NOW_MS * 1_000_000,
-    observed_at_ns: TRADING_NOW_MS * 1_000_000,
     open_orders_count: 1,
     orders: [
       {
@@ -129,7 +112,6 @@ export function tradingCurrentAccountFixture(
         unrealized_pnl_usd: "-0.025",
       },
     ],
-    truncated: false,
     unknown_orders_count: 0,
     ...overrides,
   };
@@ -146,8 +128,6 @@ export function tradingCaseFixture(overrides: Partial<TradingCase> = {}): Tradin
     mark_price: "0.0950",
     market_key: "crypto:perp:HYPE:USDT",
     observed_at_ms: TRADING_NOW_MS - 501_000,
-    oi_change_bps: 1_548,
-    oi_value_usd: 23_010_000,
     policy_checks: [
       {
         check: "whale_oi_ratio_bps",
@@ -159,17 +139,10 @@ export function tradingCaseFixture(overrides: Partial<TradingCase> = {}): Tradin
     ],
     policy_config: { max_price_move_bps: "600", min_whale_oi_ratio_bps: "8000" },
     policy_config_digest: "e".repeat(64),
-    policy_decision: "no_trade",
     policy_id: ALPHA_POLICY_ID,
     policy_reason: "smart_money_ratio_below_or_equal_floor",
-    policy_version: ALPHA_POLICY_ID,
     pre_move_bps: 187,
-    source_venue: "binance.usdm",
     state: "NO_TRADE",
-    trigger_kind: "oi",
-    underlying_key: "crypto:HYPE",
-    whale_long_profit_bps: 9_074,
-    whale_oi_ratio_bps: 5_424,
     ...overrides,
   };
 }
@@ -178,8 +151,6 @@ export function tradingCasesFixture(overrides: Partial<TradingCases> = {}): Trad
   return {
     cases: [tradingCaseFixture()],
     complete: true,
-    measured_at_ms: TRADING_NOW_MS,
-    next_cursor: null,
     reason_counts_24h: { smart_money_ratio_below_or_equal_floor: 4 },
     state_counts_24h: { BLOCKED: 1, NO_TRADE: 5, SIGNAL_EMITTED: 1 },
     window_hours: 24,
@@ -187,42 +158,12 @@ export function tradingCasesFixture(overrides: Partial<TradingCases> = {}): Trad
   };
 }
 
+/** `?underlying=` is still a bounded server filter; `base_symbol` is what the response identifies a row by. */
 export function tradingCasesForUnderlying(underlying: string | null): TradingCases {
   const batch = tradingCasesFixture();
   if (!underlying) return batch;
-  const key = underlying.includes(":") ? underlying : `crypto:${underlying.toUpperCase()}`;
-  return { ...batch, cases: (batch.cases ?? []).filter((row) => row.underlying_key === key) };
-}
-
-export function tradingSignalFixture(overrides: Partial<TradingSignal> = {}): TradingSignal {
-  return {
-    case_id: "case-sol",
-    direction: "long",
-    expired: false,
-    expires_at_ns: (TRADING_NOW_MS + 180_000) * 1_000_000,
-    market_key: "crypto:perp:SOL:USDT",
-    observed_at_ns: TRADING_NOW_MS * 1_000_000,
-    seq: 1,
-    signal_id: "d".repeat(64),
-    ...overrides,
-  };
-}
-
-export function tradingSignalsFixture(overrides: Partial<TradingSignals> = {}): TradingSignals {
-  return {
-    complete: true,
-    measured_at_ms: TRADING_NOW_MS,
-    next_cursor: null,
-    signals: [tradingSignalFixture()],
-    window_hours: 24,
-    ...overrides,
-  };
-}
-
-export function tradingSignalsForMarket(market: string | null): TradingSignals {
-  const batch = tradingSignalsFixture();
-  if (!market) return batch;
-  return { ...batch, signals: (batch.signals ?? []).filter((row) => row.market_key === market) };
+  const base = underlying.split(":").pop()?.toUpperCase() ?? "";
+  return { ...batch, cases: (batch.cases ?? []).filter((row) => row.base_symbol === base) };
 }
 
 /**
@@ -238,18 +179,14 @@ export function tradingExecutionRowFixture(
   return {
     case_id: "case-btc",
     direction: "long",
-    disposition: "accepted",
     disposition_reason: "accepted",
     entry_id: "1".repeat(64),
     exit_price: "9699.0",
     exit_reason: "flatten",
     fill_avg_price: "10000",
     fill_quantity: "0.049",
-    last_observed_at_ns: (TRADING_NOW_MS - 30_000) * 1_000_000,
     market_key: "crypto:perp:BTC:USDT",
     observed_at_ns: (TRADING_NOW_MS - 120_000) * 1_000_000,
-    order_status: "submitted",
-    position_status: "closed",
     realized_pnl_usd: "-14.92274518",
     source: "signal",
     stage: "closed",
@@ -267,7 +204,6 @@ export function tradingExecutionsFixture(
       tradingCommandRowFixture({
         action: "flatten",
         command_id: "b".repeat(64),
-        reason: "account",
         requested_at_ns: (TRADING_NOW_MS - 60_000) * 1_000_000,
         stage: "completed",
       }),
@@ -282,18 +218,14 @@ export function tradingExecutionsFixture(
       tradingExecutionRowFixture({
         case_id: "case-nvda",
         direction: "long",
-        disposition: "rejected",
         disposition_reason: "instrument_unmapped",
         entry_id: "2".repeat(64),
         exit_price: null,
         exit_reason: null,
         fill_avg_price: null,
         fill_quantity: null,
-        last_observed_at_ns: (TRADING_NOW_MS - 300_000) * 1_000_000,
         market_key: "crypto:perp:NVDA:USDT",
         observed_at_ns: (TRADING_NOW_MS - 300_000) * 1_000_000,
-        order_status: null,
-        position_status: null,
         realized_pnl_usd: null,
         stage: "rejected",
         stop_trigger_price: null,
@@ -301,18 +233,14 @@ export function tradingExecutionsFixture(
       // A Signal whose TTL ran out before the Runtime could act on it.
       tradingExecutionRowFixture({
         case_id: "case-sol",
-        disposition: "rejected",
         disposition_reason: "expired",
         entry_id: "3".repeat(64),
         exit_price: null,
         exit_reason: null,
         fill_avg_price: null,
         fill_quantity: null,
-        last_observed_at_ns: (TRADING_NOW_MS - 600_000) * 1_000_000,
         market_key: "crypto:perp:SOL:USDT",
         observed_at_ns: (TRADING_NOW_MS - 600_000) * 1_000_000,
-        order_status: null,
-        position_status: null,
         realized_pnl_usd: null,
         stage: "expired",
         stop_trigger_price: null,
@@ -328,7 +256,6 @@ export function tradingExecutionsFixture(
         exit_price: "81100.0",
         fill_avg_price: "81126.9",
         fill_quantity: "0.0122",
-        last_observed_at_ns: (TRADING_NOW_MS - 20_000) * 1_000_000,
         market_key: "crypto:perp:ETH:USDT",
         observed_at_ns: (TRADING_NOW_MS - 90_000) * 1_000_000,
         realized_pnl_usd: "-1.11984726",
@@ -336,8 +263,6 @@ export function tradingExecutionsFixture(
         stop_trigger_price: "80315.6",
       }),
     ],
-    measured_at_ms: TRADING_NOW_MS,
-    window_hours: 24,
     ...overrides,
   };
 }
@@ -348,8 +273,6 @@ export function tradingCommandRowFixture(
   return {
     action: "pause_entries",
     command_id: "9".repeat(64),
-    operator_identity: "console:operator",
-    reason: "maintenance",
     requested_at_ns: TRADING_NOW_MS * 1_000_000,
     stage: "recorded",
     ...overrides,
@@ -366,7 +289,6 @@ export function tradingGateDecisionFixture(
   overrides: Partial<TradingGateDecision> = {},
 ): TradingGateDecision {
   return {
-    base_symbol: "STORJ",
     case_id: null,
     event_id: "evt-oi-storj",
     gate_attempt_count: 1,
@@ -384,35 +306,17 @@ export function tradingGateDecisionFixture(
     gate_stage: "eligibility",
     gate_status: "REJECTED",
     source_key: "oi:evt-oi-storj:oi_signal_v1",
-    source_observed_at_ms: TRADING_NOW_MS - 120_000,
-    trigger_kind: "oi",
-    underlying_key: "crypto:STORJ",
     ...overrides,
-  };
-}
-
-export function tradingGateConfigFixture(): TradingGate["config"] {
-  return {
-    config_digest: "c".repeat(64),
-    max_age_ms: 300_000,
-    min_oi_value_usd: 5_000_000,
-    source_venues: ["binance.usdm", "hyperliquid.perp", "hyperliquid.xyz"],
-    version: "trading_admission_v9",
   };
 }
 
 export function tradingGateFixture(overrides: Partial<TradingGate> = {}): TradingGate {
   return {
     complete: true,
-    config: tradingGateConfigFixture(),
     decisions: [tradingGateDecisionFixture()],
-    latest_gate_eligible_at_ms: TRADING_NOW_MS - 3_600_000,
-    latest_source_at_ms: TRADING_NOW_MS - 60_000,
-    measured_at_ms: TRADING_NOW_MS,
     reason_counts_24h: { "eligibility:oi_value_below_floor": 22 },
     // The four answers `trading_admission` can file; there is no research bucket in the ledger.
     status_counts_24h: { CASE_CREATED: 1, DEFERRED: 3, REJECTED: 87 },
-    window_hours: 24,
     ...overrides,
   };
 }

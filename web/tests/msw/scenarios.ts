@@ -11,7 +11,6 @@ import {
   tradingGateFixture,
   tradingCasesForUnderlying,
   tradingExecutionsFixture,
-  tradingSignalsForMarket,
   tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
 
@@ -50,16 +49,13 @@ export function mockAppRoutes(apiMock: ApiMock) {
     if (path === "/api/news/status") return ok(newsStatusFixture());
     if (path === "/api/news/quotes") return ok({ measured_at_ms: 0, quotes: [] });
     if (path.startsWith("/api/news/events/")) return ok(newsEventDetailFixture());
-    // #207 PR-W1: keyed on the path segment so a route test that visits `/news/symbols/WIF` gets WIF back.
-    // #207 PR-W4: the shell reads trading status on every route for the 交易 badge.
+    // #537 PR-5: only `/trading` reads this now. The shell polled it on every News route for a
+    // sidebar badge and two chrome figures until the badge and the figures were deleted.
     if (path === "/api/trading/status") return ok(tradingStatusFixture());
-    // #282: the endpoint filters both halves by `underlying`, and the token page depends on it — a case
-    // for a different name carries an `event_id` no loaded frame matches.
+    // #282: the endpoint filters by `underlying`, so a mock that ignored it handed a token page a case
+    // for a different name, carrying an `event_id` no loaded frame matches.
     if (path.startsWith("/api/trading/cases")) {
       return ok(tradingCasesForUnderlying(param("underlying")));
-    }
-    if (path.startsWith("/api/trading/signals")) {
-      return ok(tradingSignalsForMarket(param("market")));
     }
     if (path === "/api/trading/executions") return ok(tradingExecutionsFixture());
     // #269: the durable admission ledger, read by the OI audit's admission column.

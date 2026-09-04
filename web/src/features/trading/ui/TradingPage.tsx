@@ -5,28 +5,32 @@ import { useSearchParams } from "react-router-dom";
 import {
   useTradingCasesWithToken,
   useTradingExecutionsWithToken,
-  useTradingGateWithToken,
   useTradingStatusWithToken,
 } from "../api/tradingQueries";
-import { caseStateLabel } from "../model/tradingCases";
-import { caseClock, policyReasonLabel } from "../model/tradingLabels";
+import { caseFigures, caseReasonRows } from "../model/tradingCases";
+import { caseClock, ledgerSentence } from "../model/tradingLabels";
 
-import { TradingAccountOverview } from "./TradingAccountOverview";
 import { TradingCaseDetail } from "./TradingCaseDetail";
 import { TradingEmptyNote, TradingShell } from "./TradingChrome";
 import { TradingControls } from "./TradingControls";
 import { TradingExecutionTable } from "./TradingExecutionTable";
-import { TradingFunnel } from "./TradingFunnel";
+import { TradingRisk } from "./TradingRisk";
 
 import "./trading.css";
 
 /**
- * The operator desk: one page, six blocks, one endpoint each (#528 PR-2).
+ * The operator desk: three blocks, and a Case drawer that opens on demand (#537 PR-5).
  *
- * 1 status bar and 2 account/positions read `/api/trading/status`; 3 control writes
- * `POST /api/trading/execution/commands` and reads its Command rows back from
- * `/api/trading/executions`; 4 today's executions is the rest of that same response; 5 funnel is
- * `/api/trading/gate` beside `/api/trading/cases`; 6 is the Case list and its frozen evidence.
+ * RISK answers "is what I already have safe" from `/api/trading/status`. ACT writes the three bounded
+ * Commands and reads them back from `/api/trading/executions`. CONFIRM is the rest of that same
+ * response: what the venue did with every entry today. Those two reads are the desk.
+ *
+ * It was six blocks over four endpoints. The two that went were both funnels: a card of today's
+ * admission configuration beside a status distribution, which cost a 400-row `decisions[]` download
+ * every 15 s and told an operator nothing they could act on, and a list of every Case in the window
+ * whose only interactive purpose was opening one of them. `/api/trading/cases` still answers the
+ * drawer behind `?case=<id>` — the link `TradingCaseBadge` and the OI frame table already published —
+ * and the one durable 24 h card beside it.
  *
  * The page runs no timer of its own and recomputes no freshness. `execution.facts_expire_at_ms` is the
  * instant the server published as the end of its own projection's budget, and one comparison against it
@@ -38,7 +42,6 @@ export function TradingPage({ token }: { token: string }) {
   const statusQuery = useTradingStatusWithToken(token);
   const casesQuery = useTradingCasesWithToken(token);
   const executionsQuery = useTradingExecutionsWithToken(token);
-  const gateQuery = useTradingGateWithToken(token);
   const status = statusQuery.data;
 
   if (statusQuery.isPending && !status) {
@@ -74,12 +77,9 @@ export function TradingPage({ token }: { token: string }) {
     setSearchParams(params, { replace: true });
   };
 
-  const failed = [
-    statusQuery.isError ? "Status" : "",
-    casesQuery.isError ? "Case" : "",
-    executionsQuery.isError ? "执行" : "",
-    gateQuery.isError ? "准入台账" : "",
-  ].filter(Boolean);
+  const failed = [executionsQuery.isError ? "执行" : "", casesQuery.isError ? "Case" : ""].filter(
+    Boolean,
+  );
 
   return (
     <TradingShell label="可操作交易台">
@@ -96,23 +96,41 @@ export function TradingPage({ token }: { token: string }) {
 
       <PageState.Stale
         failedRefresh={
-          failed.length ? `${failed.join(" / ")} 读取失败；保留其余已验证事实。` : undefined
+          failed.length ? `${failed.join(" / ")}账本读取失败；保留其余已验证事实。` : undefined
         }
         onRetry={() => {
           void statusQuery.refetch();
           void casesQuery.refetch();
           void executionsQuery.refetch();
-          void gateQuery.refetch();
         }}
-        updating={
-          statusQuery.isFetching ||
-          casesQuery.isFetching ||
-          executionsQuery.isFetching ||
-          gateQuery.isFetching
-        }
+        updating={statusQuery.isFetching || casesQuery.isFetching || executionsQuery.isFetching}
       >
         <div className="trading-body">
-          <TradingAccountOverview execution={status.execution} stale={stale} />
+          {selectedCaseId ? (
+            <section aria-label="案例抽屉" className="trading-case-drawer">
+              <div className="trading-case-drawer-bar">
+                <code>{selectedCaseId}</code>
+                <button onClick={() => selectCase(null)} type="button">
+                  关闭
+                </button>
+              </div>
+              {selectedCase ? (
+                <TradingCaseDetail item={selectedCase} />
+              ) : (
+                <TradingEmptyNote>
+                  {casesQuery.isPending || casesQuery.isError
+                    ? ledgerSentence({
+                        failed: casesQuery.isError,
+                        pending: casesQuery.isPending,
+                        subject: "Case",
+                      })
+                    : `这个案例不在当前 ${casesQuery.data?.window_hours ?? "—"} 小时窗口。`}
+                </TradingEmptyNote>
+              )}
+            </section>
+          ) : null}
+
+          <TradingRisk execution={status.execution} stale={stale} />
 
           <TradingControls
             commands={commands}
@@ -126,65 +144,51 @@ export function TradingPage({ token }: { token: string }) {
           <TradingExecutionTable
             complete={executionsQuery.data?.complete ?? true}
             failed={executionsQuery.isError}
+            onOpenCase={selectCase}
             pending={executionsQuery.isPending}
             rows={executions}
+            selectedCaseId={selectedCaseId}
           />
 
-          <TradingFunnel
-            cases={casesQuery.data}
-            casesFailed={casesQuery.isError}
-            gate={gateQuery.data}
-            gateFailed={gateQuery.isError}
-          />
-
-          <Card
-            flush
-            hint="每个 SIGNAL_EMITTED Case 必须且只能对应一个 Signal；点一行读冻结证据"
-            title="最近 Case"
-          >
-            {cases.length ? (
-              <div className="trading-case-list">
-                {cases.map((item) => (
-                  <button
-                    aria-expanded={item.case_id === selectedCaseId}
-                    className="trading-case-card"
-                    data-selected={item.case_id === selectedCaseId || undefined}
-                    key={item.case_id}
-                    onClick={() =>
-                      selectCase(item.case_id === selectedCaseId ? null : item.case_id)
-                    }
-                    type="button"
-                  >
-                    <b>{item.base_symbol}</b>
-                    <span>{caseStateLabel(item)}</span>
-                    <span>{policyReasonLabel(item.policy_reason)}</span>
-                    <small>{caseClock(item.observed_at_ms)}</small>
-                  </button>
+          {/*
+           * The one durable Case figure left on the desk. Both distributions are server aggregates over
+           * the same 24 h window the blocks above describe, so a zero here is a lane that decided
+           * nothing rather than a page that counted the rows it happened to render (#331).
+           */}
+          <Card hint="冻结判定的终局与原因" title="Alpha 成案 · 24h">
+            <div className="trading-fact-grid">
+              {caseFigures(casesQuery.data).map((figure) => (
+                <span
+                  className="trading-fact"
+                  data-tone={figure.tone === "plain" ? undefined : figure.tone}
+                  key={figure.key}
+                >
+                  <small>{figure.label}</small>
+                  <b>{figure.value}</b>
+                </span>
+              ))}
+            </div>
+            {caseReasonRows(casesQuery.data).length ? (
+              <div className="trading-count-list">
+                {caseReasonRows(casesQuery.data).map(([reason, count]) => (
+                  <span className="trading-count-row" key={reason}>
+                    <small>{reason}</small>
+                    <b>{count}</b>
+                  </span>
                 ))}
               </div>
             ) : (
-              <TradingEmptyNote>
-                {caseLedgerEmpty(casesQuery.isPending, casesQuery.isError)}
-              </TradingEmptyNote>
+              <p className="trading-inline-empty">
+                {ledgerSentence({
+                  failed: casesQuery.isError,
+                  pending: casesQuery.isPending,
+                  subject: "Case",
+                })}
+              </p>
             )}
-            {cases.length && casesQuery.data && !casesQuery.data.complete ? (
-              <TradingEmptyNote>本窗口已截断；未列出的 Case 不能解释为没有发生。</TradingEmptyNote>
-            ) : null}
-            {selectedCase ? <TradingCaseDetail item={selectedCase} /> : null}
-            {selectedCaseId && !selectedCase && cases.length ? (
-              <TradingEmptyNote>
-                这个案例不在当前 {casesQuery.data?.window_hours ?? "—"} 小时窗口。
-              </TradingEmptyNote>
-            ) : null}
           </Card>
         </div>
       </PageState.Stale>
     </TradingShell>
   );
-}
-
-function caseLedgerEmpty(pending: boolean, failed: boolean): string {
-  if (pending) return "正在读取 Case 账本…";
-  if (failed) return "Case 账本读取失败，不能据此断言为空。";
-  return "当前 24 小时窗口没有 Case。";
 }

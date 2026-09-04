@@ -167,19 +167,6 @@
   }
 
   /*
-   * Decision state plus execution mode rather than a volume. Disabled is visible but not presented as ready.
-   */
-  .cockpit-app-sidebar-badge {
-    flex: 0 0 auto;
-    padding: 1px 5px;
-    border-radius: var(--radius-xs);
-    background: var(--surface-hover);
-    color: var(--text-subtle);
-    font: 700 var(--font-size-eyebrow)/1.5 var(--font-mono);
-    letter-spacing: 0.04em;
-  }
-
-  /*
    * Health used to live here as a dot on the 流水线状态 entry. It is the topbar's lamp now (#207), visible
    * after every successful health read in all three frames instead of only the widest. When degraded it
    * carries the failing item's own sentence rather than a colour the reader has to go and decode.

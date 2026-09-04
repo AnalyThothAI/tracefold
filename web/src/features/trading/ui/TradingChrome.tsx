@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 
+import { ledgerSentence } from "../model/tradingLabels";
+
 import "./tradingShell.css";
 
 /**
@@ -36,4 +38,9 @@ export function TradingSourceLine({ note, path }: { note?: ReactNode; path: stri
 /** The sentence a table shows instead of rows. Never "加载失败" — an empty ledger is an answer. */
 export function TradingEmptyNote({ children }: { children: ReactNode }) {
   return <p className="trading-empty-note">{children}</p>;
+}
+
+/** The one sentence every ledger on the desk shows instead of rows (#537 PR-5). */
+export function TradingLedgerNote(props: { failed: boolean; pending: boolean; subject: string }) {
+  return <p className="trading-empty-note">{ledgerSentence(props)}</p>;
 }

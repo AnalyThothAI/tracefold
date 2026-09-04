@@ -35,6 +35,9 @@ describe("public browser surface", () => {
       .filter((path) => path.startsWith("/api/"))
       .sort();
 
+    // #537 PR-5 deleted three GET routes nothing in the browser called: the Signal list and the two
+    // raw execution projections, all three of them shapes over ledgers `/api/trading/executions`
+    // already reads folded.
     expect(apiPaths).toEqual([
       "/api/bootstrap",
       "/api/news/events/{event_id}",
@@ -45,11 +48,9 @@ describe("public browser surface", () => {
       "/api/status",
       "/api/trading/cases",
       "/api/trading/execution/commands",
-      "/api/trading/execution/observations",
       "/api/trading/executions",
       "/api/trading/gate",
       "/api/trading/gate/{event_id}",
-      "/api/trading/signals",
       "/api/trading/status",
     ]);
 
@@ -61,7 +62,8 @@ describe("public browser surface", () => {
     expect(operations.filter((operation) => !operation.startsWith("GET "))).toEqual([
       "POST /api/trading/execution/commands",
     ]);
-    expect(operations).toHaveLength(apiPaths.length + 1);
+    // The Command path is the one write and only a write now, so the operation count is the path count.
+    expect(operations).toHaveLength(apiPaths.length);
   });
 
   it("keeps the runtime API facade to GET plus the one POST transport", () => {

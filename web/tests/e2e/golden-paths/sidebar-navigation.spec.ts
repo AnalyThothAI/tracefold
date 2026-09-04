@@ -109,8 +109,10 @@ test.describe("desktop sidebar navigation", () => {
   test("keeps desktop sidebar navigation available when route APIs fail", async ({ page }) => {
     allowBrowserFailure(page, {
       kind: "requestfailed",
+      // `trading/orders` has not existed since #475; `/trading` reads status, cases and executions,
+      // and `/news/oi` reads gate. No News route reads trading status at all since #537 PR-5.
       match:
-        /^GET \/api\/(?:status|news\/(?:feed|status|quotes)|trading\/(?:status|orders|gate)) \(net::ERR_FAILED\)$/,
+        /^GET \/api\/(?:status|news\/(?:feed|status|quotes)|trading\/(?:status|cases|executions|gate)) \(net::ERR_FAILED\)$/,
       reason:
         "This case intentionally aborts the known post-bootstrap reads to prove navigation survives.",
     });

@@ -22,10 +22,7 @@ describe("AppSidebar", () => {
   });
 
   it("renders the three supported primary destinations", () => {
-    renderSidebar({
-      badges: { tradingEnvironment: "Demo" },
-      counts: { events: 1463, oiFrames: 188 },
-    });
+    renderSidebar({ counts: { events: 1463, oiFrames: 188 } });
 
     const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
     const links = within(navigation).getAllByRole("link");
@@ -40,11 +37,12 @@ describe("AppSidebar", () => {
     ]);
     expect(links[0].textContent).toContain("事件流");
     expect(links[0].textContent).toContain("1.4k");
-    // 交易 carries a word, not a volume: "is any of this real money" is what a reader needs before
-    // opening it, and at 204px the badge and a count together clip the label to one glyph.
-    expect(links[1].textContent).toContain("交易");
-    expect(links[1].textContent).toContain("Demo");
-    expect(links[1].textContent).not.toMatch(/\d/);
+    /*
+     * 交易 carries neither a count nor a badge. At 204px a count clipped the label to one glyph
+     * (#460), and the `tradingEnvironment` badge that replaced it cost every News route a 15 s poll of
+     * `/api/trading/status` for a clock and the word `paper` the desk itself states (#537 PR-5).
+     */
+    expect(links[1].textContent?.trim()).toBe("交易");
     expect(links[2].textContent).toContain("OI 来源与准入审计");
     expect(links[2].textContent).toContain("188");
   });
@@ -59,12 +57,13 @@ describe("AppSidebar", () => {
     }
   });
 
-  it("keeps the mode out of the accessible name, as it keeps the counts out", () => {
-    // The destination is 交易; folding the environment into the link's accessible name
-    // would rename it when configuration changed.
-    renderSidebar({ badges: { tradingEnvironment: "Demo" } });
+  it("names the trading destination and nothing about its configuration", () => {
+    // The destination is 交易. It carried the execution environment as a badge until #537 PR-5, which
+    // is a fact about the Runtime rather than about where the link goes.
+    renderSidebar();
 
     expect(screen.getByRole("link", { name: "交易" })).toHaveAttribute("href", "/trading");
+    expect(document.querySelector(".cockpit-app-sidebar-badge")).toBeNull();
   });
 
   it("keeps the count out of the accessible name", () => {
@@ -123,17 +122,15 @@ describe("AppSidebar", () => {
 });
 
 function renderSidebar({
-  badges,
   counts,
   route = "/",
 }: {
-  badges?: { tradingEnvironment?: string };
   counts?: { events?: number; oiFrames?: number };
   route?: string;
 } = {}) {
   return render(
     <MemoryRouter initialEntries={[route]}>
-      <AppSidebar badges={badges} counts={counts} />
+      <AppSidebar counts={counts} />
     </MemoryRouter>,
   );
 }
