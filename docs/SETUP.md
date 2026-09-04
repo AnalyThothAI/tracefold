@@ -296,9 +296,8 @@ Use `prompt_json` for an OpenAI-compatible local/provider endpoint that rejects
 `response_format` but can follow an in-prompt JSON Schema. Set
 `send_temperature: false` when it rejects the temperature field. These controls
 are available on every endpoint block; they replace model-name or URL-specific
-compatibility hacks. In `auto`, MiniMax M3 uses temperature 1, `top_p: 0.95`,
-thinking disabled, and prompt-only JSON; DeepSeek uses JSON-object mode. Explicit
-operator values take precedence. These request semantics enter
+compatibility hacks. In `auto`, DeepSeek uses JSON-object mode with thinking
+disabled. Explicit operator values take precedence. These request semantics enter
 `configured_endpoint_model_v3`, so two endpoints with different request contracts
 cannot reuse the same evidence cohort. A directly callable `qwen*:thinking` alias
 is sent unchanged without the ordinary Qwen disable override and uses

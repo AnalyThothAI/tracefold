@@ -106,7 +106,7 @@ def test_accept_drafts_records_the_model_that_actually_authored_the_proposal(
         "taxonomy": other,
         "taxonomy_drafts": {
             "openai/deepseek-v4-pro": other,
-            "openai/minimax-m3": {**other, "event_family": "market_access"},
+            "openai/qwen3.8-27b:thinking": {**other, "event_family": "market_access"},
         },
         "taxonomy_disagreement": True,
         "confidence": 0.8,
@@ -120,7 +120,7 @@ def test_accept_drafts_records_the_model_that_actually_authored_the_proposal(
                     "drafter_id": "tracefold.news.review_drafter_v7",
                     "model": "openai/qwen3.8-27b:thinking",
                 },
-                "taxonomy_drafters": {"models": ["openai/deepseek-v4-pro", "openai/minimax-m3"]},
+                "taxonomy_drafters": {"models": ["openai/deepseek-v4-pro", "openai/qwen3.8-27b:thinking"]},
                 "drafts": [
                     {
                         "task_id": "evt.1",
@@ -194,8 +194,8 @@ def test_accept_drafts_records_the_model_that_actually_authored_the_proposal(
 
     assert code == 0 and result["data"]["submitted"] == 1
     assert persisted == {
-        "draft_author": "openai/deepseek-v4-pro+openai/minimax-m3",
-        "drafts": {"openai/deepseek-v4-pro": "other", "openai/minimax-m3": "market_access"},
+        "draft_author": "openai/deepseek-v4-pro+openai/qwen3.8-27b:thinking",
+        "drafts": {"openai/deepseek-v4-pro": "other", "openai/qwen3.8-27b:thinking": "market_access"},
         # The failed taxonomy dimension still cites the batch's rubric drafter as the proposal source.
         "evidence_refs": ["source:leader:title", "draft:tracefold.news.review_drafter_v7@openai/qwen3.8-27b:thinking"],
         "reviewer": "owner_authorized_codex",

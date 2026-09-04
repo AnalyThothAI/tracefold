@@ -423,12 +423,12 @@ def test_batch_names_the_drafter_and_disclaims_authority() -> None:
 
 def test_prompt_json_drafter_uses_configured_capability_in_the_actual_request() -> None:
     lm = build_drafter_lm(
-        model_name="openai/MiniMax-M3",
+        model_name="openai/qwen3.8-27b:thinking",
         api_key="test-key",
-        api_base="https://minimax.test/v1",
-        model_kwargs={"extra_body": {"thinking": {"type": "disabled"}}},
+        api_base="https://qwen.test/v1",
+        model_kwargs={},
         structured_output="prompt_json",
-        temperature=1.0,
+        temperature=0.0,
         lm_type=_RequestSpyDrafterLM,
     )
 
@@ -437,7 +437,7 @@ def test_prompt_json_drafter_uses_configured_capability_in_the_actual_request() 
     assert isinstance(result, RubricDraft)
     assert len(lm.requests) == 1
     assert lm.requests[0].config.response_format is None
-    assert lm.requests[0].config.extensions["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert "extra_body" not in lm.requests[0].config.extensions
 
 
 def test_the_drafter_writes_nothing_to_the_review_plane() -> None:

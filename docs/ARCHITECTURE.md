@@ -1230,9 +1230,9 @@ That boundary makes provider execution semantics auditable without pretending
 an endpoint change rewrote the Program graph. Every endpoint can explicitly omit
 temperature, choose JSON Schema, JSON-object, or prompt-only JSON, and add guarded
 OpenAI-compatible body fields. There is no Kimi URL/model special case. Known
-provider defaults remain narrow (including MiniMax M3's valid sampling and JSON
-prompt envelope), while local and other models are configured through the same
-request block.
+provider defaults remain narrow (the `qwen*:thinking` alias's prompt-JSON
+envelope, DeepSeek's JSON-object mode), while local and other models are
+configured through the same request block.
 
 The production registry resolves an image-carried SHA, never arbitrary database
 instructions, and the document is one `<program_sha256>.json` file. Loading
