@@ -10,7 +10,7 @@ def handle_nautilus(args: object) -> int:
     from tracefold.app.nautilus.root import run_nautilus
 
     settings = load_settings(require_ws_token=False)
-    setup_logging(settings.log_file)
+    setup_logging(settings.log_file.with_name("nautilus.log"))
     run_nautilus(settings)
     return 0
 

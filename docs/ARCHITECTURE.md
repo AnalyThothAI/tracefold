@@ -2086,8 +2086,9 @@ makes the contract the only validator — every JSON-shape CHECK and the four
 `trading_*` functions behind them are gone, along with the unread
 `payload_digest` / `alpha_contract_sha256` / `evidence_sha256` digests, the
 `confirmation_identity` column and the five readiness booleans (#520 PR-C); and
-additive `20260903_0358`, the current single head, opens the judgment CHECK's
-model, OI and degraded branches to `news_triage_policy_v13` (#523).
+and additive `20260903_0358` opens the judgment CHECK's model, OI and degraded
+branches to `news_triage_policy_v13` (#523). `20260903_0359` is the current
+single head.
 
 Every new schema change is again a normal linear, immutable, forward-only
 revision after the baseline. Exact-image replacement requires source, image,
@@ -2532,12 +2533,14 @@ path.
 ### Runtime and cutover
 
 A deployment with `execution.mode=disabled` requires no execution credential and
-canonical lifecycle stops any stale Nautilus process. `make up`,
+`make runtime-status` rejects a leftover Nautilus process. `make up`,
 `make deploy-image` and `make status` always require PostgreSQL, migration,
-Serve, Workers and Web. For `paper|live` they additionally require one healthy
-Nautilus runtime whose profile, revision, image, config digest, credentials,
-singleton, Portfolio, audit, startup reconciliation and heartbeat match the
-durable current projection. Decision starts `STARTING`, advances to `RUNNING`
+Serve, Workers and Web. For `paper|live`, `make status` additionally requires one
+healthy Nautilus runtime whose credentials, singleton, Portfolio, audit, startup
+reconciliation and heartbeat match the durable current projection. The runtime
+is deployed by its own `make runtime-*` targets from its own
+`tracefold-runtime:<sha>` image, so a News, Serve or Workers deploy neither stops
+nor recreates the process that owns exposure (#537 PR-2). Decision starts `STARTING`, advances to `RUNNING`
 with a durable heartbeat, and a real schema, wiring, policy or generation fault
 fails Workers startup or records `FAULTED` rather than becoming observer mode.
 

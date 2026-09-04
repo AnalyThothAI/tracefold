@@ -95,6 +95,19 @@ if [ "$1" = "compose" ] && [ "$2" = "exec" ]; then
   esac
   exit 0
 fi
+if [ "$1" = "compose" ] && [ "$2" = "build" ]; then
+  printf '%s\n' "$*" > "$TRACEFOLD_TEST_BUILD_ARGS"
+  exit 0
+fi
+if [ "$1" = "compose" ] && [ "$2" = "down" ]; then
+  printf '%s\n' "$*" > "$TRACEFOLD_TEST_DOWN_ARGS"
+  exit 0
+fi
+if [ "$1" = "compose" ] && [ "$2" = "rm" ]; then
+  rm -f "$TRACEFOLD_TEST_NAUTILUS_RECREATED"
+  : > "$TRACEFOLD_TEST_NAUTILUS_REMOVED"
+  exit 0
+fi
 if [ "$1" = "compose" ] && [ "$2" = "stop" ]; then
   : > "$TRACEFOLD_TEST_SERVICES_STOPPED"
   printf '%s\n' "$*" > "$TRACEFOLD_TEST_STOP_ARGS"
@@ -224,6 +237,9 @@ esac
         "TRACEFOLD_TEST_SERVICES_STOPPED": str(services_stopped),
         "TRACEFOLD_TEST_STOP_ARGS": str(tmp_path / "stop-args"),
         "TRACEFOLD_TEST_UP_ARGS": str(tmp_path / "up-args"),
+        "TRACEFOLD_TEST_BUILD_ARGS": str(tmp_path / "build-args"),
+        "TRACEFOLD_TEST_DOWN_ARGS": str(tmp_path / "down-args"),
+        "TRACEFOLD_TEST_NAUTILUS_REMOVED": str(tmp_path / "nautilus-removed"),
         "TRACEFOLD_TEST_DB_HEAD": "20260824_0303",
         "TRACEFOLD_TEST_SCHEMA_STATE": "existing",
         "TRACEFOLD_TEST_MIGRATION_STATE": "20260830_0336|t|t",
@@ -569,7 +585,6 @@ def test_deploy_runs_decision_without_demo_credentials_or_nautilus(
     assert services_stopped.exists()
     assert not Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
     assert not Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).exists()
-    assert "execution runtime: disabled (operator selected)" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -645,11 +660,27 @@ def test_exact_image_deploy_does_not_recreate_nautilus_without_demo_credentials(
 
 
 @pytest.mark.parametrize("target", ("up", "deploy-image"))
-def test_active_execution_mode_recreates_and_requires_nautilus(tmp_path: Path, target: str) -> None:
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+@pytest.mark.parametrize("execution_mode", ("disabled", "paper"))
+def test_a_deploy_never_stops_or_recreates_the_execution_runtime(
+    tmp_path: Path,
+    target: str,
+    execution_mode: str,
+) -> None:
+    """The inversion of the old contract (#537 D3).
+
+    `make up` used to `stop -t 40 workers serve nautilus` and then recreate all three, so a
+    News-only merge destroyed and rebuilt the process holding a live Binance position: 26 restarts
+    in 56.7 hours, and three Signals lost to `expired`/`account_stale`. The runtime now has its own
+    image and its own `make runtime-*` lifecycle, and a deploy must not name the service at all —
+    in either execution mode, and whether or not the container is currently running.
+    """
+
+    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
-    env["TRACEFOLD_TEST_EXECUTION_MODE"] = "paper"
+    env["TRACEFOLD_TEST_EXECUTION_MODE"] = execution_mode
     env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
+    if execution_mode != "disabled":
+        env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
     command = ["make", target]
     if target == "deploy-image":
         command.append(f"IMAGE_ID={TEST_IMAGE_ID}")
@@ -657,13 +688,23 @@ def test_active_execution_mode_recreates_and_requires_nautilus(tmp_path: Path, t
     result = subprocess.run(command, cwd=repo, env=env, capture_output=True, check=False, text=True)
 
     assert result.returncode == 0, result.stderr
-    assert "nautilus" in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
-    assert "execution runtime: mode=paper (Binance Runtime ready)" in result.stdout
+    assert services_stopped.exists()
+    assert "nautilus" not in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+    assert "nautilus" not in Path(env["TRACEFOLD_TEST_STOP_ARGS"]).read_text(encoding="utf-8")
+    assert not Path(env["TRACEFOLD_TEST_NAUTILUS_STOPPED"]).exists()
+    assert not Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
 
 
-def test_deploy_image_rejects_a_different_runtime_revision_before_stopping_services(
+def test_deploy_image_accepts_an_older_runtime_revision_so_a_rollback_target_exists(
     tmp_path: Path,
 ) -> None:
+    """The image an operator needs during an incident is the previous one, by definition.
+
+    `deploy-image` used to refuse any image whose `runtime_revision` was not current main's SHA,
+    which made the rollback path refuse every rollback target (#537 D12). The Alembic heads are the
+    compatibility rule and they are still enforced; the revision equality is gone.
+    """
+
     repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_IMAGE_REVISION"] = "f" * 40
 
@@ -676,9 +717,9 @@ def test_deploy_image_rejects_a_different_runtime_revision_before_stopping_servi
         text=True,
     )
 
-    assert result.returncode != 0
-    assert "execution image rollback is refused" in result.stderr
-    assert not services_stopped.exists()
+    assert result.returncode == 0, result.stderr
+    assert f"Tracefold deployed exact local image {TEST_IMAGE_ID}." in result.stdout
+    assert services_stopped.exists()
 
 
 def test_deployment_lock_is_released_by_the_os_when_the_owner_crashes(tmp_path: Path) -> None:
@@ -1045,3 +1086,30 @@ def test_deploy_image_allows_an_unrelated_untracked_research_notebook(tmp_path: 
     assert result.returncode == 0, result.stderr
     assert f"Tracefold deployed exact local image {TEST_IMAGE_ID}." in result.stdout
     assert services_stopped.exists()
+
+
+def test_make_down_refuses_to_delete_a_live_execution_runtime(tmp_path: Path) -> None:
+    """`docker compose down` removes the project's containers and network, runtime included.
+
+    An operator reaching for `make down` while a position is open would take the exposure owner
+    with it and leave no container to restart, so the refusal names the one command that stops
+    trading deliberately (#537 PR-2).
+    """
+
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
+
+    result = subprocess.run(["make", "down"], cwd=repo, env=env, capture_output=True, check=False, text=True)
+
+    assert result.returncode == 2
+    assert "run make runtime-down first" in result.stderr
+    assert not Path(env["TRACEFOLD_TEST_DOWN_ARGS"]).exists()
+
+
+def test_make_down_still_stops_the_stack_when_no_runtime_container_exists(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+
+    result = subprocess.run(["make", "down"], cwd=repo, env=env, capture_output=True, check=False, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert Path(env["TRACEFOLD_TEST_DOWN_ARGS"]).read_text(encoding="utf-8").strip() == "compose down"

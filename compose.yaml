@@ -4,6 +4,7 @@ x-tracefold-app: &tracefold-app
   image: ${TRACEFOLD_APP_IMAGE:-${COMPOSE_PROJECT_NAME:-tracefold}-app:local}
   build:
     context: .
+    target: app
     args:
       TRACEFOLD_BUILD_REVISION: ${TRACEFOLD_BUILD_REVISION:-}
     secrets:
@@ -229,18 +230,36 @@ services:
       retries: 5
       start_period: 90s
 
+  # The execution runtime does not share the application anchor (#537 PR-2). It owns a live Binance
+  # account, so it owns its own image tag and its own lifecycle: `make runtime-build` produces
+  # `tracefold-runtime:<sha>` and `make runtime-up` starts exactly that tag, while `make up` never
+  # names this service at all. The `:local` default is deliberately never built, so a bare
+  # `docker compose --profile execution up` fails closed instead of starting an unproven image.
   nautilus:
-    <<: *tracefold-app
+    image: ${TRACEFOLD_RUNTIME_IMAGE:-tracefold-runtime:local}
+    build:
+      context: .
+      target: runtime
+      args:
+        TRACEFOLD_BUILD_REVISION: ${TRACEFOLD_BUILD_REVISION:-}
+      secrets:
+        - github_token
+    # The image cannot hash itself at build time, so the digest arrives at start time;
+    # `make runtime-up` computes it from the image it is about to run.
+    environment:
+      TRACEFOLD_IMAGE_DIGEST: ${TRACEFOLD_IMAGE_DIGEST:-}
     # Canonical deployment enables this profile only for explicit paper/live config. Disabled
     # remains the default and constructs no TradingNode or credential-capable process.
     profiles: ["execution"]
     init: true
     restart: unless-stopped
+    # PostgreSQL and nothing else. A News broker outage or a one-shot migration that has not been
+    # rerun since the last boot must never be what keeps the process that owns exposure from coming
+    # back; the schema head it needs is asserted inside the process before it takes the account-slot
+    # lock, which is a stronger check than an ordering edge (#537 D4).
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
     ports:
       - "${TRACEFOLD_NAUTILUS_HOST:-127.0.0.1}:${TRACEFOLD_NAUTILUS_PORT:-8767}:8767"
     volumes:
@@ -250,7 +269,11 @@ services:
       - ${HOME}/.tracefold/binance_usdm_api_secret:/root/.tracefold/binance_usdm_api_secret:ro
       - ${HOME}/.tracefold/logs:/root/.tracefold/logs
     command: ["tracefold", "nautilus", "run"]
-    stop_grace_period: 40s
+    # Worst-case shutdown is three sequential 20 s Nautilus stop budgets plus the final projection
+    # write; 40 s made SIGKILL the normal exit, which skips `singleton.release()` and leaves a ghost
+    # session holding the account-slot advisory lock. `tests/deploy/test_runtime_lifecycle.py` pins
+    # `3 * _STOP_TIMEOUT_SECONDS + 20 <= 90` against this number.
+    stop_grace_period: 90s
     deploy:
       resources:
         limits:

@@ -4,17 +4,81 @@ export UV_CACHE_DIR
 TRACEFOLD := uv run tracefold
 READ_TRADING_ENABLED := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["enabled"]; print(str(value).lower()) if type(value) is bool else sys.exit("invalid trading enabled")'
 READ_TRADING_EXECUTION_MODE := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["execution"]["mode"]; print(value) if value in {"disabled", "paper", "live"} else sys.exit("invalid trading execution mode")'
+# Every published Compose binding is declared once, here, with the same default `compose.yaml`
+# renders, and exported once. Six of the twelve used to be missing: an operator who exported
+# `TRACEFOLD_POSTGRES_PORT` for one command and forgot it for the next changed the rendered
+# postgres port, and Compose then recreated the container holding the database (#537 D5). There is
+# no `.env` support and there must not be: an untracked deployment input is exactly what the
+# deployment gate refuses.
+TRACEFOLD_POSTGRES_HOST ?= 127.0.0.1
+TRACEFOLD_POSTGRES_PORT ?= 56532
+TRACEFOLD_RABBITMQ_HOST ?= 127.0.0.1
+TRACEFOLD_RABBITMQ_PORT ?= 5672
+TRACEFOLD_RABBITMQ_MGMT_HOST ?= 127.0.0.1
+TRACEFOLD_RABBITMQ_MGMT_PORT ?= 15672
 TRACEFOLD_API_HOST ?= 127.0.0.1
 TRACEFOLD_API_PORT ?= 8765
 TRACEFOLD_WORKERS_HOST ?= 127.0.0.1
 TRACEFOLD_WORKERS_PORT ?= 8766
 TRACEFOLD_NAUTILUS_HOST ?= 127.0.0.1
 TRACEFOLD_NAUTILUS_PORT ?= 8767
+export TRACEFOLD_POSTGRES_HOST TRACEFOLD_POSTGRES_PORT
+export TRACEFOLD_RABBITMQ_HOST TRACEFOLD_RABBITMQ_PORT
+export TRACEFOLD_RABBITMQ_MGMT_HOST TRACEFOLD_RABBITMQ_MGMT_PORT
+export TRACEFOLD_API_HOST TRACEFOLD_API_PORT
+export TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT
+export TRACEFOLD_NAUTILUS_HOST TRACEFOLD_NAUTILUS_PORT
+
 TRACEFOLD_API_URL ?= http://127.0.0.1:$(TRACEFOLD_API_PORT)
 TRACEFOLD_WORKERS_URL ?= http://127.0.0.1:$(TRACEFOLD_WORKERS_PORT)
 TRACEFOLD_NAUTILUS_URL ?= http://127.0.0.1:$(TRACEFOLD_NAUTILUS_PORT)
 TRACEFOLD_COMPOSE_WAIT_SECONDS ?= 300
-export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT TRACEFOLD_NAUTILUS_HOST TRACEFOLD_NAUTILUS_PORT
+
+# The execution runtime image `make runtime-up` starts. The default is this checkout's HEAD, which
+# is what `make runtime-build` tags; passing an older tag on the command line is the rollback.
+RUNTIME_IMAGE ?= tracefold-runtime:$(shell git rev-parse --verify HEAD 2>/dev/null)
+
+# One refusal for every entry that drives the production stack. Inheriting a `COMPOSE_*` variable
+# would let ambient environment point a deployment at another file, project or profile set; pinning
+# them here is also what lets a checkout whose directory is not named `tracefold` still deploy the
+# `tracefold` project. `COMPOSE_PROFILES=execution` is now unconditional: the execution runtime is
+# always part of the Compose model, and what actually starts or stops is decided only by the
+# explicit service lists below (#537 D3).
+define PIN_COMPOSE_STACK
+if [ -n "$${COMPOSE_FILE:-}" ] || [ -n "$${COMPOSE_PROJECT_NAME:-}" ] || \
+		[ -n "$${COMPOSE_ENV_FILES:-}" ] || [ -n "$${COMPOSE_PROFILES:-}" ] || \
+		[ -n "$${COMPOSE_PATH_SEPARATOR:-}" ] || [ -n "$${COMPOSE_DISABLE_ENV_FILE:-}" ]; then \
+		echo "$(1) refuses inherited Compose stack variables; rerun without COMPOSE_* overrides." >&2; \
+		exit 2; \
+	fi; \
+	COMPOSE_FILE="$$(pwd -P)/compose.yaml"; \
+	COMPOSE_PROJECT_NAME=tracefold; \
+	COMPOSE_PROFILES=execution; \
+	export COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES; \
+	unset COMPOSE_ENV_FILES COMPOSE_PATH_SEPARATOR COMPOSE_DISABLE_ENV_FILE
+endef
+
+# Applying a migration under a running execution runtime replaces the schema beneath the one process
+# that owns live exposure, and the runtime is not restarted by a deploy any more, so nothing would
+# reload it. Refuse instead, and name the way out.
+define REFUSE_MIGRATION_UNDER_RUNTIME
+if [ "$${TRACEFOLD_MIGRATE_UNDER_RUNTIME:-}" != 1 ] && [ -n "$$(docker compose ps -q nautilus)" ]; then \
+		migration_source_head=$$(uv run python -c 'from tracefold.platform.postgres.migrations import latest_migration_version; print(latest_migration_version())'); \
+		migration_database_head=$$($(POSTGRES_READ_ONLY_PSQL) "SELECT version_num FROM alembic_version LIMIT 1" || true); \
+		if [ "$$migration_database_head" != "$$migration_source_head" ]; then \
+			echo "the execution runtime is running and this would migrate the database from '$$migration_database_head' to '$$migration_source_head'." >&2; \
+			echo "run make runtime-down first or set TRACEFOLD_MIGRATE_UNDER_RUNTIME=1." >&2; \
+			exit 2; \
+		fi; \
+	fi
+endef
+
+# One read-only psql invocation, reused by every head comparison. `$$1` is the statement.
+POSTGRES_READ_ONLY_PSQL = docker compose exec -T postgres sh -eu -c \
+	'PGPASSWORD=$$(cat /run/secrets/postgres_database_password); \
+	PGOPTIONS="-c default_transaction_read_only=on"; \
+	export PGPASSWORD PGOPTIONS; \
+	exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold -d tracefold -c "$$1"' sh
 
 TRACEFOLD_TEST_RESULT_DIR ?= artifacts/test-results
 QUALITY_TEST_SELECTION := tests/architecture tests/contract -m "(architecture or contract) and not external_codegen and not slow and not scheduled"
@@ -56,7 +120,7 @@ PYTEST_ADDOPTS= PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_HYPOTHESIS_PROFILE=ci
 	--junitxml="$(TRACEFOLD_TEST_RESULT_DIR)/$(2)" --durations=50
 endef
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness mutation mutation-sentinel ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-broker ci-deploy-e2e ci-test-integrity ci-frontend test-property test-slow test-scheduled postgres-restore-drill test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health news-genesis-manifest serve workers serve-shell workers-shell clean trading-smoke test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status status-app logs down runtime-build _runtime-build-locked runtime-up _runtime-up-locked runtime-restart runtime-down runtime-logs runtime-status preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness mutation mutation-sentinel ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-broker ci-deploy-e2e ci-test-integrity ci-frontend test-property test-slow test-scheduled postgres-restore-drill test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health serve workers serve-shell workers-shell clean test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -306,11 +370,6 @@ check: check-static ## static checks plus local architecture/contract regression
 test-integration: ## run only tests/integration/ (real PostgreSQL boundary), excluding slow
 	@uv run python -m pytest tests/integration -m "integration and not slow and not scheduled"
 
-trading-smoke: ## News Source -> Case -> TradeSignalV1 plus hard-cut invariants on real PostgreSQL (#433-C)
-	@echo "This focused lane proves atomic Case/Signal emission and the irreversible execution-writer hard cut."
-	@echo "It does not contact a venue and is not a substitute for the complete verification entry."
-	@uv run python -m pytest tests/integration/test_news_to_trading_seam.py tests/integration/test_trading_signal_hard_cut.py -m integration
-
 test-deploy: ## run deploy/operations subprocess and lifecycle tests
 	@uv run python -m pytest tests/deploy -m deploy
 
@@ -353,21 +412,18 @@ db-migrate: preflight github-preflight ## apply PostgreSQL migrations
 _db-migrate-locked:
 	@python3 scripts/with_deployment_lock.py --assert-held
 	@uv run python scripts/require_main_ci.py
+	@# In the migration container, not on the host. The host CLI used to reach the container
+	@# database through a hard-coded `postgres -> 127.0.0.1` DSN rewrite; that rewrite is deleted
+	@# (#537 D1), so every CLI entry that touches the production database runs inside a container
+	@# that already has the compose network and the mounted credential.
 	@set -eu; \
-		if [ -n "$${COMPOSE_FILE:-}" ] || [ -n "$${COMPOSE_PROJECT_NAME:-}" ] || \
-			[ -n "$${COMPOSE_ENV_FILES:-}" ] || [ -n "$${COMPOSE_PROFILES:-}" ] || \
-			[ -n "$${COMPOSE_PATH_SEPARATOR:-}" ] || [ -n "$${COMPOSE_DISABLE_ENV_FILE:-}" ]; then \
-			echo "db-migrate refuses inherited Compose stack variables; rerun without COMPOSE_* overrides." >&2; \
-			exit 2; \
-		fi; \
-		COMPOSE_FILE="$$(pwd -P)/compose.yaml"; \
-		COMPOSE_PROJECT_NAME=tracefold; \
-		export COMPOSE_FILE COMPOSE_PROJECT_NAME; \
-		unset COMPOSE_ENV_FILES COMPOSE_PROFILES COMPOSE_PATH_SEPARATOR COMPOSE_DISABLE_ENV_FILE; \
-		$(TRACEFOLD) db migrate
+		$(call PIN_COMPOSE_STACK,db-migrate); \
+		$(REFUSE_MIGRATION_UNDER_RUNTIME); \
+		docker compose run --rm --no-deps --entrypoint tracefold migrate db migrate
 
 db-health: ## check PostgreSQL liveness and migration version
-	@$(TRACEFOLD) db health
+	@set -eu; \
+		COMPOSE_PROFILES=execution docker compose exec -T workers tracefold db health
 
 serve: ## run the read-only public runtime in foreground
 	@$(TRACEFOLD) serve
@@ -387,6 +443,26 @@ preflight: ## verify the one-command startup prerequisites
 		echo "Start Docker Desktop or grant this terminal access to the Docker socket, then rerun make up." >&2; \
 		exit 1; \
 	}
+	@# The image is `python:3.13-slim` and the locked Nautilus wheel is cp313. A host venv on
+	@# another minor runs a different Nautilus binary than the one that will hold the account, so
+	@# every local proof is about a different artefact. `.python-version` pins it; this asserts it.
+	@uv run python -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 13) else "the project interpreter must be Python 3.13 to match the deployed image; run make sync")'
+	@# Binance rejects a signed request whose timestamp is outside `recvWindow`, and a suspended
+	@# WSL2 host drifts silently. One read of the venue's own clock is the whole check.
+	@set -eu; \
+		if venue_time=$$(curl -fsS --max-time 5 https://fapi.binance.com/fapi/v1/time 2>/dev/null); then \
+			venue_ms=$$(printf '%s' "$$venue_time" | tr -dc '0-9'); \
+			if [ -n "$$venue_ms" ]; then \
+				drift=$$(( $$(date +%s) * 1000 - venue_ms )); \
+				if [ "$$drift" -lt 0 ]; then drift=$$(( 0 - drift )); fi; \
+				if [ "$$drift" -gt 2000 ]; then \
+					echo "host clock differs from the venue by $$drift ms (budget 2000 ms); resynchronise the clock first." >&2; \
+					exit 1; \
+				fi; \
+			fi; \
+		else \
+			echo "WARNING: the venue time endpoint was unreachable; clock drift was not checked." >&2; \
+		fi
 
 github-preflight:
 	@command -v gh >/dev/null 2>&1 || { echo "GitHub CLI is not installed or not on PATH" >&2; exit 127; }
@@ -398,15 +474,6 @@ github-preflight:
 verify-main-ci: github-preflight ## require the exact origin/main SHA to have a trusted green ci-gate
 	@uv run python scripts/require_main_ci.py
 
-news-genesis-manifest: preflight github-preflight ## print the exact News genesis target manifest for the configured image
-	@uv run python scripts/require_main_ci.py
-	@set -eu; \
-		image=$$(docker compose config --images migrate 2>/dev/null \
-			| grep -v '@sha256:' | head -n 1); \
-		TRACEFOLD_IMAGE_DIGEST=$$(docker image inspect --format '{{.Id}}' "$$image"); \
-		export TRACEFOLD_IMAGE_DIGEST; \
-		docker compose run --rm --no-deps --entrypoint tracefold migrate db news-genesis-manifest
-
 up: preflight github-preflight ## build, migrate, start, and verify the complete product
 	@uv run python scripts/with_deployment_lock.py make --no-print-directory _up-locked
 
@@ -414,19 +481,8 @@ _up-locked:
 	@python3 scripts/with_deployment_lock.py --assert-held
 	@uv run python scripts/require_main_ci.py
 	@set -eu; \
-		if [ -n "$${COMPOSE_FILE:-}" ] || [ -n "$${COMPOSE_PROJECT_NAME:-}" ] || \
-			[ -n "$${COMPOSE_ENV_FILES:-}" ] || [ -n "$${COMPOSE_PROFILES:-}" ] || \
-			[ -n "$${COMPOSE_PATH_SEPARATOR:-}" ] || [ -n "$${COMPOSE_DISABLE_ENV_FILE:-}" ]; then \
-			echo "up refuses inherited Compose stack variables; rerun without COMPOSE_* overrides." >&2; \
-			exit 2; \
-		fi; \
-		COMPOSE_FILE="$$(pwd -P)/compose.yaml"; \
-		COMPOSE_PROJECT_NAME=tracefold; \
-		export COMPOSE_FILE COMPOSE_PROJECT_NAME; \
+		$(call PIN_COMPOSE_STACK,up); \
 		$(TRACEFOLD) init; \
-		runtime_config=$$($(TRACEFOLD) config); \
-		execution_mode=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_EXECUTION_MODE)); \
-		if [ "$$execution_mode" != disabled ]; then COMPOSE_PROFILES=execution; export COMPOSE_PROFILES; fi; \
 		unset TRACEFOLD_APP_IMAGE; \
 		token="$${GITHUB_TOKEN:-}"; \
 		if [ -z "$$token" ] && command -v gh >/dev/null 2>&1; then \
@@ -435,6 +491,7 @@ _up-locked:
 		GITHUB_TOKEN="$$token"; \
 		TRACEFOLD_BUILD_REVISION=$$(git rev-parse --verify HEAD); \
 		export GITHUB_TOKEN TRACEFOLD_BUILD_REVISION; \
+		$(REFUSE_MIGRATION_UNDER_RUNTIME); \
 		fail() { \
 			docker compose ps --all >&2 || true; \
 			echo "Startup failed. Run make logs for diagnostics." >&2; \
@@ -446,9 +503,9 @@ _up-locked:
 		TRACEFOLD_IMAGE_DIGEST=$$(docker image inspect --format '{{.Id}}' "$$image" 2>/dev/null || true); \
 		export TRACEFOLD_IMAGE_DIGEST; \
 		if [ -z "$$TRACEFOLD_IMAGE_DIGEST" ]; then \
-			echo "WARNING: could not read the digest of $${image:-the built image}." >&2; \
-			echo "  Deployment continues, but every runtime manifest it writes records" >&2; \
-			echo "  image_digest=unversioned and cannot close a learning promotion." >&2; \
+			echo "Could not read the digest of $${image:-the built image}; every runtime manifest it wrote" >&2; \
+			echo "  would record image_digest=unversioned and could close no learning promotion." >&2; \
+			exit 1; \
 		fi; \
 		manifest_document=$$(docker compose run --rm --no-deps --entrypoint tracefold migrate \
 			db news-genesis-manifest) || fail; \
@@ -456,11 +513,10 @@ _up-locked:
 			| uv run python -c 'import json,sys; print(json.load(sys.stdin)["data"]["runtime_manifest_sha"])') || fail; \
 		docker compose up -d --no-build --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) postgres || fail; \
 		runtime_services="migrate rabbitmq-policy serve workers"; \
-		if [ "$$execution_mode" != disabled ]; then runtime_services="$$runtime_services nautilus"; fi; \
-		docker compose stop -t 40 workers serve nautilus || fail; \
+		docker compose stop -t 40 workers serve || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
-		make --no-print-directory status || fail; \
+		make --no-print-directory status-app || fail; \
 		ready_manifest=$$(curl -fsS "$(TRACEFOLD_WORKERS_URL)/readyz" \
 			| uv run python -c 'import json,sys; print(str(json.load(sys.stdin).get("runtime_manifest_sha") or ""))') || fail; \
 		if [ "$$ready_manifest" != "$$target_manifest" ]; then \
@@ -469,6 +525,10 @@ _up-locked:
 		fi; \
 		echo "Tracefold ready at $(TRACEFOLD_API_URL)"
 
+# There is no revision-equality check here. The three Alembic heads are the compatibility rule;
+# additionally requiring the image to carry current main's SHA meant the one image an operator
+# actually needs during an incident — the previous one — was the one image this target refused
+# (#537 D12). It never touches the execution runtime: that is `make runtime-up`'s job.
 deploy-image: preflight github-preflight ## deploy an explicit local DB-compatible sha256 image from the primary checkout
 	@uv run python scripts/with_deployment_lock.py make --no-print-directory _deploy-image-locked
 
@@ -476,16 +536,7 @@ _deploy-image-locked:
 	@python3 scripts/with_deployment_lock.py --assert-held
 	@uv run python scripts/require_main_ci.py
 	@set -eu; \
-		if [ -n "$${COMPOSE_FILE:-}" ] || [ -n "$${COMPOSE_PROJECT_NAME:-}" ] || \
-			[ -n "$${COMPOSE_ENV_FILES:-}" ] || [ -n "$${COMPOSE_PROFILES:-}" ] || \
-			[ -n "$${COMPOSE_PATH_SEPARATOR:-}" ] || [ -n "$${COMPOSE_DISABLE_ENV_FILE:-}" ]; then \
-			echo "deploy-image refuses inherited Compose stack variables; rerun without COMPOSE_* overrides." >&2; \
-			exit 2; \
-		fi; \
-		COMPOSE_FILE="$$(pwd -P)/compose.yaml"; \
-		COMPOSE_PROJECT_NAME=tracefold; \
-		unset COMPOSE_ENV_FILES COMPOSE_PROFILES COMPOSE_PATH_SEPARATOR COMPOSE_DISABLE_ENV_FILE; \
-		export COMPOSE_FILE COMPOSE_PROJECT_NAME; \
+		$(call PIN_COMPOSE_STACK,deploy-image); \
 		git_dir=$$(git rev-parse --absolute-git-dir); \
 		git_common_dir=$$(git rev-parse --path-format=absolute --git-common-dir); \
 		branch=$$(git branch --show-current); \
@@ -542,20 +593,7 @@ _deploy-image-locked:
 			echo "Target image Alembic head '$$image_head' does not match current source head '$$source_head'; schema-incompatible images are refused." >&2; \
 			exit 2; \
 		fi; \
-		if ! image_revision=$$(docker run --rm --entrypoint python "$$image_id" -c 'from tracefold.platform.runtime_identity import runtime_identity; print(runtime_identity().runtime_revision)'); then \
-			echo "Could not inspect the target image runtime revision: $$image_id" >&2; \
-			exit 2; \
-		fi; \
-		if [ "$$image_revision" != "$$head" ]; then \
-			echo "Target image revision '$$image_revision' does not equal current main '$$head'; execution image rollback is refused." >&2; \
-			exit 2; \
-		fi; \
-		if ! database_head=$$(docker compose exec -T postgres sh -eu -c \
-			'PGPASSWORD=$$(cat /run/secrets/postgres_database_password); \
-			PGOPTIONS="-c default_transaction_read_only=on"; \
-			export PGPASSWORD PGOPTIONS; \
-			exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold -d tracefold \
-			-c "SELECT version_num FROM alembic_version LIMIT 1"'); then \
+		if ! database_head=$$($(POSTGRES_READ_ONLY_PSQL) "SELECT version_num FROM alembic_version LIMIT 1"); then \
 			echo "Could not inspect the live database Alembic head; no services were stopped." >&2; \
 			exit 2; \
 		fi; \
@@ -575,19 +613,16 @@ _deploy-image-locked:
 			echo "Target image could not parse the active operator config; no services were stopped." >&2; \
 			exit 2; \
 		fi; \
-		execution_mode=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_EXECUTION_MODE)); \
-		if [ "$$execution_mode" != disabled ]; then COMPOSE_PROFILES=execution; export COMPOSE_PROFILES; fi; \
+		printf '%s\n' "$$runtime_config" | $(READ_TRADING_EXECUTION_MODE) >/dev/null; \
 		fail() { \
 			docker compose ps --all >&2 || true; \
 			echo "Exact-image deployment failed. Run make logs for diagnostics." >&2; \
 			exit 1; \
 		}; \
 		runtime_services="migrate rabbitmq-policy serve workers"; \
-		if [ "$$execution_mode" != disabled ]; then runtime_services="$$runtime_services nautilus"; fi; \
-		base_services="$$runtime_services"; \
-		docker compose stop -t 40 workers serve nautilus || fail; \
+		docker compose stop -t 40 workers serve || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
-			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$base_services || fail; \
+			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
 		for service in $$runtime_services; do \
 			container_id=$$(docker compose ps --all -q "$$service"); \
 			if [ -z "$$container_id" ]; then \
@@ -611,17 +646,6 @@ _deploy-image-locked:
 		if [ "$$ready_image" != "$$image_id" ]; then \
 			echo "Workers readiness image_digest '$$ready_image' does not equal requested '$$image_id'." >&2; \
 			fail; \
-		fi; \
-		if [ "$$execution_mode" != disabled ]; then \
-			if ! nautilus_ready_image=$$(curl -fsS "$(TRACEFOLD_NAUTILUS_URL)/readyz" \
-				| uv run python -c 'import json,sys; print(str(json.load(sys.stdin).get("image_digest") or ""))'); then \
-				echo "Could not read Nautilus readiness image_digest after exact-image deployment." >&2; \
-				fail; \
-			fi; \
-			if [ "$$nautilus_ready_image" != "$$image_id" ]; then \
-				echo "Nautilus readiness image_digest '$$nautilus_ready_image' does not equal requested '$$image_id'." >&2; \
-				fail; \
-			fi; \
 		fi; \
 		if ! receipt_identity=$$(docker compose exec -T postgres sh -eu -c \
 			'PGPASSWORD=$$(cat /run/secrets/postgres_database_password); \
@@ -662,20 +686,19 @@ _deploy-image-locked:
 			echo "Latest active/deployment receipt does not prove requested image '$$image_id'." >&2; \
 			fail; \
 		fi; \
-		make --no-print-directory status || fail; \
+		make --no-print-directory status-app || fail; \
 		echo "Tracefold deployed exact local image $$image_id."
 
-status: preflight ## fail closed unless every enabled runtime is ready
+status: ## fail closed unless the product and the execution runtime are both ready
+	@$(MAKE) --no-print-directory status-app
+	@$(MAKE) --no-print-directory runtime-status
+
+status-app: preflight ## fail closed unless PostgreSQL, migration, Serve and Workers are ready
 	@set -eu; \
-		runtime_config=$$($(TRACEFOLD) config); \
-		trading_enabled=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_ENABLED)); \
-		execution_mode=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_EXECUTION_MODE)); \
-		if [ "$$execution_mode" != disabled ]; then COMPOSE_PROFILES=execution; export COMPOSE_PROFILES; fi; \
+		COMPOSE_PROFILES=execution; export COMPOSE_PROFILES; \
 		docker compose ps --all; \
 		failed=0; \
-		services="postgres rabbitmq serve workers"; \
-		if [ "$$execution_mode" != disabled ]; then services="$$services nautilus"; fi; \
-		for service in $$services; do \
+		for service in postgres rabbitmq serve workers; do \
 			container_id=$$(docker compose ps -q "$$service"); \
 			if [ -z "$$container_id" ]; then \
 				echo "$$service: missing or stopped" >&2; \
@@ -689,17 +712,6 @@ status: preflight ## fail closed unless every enabled runtime is ready
 				failed=1; \
 			fi; \
 		done; \
-		if [ "$$execution_mode" != disabled ]; then \
-			curl -fsS "$(TRACEFOLD_NAUTILUS_URL)/readyz" >/dev/null || { echo "nautilus readiness failed" >&2; failed=1; }; \
-			echo "execution runtime: mode=$$execution_mode (Binance Runtime ready)"; \
-		elif [ -n "$$(COMPOSE_PROFILES=execution docker compose ps -q nautilus)" ]; then \
-			echo "execution runtime: disabled but nautilus is still running" >&2; \
-			failed=1; \
-		elif [ "$$trading_enabled" = true ]; then \
-			echo "execution runtime: disabled (operator selected)"; \
-		else \
-			echo "execution runtime: disabled (Trading disabled)"; \
-		fi; \
 		migrate_id=$$(docker compose ps --all -q migrate); \
 		if [ -z "$$migrate_id" ]; then \
 			echo "migrate: missing" >&2; \
@@ -730,7 +742,148 @@ logs: preflight ## tail all product runtime and dependency logs
 	@COMPOSE_PROFILES=execution docker compose logs -f --tail=100 serve workers nautilus migrate postgres rabbitmq
 
 down: preflight ## stop the container stack without deleting PostgreSQL data
-	@COMPOSE_PROFILES=execution docker compose down
+	@set -eu; \
+		if [ -n "$$(COMPOSE_PROFILES=execution docker compose ps --all -q nautilus)" ]; then \
+			echo "the execution runtime is running and owns live exposure; run make runtime-down first." >&2; \
+			exit 2; \
+		fi; \
+		COMPOSE_PROFILES=execution docker compose down
+
+# The execution runtime lifecycle (#537 PR-2). It is separate from `up`/`deploy-image` on purpose:
+# a News, Serve or Workers deploy must change nothing about the one process that owns live Binance
+# exposure. `runtime-build` is the only entry here that builds, reaches GitHub, or takes the
+# exact-main gate; `runtime-up`, `runtime-restart` and `runtime-down` move an already-proven image
+# and never migrate. Cutover order for a release that also changes the runtime:
+#   make runtime-build   (gated build of tracefold-runtime:<sha>)
+#   make up              (News/Serve/Workers, including any migration)
+#   make runtime-up      (stop the old runtime, start the new one)
+runtime-build: preflight github-preflight ## build and tag the execution runtime image for this HEAD
+	@uv run python scripts/with_deployment_lock.py make --no-print-directory _runtime-build-locked
+
+_runtime-build-locked:
+	@python3 scripts/with_deployment_lock.py --assert-held
+	@uv run python scripts/require_main_ci.py
+	@set -eu; \
+		$(call PIN_COMPOSE_STACK,runtime-build); \
+		revision=$$(git rev-parse --verify HEAD); \
+		token="$${GITHUB_TOKEN:-}"; \
+		if [ -z "$$token" ] && command -v gh >/dev/null 2>&1; then \
+			token=$$(gh auth token 2>/dev/null || true); \
+		fi; \
+		GITHUB_TOKEN="$$token"; \
+		TRACEFOLD_BUILD_REVISION="$$revision"; \
+		TRACEFOLD_RUNTIME_IMAGE="tracefold-runtime:$$revision"; \
+		export GITHUB_TOKEN TRACEFOLD_BUILD_REVISION TRACEFOLD_RUNTIME_IMAGE; \
+		docker compose build nautilus; \
+		echo "Execution runtime image built: $$TRACEFOLD_RUNTIME_IMAGE"
+
+runtime-up: preflight ## start or replace the execution runtime from an already built local image
+	@uv run python scripts/with_deployment_lock.py make --no-print-directory _runtime-up-locked RUNTIME_IMAGE="$(RUNTIME_IMAGE)"
+
+_runtime-up-locked:
+	@python3 scripts/with_deployment_lock.py --assert-held
+	@set -eu; \
+		$(call PIN_COMPOSE_STACK,runtime-up); \
+		image="$(RUNTIME_IMAGE)"; \
+		if [ -z "$$image" ]; then \
+			echo "RUNTIME_IMAGE is empty; pass make runtime-up RUNTIME_IMAGE=tracefold-runtime:<sha>." >&2; \
+			exit 2; \
+		fi; \
+		execution_mode=$$($(TRACEFOLD) config | $(READ_TRADING_EXECUTION_MODE)); \
+		if [ "$$execution_mode" = disabled ]; then \
+			echo "trading.execution.mode is disabled; there is no execution runtime to start." >&2; \
+			exit 2; \
+		fi; \
+		if ! image_id=$$(docker image inspect --format '{{.Id}}' "$$image" 2>/dev/null); then \
+			echo "Execution runtime image '$$image' is not in the local image store; run make runtime-build." >&2; \
+			exit 2; \
+		fi; \
+		if ! image_head=$$(docker run --rm --entrypoint python "$$image" -c 'from tracefold.platform.postgres.migrations import latest_migration_version; print(latest_migration_version())'); then \
+			echo "Could not inspect the Alembic head of '$$image'; the running runtime was not stopped." >&2; \
+			exit 2; \
+		fi; \
+		if ! database_head=$$($(POSTGRES_READ_ONLY_PSQL) "SELECT version_num FROM alembic_version LIMIT 1"); then \
+			echo "Could not inspect the live database Alembic head; the running runtime was not stopped." >&2; \
+			exit 2; \
+		fi; \
+		if [ -z "$$database_head" ] || [ "$$image_head" != "$$database_head" ]; then \
+			echo "Runtime image Alembic head '$$image_head' does not match the live database head '$$database_head'; the running runtime was not stopped." >&2; \
+			exit 2; \
+		fi; \
+		previous_container=$$(docker compose ps --all -q nautilus); \
+		if [ -n "$$previous_container" ]; then \
+			previous_image=$$(docker inspect --format '{{.Config.Image}}' "$$previous_container"); \
+			echo "Replacing execution runtime image $$previous_image; roll back with make runtime-up RUNTIME_IMAGE=$$previous_image"; \
+		fi; \
+		TRACEFOLD_RUNTIME_IMAGE="$$image"; \
+		TRACEFOLD_IMAGE_DIGEST="$$image_id"; \
+		export TRACEFOLD_RUNTIME_IMAGE TRACEFOLD_IMAGE_DIGEST; \
+		docker compose stop -t 90 nautilus; \
+		docker compose up -d --no-build --force-recreate --wait \
+			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) nautilus; \
+		make --no-print-directory runtime-status
+
+runtime-restart: preflight ## restart the execution runtime on the exact image it is already running
+	@set -eu; \
+		container_id=$$(COMPOSE_PROFILES=execution docker compose ps --all -q nautilus); \
+		if [ -z "$$container_id" ]; then \
+			echo "there is no execution runtime container to restart; run make runtime-up." >&2; \
+			exit 2; \
+		fi; \
+		image=$$(docker inspect --format '{{.Config.Image}}' "$$container_id"); \
+		make --no-print-directory runtime-up RUNTIME_IMAGE="$$image"
+
+runtime-down: preflight ## stop and remove the execution runtime container
+	@set -eu; \
+		COMPOSE_PROFILES=execution; export COMPOSE_PROFILES; \
+		docker compose stop -t 90 nautilus; \
+		docker compose rm -f nautilus
+
+runtime-logs: preflight ## tail the execution runtime log
+	@COMPOSE_PROFILES=execution docker compose logs -f --tail=100 nautilus
+
+runtime-status: preflight ## report the execution runtime container, health, and readiness identity
+	@set -eu; \
+		runtime_config=$$($(TRACEFOLD) config); \
+		trading_enabled=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_ENABLED)); \
+		execution_mode=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_EXECUTION_MODE)); \
+		COMPOSE_PROFILES=execution; export COMPOSE_PROFILES; \
+		failed=0; \
+		container_id=$$(docker compose ps -q nautilus); \
+		if [ "$$execution_mode" = disabled ]; then \
+			if [ -n "$$container_id" ]; then \
+				echo "execution runtime: disabled but nautilus is still running" >&2; \
+				failed=1; \
+			elif [ "$$trading_enabled" = true ]; then \
+				echo "execution runtime: disabled (operator selected)"; \
+			else \
+				echo "execution runtime: disabled (Trading disabled)"; \
+			fi; \
+		elif [ -z "$$container_id" ]; then \
+			echo "execution runtime: mode=$$execution_mode but no container is running; run make runtime-up" >&2; \
+			failed=1; \
+		else \
+			state=$$(docker inspect --format '{{.State.Status}}' "$$container_id"); \
+			health=$$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$$container_id"); \
+			if [ "$$state" != "running" ] || [ "$$health" != "healthy" ]; then \
+				echo "nautilus: state=$$state health=$$health" >&2; \
+				failed=1; \
+			fi; \
+			echo "execution runtime image: $$(docker inspect --format '{{.Config.Image}}' "$$container_id")"; \
+			if readiness=$$(curl -fsS "$(TRACEFOLD_NAUTILUS_URL)/readyz"); then \
+				printf 'execution runtime readyz: %s\n' "$$readiness"; \
+			else \
+				echo "nautilus readiness failed" >&2; \
+				failed=1; \
+			fi; \
+			if [ "$$failed" -eq 0 ]; then \
+				echo "execution runtime: mode=$$execution_mode (Binance Runtime ready)"; \
+			fi; \
+		fi; \
+		if [ "$$failed" -ne 0 ]; then \
+			echo "Run make runtime-logs for diagnostics." >&2; \
+			exit 1; \
+		fi
 
 serve-shell: preflight ## open a shell in the Serve container
 	@docker compose exec serve /bin/sh

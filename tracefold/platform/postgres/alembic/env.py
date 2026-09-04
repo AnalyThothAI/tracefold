@@ -6,7 +6,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from tracefold.platform.config.loader import load_settings
-from tracefold.platform.postgres.client import local_docker_host_dsn, with_password_from_file
+from tracefold.platform.postgres.client import with_password_from_file
 from tracefold.platform.postgres.maintenance_gate import MAINTENANCE_GATE_LOCK_KEYS
 
 config = context.config
@@ -20,13 +20,11 @@ target_metadata = None
 def _database_url() -> str:
     configured = config.attributes.get("database_url")
     if configured:
-        return local_docker_host_dsn(str(configured))
+        return str(configured)
     settings = load_settings(require_ws_token=False)
-    return local_docker_host_dsn(
-        with_password_from_file(
-            settings.storage.postgres.dsn,
-            settings.postgres_password_file(),
-        )
+    return with_password_from_file(
+        settings.storage.postgres.dsn,
+        settings.postgres_password_file(),
     )
 
 

@@ -88,4 +88,8 @@ def test_make_up_computes_the_digest_from_the_image_it_built() -> None:
         "classic store and populated under containerd, so choosing it would make the recorded identity — "
         "and every manifest_sha derived from it — depend on the host"
     )
-    assert "WARNING" in up, "an empty digest must be announced, not silently normalised to unversioned"
+    # #537 D: this used to warn and continue. A deployment whose receipts all record
+    # `image_digest=unversioned` cannot close a learning promotion and cannot be rolled back to by
+    # ID, so an unreadable digest is now a refusal.
+    assert "image_digest=unversioned" in up
+    assert "exit 1" in up.split("TRACEFOLD_IMAGE_DIGEST", 1)[1], "an empty digest must fail the deployment"

@@ -10,13 +10,6 @@ from psycopg import Connection, conninfo, pq
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
-from tracefold.platform.docker_host import (
-    COMPOSE_POSTGRES_HOST as _COMPOSE_POSTGRES_HOST,
-)
-from tracefold.platform.docker_host import (
-    HOST_LOOPBACK as _HOST_LOOPBACK,
-)
-from tracefold.platform.docker_host import host_postgres_port, loopback_url_for_compose_host, running_in_container
 from tracefold.platform.validation import require_nonnegative_float
 
 
@@ -28,19 +21,6 @@ def with_password_from_file(dsn: str, password_file: Path | None) -> str:
         return _url_dsn_with_password(dsn, password)
     parts: dict[str, Any] = dict(conninfo.conninfo_to_dict(dsn))
     parts["password"] = password
-    return str(conninfo.make_conninfo(**parts))
-
-
-def local_docker_host_dsn(dsn: str) -> str:
-    if _running_in_container():
-        return dsn
-    if "://" in dsn:
-        return _url_dsn_with_local_docker_host(dsn)
-    parts: dict[str, Any] = dict(conninfo.conninfo_to_dict(dsn))
-    if parts.get("host") != _COMPOSE_POSTGRES_HOST:
-        return dsn
-    parts["host"] = _HOST_LOOPBACK
-    parts["port"] = _host_postgres_port()
     return str(conninfo.make_conninfo(**parts))
 
 
@@ -62,7 +42,6 @@ def create_pool(
     keepalives_count: int | None = None,
     read_only: bool = False,
 ) -> ConnectionPool:
-    dsn = local_docker_host_dsn(dsn)
     kwargs: dict[str, Any] = {
         "autocommit": True,
         "connect_timeout": int(connect_timeout_seconds),
@@ -131,18 +110,6 @@ def _seconds_to_ms(seconds: float) -> int:
     return int(timeout_seconds * 1000)
 
 
-def _running_in_container() -> bool:
-    return running_in_container()
-
-
-def _host_postgres_port() -> str:
-    return host_postgres_port()
-
-
-def _url_dsn_with_local_docker_host(dsn: str) -> str:
-    return loopback_url_for_compose_host(dsn, compose_host=_COMPOSE_POSTGRES_HOST, host_port=_host_postgres_port())
-
-
 def _url_dsn_with_password(dsn: str, password: str) -> str:
     parsed = urlsplit(dsn)
     username = parsed.username or ""
@@ -161,8 +128,22 @@ def connect_postgres(
     *,
     connect_timeout_seconds: float = 5.0,
     application_name: str | None = None,
+    session_settings: Mapping[str, str] | None = None,
+    keepalives: bool | None = None,
+    keepalives_idle: int | None = None,
+    keepalives_interval: int | None = None,
+    keepalives_count: int | None = None,
 ) -> Connection[dict[str, Any]]:
-    dsn = local_docker_host_dsn(dsn)
+    """Open one connection.
+
+    The keepalive and session-setting parameters mirror `create_pool` exactly. A pooled connection
+    is replaced when it dies; a single long-lived session is not, and the execution runtime holds
+    exactly one of those for the whole life of the process — it is the session whose advisory lock
+    means "this process owns the account slot". Without TCP keepalives a killed container leaves
+    that backend alive on the server, still holding the lock, and the next start fails with
+    `oi_runtime_account_slot_already_owned` until the server notices (#537 D2).
+    """
+
     kwargs: dict[str, Any] = {
         "autocommit": True,
         "connect_timeout": int(connect_timeout_seconds),
@@ -170,6 +151,22 @@ def connect_postgres(
     }
     if application_name is not None:
         kwargs["application_name"] = application_name
+    options = _postgres_runtime_options(
+        statement_timeout_seconds=None,
+        lock_timeout_seconds=None,
+        idle_in_transaction_session_timeout_seconds=None,
+        session_settings=session_settings,
+    )
+    if options:
+        kwargs["options"] = options
+    if keepalives is not None:
+        kwargs["keepalives"] = int(bool(keepalives))
+    if keepalives_idle is not None:
+        kwargs["keepalives_idle"] = int(keepalives_idle)
+    if keepalives_interval is not None:
+        kwargs["keepalives_interval"] = int(keepalives_interval)
+    if keepalives_count is not None:
+        kwargs["keepalives_count"] = int(keepalives_count)
     return Connection.connect(dsn, **kwargs)
 
 

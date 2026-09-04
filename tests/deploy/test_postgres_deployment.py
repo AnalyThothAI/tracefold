@@ -77,23 +77,39 @@ def test_compose_keeps_processes_separate_but_uses_one_postgres_login() -> None:
     shared_app_image = "${TRACEFOLD_APP_IMAGE:-${COMPOSE_PROJECT_NAME:-tracefold}-app:local}"
     shared_app_build = {
         "context": ".",
+        "target": "app",
         "args": {"TRACEFOLD_BUILD_REVISION": "${TRACEFOLD_BUILD_REVISION:-}"},
         "secrets": ["github_token"],
     }
     for service_name in ("migrate", "serve", "workers", "nautilus"):
         assert credential in services[service_name]["volumes"]
         assert services[service_name]["depends_on"]["postgres"]["condition"] == "service_healthy"
+    for service_name in ("migrate", "serve", "workers", "rabbitmq-policy"):
         assert services[service_name]["image"] == shared_app_image
         assert services[service_name]["build"] == shared_app_build
+    # The execution runtime is not on the shared anchor (#537 PR-2): its own image tag and its own
+    # `runtime` build target are what let `make up` rebuild and recreate the application without
+    # touching the one process that owns live exposure.
+    assert services["nautilus"]["image"] == "${TRACEFOLD_RUNTIME_IMAGE:-tracefold-runtime:local}"
+    assert services["nautilus"]["build"] == {
+        "context": ".",
+        "target": "runtime",
+        "args": {"TRACEFOLD_BUILD_REVISION": "${TRACEFOLD_BUILD_REVISION:-}"},
+        "secrets": ["github_token"],
+    }
+    # PostgreSQL and nothing else. A broker outage or a migration container that has not been rerun
+    # must never be what keeps the exposure owner from coming back (#537 D4); the schema head is
+    # asserted inside the process instead.
+    assert services["nautilus"]["depends_on"] == {"postgres": {"condition": "service_healthy"}}
     assert services["migrate"]["environment"] == {
         "TRACEFOLD_IMAGE_DIGEST": "${TRACEFOLD_IMAGE_DIGEST:-}",
         "TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON": "${TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON:-}",
     }
     for service_name in ("serve", "workers", "nautilus"):
         assert "TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON" not in services[service_name]["environment"]
-        assert services[service_name]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
         assert "rsshub" not in services[service_name]["depends_on"]
-    assert "rabbitmq" not in services["nautilus"]["depends_on"]
+    for service_name in ("serve", "workers"):
+        assert services[service_name]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
     assert services["migrate"]["command"] == ["tracefold", "db", "migrate"]
     assert services["serve"]["command"] == ["tracefold", "serve"]
     assert services["workers"]["command"] == ["tracefold", "workers"]

@@ -240,7 +240,9 @@ class OiRuntimeDatabaseBridge:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                with open_repositories(self._settings, application_name="tracefold_nautilus_stream") as repos:
+                with open_repositories(
+                    self._settings, application_name="tracefold_nautilus_stream", long_lived=True
+                ) as repos:
                     repos.conn.execute(f"SET statement_timeout = {_STATEMENT_TIMEOUT_MS}")
                     install_execution_stream_listener(repos.conn, channel=execution_stream_channel())
                     with self._lock:

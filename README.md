@@ -67,7 +67,7 @@ Open `http://127.0.0.1:8765/` after it succeeds. The lifecycle is deliberately
 small:
 
 ```bash
-make status  # fail closed unless DB, migration, Serve, Workers, and console are ready
+make status  # fail closed unless DB, migration, Serve, Workers, console, and the runtime are ready
 make logs    # follow service logs; Ctrl-C leaves the services running
 make down    # stop containers without deleting PostgreSQL data
 ```
@@ -75,7 +75,14 @@ make down    # stop containers without deleting PostgreSQL data
 A second `make up` rebuilds that application image and recreates only the
 migration, Serve, and Workers containers so configuration changes take effect.
 An already running PostgreSQL container is not recreated, and its named volume,
-operator configuration, and role passwords are preserved. The generated
+operator configuration, and role passwords are preserved.
+
+The optional Binance execution runtime is deployed separately, because it owns a
+live account and must not be restarted by a News, Serve, or Workers release:
+`make runtime-build`, `make runtime-up`, `make runtime-restart`,
+`make runtime-status`, `make runtime-logs`, and `make runtime-down`. `make up`
+never names it; `make down` refuses while it exists. See
+[Operations](docs/OPERATIONS.md). The generated
 defaults contain no live OpenNews, model, webhook, or bot credential (the
 Telegram token file is an empty placeholder), and News push is disabled. The
 product still starts; credential-dependent capabilities report
@@ -93,7 +100,9 @@ The operator-owned runtime directory is:
 ~/.tracefold/telegram_bot_token          # optional Telegram secret; 0600
 ~/.tracefold/postgres_password           # fresh-volume bootstrap only; 0600
 ~/.tracefold/postgres_database_password  # shared non-superuser application login; 0600
-~/.tracefold/logs/
+~/.tracefold/logs/serve.log                # one file per container role
+~/.tracefold/logs/workers.log
+~/.tracefold/logs/nautilus.log
 ~/.tracefold/cache/
 ```
 
@@ -102,11 +111,15 @@ configuration generator; repository fixtures and `.env` files are not runtime
 truth. Confirm the active path and redacted credential booleans with:
 
 ```bash
-uv run tracefold config
-uv run tracefold news bus-check   # broker reachable, topology declared, queue depths
-uv run tracefold db audit         # migration head, news_* row counts, exact news_* tables
+uv run tracefold config           # reads only ~/.tracefold/config.yaml; no database or broker
 uv run tracefold --help
+docker compose exec workers tracefold news bus-check  # broker reachable, topology, queue depths
+docker compose exec workers tracefold db audit        # migration head, news_* row counts and tables
 ```
+
+Any CLI command that reaches PostgreSQL or RabbitMQ runs **inside** the Workers
+container. The configured DSN and broker URL are compose-network addresses and
+are used exactly as written; there is no host address rewriting.
 
 Exact HTTP fields come from [OpenAPI](docs/generated/openapi.json). The
 complete CLI snapshot is [cli-help.md](docs/generated/cli-help.md). Detailed

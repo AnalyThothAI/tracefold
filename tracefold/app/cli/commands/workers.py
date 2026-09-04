@@ -9,6 +9,6 @@ from tracefold.platform.observability import setup_logging
 
 def handle_workers(_args: object) -> int:
     settings = load_settings(require_ws_token=False)
-    setup_logging(settings.log_file)
+    setup_logging(settings.log_file.with_name("workers.log"))
     asyncio.run(run_workers(settings))
     return 0
