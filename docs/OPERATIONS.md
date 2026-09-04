@@ -1451,9 +1451,9 @@ snapshot.
 ## Migrations
 
 Alembic has one root, baseline `20260831_0340`, and current head
-`20260903_0359`, the destructive drop of the never-written Trading notification
-delivery ledger (#528). A fresh PostgreSQL 18 database applies the
-baseline and every
+`20260904_0360`, the destructive cut of the lane columns no rule reads and of
+the admission ledger's two extra key columns (#537 PR-3). A fresh PostgreSQL 18
+database applies the baseline and every
 revision after it in order; each revision's own docstring carries its evidence.
 Four of them need an operator step before the upgrade runs: `20260901_0347`
 drops twenty-two read-only execution tables, `20260903_0355` drops the six
@@ -1462,8 +1462,17 @@ retired state or admission value, `20260903_0356` drops the profile and
 activation ledgers, and `20260903_0357` drops the JSON-shape CHECKs with the
 nine unread columns and their payload keys. All four archive to
 `~/.tracefold/backups/`
-first; [the migration guide](MIGRATIONS.md) carries the exact commands. This
-source may merge or deploy only after the supported pre-cut database
+first; [the migration guide](MIGRATIONS.md) carries the exact commands.
+
+`20260904_0360` needs no operator step and refuses nothing: it collapses any
+duplicate admission `source_key` to the row every reader already showed. It is
+still destructive — ten columns and one payload key go with it — so the same
+archive is taken before it runs. Because it changes the schema the execution
+Runtime writes, `make up` refuses to apply it while the Nautilus container is up:
+the deploy is `make runtime-build` -> `make runtime-down` (account flat) ->
+`make up` -> `make runtime-up`.
+
+This source may merge or deploy only after the supported pre-cut database
 is advanced to the old terminal revision with its recorded image, backed up,
 and put through the #449 stopped-writer role catalog cut while retaining the
 same Alembic identity and all business rows. The issue receipt records the old
