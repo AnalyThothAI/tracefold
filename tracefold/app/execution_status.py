@@ -5,6 +5,12 @@ the projection row exactly as `RuntimeReadiness.snapshot` wrote them — that sn
 the control row the Runtime is holding — and the only thing added here is this reader's own freshness
 rule: a heartbeat past its budget makes the whole row a claim about a Runtime that may not be running,
 so `alive`, `execution_safe` and `entries_armed` all fall to false together (#537 PR-3).
+
+It also published six identity facts -- `runtime_release`, `config_sha256`, `runtime_revision`,
+`image_digest`, `credential_fingerprint` and `lifecycle_state` -- straight through to `/status` and to
+`tracefold trading status`. No page rendered one, no operator command took one, and the projection
+already answers what an operator acts on: whether entries are armed, why not, and what the account
+holds (#537 PR-4).
 """
 
 from __future__ import annotations
@@ -32,12 +38,6 @@ def execution_readiness_projection(
         "execution_safe": False,
         "entries_armed": False,
         "entry_block_reason": "disabled" if execution.mode == "disabled" else "runtime_state_missing",
-        "runtime_release": None,
-        "config_sha256": None,
-        "runtime_revision": None,
-        "image_digest": None,
-        "credential_fingerprint": None,
-        "lifecycle_state": None,
         "heartbeat_at_ns": None,
         "reconciliation_observed_at_ns": None,
         "reconciliation_age_ms": None,
@@ -93,12 +93,6 @@ def execution_readiness_projection(
             "execution_safe": execution_safe,
             "entries_armed": entries_armed,
             "entry_block_reason": None if entries_armed else entry_block_reason or "entry_blocked",
-            "runtime_release": state.runtime_release,
-            "config_sha256": state.config_sha256,
-            "runtime_revision": state.runtime_revision,
-            "image_digest": state.image_digest,
-            "credential_fingerprint": state.credential_fingerprint,
-            "lifecycle_state": state.lifecycle_state,
             "heartbeat_at_ns": state.heartbeat_at_ns,
             "reconciliation_observed_at_ns": state.reconciliation_observed_at_ns,
             "reconciliation_age_ms": reconciliation_age_ns // 1_000_000,

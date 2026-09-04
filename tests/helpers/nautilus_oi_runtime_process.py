@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import sys
 from collections.abc import Callable
-from dataclasses import replace
 from decimal import Decimal
 from functools import partial
 from typing import Any
@@ -137,7 +136,7 @@ def _seed_cold_cache(
         client_order_id=deterministic_client_order_id(
             namespace=profile.client_order_namespace,
             entry_id=entry_id,
-            leg=protection_leg(1, _COLD_QUANTITY),
+            leg=protection_leg(1),
         ),
     )
     # `BacktestEngine.run` replays every cached open order through the matching engine, which
@@ -214,11 +213,10 @@ def main() -> None:
         control_state = RuntimeControlSnapshot(False, False, ())
         if mode == "rolling_restart":
             # A rolling restart after a code or configuration change: same account slot, same
-            # deployment, a Runtime whose release string moved. #520 PR-A: this simply starts, keeps
-            # whatever control state the operator last set, and never demands a flat account.
-            profile = replace(profile, runtime_release="nautilus-1.231.0+oi-v2")
+            # deployment, a new build. #520 PR-A: this simply starts, keeps whatever control state
+            # the operator last set, and never demands a flat account.
             control_state = load_runtime_control_state(repos, profile.account_slot, now_ns=NOW_NS)
-        factory = ObservationFactory(profile.account_slot, profile.runtime_release, "oi_nautilus_v1")
+        factory = ObservationFactory(profile.account_slot, "oi_nautilus_v1")
         audit = AuditSink(factory=factory)
         readiness = RuntimeReadiness(reconciliation_stale_after_ns=profile.risk.reconciliation_stale_after_ns)
         poll_commands = partial(signals.poll_commands_once, unresolved_commands)

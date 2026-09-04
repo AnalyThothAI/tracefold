@@ -189,7 +189,7 @@ class ProtectionCoordinator:
         quantity_value = instrument.make_qty(quantity)
         trigger_price = instrument.make_price(desired)
         state.protection_generation += 1
-        leg = protection_leg(state.protection_generation, quantity_value.as_decimal())
+        leg = protection_leg(state.protection_generation)
         client_order_id = deterministic_client_order_id(
             namespace=self._profile.client_order_namespace,
             entry_id=state.entry.entry_id,
@@ -250,7 +250,7 @@ class ProtectionCoordinator:
             protection=existing,
             quantity=quantity,
             expected_trigger=trigger_price,
-            expected_leg=protection_leg(state.protection_generation, quantity),
+            expected_leg=protection_leg(state.protection_generation),
             require_open=False,
         ):
             self._request_reconciliation("protection_ambiguity")

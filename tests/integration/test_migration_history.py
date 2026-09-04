@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import tempfile
+from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -15,22 +17,26 @@ from alembic.script import ScriptDirectory
 from tests.postgres_test_utils import connect_postgres_test, prepare_test_migration_database
 from tests.postgres_test_utils import postgres_migration_test_dsn as postgres_test_dsn
 from tests.postgres_test_utils import test_postgres_dsn as admin_postgres_test_dsn
-from tracefold.integrations.nautilus.oi_runtime.audit_sink import ObservationFactory
+from tracefold.integrations.nautilus.oi_runtime.audit_sink import (
+    ObservationFactory,
+    day_start_baseline_from_observation,
+)
 from tracefold.platform.postgres.migrations import alembic_config
 from tracefold.trading.storage.execution_stream import (
     materialize_execution_observation,
-    materialize_operator_intent,
-    materialize_trade_signal,
+    materialize_operator_intents,
+    materialize_trade_signals,
     prepare_execution_observations,
     prepare_operator_intent,
 )
+from tracefold.trading.storage.root import TradingRepository
 
 pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefixtures("postgres_migration_dsn")]
 
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260904_0360"
+HEAD = "20260904_0361"
 
 
 def _config():
@@ -58,15 +64,27 @@ def _renamed_key(payload_json: str, old_key: str, new_key: str) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
+# The release literal every observation carried in a column and again in its payload until
+# `20260904_0361` deleted both. A seed for an older schema has to state it, because the contract no
+# longer can.
+PRE_0361_RUNTIME_RELEASE = "nautilus-1.231.0+oi-v1"
+
+
+def _pre_0361_payload(observation) -> dict:
+    payload = json.loads(prepare_execution_observations((observation,)).payload_json)[0]
+    payload["runtime_release"] = PRE_0361_RUNTIME_RELEASE
+    return payload
+
+
 def _pre_0357_observation(observation, *, profile_key: str | None = None) -> tuple[str, dict]:
     """State one observation the way every revision before 20260903_0357 stored it.
 
-    `ExecutionObservationV1` no longer carries `payload_digest`, so a seed for an older schema has to
-    put the key and the column back: their CHECK counted 13 payload keys and compared that one
-    against the column.
+    `ExecutionObservationV1` no longer carries `payload_digest` or `runtime_release`, so a seed for an
+    older schema has to put those keys and their columns back: the pre-0357 CHECK counted 13 payload
+    keys and compared the digest against its own column.
     """
 
-    payload = json.loads(prepare_execution_observations((observation,)).payload_json)[0]
+    payload = _pre_0361_payload(observation)
     if profile_key is not None:
         payload[profile_key] = payload.pop("account_slot")
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -100,6 +118,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260904_0360",
         "20260903_0359",
         "20260903_0358",
         "20260903_0357",
@@ -121,27 +140,28 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260901_0341",
         BASELINE,
     ]
-    assert revisions[0].down_revision == "20260903_0359"
-    assert revisions[1].down_revision == "20260903_0358"
-    assert revisions[2].down_revision == "20260903_0357"
-    assert revisions[3].down_revision == "20260903_0356"
-    assert revisions[4].down_revision == "20260903_0355"
-    assert revisions[5].down_revision == "20260903_0354"
-    assert revisions[6].down_revision == "20260903_0353"
-    assert revisions[7].down_revision == "20260903_0352"
-    assert revisions[8].down_revision == "20260902_0351"
-    assert revisions[9].down_revision == "20260902_0350"
-    assert revisions[10].down_revision == "20260902_0349"
-    assert revisions[11].down_revision == "20260902_0348"
-    assert revisions[12].down_revision == "20260901_0347"
-    assert revisions[13].down_revision == "20260901_0346"
-    assert revisions[14].down_revision == "20260901_0345"
-    assert revisions[15].down_revision == "20260901_0344"
-    assert revisions[16].down_revision == "20260901_0343"
-    assert revisions[17].down_revision == "20260901_0342"
-    assert revisions[18].down_revision == "20260901_0341"
-    assert revisions[19].down_revision == BASELINE
-    assert revisions[20].down_revision is None
+    assert revisions[0].down_revision == "20260904_0360"
+    assert revisions[1].down_revision == "20260903_0359"
+    assert revisions[2].down_revision == "20260903_0358"
+    assert revisions[3].down_revision == "20260903_0357"
+    assert revisions[4].down_revision == "20260903_0356"
+    assert revisions[5].down_revision == "20260903_0355"
+    assert revisions[6].down_revision == "20260903_0354"
+    assert revisions[7].down_revision == "20260903_0353"
+    assert revisions[8].down_revision == "20260903_0352"
+    assert revisions[9].down_revision == "20260902_0351"
+    assert revisions[10].down_revision == "20260902_0350"
+    assert revisions[11].down_revision == "20260902_0349"
+    assert revisions[12].down_revision == "20260902_0348"
+    assert revisions[13].down_revision == "20260901_0347"
+    assert revisions[14].down_revision == "20260901_0346"
+    assert revisions[15].down_revision == "20260901_0345"
+    assert revisions[16].down_revision == "20260901_0344"
+    assert revisions[17].down_revision == "20260901_0343"
+    assert revisions[18].down_revision == "20260901_0342"
+    assert revisions[19].down_revision == "20260901_0341"
+    assert revisions[20].down_revision == BASELINE
+    assert revisions[21].down_revision is None
     assert sorted(path.name for path in VERSIONS.glob("*.py")) == [
         "20260831_0340_baseline.py",
         "20260901_0341_trading_signal_hard_cut.py",
@@ -164,6 +184,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260903_0358_news_policy_v13_judgment_check.py",
         "20260903_0359_drop_trading_notification_deliveries.py",
         "20260904_0360_trading_lane_gate_cut.py",
+        "20260904_0361_trading_runtime_identity_cut.py",
     ]
 
 
@@ -195,9 +216,10 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    # `20260904_0360` deletes the lane's unread columns, so it is the first refusal the walk to base
-    # meets; `20260903_0357`, which deletes the unread execution digests, is still behind it.
-    with pytest.raises(RuntimeError, match="20260904_0360 deletes the lane's unread"):
+    # `20260904_0361` deletes the Runtime projection's identity columns, so it is the first refusal
+    # the walk to base meets; `20260903_0357`, which deletes the unread execution digests, is still
+    # behind it.
+    with pytest.raises(RuntimeError, match="20260904_0361 deletes the Runtime projection"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
 
@@ -227,7 +249,7 @@ def test_runtime_control_hard_cut_backfills_current_control_and_forces_runtime_r
                 """,
                 (profile_id, "a" * 64),
             )
-            factory = ObservationFactory(profile_id, "runtime-test", "oi_nautilus_v1")
+            factory = ObservationFactory(profile_id, "oi_nautilus_v1")
             for index, action in enumerate(("pause_entries", "resume_entries", "emergency_halt"), start=1):
                 confirmation_identity = "b" * 64 if action != "pause_entries" else None
                 prepared = prepare_operator_intent(
@@ -294,7 +316,7 @@ def test_runtime_control_hard_cut_backfills_current_control_and_forces_runtime_r
                     (
                         observation.event_id,
                         observation.account_slot,
-                        observation.runtime_release,
+                        PRE_0361_RUNTIME_RELEASE,
                         observation.execution_strategy,
                         observation.command_id,
                         observation.normalized_kind,
@@ -426,7 +448,7 @@ def _seed_pre_0356_profile(
         ),
     ).fetchone()
     assert row is not None
-    factory = ObservationFactory(profile_id, "runtime-test", "oi_nautilus_v1")
+    factory = ObservationFactory(profile_id, "oi_nautilus_v1")
     observation = factory.create(
         normalized_kind="control_disposition",
         command_id=value.command_id,
@@ -448,7 +470,7 @@ def _seed_pre_0356_profile(
         (
             observation.event_id,
             profile_id,
-            observation.runtime_release,
+            PRE_0361_RUNTIME_RELEASE,
             observation.execution_strategy,
             observation.command_id,
             observation.normalized_kind,
@@ -546,10 +568,11 @@ def test_account_slot_identity_cut_renames_backfills_and_folds_control_state() -
              ORDER BY seq
             """
         ).fetchall()
-        # 12, not 13: `20260903_0357` took `payload_digest` out of the stored payload as well.
+        # 11, not 13: `20260903_0357` took `payload_digest` out of the stored payload and
+        # `20260904_0361` took `runtime_release` out of it too.
         assert [dict(row) for row in observations] == [
-            {"account_slot": slot, "payload_slot": slot, "keeps_profile_key": False, "key_count": 12},
-            {"account_slot": slot, "payload_slot": slot, "keeps_profile_key": False, "key_count": 12},
+            {"account_slot": slot, "payload_slot": slot, "keeps_profile_key": False, "key_count": 11},
+            {"account_slot": slot, "payload_slot": slot, "keeps_profile_key": False, "key_count": 11},
         ]
 
         commands = conn.execute(
@@ -589,7 +612,13 @@ def test_account_slot_identity_cut_renames_backfills_and_folds_control_state() -
             ).fetchall()
         }
         assert columns.isdisjoint({"runtime_profile_id", "credential_ready", "activation_ready"})
-        assert {"account_slot", "runtime_release", "config_sha256", "image_digest", "credential_fingerprint"} <= columns
+        # #520 PR-A made `account_slot` the identity; `20260904_0361` then deleted the five values
+        # that only ever described what was running, so the walk to head keeps the slot and nothing
+        # else from that group.
+        assert "account_slot" in columns
+        assert columns.isdisjoint(
+            {"runtime_release", "config_sha256", "runtime_revision", "image_digest", "credential_fingerprint"}
+        )
 
         retired = conn.execute(
             """
@@ -652,7 +681,7 @@ def _seed_pre_0356_signal_disposition(conn, *, profile_id: str, signal_id: str, 
             ),
         ),
     )
-    factory = ObservationFactory(profile_id, "runtime-test", "oi_nautilus_v1")
+    factory = ObservationFactory(profile_id, "oi_nautilus_v1")
     observation = factory.create(
         normalized_kind="signal_disposition",
         signal_id=signal_id,
@@ -674,7 +703,7 @@ def _seed_pre_0356_signal_disposition(conn, *, profile_id: str, signal_id: str, 
         (
             observation.event_id,
             profile_id,
-            observation.runtime_release,
+            PRE_0361_RUNTIME_RELEASE,
             observation.execution_strategy,
             signal_id,
             observation.normalized_kind,
@@ -861,7 +890,7 @@ def _seed_pre_0357_facts(conn, *, signal_id: str, case_id: str, command_id: str,
             _pre_0357_command_payload(prepared.payload_json, confirmation_identity="a" * 64),
         ),
     )
-    observation = ObservationFactory(slot, "runtime-test", "oi_nautilus_v1").create(
+    observation = ObservationFactory(slot, "oi_nautilus_v1").create(
         normalized_kind="signal_disposition",
         signal_id=signal_id,
         occurred_at_ns=2_000,
@@ -882,7 +911,7 @@ def _seed_pre_0357_facts(conn, *, signal_id: str, case_id: str, command_id: str,
         (
             observation.event_id,
             slot,
-            observation.runtime_release,
+            PRE_0361_RUNTIME_RELEASE,
             observation.execution_strategy,
             signal_id,
             observation.normalized_kind,
@@ -1028,13 +1057,171 @@ def test_pydantic_only_cut_drops_the_shape_checks_the_digests_and_the_readiness_
 
         # And every one of them still materializes through the contract that is now the only validator.
         assert materialize_execution_observation((1, dict(stored["observation"]))).event_id == event_id
-        assert materialize_trade_signal((1, dict(stored["signal"]))).signal_id == signal_id
-        assert materialize_operator_intent((1, dict(stored["command"]))).command_id == command_id
+        assert materialize_trade_signals(((1, dict(stored["signal"])),))[0].signal_id == signal_id
+        assert materialize_operator_intents(((1, dict(stored["command"])),))[0].command_id == command_id
 
         assert (
             conn.execute("SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_trading_trade_signals_unresolved'")
             .fetchone()["indexdef"]
             .endswith("USING btree (seq) INCLUDE (signal_id, expires_at_ns, payload)")
         )
+    finally:
+        conn.close()
+
+
+def test_runtime_identity_cut_drops_the_columns_and_rewrites_the_observation_payload() -> None:
+    """#537 PR-4. Rows written with the identity ceremony upgrade, and the projection still reads.
+
+    Six columns on the Runtime projection and one on the observation ledger described what build was
+    running. `ExecutionObservationV1` forbids extra keys, so an observation whose stored payload still
+    carried `runtime_release` would stop materialising at all -- including the day-start equity fact
+    the Runtime reads back before it will size an entry.
+    """
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260904_0360")
+    slot = "binance_usdm_primary"
+    event_id = "7" * 64
+    conn = connect_postgres_test(read_only=False)
+    try:
+        observation = ObservationFactory(slot, "oi_nautilus_v1").create(
+            normalized_kind="risk",
+            occurred_at_ns=2_000,
+            observed_at_ns=2_000,
+            summary={"risk_fact": "day_start_equity", "utc_day": "2030-03-17", "equity_usd_decimal": "1000.50"},
+            payload={"risk_fact": "day_start_equity"},
+            fixed_event_id=event_id,
+        )
+        payload = _pre_0361_payload(observation)
+        with conn.transaction():
+            conn.execute(
+                """
+                INSERT INTO trading_execution_observations (
+                  event_id, account_slot, runtime_release, execution_strategy,
+                  signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
+                  native_identity_references, summary, payload
+                ) VALUES (%s, %s, %s, %s, NULL, NULL, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb)
+                """,
+                (
+                    event_id,
+                    slot,
+                    PRE_0361_RUNTIME_RELEASE,
+                    observation.execution_strategy,
+                    observation.normalized_kind,
+                    observation.occurred_at_ns,
+                    observation.observed_at_ns,
+                    json.dumps(payload["native_identity_references"]),
+                    json.dumps(payload["summary"]),
+                    json.dumps(payload),
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO trading_execution_runtime_state (
+                  account_slot, mode, runtime_release, config_sha256, runtime_id, runtime_revision,
+                  image_digest, credential_fingerprint, lifecycle_state, alive, execution_safe,
+                  entries_armed, startup_reconciled, unexpected_exposure, account_flat,
+                  positions_count, open_orders_count, protection_status,
+                  reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
+                  started_at_ns, updated_at_ns, routes_count
+                ) VALUES (
+                  %s, 'paper', %s, %s, '33333333-3333-4333-8333-333333333333', %s,
+                  'unversioned', %s, 'running', TRUE, TRUE, FALSE, TRUE, FALSE, TRUE,
+                  0, 0, 'not_applicable', 3000, 3000, 'entries_paused', 1000, 3000, 5
+                )
+                """,
+                (slot, PRE_0361_RUNTIME_RELEASE, "a" * 64, "c" * 40, "d" * 64),
+            )
+    finally:
+        conn.close()
+
+    command.upgrade(config, "head")
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        columns = {
+            (str(row["table_name"]), str(row["column_name"]))
+            for row in conn.execute(
+                """
+                SELECT table_name, column_name FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name LIKE 'trading\\_%'
+                """
+            ).fetchall()
+        }
+        assert columns.isdisjoint(
+            {
+                ("trading_execution_runtime_state", "runtime_release"),
+                ("trading_execution_runtime_state", "config_sha256"),
+                ("trading_execution_runtime_state", "runtime_revision"),
+                ("trading_execution_runtime_state", "image_digest"),
+                ("trading_execution_runtime_state", "credential_fingerprint"),
+                ("trading_execution_runtime_state", "lifecycle_state"),
+                ("trading_execution_observations", "runtime_release"),
+            }
+        )
+        # What the projection is for survives untouched: the generation fence, the readiness answer
+        # and the account facts an operator acts on.
+        assert {
+            ("trading_execution_runtime_state", "runtime_id"),
+            ("trading_execution_runtime_state", "alive"),
+            ("trading_execution_runtime_state", "entries_armed"),
+            ("trading_execution_runtime_state", "entry_block_reason"),
+            ("trading_execution_runtime_state", "routes_count"),
+            ("trading_execution_observations", "account_slot"),
+            ("trading_execution_observations", "execution_strategy"),
+        } <= columns
+
+        checks = {
+            str(row["conname"])
+            for row in conn.execute(
+                """
+                SELECT con.conname FROM pg_constraint con
+                  JOIN pg_class rel ON rel.oid = con.conrelid
+                 WHERE con.contype = 'c' AND rel.relname LIKE 'trading\\_%'
+                """
+            ).fetchall()
+        }
+        assert checks.isdisjoint(
+            {
+                "trading_execution_runtime_release_check",
+                "trading_execution_runtime_config_check",
+                "trading_execution_runtime_revision_check",
+                "trading_execution_runtime_image_check",
+                "trading_execution_runtime_credential_check",
+                "trading_execution_runtime_lifecycle_check",
+                "trading_execution_runtime_alive_check",
+                "trading_execution_observation_release_check",
+            }
+        )
+        assert {"trading_execution_runtime_safe_check", "trading_execution_runtime_armed_check"} <= checks
+
+        # The ledger is still append-only, and the rewritten payload still materialises.
+        trigger = conn.execute(
+            """
+            SELECT tgname FROM pg_trigger
+             WHERE tgrelid = 'public.trading_execution_observations'::regclass AND NOT tgisinternal
+            """
+        ).fetchall()
+        assert {str(row["tgname"]) for row in trigger} == {"trg_trading_execution_observations_append_only"}
+
+        stored = conn.execute(
+            "SELECT payload FROM trading_execution_observations WHERE event_id = %s", (event_id,)
+        ).fetchone()
+        assert stored is not None
+        assert "runtime_release" not in stored["payload"]
+        materialized = materialize_execution_observation((1, dict(stored["payload"])))
+        assert materialized.event_id == event_id
+        assert day_start_baseline_from_observation(materialized).equity_usd == Decimal("1000.50")
+
+        # And the projection round-trips through the repository without the deleted columns.
+        repo = TradingRepository(conn)
+        state = repo.execution_runtime_state(slot)
+        assert state is not None
+        assert (state.mode, state.entries_armed, state.routes_count) == ("paper", False, 5)
+        rewritten = replace(state, heartbeat_at_ns=4_000, updated_at_ns=4_000, entry_block_reason="runtime_stopped")
+        with conn.transaction():
+            assert repo.update_execution_runtime_state(rewritten) is True
+        assert repo.execution_runtime_state(slot) == rewritten
     finally:
         conn.close()

@@ -76,12 +76,6 @@ class TradingExecutionReadinessData(ExactApiSchema):
     execution_safe: bool
     entries_armed: bool
     entry_block_reason: str | None = None
-    runtime_release: str | None = None
-    config_sha256: str | None = None
-    runtime_revision: str | None = None
-    image_digest: str | None = None
-    credential_fingerprint: str | None = None
-    lifecycle_state: Literal["starting", "running", "stopping", "stopped", "failed"] | None = None
     heartbeat_at_ns: int | None = None
     reconciliation_observed_at_ns: int | None = None
     reconciliation_age_ms: int | None = None
@@ -233,7 +227,6 @@ class TradingExecutionObservationData(ExactApiSchema):
     seq: int
     event_id: str
     account_slot: str
-    runtime_release: str
     execution_strategy: str
     signal_id: str | None = None
     command_id: str | None = None

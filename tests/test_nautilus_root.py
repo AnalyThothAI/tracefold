@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
 from nautilus_trader.model.identifiers import InstrumentId
 from pydantic import ValidationError
 
@@ -18,7 +19,6 @@ from tracefold.app.nautilus.oi_runtime import RuntimeStateProjector
 from tracefold.app.nautilus.root import (
     _discover_routes,
     _observe_reconciliation,
-    _observe_runtime_start,
     _PrivateReconciliationRequests,
     _PrivateReconciliationResult,
     _probe_payload,
@@ -53,13 +53,7 @@ def _runtime_state(*, heartbeat_at_ns: int = 1_000_000_000) -> ExecutionRuntimeS
     return ExecutionRuntimeState(
         account_slot="binance_usdm_primary",
         mode="paper",
-        runtime_release="nautilus-1.231.0+oi-v1",
-        config_sha256="a" * 64,
         runtime_id=UUID("11111111-1111-4111-8111-111111111111"),
-        runtime_revision="b" * 40,
-        image_digest="sha256:" + "c" * 64,
-        credential_fingerprint="d" * 64,
-        lifecycle_state="starting",
         alive=True,
         execution_safe=False,
         entries_armed=False,
@@ -117,7 +111,7 @@ def test_route_discovery_uses_real_clock_and_skips_unaddressable_provider_symbol
     )
 
     assert captured["loaded"] is True
-    assert captured["client"]["environment"] == nautilus_root.BinanceEnvironment.DEMO
+    assert captured["client"]["environment"] is BinanceEnvironment.DEMO
     assert type(captured["client"]["clock"]).__name__ == "LiveClock"
     assert [route.market_key for route in routes] == ["crypto:perp:BTC:USDT"]
     assert [route.stop_distance_bps for route in routes] == [100]
@@ -254,7 +248,6 @@ def test_runtime_state_projector_writes_changes_immediately_and_unchanged_state_
 
     changed = replace(
         starting,
-        lifecycle_state="running",
         heartbeat_at_ns=starting.heartbeat_at_ns + 1,
         entry_block_reason="reconciliation_stale",
         updated_at_ns=starting.updated_at_ns + 1,
@@ -291,7 +284,6 @@ def test_runtime_state_projector_writes_changes_immediately_and_unchanged_state_
 def test_probe_readiness_requires_execution_safety_but_not_entry_arming() -> None:
     safe_but_paused = replace(
         _runtime_state(),
-        lifecycle_state="running",
         execution_safe=True,
         entries_armed=False,
         startup_reconciled=True,
@@ -305,13 +297,32 @@ def test_probe_readiness_requires_execution_safety_but_not_entry_arming() -> Non
     assert payload["execution_safe"] is True
     assert payload["entries_armed"] is False
     assert _probe_payload(replace(safe_but_paused, execution_safe=False))["ok"] is False
+    # #537 PR-4. `/readyz` states only what an operator acts on. The build's release string, the
+    # configuration digest, the image digest, the deployment revision and the credential fingerprint
+    # were five of its fourteen keys and no reader -- healthcheck, page or command -- named one.
+    assert set(payload) == {
+        "ok",
+        "alive",
+        "execution_safe",
+        "entries_armed",
+        "entry_block_reason",
+        "mode",
+        "account_slot",
+        "startup_reconciled",
+        "unexpected_exposure",
+        "account_flat",
+        "positions_count",
+        "open_orders_count",
+        "protection_status",
+        "heartbeat_at_ns",
+    }
+    assert set(nautilus_root._ProbeState.starting(oi_profile("paper")).readiness()) <= set(payload)
 
 
 def test_reconciliation_observation_preserves_native_ids_and_flat_proof() -> None:
     audit = AuditSink(
         factory=ObservationFactory(
             account_slot="oi-paper-profile",
-            runtime_release="nautilus-1.231.0+oi-v1",
             execution_strategy="oi_nautilus_v1",
         )
     )
@@ -360,7 +371,6 @@ def test_a_steady_reconciliation_that_changed_nothing_stays_out_of_the_ledger() 
     audit = AuditSink(
         factory=ObservationFactory(
             account_slot="oi-paper-profile",
-            runtime_release="nautilus-1.231.0+oi-v1",
             execution_strategy="oi_nautilus_v1",
         )
     )
@@ -418,69 +428,6 @@ def test_a_steady_reconciliation_that_changed_nothing_stays_out_of_the_ledger() 
     assert [value.summary["positions"] for value in observed] == [1, 0, 0]
 
 
-def test_runtime_start_receipt_binds_exact_runtime_image_config_and_credentials() -> None:
-    audit = AuditSink(
-        factory=ObservationFactory(
-            account_slot="oi-paper-profile",
-            runtime_release="nautilus-1.231.0+oi-v1",
-            execution_strategy="oi_nautilus_v1",
-        )
-    )
-    state: Any = SimpleNamespace(
-        started_at_ns=1_000,
-        runtime_id="11111111-1111-4111-8111-111111111111",
-        mode="paper",
-        runtime_revision="a" * 40,
-        image_digest="sha256:" + "b" * 64,
-        config_sha256="c" * 64,
-        credential_fingerprint="d" * 64,
-        account_slot="binance_usdm_primary",
-    )
-
-    _observe_runtime_start(audit=audit, state=state)
-
-    observation = audit.flush_once(lambda _values: None)[0]
-    assert observation.normalized_kind == "readiness"
-    assert observation.summary["runtime_id"] == state.runtime_id
-    assert observation.summary["image_digest"] == state.image_digest
-    assert observation.summary["config_sha256"] == state.config_sha256
-    assert observation.summary["credential_fingerprint"] == state.credential_fingerprint
-
-
-def test_a_full_audit_sink_does_not_stop_the_runtime_from_starting() -> None:
-    """#537 PR-3. The start receipt raised when `offer` refused, and `offer` cannot refuse here.
-
-    The sink is empty at start, so the guard could only ever fire if the very first observation
-    overflowed a bound it cannot reach. Keeping it meant a Runtime that failed to start over a
-    telemetry write. The observation is still offered; the process no longer depends on it.
-    """
-
-    audit = AuditSink(
-        factory=ObservationFactory(
-            account_slot="binance_usdm_primary",
-            runtime_release="nautilus-1.231.0+oi-v1",
-            execution_strategy="oi_nautilus_v1",
-        ),
-        max_count=1,
-    )
-    state: Any = SimpleNamespace(
-        started_at_ns=1_000,
-        runtime_id="11111111-1111-4111-8111-111111111111",
-        mode="paper",
-        runtime_revision="a" * 40,
-        image_digest="sha256:" + "b" * 64,
-        config_sha256="c" * 64,
-        credential_fingerprint="d" * 64,
-        account_slot="binance_usdm_primary",
-    )
-    _observe_runtime_start(audit=audit, state=state)
-
-    # The bound is spent, so a second start receipt is dropped and recorded as a gap — and returns.
-    _observe_runtime_start(audit=audit, state=SimpleNamespace(**{**vars(state), "runtime_id": "2" * 8}))
-
-    assert audit.healthy is False
-
-
 def _settings_with_risk(**overrides: Any) -> Settings:
     return Settings(trading={"execution": {"mode": "paper", "risk": overrides}})
 
@@ -522,22 +469,27 @@ def test_risk_limits_come_from_the_operator_config_and_carry_the_route_stop_dist
         {"market_stale_after_seconds": 7.0},
     ],
 )
-def test_every_risk_value_is_inside_the_reported_config_digest(override: dict[str, Any]) -> None:
-    """#510 E. Risk lived outside `config_sha256`, so an operator edit left no trace at all.
+def test_every_risk_value_reaches_the_runtime_policy_without_renaming_the_account(
+    override: dict[str, Any],
+) -> None:
+    """#537 PR-4. An operator risk edit changes what the Runtime enforces and nothing else.
 
-    Since #520 PR-A the digest is evidence rather than a fence: it lands on the durable projection and
-    on the Runtime's start observation, the account slot is unchanged by a risk edit, and the Runtime
-    restarts without a rename. Every risk value still has to move it, or a deploy cannot be told apart
-    from the one before it.
+    It used to also change `config_sha256`, a digest of the whole configuration that rode on the
+    durable projection and on a start receipt no reader ever opened; the one mechanism that consumed
+    it was the Nautilus instance id, which then made every risk edit a new Cache namespace. The
+    account slot, the mode and the client order namespace are what identity means here, and none of
+    them may move when a risk number does.
     """
 
     routes = oi_profile().routes
-    baseline = nautilus_root._active_profile(Settings(trading={"execution": {"mode": "paper"}}), routes)
-    edited = nautilus_root._active_profile(_settings_with_risk(**override), routes)
+    baseline = nautilus_root._active_profile(Settings(trading={"execution": {"mode": "paper"}}), "paper", routes)
+    edited = nautilus_root._active_profile(_settings_with_risk(**override), "paper", routes)
 
-    assert edited.config_sha256 != baseline.config_sha256
     assert edited.account_slot == baseline.account_slot
     assert edited.client_order_namespace == baseline.client_order_namespace
+    assert edited.cache_namespace == baseline.cache_namespace
+    if "stop_distance_bps" not in override:
+        assert edited.risk != baseline.risk
 
 
 @pytest.mark.parametrize(

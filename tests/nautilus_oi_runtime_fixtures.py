@@ -54,8 +54,6 @@ def oi_profile(mode: RuntimeMode = "paper") -> OiRuntimeProfile:
         mode=mode,
         account_slot="binance_usdm_primary",
         account_id=ACCOUNT_ID,
-        runtime_release="nautilus-1.231.0+oi-v1",
-        config_sha256="a" * 64,
         cache_namespace=f"oi-{mode}-cache",
         client_order_namespace=f"oi-{mode}-orders",
         routes=routes,
@@ -215,7 +213,6 @@ def registered_oi_strategy(
         selected_signals.poll_commands_once(CommandRows(*commands))
     factory = ObservationFactory(
         account_slot=profile.account_slot,
-        runtime_release=profile.runtime_release,
         execution_strategy="oi_nautilus_v1",
     )
     selected_audit = audit or AuditSink(factory=factory)

@@ -6,7 +6,7 @@ from collections.abc import Callable
 from decimal import Decimal
 from typing import Any
 
-from nautilus_trader.model.enums import OrderSide, PositionSide
+from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import ClientId
 
 from tracefold.trading import TradeSignalV1
@@ -24,7 +24,6 @@ from .state import (
     RuntimeReadiness,
     RuntimeReadinessSnapshot,
     deterministic_client_order_id,
-    entry_order_valid,
 )
 
 _AMBIGUOUS_QUERY_AFTER_NS = 5_000_000_000
@@ -94,7 +93,15 @@ class EntryCoordinator:
         )
         existing = self._engine.cache.order(client_order_id)
         if existing is not None:
-            self._replay_cached(request=request, route=route, order=existing, now_ns=now_ns)
+            # This entry identity has already claimed its one deterministic client order id, so no
+            # second economic order can come of this request. Rebuilding what became of that order --
+            # the position it opened, the stop resting on it, the exit generation -- belongs to
+            # `RecoveryCoordinator.reconcile`, which does it from the durable order and position
+            # facts against a Binance report of the same instant. There was a second rebuild here
+            # that worked from Cache alone and could reach a different answer about the same
+            # execution, including flattening a position recovery had just reclaimed (#537 PR-4).
+            self._engine.query_order(existing, client_id=ClientId("BINANCE"))
+            self._observations.dispose_entry(request, "replayed_query_first")
             return
         if request.expires_at_ns <= now_ns:
             self._observations.dispose_entry(request, "expired")
@@ -203,64 +210,6 @@ class EntryCoordinator:
             return
         self._observations.order(execution, order, "entry", "submitted")
         self._observations.dispose_entry(request, "accepted")
-
-    def _replay_cached(
-        self,
-        *,
-        request: RuntimeEntryRequest,
-        route: OiInstrumentRoute,
-        order: Any,
-        now_ns: int,
-    ) -> None:
-        if not entry_order_valid(
-            profile=self._profile,
-            strategy_id=self._engine.id,
-            request=request,
-            route=route,
-            order=order,
-        ):
-            self._readiness.halt_for_unexpected_exposure()
-            self._request_reconciliation("unexpected_exposure")
-            self._observations.dispose_entry(request, "cached_entry_invalid")
-            return
-        position = self._engine.cache.position_for_order(order.client_order_id)
-        expected_side = PositionSide.LONG if request.direction == "long" else PositionSide.SHORT
-        if (
-            position is not None
-            and position.is_open
-            and (
-                position.account_id != self._profile.account_id
-                or position.strategy_id != self._engine.id
-                or position.instrument_id != route.instrument_id
-                or position.side != expected_side
-            )
-        ):
-            self._readiness.halt_for_unexpected_exposure()
-            self._request_reconciliation("unexpected_exposure")
-            self._observations.dispose_entry(request, "cached_position_invalid")
-            return
-        self._state.orders[order.client_order_id] = (request.entry_id, "entry")
-        execution = ExecutionState(
-            entry=request,
-            route=route,
-            entry_client_order_id=order.client_order_id,
-            entry_order=order,
-            submitted_at_ns=now_ns,
-            disposition_reason="replayed_query_first",
-            active=bool(position is not None and position.is_open) or not order.is_closed,
-            entry_query_pending=bool(order.is_inflight or order.is_active_local),
-        )
-        self._state.executions[request.entry_id] = execution
-        if position is not None and position.is_open:
-            execution.position_id = position.id
-            execution.position_quantity = abs(Decimal(str(position.quantity)))
-            execution.avg_entry_price = Decimal(str(position.avg_px_open))
-            self._state.positions[position.id] = request.entry_id
-            self._readiness.halt_for_unexpected_exposure()
-            self._request_reconciliation("unexpected_exposure")
-            self._engine.flatten_position(position.id)
-        self._engine.query_order(order, client_id=ClientId("BINANCE"))
-        self._observations.dispose_entry(request, "replayed_query_first")
 
     def _sized_quantity(
         self,

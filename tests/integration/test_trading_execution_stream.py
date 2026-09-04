@@ -25,9 +25,7 @@ from tracefold.trading.storage.execution_stream import (
     PreparedOperatorIntent,
     PreparedTradeSignal,
     execution_stream_query_specs,
-    materialize_operator_intent,
     materialize_operator_intents,
-    materialize_trade_signal,
     materialize_trade_signals,
     prepare_execution_observations,
     prepare_operator_intent,
@@ -97,7 +95,6 @@ def _observation(
     values: dict[str, object] = {
         "event_id": event * 64,
         "account_slot": "demo-v1",
-        "runtime_release": "sha256:" + "1" * 64,
         "execution_strategy": "oi_nautilus_v1",
         "signal_id": signal_id,
         "command_id": command_id,
@@ -172,8 +169,8 @@ def test_exact_append_is_idempotent_and_identity_conflicts_fail_closed() -> None
     finally:
         conn.close()
 
-    assert materialize_trade_signal(first_row) == materialize_trade_signal(identical_row)
-    assert materialize_operator_intent(command_row).command_id == command.value.command_id
+    assert materialize_trade_signals((first_row,)) == materialize_trade_signals((identical_row,))
+    assert materialize_operator_intents((command_row,))[0].command_id == command.value.command_id
 
 
 def test_operator_ingress_records_only_the_idempotent_intent_without_interpreting_it() -> None:
@@ -339,8 +336,8 @@ def test_a_final_disposition_drives_the_bounded_anti_join_reads() -> None:
             signal_row = _append_signal(repo, signal_prepared)
             command_row = repo.append_operator_intent(command_prepared)
 
-        signal = materialize_trade_signal(signal_row)
-        command = materialize_operator_intent(command_row)
+        signal = materialize_trade_signals((signal_row,))[0]
+        command = materialize_operator_intents((command_row,))[0]
         with conn.transaction():
             first = read(repo)
             second = read(repo)
@@ -412,8 +409,8 @@ def test_unresolved_reads_return_only_unexpired_intents() -> None:
             commands = repo.unresolved_operator_intents(
                 account_slot="demo-v1", execution_strategy="oi_nautilus_v1", now_ns=now_ns, limit=10
             )
-        assert materialize_trade_signals(signals) == (materialize_trade_signal(live_signal_row),)
-        assert materialize_operator_intents(commands) == (materialize_operator_intent(live_command_row),)
+        assert materialize_trade_signals(signals) == materialize_trade_signals((live_signal_row,))
+        assert materialize_operator_intents(commands) == materialize_operator_intents((live_command_row,))
     finally:
         conn.close()
 
@@ -493,13 +490,7 @@ def test_runtime_state_is_single_generation_per_account_slot() -> None:
     running = ExecutionRuntimeState(
         account_slot="binance_usdm_primary",
         mode="paper",
-        runtime_release="nautilus-1.231.0+oi-v1",
-        config_sha256="4" * 64,
         runtime_id=UUID("11111111-1111-4111-8111-111111111111"),
-        runtime_revision="a" * 40,
-        image_digest="sha256:" + "b" * 64,
-        credential_fingerprint="c" * 64,
-        lifecycle_state="running",
         alive=True,
         execution_safe=True,
         entries_armed=True,
@@ -575,7 +566,6 @@ def test_runtime_state_is_single_generation_per_account_slot() -> None:
             assert repo.update_execution_runtime_state(stale_generation) is False
         stopped = replace(
             running,
-            lifecycle_state="stopped",
             alive=False,
             execution_safe=False,
             entries_armed=False,
@@ -1005,11 +995,11 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
             (
                 """
                 INSERT INTO trading_execution_observations (
-                  event_id, account_slot, runtime_release, execution_strategy,
+                  event_id, account_slot, execution_strategy,
                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                   native_identity_references, summary, payload
                 )
-                SELECT %s, account_slot, runtime_release, execution_strategy,
+                SELECT %s, account_slot, execution_strategy,
                        %s, %s, normalized_kind, occurred_at_ns, observed_at_ns,
                        native_identity_references, summary, payload
                   FROM trading_execution_observations WHERE event_id = %s
@@ -1021,11 +1011,11 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
             (
                 """
                 INSERT INTO trading_execution_observations (
-                  event_id, account_slot, runtime_release, execution_strategy,
+                  event_id, account_slot, execution_strategy,
                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                   native_identity_references, summary, payload
                 )
-                SELECT %s, account_slot, runtime_release, execution_strategy,
+                SELECT %s, account_slot, execution_strategy,
                        signal_id, command_id, normalized_kind, 3000, observed_at_ns,
                        native_identity_references, summary, payload
                   FROM trading_execution_observations WHERE event_id = %s
@@ -1037,11 +1027,11 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
             (
                 """
                 INSERT INTO trading_execution_observations (
-                  event_id, account_slot, runtime_release, execution_strategy,
+                  event_id, account_slot, execution_strategy,
                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                   native_identity_references, summary, payload
                 )
-                SELECT %s, account_slot, runtime_release, execution_strategy,
+                SELECT %s, account_slot, execution_strategy,
                        %s, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                        native_identity_references, summary, payload
                   FROM trading_execution_observations WHERE event_id = %s
@@ -1053,11 +1043,11 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
             (
                 """
                 INSERT INTO trading_execution_observations (
-                  event_id, account_slot, runtime_release, execution_strategy,
+                  event_id, account_slot, execution_strategy,
                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                   native_identity_references, summary, payload
                 )
-                SELECT %s, account_slot, runtime_release, execution_strategy,
+                SELECT %s, account_slot, execution_strategy,
                        signal_id, %s, normalized_kind, occurred_at_ns, observed_at_ns,
                        native_identity_references, summary, payload
                   FROM trading_execution_observations WHERE event_id = %s
@@ -1195,7 +1185,6 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
             "trading_execution_observation_command_fk",
             "trading_execution_observation_id_check",
             "trading_execution_observation_slot_check",
-            "trading_execution_observation_release_check",
             "trading_execution_observation_strategy_check",
             "trading_execution_observation_kind_check",
             "trading_execution_observation_correlation_check",
@@ -1214,17 +1203,10 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
             "trading_execution_runtime_state_runtime_id_key",
             "trading_execution_runtime_slot_check",
             "trading_execution_runtime_mode_check",
-            "trading_execution_runtime_release_check",
-            "trading_execution_runtime_config_check",
-            "trading_execution_runtime_revision_check",
-            "trading_execution_runtime_image_check",
-            "trading_execution_runtime_credential_check",
-            "trading_execution_runtime_lifecycle_check",
             "trading_execution_runtime_clock_check",
             "trading_execution_runtime_reason_check",
             "trading_execution_runtime_counts_check",
             "trading_execution_runtime_protection_check",
-            "trading_execution_runtime_alive_check",
             "trading_execution_runtime_safe_check",
             "trading_execution_runtime_armed_check",
             "trading_execution_runtime_entry_reason_check",

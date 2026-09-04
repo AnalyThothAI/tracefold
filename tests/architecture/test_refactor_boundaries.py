@@ -410,13 +410,6 @@ def test_evidence_cross_context_facts_have_named_annotations() -> None:
     assert violations == []
 
 
-def test_news_to_trading_mapper_matches_the_projection_version() -> None:
-    from tracefold.app.workers.wiring.news_to_trading import MAPPED_NEWS_PROJECTION_VERSION
-    from tracefold.news.storage.trade_projection import NEWS_TRADE_PROJECTION_VERSION
-
-    assert MAPPED_NEWS_PROJECTION_VERSION == NEWS_TRADE_PROJECTION_VERSION
-
-
 APP_DATABASE_METHODS = frozenset({"worker_session", "run_news", "run_business", "run_control", "heavy_business"})
 
 

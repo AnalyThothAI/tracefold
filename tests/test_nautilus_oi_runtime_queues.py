@@ -29,7 +29,6 @@ def _factory() -> ObservationFactory:
     profile = oi_profile()
     return ObservationFactory(
         account_slot=profile.account_slot,
-        runtime_release=profile.runtime_release,
         execution_strategy="oi_nautilus_v1",
     )
 
@@ -260,7 +259,14 @@ def test_audit_identity_conflict_stays_unhealthy_until_gap_is_durable() -> None:
     assert len(gap_batch) == 1
     gap = gap_batch[0]
     assert gap.normalized_kind == "audit_gap"
-    assert gap.summary == {"cause": "audit_identity_conflict", "conflict_count": 1}
+    # #537 PR-4. One gap shape for all three causes: what was lost, how much, the first identity
+    # and the kinds, whichever cause explains it.
+    assert gap.summary == {
+        "cause": "audit_identity_conflict",
+        "dropped_count": 1,
+        "first_event_id": conflicting.event_id,
+        "kind.readiness": 1,
+    }
     assert sink.healthy is True
 
 
@@ -293,12 +299,22 @@ def test_audit_overflow_stays_unhealthy_until_a_durable_gap_is_written() -> None
     assert len(gap_batch) == 2
     gap = gap_batch[0]
     assert gap.normalized_kind == "audit_gap"
-    assert gap.summary == {"cause": "audit_queue_overflow", "dropped_count": 1}
+    assert gap.summary == {
+        "cause": "audit_queue_overflow",
+        "dropped_count": 1,
+        "first_event_id": values[2].event_id,
+        "kind.readiness": 1,
+    }
     assert sink.healthy is False
     next_gap_batch = sink.flush_once(written.extend)
     assert len(next_gap_batch) == 1
     assert next_gap_batch[0].normalized_kind == "audit_gap"
-    assert next_gap_batch[0].summary == {"cause": "audit_queue_overflow", "dropped_count": 1}
+    assert next_gap_batch[0].summary == {
+        "cause": "audit_queue_overflow",
+        "dropped_count": 1,
+        "first_event_id": values[4].event_id,
+        "kind.readiness": 1,
+    }
     assert sink.healthy is True
 
 

@@ -215,7 +215,7 @@ class RecoveryCoordinator:
                 protection=protection,
                 quantity=protection_seed.quantity,
                 expected_trigger=protection_seed.trigger_price,
-                expected_leg=protection_leg(protection_seed.generation, protection_seed.quantity),
+                expected_leg=protection_leg(protection_seed.generation),
                 require_open=protection_seed.role == "active",
             ):
                 return self._fail_and_flatten(state, executions, orders, positions)
@@ -300,25 +300,8 @@ class RecoveryCoordinator:
             if state.exit_order is not None and state.exit_order.is_inflight:
                 self._engine.query_order(state.exit_order, client_id=ClientId("BINANCE"))
 
-    def _stop_valid(
-        self,
-        *,
-        state: ExecutionState,
-        protection: Any,
-        quantity: Decimal,
-        avg_price: Decimal | None,
-        require_open: bool,
-    ) -> bool:
-        """The steady-state call into the one stop validator; `None` avg price means "not yet priced"."""
-
-        return self._protection.stop_valid(
-            state=state,
-            protection=protection,
-            quantity=quantity,
-            expected_trigger=None if avg_price is None else self._protection.desired_trigger_price(state, avg_price),
-            expected_leg=None,
-            require_open=require_open,
-        )
+    def _desired_trigger(self, state: ExecutionState, avg_price: Decimal | None) -> Decimal | None:
+        return None if avg_price is None else self._protection.desired_trigger_price(state, avg_price)
 
     def verify_owned_exposure(self) -> bool:
         if any(self._unowned_exposure(orders=self._state.orders, positions=self._state.positions)):
@@ -331,11 +314,13 @@ class RecoveryCoordinator:
         for state in self._state.executions.values():
             if state.position_id is None or state.position_quantity <= 0:
                 continue
-            active_valid = self._stop_valid(
+            active_valid = self._protection.stop_valid(
                 state=state,
                 protection=state.stop_order,
                 quantity=state.stop_quantity,
-                avg_price=state.stop_avg_price,
+                # `None` means "not yet priced", so there is no trigger to compare against yet.
+                expected_trigger=self._desired_trigger(state, state.stop_avg_price),
+                expected_leg=None,
                 require_open=True,
             )
             fully_protected = (
@@ -345,11 +330,12 @@ class RecoveryCoordinator:
             )
             if fully_protected:
                 continue
-            pending_valid = self._stop_valid(
+            pending_valid = self._protection.stop_valid(
                 state=state,
                 protection=state.pending_stop_order,
                 quantity=state.pending_stop_quantity,
-                avg_price=state.pending_stop_avg_price,
+                expected_trigger=self._desired_trigger(state, state.pending_stop_avg_price),
+                expected_leg=None,
                 require_open=False,
             )
             if pending_valid and (state.stop_order is None or active_valid):

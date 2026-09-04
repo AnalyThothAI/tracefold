@@ -161,12 +161,17 @@ class OperatorIntentV1(_FrozenContract):
 
 
 class ExecutionObservationV1(_FrozenContract):
-    """A bounded append-only audit projection of a native Runtime event."""
+    """A bounded append-only audit projection of a native Runtime event.
+
+    It carried `runtime_release` too -- one build-time literal, identical on every row this Runtime
+    has ever written, stored as a column and again inside `payload`, and read by nothing but the
+    `/execution/observations` JSON. `account_slot` and `execution_strategy` are the two identities a
+    reader actually correlates on, and both are still here (#537 PR-4).
+    """
 
     observation_version: Literal["execution_observation_v1"] = "execution_observation_v1"
     event_id: str = Field(pattern=SHA256_PATTERN)
     account_slot: str = Field(pattern=IDENTITY_PATTERN)
-    runtime_release: str = Field(min_length=1, max_length=128)
     execution_strategy: str = Field(pattern=IDENTITY_PATTERN)
     signal_id: str | None = Field(default=None, pattern=SHA256_PATTERN)
     command_id: str | None = Field(default=None, pattern=SHA256_PATTERN)
@@ -175,13 +180,6 @@ class ExecutionObservationV1(_FrozenContract):
     observed_at_ns: int = Field(gt=0)
     native_identity_references: tuple[str, ...] = Field(default=(), max_length=16)
     summary: dict[str, MetadataScalar] = Field(default_factory=dict)
-
-    @field_validator("runtime_release")
-    @classmethod
-    def validate_runtime_release(cls, value: str) -> str:
-        if not postgres_text_valid(value):
-            raise ValueError("execution_observation_release_invalid")
-        return value
 
     @field_validator("native_identity_references", mode="before")
     @classmethod

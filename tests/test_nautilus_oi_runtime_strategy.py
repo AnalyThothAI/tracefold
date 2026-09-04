@@ -342,35 +342,18 @@ def test_restart_replay_queries_same_deterministic_client_id_without_resubmit() 
     assert entry.client_order_id == first.strategy.submitted[0][0].client_order_id
 
 
-def test_unresolved_signal_replay_rejects_wrong_cached_entry_shape() -> None:
+def test_a_redelivered_signal_whose_entry_id_is_cached_submits_no_second_economic_order() -> None:
+    """#537 PR-4. One ownership-rebuild path, and it is not on the entry path.
+
+    An entry identity claims exactly one deterministic client order id, so a redelivery that finds
+    that id in Cache can never open a second position -- and the entry path stops there. What became
+    of that order is rebuilt by `RecoveryCoordinator.reconcile`, from the durable order and position
+    facts against a Binance report of the same instant. `EntryCoordinator` used to rebuild it a
+    second time from Cache alone: it re-derived the order's shape, adopted the position, and could
+    flatten one that recovery had just reclaimed.
+    """
+
     signal = trade_signal()
-    first = registered_oi_strategy()
-    entry_id = deterministic_client_order_id(
-        namespace=first.profile.client_order_namespace,
-        entry_id=signal.signal_id,
-        leg="entry",
-    )
-    wrong_entry = first.strategy.order_factory.market(
-        instrument_id=first.instrument.id,
-        order_side=OrderSide.SELL,
-        quantity=first.instrument.make_qty(Decimal("0.01")),
-        client_order_id=entry_id,
-    )
-    _accepted(first, wrong_entry)
-    canceled = TestEventStubs.order_canceled(wrong_entry, account_id=ACCOUNT_ID, ts_event=NOW_NS + 2)
-    wrong_entry.apply(canceled)
-    first.cache.update_order(wrong_entry)
-    restarted = registered_oi_strategy(values=(signal,), cache=first.cache)
-
-    restarted.strategy.on_timer(None)
-
-    assert restarted.strategy.submitted == []
-    assert restarted.strategy.queried == []
-    assert restarted.strategy.readiness().unexpected_exposure is True
-
-
-def test_expired_unresolved_signal_reclaims_cached_filled_position_and_flattens() -> None:
-    signal = trade_signal(expires_at_ns=NOW_NS)
     first = registered_oi_strategy()
     entry_id = deterministic_client_order_id(
         namespace=first.profile.client_order_namespace,
@@ -384,31 +367,16 @@ def test_expired_unresolved_signal_reclaims_cached_filled_position_and_flattens(
         client_order_id=entry_id,
     )
     _accepted(first, entry)
-    position_id = PositionId("BTCUSDT-PERP.BINANCE-OI-EXPIRED-RECOVERY")
-    fill = TestEventStubs.order_filled(
-        order=entry,
-        instrument=first.instrument,
-        strategy_id=first.strategy.id,
-        account_id=ACCOUNT_ID,
-        venue_order_id=entry.venue_order_id,
-        position_id=position_id,
-        last_qty=first.instrument.make_qty(Decimal("0.01")),
-        last_px=first.instrument.make_price(Decimal("10000")),
-        commission=Money(0, first.instrument.quote_currency),
-        ts_event=NOW_NS + 2,
-    )
-    entry.apply(fill)
-    first.cache.update_order(entry)
-    first.cache.add_position(Position(first.instrument, fill), OmsType.NETTING)
     restarted = registered_oi_strategy(values=(signal,), cache=first.cache)
 
     restarted.strategy.on_timer(None)
 
-    flatten = restarted.strategy.submitted[0][0]
-    assert restarted.strategy.queried == [entry, flatten]
-    assert flatten.order_type == OrderType.MARKET
-    assert flatten.is_reduce_only is True
-    assert restarted.strategy.readiness().unexpected_exposure is True
+    assert restarted.strategy.submitted == []
+    assert restarted.strategy.queried == [entry]
+    written: list[object] = []
+    restarted.audit.flush_once(written.extend)
+    dispositions = [value for value in written if value.normalized_kind == "signal_disposition"]
+    assert [value.summary["disposition"] for value in dispositions] == ["replayed_query_first"]
 
 
 def test_closed_replayed_entry_does_not_keep_instrument_busy() -> None:
@@ -529,7 +497,7 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
     old_stop_id = deterministic_client_order_id(
         namespace=first.profile.client_order_namespace,
         entry_id=signal.signal_id,
-        leg="protection:1:0.04",
+        leg="protection:1",
     )
     old_stop = first.strategy.order_factory.stop_market(
         instrument_id=first.instrument.id,
@@ -544,7 +512,7 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
     replacement_id = deterministic_client_order_id(
         namespace=first.profile.client_order_namespace,
         entry_id=signal.signal_id,
-        leg="protection:2:0.05",
+        leg="protection:2",
     )
     replacement = first.strategy.order_factory.stop_market(
         instrument_id=first.instrument.id,
@@ -803,7 +771,7 @@ def test_cached_same_id_invalid_protection_flattens_instead_of_replaying() -> No
     cached_id = deterministic_client_order_id(
         namespace=context.profile.client_order_namespace,
         entry_id=signal.signal_id,
-        leg="protection:2:0.08",
+        leg="protection:2",
     )
     cached = context.strategy.order_factory.stop_market(
         instrument_id=context.instrument.id,
@@ -1087,7 +1055,7 @@ def test_failed_audit_writer_still_admits_the_next_signal_and_reports_the_gap() 
     """#520 PR-B: an unwritable local audit copy is a status flag, not an admission gate."""
 
     profile = registered_oi_strategy().profile
-    factory = ObservationFactory(profile.account_slot, profile.runtime_release, "oi_nautilus_v1")
+    factory = ObservationFactory(profile.account_slot, "oi_nautilus_v1")
     audit = AuditSink(factory=factory)
     audit.offer(
         factory.create(
@@ -1355,7 +1323,7 @@ def _cold_stop(context: SimpleNamespace, entry_id: str, *, quantity: str = "0.05
         client_order_id=deterministic_client_order_id(
             namespace=context.profile.client_order_namespace,
             entry_id=entry_id,
-            leg=protection_leg(1, Decimal(quantity)),
+            leg=protection_leg(1),
         ),
     )
     context.cache.add_order(stop)
@@ -1401,6 +1369,66 @@ def test_cold_cache_restart_reclaims_position_and_stop_without_a_cached_entry_or
     assert [value.summary["disposition"] for value in written if value.normalized_kind == "signal_disposition"] == [
         "recovered"
     ]
+
+
+def test_cold_recovery_matches_cached_orders_once_each_without_a_generation_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#537 PR-4. Reclaiming ownership derives ids per identity, not per identity per cached order.
+
+    A protection leg was `protection:{generation}:{quantity}`, and the quantity is knowable only from
+    an order already in hand, so recovery had to hash 128 candidate legs for every cached order to
+    discover which generation that order was: `O(orders x 128)` SHA-256 derivations every five
+    seconds. The generation alone is unique — `_submit_stop` advances it before it derives the id —
+    so the candidate map is now known before any order is read, and matching N cached orders is N
+    dictionary lookups.
+    """
+
+    from tracefold.app.nautilus import reconciliation as reconciliation_module
+
+    signal = trade_signal()
+    context = registered_oi_strategy(values=(signal,), mark_reconciled=False)
+    _cold_position(context)
+    stop = _cold_stop(context, signal.signal_id)
+    # Unrelated open orders on the same account: the ones a second slot's identity, or a manual
+    # venue order, leaves in the reconciled Cache.
+    for index in range(12):
+        noise = context.strategy.order_factory.stop_market(
+            instrument_id=context.instrument.id,
+            order_side=OrderSide.SELL,
+            quantity=context.instrument.make_qty(Decimal("0.05")),
+            trigger_price=context.instrument.make_price(Decimal(9_700 + index)),
+            trigger_type=TriggerType.LAST_PRICE,
+            reduce_only=True,
+            client_order_id=ClientOrderId(f"tf{index:030d}"),
+        )
+        _accepted(context, noise)
+
+    derived: list[str] = []
+    original = reconciliation_module.deterministic_client_order_id
+
+    def counting(*, namespace: str, entry_id: str, leg: str) -> ClientOrderId:
+        derived.append(leg)
+        return original(namespace=namespace, entry_id=entry_id, leg=leg)
+
+    monkeypatch.setattr(reconciliation_module, "deterministic_client_order_id", counting)
+    snapshot = build_runtime_reconciliation_snapshot(
+        profile=context.profile,
+        signals=(signal,),
+        cache=context.cache,
+        account_observed_at_ns=NOW_NS,
+        reconciliation_observed_at_ns=NOW_NS,
+    )
+
+    assert [value.client_order_id for value in snapshot.executions[0].protections] == [stop.client_order_id]
+    # One entry id plus one candidate map per durable identity, and the map does not grow with the
+    # thirteen orders the Cache holds.
+    generations = reconciliation_module._MAX_RECOVERY_GENERATIONS
+    assert len(derived) == 1 + generations + (generations + 1)
+    assert derived.count("entry") == 1
+    assert len([leg for leg in derived if leg.startswith("protection:")]) == generations
+    assert len([leg for leg in derived if leg == "exit" or leg.startswith("exit:")]) == generations + 1
+    assert context.strategy.reconcile_runtime(snapshot) is False
 
 
 def test_cold_recovery_without_a_durable_entry_fact_stays_unclaimed_and_visible() -> None:

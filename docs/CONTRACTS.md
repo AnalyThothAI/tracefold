@@ -293,7 +293,11 @@ supplemental source keys and three restated policy identity columns, the
 admission ledger's write-only `release_revision`, and the Signal ledger's
 `alpha_metadata`; it narrowed the admission primary key to `(source_key)` with
 `gate_version` / `gate_config_digest` moved into `evidence`, and replaced the
-Runtime projection's `routes` array with `routes_count` (#537 PR-3). `20260903_0356` dropped the profile
+Runtime projection's `routes` array with `routes_count` (#537 PR-3).
+`20260904_0361` dropped the Runtime projection's `runtime_release`,
+`config_sha256`, `runtime_revision`, `image_digest`, `credential_fingerprint`
+and `lifecycle_state`, and the observation ledger's `runtime_release` column and
+stored payload key (#537 PR-4). `20260903_0356` dropped the profile
 activation ledger and the Decision Plane heartbeat with it, and renamed both
 execution identity columns to `account_slot`; `20260903_0357` dropped every
 JSON-shape CHECK on those tables, the four `trading_*` functions behind them,
@@ -1088,11 +1092,13 @@ Runtime facts, and status carries readiness plus bounded totals.
   deleted the `alpha` block: the frozen policy identity, version, digest and
   config are on every Case row that was decided under them, which is where a
   reader can act on them. Decision exposes state/heartbeat/reason;
-  execution exposes mode/profile/account,
-  exact Runtime/revision/image/config identity, independent `alive`,
+  execution exposes mode and account slot, independent `alive`,
   `execution_safe`, and `entries_armed` facts, `entry_block_reason`, control,
-  audit/day-start gates, position/open-order counts, protection status, flatness,
-  heartbeat and reconciliation age. `current_account` is the replaceable
+  position/open-order counts, protection status, flatness,
+  heartbeat and reconciliation age. #537 PR-4 deleted the six identity fields
+  beside them — `runtime_release`, `config_sha256`, `runtime_revision`,
+  `image_digest`, `credential_fingerprint` and `lifecycle_state` — which named
+  the build rather than what it was doing and which no page or command read. `current_account` is the replaceable
   Runtime-owned read model for current equity, day-start/drawdown, aggregate
   risk, bounded position/protection rows, and bounded open/in-flight order rows
   including ownership uncertainty. It is neither an append-only audit ledger

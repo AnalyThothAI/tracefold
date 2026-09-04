@@ -568,7 +568,6 @@
 | `seq` | `BIGINT` | False | `None` |
 | `event_id` | `TEXT` | False | `None` |
 | `account_slot` | `TEXT` | False | `None` |
-| `runtime_release` | `TEXT` | False | `None` |
 | `execution_strategy` | `TEXT` | False | `None` |
 | `signal_id` | `TEXT` | True | `None` |
 | `command_id` | `TEXT` | True | `None` |
@@ -596,13 +595,7 @@
 |--------|------|----------|---------|
 | `account_slot` | `TEXT` | False | `None` |
 | `mode` | `TEXT` | False | `None` |
-| `runtime_release` | `TEXT` | False | `None` |
-| `config_sha256` | `TEXT` | False | `None` |
 | `runtime_id` | `UUID` | False | `None` |
-| `runtime_revision` | `TEXT` | False | `None` |
-| `image_digest` | `TEXT` | False | `None` |
-| `credential_fingerprint` | `TEXT` | False | `None` |
-| `lifecycle_state` | `TEXT` | False | `None` |
 | `alive` | `BOOLEAN` | False | `None` |
 | `startup_reconciled` | `BOOLEAN` | False | `None` |
 | `unexpected_exposure` | `BOOLEAN` | False | `None` |

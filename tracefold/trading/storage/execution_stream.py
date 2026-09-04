@@ -20,7 +20,6 @@ from ..execution_contracts import (
     postgres_text_valid,
 )
 
-EXECUTION_STREAM_NOTIFY_CHANNEL = "tracefold_trading_execution_stream"
 MAX_EXECUTION_READ_BATCH = 1_000
 MAX_OBSERVATION_APPEND_BATCH = 128
 MAX_OBSERVATION_APPEND_BYTES = 1_048_576
@@ -70,6 +69,57 @@ UNRESOLVED_OPERATOR_INTENTS_SQL: Final = """
        AND disposition.event_id IS NULL
      ORDER BY command.seq
      LIMIT %s
+"""
+
+# The one recovery read, shared by the Signal ledger and the manual-entry Command ledger. `table`,
+# `identity` and `scope` are fixed literals chosen by the two callers below; every value is bound.
+_RECOVERY_ENTRIES_SQL: Final = """
+    SELECT candidate.seq, candidate.payload
+      FROM {table} candidate
+     WHERE {scope}
+       AND EXISTS (
+         SELECT 1
+           FROM trading_execution_observations entry_fact
+          WHERE entry_fact.account_slot = %(slot)s
+            AND entry_fact.{identity} = candidate.{identity}
+            AND entry_fact.normalized_kind = 'order'
+            AND entry_fact.summary ->> 'leg' = 'entry'
+            AND entry_fact.observed_at_ns >= %(since)s
+       )
+       AND NOT EXISTS (
+         SELECT 1
+           FROM trading_execution_observations closed_position
+          WHERE closed_position.account_slot = %(slot)s
+            AND closed_position.{identity} = candidate.{identity}
+            AND closed_position.normalized_kind = 'position'
+            AND closed_position.summary ->> 'status' = 'closed'
+            AND closed_position.seq = (
+              SELECT max(latest.seq)
+                FROM trading_execution_observations latest
+               WHERE latest.account_slot = %(slot)s
+                 AND latest.{identity} = candidate.{identity}
+                 AND latest.normalized_kind = 'position'
+            )
+       )
+       AND NOT EXISTS (
+         SELECT 1
+           FROM trading_execution_observations retired_entry
+          WHERE retired_entry.account_slot = %(slot)s
+            AND retired_entry.{identity} = candidate.{identity}
+            AND retired_entry.normalized_kind = 'order'
+            AND retired_entry.summary ->> 'leg' = 'entry'
+            AND retired_entry.summary ->> 'status' IN ('canceled', 'rejected', 'denied', 'expired')
+            AND retired_entry.seq = (
+              SELECT max(latest.seq)
+                FROM trading_execution_observations latest
+               WHERE latest.account_slot = %(slot)s
+                 AND latest.{identity} = candidate.{identity}
+                 AND latest.normalized_kind = 'order'
+                 AND latest.summary ->> 'leg' = 'entry'
+            )
+       )
+     ORDER BY candidate.seq DESC
+     LIMIT %(limit)s
 """
 
 
@@ -223,17 +273,20 @@ class ExecutionAccountSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class ExecutionRuntimeState:
-    """The sole durable current projection for one execution account slot."""
+    """The sole durable current projection for one execution account slot.
+
+    What is running was six further columns: `runtime_release`, `config_sha256`, `runtime_revision`,
+    `image_digest`, `credential_fingerprint` and `lifecycle_state`. Every one of them was written on
+    every heartbeat and read by nothing but the `/status` JSON, where no page and no operator command
+    ever named one; `lifecycle_state` restated `alive` with a fifth value (`failed`) no writer ever
+    used. `runtime_id` stays, because the generation fence in `update_execution_runtime_state` is a
+    real refusal: it is how a row a departing Runtime still holds cannot be overwritten by its
+    successor (#537 PR-4).
+    """
 
     account_slot: str
     mode: Literal["paper", "live"]
-    runtime_release: str
-    config_sha256: str
     runtime_id: UUID
-    runtime_revision: str
-    image_digest: str
-    credential_fingerprint: str
-    lifecycle_state: Literal["starting", "running", "stopping", "stopped", "failed"]
     alive: bool
     execution_safe: bool
     entries_armed: bool
@@ -260,20 +313,12 @@ class ExecutionRuntimeState:
             raise ValueError("execution_runtime_identity_invalid")
         if self.mode not in {"paper", "live"}:
             raise ValueError("execution_runtime_mode_invalid")
-        if _SHA256.fullmatch(self.config_sha256) is None:
-            raise ValueError("execution_runtime_config_invalid")
-        if self.image_digest != "unversioned" and re.fullmatch(r"sha256:[0-9a-f]{64}", self.image_digest) is None:
-            raise ValueError("execution_runtime_image_invalid")
-        if _SHA256.fullmatch(self.credential_fingerprint) is None:
-            raise ValueError("execution_runtime_credential_invalid")
         if self.reconciliation_observed_at_ns < 0 or min(self.heartbeat_at_ns, self.started_at_ns) <= 0:
             raise ValueError("execution_runtime_clock_invalid")
         if self.updated_at_ns < max(self.heartbeat_at_ns, self.started_at_ns):
             raise ValueError("execution_runtime_clock_invalid")
         if min(self.positions_count, self.open_orders_count) < 0:
             raise ValueError("execution_runtime_counts_invalid")
-        if self.alive and self.lifecycle_state not in {"starting", "running", "stopping"}:
-            raise ValueError("execution_runtime_alive_invalid")
         if self.execution_safe and not (self.alive and self.startup_reconciled and not self.unexpected_exposure):
             raise ValueError("execution_runtime_safe_invalid")
         if self.entries_armed and not self.execution_safe:
@@ -382,22 +427,12 @@ def prepare_execution_observations(
     return PreparedExecutionObservationBatch(payload_json=payload_json, count=len(values))
 
 
-def materialize_trade_signal(row: StoredExecutionPayload) -> TradeSignalV1:
-    seq, payload = row
-    return TradeSignalV1.model_validate(payload | {"seq": seq})
-
-
 def materialize_trade_signals(rows: Sequence[StoredExecutionPayload]) -> tuple[TradeSignalV1, ...]:
-    return tuple(materialize_trade_signal(row) for row in rows)
-
-
-def materialize_operator_intent(row: StoredExecutionPayload) -> OperatorIntentV1:
-    seq, payload = row
-    return OperatorIntentV1.model_validate(payload | {"seq": seq})
+    return tuple(TradeSignalV1.model_validate(payload | {"seq": seq}) for seq, payload in rows)
 
 
 def materialize_operator_intents(rows: Sequence[StoredExecutionPayload]) -> tuple[OperatorIntentV1, ...]:
-    return tuple(materialize_operator_intent(row) for row in rows)
+    return tuple(OperatorIntentV1.model_validate(payload | {"seq": seq}) for seq, payload in rows)
 
 
 def materialize_execution_observation(row: StoredExecutionPayload) -> ExecutionObservationV1:
@@ -432,7 +467,6 @@ class ExecutionStreamStorage:
             ),
         ).fetchone()
         if inserted is not None:
-            self._notify("signal")
             return int(inserted["seq"]), dict(inserted["payload"])
         rows = self.conn.execute(
             """
@@ -474,7 +508,6 @@ class ExecutionStreamStorage:
             ),
         ).fetchone()
         if inserted is not None:
-            self._notify("command")
             return int(inserted["seq"]), dict(inserted["payload"])
         rows = self.conn.execute(
             "SELECT seq, payload, payload = %s::jsonb AS exact FROM trading_operator_intents WHERE command_id = %s",
@@ -493,15 +526,15 @@ class ExecutionStreamStorage:
             # `prepare_execution_observations` already bounded the batch, refused duplicate event ids
             # and validated every row, so the append is one ordinary INSERT. Until #520 PR-C this
             # statement re-derived those same bounds in SQL to feed the per-key `payload` CHECK.
-            inserted = self.conn.execute(
+            self.conn.execute(
                 """
                 INSERT INTO trading_execution_observations (
-                  event_id, account_slot, runtime_release, execution_strategy,
+                  event_id, account_slot, execution_strategy,
                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
                   native_identity_references, summary, payload
                 )
                 SELECT payload ->> 'event_id', payload ->> 'account_slot',
-                       payload ->> 'runtime_release', payload ->> 'execution_strategy',
+                       payload ->> 'execution_strategy',
                        payload ->> 'signal_id', payload ->> 'command_id',
                        payload ->> 'normalized_kind', (payload ->> 'occurred_at_ns')::bigint,
                        (payload ->> 'observed_at_ns')::bigint,
@@ -525,8 +558,6 @@ class ExecutionStreamStorage:
             if len(stored) != prepared.count:
                 raise RuntimeError("execution_stream_identity_conflict")
             sequences = tuple(int(seq) for seq in stored)
-            if inserted.rowcount > 0:
-                self._notify("observation")
             self._project_runtime_control_state(prepared.payload_json)
         except Exception:
             self.conn.execute(f"ROLLBACK TO SAVEPOINT {_OBSERVATION_BATCH_SAVEPOINT}")
@@ -640,68 +671,16 @@ class ExecutionStreamStorage:
         since_ns: int,
         limit: int,
     ) -> tuple[StoredExecutionPayload, ...]:
-        """Read the Signals whose durable entry order can still hold Binance exposure.
+        """Read the Signals whose durable entry order can still hold Binance exposure."""
 
-        An identity is a recovery candidate only while its own facts leave that possible: it
-        submitted an entry order inside the window, its latest position fact is not `closed`, and
-        its latest entry-order fact is not terminal. A stopped-out identity is excluded here
-        because `_matched_position` claims by instrument and direction alone, and a retired
-        identity would otherwise adopt an unrelated position on the same route.
-        """
-
-        self._validate_read_limit(limit)
-        self._validate_recovery_window(account_slot, since_ns)
-        rows = self.conn.execute(
-            """
-            SELECT signal.seq, signal.payload
-              FROM trading_trade_signals signal
-             WHERE EXISTS (
-                 SELECT 1
-                   FROM trading_execution_observations entry_fact
-                  WHERE entry_fact.account_slot = %s
-                    AND entry_fact.signal_id = signal.signal_id
-                    AND entry_fact.normalized_kind = 'order'
-                    AND entry_fact.summary ->> 'leg' = 'entry'
-                    AND entry_fact.observed_at_ns >= %s
-               )
-               AND NOT EXISTS (
-                 SELECT 1
-                   FROM trading_execution_observations closed_position
-                  WHERE closed_position.account_slot = %s
-                    AND closed_position.signal_id = signal.signal_id
-                    AND closed_position.normalized_kind = 'position'
-                    AND closed_position.summary ->> 'status' = 'closed'
-                    AND closed_position.seq = (
-                      SELECT max(latest.seq)
-                        FROM trading_execution_observations latest
-                       WHERE latest.account_slot = closed_position.account_slot
-                         AND latest.signal_id = signal.signal_id
-                         AND latest.normalized_kind = 'position'
-                    )
-               )
-               AND NOT EXISTS (
-                 SELECT 1
-                   FROM trading_execution_observations retired_entry
-                  WHERE retired_entry.account_slot = %s
-                    AND retired_entry.signal_id = signal.signal_id
-                    AND retired_entry.normalized_kind = 'order'
-                    AND retired_entry.summary ->> 'leg' = 'entry'
-                    AND retired_entry.summary ->> 'status' IN ('canceled', 'rejected', 'denied', 'expired')
-                    AND retired_entry.seq = (
-                      SELECT max(latest.seq)
-                        FROM trading_execution_observations latest
-                       WHERE latest.account_slot = retired_entry.account_slot
-                         AND latest.signal_id = signal.signal_id
-                         AND latest.normalized_kind = 'order'
-                         AND latest.summary ->> 'leg' = 'entry'
-                    )
-               )
-             ORDER BY signal.seq DESC
-             LIMIT %s
-            """,
-            (account_slot, since_ns, account_slot, account_slot, limit),
-        ).fetchall()
-        return tuple((int(row["seq"]), dict(row["payload"])) for row in reversed(rows))
+        return self._execution_recovery_entries(
+            table="trading_trade_signals",
+            identity="signal_id",
+            scope="TRUE",
+            account_slot=account_slot,
+            since_ns=since_ns,
+            limit=limit,
+        )
 
     def execution_recovery_manual_entries(
         self,
@@ -712,59 +691,45 @@ class ExecutionStreamStorage:
     ) -> tuple[StoredExecutionPayload, ...]:
         """Read the manual entries whose durable entry order can still hold Binance exposure."""
 
+        return self._execution_recovery_entries(
+            table="trading_operator_intents",
+            identity="command_id",
+            scope="candidate.account_slot = %(slot)s AND candidate.action = 'manual_entry'",
+            account_slot=account_slot,
+            since_ns=since_ns,
+            limit=limit,
+        )
+
+    def _execution_recovery_entries(
+        self,
+        *,
+        table: str,
+        identity: str,
+        scope: str,
+        account_slot: str,
+        since_ns: int,
+        limit: int,
+    ) -> tuple[StoredExecutionPayload, ...]:
+        """The one recovery read, over whichever ledger carries the entry identity.
+
+        An identity is a recovery candidate only while its own facts leave exposure possible: it
+        submitted an entry order inside the window, its latest position fact is not `closed`, and its
+        latest entry-order fact is not terminal. A stopped-out identity is excluded because
+        `_matched_position` claims by instrument and direction alone, and a retired identity would
+        otherwise adopt an unrelated position on the same route.
+
+        Signals and manual Commands are the same question asked of two ledgers, and it was written
+        twice: two 45-line statements whose only differences were the table, the correlation column
+        and the `manual_entry` scope, so a fix to one silently left the other with the older rule
+        (#537 PR-4). Every fragment substituted below is a fixed literal chosen here; every value
+        stays bound.
+        """
+
         self._validate_read_limit(limit)
         self._validate_recovery_window(account_slot, since_ns)
         rows = self.conn.execute(
-            """
-            SELECT command.seq, command.payload
-              FROM trading_operator_intents command
-             WHERE command.account_slot = %s
-               AND command.action = 'manual_entry'
-               AND EXISTS (
-                 SELECT 1
-                   FROM trading_execution_observations entry_fact
-                  WHERE entry_fact.account_slot = command.account_slot
-                    AND entry_fact.command_id = command.command_id
-                    AND entry_fact.normalized_kind = 'order'
-                    AND entry_fact.summary ->> 'leg' = 'entry'
-                    AND entry_fact.observed_at_ns >= %s
-               )
-               AND NOT EXISTS (
-                 SELECT 1
-                   FROM trading_execution_observations closed_position
-                  WHERE closed_position.account_slot = command.account_slot
-                    AND closed_position.command_id = command.command_id
-                    AND closed_position.normalized_kind = 'position'
-                    AND closed_position.summary ->> 'status' = 'closed'
-                    AND closed_position.seq = (
-                      SELECT max(latest.seq)
-                        FROM trading_execution_observations latest
-                       WHERE latest.account_slot = command.account_slot
-                         AND latest.command_id = command.command_id
-                         AND latest.normalized_kind = 'position'
-                    )
-               )
-               AND NOT EXISTS (
-                 SELECT 1
-                   FROM trading_execution_observations retired_entry
-                  WHERE retired_entry.account_slot = command.account_slot
-                    AND retired_entry.command_id = command.command_id
-                    AND retired_entry.normalized_kind = 'order'
-                    AND retired_entry.summary ->> 'leg' = 'entry'
-                    AND retired_entry.summary ->> 'status' IN ('canceled', 'rejected', 'denied', 'expired')
-                    AND retired_entry.seq = (
-                      SELECT max(latest.seq)
-                        FROM trading_execution_observations latest
-                       WHERE latest.account_slot = command.account_slot
-                         AND latest.command_id = command.command_id
-                         AND latest.normalized_kind = 'order'
-                         AND latest.summary ->> 'leg' = 'entry'
-                    )
-               )
-             ORDER BY command.seq DESC
-             LIMIT %s
-            """,
-            (account_slot, since_ns, limit),
+            _RECOVERY_ENTRIES_SQL.format(table=table, identity=identity, scope=scope),
+            {"slot": account_slot, "since": since_ns, "limit": limit},
         ).fetchall()
         return tuple((int(row["seq"]), dict(row["payload"])) for row in reversed(rows))
 
@@ -775,36 +740,21 @@ class ExecutionStreamStorage:
         if since_ns < 0:
             raise ValueError("execution_recovery_window_invalid")
 
-    def execution_runtime_state(self, account_slot: str, *, for_update: bool = False) -> ExecutionRuntimeState | None:
+    def execution_runtime_state(self, account_slot: str) -> ExecutionRuntimeState | None:
         if _IDENTITY.fullmatch(account_slot) is None:
             raise ValueError("execution_account_slot_invalid")
-        query = (
+        row = self.conn.execute(
             """
-            SELECT account_slot, mode, runtime_release, config_sha256,
-                   runtime_id, runtime_revision, image_digest, credential_fingerprint,
-                   lifecycle_state, alive, execution_safe, entries_armed,
+            SELECT account_slot, mode, runtime_id, alive, execution_safe, entries_armed,
                    startup_reconciled, unexpected_exposure, account_flat,
                    positions_count, open_orders_count, protection_status,
                    reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
                    started_at_ns, updated_at_ns, account_snapshot, routes_count
               FROM trading_execution_runtime_state
              WHERE account_slot = %s
-             FOR UPDATE
-            """
-            if for_update
-            else """
-            SELECT account_slot, mode, runtime_release, config_sha256,
-                   runtime_id, runtime_revision, image_digest, credential_fingerprint,
-                   lifecycle_state, alive, execution_safe, entries_armed,
-                   startup_reconciled, unexpected_exposure, account_flat,
-                   positions_count, open_orders_count, protection_status,
-                   reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
-                   started_at_ns, updated_at_ns, account_snapshot, routes_count
-              FROM trading_execution_runtime_state
-             WHERE account_slot = %s
-            """
-        )
-        row = self.conn.execute(query, (account_slot,)).fetchone()
+            """,
+            (account_slot,),
+        ).fetchone()
         return None if row is None else self._materialize_runtime_state(row)
 
     def put_execution_runtime_state(self, value: ExecutionRuntimeState) -> ExecutionRuntimeState:
@@ -812,27 +762,18 @@ class ExecutionStreamStorage:
         self.conn.execute(
             """
             INSERT INTO trading_execution_runtime_state (
-              account_slot, mode, runtime_release, config_sha256,
-              runtime_id, runtime_revision, image_digest, credential_fingerprint,
-              lifecycle_state, alive, execution_safe, entries_armed,
+              account_slot, mode, runtime_id, alive, execution_safe, entries_armed,
               startup_reconciled, unexpected_exposure, account_flat,
               positions_count, open_orders_count, protection_status,
               reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
               started_at_ns, updated_at_ns, account_snapshot, routes_count
             ) VALUES (
               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s::jsonb, %s
+              %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s
             )
             ON CONFLICT (account_slot) DO UPDATE SET
               mode = EXCLUDED.mode,
-              runtime_release = EXCLUDED.runtime_release,
-              config_sha256 = EXCLUDED.config_sha256,
               runtime_id = EXCLUDED.runtime_id,
-              runtime_revision = EXCLUDED.runtime_revision,
-              image_digest = EXCLUDED.image_digest,
-              credential_fingerprint = EXCLUDED.credential_fingerprint,
-              lifecycle_state = EXCLUDED.lifecycle_state,
               alive = EXCLUDED.alive,
               execution_safe = EXCLUDED.execution_safe,
               entries_armed = EXCLUDED.entries_armed,
@@ -861,7 +802,7 @@ class ExecutionStreamStorage:
         updated = self.conn.execute(
             """
             UPDATE trading_execution_runtime_state
-               SET lifecycle_state = %s, alive = %s, execution_safe = %s,
+               SET alive = %s, execution_safe = %s,
                    entries_armed = %s,
                    startup_reconciled = %s, unexpected_exposure = %s, account_flat = %s,
                    positions_count = %s, open_orders_count = %s, protection_status = %s,
@@ -871,7 +812,6 @@ class ExecutionStreamStorage:
              WHERE account_slot = %s AND runtime_id = %s
             """,
             (
-                value.lifecycle_state,
                 value.alive,
                 value.execution_safe,
                 value.entries_armed,
@@ -897,13 +837,7 @@ class ExecutionStreamStorage:
         return ExecutionRuntimeState(
             account_slot=str(row["account_slot"]),
             mode=row["mode"],
-            runtime_release=str(row["runtime_release"]),
-            config_sha256=str(row["config_sha256"]),
             runtime_id=UUID(str(row["runtime_id"])),
-            runtime_revision=str(row["runtime_revision"]),
-            image_digest=str(row["image_digest"]),
-            credential_fingerprint=str(row["credential_fingerprint"]),
-            lifecycle_state=row["lifecycle_state"],
             alive=bool(row["alive"]),
             execution_safe=bool(row["execution_safe"]),
             entries_armed=bool(row["entries_armed"]),
@@ -935,13 +869,7 @@ class ExecutionStreamStorage:
         return (
             value.account_slot,
             value.mode,
-            value.runtime_release,
-            value.config_sha256,
             value.runtime_id,
-            value.runtime_revision,
-            value.image_digest,
-            value.credential_fingerprint,
-            value.lifecycle_state,
             value.alive,
             value.execution_safe,
             value.entries_armed,
@@ -1069,12 +997,8 @@ class ExecutionStreamStorage:
             raise RuntimeError("execution_stream_identity_conflict")
         return int(rows[0]["seq"]), dict(rows[0]["payload"])
 
-    def _notify(self, kind: str) -> None:
-        self.conn.execute("SELECT pg_notify(%s, %s)", (EXECUTION_STREAM_NOTIFY_CHANNEL, kind))
-
 
 __all__ = [
-    "EXECUTION_STREAM_NOTIFY_CHANNEL",
     "MAX_EXECUTION_READ_BATCH",
     "MAX_OBSERVATION_APPEND_BATCH",
     "MAX_OBSERVATION_APPEND_BYTES",
@@ -1091,9 +1015,7 @@ __all__ = [
     "StoredExecutionPayload",
     "execution_stream_query_specs",
     "materialize_execution_observation",
-    "materialize_operator_intent",
     "materialize_operator_intents",
-    "materialize_trade_signal",
     "materialize_trade_signals",
     "prepare_execution_observations",
     "prepare_operator_intent",

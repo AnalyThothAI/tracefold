@@ -29,13 +29,7 @@ def _runtime_state() -> ExecutionRuntimeState:
     return ExecutionRuntimeState(
         account_slot="binance_usdm_primary",
         mode="paper",
-        runtime_release="nautilus-1.231.0+oi-v1",
-        config_sha256="a" * 64,
         runtime_id=UUID("11111111-1111-4111-8111-111111111111"),
-        runtime_revision="b" * 40,
-        image_digest="sha256:" + "c" * 64,
-        credential_fingerprint="d" * 64,
-        lifecycle_state="starting",
         alive=True,
         execution_safe=False,
         entries_armed=False,
@@ -141,7 +135,6 @@ def test_a_failing_audit_step_never_stops_the_command_read_and_logs_one_cause_on
     profile = oi_profile()
     factory = ObservationFactory(
         account_slot=profile.account_slot,
-        runtime_release=profile.runtime_release,
         execution_strategy="oi_nautilus_v1",
     )
     audit = AuditSink(factory=factory, max_count=32, max_bytes=200_000)
@@ -186,7 +179,6 @@ def test_a_transient_audit_failure_leaves_the_batch_queued_without_killing_the_b
     profile = oi_profile()
     factory = ObservationFactory(
         account_slot=profile.account_slot,
-        runtime_release=profile.runtime_release,
         execution_strategy="oi_nautilus_v1",
     )
     audit = AuditSink(factory=factory, max_count=32, max_bytes=200_000)
@@ -224,7 +216,6 @@ def test_a_lost_connection_still_aborts_the_cycle_so_the_session_is_replaced() -
     profile = oi_profile()
     factory = ObservationFactory(
         account_slot=profile.account_slot,
-        runtime_release=profile.runtime_release,
         execution_strategy="oi_nautilus_v1",
     )
     audit = AuditSink(factory=factory, max_count=32, max_bytes=200_000)
@@ -260,7 +251,6 @@ def test_a_stuck_input_step_keeps_reading_and_never_disarms_entries() -> None:
     profile = oi_profile()
     factory = ObservationFactory(
         account_slot=profile.account_slot,
-        runtime_release=profile.runtime_release,
         execution_strategy="oi_nautilus_v1",
     )
     audit = AuditSink(factory=factory, max_count=32, max_bytes=200_000)
@@ -316,7 +306,6 @@ def test_the_bridge_thread_owns_the_projection_write_the_recovery_read_and_the_s
     profile = oi_profile()
     factory = ObservationFactory(
         account_slot=profile.account_slot,
-        runtime_release=profile.runtime_release,
         execution_strategy="oi_nautilus_v1",
     )
     audit = AuditSink(factory=factory, max_count=32, max_bytes=200_000)
@@ -341,7 +330,6 @@ def test_the_bridge_thread_owns_the_projection_write_the_recovery_read_and_the_s
 
     running = replace(
         starting,
-        lifecycle_state="running",
         entry_block_reason="reconciliation_stale",
         heartbeat_at_ns=starting.heartbeat_at_ns + 1,
         updated_at_ns=starting.updated_at_ns + 1,
@@ -365,7 +353,6 @@ def test_a_failing_projection_write_logs_once_and_leaves_the_inputs_and_the_gate
     profile = oi_profile()
     factory = ObservationFactory(
         account_slot=profile.account_slot,
-        runtime_release=profile.runtime_release,
         execution_strategy="oi_nautilus_v1",
     )
     audit = AuditSink(factory=factory, max_count=32, max_bytes=200_000)
@@ -393,7 +380,7 @@ def test_a_failing_projection_write_logs_once_and_leaves_the_inputs_and_the_gate
             projector.offer(
                 replace(
                     starting,
-                    lifecycle_state="running",
+                    entry_block_reason="reconciliation_stale",
                     heartbeat_at_ns=starting.heartbeat_at_ns + offset,
                     updated_at_ns=starting.updated_at_ns + offset,
                 )

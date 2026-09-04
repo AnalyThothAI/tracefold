@@ -521,7 +521,6 @@ def _observation(row: dict[str, Any]) -> dict[str, Any]:
         "seq": int(row["seq"]),
         "event_id": str(row["event_id"]),
         "account_slot": str(row["account_slot"]),
-        "runtime_release": str(row["runtime_release"]),
         "execution_strategy": str(row["execution_strategy"]),
         "signal_id": row.get("signal_id"),
         "command_id": row.get("command_id"),

@@ -8,8 +8,6 @@ from typing import Any
 from tracefold.news.storage.trade_projection import OiTradeProjectionRow
 from tracefold.trading.contracts import OiCandidateRow
 
-MAPPED_NEWS_PROJECTION_VERSION = "news_trade_projection_v14"
-
 
 def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
     """Map one persisted News OI fact without adding defaults or execution identity.
@@ -56,4 +54,4 @@ def news_oi_sources(
     ]
 
 
-__all__ = ["MAPPED_NEWS_PROJECTION_VERSION", "news_oi_sources", "to_oi_candidate_row"]
+__all__ = ["news_oi_sources", "to_oi_candidate_row"]

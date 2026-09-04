@@ -2433,8 +2433,6 @@ export interface components {
             observed_at_ns: number;
             /** Occurred At Ns */
             occurred_at_ns: number;
-            /** Runtime Release */
-            runtime_release: string;
             /** Seq */
             seq: number;
             /** Signal Id */
@@ -2531,10 +2529,6 @@ export interface components {
             account_slot: string;
             /** Alive */
             alive: boolean;
-            /** Config Sha256 */
-            config_sha256?: string | null;
-            /** Credential Fingerprint */
-            credential_fingerprint?: string | null;
             current_account?: components["schemas"]["TradingExecutionAccountData"] | null;
             /**
              * Emergency Halted
@@ -2556,10 +2550,6 @@ export interface components {
             facts_expire_at_ms?: number | null;
             /** Heartbeat At Ns */
             heartbeat_at_ns?: number | null;
-            /** Image Digest */
-            image_digest?: string | null;
-            /** Lifecycle State */
-            lifecycle_state?: ("starting" | "running" | "stopping" | "stopped" | "failed") | null;
             /**
              * Mode
              * @enum {string}
@@ -2590,10 +2580,6 @@ export interface components {
              * @default 0
              */
             routes_count: number;
-            /** Runtime Release */
-            runtime_release?: string | null;
-            /** Runtime Revision */
-            runtime_revision?: string | null;
             /**
              * Startup Reconciled
              * @default false

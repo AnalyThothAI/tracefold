@@ -191,6 +191,31 @@ the execution Runtime writes, so `make up` refuses to apply it while the Nautilu
 container is running: `make runtime-build`, then `make runtime-down` with the
 account flat, then `make up`, then `make runtime-up`.
 
+`20260904_0361` deletes the Runtime identity ceremony (#537 PR-4):
+`trading_execution_runtime_state.runtime_release`, `config_sha256`,
+`runtime_revision`, `image_digest`, `credential_fingerprint` and
+`lifecycle_state`, with the seven CHECK constraints that only ever constrained
+them; and `trading_execution_observations.runtime_release`, whose key is also
+removed from every stored `payload` for the reason `0357`'s and `0360`'s were —
+`ExecutionObservationV1` forbids extra keys, so a payload that still carried it
+would stop materialising, including the day-start equity fact the Runtime reads
+back before it will size an entry.
+
+```bash
+pg_dump --data-only --table=trading_execution_observations \
+  --table=trading_execution_runtime_state \
+  > ~/.tracefold/backups/pre-0361-trading-runtime-identity-$(date +%Y%m%d).sql
+```
+
+It refuses nothing and needs no operator config step. Like `0360` it changes the
+schema the execution Runtime writes, so the order is `make runtime-build`, then
+`make runtime-down` with the account flat, then `make up`, then `make runtime-up`.
+The account must be flat for a second reason this time: a Runtime built from this
+revision derives its Nautilus instance id from `account_slot:mode` rather than
+from the configuration digest, and derives protection client order ids from the
+replacement generation alone, so a stop resting at the venue under an id an older
+build chose is not this build's and is refused as unowned exposure.
+
 ## Database development standard
 
 1. The deployment has one non-superuser application login, `tracefold`.

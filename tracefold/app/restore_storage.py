@@ -70,7 +70,6 @@ def _seed_and_summarize(dsn: str) -> dict[str, Any]:
             ExecutionObservationV1(
                 event_id=_OBSERVATION_ID,
                 account_slot=_ACCOUNT_SLOT,
-                runtime_release="restore-release",
                 execution_strategy=EXECUTION_STRATEGY_ID,
                 signal_id=_SIGNAL_ID,
                 normalized_kind="signal_disposition",

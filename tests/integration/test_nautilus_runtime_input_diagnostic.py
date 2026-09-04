@@ -19,7 +19,6 @@ from pathlib import Path
 from threading import Condition, Event
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -145,11 +144,6 @@ def _p95(values: list[float]) -> float:
     return ordered[max(0, round(0.95 * len(ordered) + 0.499999) - 1)]
 
 
-def _discard_wake(_conn: object, timeout_seconds: float) -> bool:
-    time.sleep(timeout_seconds)
-    return False
-
-
 def _sha(value: str) -> str:
     import hashlib
 
@@ -263,7 +257,7 @@ def _dispose_workload(repo: TradingRepository, *, account_slot: str, size: int, 
     have appended for what it just dequeued.
     """
 
-    factory = ObservationFactory(account_slot, "nautilus-1.231.0+oi-v1", "oi_nautilus_v1")
+    factory = ObservationFactory(account_slot, "oi_nautilus_v1")
     observations = []
     for index in range(size):
         observations.append(
@@ -305,7 +299,7 @@ def _runtime_bridge(
         cache_namespace=f"{account_slot}-cache",
         client_order_namespace=f"{account_slot}-orders",
     )
-    audit = AuditSink(factory=ObservationFactory(account_slot, profile.runtime_release, "oi_nautilus_v1"))
+    audit = AuditSink(factory=ObservationFactory(account_slot, "oi_nautilus_v1"))
     singleton = AccountSlotSingleton(
         account_slot=account_slot,
         try_acquire=lambda _slot: True,
@@ -334,7 +328,6 @@ def _runtime_state(*, account_slot: str) -> ExecutionRuntimeState:
     return ExecutionRuntimeState(
         account_slot=account_slot,
         mode="paper",
-        runtime_release="nautilus-1.231.0+oi-v1",
         config_sha256="a" * 64,
         runtime_id=uuid4(),
         runtime_revision="b" * 40,
@@ -418,8 +411,8 @@ def _stream_samples(settings: Settings) -> tuple[dict[str, Any], int]:
                 bridge.start()
                 try:
                     _wait_until_bridge_connects(bridge)
-                    # Commit at one fixed phase after a completed production cycle so the
-                    # transaction's NOTIFY measures the normal wake path, not construction time.
+                    # Commit at one fixed phase after a completed production cycle so the sample
+                    # measures the normal indexed poll, not construction time.
                     _wait_until_initial_cycle_finishes(bridge)
                     _append_workload(
                         repo,
@@ -452,49 +445,23 @@ def _stream_samples(settings: Settings) -> tuple[dict[str, Any], int]:
                 _dispose_workload(repo, account_slot=slot, size=size, seed=seed)
             by_burst[str(size)] = {
                 "samples": _REPEATS,
-                "delivery_path": "production_listen_notify_with_indexed_repair",
+                "delivery_path": "production_indexed_anti_join_poll",
                 "poll_cadence_ms": int(_REPAIR_SECONDS * 1_000),
                 "persisted_to_dequeued_p95_ms": round(_p95(dequeue_ms), 3),
                 "reader_calls_per_cycle": 2,
                 "pending_identity_duplicates": 0,
             }
 
-        client = ExecutionSignalClient(account_slot=slot, execution_strategy="oi_nautilus_v1")
-        bridge = _runtime_bridge(
-            settings=settings,
-            account_slot=slot,
-            signals=client,
-        )
-        with patch(
-            "tracefold.app.nautilus.oi_runtime.wait_for_execution_stream_wake",
-            side_effect=_discard_wake,
-        ):
-            bridge.start()
-            try:
-                _wait_until_bridge_connects(bridge)
-                _wait_until_initial_cycle_finishes(bridge)
-                _append_workload(
-                    repo,
-                    account_slot=slot,
-                    size=1,
-                    seed="repair",
-                    now_ns=NOW_NS + 100,
-                    before_commit=lambda: _wait_until_next_cycle_finishes(bridge),
-                )
-                committed = time.perf_counter()
-                _wait_until_bridge_delivers(bridge, client, expected_count=2)
-                repaired_ms = (time.perf_counter() - committed) * 1_000
-            finally:
-                bridge.stop()
-                bridge.join(2.0)
-                assert not bridge.connected
         return (
             {
                 "status": "observed",
-                "production_delivery_path": "listen_notify_with_indexed_timeout_repair",
+                # There is one delivery path now. A Signal or Command is unresolved until a
+                # disposition exists, so the indexed anti-join below is complete on its own and the
+                # `LISTEN`/`NOTIFY` wake beside it -- and the missed-wake repair sample that existed
+                # to prove the poll could stand in for it -- are gone (#537 PR-4).
+                "production_delivery_path": "indexed_anti_join_poll",
                 "bursts": by_burst,
-                "missed_wake_repair_ms": round(repaired_ms, 3),
-                "repair_cadence_ms": int(_REPAIR_SECONDS * 1_000),
+                "poll_cadence_ms": int(_REPAIR_SECONDS * 1_000),
                 "ttl_ms": 60_000,
             },
             max_connections,
@@ -509,7 +476,7 @@ def _audit_sample() -> dict[str, Any]:
         slot = "runtime-input-slot-audit"
         repos = repositories_for_connection(conn)
         signals = ExecutionSignalClient(account_slot=slot, execution_strategy="oi_nautilus_v1")
-        sink = AuditSink(factory=ObservationFactory(slot, "nautilus-1.231.0+oi-v1", "oi_nautilus_v1"))
+        sink = AuditSink(factory=ObservationFactory(slot, "oi_nautilus_v1"))
         for index in range(100):
             assert sink.offer(
                 sink.factory.create(
@@ -666,7 +633,7 @@ def test_emit_runtime_input_diagnostic(tmp_path: Path) -> None:
         },
         "interpretation": {
             "normal_stream_slo_ms": 250,
-            "missed_wake_ttl_fraction": "1/3",
+            "poll_cadence_ttl_fraction": "1/300",
             "duplicate_economic_orders": {
                 "status": "not_observed",
                 "reason": "requires_replay_or_concurrent_admission_workload",
