@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -594,3 +595,142 @@ def test_terminal_delivery_without_a_verdict_is_held_in_both_row_and_tab_partiti
     assert row["outcome"]["kind"] == "delivery_failed"
     assert {event["event_id"] for event in held["events"]} == {"terminal-event"}
     assert all_rows["counts"] == {"total": 1, "pushed": 0, "held": 1, "pending": 0}
+
+
+def test_oi_frame_whose_provider_clock_ran_ahead_stores_on_the_first_attempt(conn) -> None:
+    """#544 F2P. The exchange stamped this frame 250 ms after this host's clock says it arrived.
+
+    Before `20260904_0362` the ledger refused the row, `_store_frame` did not classify
+    `psycopg.errors.CheckViolation`, and the whole News Workers process exited on it — seven times in
+    six hours in production on 2026-09-04. The three columns are three recorded facts and nothing
+    orders them: `observed_at_ms` is the provider's own publication stamp, `available_at_ms` is when
+    this host could first read the frame, `created_at_ms` is when the row was written. The frame is
+    stored exactly as measured; no clamp rewrites the provider's stamp into the host's.
+    """
+
+    repos = repositories_for_connection(conn)
+    news = repos.news
+    signal = OiSignal(
+        symbol="BTC",
+        direction="rise",
+        oi_change_bps=455,
+        oi_value_usd=32_170_000,
+        whale_long_profit_bps=8_021,
+        whale_oi_ratio_bps=10_071,
+    )
+    with repos.transaction():
+        _item(news, "ahead-oi-item")
+        _event(news, "ahead-oi-event", "ahead-oi-item", "oi")
+        news.insert_oi_signal(
+            event_id="ahead-oi-event",
+            metric_version=OI_METRIC_VERSION,
+            symbol=signal.symbol,
+            direction=signal.direction,
+            oi_change_bps=signal.oi_change_bps,
+            oi_value_usd=signal.oi_value_usd,
+            whale_long_profit_bps=signal.whale_long_profit_bps,
+            whale_oi_ratio_bps=signal.whale_oi_ratio_bps,
+            observed_at_ms=NOW + 250,
+            now_ms=NOW,
+            source_item_id="ahead-oi-item",
+            source_venue="binance",
+        )
+
+    stored = news.oi_signal(event_id="ahead-oi-event", metric_version=OI_METRIC_VERSION)
+    assert stored is not None
+    assert (stored["observed_at_ms"], stored["available_at_ms"]) == (NOW + 250, NOW)
+
+    # And the two host stamps are no longer ordered against each other either, which is the second
+    # shape the same refusal took in production. Written at the table because one `now_ms` feeds both.
+    with repos.transaction():
+        conn.execute(
+            """
+            INSERT INTO news_oi_signals (
+              event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd,
+              whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, created_at_ms,
+              source_item_id, source_venue, available_at_ms, learning_epoch
+            ) VALUES (%s, 'oi_clock_probe_v1', 'BTC', 'rise', 455, 32170000, 8021, 10071,
+                      %s, %s, %s, 'binance', %s, 'unproven')
+            """,
+            ("ahead-oi-event", NOW, NOW + 240, "ahead-oi-item", NOW),
+        )
+
+    probe = news.oi_signal(event_id="ahead-oi-event", metric_version="oi_clock_probe_v1")
+    assert probe is not None
+    assert probe["available_at_ms"] == NOW
+
+
+def test_liquidation_whose_venue_clock_ran_ahead_stores_and_judges_like_any_other(conn) -> None:
+    """#544 F2P. Binance stamped this forced trade 250 ms after this host says it read the frame.
+
+    The parser used to return `None` for it and the fact was dropped without a row — a guard that
+    existed only so `news_market_liquidations_time_order` would never fire. `20260904_0362` deletes
+    both, so the fact parses, stores on the first attempt, and reaches the same admission outcome a
+    frame whose clocks happened to agree would.
+    """
+
+    ahead = parse_liquidation(
+        "BTC Large Short Liquidation 1M at $100000",
+        item_id="ahead-liq-item",
+        fact_id="fact:ahead-liq",
+        provider_source="binance",
+        event_at_ms=NOW + 250,
+        received_at_ms=NOW,
+    )
+    assert ahead is not None
+
+    repos = repositories_for_connection(conn)
+    news = repos.news
+    with repos.transaction():
+        _item(news, "ahead-liq-item")
+        news.insert_market_liquidation(
+            source_key=ahead.source_key,
+            item_id=ahead.item_id,
+            fact_id=ahead.fact_id,
+            ingest_mode="live",
+            symbol=ahead.symbol,
+            venue=ahead.venue,
+            liquidated_position_side=ahead.liquidated_position_side,
+            forced_order_side=ahead.forced_order_side,
+            notional_usd=ahead.notional_usd,
+            quantity=ahead.quantity,
+            price=ahead.price,
+            event_at_ms=ahead.event_at_ms,
+            received_at_ms=ahead.received_at_ms,
+            parser_version=ahead.parser_version,
+            provider_record_identity=ahead.provider_record_identity,
+            symbol_contract_identity=ahead.symbol_contract_identity,
+            position_side_semantics=ahead.position_side_semantics,
+            quantity_semantics=ahead.quantity_semantics,
+            notional_semantics=ahead.notional_semantics,
+            price_semantics=ahead.price_semantics,
+            completeness_assumption=ahead.completeness_assumption,
+            throttle_assumption=ahead.throttle_assumption,
+            source_contract_version=ahead.source_contract_version,
+            source_contract_complete=ahead.source_contract_complete,
+            now_ms=NOW,
+        )
+
+    stored = news.market_liquidation(
+        item_id="ahead-liq-item", fact_id="fact:ahead-liq", parser_version=ahead.parser_version
+    )
+    assert stored is not None
+    assert (stored["event_at_ms"], stored["received_at_ms"]) == (NOW + 250, NOW)
+    assert (stored["symbol"], stored["forced_order_side"]) == ("BTC", "buy")
+
+    # Same fact, same deterministic verdict, same push rule as a frame whose clocks agreed.
+    agreed = parse_liquidation(
+        "BTC Large Short Liquidation 1M at $100000",
+        item_id="ahead-liq-item",
+        fact_id="fact:ahead-liq",
+        provider_source="binance",
+        event_at_ms=NOW,
+        received_at_ms=NOW,
+    )
+    assert agreed is not None
+    # The two facts differ in exactly the two clocks and in nothing a reader is shown.
+    assert replace(ahead, event_at_ms=NOW, received_at_ms=NOW) == agreed
+    judgment = judge_liquidation(ahead)
+    assert judgment.verdict.model_dump(mode="json") == judge_liquidation(agreed).verdict.model_dump(mode="json")
+    assert judgment.decision == judge_liquidation(agreed).decision
+    assert (judgment.decision.final, judgment.decision.override_rule) == ("push", "liquidation_fact_only")

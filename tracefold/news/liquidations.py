@@ -107,11 +107,18 @@ def parse_liquidation(
     received_at_ms: int,
     provider_record_identity: str | None = None,
 ) -> LiquidationFact | None:
-    """Parse the Strategy 2000 wire template, failing closed on ambiguous units or venue."""
+    """Parse the Strategy 2000 wire template, failing closed on ambiguous units or venue.
+
+    The two clocks are not compared. `event_at_ms` is the venue's own stamp for the forced trade and
+    `received_at_ms` is when this host read it; a venue clock running a few hundred milliseconds ahead
+    of this one is a fact about the world, not a malformed frame, and refusing the frame for it
+    discarded a real liquidation that had already happened (#544). A non-positive `event_at_ms` is
+    still refused, because that is a missing stamp rather than an early one.
+    """
 
     match = _FRAME.fullmatch(str(title or ""))
     venue = str(provider_source or "").strip().lower()
-    if match is None or venue not in _VENUES or event_at_ms <= 0 or received_at_ms < event_at_ms:
+    if match is None or venue not in _VENUES or event_at_ms <= 0:
         return None
     try:
         notional = Decimal(match.group("notional")) * _UNIT[match.group("unit").upper()]

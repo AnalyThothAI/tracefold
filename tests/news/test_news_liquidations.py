@@ -15,6 +15,7 @@ from tracefold.news.liquidations import (
     parse_liquidation,
     program_sha256,
 )
+from tracefold.news.liquidations import trace as liquidation_trace
 from tracefold.news.source_contracts import classify_source_contract, source_contract_admission
 
 
@@ -81,18 +82,51 @@ def test_ambiguous_or_malformed_prose_fails_closed(text: str) -> None:
     assert _parse(text) is None
 
 
-def test_unknown_venue_or_timestamp_order_fails_closed() -> None:
+def test_unknown_venue_or_missing_event_stamp_fails_closed() -> None:
     assert _parse("SOL Large Short Liquidation 10K at $150", venue="other") is None
+    # A non-positive venue stamp is a *missing* stamp, which is still a malformed frame.
     assert (
         parse_liquidation(
             "SOL Large Short Liquidation 10K at $150",
             item_id="a" * 64,
             fact_id="whole",
             provider_source="binance",
-            event_at_ms=2_000,
+            event_at_ms=0,
             received_at_ms=1_000,
         )
         is None
+    )
+
+
+def test_venue_clock_ahead_of_this_host_still_parses(fact_ahead) -> None:
+    """#544. The forced trade happened; the venue simply stamped it 250 ms ahead of our clock.
+
+    The refusal here existed only to keep `news_market_liquidations_time_order` from firing, and its
+    price was discarding a real liquidation. `20260904_0362` deletes both.
+    """
+
+    assert fact_ahead is not None
+    assert fact_ahead.event_at_ms - fact_ahead.received_at_ms == 250
+    assert fact_ahead.symbol == "SOL"
+    assert fact_ahead.forced_order_side == "buy"
+    # The same fact a normal frame would produce, judged the same way and pushed for the same rule.
+    judgment = judge(fact_ahead)
+    assert judgment.verdict.direction == "neutral"
+    assert (judgment.decision.final, judgment.decision.override_rule) == ("push", "liquidation_fact_only")
+    # `source_latency_ms` is a reported non-negative metric rather than a gate, so an ahead-of-host
+    # venue stamp floors at zero instead of publishing a negative latency.
+    assert liquidation_trace(fact_ahead)["source_latency_ms"] == 0
+
+
+@pytest.fixture()
+def fact_ahead():
+    return parse_liquidation(
+        "SOL Large Short Liquidation 10K at $150",
+        item_id="a" * 64,
+        fact_id="whole",
+        provider_source="binance",
+        event_at_ms=1_000_250,
+        received_at_ms=1_000_000,
     )
 
 

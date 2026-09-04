@@ -216,6 +216,35 @@ from the configuration digest, and derives protection client order ids from the
 replacement generation alone, so a stop resting at the venue under an id an older
 build chose is not this build's and is refused as unowned exposure.
 
+`20260904_0362` deletes the two CHECKs that ordered a venue's clock against this
+host's (#544).
+
+`news_oi_signals_available_clock_check` asserted
+`available_at_ms >= observed_at_ms AND available_at_ms >= created_at_ms`. A frame
+stamped a few hundred milliseconds ahead was refused, `_store_frame` does not
+classify `psycopg.errors.CheckViolation`, and the News Workers process exited on
+it seven times in six hours on 2026-09-04.
+`news_market_liquidations_time_order` asserted `received_at_ms >= event_at_ms`
+over the same pair of clocks. It never fired, because `parse_liquidation` returned
+`None` for such a frame first — a guard that existed only to keep this CHECK
+quiet, and whose price was discarding a forced trade that had really happened.
+That guard is deleted in the same change; leaving the CHECK would have put the
+refusal straight back one layer down, as the same fatal `CheckViolation`.
+
+The revision archives nothing and refuses nothing: no row is read, written or
+revalidated, every stored row already satisfies both deleted predicates, and
+`news_market_liquidations` holds no rows at all. It needs no operator config step
+and no stopped writer — dropping a CHECK only widens what the table accepts, so a
+writer on the old schema stays correct against the new one — and it touches no
+table the execution Runtime writes, so `make up` alone applies it.
+
+Unlike the hard cuts around it, it has a real `downgrade`, because it deletes
+rules and not data. Each re-added CHECK is validated against every stored row, so
+a database that has since accepted an ahead-of-host fact refuses the downgrade
+rather than deleting that fact, which is the correct refusal and the reason to
+roll forward instead. The walk to base still stops at `20260904_0361`, one
+revision later, and rolls 0362's re-added CHECKs back with it.
+
 ## Database development standard
 
 1. The deployment has one non-superuser application login, `tracefold`.
