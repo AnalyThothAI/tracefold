@@ -164,7 +164,11 @@ Every case with valid accepted Gold and a replayable Stable answer is an
 optimizer sample (#501 D9); the plan calls it `included`, records whether
 Stable already matched (`stable_exact`), and reports `stable_exact_n` /
 `stable_mismatch_n` as readiness diagnostics. Owner columns and `taxonomy_*`
-dimension labels are audit metadata and grant no optimization authority. The
+dimension labels are audit metadata and grant no optimization authority; since
+#534 the development corpus also ignores every `taxonomy_*` dimension when it
+splits accepted cases into boundary and retention, because those labels are
+written by code from whether Stable matched Gold, so counting them would make
+`retention_clusters_min` a quota of Stable taxonomy successes. The
 GEPA student is the single `taxonomy` Predict; the admitted candidate is GEPA's
 own `best_idx` when its selection score is strictly above the seed's, otherwise
 the run is `NO_OP`.

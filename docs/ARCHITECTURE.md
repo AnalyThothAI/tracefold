@@ -1855,7 +1855,13 @@ calendar (#259). The release profile asks for independent connected fact
 clusters by role — boundary, retention, negative, at least one safety — plus the
 strata both split halves must carry, and the Objective Plan asks for Gold-bearing
 clusters and a cluster-disjoint, time-ordered
-split. `natural_day_n` — how many distinct UTC dates the accepted cases opened
+split. A case is *boundary* when the reviewer marked it `must_push`/`must_hold`,
+failed a reviewer-owned rubric dimension, or wrote an `expected_correction`, and
+*retention* otherwise; the five code-written `taxonomy_*` dimensions never count
+(#534), because they record whether Stable's taxonomy equalled Gold rather than
+judging Stable, and treating them as rubric defects turned the retention floor
+into a quota of Stable taxonomy successes. `natural_day_n` — how many
+distinct UTC dates the accepted cases opened
 on — and `window_duration_hours` are published beside those counts as
 diagnostics of case concentration and gate nothing. The two say different things
 and may disagree freely: a 72 h freeze whose reviews all landed in one afternoon

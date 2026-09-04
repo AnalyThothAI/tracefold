@@ -21,6 +21,12 @@ a pass/fail input, and no stable-age, window-age or calendar-day gate may replac
 with its κ and subject-F1 minima. GEPA needs Gold-bearing samples, not a quota of Stable mistakes, and
 a small corpus ends in `NO_OP` on its own; κ is still computed at freeze time and reported beside the
 corpus, but the holdout is the gate.
+
+#534 left every threshold alone and changed what feeds two of them: `_dataset_counts` no longer reads the
+code-written `taxonomy_*` dimensions when it splits boundary from retention, because they compare Stable
+to Gold rather than judging Stable, and counting them made `retention_clusters_min` the same quota of
+Stable mistakes in reverse. That is a profile-semantics change, so `EVALUATOR_VERSION` is `v6` and the
+trusted root moves with it.
 """
 
 from __future__ import annotations
@@ -33,7 +39,7 @@ from typing import Any
 from ..review.desk import READER_CONTRACT_SHA256, READER_CONTRACT_VERSION, REVIEW_RUBRIC_VERSION
 from .contracts import LEARNING_PROFILE_ID
 
-EVALUATOR_VERSION = "news_candidate_evaluator_v5"
+EVALUATOR_VERSION = "news_candidate_evaluator_v6"
 
 _PROFILE: dict[str, Any] = {
     "profile_id": LEARNING_PROFILE_ID,
