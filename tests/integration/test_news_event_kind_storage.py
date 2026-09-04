@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -657,3 +658,79 @@ def test_oi_frame_whose_provider_clock_ran_ahead_stores_on_the_first_attempt(con
     probe = news.oi_signal(event_id="ahead-oi-event", metric_version="oi_clock_probe_v1")
     assert probe is not None
     assert probe["available_at_ms"] == NOW
+
+
+def test_liquidation_whose_venue_clock_ran_ahead_stores_and_judges_like_any_other(conn) -> None:
+    """#544 F2P. Binance stamped this forced trade 250 ms after this host says it read the frame.
+
+    The parser used to return `None` for it and the fact was dropped without a row — a guard that
+    existed only so `news_market_liquidations_time_order` would never fire. `20260904_0362` deletes
+    both, so the fact parses, stores on the first attempt, and reaches the same admission outcome a
+    frame whose clocks happened to agree would.
+    """
+
+    ahead = parse_liquidation(
+        "BTC Large Short Liquidation 1M at $100000",
+        item_id="ahead-liq-item",
+        fact_id="fact:ahead-liq",
+        provider_source="binance",
+        event_at_ms=NOW + 250,
+        received_at_ms=NOW,
+    )
+    assert ahead is not None
+
+    repos = repositories_for_connection(conn)
+    news = repos.news
+    with repos.transaction():
+        _item(news, "ahead-liq-item")
+        news.insert_market_liquidation(
+            source_key=ahead.source_key,
+            item_id=ahead.item_id,
+            fact_id=ahead.fact_id,
+            ingest_mode="live",
+            symbol=ahead.symbol,
+            venue=ahead.venue,
+            liquidated_position_side=ahead.liquidated_position_side,
+            forced_order_side=ahead.forced_order_side,
+            notional_usd=ahead.notional_usd,
+            quantity=ahead.quantity,
+            price=ahead.price,
+            event_at_ms=ahead.event_at_ms,
+            received_at_ms=ahead.received_at_ms,
+            parser_version=ahead.parser_version,
+            provider_record_identity=ahead.provider_record_identity,
+            symbol_contract_identity=ahead.symbol_contract_identity,
+            position_side_semantics=ahead.position_side_semantics,
+            quantity_semantics=ahead.quantity_semantics,
+            notional_semantics=ahead.notional_semantics,
+            price_semantics=ahead.price_semantics,
+            completeness_assumption=ahead.completeness_assumption,
+            throttle_assumption=ahead.throttle_assumption,
+            source_contract_version=ahead.source_contract_version,
+            source_contract_complete=ahead.source_contract_complete,
+            now_ms=NOW,
+        )
+
+    stored = news.market_liquidation(
+        item_id="ahead-liq-item", fact_id="fact:ahead-liq", parser_version=ahead.parser_version
+    )
+    assert stored is not None
+    assert (stored["event_at_ms"], stored["received_at_ms"]) == (NOW + 250, NOW)
+    assert (stored["symbol"], stored["forced_order_side"]) == ("BTC", "buy")
+
+    # Same fact, same deterministic verdict, same push rule as a frame whose clocks agreed.
+    agreed = parse_liquidation(
+        "BTC Large Short Liquidation 1M at $100000",
+        item_id="ahead-liq-item",
+        fact_id="fact:ahead-liq",
+        provider_source="binance",
+        event_at_ms=NOW,
+        received_at_ms=NOW,
+    )
+    assert agreed is not None
+    # The two facts differ in exactly the two clocks and in nothing a reader is shown.
+    assert replace(ahead, event_at_ms=NOW, received_at_ms=NOW) == agreed
+    judgment = judge_liquidation(ahead)
+    assert judgment.verdict.model_dump(mode="json") == judge_liquidation(agreed).verdict.model_dump(mode="json")
+    assert judgment.decision == judge_liquidation(agreed).decision
+    assert (judgment.decision.final, judgment.decision.override_rule) == ("push", "liquidation_fact_only")

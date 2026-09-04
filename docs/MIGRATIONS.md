@@ -216,24 +216,34 @@ from the configuration digest, and derives protection client order ids from the
 replacement generation alone, so a stop resting at the venue under an id an older
 build chose is not this build's and is refused as unowned exposure.
 
-`20260904_0362` deletes `news_oi_signals_available_clock_check` (#544). The rule
-asserted `available_at_ms >= observed_at_ms AND available_at_ms >= created_at_ms`,
-which orders the provider's own exchange clock against this host's; a frame
+`20260904_0362` deletes the two CHECKs that ordered a venue's clock against this
+host's (#544).
+
+`news_oi_signals_available_clock_check` asserted
+`available_at_ms >= observed_at_ms AND available_at_ms >= created_at_ms`. A frame
 stamped a few hundred milliseconds ahead was refused, `_store_frame` does not
 classify `psycopg.errors.CheckViolation`, and the News Workers process exited on
-it seven times in six hours on 2026-09-04. It archives nothing and refuses
-nothing: no row is read, written or revalidated, and every stored row already
-satisfies the deleted predicate. It needs no operator config step and no stopped
-writer — dropping a CHECK only widens what the table accepts, so a writer on the
-old schema stays correct against the new one — and it touches no table the
-execution Runtime writes, so `make up` alone applies it.
+it seven times in six hours on 2026-09-04.
+`news_market_liquidations_time_order` asserted `received_at_ms >= event_at_ms`
+over the same pair of clocks. It never fired, because `parse_liquidation` returned
+`None` for such a frame first — a guard that existed only to keep this CHECK
+quiet, and whose price was discarding a forced trade that had really happened.
+That guard is deleted in the same change; leaving the CHECK would have put the
+refusal straight back one layer down, as the same fatal `CheckViolation`.
 
-Unlike the hard cuts around it, it has a real `downgrade`, because it deletes a
-rule and not data. The re-added CHECK is validated against every stored row, so a
-database that has since accepted an ahead-of-host frame refuses the downgrade
-rather than deleting that frame, which is the correct refusal and the reason to
+The revision archives nothing and refuses nothing: no row is read, written or
+revalidated, every stored row already satisfies both deleted predicates, and
+`news_market_liquidations` holds no rows at all. It needs no operator config step
+and no stopped writer — dropping a CHECK only widens what the table accepts, so a
+writer on the old schema stays correct against the new one — and it touches no
+table the execution Runtime writes, so `make up` alone applies it.
+
+Unlike the hard cuts around it, it has a real `downgrade`, because it deletes
+rules and not data. Each re-added CHECK is validated against every stored row, so
+a database that has since accepted an ahead-of-host fact refuses the downgrade
+rather than deleting that fact, which is the correct refusal and the reason to
 roll forward instead. The walk to base still stops at `20260904_0361`, one
-revision later, and rolls 0362's re-added CHECK back with it.
+revision later, and rolls 0362's re-added CHECKs back with it.
 
 ## Database development standard
 

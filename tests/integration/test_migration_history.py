@@ -1231,14 +1231,15 @@ def test_runtime_identity_cut_drops_the_columns_and_rewrites_the_observation_pay
         conn.close()
 
 
-def test_oi_clock_check_cut_removes_the_one_rule_and_leaves_the_rest_of_the_ledger() -> None:
-    """#544. `20260904_0362` deletes exactly one CHECK and touches nothing else on the frame ledger.
+def test_cross_clock_check_cut_removes_exactly_two_rules_and_leaves_the_rest() -> None:
+    """#544. `20260904_0362` deletes the two CHECKs that ordered a venue clock against this host's.
 
-    The rule it deletes ordered the provider's own `observed_at_ms` against this host's
-    `available_at_ms`, which is not a property of the data — the exchange clock is free to run ahead —
-    and PostgreSQL enforced it by refusing the insert, which the Triage handler does not classify and
-    the Workers process therefore died on. The catalog is the whole proof for the revision; that a
-    frame stamped ahead of the host now stores on its first attempt is proven at the repository seam.
+    `news_oi_signals_available_clock_check` compared the provider's `observed_at_ms` with this host's
+    `available_at_ms`; PostgreSQL enforced it by refusing the insert, which the Triage handler does not
+    classify and the Workers process therefore died on. `news_market_liquidations_time_order` compared
+    the venue's `event_at_ms` with this host's `received_at_ms` over the same pair of clocks, and never
+    fired only because `parse_liquidation` dropped such a frame first. Nothing else on either ledger
+    moves: the rules that state what a fact *is* are not clock assumptions.
     """
 
     config = _config()
@@ -1247,16 +1248,17 @@ def test_oi_clock_check_cut_removes_the_one_rule_and_leaves_the_rest_of_the_ledg
 
     conn = connect_postgres_test(read_only=False)
     try:
-        before = _oi_signal_checks(conn)
-        assert "news_oi_signals_available_clock_check" in before
+        before = _table_checks(conn, "news_oi_signals") | _table_checks(conn, "news_market_liquidations")
+        assert {"news_oi_signals_available_clock_check", "news_market_liquidations_time_order"} <= before
 
         command.upgrade(config, "head")
-        after = _oi_signal_checks(conn)
+        after = _table_checks(conn, "news_oi_signals") | _table_checks(conn, "news_market_liquidations")
 
-        assert before - after == {"news_oi_signals_available_clock_check"}
+        assert before - after == {
+            "news_oi_signals_available_clock_check",
+            "news_market_liquidations_time_order",
+        }
         assert after - before == set()
-        # The rules that state what a frame *is* stay: the direction vocabulary, the epoch identity and
-        # the all-or-nothing source contract are not clock assumptions.
         assert {
             "news_oi_signals_direction_check",
             "news_oi_signals_learning_epoch_nonempty",
@@ -1266,13 +1268,14 @@ def test_oi_clock_check_cut_removes_the_one_rule_and_leaves_the_rest_of_the_ledg
         conn.close()
 
 
-def _oi_signal_checks(conn) -> set[str]:
+def _table_checks(conn, table: str) -> set[str]:
     return {
         str(row["conname"])
         for row in conn.execute(
             """
             SELECT con.conname FROM pg_constraint con
-             WHERE con.contype = 'c' AND con.conrelid = 'public.news_oi_signals'::regclass
-            """
+             WHERE con.contype = 'c' AND con.conrelid = %s::regclass
+            """,
+            (f"public.{table}",),
         ).fetchall()
     }
