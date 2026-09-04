@@ -136,9 +136,16 @@ non-thinking production `qwen3.8-27b` is not a drafter because it *is* the
 Stable taxonomy route — same seed, same `evidence_json`, temperature 0 — so its
 label is already in the verdict and readiness reports that agreement for free as
 `stable_exact_n / stable_mismatch_n`. The default is `--rubric-model
-qwen3.8-27b:thinking --taxonomy-models deepseek-v4-pro,qwen3.8-27b:thinking`: A
-is DeepSeek, so a disagreed draft leans away from the Stable family and leaves
-GEPA a target, and B is the local thinking Qwen at zero cost.
+deepseek-v4-pro --taxonomy-models deepseek-v4-pro,qwen3.8-27b:thinking`: A is
+DeepSeek, so a disagreed draft leans away from the Stable family and leaves GEPA
+a target, and B is the local thinking Qwen at zero cost. The rubric model is
+DeepSeek rather than the thinking Qwen because the 2026-09-04 01:22 UTC smoke
+batch had 7 of 20 rubric drafts rejected by `RubricDraft` validation when
+`qwen3.8-27b:thinking` drafted the rubric under `prompt_json` — invented
+`trade_*` enum values and extra keys — against 0 of 40 blind taxonomy failures,
+and a rejected rubric discards that task's two paid taxonomy labels; the rubric
+drafter never labels taxonomy, so one model may hold both the rubric and
+drafter-A roles.
 
 The existing development Dataset projects four model-owned axes into each
 episode: `subject_codes`, `event_family`, `change_state`, and

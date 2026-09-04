@@ -1166,10 +1166,19 @@ For the taxonomy Gold → Candidate workflow (#501 PR-D, drafter routes #534):
    route — same seed, same `evidence_json`, temperature 0 — so its label is
    already in the verdict and readiness reports that agreement for free as
    `stable_exact_n / stable_mismatch_n`. The default is `news learning
-   draft-reviews --rubric-model qwen3.8-27b:thinking --taxonomy-models
+   draft-reviews --rubric-model deepseek-v4-pro --taxonomy-models
    deepseek-v4-pro,qwen3.8-27b:thinking --hours 24 --limit 100 --out FILE`: A is
    DeepSeek, so a disagreed draft leans away from the Stable family and leaves
-   GEPA a target, and B is the local thinking Qwen at zero cost. Swap A for
+   GEPA a target, and B is the local thinking Qwen at zero cost. The rubric
+   model is DeepSeek because the 2026-09-04 01:22 UTC smoke batch of 20 tasks
+   had 7/20 rubric drafts rejected by `RubricDraft` validation when
+   `qwen3.8-27b:thinking` drafted the rubric under `prompt_json` — invented
+   `trade_*` enum values such as `single_instrument`, `cross_asset` and
+   `in_line`, plus extra keys such as `draft_assets` and `dimensions.*_note` —
+   while the two blind taxonomy drafters failed 0/40, and a rejected rubric
+   discards that task's two paid taxonomy labels; the rubric drafter never
+   labels taxonomy, so DeepSeek holding both the rubric and drafter-A roles
+   costs nothing in blindness and stays inside the route set. Swap A for
    `deepseek-v4-flash` to spend less. Two Qwen names also run; the operator then
    owns the trade-off that agreeing samples equal Stable and GEPA likely returns
    `NO_OP`.

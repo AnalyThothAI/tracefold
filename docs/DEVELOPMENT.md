@@ -538,9 +538,13 @@ uv run tracefold news learning baseline --from-ms START --to-ms END \
 # — and the two taxonomy names only have to differ. The non-thinking
 # qwen3.8-27b is not a drafter: it is the Stable taxonomy route itself (same
 # seed, same evidence_json, temperature 0), and readiness already reports that
-# agreement as stable_exact_n / stable_mismatch_n. Disagreements are flagged for
-# the reviewer's edit before acceptance.
-uv run tracefold news learning draft-reviews --rubric-model qwen3.8-27b:thinking \
+# agreement as stable_exact_n / stable_mismatch_n. The rubric model is DeepSeek
+# because the thinking Qwen invents trade_* enum values and extra keys under
+# prompt_json (7/20 rubric drafts rejected in the first smoke batch, against 0/40
+# blind taxonomy failures), and a rejected rubric discards that task's two paid
+# taxonomy labels. Disagreements are flagged for the reviewer's edit before
+# acceptance.
+uv run tracefold news learning draft-reviews --rubric-model deepseek-v4-pro \
   --taxonomy-models deepseek-v4-pro,qwen3.8-27b:thinking --hours 24 --limit 100 \
   --out /tmp/drafts.json
 uv run tracefold news review accept-drafts --file /tmp/drafts.json --dry-run
