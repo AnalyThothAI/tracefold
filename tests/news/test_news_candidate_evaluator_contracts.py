@@ -8,9 +8,11 @@ import pytest
 
 import tracefold.news.learning.evaluate as candidate_evaluator_module
 from tests.support.news_judgment import news_taxonomy
+from tracefold.news.learning.contracts import PromptPatchV1
 from tracefold.news.learning.evaluate import ArmManifest, development_coverage_blockers
 from tracefold.news.learning.profile import _PROFILE
 from tracefold.news.models import TriageVerdict
+from tracefold.news.program.artifact import ProgramStrategyArtifactV1
 from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
 from tracefold.news.program.runtime import PROGRAM_VERSION
@@ -520,3 +522,104 @@ def test_stable_or_common_execution_blocks_only_past_the_shared_rate_cap() -> No
     assert unavailability(pair_n, pair_n) == (1.0, True)
     # no assigned pairs at all is an evidence gap, never a pass
     assert unavailability(1, 0) == (1.0, True)
+
+
+def _stable_artifact() -> ProgramStrategyArtifactV1:
+    from tracefold.news.program.artifact import load_stable_program_artifact
+
+    return load_stable_program_artifact()
+
+
+def _patch(**overrides: str) -> PromptPatchV1:
+    parent = _stable_artifact()
+    values = {
+        "event_semantics_instruction": parent.event_semantics_instruction,
+        "taxonomy_instruction": parent.taxonomy_instruction,
+        "reader_card_instruction": parent.reader_card_instruction,
+    }
+    values.update(overrides)
+    return PromptPatchV1(**values)
+
+
+def test_taxonomy_only_is_read_off_the_write_set_not_declared() -> None:
+    """#548: the class is the byte difference against the parent, and nothing else says so."""
+
+    parent = _stable_artifact()
+    taxonomy_only = _patch(taxonomy_instruction=parent.taxonomy_instruction + "\nPrefer the narrower code.")
+
+    assert taxonomy_only.changed_predictors(parent) == ("taxonomy",)
+    assert taxonomy_only.is_taxonomy_only(parent)
+    # A write-set that also moves a reader-facing Predictor keeps every pairwise stage.
+    also_reader_card = _patch(
+        taxonomy_instruction=parent.taxonomy_instruction + "\nPrefer the narrower code.",
+        reader_card_instruction=parent.reader_card_instruction + "\nKeep the first clause concrete.",
+    )
+    assert also_reader_card.changed_predictors(parent) == ("taxonomy", "reader_card")
+    assert not also_reader_card.is_taxonomy_only(parent)
+    # An unchanged write-set changes nothing and is not this class either.
+    assert not _patch().is_taxonomy_only(parent)
+    assert not _patch().changes(parent)
+
+
+def _taxonomy_evidence(
+    *,
+    cluster_n: int,
+    overall_delta: float | None,
+    regressed_axes: tuple[str, ...] = (),
+) -> dict[str, object]:
+    return {
+        "stable": {"cluster_n": cluster_n, "taxonomy_overall": 0.7},
+        "candidate": {
+            "cluster_n": cluster_n,
+            "taxonomy_overall": None if overall_delta is None else 0.7 + overall_delta,
+        },
+        "delta": {"taxonomy_overall": overall_delta},
+        "regressed_axes": list(regressed_axes),
+    }
+
+
+def test_a_taxonomy_only_holdout_passes_only_on_a_strict_per_axis_improvement() -> None:
+    """#548: the per-axis evidence the evaluator already computes is the whole held-out primary."""
+
+    codes = candidate_evaluator_module._taxonomy_only_release_codes
+    floor = int(_PROFILE["validation"]["primary_clusters_min"])
+
+    # Strictly above Stable with no axis below it: nothing blocks and nothing fails, so the report passes.
+    assert codes(_taxonomy_evidence(cluster_n=floor, overall_delta=0.04), stage="holdout") == ((), ())
+    # Any axis regression is a FAIL, whatever the aggregate did.
+    assert codes(
+        _taxonomy_evidence(cluster_n=floor, overall_delta=0.02, regressed_axes=("change_state_accuracy",)),
+        stage="holdout",
+    ) == ((), ("candidate_taxonomy_axis_regression",))
+    # Matching Stable exactly is not evidence of an improvement.
+    assert codes(_taxonomy_evidence(cluster_n=floor, overall_delta=0.0), stage="holdout") == (
+        ("taxonomy_overall_not_improved",),
+        (),
+    )
+    # Below the profile's primary floor, and with no Gold at all, the holdout stays UNKNOWN.
+    assert codes(_taxonomy_evidence(cluster_n=floor - 1, overall_delta=0.04), stage="holdout") == (
+        ("validation_primary_review_insufficient",),
+        (),
+    )
+    assert codes(_taxonomy_evidence(cluster_n=0, overall_delta=None), stage="holdout") == (
+        ("taxonomy_release_evidence_empty", "taxonomy_overall_not_improved"),
+        (),
+    )
+    # The 30-cluster floor is the validation profile's, so the offline screen does not read it.
+    assert codes(_taxonomy_evidence(cluster_n=1, overall_delta=0.04), stage="offline") == ((), ())
+
+
+def test_a_taxonomy_only_holdout_pass_promotes_without_shadow_or_canary() -> None:
+    """#548: both later stages measure reader-facing samples this class cannot move."""
+
+    next_stage = candidate_evaluator_module._next_stage
+
+    assert next_stage("holdout", "pass", taxonomy_only=True) == ("promotion", "advance")
+    assert next_stage("holdout", "pass", taxonomy_only=False) == ("shadow", "advance")
+    # Every other transition is the one the release plane already had.
+    assert next_stage("offline", "pass", taxonomy_only=True) == ("holdout", "advance")
+    assert next_stage("shadow", "pass", taxonomy_only=False) == ("canary", "advance")
+    assert next_stage("canary", "pass", taxonomy_only=False) == ("promotion", "advance")
+    assert next_stage("holdout", "fail", taxonomy_only=True) == ("none", "reject")
+    assert next_stage("canary", "fail", taxonomy_only=False) == ("none", "rollback")
+    assert next_stage("holdout", "unknown", taxonomy_only=True) == ("none", "hold")

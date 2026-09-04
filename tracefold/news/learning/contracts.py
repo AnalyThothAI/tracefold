@@ -454,10 +454,28 @@ class PromptPatchV1(BaseModel):
     def instruction_for(self, predictor: str) -> str:
         return str(getattr(self, f"{predictor}_instruction"))
 
-    def changes(self, parent: ProgramStrategyArtifactV1) -> bool:
-        return any(
-            self.instruction_for(predictor) != parent.instruction_for(predictor) for predictor in PREDICTOR_NAMES
+    def changed_predictors(self, parent: ProgramStrategyArtifactV1) -> tuple[str, ...]:
+        """Exactly which Predictor instructions this write-set rewrites, in Program order."""
+
+        return tuple(
+            predictor
+            for predictor in PREDICTOR_NAMES
+            if self.instruction_for(predictor) != parent.instruction_for(predictor)
         )
+
+    def changes(self, parent: ProgramStrategyArtifactV1) -> bool:
+        return bool(self.changed_predictors(parent))
+
+    def is_taxonomy_only(self, parent: ProgramStrategyArtifactV1) -> bool:
+        """Whether this candidate can move nothing the reader ever sees (#548).
+
+        EventSemantics and ReaderCard byte-identical to the parent means the verdict, the card and the
+        delivery decision are the parent's on every case, because `taxonomy` feeds none of them. It is
+        derived from the write-set the ledger already carries, never declared: a boolean a caller could
+        set would be a claim about two strings anyone can compare.
+        """
+
+        return self.changed_predictors(parent) == ("taxonomy",)
 
 
 class PromptCandidateV1(BaseModel):

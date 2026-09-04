@@ -171,7 +171,12 @@ written by code from whether Stable matched Gold, so counting them would make
 `retention_clusters_min` a quota of Stable taxonomy successes. The
 GEPA student is the single `taxonomy` Predict; the admitted candidate is GEPA's
 own `best_idx` when its selection score is strictly above the seed's, otherwise
-the run is `NO_OP`.
+the run is `NO_OP`. The held-out measurement is the same scalar over a window
+frozen after registration, which GEPA neither reflected on nor selected against:
+a taxonomy-only candidate's holdout is decided by `taxonomy_overall` and the four
+axis deltas rather than by blind pairwise preference, because taxonomy reaches
+neither the verdict, the card nor Delivery and both arms would show the reviewer
+the same card.
 
 The public chain is the existing `news learning readiness` followed by one
 `news learning run`; Dataset forms of `baseline` and standalone `optimize` do

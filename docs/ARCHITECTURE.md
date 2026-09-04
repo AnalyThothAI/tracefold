@@ -1890,7 +1890,15 @@ frozen corpus, exiting `0` only on `ADVANCE`. Candidate zero is the sole optimiz
 GEPA's own `best_idx` is the admitted candidate when it is strictly above candidate zero with a valid
 instruction. The only later baseline is
 Stable on accepted examples that did not exist when the candidate was made,
-produced by the release plane's holdout stage.
+produced by the release plane's holdout stage. A candidate whose
+EventSemantics and ReaderCard instructions are byte-identical to its parent —
+derived from the registered write-set, never declared — moves no verdict, card or
+delivery decision, so the blind-pairwise stages show both arms the identical card
+and can only report a coin flip; for that class the holdout's primary is the
+per-axis taxonomy evidence the evaluator already computes (strictly above Stable
+on `taxonomy_overall`, no axis below it, over at least `primary_clusters_min`
+Gold-bearing clusters), a PASS advances straight to promotion, and evaluation
+requires a live Program because recordings are addressed by whole-program SHA.
 
 Metric v8 (`tracefold.news.production_action_trade_relevance_v8`) uses the one
 version-bound production-action projection shared by baseline, failure-cluster
