@@ -14,24 +14,12 @@ CommandStage = Literal["recorded", "accepted", "rejected", "completed", "expired
 
 # Every terminal entry disposition that means "this Signal or manual Command became an order".
 # Everything else the Runtime writes is a refusal; the retryable clock refusals never reach a durable
-# row at all (`RETRYABLE_ENTRY_REASONS`). One durable word is stored where an operator reads two --
-# what happened, and why -- so the split is derived rather than duplicated into the observation.
+# row at all (`RETRYABLE_ENTRY_REASONS`). It also fed a published `accepted` / `rejected` split beside
+# `stage`, which already says `ordered` or `rejected` about the same row -- one word, derived once
+# here, is what `/api/trading/executions` publishes (#537 PR-5).
 ACCEPTED_ENTRY_DISPOSITIONS: frozenset[str] = frozenset(
     {"accepted", "recovered", "replayed_query_first", "unknown_query_first"}
 )
-
-
-def signal_disposition(reason: str | None) -> Literal["accepted", "rejected"] | None:
-    """`accepted` or `rejected` for one durable entry disposition reason; `None` while undisposed.
-
-    One vocabulary for both entry identities: a Signal's `signal_disposition` and a manual entry's
-    `control_disposition` are written by the same Runtime path, which splits the word off exactly the
-    frozenset above (`oi_runtime/observations.py:dispose_entry`).
-    """
-
-    if reason is None:
-        return None
-    return "accepted" if reason in ACCEPTED_ENTRY_DISPOSITIONS else "rejected"
 
 
 def execution_stage(
@@ -94,5 +82,4 @@ __all__ = [
     "ExecutionStage",
     "command_stage",
     "execution_stage",
-    "signal_disposition",
 ]

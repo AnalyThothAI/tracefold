@@ -78,7 +78,7 @@ def test_disabled_execution_never_projects_a_stale_runtime_as_ready() -> None:
     assert projection["execution_safe"] is False
     assert projection["entries_armed"] is False
     assert projection["entry_block_reason"] == "disabled"
-    assert projection["heartbeat_at_ns"] is None
+    assert projection["facts_expire_at_ms"] is None
 
 
 def test_active_execution_projects_exact_runtime_gates_and_no_identity_ceremony() -> None:
@@ -103,6 +103,10 @@ def test_active_execution_projects_exact_runtime_gates_and_no_identity_ceremony(
             "lifecycle_state",
         }
     )
+    # #537 PR-5. One field per operator question. The two raw observation clocks are what
+    # `facts_expire_at_ms` and `reconciliation_age_ms` are derived from, the two readiness counts said
+    # what `current_account` carries row by row, and raw `account_flat` is what the venue had not yet
+    # proven -- `account_flat_proven` is the one an operator acts on.
     assert set(projection) == {
         "mode",
         "account_slot",
@@ -110,17 +114,12 @@ def test_active_execution_projects_exact_runtime_gates_and_no_identity_ceremony(
         "execution_safe",
         "entries_armed",
         "entry_block_reason",
-        "heartbeat_at_ns",
-        "reconciliation_observed_at_ns",
         "reconciliation_age_ms",
         "startup_reconciled",
         "entries_paused",
         "emergency_halted",
         "unexpected_exposure",
-        "account_flat",
         "account_flat_proven",
-        "positions_count",
-        "open_orders_count",
         "protection_status",
         "routes_count",
         "facts_expire_at_ms",
@@ -142,7 +141,6 @@ def test_flat_proof_requires_a_fresh_private_reconciliation() -> None:
 
     assert projection["alive"] is True
     assert projection["execution_safe"] is True
-    assert projection["account_flat"] is True
     assert projection["account_flat_proven"] is False
     assert projection["reconciliation_age_ms"] == 11_000
     assert projection["current_account"] is None
@@ -253,6 +251,23 @@ def test_current_account_projection_remains_a_distinct_read_model() -> None:
     assert projection["account_flat_proven"] is False
     assert projection["current_account"]["equity_usd"] == "995"
     assert projection["current_account"]["positions"][0]["protection_full_coverage"] is True
+    # #537 PR-5. The stored snapshot's own two clocks are what `facts_expire_at_ms` is derived from,
+    # `day_start_equity_usd` is the baseline `daily_drawdown_usd` was already measured against, and a
+    # `truncated` snapshot is exactly one that is not `complete`.
+    assert set(projection["current_account"]) == {
+        "equity_usd",
+        "daily_drawdown_usd",
+        "daily_drawdown_bps",
+        "aggregate_risk_usd",
+        "positions",
+        "orders",
+        "open_orders_count",
+        "inflight_orders_count",
+        "unknown_orders_count",
+        "complete",
+        "audit_healthy",
+        "audit_failure_reason",
+    }
 
 
 def test_active_execution_fails_closed_on_identity_or_heartbeat_drift() -> None:
@@ -287,7 +302,7 @@ def test_transient_flat_and_unexpected_exposure_facts_remain_fail_closed() -> No
     assert projection["execution_safe"] is False
     assert projection["entries_armed"] is False
     assert projection["entry_block_reason"] == "unexpected_exposure"
-    assert projection["account_flat"] is True
+    assert projection["unexpected_exposure"] is True
     assert projection["unexpected_exposure"] is True
 
     paused_projection = execution_readiness_projection(

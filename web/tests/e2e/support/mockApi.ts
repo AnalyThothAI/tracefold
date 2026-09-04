@@ -19,7 +19,6 @@ import {
   tradingExecutionFixture,
   tradingExecutionsFixture,
   tradingGateFixture,
-  tradingSignalsForMarket,
   tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
 
@@ -88,8 +87,8 @@ export async function installMockApi(
     if (path.startsWith("/api/news/events/")) return fulfill(route, newsEventDetailData(path));
     // #207 PR-W1: identity is keyed on the path segment, so the token page's baseline names the base the
     // URL asked for rather than the fixture's default.
-    // #207 PR-W4: the shell reads trading status on every route for the 交易 badge, so every e2e page
-    // needs it answered or the unhandled-request assertion fires on routes that have nothing to do with it.
+    // #537 PR-5: only `/trading` reads trading status now, but the mock still answers it everywhere —
+    // an unhandled-request assertion on a route that never asks costs nothing and one that does is real.
     if (path === "/api/trading/status") {
       return fulfill(
         route,
@@ -98,14 +97,10 @@ export async function installMockApi(
         ),
       );
     }
-    // #282: the token page asks for one underlying, and what it gets back has to belong to that name —
-    // otherwise 资本复盘 renders its empty path on every baseline and the panel is frozen in the one
-    // state it is least useful in.
+    // #282: a caller that asks for one underlying has to get that name back. `/trading` asks for none
+    // and gets the whole window, which is what the Case drawer opens one row of.
     if (path === "/api/trading/cases") {
       return fulfill(route, tradingCasesForUnderlying(url.searchParams.get("underlying")));
-    }
-    if (path === "/api/trading/signals") {
-      return fulfill(route, tradingSignalsForMarket(url.searchParams.get("market")));
     }
     if (path === "/api/trading/executions") {
       return fulfill(route, options.tradingExecutions ?? tradingExecutionsFixture());

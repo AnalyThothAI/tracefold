@@ -113,9 +113,7 @@ def test_a_stopped_out_signal_is_one_closed_row_with_its_exit_price_and_realized
     assert row["case_id"] == "case-1"
     assert row["market_key"] == "crypto:perp:BTC:USDT"
     assert row["direction"] == "long"
-    assert row["disposition"] == "accepted"
     assert row["disposition_reason"] == "accepted"
-    assert row["position_status"] == "closed"
     assert row["exit_reason"] == "stop_filled"
     assert row["realized_pnl_usd"] is not None
     assert float(row["realized_pnl_usd"]) < 0
@@ -123,7 +121,9 @@ def test_a_stopped_out_signal_is_one_closed_row_with_its_exit_price_and_realized
     # `closed` reports the quantity that was open, not the zero the Runtime's own counter had reached.
     assert row["fill_quantity"] == "0.049"
     assert float(row["stop_trigger_price"]) < float(row["fill_avg_price"])
-    assert row["last_observed_at_ns"] >= row["observed_at_ns"]
+    # #537 PR-5. The venue's own `order_status` and `position_status` are what `stage` is derived
+    # from, and the `accepted` / `rejected` split beside it said what `closed` already says.
+    assert {"disposition", "order_status", "position_status", "last_observed_at_ns"}.isdisjoint(row)
 
     verify = connect_postgres_test(read_only=False)
     try:
@@ -211,17 +211,15 @@ def test_a_manual_entry_is_its_own_row_and_carries_the_same_close_facts_as_a_sig
     assert row["market_key"] == _MARKET_KEY
     assert row["direction"] == "long"
     assert row["observed_at_ns"] == NOW_NS
-    assert row["disposition"] == "accepted"
     assert row["disposition_reason"] == "accepted"
     assert row["stage"] == "closed"
-    assert row["position_status"] == "closed"
     assert row["exit_reason"] == "flatten"
     assert row["realized_pnl_usd"] is not None
     assert row["exit_price"] is not None
     assert row["fill_quantity"] is not None and float(row["fill_quantity"]) > 0
     assert row["fill_avg_price"] is not None
     assert row["stop_trigger_price"] is not None
-    assert row["last_observed_at_ns"] >= row["observed_at_ns"]
+    assert {"disposition", "order_status", "position_status", "last_observed_at_ns"}.isdisjoint(row)
 
     # `commands[]` is unchanged: the same manual entry is still one instruction record beside the
     # execution row it produced, and the flatten that closed it is another.

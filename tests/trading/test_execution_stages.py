@@ -4,12 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tracefold.trading import (
-    ACCEPTED_ENTRY_DISPOSITIONS,
-    command_stage,
-    execution_stage,
-    signal_disposition,
-)
+from tracefold.trading import ACCEPTED_ENTRY_DISPOSITIONS, command_stage, execution_stage
 
 _NOW_NS = 1_900_000_000_000_000_000
 
@@ -26,9 +21,8 @@ def _stage(**overrides: str | None) -> str:
     return execution_stage(**facts)  # type: ignore[arg-type]
 
 
-def test_a_signal_with_no_observation_yet_is_pending_and_carries_no_verdict() -> None:
+def test_a_signal_with_no_observation_yet_is_pending() -> None:
     assert _stage() == "pending"
-    assert signal_disposition(None) is None
 
 
 @pytest.mark.parametrize(
@@ -49,14 +43,6 @@ def test_a_disposition_alone_decides_between_ordered_expired_and_rejected(reason
 
 
 @pytest.mark.parametrize(
-    ("reason", "verdict"),
-    [("accepted", "accepted"), ("recovered", "accepted"), ("expired", "rejected"), ("entries_paused", "rejected")],
-)
-def test_the_two_word_verdict_splits_the_one_word_the_runtime_stores(reason: str, verdict: str) -> None:
-    assert signal_disposition(reason) == verdict
-
-
-@pytest.mark.parametrize(
     ("reason", "verdict", "expected"),
     [
         ("accepted", "accepted", "ordered"),
@@ -64,20 +50,20 @@ def test_the_two_word_verdict_splits_the_one_word_the_runtime_stores(reason: str
         ("expired", "rejected", "expired"),
     ],
 )
-def test_a_manual_entry_reason_derives_the_same_verdict_the_runtime_stored_beside_it(
+def test_a_manual_entry_reason_derives_the_same_stage_a_signal_reason_does(
     reason: str,
     verdict: str,
     expected: str,
 ) -> None:
-    """#528 PR-3. A manual entry's `control_disposition` carries both the reason and the split word.
+    """#528 PR-3. A manual entry's `control_disposition` carries the same reason word a Signal's does.
 
-    The read model returns the reason column alone for either entry identity, so the split has to be
-    the one the Runtime already wrote -- `dispose_command` computes it from `ACCEPTED_ENTRY_DISPOSITIONS`,
-    which is the frozenset `signal_disposition` reads.
+    The read model returns that one column for either entry identity, and `stage` is the only word
+    derived from it: the published `accepted` / `rejected` split beside it said what `ordered` and
+    `rejected` already say about the same row (#537 PR-5). `dispose_command` writes the stored word
+    off `ACCEPTED_ENTRY_DISPOSITIONS`, which is the frozenset `execution_stage` reads.
     """
 
     assert ("accepted" if reason in ACCEPTED_ENTRY_DISPOSITIONS else "rejected") == verdict
-    assert signal_disposition(reason) == verdict
     assert _stage(disposition_reason=reason) == expected
 
 

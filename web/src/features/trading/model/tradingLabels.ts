@@ -64,10 +64,7 @@ export const ENTRY_BLOCK_REASON_ZH: Record<string, string> = {
   emergency_halted: "已紧急停止",
   entries_paused: "开仓已暂停",
   entry_blocked: "开仓被拒绝（未具名）",
-  execution_unsafe: "现有 exposure 不可安全保护",
-  migration_restart_required: "迁移后需重启 Runtime",
   reconciliation_stale: "私有对账已过期",
-  runtime_control_state_missing: "控制状态未上报",
   runtime_heartbeat_stale: "Runtime 心跳已过期",
   runtime_identity_mismatch: "Runtime 身份与配置不符",
   runtime_starting: "Runtime 正在启动",
@@ -88,7 +85,9 @@ export function entryBlockReasonLabel(reason: string | null | undefined): string
  *
  * Four of these mean accepted (`tracefold/trading/stages.py:ACCEPTED_ENTRY_DISPOSITIONS`); the rest are the
  * entry path's own refusals in `oi_runtime/entry.py` plus the risk policy's in `oi_runtime/risk.py`. The
- * server already derives `accepted | rejected` from the same set, so this table only has to say *why*.
+ * server's `stage` already says `ordered` or `rejected` about the same row, so this table only has to
+ * say *why*. Exactly the words a writer can still emit: the two cached-replay refusals went with
+ * `entry._replay_cached` (#537 PR-4), and the reasons above them with the gates #537 PR-3 deleted.
  */
 export const SIGNAL_DISPOSITION_ZH: Record<string, string> = {
   accepted: "已受理",
@@ -96,8 +95,6 @@ export const SIGNAL_DISPOSITION_ZH: Record<string, string> = {
   replayed_query_first: "缓存订单重放 · 先查询",
   unknown_query_first: "提交结果未知 · 先查询",
   // The entry path's refusals.
-  cached_entry_invalid: "缓存入场单与当前配置不符",
-  cached_position_invalid: "缓存仓位与当前配置不符",
   expired: "Signal 已过期",
   instrument_busy: "该市场已有在场执行",
   instrument_or_market_missing: "缺少合约或行情",
@@ -161,7 +158,14 @@ export const COMMAND_STAGE_ZH: Record<string, string> = {
   expired: "已过期",
 };
 
-/** The closed operator grammar, as `trading_execution_commands.action` stores it. */
+/**
+ * The closed operator grammar, as `trading_operator_intents.action` stores it.
+ *
+ * All five, not the three the console can issue. `commands[]` on `/api/trading/executions` is every
+ * Command in the window whatever wrote it, which is the point of that read: the manual entry an
+ * operator typed at the CLI is the one ingress the whole chain has been proven with, and its row on
+ * this desk must not render as a bare `manual_entry` because the browser has no button for it.
+ */
 export const COMMAND_ACTION_ZH: Record<string, string> = {
   emergency_halt: "紧急停止",
   flatten: "Flatten account",
@@ -212,6 +216,27 @@ export const GATE_STATUS_ZH: Record<string, string> = {
 
 export function gateReasonLabel(key: string): string {
   return GATE_REASON_ZH[key] ?? key;
+}
+
+/**
+ * The one thing every ledger on the desk says when it has no rows (#537 PR-5).
+ *
+ * Three blocks each carried their own `ledgerEmpty(pending, failed)` with the same three sentences in
+ * three wordings, and the page's failure banner named the same ledgers again in a fourth. One function,
+ * one subject word per ledger, and a reader learns the distinction between "empty" and "not read" once.
+ */
+export function ledgerSentence({
+  failed,
+  pending,
+  subject,
+}: {
+  failed: boolean;
+  pending: boolean;
+  subject: string;
+}): string {
+  if (pending) return `正在读取${subject}账本…`;
+  if (failed) return `${subject}账本读取失败，不能据此断言为空。`;
+  return `当前 24 小时窗口没有${subject}。`;
 }
 
 /*

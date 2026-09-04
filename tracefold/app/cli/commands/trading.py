@@ -45,40 +45,40 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                 trading.execution_runtime_control_state(execution.account_slot),
                 now_ns=now_ms * 1_000_000,
             )
+            # The same dict `GET /api/trading/status` publishes. One projection, so an operator who
+            # reads the CLI and an operator who reads the desk cannot be told two different things
+            # about the same instant (#537 PR-4, PR-5).
             return 0, {
                 "ok": True,
                 "data": {
                     "decision": {"last_case_at_ms": last_case_at_ms},
                     "execution": execution_status,
-                    "counts": trading.runtime_summary(since_ms=now_ms - _WINDOW_MS),
                 },
             }
         if command == "cases":
+            state = getattr(args, "state", None)
             return 0, {
                 "ok": True,
-                "data": trading.cases(
-                    state=getattr(args, "state", None),
+                "data": trading.console_cases(
+                    since_ms=now_ms - _WINDOW_MS,
+                    underlying_key=None,
+                    states=(state,) if state else (),
                     limit=int(getattr(args, "limit", 20) or 20),
                 ),
             }
         if command == "signals":
             return 0, {
                 "ok": True,
-                "data": trading.console_signals(
+                "data": trading.signal_ledger(
                     since_ns=(now_ms - _WINDOW_MS) * 1_000_000,
-                    market_key=None,
-                    before=None,
                     limit=int(getattr(args, "limit", 20) or 20),
                 ),
             }
         if command == "observations":
             return 0, {
                 "ok": True,
-                "data": trading.console_execution_observations(
+                "data": trading.observation_ledger(
                     since_ns=(now_ms - _WINDOW_MS) * 1_000_000,
-                    account_slot=None,
-                    normalized_kind=None,
-                    before=None,
                     limit=int(getattr(args, "limit", 20) or 20),
                 ),
             }
@@ -87,9 +87,7 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                 "ok": True,
                 "data": trading.console_operator_intents(
                     since_ns=(now_ms - _WINDOW_MS) * 1_000_000,
-                    account_slot=None,
                     action=getattr(args, "action", None),
-                    before=None,
                     limit=int(getattr(args, "limit", 20) or 20),
                 ),
             }

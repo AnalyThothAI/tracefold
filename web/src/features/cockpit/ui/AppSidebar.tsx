@@ -5,11 +5,6 @@ import { APP_NAVIGATION_GROUPS, type AppNavigationItem } from "./appNavigation";
 import "./AppSidebar.css";
 
 export type AppNavigationCounts = { events?: number; oiFrames?: number };
-/**
- * The words a destination can carry instead of a number. `tradingEnvironment` names the sole execution
- * venue so the navigation cannot imply a selectable backend.
- */
-export type AppNavigationBadges = { tradingEnvironment?: string };
 
 /**
  * The console's navigation, in the frame at desktop width and inside the tablet drawer below it. One
@@ -22,12 +17,10 @@ export type AppNavigationBadges = { tradingEnvironment?: string };
  * that something was wrong without saying what.
  */
 export function AppSidebar({
-  badges,
   counts,
   inDrawer = false,
   onNavigate,
 }: {
-  badges?: AppNavigationBadges;
   counts?: AppNavigationCounts;
   inDrawer?: boolean;
   onNavigate?: () => void;
@@ -39,7 +32,7 @@ export function AppSidebar({
       data-in-drawer={inDrawer || undefined}
     >
       {inDrawer ? null : <AppBrand />}
-      <AppNavigation badges={badges} counts={counts} onNavigate={onNavigate} />
+      <AppNavigation counts={counts} onNavigate={onNavigate} />
     </aside>
   );
 }
@@ -58,11 +51,9 @@ export function AppBrand() {
 }
 
 export function AppNavigation({
-  badges,
   counts,
   onNavigate,
 }: {
-  badges?: AppNavigationBadges;
   counts?: AppNavigationCounts;
   onNavigate?: () => void;
 }) {
@@ -76,7 +67,6 @@ export function AppNavigation({
             {group.items.map((item) => (
               <AppSidebarItem
                 active={item.isActive(pathname)}
-                badge={item.badge ? badges?.[item.badge] : undefined}
                 count={item.count ? counts?.[item.count] : undefined}
                 item={item}
                 key={item.to}
@@ -92,13 +82,11 @@ export function AppNavigation({
 
 function AppSidebarItem({
   active,
-  badge,
   count,
   item,
   onNavigate,
 }: {
   active: boolean;
-  badge?: string;
   count?: number;
   item: AppNavigationItem;
   onNavigate?: () => void;
@@ -130,15 +118,6 @@ function AppSidebarItem({
           {compactCount(count)}
         </span>
       )}
-      {/*
-       * `aria-hidden` for the same reason the count is: the destination remains 交易, while the page itself
-       * states the code-owned execution environment in a labelled figure.
-       */}
-      {badge ? (
-        <span aria-hidden className="cockpit-app-sidebar-badge" title="Alpha 与执行状态">
-          {badge}
-        </span>
-      ) : null}
     </Link>
   );
 }

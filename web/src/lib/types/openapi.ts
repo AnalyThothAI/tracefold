@@ -161,31 +161,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Operator Intents */
-        get: operations["get_operator_intents_api_trading_execution_commands_get"];
+        get?: never;
         put?: never;
         /**
          * Post Operator Intent
          * @description Persist one bounded console intent; Runtime and venue outcomes remain separate facts.
          */
         post: operations["post_operator_intent_api_trading_execution_commands_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/trading/execution/observations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Execution Observations */
-        get: operations["get_execution_observations_api_trading_execution_observations_get"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -238,23 +220,6 @@ export interface paths {
         };
         /** Get Trading Gate Source */
         get: operations["get_trading_gate_source_api_trading_gate__event_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/trading/signals": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Trading Signals */
-        get: operations["get_trading_signals_api_trading_signals_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -415,16 +380,6 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
-        /** ApiEnvelope[TradingExecutionObservationsData] */
-        ApiEnvelope_TradingExecutionObservationsData_: {
-            data?: components["schemas"]["TradingExecutionObservationsData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
         /** ApiEnvelope[TradingExecutionsData] */
         ApiEnvelope_TradingExecutionsData_: {
             data?: components["schemas"]["TradingExecutionsData"] | null;
@@ -458,26 +413,6 @@ export interface components {
         /** ApiEnvelope[TradingOperatorCommandReceiptData] */
         ApiEnvelope_TradingOperatorCommandReceiptData_: {
             data?: components["schemas"]["TradingOperatorCommandReceiptData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[TradingOperatorIntentsData] */
-        ApiEnvelope_TradingOperatorIntentsData_: {
-            data?: components["schemas"]["TradingOperatorIntentsData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[TradingSignalsData] */
-        ApiEnvelope_TradingSignalsData_: {
-            data?: components["schemas"]["TradingSignalsData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -2263,7 +2198,16 @@ export interface components {
             serve_runtime: components["schemas"]["ServeRuntimeData"];
             workers_runtime: components["schemas"]["WorkersRuntimeData"];
         };
-        /** TradingCaseData */
+        /**
+         * TradingCaseData
+         * @description One frozen Case, as the drawer behind `?case=<id>` renders it.
+         *
+         *     The four measured OI numbers here were a second copy of what `policy_checks` already carries with
+         *     the threshold each was measured against, `policy_version` a second copy of `policy_id`, and
+         *     `policy_decision` a required Literal over a nullable column -- exactly the shape that turned a
+         *     stored `NULL` into a 500 on a read route (#532, #537 PR-5). `state` and `policy_reason` are the
+         *     terminal answer; `base_symbol` is the identity the drawer titles itself with.
+         */
         TradingCaseData: {
             /** Base Symbol */
             base_symbol: string;
@@ -2283,10 +2227,6 @@ export interface components {
             market_key?: string | null;
             /** Observed At Ms */
             observed_at_ms: number;
-            /** Oi Change Bps */
-            oi_change_bps?: number | null;
-            /** Oi Value Usd */
-            oi_value_usd?: number | null;
             /** Policy Checks */
             policy_checks?: components["schemas"]["TradingPolicyCheckData"][];
             /** Policy Config */
@@ -2295,42 +2235,27 @@ export interface components {
             };
             /** Policy Config Digest */
             policy_config_digest?: string | null;
-            /**
-             * Policy Decision
-             * @enum {string}
-             */
-            policy_decision: "long" | "no_trade" | "not_run";
             /** Policy Id */
             policy_id?: string | null;
             /** Policy Reason */
             policy_reason?: string | null;
-            /** Policy Version */
-            policy_version?: string | null;
             /** Pre Move Bps */
             pre_move_bps?: number | null;
-            /** Source Venue */
-            source_venue?: string | null;
             /** State */
             state: string;
-            /** Trigger Kind */
-            trigger_kind: string;
-            /** Underlying Key */
-            underlying_key: string;
-            /** Whale Long Profit Bps */
-            whale_long_profit_bps?: number | null;
-            /** Whale Oi Ratio Bps */
-            whale_oi_ratio_bps?: number | null;
         };
-        /** TradingCasesData */
+        /**
+         * TradingCasesData
+         * @description One bounded page of Cases plus the two durable 24 h distributions.
+         *
+         *     There is no `next_cursor` and no cursor parameter: the desk opens one Case at a time from
+         *     `?case=<id>` and renders one 24 h count card, and no reader ever asked for a second page (#537 PR-5).
+         */
         TradingCasesData: {
             /** Cases */
             cases?: components["schemas"]["TradingCaseData"][];
             /** Complete */
             complete: boolean;
-            /** Measured At Ms */
-            measured_at_ms: number;
-            /** Next Cursor */
-            next_cursor?: string | null;
             /** Reason Counts 24H */
             reason_counts_24h?: {
                 [key: string]: number;
@@ -2350,7 +2275,15 @@ export interface components {
             /** Last Case At Ms */
             last_case_at_ms?: number | null;
         };
-        /** TradingExecutionAccountData */
+        /**
+         * TradingExecutionAccountData
+         * @description What the account holds, as the Runtime's own private reconciliation last saw it.
+         *
+         *     Its two observation clocks, the day-start equity baseline and the `truncated` flag were published
+         *     beside these and rendered nowhere: the desk ages the whole projection against `facts_expire_at_ms`,
+         *     reads the drawdown the Runtime already measured against that baseline, and a truncated snapshot is
+         *     already not `complete` (#537 PR-5).
+         */
         TradingExecutionAccountData: {
             /** Aggregate Risk Usd */
             aggregate_risk_usd?: string | null;
@@ -2367,33 +2300,26 @@ export interface components {
             daily_drawdown_bps?: number | null;
             /** Daily Drawdown Usd */
             daily_drawdown_usd?: string | null;
-            /** Day Start Equity Usd */
-            day_start_equity_usd?: string | null;
             /** Equity Usd */
             equity_usd?: string | null;
             /** Inflight Orders Count */
             inflight_orders_count: number;
-            /** Market Observed At Ns */
-            market_observed_at_ns?: number | null;
-            /** Observed At Ns */
-            observed_at_ns: number;
             /** Open Orders Count */
             open_orders_count: number;
             /** Orders */
             orders?: components["schemas"]["TradingExecutionOrderData"][];
             /** Positions */
             positions?: components["schemas"]["TradingExecutionPositionData"][];
-            /**
-             * Truncated
-             * @default false
-             */
-            truncated: boolean;
             /** Unknown Orders Count */
             unknown_orders_count: number;
         };
         /**
          * TradingExecutionCommandRowData
          * @description One operator Command's progress, read from its `control_disposition` alone.
+         *
+         *     Action, stage and clock: the ACT block's ledger rows. `operator_identity` is the constant
+         *     `operator-console` for every browser write and `reason` is the text the same operator just typed
+         *     into the field above the ledger (#537 PR-5).
          */
         TradingExecutionCommandRowData: {
             /**
@@ -2403,10 +2329,6 @@ export interface components {
             action: "pause_entries" | "resume_entries" | "emergency_halt" | "flatten" | "manual_entry";
             /** Command Id */
             command_id: string;
-            /** Operator Identity */
-            operator_identity: string;
-            /** Reason */
-            reason: string;
             /** Requested At Ns */
             requested_at_ns: number;
             /**
@@ -2414,46 +2336,6 @@ export interface components {
              * @enum {string}
              */
             stage: "recorded" | "accepted" | "rejected" | "completed" | "expired";
-        };
-        /** TradingExecutionObservationData */
-        TradingExecutionObservationData: {
-            /** Account Slot */
-            account_slot: string;
-            /** Command Id */
-            command_id?: string | null;
-            /** Event Id */
-            event_id: string;
-            /** Execution Strategy */
-            execution_strategy: string;
-            /** Native Identity References */
-            native_identity_references?: string[];
-            /** Normalized Kind */
-            normalized_kind: string;
-            /** Observed At Ns */
-            observed_at_ns: number;
-            /** Occurred At Ns */
-            occurred_at_ns: number;
-            /** Seq */
-            seq: number;
-            /** Signal Id */
-            signal_id?: string | null;
-            /** Summary */
-            summary?: {
-                [key: string]: unknown;
-            };
-        };
-        /** TradingExecutionObservationsData */
-        TradingExecutionObservationsData: {
-            /** Complete */
-            complete: boolean;
-            /** Measured At Ms */
-            measured_at_ms: number;
-            /** Next Cursor */
-            next_cursor?: string | null;
-            /** Observations */
-            observations?: components["schemas"]["TradingExecutionObservationData"][];
-            /** Window Hours */
-            window_hours: number;
         };
         /** TradingExecutionOrderData */
         TradingExecutionOrderData: {
@@ -2513,13 +2395,17 @@ export interface components {
             /** Unrealized Pnl Usd */
             unrealized_pnl_usd?: string | null;
         };
-        /** TradingExecutionReadinessData */
+        /**
+         * TradingExecutionReadinessData
+         * @description One field per operator question, and the CLI `tracefold trading status` block is this same dict.
+         *
+         *     The two raw observation clocks (`heartbeat_at_ns`, `reconciliation_observed_at_ns`) went with the
+         *     ages derived from them: the desk compares `facts_expire_at_ms` against its own clock and prints
+         *     `reconciliation_age_ms`, both already measured here. `positions_count` / `open_orders_count` said
+         *     what `current_account` carries row by row, and raw `account_flat` said what the venue had not yet
+         *     proven -- `account_flat_proven` is the answer an operator acts on (#537 PR-5).
+         */
         TradingExecutionReadinessData: {
-            /**
-             * Account Flat
-             * @default false
-             */
-            account_flat: boolean;
             /**
              * Account Flat Proven
              * @default false
@@ -2548,23 +2434,11 @@ export interface components {
             execution_safe: boolean;
             /** Facts Expire At Ms */
             facts_expire_at_ms?: number | null;
-            /** Heartbeat At Ns */
-            heartbeat_at_ns?: number | null;
             /**
              * Mode
              * @enum {string}
              */
             mode: "disabled" | "paper" | "live";
-            /**
-             * Open Orders Count
-             * @default 0
-             */
-            open_orders_count: number;
-            /**
-             * Positions Count
-             * @default 0
-             */
-            positions_count: number;
             /**
              * Protection Status
              * @default unknown
@@ -2573,8 +2447,6 @@ export interface components {
             protection_status: "not_applicable" | "protected" | "pending" | "unprotected" | "unknown";
             /** Reconciliation Age Ms */
             reconciliation_age_ms?: number | null;
-            /** Reconciliation Observed At Ns */
-            reconciliation_observed_at_ns?: number | null;
             /**
              * Routes Count
              * @default 0
@@ -2597,7 +2469,13 @@ export interface components {
          *
          *     `entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,
          *     or the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so
-         *     `case_id` is absent on those rows rather than invented.
+         *     `case_id` is absent on those rows rather than invented; the desk links the ones that have one to
+         *     the Case drawer.
+         *
+         *     `order_status`, `position_status` and the `accepted` / `rejected` split are the inputs `stage` is
+         *     derived from, and `stage` is what the table renders: publishing all four let a reader compare a
+         *     venue word against the server's own answer about the same row (#537 PR-5). `last_observed_at_ns`
+         *     was a second clock beside `observed_at_ns` that no column printed.
          */
         TradingExecutionRowData: {
             /** Case Id */
@@ -2607,8 +2485,6 @@ export interface components {
              * @enum {string}
              */
             direction: "long" | "short";
-            /** Disposition */
-            disposition?: ("accepted" | "rejected") | null;
             /** Disposition Reason */
             disposition_reason?: string | null;
             /** Entry Id */
@@ -2621,16 +2497,10 @@ export interface components {
             fill_avg_price?: string | null;
             /** Fill Quantity */
             fill_quantity?: string | null;
-            /** Last Observed At Ns */
-            last_observed_at_ns: number;
             /** Market Key */
             market_key: string;
             /** Observed At Ns */
             observed_at_ns: number;
-            /** Order Status */
-            order_status?: string | null;
-            /** Position Status */
-            position_status?: string | null;
             /** Realized Pnl Usd */
             realized_pnl_usd?: string | null;
             /**
@@ -2654,37 +2524,21 @@ export interface components {
             complete: boolean;
             /** Executions */
             executions?: components["schemas"]["TradingExecutionRowData"][];
-            /** Measured At Ms */
-            measured_at_ms: number;
-            /** Window Hours */
-            window_hours: number;
         };
-        /** TradingGateConfigData */
-        TradingGateConfigData: {
-            /** Config Digest */
-            config_digest: string;
-            /** Max Age Ms */
-            max_age_ms: number;
-            /** Min Oi Value Usd */
-            min_oi_value_usd: number;
-            /** Source Venues */
-            source_venues: string[];
-            /** Version */
-            version: string;
-        };
-        /** TradingGateData */
+        /**
+         * TradingGateData
+         * @description The admission ledger `/news/oi` joins each OI frame against (#537 D4).
+         *
+         *     The running admission configuration was published here as `config` and the ledger's two extreme
+         *     clocks as `latest_source_at_ms` / `latest_gate_eligible_at_ms`; the second pair cost an unbounded
+         *     scan of the 90-day ledger on every 15 s poll for one card hint. Both are gone with the desk's own
+         *     read of this route (#537 PR-5).
+         */
         TradingGateData: {
             /** Complete */
             complete: boolean;
-            config: components["schemas"]["TradingGateConfigData"];
             /** Decisions */
             decisions?: components["schemas"]["TradingGateDecisionData"][];
-            /** Latest Gate Eligible At Ms */
-            latest_gate_eligible_at_ms?: number | null;
-            /** Latest Source At Ms */
-            latest_source_at_ms?: number | null;
-            /** Measured At Ms */
-            measured_at_ms: number;
             /** Reason Counts 24H */
             reason_counts_24h?: {
                 [key: string]: number;
@@ -2693,16 +2547,9 @@ export interface components {
             status_counts_24h?: {
                 [key: string]: number;
             };
-            /** Window Hours */
-            window_hours: number;
         };
         /** TradingGateDecisionData */
         TradingGateDecisionData: {
-            /**
-             * Base Symbol
-             * @default
-             */
-            base_symbol: string;
             /** Case Id */
             case_id?: string | null;
             /** Event Id */
@@ -2727,12 +2574,6 @@ export interface components {
             gate_status?: ("DEFERRED" | "REJECTED" | "CASE_CREATED" | "EXPIRED") | null;
             /** Source Key */
             source_key: string;
-            /** Source Observed At Ms */
-            source_observed_at_ms: number;
-            /** Trigger Kind */
-            trigger_kind: string;
-            /** Underlying Key */
-            underlying_key?: string | null;
         };
         /** TradingGateSourceData */
         TradingGateSourceData: {
@@ -2763,53 +2604,6 @@ export interface components {
              */
             truth: "intent_recorded_not_runtime_or_venue";
         };
-        /** TradingOperatorIntentData */
-        TradingOperatorIntentData: {
-            /** Account Slot */
-            account_slot: string;
-            /**
-             * Action
-             * @enum {string}
-             */
-            action: "pause_entries" | "resume_entries" | "emergency_halt" | "flatten" | "manual_entry";
-            /** Command Id */
-            command_id: string;
-            /** Direction */
-            direction?: ("long" | "short") | null;
-            /** Disposition */
-            disposition?: string | null;
-            /** Disposition Reason */
-            disposition_reason?: string | null;
-            /** Expired */
-            expired: boolean;
-            /** Expires At Ns */
-            expires_at_ns: number;
-            /** Market Key */
-            market_key?: string | null;
-            /** Operator Identity */
-            operator_identity: string;
-            /** Reason */
-            reason: string;
-            /** Requested At Ns */
-            requested_at_ns: number;
-            /** Scope */
-            scope: string;
-            /** Seq */
-            seq: number;
-        };
-        /** TradingOperatorIntentsData */
-        TradingOperatorIntentsData: {
-            /** Commands */
-            commands?: components["schemas"]["TradingOperatorIntentData"][];
-            /** Complete */
-            complete: boolean;
-            /** Measured At Ms */
-            measured_at_ms: number;
-            /** Next Cursor */
-            next_cursor?: string | null;
-            /** Window Hours */
-            window_hours: number;
-        };
         /** TradingPolicyCheckData */
         TradingPolicyCheckData: {
             /** Check */
@@ -2823,63 +2617,18 @@ export interface components {
             /** Threshold */
             threshold: string;
         };
-        /** TradingRuntimeCountsData */
-        TradingRuntimeCountsData: {
-            /**
-             * Cases 24H
-             * @default 0
-             */
-            cases_24h: number;
-            /**
-             * Signals 24H
-             * @default 0
-             */
-            signals_24h: number;
-        };
-        /** TradingSignalData */
-        TradingSignalData: {
-            /** Case Id */
-            case_id: string;
-            /**
-             * Direction
-             * @enum {string}
-             */
-            direction: "long" | "short";
-            /** Expired */
-            expired: boolean;
-            /** Expires At Ns */
-            expires_at_ns: number;
-            /** Market Key */
-            market_key: string;
-            /** Observed At Ns */
-            observed_at_ns: number;
-            /** Seq */
-            seq: number;
-            /** Signal Id */
-            signal_id: string;
-        };
-        /** TradingSignalsData */
-        TradingSignalsData: {
-            /** Complete */
-            complete: boolean;
-            /** Measured At Ms */
-            measured_at_ms: number;
-            /** Next Cursor */
-            next_cursor?: string | null;
-            /** Signals */
-            signals?: components["schemas"]["TradingSignalData"][];
-            /** Window Hours */
-            window_hours: number;
-        };
-        /** TradingStatusData */
+        /**
+         * TradingStatusData
+         * @description The desk's RISK block, and nothing beside it.
+         *
+         *     `counts` carried a `cases_24h` and a `signals_24h` that cost two `count(*)` on every 15 s poll of
+         *     every route and were rendered only in the chrome figures #537 PR-5 deleted. The window and the
+         *     measurement clock went with them: this projection publishes the instant it expires, which is the
+         *     only clock a reader compares (#537 PR-5).
+         */
         TradingStatusData: {
-            counts: components["schemas"]["TradingRuntimeCountsData"];
             decision: components["schemas"]["TradingDecisionRuntimeData"];
             execution: components["schemas"]["TradingExecutionReadinessData"];
-            /** Measured At Ms */
-            measured_at_ms: number;
-            /** Window Hours */
-            window_hours: number;
         };
         /** ValidationError */
         ValidationError: {
@@ -3141,7 +2890,6 @@ export interface operations {
             query?: {
                 underlying?: string;
                 state?: string;
-                cursor?: string;
             };
             header?: never;
             path?: never;
@@ -3156,39 +2904,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_TradingCasesData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_operator_intents_api_trading_execution_commands_get: {
-        parameters: {
-            query?: {
-                slot?: string;
-                action?: string;
-                cursor?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_TradingOperatorIntentsData_"];
                 };
             };
             /** @description Validation Error */
@@ -3229,39 +2944,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_TradingOperatorCommandReceiptData_"];
-                };
-            };
-        };
-    };
-    get_execution_observations_api_trading_execution_observations_get: {
-        parameters: {
-            query?: {
-                slot?: string;
-                kind?: string;
-                cursor?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_TradingExecutionObservationsData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -3324,38 +3006,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_TradingGateSourceData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_trading_signals_api_trading_signals_get: {
-        parameters: {
-            query?: {
-                market?: string;
-                cursor?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_TradingSignalsData_"];
                 };
             };
             /** @description Validation Error */

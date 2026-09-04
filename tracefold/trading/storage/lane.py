@@ -9,12 +9,17 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 from ..admission import AdmissionRow
 from ..contracts import CURRENT_TERMINAL_STATES, CaseState, TradingCaseManifest
 from .execution_stream import ExecutionStreamStorage, PreparedTradeSignal, _dumps
 from .gate import CandidateGateStorage
+
+# The Decision Plane's whole liveness, and the one statement `GET /api/trading/status` still runs over
+# `trading_cases`: an index-only probe of `ix_trading_cases_created` rather than the two `count(*)`
+# scans that route also carried until #537 PR-5.
+LATEST_CASE_CREATED_AT_SQL: Final = "SELECT max(created_at_ms) AS latest FROM trading_cases"
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,21 +215,20 @@ class LaneStorage(CandidateGateStorage, ExecutionStreamStorage):
         ).fetchone()
         return dict(row) if row is not None else None
 
-    def case(self, *, case_id: str) -> dict[str, Any] | None:
-        row = self.conn.execute("SELECT * FROM trading_cases WHERE case_id = %s", (case_id,)).fetchone()
-        return dict(row) if row is not None else None
+    def restore_drill_case(self, *, case_id: str) -> dict[str, Any] | None:
+        """The two facts the isolated restore drill asserts about the Case it seeded.
 
-    def cases(self, *, state: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
-        if state:
-            rows = self.conn.execute(
-                "SELECT * FROM trading_cases WHERE state = %s ORDER BY created_at_ms DESC LIMIT %s",
-                (state, int(limit)),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT * FROM trading_cases ORDER BY created_at_ms DESC LIMIT %s", (int(limit),)
-            ).fetchall()
-        return [dict(row) for row in rows]
+        It was a `SELECT *` named `case()` beside an unbounded `cases()` list, and the only readers
+        either had were this drill and `tracefold trading cases` -- which now reads the same bounded
+        projection `GET /api/trading/cases` does, so the console and the CLI cannot disagree about
+        what a Case is (#537 PR-5).
+        """
+
+        row = self.conn.execute(
+            "SELECT case_id, state, manifest_sha256 FROM trading_cases WHERE case_id = %s",
+            (case_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
 
     def seed_restore_drill_case(self, *, case_id: str) -> None:
         """Seed one current Signal Case for the isolated application restore drill."""
@@ -253,9 +257,9 @@ class LaneStorage(CandidateGateStorage, ExecutionStreamStorage):
         lane already writes -- the newest Case.
         """
 
-        row = self.conn.execute("SELECT max(created_at_ms) AS latest FROM trading_cases").fetchone()
+        row = self.conn.execute(LATEST_CASE_CREATED_AT_SQL).fetchone()
         latest = None if row is None else row["latest"]
         return None if latest is None else int(latest)
 
 
-__all__ = ["LaneStorage", "SignalLaneSnapshot"]
+__all__ = ["LATEST_CASE_CREATED_AT_SQL", "LaneStorage", "SignalLaneSnapshot"]

@@ -2,7 +2,7 @@
 
 > **Scope.** Owns the `web/` architecture, layer responsibilities, component conventions, and the UI verification gate. Backend layer boundaries live in `ARCHITECTURE.md`; public HTTP contracts live in `CONTRACTS.md`; install and run commands live in `SETUP.md`.
 
-The React operator console is a News workbench plus one actionable Alpha/Execution desk. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/trading/status`, `/api/trading/cases`, `/api/trading/signals`, `/api/trading/executions`, `/api/trading/gate`, and `/api/trading/gate/{event_id}` over HTTP. `GET /api/trading/execution/observations` remains a server surface for the CLI; since #528 PR-2 no browser surface reads the raw Observation stream, because the folded per-entry read model is what an operator actually reads. Every operation is a read except the exact authenticated `POST /api/trading/execution/commands`, which can append only pause, resume, or account-flatten intents in the existing closed grammar. It cannot submit an order or accept quantity, notional, leverage, venue, or direction. There is no WebSocket client, no separate Search route, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
+The React operator console is a News workbench plus one actionable Alpha/Execution desk. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/trading/status`, `/api/trading/cases`, `/api/trading/executions`, `/api/trading/gate`, and `/api/trading/gate/{event_id}` over HTTP — twelve reads and one write. `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections were deleted in #537 PR-5: no browser surface called any of the three, they were three more public shapes over the ledgers `/api/trading/executions` already reads folded, and `tracefold trading signals | observations | commands` reads the same repository directly. Every operation is a read except the exact authenticated `POST /api/trading/execution/commands`, which can append only pause, resume, or account-flatten intents in the existing closed grammar. It cannot submit an order or accept quantity, notional, leverage, venue, or direction. There is no WebSocket client, no separate Search route, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
 
 ## Source Layer Map (`web/src/`)
 
@@ -81,10 +81,10 @@ the route components into the eager shell chunk.
 - **Transport.** The browser talks HTTP only. `useAppSession` reads
   `/api/bootstrap` (`{ws_token}`) once and installs the bearer token on
   `lib/api/client`; feature hooks poll `/api/news/*` on
-  code-owned intervals with ETag revalidation. This bootstrap token is read
-  authority only. The Trading desk requires the separate operator write token
-  for Command buttons and holds the pasted value only in component memory; it
-  is never bootstrapped or persisted. There is no `/ws` client, no
+  code-owned intervals with ETag revalidation. The Trading desk's three Command
+  buttons write with that same bearer: the separate 0600 operator write token
+  and the Live `CONFIRM` re-entry went with #520 PR-B, and one credential for
+  the read and the one bounded append is the whole authority model. There is no `/ws` client, no
   socket provider, no live-market cache patching, and no subscription registry;
   the shell status pill derives only from `/api/status.runtime`.
 - **Topbar search.** The single topbar search box is News-only: its label is
@@ -130,15 +130,16 @@ the route components into the eager shell chunk.
   and is judged by rule rather than by the model. It asks only about the
   *Source*: did the telemetry parse, did it clear the push gates, and did the
   Signal lane admit it. It reads bounded endpoints — `/api/news/status` for
-  `oi.policy` and `oi.by_rule_24h`,
+  `oi.by_rule_24h`,
   `/api/news/feed?admission=telemetry_deterministic&hours=24` for the frames,
   one `/api/news/quotes` batch for the visible resolved assets, and
   `/api/trading/gate` for the per-frame admission verdicts. It renders the 24 h
-  telemetry band, one `来源入账 · NEWS.OI` panel, and the frame table. The
-  admission *configuration* that same `/api/trading/gate` batch carries is
-  printed on the Trading desk's funnel instead (#528 PR-2), beside the answers
-  it filed: it is the Signal lane's own threshold set, it never belonged on two
-  pages, and this page answers 「来源发生了什么」 without it.
+  telemetry band, one `来源入账 · NEWS.OI` panel, and the frame table. It is the
+  only browser reader of `/api/trading/gate` since #537 PR-5: the desk
+  downloaded the same up-to-400-row `decisions[]` every 15 s and rendered none
+  of the rows. The admission *configuration* that batch used to carry is not a
+  response field any more — the rulebook that decided a row travels in its own
+  `evidence` (#537 PR-3), which is where this page reads it.
 
   **No Intent read (#331).** The trailing column used to load
   `/api/trading/intents` to show a Case state and an execution state beside each
@@ -146,11 +147,11 @@ the route components into the eager shell chunk.
   row as 未成案. The admission panel shows no Alpha threshold either: those are
   frozen onto each Case and belong beside the Case that executed them.
 
-  The frame table's four tabs (`全部 / 已推送 / 未达阈值 / 解析失败`) filter
-  server-side through `?oi=pushed|withheld|parse_failed` and take their counts
-  from `oi.by_rule_24h`, never from the loaded page. Rows render the `oi` block
-  the server folded out of the judge's own trace — the four measurements, the
-  eligible rank, and the gate that decided — plus separate current Quote and
+  The frame table filters server-side through
+  `?oi=pushed|withheld|parse_failed` and takes its counts from
+  `oi.by_rule_24h`, never from the loaded page. Rows render the `oi` block
+  the server folded out of the judge's own trace — the four measurements and the
+  gate that decided — plus separate current Quote and
   Event-anchored `p0` columns and the fixed 1H/4H reaction. Before +1H matures,
   p0 says `待 1H 回填` while current Quote can already render; a row
   whose `oi` block is absent says so and keeps its other columns rather than
@@ -211,11 +212,13 @@ the route components into the eager shell chunk.
   a guess from `admission`, title, or verdict. The rendered token page has no
   watchlist control, price chart, or open-interest curve.
 
-  In #433-C the token page appends one `Alpha 复盘 · Case → Signal` section. It
-  reads `/api/trading/cases?underlying=` and
-  `/api/trading/signals?market=crypto:perp:{BASE}:USDT` independently, joins only
-  by durable `case_id`, and says `未发出` when no Signal exists. A failed Case
-  read is not rendered as an empty ledger.
+  The token page reads no Trading endpoint at all (#537 PR-5). It carried one
+  `Alpha 复盘 · Case → Signal` section from #433-C, reading
+  `/api/trading/cases?underlying=` and `/api/trading/signals?market=…` and
+  joining them by `case_id`: a second Case list, on a News surface, over the two
+  ledgers the desk renders folded into one row per entry with its whole venue
+  outcome. The desk is where a Case and what the Runtime did with it are read
+  together; this page answers what happened to one name.
 
   **Historical pre-433-C UI note (retired).** The previous artifact's order was
   identity band, then the capital
@@ -314,17 +317,23 @@ the route components into the eager shell chunk.
   pipeline dropped it and it moved 3%" is the one thing the conclusion cannot
   say. A horizon that has not matured reads `未到期`, never `0.00%`.
 
-  `/trading` is the Alpha/Execution operator desk: **one page, six blocks, one
-  endpoint each** (#528 PR-2).
+  `/trading` is the Alpha/Execution operator desk: **three blocks over two
+  endpoints, plus a Case drawer that opens on demand** (#537 PR-5). It was six
+  blocks over four; the two that went were both funnels — a card of today's
+  admission configuration beside a status distribution, and a list of every Case
+  in the window whose only interactive purpose was opening one of them.
 
-  1. **Status bar** — `/api/trading/status`. `ALIVE`, `SAFE`, `ARMED`, `FLAT`,
-     the blocking reason through `ENTRY_BLOCK_REASON_ZH`, and
-     `execution.routes_count` as `Runtime 可执行市场 N 个`.
-  2. **Account and positions** — the same read. Equity, UTC-day drawdown,
-     aggregate risk, private reconcile age, `audit_healthy` with its own
-     failure reason, per-position quantity/entry/mark/unrealized PnL/protection
-     trigger/coverage, and open orders with their `trigger_price`.
-  3. **Control** — `POST /api/trading/execution/commands` to write, and the
+  1. **RISK** — `/api/trading/status`. One strip of `ALIVE`, `SAFE`, `ARMED`,
+     `FLAT` with the blocking reason through `ENTRY_BLOCK_REASON_ZH` and
+     `execution.routes_count` as `Runtime 可执行市场 N 个`; then equity, UTC-day
+     drawdown, aggregate risk, private reconcile age and `audit_healthy` with
+     its own failure reason; then the positions the venue holds, each with
+     quantity, entry, mark, unrealized PnL and its protection trigger and
+     coverage, under a header of the three order counts (open / inflight /
+     unknown) and the protection word. Those three counts were a card of their
+     own between the equity figures and the positions, where they read as a
+     fifth safety answer; they are three integers about the same account.
+  2. **ACT** — `POST /api/trading/execution/commands` to write, and the
      `commands[]` of `/api/trading/executions` to read back. Pause, Resume /
      Arm and Flatten, with **no confirmation dialog**: none of the three can
      submit an entry, and a modal in front of them taught readers that clicking
@@ -332,43 +341,42 @@ the route components into the eager shell chunk.
      three; all three write with the session token the page already holds (the
      pasted write token and the Live `CONFIRM` re-entry went with #520 PR-B). A
      successful POST says only that the Command was persisted. Each Command row
-     renders the server's `stage` — `recorded / accepted / rejected / completed
-     / expired` — derived from `control_disposition` alone.
-  4. **Today's executions** — `/api/trading/executions`. One row per entry:
-     time, `source` (Signal or the operator's own manual entry), market,
-     direction, `disposition_reason` through `SIGNAL_DISPOSITION_ZH`, `stage`,
-     fill quantity and average price, stop trigger, position status, exit price,
-     realized PnL and exit reason. A manual entry renders beside a Signal with
-     the same columns and no Case identity (#528 PR-3). The header totals
-     entries, splits them by source, and sums the realized PnL, which is the
-     page's only arithmetic — #528 refuses an equity-curve table for a number
-     that is already one column.
-  5. **Funnel** — `/api/trading/gate` beside `/api/trading/cases`. Admission's
-     `status_counts_24h` and `reason_counts_24h` with `latest_source_at_ms` and
-     `latest_gate_eligible_at_ms`, the Case `state_counts_24h` and
-     `reason_counts_24h`, and the admission configuration the ledger's rows were
-     filed under. No Alpha threshold, ever: those are frozen onto each Case.
-  6. **Cases** — `/api/trading/cases`. The row list, the frozen evidence card,
-     and one line when `complete=false`. No pagination.
+     is action, the server's `stage` — `recorded / accepted / rejected /
+     completed / expired`, derived from `control_disposition` alone — and its
+     clock. The reason column repeated the text the operator had just typed into
+     the field above it, and `operator_identity` was the constant
+     `operator-console` on every row a browser wrote.
+  3. **CONFIRM** — `/api/trading/executions`. One row per entry: time, `source`
+     (Signal or the operator's own manual entry), market, direction,
+     `disposition_reason` through `SIGNAL_DISPOSITION_ZH`, `stage`, fill
+     quantity and average price, stop trigger, exit price, realized PnL and exit
+     reason. A manual entry renders beside a Signal with the same columns and no
+     Case identity (#528 PR-3); a Signal row's `source` cell is the link that
+     opens its Case. The two columns #537 PR-5 dropped were both second answers:
+     `disposition` was `accepted` / `rejected` beside a `stage` that already says
+     `ordered` or `rejected`, and `position_status` was `closed` beside
+     `stage=closed`. The header totals entries, splits them by source, and sums
+     the realized PnL, which is the page's only arithmetic — #528 refuses an
+     equity-curve table for a number that is already one column.
 
-  Missing or partial current facts remain visibly unavailable; zero visible rows
-  never becomes flatness evidence. Only a fresh Binance private reconciliation
-  may light the proven-flat state.
+  **The Case drawer** is `/api/trading/cases`, opened by `?case=<id>` — the deep
+  link `TradingCaseBadge` and the OI frame table already published. It shows one
+  Case's terminal answer, the frozen per-check evidence and the frozen policy
+  configuration, and says so when the Case is outside the 24 h window rather
+  than rendering nothing. Beside it, one card carries that read's two durable 24 h
+  distributions: `state_counts_24h` and the policy-reason counts. There is no
+  pagination and no cursor — the response published a `next_cursor` no reader
+  ever sent back.
 
-  **One freshness comparison, and no client clock.** `/status` publishes
-  `execution.facts_expire_at_ms` — the earlier of the heartbeat and private
-  reconciliation budgets, as an absolute instant. Past it, all four safety words
-  read `过期`. The page keeps no timer and re-derives no age: the two
-  `setTimeout` re-render clocks and the three browser freshness models they drove
-  (`accountFlatProof`, `executionFreshness`, `executionProgress`) disagreed with
-  the server about ages it had already measured, and `executionProgress`
-  correlated a flatten's venue orders by `command_id` when those orders carry the
-  *entry* Signal's `signal_id`, so the third step never advanced.
+  **One empty-ledger vocabulary.** Every ledger on the page says the same three
+  sentences about its own subject word: reading, unreadable, or empty. Three
+  blocks each carried their own copy of them and the failure banner named the
+  same ledgers again in a fourth.
 
   When Decision is disabled, empty ledger copy says the lane has no work; it
   never rebrands execution as paper. Loading, cold failure, stale refresh, and a
   genuinely empty batch remain different page states. The responsive desk uses
-  cards at desktop, tablet, and phone widths; block 4's twelve-column table
+  cards at desktop, tablet, and phone widths; CONFIRM's twelve-column table
   scrolls inside its own panel and never widens the document.
 
 
@@ -383,15 +391,18 @@ the route components into the eager shell chunk.
   at all for a model-lane Event: only the deterministic OI lane's source key
   (`oi:{event_id}:{metric_version}`) is reconstructible from an `event_id`, the
   model lane's is a content hash of an artifact and a fingerprint (#154), and a
-  未成案 chip there would report a refusal that never happened. The token page's
-  交易复盘 section is owned by `features/trading` for the same reason the badge is
-  — Case states, Signal fields and rule keys are the Signal lane's vocabulary,
-  and a copy inside News would be a second place they could drift.
+  未成案 chip there would report a refusal that never happened. The badge and the
+  OI monitor's admission cell are owned by `features/trading` — Case states,
+  gate stages and rule keys are the Signal lane's vocabulary, and a copy inside
+  News would be a second place they could drift.
 
   Polling: Feed every 3 seconds; the OI frame table every 5 seconds; Quote,
-  Event detail, Status and the trading reads every 15 seconds (one shared status query feeds the Feed
-  header, the topbar health lamp, the OI monitor, the token page's rank window
-  and `/news/status`). Token identity does not poll.
+  Event detail, Status and the trading reads every 15 seconds (one shared News
+  status query feeds the Feed header, the topbar health lamp, the OI monitor,
+  the token page's rank window and `/news/status`). The three Trading reads run
+  on `/trading` alone and `/api/trading/gate` on `/news/oi` alone: the shell
+  polled `/api/trading/status` on every route for a sidebar badge and two
+  chrome figures until #537 PR-5 deleted both. Token identity does not poll.
   Quote batches preserve Feed order while deduplicating, select the first 100,
   and only then sort that selected identity for the request/cache key. Their
   interval pauses in a background tab and `refetchOnWindowFocus` immediately
@@ -454,7 +465,7 @@ the route components into the eager shell chunk.
   open interest rising is not price rising (#104). Only `favicon.svg` and
   the sidebar's `BrandMark` may be filled shapes; they are the same path on the
   same indigo tile, so the tab and the frame are one face.
-- **Shell navigation.** `AppSidebar` is a purpose-built 204px aside — one component for the in-frame sidebar and the drawer body, so the two presentations cannot disagree about what exists or which destination is current. `CockpitShell` picks the frame by mounting, not by hiding: from `(min-width: 1280px)` the sidebar is in-frame and stays there. From `768px` to `1279px` the same sidebar is the left `Drawer`; below `768px` `AppBottomNav` takes over. The nav carries three working surfaces in two groups — `Workbench`: `事件流` `/news`, `交易` `/trading`; `System · 数据健康`: `OI 来源与准入审计` `/news/oi`. The feed entry shows the 24 h received count and the OI entry shows telemetry received; `交易` carries the Alpha decision state and execution mode instead of a number, because "is any of this real money" is what a reader needs before opening it — and at 204px a badge and a count together clip the label. `CASES 24H` leads the Trading page's own figure row. Counts are compacted and `aria-hidden`. `/` redirects to `/news`; topbar search always opens a fresh News scope. Public SPA routes are `/`, `/news`, `/news/oi`, `/news/status`, `/news/symbols/:base`, `/news/events/:eventId`, and `/trading`; retired routes, including `/news/alpha` and `/news/leverage`, resolve through the standard not-found route. Operational diagnosis remains on API/CLI surfaces and there is no browser Ops route.
+- **Shell navigation.** `AppSidebar` is a purpose-built 204px aside — one component for the in-frame sidebar and the drawer body, so the two presentations cannot disagree about what exists or which destination is current. `CockpitShell` picks the frame by mounting, not by hiding: from `(min-width: 1280px)` the sidebar is in-frame and stays there. From `768px` to `1279px` the same sidebar is the left `Drawer`; below `768px` `AppBottomNav` takes over. The nav carries three working surfaces in two groups — `Workbench`: `事件流` `/news`, `交易` `/trading`; `System · 数据健康`: `OI 来源与准入审计` `/news/oi`. The feed entry shows the 24 h received count and the OI entry shows telemetry received; `交易` carries neither. A count clipped the 204px row's label to one glyph (#460), and the `tradingEnvironment` badge that replaced it — the lane's last-Case clock and the execution mode — cost every News route a 15 s poll of `/api/trading/status` for two words the desk itself states first (#537 PR-5). Counts are compacted and `aria-hidden`. `/` redirects to `/news`; topbar search always opens a fresh News scope. Public SPA routes are `/`, `/news`, `/news/oi`, `/news/status`, `/news/symbols/:base`, `/news/events/:eventId`, and `/trading`; retired routes, including `/news/alpha` and `/news/leverage`, resolve through the standard not-found route. Operational diagnosis remains on API/CLI surfaces and there is no browser Ops route.
 - **No keyboard layer.** The console has no command palette, no `?` shortcut panel, and no document-level key bindings at all; #82's keyboard layer was cut whole. Every action the palette collapsed — the three destinations, the four feed task tabs, a `symbol` filter — is already a control on the page, so the layer bought a second way to reach what one click reached and a list that had to be kept in sync with the routes; the toolbar was even advertising an `X 复制标注` binding that nothing implemented. The cut removed `shared/ui/CommandPalette`, `shared/ui/ShortcutsDialog`, `features/cockpit/ui/appShortcuts.ts` and `features/news/state/useFeedCursor.ts` together with the shell's own `keydown` listener, the `--surface-cursor` token and every `<kbd>` hint. Do not reintroduce a `document.addEventListener("keydown", ...)` in shell or route code, and do not restore the `⌘K` topbar button: keyboard access is the platform's — real controls, real tab order, `Enter` on a form, and Radix's own `Esc`.
 - **Scrolling.** `body` remains locked for the app shell. `.center-column` is the shell-managed route scroll container. No retired table, bottom deck, controls row, or mobile task-bar reserves height. Route-level nested scrollers are allowed only when they are intentionally bounded and covered by Playwright overflow/reachability assertions.
 - **Breakpoint policy.** Desktop density starts at `1280px`. Tablet uses a single route column from `768px` through `1279px`. Mobile rules are `max-width: 767px` and must appear late enough in the cascade to win over base and desktop/tablet rules. Use container queries for local card/panel behavior when component width matters more than viewport width.
@@ -587,7 +598,7 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
 5. Confirm the topbar shows no status pill while `/api/status.runtime.ok` is
    true and shows the first runtime reason when it is not, and that the feed
    header shows no health pill while `health.overall` is `ok`.
-6. At `390px`, confirm there is no sidebar trigger, the bottom tab bar shows every destination with 48px targets and clears the home indicator, `.topbar` / `.center-column` / the bar do not overlap, Event rows read as separate cards with no select box and no expand caret, the funnel tiles and task tabs scroll horizontally inside themselves without giving the page a horizontal scroll, `/` lands on the News list, the approved tabs/time/filter controls remain reachable, and no retired Tape/task bar exists. On `/trading`, confirm the status bar, controls, positions, Command rows, the execution table (which scrolls inside its own panel), the funnel and Cases remain reachable without page-level horizontal overflow.
+6. At `390px`, confirm there is no sidebar trigger, the bottom tab bar shows every destination with 48px targets and clears the home indicator, `.topbar` / `.center-column` / the bar do not overlap, Event rows read as separate cards with no select box and no expand caret, the funnel tiles and task tabs scroll horizontally inside themselves without giving the page a horizontal scroll, `/` lands on the News list, the approved tabs/time/filter controls remain reachable, and no retired Tape/task bar exists. On `/trading`, confirm the RISK strip, the account figures, the positions and their order-count header, the ACT controls and Command rows, the CONFIRM table (which scrolls inside its own panel) and the 24 h Case card remain reachable without page-level horizontal overflow.
 7. At tablet width around `834px`, confirm the desktop sidebar is not mounted, the topbar trigger opens the drawer, drawer route navigation and topbar search still work, and the News list and no-overflow contract remain intact.
    At `1280px` and above, confirm `/news` keeps the sidebar fixed in the frame with no trigger, other routes
    retain the shared fold trigger, all three destinations are present and 交易 carries its mode word,

@@ -1,9 +1,14 @@
-"""Trading reads plus the one authenticated bounded operator-command append."""
+"""Trading reads plus the one authenticated bounded operator-command append.
+
+Four reads and one write. `GET /api/trading/signals` and the two `GET /api/trading/execution/*`
+projections were three more public shapes over ledgers the desk already reads folded: the Signal list
+is `executions[]` with its venue outcome attached, the raw observation stream is what that fold reads,
+and the Command list is `executions[].commands`. Nothing in the browser called any of the three, and
+`tracefold trading signals | observations | commands` reads the same repository directly (#537 PR-5).
+"""
 
 from __future__ import annotations
 
-import base64
-import json
 import re
 import time
 from typing import Annotated, Any, Final
@@ -14,7 +19,6 @@ from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from tracefold.app.execution_status import execution_readiness_projection
-from tracefold.app.trading_config import ADMISSION_VERSION, signal_lane_config
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from tracefold.trading import (
     OperatorCommandError,
@@ -22,7 +26,6 @@ from tracefold.trading import (
     execution_stage,
     parse_operator_command,
     prepare_parsed_operator_intent,
-    signal_disposition,
 )
 
 from ..dependencies import _authenticated_runtime, _authenticated_write_runtime, _validate_query_params
@@ -36,9 +39,6 @@ _StatusEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingStatusData]
 _GateEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingGateData]
 _GateSourceEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingGateSourceData]
 _CasesEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingCasesData]
-_SignalsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingSignalsData]
-_ObservationsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingExecutionObservationsData]
-_CommandsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingOperatorIntentsData]
 _ExecutionsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingExecutionsData]
 _CommandReceiptEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingOperatorCommandReceiptData]
 
@@ -47,28 +47,12 @@ _ROW_LIMIT: Final = 100
 _GATE_LIMIT: Final = 400
 _OI_METRIC_VERSION: Final = OI_METRIC_VERSION
 _BASE_SYMBOL: Final = re.compile(r"^[A-Z0-9._-]{1,24}$")
-_MARKET_KEY: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
 _CASE_STATE_FILTERS: Final[dict[str, tuple[str, ...]]] = {
     "open": ("PENDING", "RUNNING"),
     "no_trade": ("NO_TRADE",),
     "blocked": ("BLOCKED",),
     "emitted": ("SIGNAL_EMITTED",),
 }
-_OBSERVATION_KINDS: Final = frozenset(
-    {
-        "signal_disposition",
-        "control_disposition",
-        "risk",
-        "order",
-        "fill",
-        "position",
-        "protection",
-        "reconciliation",
-        "readiness",
-        "audit_gap",
-    }
-)
-_COMMAND_ACTIONS: Final = frozenset({"pause_entries", "resume_entries", "emergency_halt", "flatten", "manual_entry"})
 _CONSOLE_COMMAND_ACTIONS: Final = frozenset({"pause_entries", "resume_entries", "flatten"})
 _MAX_FUTURE_SKEW_NS: Final = 30_000_000_000
 _MAX_COMMAND_REQUEST_BYTES: Final = 2_048
@@ -89,7 +73,6 @@ def get_trading_status(request: Request) -> Response:
     now_ms = int(time.time() * 1000)
     with runtime.repositories() as repos:
         last_case_at_ms = repos.trading.latest_case_created_at_ms()
-        counts = repos.trading.runtime_summary(since_ms=now_ms - _WINDOW_MS)
         execution = runtime.settings.trading.execution
         execution_status = execution_readiness_projection(
             execution,
@@ -98,13 +81,7 @@ def get_trading_status(request: Request) -> Response:
             now_ns=now_ms * 1_000_000,
         )
     return _etagged(
-        {
-            "decision": {"last_case_at_ms": last_case_at_ms},
-            "execution": execution_status,
-            "counts": counts,
-            "window_hours": _WINDOW_MS // 3_600_000,
-            "measured_at_ms": now_ms,
-        },
+        {"decision": {"last_case_at_ms": last_case_at_ms}, "execution": execution_status},
         request,
         envelope=_StatusEnvelope,
     )
@@ -116,20 +93,14 @@ def get_trading_gate(request: Request) -> Response:
     runtime = _authenticated_runtime(request)
     now_ms = int(time.time() * 1000)
     with runtime.repositories() as repos:
-        rows = repos.trading.gate_decisions_since(since_ms=now_ms - _WINDOW_MS, limit=_GATE_LIMIT + 1)
-        report = repos.trading.candidate_admission_report(now_ms=now_ms)
-    admission = signal_lane_config(runtime.settings).admission
+        report = repos.trading.candidate_admission_report(now_ms=now_ms, limit=_GATE_LIMIT + 1)
+    rows = report["decisions"]
     return _etagged(
         {
-            "config": {"version": ADMISSION_VERSION, "config_digest": admission.digest, **admission.snapshot},
             "decisions": [_gate_decision(row) for row in rows[:_GATE_LIMIT]],
             "status_counts_24h": report["candidate_counts_24h"],
             "reason_counts_24h": report["candidate_reasons_24h"],
-            "latest_source_at_ms": report["latest_source_at_ms"],
-            "latest_gate_eligible_at_ms": report["latest_gate_eligible_at_ms"],
             "complete": len(rows) <= _GATE_LIMIT,
-            "window_hours": _WINDOW_MS // 3_600_000,
-            "measured_at_ms": now_ms,
         },
         request,
         envelope=_GateEnvelope,
@@ -166,13 +137,11 @@ def get_trading_cases(
     request: Request,
     underlying: Annotated[str, Query(max_length=32)] = "",
     state: Annotated[str, Query(max_length=16)] = "",
-    cursor: Annotated[str, Query(max_length=256)] = "",
 ) -> Response:
-    _validate_query_params(request, supported={"cursor", "state", "token", "underlying"})
+    _validate_query_params(request, supported={"state", "token", "underlying"})
     if state and state not in _CASE_STATE_FILTERS:
         raise ApiBadRequest("trading_cases_state_invalid", field="state")
     underlying_key = _underlying_key(underlying, error="trading_cases_underlying_invalid")
-    before = _cursor_pair(cursor, kind="cases", error="trading_cases_cursor_invalid")
     runtime = _authenticated_runtime(request)
     now_ms = int(time.time() * 1000)
     with runtime.repositories() as repos:
@@ -180,7 +149,6 @@ def get_trading_cases(
             since_ms=now_ms - _WINDOW_MS,
             underlying_key=underlying_key,
             states=_CASE_STATE_FILTERS.get(state, ()),
-            before=before,
             limit=_ROW_LIMIT + 1,
         )
         states = repos.trading.case_counts(since_ms=now_ms - _WINDOW_MS)
@@ -191,119 +159,10 @@ def get_trading_cases(
             "state_counts_24h": states,
             "reason_counts_24h": reasons,
             "complete": len(rows) <= _ROW_LIMIT,
-            "next_cursor": _next_cursor(rows, kind="cases", time_key="case_created_at_ms", id_key="case_id"),
             "window_hours": _WINDOW_MS // 3_600_000,
-            "measured_at_ms": now_ms,
         },
         request,
         envelope=_CasesEnvelope,
-    )
-
-
-@router.get("/trading/signals", response_model=_SignalsEnvelope)
-def get_trading_signals(
-    request: Request,
-    market: Annotated[str, Query(max_length=128)] = "",
-    cursor: Annotated[str, Query(max_length=256)] = "",
-) -> Response:
-    _validate_query_params(request, supported={"cursor", "market", "token"})
-    market_value = market.strip()
-    if market_value and _MARKET_KEY.fullmatch(market_value) is None:
-        raise ApiBadRequest("trading_signals_market_invalid", field="market")
-    before = _cursor_pair(cursor, kind="signals", error="trading_signals_cursor_invalid")
-    runtime = _authenticated_runtime(request)
-    now_ms = int(time.time() * 1000)
-    with runtime.repositories() as repos:
-        rows = repos.trading.console_signals(
-            since_ns=(now_ms - _WINDOW_MS) * 1_000_000,
-            market_key=market_value or None,
-            before=before,
-            limit=_ROW_LIMIT + 1,
-        )
-    return _etagged(
-        {
-            "signals": [_signal(row, now_ns=now_ms * 1_000_000) for row in rows[:_ROW_LIMIT]],
-            "complete": len(rows) <= _ROW_LIMIT,
-            "next_cursor": _next_cursor(rows, kind="signals", time_key="observed_at_ns", id_key="signal_id"),
-            "window_hours": _WINDOW_MS // 3_600_000,
-            "measured_at_ms": now_ms,
-        },
-        request,
-        envelope=_SignalsEnvelope,
-    )
-
-
-@router.get("/trading/execution/observations", response_model=_ObservationsEnvelope)
-def get_execution_observations(
-    request: Request,
-    slot: Annotated[str, Query(max_length=128)] = "",
-    kind: Annotated[str, Query(max_length=32)] = "",
-    cursor: Annotated[str, Query(max_length=256)] = "",
-) -> Response:
-    _validate_query_params(request, supported={"cursor", "kind", "slot", "token"})
-    if kind and kind not in _OBSERVATION_KINDS:
-        raise ApiBadRequest("trading_observations_kind_invalid", field="kind")
-    before = _cursor_pair(cursor, kind="observations", error="trading_observations_cursor_invalid")
-    runtime = _authenticated_runtime(request)
-    now_ms = int(time.time() * 1000)
-    with runtime.repositories() as repos:
-        rows = repos.trading.console_execution_observations(
-            since_ns=(now_ms - _WINDOW_MS) * 1_000_000,
-            account_slot=slot.strip() or None,
-            normalized_kind=kind or None,
-            before=before,
-            limit=_ROW_LIMIT + 1,
-        )
-    return _etagged(
-        {
-            "observations": [_observation(row) for row in rows[:_ROW_LIMIT]],
-            "complete": len(rows) <= _ROW_LIMIT,
-            "next_cursor": _next_cursor(rows, kind="observations", time_key="observed_at_ns", id_key="event_id"),
-            "window_hours": _WINDOW_MS // 3_600_000,
-            "measured_at_ms": now_ms,
-        },
-        request,
-        envelope=_ObservationsEnvelope,
-    )
-
-
-@router.get("/trading/execution/commands", response_model=_CommandsEnvelope)
-def get_operator_intents(
-    request: Request,
-    slot: Annotated[str, Query(max_length=128)] = "",
-    action: Annotated[str, Query(max_length=32)] = "",
-    cursor: Annotated[str, Query(max_length=256)] = "",
-) -> Response:
-    _validate_query_params(request, supported={"action", "cursor", "slot", "token"})
-    if action and action not in _COMMAND_ACTIONS:
-        raise ApiBadRequest("trading_commands_action_invalid", field="action")
-    before = _cursor_pair(cursor, kind="commands", error="trading_commands_cursor_invalid")
-    runtime = _authenticated_runtime(request)
-    now_ms = int(time.time() * 1000)
-    now_ns = now_ms * 1_000_000
-    with runtime.repositories() as repos:
-        rows = repos.trading.console_operator_intents(
-            since_ns=(now_ms - _WINDOW_MS) * 1_000_000,
-            account_slot=slot.strip() or None,
-            action=action or None,
-            before=before,
-            limit=_ROW_LIMIT + 1,
-        )
-    return _etagged(
-        {
-            "commands": [_command(row, now_ns=now_ns) for row in rows[:_ROW_LIMIT]],
-            "complete": len(rows) <= _ROW_LIMIT,
-            "next_cursor": _next_cursor(
-                rows,
-                kind="commands",
-                time_key="requested_at_ns",
-                id_key="command_id",
-            ),
-            "window_hours": _WINDOW_MS // 3_600_000,
-            "measured_at_ms": now_ms,
-        },
-        request,
-        envelope=_CommandsEnvelope,
     )
 
 
@@ -318,20 +177,12 @@ def get_trading_executions(request: Request) -> Response:
     since_ns = (now_ms - _WINDOW_MS) * 1_000_000
     with runtime.repositories() as repos:
         rows = repos.trading.console_executions(since_ns=since_ns, limit=_ROW_LIMIT + 1)
-        commands = repos.trading.console_operator_intents(
-            since_ns=since_ns,
-            account_slot=None,
-            action=None,
-            before=None,
-            limit=_ROW_LIMIT,
-        )
+        commands = repos.trading.console_operator_intents(since_ns=since_ns, action=None, limit=_ROW_LIMIT)
     return _etagged(
         {
             "executions": [_execution(row) for row in rows[:_ROW_LIMIT]],
             "commands": [_execution_command(row, now_ns=now_ns) for row in commands],
             "complete": len(rows) <= _ROW_LIMIT,
-            "window_hours": _WINDOW_MS // 3_600_000,
-            "measured_at_ms": now_ms,
         },
         request,
         envelope=_ExecutionsEnvelope,
@@ -397,58 +248,12 @@ async def post_operator_intent(
     )
 
 
-def _encode_cursor(kind: str, timestamp: int, identity: str) -> str:
-    raw = json.dumps(
-        {"v": 1, "kind": kind, "values": [timestamp, identity]},
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
-
-
-def _cursor_pair(cursor: str, *, kind: str, error: str) -> tuple[int, str] | None:
-    if not cursor:
-        return None
-    try:
-        padding = "=" * (-len(cursor) % 4)
-        payload = json.loads(base64.urlsafe_b64decode((cursor + padding).encode()).decode())
-    except (ValueError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ApiBadRequest(error, field="cursor") from exc
-    if (
-        not isinstance(payload, dict)
-        or set(payload) != {"v", "kind", "values"}
-        or payload.get("v") != 1
-        or payload.get("kind") != kind
-        or not isinstance(payload.get("values"), list)
-        or len(payload["values"]) != 2
-    ):
-        raise ApiBadRequest(error, field="cursor")
-    timestamp, identity = payload["values"]
-    if isinstance(timestamp, bool) or not isinstance(timestamp, int) or timestamp < 0:
-        raise ApiBadRequest(error, field="cursor")
-    if not isinstance(identity, str) or not identity or len(identity) > 256:
-        raise ApiBadRequest(error, field="cursor")
-    return timestamp, identity
-
-
-def _next_cursor(rows: list[dict[str, Any]], *, kind: str, time_key: str, id_key: str) -> str | None:
-    if len(rows) <= _ROW_LIMIT:
-        return None
-    last = rows[_ROW_LIMIT - 1]
-    return _encode_cursor(kind, int(last[time_key]), str(last[id_key]))
-
-
 def _gate_decision(row: dict[str, Any]) -> dict[str, Any]:
-    status = str(row["status"])
     return {
         "source_key": str(row["source_key"]),
         "event_id": _oi_event_id(row.get("source_key")),
-        "underlying_key": row.get("underlying_key"),
-        "base_symbol": _base_symbol(row.get("underlying_key")),
-        "trigger_kind": str(row["trigger_kind"]),
-        "source_observed_at_ms": int(row["source_observed_at_ms"]),
         "case_id": row.get("case_id"),
-        "gate_status": status,
+        "gate_status": str(row["status"]),
         "gate_stage": str(row["stage"]),
         "gate_reason": str(row["reason"]),
         "gate_retryable": bool(row["retryable"]),
@@ -466,97 +271,34 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
     manifest: dict[str, Any] = manifest_value if isinstance(manifest_value, dict) else {}
     contexts_value = manifest.get("contexts")
     contexts: dict[str, Any] = contexts_value if isinstance(contexts_value, dict) else {}
-    oi_value = contexts.get("oi")
-    oi: dict[str, Any] = oi_value if isinstance(oi_value, dict) else {}
     market_value = contexts.get("market")
     market: dict[str, Any] = market_value if isinstance(market_value, dict) else {}
-    trigger_value = manifest.get("primary_trigger")
-    trigger: dict[str, Any] = trigger_value if isinstance(trigger_value, dict) else {}
     return {
         "case_id": str(row["case_id"]),
         "event_id": _oi_event_id(row.get("primary_source_key")),
-        "underlying_key": str(row["underlying_key"]),
         "base_symbol": _base_symbol(row.get("underlying_key")),
         "market_key": manifest.get("market_key"),
-        "source_venue": trigger.get("venue"),
-        "trigger_kind": str(row["trigger_kind"]),
         "manifest_version": manifest.get("manifest_version"),
         # From the manifest, which is what the lane compares a Case against before it decides one.
         # Three columns beside it said the same thing and nothing read them (#537 PR-3).
         "policy_id": _string_or_none(manifest.get("policy_id")),
-        "policy_version": _string_or_none(manifest.get("policy_version")),
         "policy_config_digest": _string_or_none(manifest.get("policy_config_digest")),
         "policy_config": _frozen_config(manifest.get("policy_config")),
         "policy_checks": _policy_checks(row.get("policy_checks")),
         "state": str(row["state"]),
-        "policy_decision": row.get("policy_decision"),
         "policy_reason": row.get("policy_reason"),
         "mark_price": _string_or_none(market.get("mark_price")),
         "pre_move_bps": _int_or_none(market.get("pre_move_bps")),
-        "oi_change_bps": _int_or_none(oi.get("oi_change_bps")),
-        "oi_value_usd": _int_or_none(oi.get("oi_value_usd")),
-        "whale_oi_ratio_bps": _int_or_none(oi.get("whale_oi_ratio_bps")),
-        "whale_long_profit_bps": _int_or_none(oi.get("whale_long_profit_bps")),
         "observed_at_ms": int(row["observed_at_ms"]),
         "created_at_ms": int(row["case_created_at_ms"]),
         "decided_at_ms": _int_or_none(row.get("decided_at_ms")),
     }
 
 
-def _signal(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
-    return {
-        "seq": int(row["seq"]),
-        "signal_id": str(row["signal_id"]),
-        "case_id": str(row["case_id"]),
-        "market_key": str(row["market_key"]),
-        "direction": str(row["direction"]),
-        "observed_at_ns": int(row["observed_at_ns"]),
-        "expires_at_ns": int(row["expires_at_ns"]),
-        "expired": int(row["expires_at_ns"]) <= now_ns,
-    }
-
-
-def _observation(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "seq": int(row["seq"]),
-        "event_id": str(row["event_id"]),
-        "account_slot": str(row["account_slot"]),
-        "execution_strategy": str(row["execution_strategy"]),
-        "signal_id": row.get("signal_id"),
-        "command_id": row.get("command_id"),
-        "normalized_kind": str(row["normalized_kind"]),
-        "occurred_at_ns": int(row["occurred_at_ns"]),
-        "observed_at_ns": int(row["observed_at_ns"]),
-        "native_identity_references": list(row.get("native_identity_references") or []),
-        "summary": row.get("summary") or {},
-    }
-
-
-def _command(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
-    return {
-        "seq": int(row["seq"]),
-        "command_id": str(row["command_id"]),
-        "account_slot": str(row["account_slot"]),
-        "action": str(row["action"]),
-        "scope": str(row["scope"]),
-        "reason": str(row["reason"]),
-        "operator_identity": str(row["operator_identity"]),
-        "requested_at_ns": int(row["requested_at_ns"]),
-        "expires_at_ns": int(row["expires_at_ns"]),
-        "expired": int(row["expires_at_ns"]) <= now_ns,
-        "market_key": row.get("market_key"),
-        "direction": row.get("direction"),
-        "disposition": row.get("disposition"),
-        "disposition_reason": row.get("disposition_reason"),
-    }
-
-
 def _execution(row: dict[str, Any]) -> dict[str, Any]:
     reason = _string_or_none(row.get("disposition_reason"))
-    order_status = _string_or_none(row.get("order_status"))
     fill_quantity = _string_or_none(row.get("fill_quantity"))
     stop_trigger_price = _string_or_none(row.get("stop_trigger_price"))
-    position_status = _string_or_none(row.get("position_status"))
     return {
         "source": str(row["source"]),
         "entry_id": str(row["entry_id"]),
@@ -564,24 +306,23 @@ def _execution(row: dict[str, Any]) -> dict[str, Any]:
         "market_key": str(row["market_key"]),
         "direction": str(row["direction"]),
         "observed_at_ns": int(row["observed_at_ns"]),
-        "disposition": signal_disposition(reason),
         "disposition_reason": reason,
-        "order_status": order_status,
         "fill_quantity": fill_quantity,
         "fill_avg_price": _string_or_none(row.get("fill_avg_price")),
         "stop_trigger_price": stop_trigger_price,
-        "position_status": position_status,
         "exit_price": _string_or_none(row.get("exit_price")),
         "realized_pnl_usd": _string_or_none(row.get("realized_pnl_usd")),
         "exit_reason": _string_or_none(row.get("exit_reason")),
+        # The venue's own `order_status` and `position_status` are inputs to this word, not a second
+        # answer beside it: the table renders the stage, and publishing both let a reader compare a
+        # raw venue string against the server's derivation of the same row (#537 PR-5).
         "stage": execution_stage(
             disposition_reason=reason,
-            order_status=order_status,
+            order_status=_string_or_none(row.get("order_status")),
             fill_quantity=fill_quantity,
             stop_trigger_price=stop_trigger_price,
-            position_status=position_status,
+            position_status=_string_or_none(row.get("position_status")),
         ),
-        "last_observed_at_ns": int(row["last_observed_at_ns"]),
     }
 
 
@@ -589,9 +330,7 @@ def _execution_command(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
     return {
         "command_id": str(row["command_id"]),
         "action": str(row["action"]),
-        "reason": str(row["reason"]),
         "requested_at_ns": int(row["requested_at_ns"]),
-        "operator_identity": str(row["operator_identity"]),
         "stage": command_stage(
             disposition=_string_or_none(row.get("disposition")),
             disposition_reason=_string_or_none(row.get("disposition_reason")),

@@ -7,12 +7,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
 
 import { AppBottomNav } from "./AppBottomNav";
-import {
-  AppBrand,
-  AppSidebar,
-  type AppNavigationBadges,
-  type AppNavigationCounts,
-} from "./AppSidebar";
+import { AppBrand, AppSidebar, type AppNavigationCounts } from "./AppSidebar";
 import { CockpitTopbar, type CockpitTopbarProps } from "./CockpitTopbar";
 import "./cockpitShell.css";
 import "./cockpitShellContract.css";
@@ -25,7 +20,6 @@ const PHONE_QUERY = "(max-width: 767px)";
 export type CockpitShellProps = {
   /** Whether a frame-owned read is still in flight. Drives the 2px in-flight line and nothing else. */
   busy?: boolean;
-  navBadges?: AppNavigationBadges;
   navCounts?: AppNavigationCounts;
   outletContext?: unknown;
   routeContent?: ReactNode;
@@ -43,7 +37,6 @@ export type CockpitShellProps = {
  */
 export function CockpitShell({
   busy = false,
-  navBadges,
   navCounts,
   outletContext,
   routeContent,
@@ -60,7 +53,7 @@ export function CockpitShell({
   return (
     <div className="cockpit-shell">
       {busy ? <PageState.RouteProgress /> : null}
-      {desktop ? <AppSidebar badges={navBadges} counts={navCounts} /> : null}
+      {desktop ? <AppSidebar counts={navCounts} /> : null}
       <div className="cockpit-main">
         <CockpitTopbar
           {...topbar}
@@ -97,12 +90,7 @@ export function CockpitShell({
           title="导航"
           width={260}
         >
-          <AppSidebar
-            badges={navBadges}
-            counts={navCounts}
-            inDrawer
-            onNavigate={() => setDrawerOpen(false)}
-          />
+          <AppSidebar counts={navCounts} inDrawer onNavigate={() => setDrawerOpen(false)} />
         </Drawer>
       )}
     </div>

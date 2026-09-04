@@ -10,10 +10,10 @@ import {
   signalDispositionLabel,
 } from "../model/tradingLabels";
 
-import { TradingEmptyNote, TradingSourceLine } from "./TradingChrome";
+import { TradingEmptyNote, TradingLedgerNote, TradingSourceLine } from "./TradingChrome";
 
 /**
- * Block 4: one row per entry, every cell a field `GET /api/trading/executions` already folded (#528).
+ * CONFIRM: one row per entry, every cell a field `GET /api/trading/executions` already folded (#528).
  *
  * An entry is a Signal or a manual entry the operator typed, and `source` is the only column that tells
  * them apart: a manual entry has no Case, and every other fact it carries is the same venue fact folded
@@ -21,17 +21,26 @@ import { TradingEmptyNote, TradingSourceLine } from "./TradingChrome";
  * quantity are the venue's own decimal strings, and the realized PnL is the one Nautilus reported on
  * `PositionClosed` — the total above the table is their sum and the only arithmetic on this page, because
  * #528 explicitly refuses an equity curve table for a number that is already one column.
+ *
+ * Two columns went in #537 PR-5. `disposition` was `accepted` / `rejected` beside a stage that already
+ * says `ordered` or `rejected` about the same row, and `position_status` was `closed` beside
+ * `stage=closed`. A Signal row's `case_id` is a link now: the Case that authored it opens in the drawer
+ * on this page rather than in a list of every Case below it.
  */
 export function TradingExecutionTable({
   complete,
   failed,
+  onOpenCase,
   pending,
   rows,
+  selectedCaseId,
 }: {
   complete: boolean;
   failed: boolean;
+  onOpenCase: (caseId: string) => void;
   pending: boolean;
   rows: readonly TradingExecutionRow[];
+  selectedCaseId: string | null;
 }) {
   const filled = rows.filter((row) => row.fill_quantity != null).length;
   const manual = rows.filter((row) => row.source === "manual").length;
@@ -54,7 +63,6 @@ export function TradingExecutionTable({
             <span>成交量</span>
             <span>成交均价</span>
             <span>止损价</span>
-            <span>仓位</span>
             <span>退出价</span>
             <span>已实现</span>
             <span>退出原因</span>
@@ -62,14 +70,27 @@ export function TradingExecutionTable({
           {rows.map((row) => (
             <article className="trading-execution-row" key={row.entry_id}>
               <span data-label="时间">{nsClock(row.observed_at_ns)}</span>
-              <span data-label="来源">{EXECUTION_SOURCE_ZH[row.source] ?? row.source}</span>
+              <span data-label="来源">
+                {row.case_id ? (
+                  <button
+                    aria-expanded={row.case_id === selectedCaseId}
+                    className="trading-case-link"
+                    onClick={() => onOpenCase(row.case_id as string)}
+                    type="button"
+                  >
+                    {EXECUTION_SOURCE_ZH[row.source] ?? row.source}
+                  </button>
+                ) : (
+                  (EXECUTION_SOURCE_ZH[row.source] ?? row.source)
+                )}
+              </span>
               <span data-label="市场">{row.market_key}</span>
               <span data-label="方向" data-tone={row.direction === "long" ? "long" : "short"}>
                 {row.direction.toUpperCase()}
               </span>
               <span
                 data-label="处置"
-                data-tone={row.disposition === "rejected" ? "caution" : undefined}
+                data-tone={REFUSED_STAGES.has(row.stage) ? "caution" : undefined}
               >
                 {signalDispositionLabel(row.disposition_reason)}
               </span>
@@ -79,7 +100,6 @@ export function TradingExecutionTable({
               <span data-label="成交量">{row.fill_quantity ?? "—"}</span>
               <span data-label="成交均价">{row.fill_avg_price ?? "—"}</span>
               <span data-label="止损价">{row.stop_trigger_price ?? "—"}</span>
-              <span data-label="仓位">{row.position_status ?? "—"}</span>
               <span data-label="退出价">{row.exit_price ?? "—"}</span>
               <span data-label="已实现">{moneyLabel(row.realized_pnl_usd)}</span>
               <span data-label="退出原因">
@@ -89,7 +109,7 @@ export function TradingExecutionTable({
           ))}
         </div>
       ) : (
-        <TradingEmptyNote>{ledgerEmpty(pending, failed)}</TradingEmptyNote>
+        <TradingLedgerNote failed={failed} pending={pending} subject="执行" />
       )}
       {rows.length && !complete ? (
         <TradingEmptyNote>本窗口已截断；未列出的入场不能解释为没有发生。</TradingEmptyNote>
@@ -99,13 +119,10 @@ export function TradingExecutionTable({
   );
 }
 
+/** The two stages that mean the entry never reached the venue, as `tracefold/trading/stages.py` derives them. */
+const REFUSED_STAGES = new Set(["rejected", "expired"]);
+
 function realizedPnl(row: TradingExecutionRow): number {
   const value = Number(row.realized_pnl_usd);
   return Number.isFinite(value) ? value : 0;
-}
-
-function ledgerEmpty(pending: boolean, failed: boolean): string {
-  if (pending) return "正在读取执行账本…";
-  if (failed) return "执行账本读取失败，不能据此断言为空。";
-  return "当前 24 小时窗口没有入场。";
 }

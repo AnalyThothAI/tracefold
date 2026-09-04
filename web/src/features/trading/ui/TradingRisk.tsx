@@ -6,14 +6,19 @@ import type { TradingExecutionReadiness } from "../api/tradingQueries";
 import { bpsPercent, entryBlockReasonLabel, moneyLabel } from "../model/tradingLabels";
 
 /**
- * Blocks 1 and 2 of the desk: is the lane safe, and what is actually on the account (#528 PR-2).
+ * RISK: is the lane safe, and what is on the account (#537 PR-5, blocks 1 and 2 of #528 PR-2 merged).
+ *
+ * One strip of four safety words, four numbers beside it, and the positions the venue actually holds
+ * with the protection covering each. The open / inflight / unknown order counts are that table's own
+ * header rather than a card of their own — they are three integers about the same account, and a card
+ * between the equity and the positions made them read as a fifth safety answer.
  *
  * `stale` is the page's one freshness comparison — `Date.now() > execution.facts_expire_at_ms`, the instant
  * the server itself published as the end of this projection's budget. Past it the four safety words are
  * not what the response says they are, so all four read 过期 rather than the browser recomputing a
  * heartbeat age and a reconciliation age of its own and disagreeing with the server about both.
  */
-export function TradingAccountOverview({
+export function TradingRisk({
   execution,
   stale,
 }: {
@@ -21,8 +26,10 @@ export function TradingAccountOverview({
   stale: boolean;
 }) {
   const account = execution.current_account;
+  const positions = account?.positions ?? [];
+  const orders = account?.orders ?? [];
   return (
-    <div className="trading-account-overview">
+    <div className="trading-risk">
       <MetricRow className="trading-safety-grid" columns={4} label="执行安全状态">
         <Metric
           eyebrow="ALIVE"
@@ -55,97 +62,73 @@ export function TradingAccountOverview({
         {stale ? " · 本次读取的事实已过期" : ""}
       </p>
 
-      <div className="trading-account-grid">
-        <Card title="账户与风险">
-          <div className="trading-fact-grid">
-            <Fact label="Equity" value={moneyLabel(account?.equity_usd)} />
-            <Fact
-              label="当日 Drawdown"
-              value={
-                account?.daily_drawdown_usd == null
-                  ? "UNAVAILABLE"
-                  : `${moneyLabel(account.daily_drawdown_usd)} · ${bpsPercent(account.daily_drawdown_bps)}`
-              }
-              warn={Number(account?.daily_drawdown_usd ?? 0) > 0}
-            />
-            <Fact label="Aggregate risk" value={moneyLabel(account?.aggregate_risk_usd)} />
-            <Fact
-              label="Private reconcile age"
-              value={
-                execution.reconciliation_age_ms == null
-                  ? "UNAVAILABLE"
-                  : `${execution.reconciliation_age_ms.toLocaleString("en-US")} ms`
-              }
-              warn={
-                execution.reconciliation_age_ms == null || execution.reconciliation_age_ms > 10_000
-              }
-            />
-            <Fact
-              label="账户事实"
-              value={account?.complete ? "COMPLETE" : account ? "PARTIAL" : "UNAVAILABLE"}
-              warn={!account?.complete}
-            />
-            <Fact
-              /*
-               * The audit the Runtime writes its own facts through. Unhealthy means the account read
-               * happened and could not be recorded, which is a different fact from a missing snapshot —
-               * so it names its own reason rather than degrading into UNAVAILABLE beside it.
-               */
-              label="审计写入"
-              value={
-                account == null
-                  ? "UNAVAILABLE"
-                  : account.audit_healthy
-                    ? "HEALTHY"
-                    : (account.audit_failure_reason ?? "UNHEALTHY")
-              }
-              warn={account != null && !account.audit_healthy}
-            />
-          </div>
-        </Card>
+      <Card title="账户与风险">
+        <div className="trading-fact-grid">
+          <Fact label="Equity" value={moneyLabel(account?.equity_usd)} />
+          <Fact
+            label="当日 Drawdown"
+            value={
+              account?.daily_drawdown_usd == null
+                ? "UNAVAILABLE"
+                : `${moneyLabel(account.daily_drawdown_usd)} · ${bpsPercent(account.daily_drawdown_bps)}`
+            }
+            warn={Number(account?.daily_drawdown_usd ?? 0) > 0}
+          />
+          <Fact label="Aggregate risk" value={moneyLabel(account?.aggregate_risk_usd)} />
+          <Fact
+            label="Private reconcile age"
+            value={
+              execution.reconciliation_age_ms == null
+                ? "UNAVAILABLE"
+                : `${execution.reconciliation_age_ms.toLocaleString("en-US")} ms`
+            }
+            warn={
+              execution.reconciliation_age_ms == null || execution.reconciliation_age_ms > 10_000
+            }
+          />
+          <Fact
+            label="账户事实"
+            value={account?.complete ? "COMPLETE" : account ? "PARTIAL" : "UNAVAILABLE"}
+            warn={!account?.complete}
+          />
+          <Fact
+            /*
+             * The audit the Runtime writes its own facts through. Unhealthy means the account read
+             * happened and could not be recorded, which is a different fact from a missing snapshot —
+             * so it names its own reason rather than degrading into UNAVAILABLE beside it.
+             */
+            label="审计写入"
+            value={
+              account == null
+                ? "UNAVAILABLE"
+                : account.audit_healthy
+                  ? "HEALTHY"
+                  : (account.audit_failure_reason ?? "UNHEALTHY")
+            }
+            warn={account != null && !account.audit_healthy}
+          />
+        </div>
+      </Card>
 
-        <Card title="订单与不确定性">
-          <div className="trading-fact-grid">
-            <Fact label="Open" value={account?.open_orders_count ?? "—"} />
-            <Fact label="Inflight" value={account?.inflight_orders_count ?? "—"} />
-            <Fact
-              label="Unknown"
-              value={account?.unknown_orders_count ?? "—"}
-              warn={Boolean(account?.unknown_orders_count)}
-            />
-            <Fact
-              label="Protection"
-              value={protectionLabel(execution.protection_status)}
-              warn={["pending", "unprotected", "unknown"].includes(execution.protection_status)}
-            />
-          </div>
-          {(account?.orders ?? []).length ? (
-            <div className="trading-current-order-list">
-              {(account?.orders ?? []).map((order) => (
-                <article className="trading-current-order-row" key={order.client_order_id}>
-                  <b>{order.instrument_id}</b>
-                  <span>{order.state.toUpperCase()}</span>
-                  <span data-tone={order.leg === "unknown" ? "caution" : undefined}>
-                    {order.leg.toUpperCase()} · Qty {order.quantity}
-                  </span>
-                  <span>Trigger {order.trigger_price ?? "—"}</span>
-                  <span data-tone={!order.owned ? "caution" : undefined}>
-                    {order.owned ? "OWNED" : "UNCLAIMED"}
-                    {order.reduce_only ? " · REDUCE ONLY" : ""}
-                  </span>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <p className="trading-inline-empty">未见 open / inflight order；不据此推断账户为空。</p>
-          )}
-        </Card>
-      </div>
+      <Card hint="仓位与保护逐项展示；数量完整覆盖才标记 protected" title="当前仓位与挂单">
+        <div className="trading-order-counts">
+          <Fact label="Open" value={account?.open_orders_count ?? "—"} />
+          <Fact label="Inflight" value={account?.inflight_orders_count ?? "—"} />
+          <Fact
+            label="Unknown"
+            value={account?.unknown_orders_count ?? "—"}
+            warn={Boolean(account?.unknown_orders_count)}
+          />
+          <Fact
+            label="Protection"
+            value={protectionLabel(execution.protection_status)}
+            warn={["pending", "unprotected", "unknown"].includes(execution.protection_status)}
+          />
+        </div>
 
-      <Card hint="仓位与保护逐项展示；数量完整覆盖才标记 protected" title="当前仓位">
-        {(account?.positions ?? []).length ? (
+        {positions.length ? (
           <div className="trading-position-list">
-            {(account?.positions ?? []).map((position) => (
+            {positions.map((position) => (
               <article className="trading-position-row" key={position.position_id}>
                 <div className="trading-position-identity">
                   <b>{position.instrument_id}</b>
@@ -184,6 +167,27 @@ export function TradingAccountOverview({
               ? "当前账户无仓位，且新鲜 Binance 私有对账已证明账户为空。"
               : "未见当前仓位；这本身不能证明账户为空。"}
           </p>
+        )}
+
+        {orders.length ? (
+          <div className="trading-current-order-list">
+            {orders.map((order) => (
+              <article className="trading-current-order-row" key={order.client_order_id}>
+                <b>{order.instrument_id}</b>
+                <span>{order.state.toUpperCase()}</span>
+                <span data-tone={order.leg === "unknown" ? "caution" : undefined}>
+                  {order.leg.toUpperCase()} · Qty {order.quantity}
+                </span>
+                <span>Trigger {order.trigger_price ?? "—"}</span>
+                <span data-tone={!order.owned ? "caution" : undefined}>
+                  {order.owned ? "OWNED" : "UNCLAIMED"}
+                  {order.reduce_only ? " · REDUCE ONLY" : ""}
+                </span>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="trading-inline-empty">未见 open / inflight order；不据此推断账户为空。</p>
         )}
       </Card>
     </div>

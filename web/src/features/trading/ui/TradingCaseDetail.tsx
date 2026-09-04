@@ -13,7 +13,9 @@ import { bpsPercent, caseClock, policyLabel } from "../model/tradingLabels";
  *
  * It lived on `/news/alpha` until #460, which removed that page. The row list above it was a second view
  * of `GET /api/trading/cases`; this was not, and deleting it would have made the frozen per-check
- * evidence a database query rather than something an operator can read.
+ * evidence a database query rather than something an operator can read. #537 PR-5 deleted that row list
+ * too: this opens on demand from `?case=<id>`, which is the link every surface that names a Case already
+ * publishes, rather than being one card in a list of every Case in the window.
  */
 export function TradingCaseDetail({ item }: { item: TradingCase }) {
   const checks = caseChecks(item);
@@ -59,7 +61,7 @@ export function TradingCaseDetail({ item }: { item: TradingCase }) {
           </div>
           <div className="trading-case-fact">
             <dt>Signal</dt>
-            <dd>{item.state === "SIGNAL_EMITTED" ? "已发出，见下方 Signal 账本" : "未发出"}</dd>
+            <dd>{item.state === "SIGNAL_EMITTED" ? "已发出，见今日执行" : "未发出"}</dd>
           </div>
         </dl>
       </Card>

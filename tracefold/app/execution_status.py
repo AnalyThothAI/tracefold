@@ -11,6 +11,14 @@ It also published six identity facts -- `runtime_release`, `config_sha256`, `run
 `tracefold trading status`. No page rendered one, no operator command took one, and the projection
 already answers what an operator acts on: whether entries are armed, why not, and what the account
 holds (#537 PR-4).
+
+One field per operator question, and the same dict for both readers. The two raw observation clocks,
+the readiness-level position and order counts, and raw `account_flat` were published beside the
+answers derived from them: `facts_expire_at_ms` and `reconciliation_age_ms` are the two ages measured
+here, `current_account` carries the positions and orders row by row, and `account_flat_proven` is the
+only flat an operator acts on. The account snapshot's own two clocks, its day-start equity baseline
+and its `truncated` flag went the same way -- the drawdown is already measured against that baseline
+and a truncated snapshot is already not `complete` (#537 PR-5).
 """
 
 from __future__ import annotations
@@ -18,7 +26,11 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from tracefold.trading.storage.execution_stream import ExecutionRuntimeControlState, ExecutionRuntimeState
+from tracefold.trading.storage.execution_stream import (
+    ExecutionAccountSnapshot,
+    ExecutionRuntimeControlState,
+    ExecutionRuntimeState,
+)
 
 _HEARTBEAT_STALE_AFTER_NS = 5_000_000_000
 _PRIVATE_RECONCILIATION_STALE_AFTER_NS = 10_000_000_000
@@ -38,17 +50,12 @@ def execution_readiness_projection(
         "execution_safe": False,
         "entries_armed": False,
         "entry_block_reason": "disabled" if execution.mode == "disabled" else "runtime_state_missing",
-        "heartbeat_at_ns": None,
-        "reconciliation_observed_at_ns": None,
         "reconciliation_age_ms": None,
         "startup_reconciled": False,
         "entries_paused": True,
         "emergency_halted": False,
         "unexpected_exposure": False,
-        "account_flat": False,
         "account_flat_proven": False,
-        "positions_count": 0,
-        "open_orders_count": 0,
         "protection_status": "unknown",
         "routes_count": 0,
         "facts_expire_at_ms": None,
@@ -93,14 +100,11 @@ def execution_readiness_projection(
             "execution_safe": execution_safe,
             "entries_armed": entries_armed,
             "entry_block_reason": None if entries_armed else entry_block_reason or "entry_blocked",
-            "heartbeat_at_ns": state.heartbeat_at_ns,
-            "reconciliation_observed_at_ns": state.reconciliation_observed_at_ns,
             "reconciliation_age_ms": reconciliation_age_ns // 1_000_000,
             "startup_reconciled": state.startup_reconciled,
             "entries_paused": entries_paused,
             "emergency_halted": emergency_halted,
             "unexpected_exposure": state.unexpected_exposure,
-            "account_flat": state.account_flat,
             "account_flat_proven": bool(
                 alive
                 and execution_safe
@@ -108,8 +112,6 @@ def execution_readiness_projection(
                 and account_snapshot_flat
                 and state.account_flat
             ),
-            "positions_count": state.positions_count,
-            "open_orders_count": state.open_orders_count,
             "protection_status": state.protection_status,
             "routes_count": state.routes_count,
             # When this projection stops being current, so a reader can compare one instant against
@@ -122,13 +124,27 @@ def execution_readiness_projection(
             )
             // 1_000_000,
             "current_account": (
-                asdict(state.account_snapshot)
+                _account(state.account_snapshot)
                 if private_reconciliation_fresh and state.account_snapshot is not None
                 else None
             ),
         }
     )
     return base
+
+
+def _account(snapshot: ExecutionAccountSnapshot) -> dict[str, Any]:
+    """The stored snapshot minus the four facts the answers above it already carry.
+
+    `observed_at_ns` and `market_observed_at_ns` are the clocks `facts_expire_at_ms` is derived from,
+    `day_start_equity_usd` is the baseline `daily_drawdown_usd` was measured against, and `truncated`
+    is one of the conditions that makes `complete` false.
+    """
+
+    published = asdict(snapshot)
+    for key in ("observed_at_ns", "market_observed_at_ns", "day_start_equity_usd", "truncated"):
+        del published[key]
+    return published
 
 
 __all__ = ["execution_readiness_projection"]

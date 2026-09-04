@@ -29,16 +29,25 @@ def test_retired_execution_configuration_fails_closed(retired: dict[str, object]
         Settings.model_validate({"trading": retired})
 
 
-def test_public_http_is_case_signal_observation_and_readiness_only() -> None:
+def test_public_http_is_case_execution_gate_and_readiness_only() -> None:
+    """#537 PR-5. Four reads and one write; every retired execution surface stays deleted.
+
+    The Signal list and the raw observation stream were two more public shapes over the ledgers
+    `/api/trading/executions` already reads folded, and nothing in the browser called either.
+    """
+
     schema = create_app(settings=Settings(ws_token="schema-test")).openapi()
     paths = set(schema["paths"])
 
-    assert "/api/trading/signals" in paths
-    assert "/api/trading/execution/observations" in paths
-    assert "/api/trading/execution/commands" in paths
-    assert "/api/trading/intents" not in paths
-    assert "/api/trading/capabilities" not in paths
-    assert "/api/trading/evidence" not in paths
+    assert {path for path in paths if path.startswith("/api/trading/")} == {
+        "/api/trading/status",
+        "/api/trading/cases",
+        "/api/trading/executions",
+        "/api/trading/gate",
+        "/api/trading/gate/{event_id}",
+        "/api/trading/execution/commands",
+    }
+    assert set(schema["paths"]["/api/trading/execution/commands"]) == {"post"}
 
 
 def test_active_signal_path_has_no_execution_or_nautilus_import() -> None:

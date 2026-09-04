@@ -65,14 +65,13 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
         "/api/bootstrap",
         "/api/status",
         "/api/trading/status",
-        # One route per durable aggregate: Alpha publishes Cases and engine-neutral Signals;
-        # execution publishes only normalized observations in this slice.
+        # One route per question the desk asks. `/api/trading/signals` and the two raw
+        # `/api/trading/execution/*` projections were three more shapes over the same ledgers the
+        # desk reads already folded, and nothing in the browser called any of them (#537 PR-5).
         "/api/trading/cases",
-        "/api/trading/signals",
-        "/api/trading/execution/observations",
         "/api/trading/execution/commands",
-        # #528 PR-1: the desk table. One row per Signal folded from those same observations, plus the
-        # Command rows beside it; it appends nothing and adds no aggregate.
+        # #528 PR-1: the desk table. One row per entry folded from the Runtime's own observations,
+        # plus the Command rows beside it; it appends nothing and adds no aggregate.
         "/api/trading/executions",
         # The admission ledger for a window of frames at once, and one Source at a time.
         "/api/trading/gate",
@@ -83,14 +82,12 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
     for path in (
         "/api/trading/status",
         "/api/trading/cases",
-        "/api/trading/signals",
-        "/api/trading/execution/observations",
         "/api/trading/executions",
         "/api/trading/gate",
         "/api/trading/gate/{event_id}",
     ):
         assert set(schema["paths"][path]) == {"get"}, path
-    assert set(schema["paths"]["/api/trading/execution/commands"]) == {"get", "post"}
+    assert set(schema["paths"]["/api/trading/execution/commands"]) == {"post"}
     for retired in (
         "/api/token-radar",
         "/api/stocks-radar",

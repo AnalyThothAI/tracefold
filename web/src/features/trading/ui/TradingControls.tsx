@@ -7,7 +7,7 @@ import type { TradingExecutionCommand } from "../api/tradingQueries";
 import { useIssueTradingCommandWithToken } from "../api/tradingQueries";
 import { COMMAND_ACTION_ZH, COMMAND_STAGE_ZH, nsClock } from "../model/tradingLabels";
 
-import { TradingEmptyNote, TradingSourceLine } from "./TradingChrome";
+import { TradingLedgerNote, TradingSourceLine } from "./TradingChrome";
 
 type CommandAction = "pause" | "resume" | "flatten";
 type CommandEnvelope = {
@@ -18,7 +18,7 @@ type CommandEnvelope = {
 };
 
 /**
- * Block 3: the three writes, and every Command in the window with the stage the server derived.
+ * ACT: the three writes, and every Command in the window with the stage the server derived.
  *
  * No confirmation dialog. Pause and Resume only move the control flag, Flatten only asks the Runtime to
  * reduce-only out of what it owns, and none of the three can submit an entry — a modal in front of them
@@ -133,30 +133,27 @@ export function TradingControls({
         ) : null}
       </section>
 
+      {/*
+       * Action, stage and clock. The reason column repeated the text the operator had just typed into
+       * the field above it, and `operator_identity` was the constant `operator-console` on every row a
+       * browser wrote — neither is published any more (#537 PR-5).
+       */}
       {commands.length ? (
         <div className="trading-command-list">
           {commands.map((item) => (
             <article className="trading-command-row" key={item.command_id}>
               <b>{COMMAND_ACTION_ZH[item.action] ?? item.action}</b>
-              <span>{item.reason}</span>
-              <span>{item.operator_identity}</span>
-              <span>{nsClock(item.requested_at_ns)}</span>
               <span className="trading-stage" data-stage={item.stage}>
                 {COMMAND_STAGE_ZH[item.stage] ?? item.stage}
               </span>
+              <span>{nsClock(item.requested_at_ns)}</span>
             </article>
           ))}
         </div>
       ) : (
-        <TradingEmptyNote>{ledgerEmpty(commandsPending, commandsFailed)}</TradingEmptyNote>
+        <TradingLedgerNote failed={commandsFailed} pending={commandsPending} subject="Command" />
       )}
       <TradingSourceLine path="POST /api/trading/execution/commands · GET /api/trading/executions → commands[].stage" />
     </Card>
   );
-}
-
-function ledgerEmpty(pending: boolean, failed: boolean): string {
-  if (pending) return "正在读取 Command 账本…";
-  if (failed) return "Command 账本读取失败，不能据此断言为空。";
-  return "当前 24 小时窗口没有 Command。";
 }
