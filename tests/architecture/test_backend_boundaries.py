@@ -128,10 +128,6 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.trading.market_context",
         "tracefold.trading.policy",
         "tracefold.trading.replay",
-        # #459 Stage A. The corpus format and the pre-registered replay are pure: the provider walk is
-        # `integrations.venues.open_interest_history` and the argument parser is the CLI's.
-        "tracefold.trading.research.oi_corpus",
-        "tracefold.trading.research.oi_replay",
         # #377's credential-free CLI is the App composition seam for the evidence clock.  These
         # modules are pure contracts and transformations; provider and PostgreSQL I/O stay in App.
         "tracefold.trading.contract_receipt",

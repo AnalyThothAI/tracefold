@@ -168,6 +168,12 @@ ignore = [
   "S603",   # subprocess inputs are local CLI args
   "S607",
 ]
+# The research workspace's own self-tests (#537 PR-1). They are not in `tests/`, so `testpaths` never
+# collects them and CI never runs them — but they are still tests, and `assert` is still their contract.
+"notebooks/research/test_*.py" = [
+  "S101",
+  "PLR2004",
+]
 [tool.ruff.format]
 # Default settings; line-length inherited from [tool.ruff] = 120
 

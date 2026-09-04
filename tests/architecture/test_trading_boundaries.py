@@ -29,13 +29,6 @@ SIGNAL_PATH = (
     "app/workers/wiring/news_to_trading.py",
     "app/trading_config.py",
 )
-# Offline and one-shot (#459 Stage A). Never imported by the Signal path, never on a live clock, and
-# the reason the Signal path's capability ban does not reach it: reading a sealed corpus off disk is
-# what it is for.
-RESEARCH = {
-    "trading/research/oi_corpus.py",
-    "trading/research/oi_replay.py",
-}
 EXECUTION_PATH = {
     "trading/execution_contracts.py",
     "trading/stages.py",
@@ -122,10 +115,14 @@ def _trading_sources() -> list[Path]:
     return sorted(path for path in TRADING.rglob("*.py") if "__pycache__" not in path.parts)
 
 
+def _service_sources() -> list[Path]:
+    return sorted(path for path in SRC.rglob("*.py") if "__pycache__" not in path.parts)
+
+
 def test_signal_path_manifest_is_complete_and_every_trading_module_is_classified() -> None:
     assert SIGNAL_PATH
     assert [relative for relative in SIGNAL_PATH if not (SRC / relative).is_file()] == []
-    classified = set(SIGNAL_PATH) | EXECUTION_PATH | RESEARCH
+    classified = set(SIGNAL_PATH) | EXECUTION_PATH
     unclassified = [
         str(path.relative_to(SRC))
         for path in _trading_sources()
@@ -252,6 +249,34 @@ def test_legacy_execution_cluster_is_deleted_without_forwarders() -> None:
         "integrations/nautilus/execution_adapter.py",
     )
     assert [relative for relative in retired if (SRC / relative).exists()] == []
+
+
+def test_research_left_the_service_package_without_a_forwarder() -> None:
+    """#537 PR-1. The #459 Stage A corpus, replay and provider walk are research, not a service module.
+
+    Nothing in `tracefold/` ever imported them: the only caller was the CLI command that existed to run
+    them. They live in `notebooks/research/` now, on the same terms as every other research script — so
+    the package classifies two kinds of Trading module, not three, and no name here forwards to them.
+    """
+
+    moved = (
+        "trading/research/__init__.py",
+        "trading/research/oi_corpus.py",
+        "trading/research/oi_replay.py",
+        "integrations/venues/open_interest_history.py",
+        "app/cli/commands/trading_research.py",
+    )
+    assert [relative for relative in moved if (SRC / relative).exists()] == []
+    assert not (SRC / "trading/research").exists()
+
+    retired_names = ("trading.research", "open_interest_history", "trading_research")
+    offenders = [
+        f"{path.relative_to(ROOT)}:{name}"
+        for path in _service_sources()
+        for name in retired_names
+        if name in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
 
 
 def test_live_wiring_uses_source_native_public_bars_and_no_model_runner() -> None:

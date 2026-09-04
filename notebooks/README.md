@@ -22,10 +22,13 @@ notebooks/
   news-*.ipynb         one notebook per question, domain prefix, flat
   trading-*.ipynb
   snapshots/           the .sql + .json pairs that channel-C notebooks read
+  research/            multi-file research programs: modules, an entry script, its self-tests
 ```
 
-Flat and top level. The date belongs in the filename
+Notebooks are flat and top level. The date belongs in the filename
 (`news-learning-loop-audit-2026-08-21.ipynb`), never in a directory.
+`snapshots/` and `research/` are the two exceptions, and neither holds a
+notebook: one holds data, the other holds code too large for one file.
 
 | Notebook | Channel | Question |
 | --- | --- | --- |
@@ -33,6 +36,7 @@ Flat and top level. The date belongs in the filename
 | [`news-learning-loop-audit-2026-08-21.ipynb`](news-learning-loop-audit-2026-08-21.ipynb) | C | What does the fixed 2026-08-21 24 h window actually say about the learning plane? |
 | [`trading-agent-72h-event-study.ipynb`](trading-agent-72h-event-study.ipynb) | A | Over 72 h of delivered pushes, would a trading agent have had anything executable? |
 | [`oi_chain_backtest_2026_09_03.py`](oi_chain_backtest_2026_09_03.py) | A | What did the deployed OI chain do to the 310 frames it saw, and were those frames worth anything? |
+| [`research/oi_research_cli.py`](research/oi_research_cli.py) | A | Does the pre-registered #459 rule survive a holdout over every USDT perpetual Binance lists? |
 
 A plain `.py` belongs here on the same terms as a notebook when the work has no
 reason to carry cell state: same header block, same channel, same red lines. It
@@ -40,6 +44,51 @@ is a script rather than a notebook because its whole output is one receipt file
 that `docs/research/` cites, and a committed `.ipynb` of a channel-A run would
 have to be stripped of exactly that output. `make check` reads only `.ipynb`, so
 a `.py` here answers to `ruff check` and `ruff format` instead.
+
+## `research/` — the #459 Stage A open-interest program
+
+One question needed more than one file, so it gets a directory rather than a
+1,000-line script. #537 PR-1 moved it out of the service package, where it had
+been sitting as `tracefold/trading/research/` with a `tracefold trading
+oi-corpus|oi-replay` CLI in front of it: nothing in production ever imported it,
+and a research corpus reader is not a service module.
+
+```text
+notebooks/research/
+  oi_research_cli.py        the entry point; carries the header block for all of it
+  oi_corpus.py              the sealed corpus format: content-addressed payloads, a fixed window
+  oi_replay.py              the pre-registered rule and its measurement conventions
+  open_interest_history.py  the Binance history walk, with the two rate budgets it needs
+  test_oi_research.py       the self-tests: the four ways the replay's number could quietly lie
+```
+
+Two commands, never one. Collection is a fact about a 30-day Binance window that
+cannot be served again; evaluation is a claim about a rule. Folding them
+together would make every re-scoring silently re-collect, and no receipt could
+name its own data.
+
+```bash
+# Seal a corpus (resumable; the window is fixed by the first pull).
+uv run python notebooks/research/oi_research_cli.py oi-corpus pull --out ~/.tracefold/research/oi_corpus/<name>
+# Re-seal the manifest from an existing progress log.
+uv run python notebooks/research/oi_research_cli.py oi-corpus seal --out ~/.tracefold/research/oi_corpus/<name>
+# Score the pre-registered rule; writes <corpus>/replay_receipt.json unless --out says otherwise.
+uv run python notebooks/research/oi_research_cli.py oi-replay --corpus ~/.tracefold/research/oi_corpus/<name>
+```
+
+The modules import each other as siblings, so the entry script and the tests put
+their own directory on `sys.path`; nothing here imports `tracefold`. Corpora and
+receipts live under the operator's `~/.tracefold/`, never in the repository —
+`docs/research/oi-stage-a-holdout-2026-09-01.md` quotes the corpus digest instead
+of carrying the 5 GB it names.
+
+The self-tests are not in `tests/`, so the fixed CI job set does not run them
+(`testpaths = ["tests"]`): this is research, and CI verifies the service. Run
+them beside the scripts, and before quoting any number they produced:
+
+```bash
+uv run python -m pytest notebooks/research/test_oi_research.py
+```
 
 ## The three data channels
 

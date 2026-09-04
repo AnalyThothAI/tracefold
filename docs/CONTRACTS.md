@@ -1184,7 +1184,7 @@ Runtime facts, and status carries readiness plus bounded totals.
 - service/config: `serve`, `workers`, `nautilus run`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
 - News: `news bus-check|control|instruments|review|learning|replay|why|dlq`;
-- Trading: `trading status|cases|signals|observations|commands|issue|oi-corpus|oi-replay`;
+- Trading: `trading status|cases|signals|observations|commands|issue`;
 - maintenance: `ops validate-projections`.
 
 There is no `recent` or `search` command and no market rebuild/sync/reconcile

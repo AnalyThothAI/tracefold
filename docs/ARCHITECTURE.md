@@ -2515,11 +2515,19 @@ are five distinct facts.
 
 ### OI research replay
 
-`tracefold trading oi-corpus` seals a Binance open-interest corpus and
-`tracefold trading oi-replay` scores one pre-registered rule over it, on the
-symbols the rule's originating probe never saw. Both are cold research commands
-over a sealed local corpus: no database transaction, no receipt, no venue write,
-no execution path.
+The #459 Stage A corpus and replay are **not part of the service**. They live in
+`notebooks/research/` with every other research script, and nothing under
+`tracefold/` imports them: `oi_research_cli.py oi-corpus` seals a Binance
+open-interest corpus, `oi_research_cli.py oi-replay` scores one pre-registered
+rule over it on the symbols the rule's originating probe never saw, and the
+provider walk that feeds them is `notebooks/research/open_interest_history.py`.
+
+There is no `tracefold trading oi-corpus|oi-replay` command; #537 PR-1 deleted
+the parser and the CLI handler with the modules, because a research script that
+reads a local corpus off disk never needed a service seam. See
+[the research workspace](../notebooks/README.md) for how it is run and what it
+may touch: no database transaction, no receipt, no venue write, no execution
+path.
 
 ### Runtime and cutover
 

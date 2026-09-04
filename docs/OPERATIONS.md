@@ -1287,12 +1287,20 @@ old rule decided.
 
 ### OI research replay
 
-`uv run tracefold trading oi-corpus` seals a Binance open-interest corpus under
-`--out`; `uv run tracefold trading oi-replay` scores the one pre-registered rule
-over it and prints the table. Both are cold research commands over local files:
-no database transaction, no receipt, no venue write, and no execution adapter.
-Read `tracefold trading oi-replay --help` for the current flags rather than a
-copy of them here.
+Not a `tracefold` command. The #459 Stage A corpus and replay are research
+scripts under `notebooks/research/` (#537 PR-1):
+
+```bash
+uv run python notebooks/research/oi_research_cli.py oi-corpus pull --out DIR
+uv run python notebooks/research/oi_research_cli.py oi-replay --corpus DIR
+```
+
+The first seals a Binance open-interest corpus under `--out`; the second scores
+the one pre-registered rule over it and prints the table. Both are cold research
+runs over local files: no database transaction, no receipt, no venue write, and
+no execution adapter. Read
+`uv run python notebooks/research/oi_research_cli.py oi-replay --help` for the
+current flags rather than a copy of them here.
 
 ### Price Review plane (#88)
 
