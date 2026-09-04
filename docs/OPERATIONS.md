@@ -282,23 +282,22 @@ make down
 ```
 
 `make up` preflights Git, `uv`, Docker, Compose, `curl`, an authenticated GitHub
-CLI, the project interpreter (3.13, matching the image), host clock drift
-against the venue, and daemon access; runs idempotent initialization; builds one
-shared Python/React image; starts PostgreSQL when absent; requires the one-shot
-migration to succeed; starts Serve and Workers; and then runs the same
-fail-closed application status gate. It does not recreate a running PostgreSQL
-container, and it never names the `nautilus` service in any state: the execution
-runtime has its own image and its own lifecycle (below). If a Runtime is running
-and the source Alembic head is ahead of the live database, `make up` refuses
-before building, rather than migrating the schema beneath a process that owns an
-open position; `make runtime-down` first, or set
-`TRACEFOLD_MIGRATE_UNDER_RUNTIME=1` deliberately. An image whose digest cannot be
-read is a hard failure, not a warning: every receipt it wrote would record
-`image_digest=unversioned`. On failure, use `make logs`. Operator config, two
-PostgreSQL password files, and named-volume data remain in place. `make down`
-stops containers without deleting that volume, and refuses while a `nautilus`
-container exists, because `docker compose down` would delete it along with the
-project network.
+CLI, the project interpreter (3.13, matching the image), and daemon access; runs
+idempotent initialization; builds one shared Python/React image; starts
+PostgreSQL when absent; requires the one-shot migration to succeed; starts Serve
+and Workers; and then runs the same fail-closed application status gate. It does
+not recreate a running PostgreSQL container, and it never names the `nautilus`
+service in any state: the execution runtime has its own image and its own
+lifecycle (below). If a Runtime is running and the source Alembic head is ahead
+of the live database, `make up` refuses before building, rather than migrating
+the schema beneath a process that owns an open position; `make runtime-down`
+first, or set `TRACEFOLD_MIGRATE_UNDER_RUNTIME=1` deliberately. An image whose
+digest cannot be read is a hard failure, not a warning: every receipt it wrote
+would record `image_digest=unversioned`. On failure, use `make logs`. Operator
+config, two PostgreSQL password files, and named-volume data remain in place.
+`make down` stops containers without deleting that volume, and refuses while a
+`nautilus` container exists, because `docker compose down` would delete it along
+with the project network.
 
 All twelve published Compose bindings (`TRACEFOLD_{POSTGRES,RABBITMQ,RABBITMQ_MGMT,API,WORKERS,NAUTILUS}_{HOST,PORT}`)
 are declared once in the Makefile with Compose's own defaults and exported from

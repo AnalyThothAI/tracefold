@@ -447,22 +447,6 @@ preflight: ## verify the one-command startup prerequisites
 	@# another minor runs a different Nautilus binary than the one that will hold the account, so
 	@# every local proof is about a different artefact. `.python-version` pins it; this asserts it.
 	@uv run python -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 13) else "the project interpreter must be Python 3.13 to match the deployed image; run make sync")'
-	@# Binance rejects a signed request whose timestamp is outside `recvWindow`, and a suspended
-	@# WSL2 host drifts silently. One read of the venue's own clock is the whole check.
-	@set -eu; \
-		if venue_time=$$(curl -fsS --max-time 5 https://fapi.binance.com/fapi/v1/time 2>/dev/null); then \
-			venue_ms=$$(printf '%s' "$$venue_time" | tr -dc '0-9'); \
-			if [ -n "$$venue_ms" ]; then \
-				drift=$$(( $$(date +%s) * 1000 - venue_ms )); \
-				if [ "$$drift" -lt 0 ]; then drift=$$(( 0 - drift )); fi; \
-				if [ "$$drift" -gt 2000 ]; then \
-					echo "host clock differs from the venue by $$drift ms (budget 2000 ms); resynchronise the clock first." >&2; \
-					exit 1; \
-				fi; \
-			fi; \
-		else \
-			echo "WARNING: the venue time endpoint was unreachable; clock drift was not checked." >&2; \
-		fi
 
 github-preflight:
 	@command -v gh >/dev/null 2>&1 || { echo "GitHub CLI is not installed or not on PATH" >&2; exit 127; }

@@ -170,8 +170,13 @@ def test_every_published_compose_binding_is_declared_once_in_the_makefile() -> N
 
 
 def test_the_project_interpreter_is_pinned_to_the_image_interpreter() -> None:
+    recipe = _dry_run("preflight")
+
     assert (ROOT / ".python-version").read_text(encoding="utf-8").strip() == "3.13"
-    assert "sys.version_info[:2] == (3, 13)" in _dry_run("preflight")
+    assert "sys.version_info[:2] == (3, 13)" in recipe
+    # Deploying is not the place to gate on a venue's clock: Binance rejects an out-of-`recvWindow`
+    # request itself, with its own error (#537 PR-6).
+    assert "fapi.binance.com" not in recipe
 
 
 def test_the_dockerfile_builds_a_runtime_stage_and_still_defaults_to_the_application() -> None:
