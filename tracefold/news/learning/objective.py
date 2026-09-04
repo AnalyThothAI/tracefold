@@ -728,15 +728,17 @@ def build_readiness_report(
     selection = _half_counts(plan, plan.development_selection_episodes)
     profile_counts = {**dict(coverage), **development_split_profile_counts(plan)}
     profile_blockers = development_coverage_blockers(profile_counts)
+    # One vote per connected fact cluster — the elected representatives, which is exactly the population the
+    # freeze summarizes and the optimizer scores. Per-case Gold legitimately differs between media members of
+    # one fact (`announced` versus `effective`, a subject-code superset), so summarizing every member would
+    # make `summarize_taxonomy` fail closed on a corpus the freeze accepted (#534). Shadowed members stay
+    # audit facts in `case_dispositions` and `excluded_case_ids`, and contribute no second vote here.
     gold_rows: list[dict[str, Any]] = []
-    for episode in episodes:
-        try:
-            gold = ModelTaxonomyV1.model_validate(dict(episode.accepted_review or {}).get("taxonomy"))
-        except ValueError:
-            continue
+    for episode in plan.optimizer_episodes:
         predicted = episode.production_judgment.editorial.taxonomy if episode.production_judgment else None
         if predicted is None:
             continue
+        gold = ModelTaxonomyV1.model_validate(dict(episode.accepted_review or {}).get("taxonomy"))
         gold_rows.append(
             {
                 "case_id": episode.case_id,

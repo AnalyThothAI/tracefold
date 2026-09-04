@@ -1840,9 +1840,12 @@ carry the current identity, while leaving their artifact bytes intact.
 `news learning readiness --development SHA` publishes the plan with zero model
 calls, and `run` rebuilds it and refuses on the same conditions before any
 endpoint is touched. Its v4 report separately publishes `objective.compilable` and
-`development_profile.ready`; it has no ambiguous top-level outcome. The population is every case with
-valid accepted Gold and a replayable Stable answer (#501 D9) — `included`, with `stable_exact` recorded
-as a diagnostic — because the #456 target/control rule (explicit-owner mismatches versus Stable-exact
+`development_profile.ready`; it has no ambiguous top-level outcome. Its `taxonomy_gold` block summarizes
+the elected cluster representatives — the same one-vote-per-connected-fact-cluster population the freeze's
+dataset distributions summarize — so per-case Gold that legitimately differs between media members of one
+fact (`announced` versus `effective`, a subject-code superset) cannot make readiness refuse a corpus the
+freeze accepted (#534). The population is every case with valid accepted Gold and a replayable Stable
+answer (#501 D9) — `included`, with `stable_exact` recorded as a diagnostic — because the #456 target/control rule (explicit-owner mismatches versus Stable-exact
 controls) measured which batch drafted the label rather than the Program. #501 also deleted the
 60/60 and 30/30 target/control floors and the 50-cluster calibration gate: GEPA needs Gold-bearing
 samples, not a quota of Stable mistakes, and a small corpus ends in `NO_OP` on its own. Inter-drafter κ
