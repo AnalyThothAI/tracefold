@@ -532,11 +532,20 @@ uv run tracefold news learning baseline --from-ms START --to-ms END \
 # Draft the cases nobody has judged over the ReviewDesk look-back window. The
 # owner authorizes an explicit reviewed subset before it becomes truth; any AI
 # adjudicator is named honestly and is never described as human review.
-# Taxonomy Gold is drafted blind by two models of different families (#501);
-# the rubric model never sees or labels taxonomy. Disagreements are flagged for
-# the reviewer's edit before acceptance.
+# Taxonomy Gold is drafted blind by two models (#501, #534); the rubric model
+# never sees or labels taxonomy. Drafters come only from the routes this machine
+# already has — qwen3.8-27b:thinking (local), deepseek-v4-pro, deepseek-v4-flash
+# — and the two taxonomy names only have to differ. The non-thinking
+# qwen3.8-27b is not a drafter: it is the Stable taxonomy route itself (same
+# seed, same evidence_json, temperature 0), and readiness already reports that
+# agreement as stable_exact_n / stable_mismatch_n. The rubric model is DeepSeek
+# because the thinking Qwen invents trade_* enum values and extra keys under
+# prompt_json (7/20 rubric drafts rejected in the first smoke batch, against 0/40
+# blind taxonomy failures), and a rejected rubric discards that task's two paid
+# taxonomy labels. Disagreements are flagged for the reviewer's edit before
+# acceptance.
 uv run tracefold news learning draft-reviews --rubric-model deepseek-v4-pro \
-  --taxonomy-models deepseek-v4-pro,MiniMax-M3 --hours 24 --limit 100 \
+  --taxonomy-models deepseek-v4-pro,qwen3.8-27b:thinking --hours 24 --limit 100 \
   --out /tmp/drafts.json
 uv run tracefold news review accept-drafts --file /tmp/drafts.json --dry-run
 uv run tracefold news review accept-drafts --file /tmp/drafts.json \

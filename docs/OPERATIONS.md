@@ -1155,14 +1155,35 @@ the production persistence/read/UI seam before taxonomy denominators exist;
 issue #501 uses them through the existing Review v6, Dataset, Objective, direct taxonomy GEPA metric and
 release path only.
 
-For the taxonomy Gold → Candidate workflow (#501 PR-D):
+For the taxonomy Gold → Candidate workflow (#501 PR-D, drafter routes #534):
 
 1. Draft current unjudged ReviewDesk tasks in batches of at most 100 with one
-   rubric model and two blind taxonomy drafters of different families, neither
-   the Stable task model, for example `news learning draft-reviews
-   --rubric-model deepseek-v4-pro --taxonomy-models deepseek-v4-pro,MiniMax-M3`.
+   rubric model and two blind taxonomy drafters (#534). Drafters come only from
+   the routes this machine already has — `qwen3.8-27b:thinking` (local),
+   `deepseek-v4-pro`, `deepseek-v4-flash` — the two taxonomy drafter names only
+   have to differ, and no third family is introduced. The non-thinking
+   production `qwen3.8-27b` is not a drafter because it *is* the Stable taxonomy
+   route — same seed, same `evidence_json`, temperature 0 — so its label is
+   already in the verdict and readiness reports that agreement for free as
+   `stable_exact_n / stable_mismatch_n`. The default is `news learning
+   draft-reviews --rubric-model deepseek-v4-pro --taxonomy-models
+   deepseek-v4-pro,qwen3.8-27b:thinking --hours 24 --limit 100 --out FILE`: A is
+   DeepSeek, so a disagreed draft leans away from the Stable family and leaves
+   GEPA a target, and B is the local thinking Qwen at zero cost. The rubric
+   model is DeepSeek because the 2026-09-04 01:22 UTC smoke batch of 20 tasks
+   had 7/20 rubric drafts rejected by `RubricDraft` validation when
+   `qwen3.8-27b:thinking` drafted the rubric under `prompt_json` — invented
+   `trade_*` enum values such as `single_instrument`, `cross_asset` and
+   `in_line`, plus extra keys such as `draft_assets` and `dimensions.*_note` —
+   while the two blind taxonomy drafters failed 0/40, and a rejected rubric
+   discards that task's two paid taxonomy labels; the rubric drafter never
+   labels taxonomy, so DeepSeek holding both the rubric and drafter-A roles
+   costs nothing in blindness and stays inside the route set. Swap A for
+   `deepseek-v4-flash` to spend less. Two Qwen names also run; the operator then
+   owns the trade-off that agreeing samples equal Stable and GEPA likely returns
+   `NO_OP`.
    Read the batch receipt's `taxonomy_drafters.agreement_rate` and per-model
-   `stable_agreement_rate`; a family that tracks Stable far more closely than
+   `stable_agreement_rate`; a drafter that tracks Stable far more closely than
    the other is the bias to watch. Inspect each `taxonomy_disagreement` task and
    edit it before accepting. Preview with `news review accept-drafts
    --file FILE --dry-run`; every write requires an explicit non-empty `--only`

@@ -179,8 +179,10 @@ def add_news_commands(
     learning_draft.add_argument(
         "--rubric-model", required=True, help="rubric drafting model, e.g. deepseek-v4-pro or qwen3.8-27b:thinking"
     )
-    # #501 D8: two blind taxonomy drafters of different families, neither the Stable task model. That is an
-    # operating rule recorded in the batch receipt, not a code check.
+    # #534: both blind taxonomy drafters come from the routes this machine already has — qwen3.8-27b:thinking,
+    # deepseek-v4-pro, deepseek-v4-flash — and only their two names must differ. The non-thinking qwen3.8-27b
+    # is the Stable taxonomy route itself, so readiness already reports that agreement. That is an operating
+    # rule recorded in the batch receipt, not a code check.
     learning_draft.add_argument(
         "--taxonomy-models",
         required=True,

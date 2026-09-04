@@ -25,7 +25,7 @@ from tracefold.news.review.drafter import ReviewDraft, submission_payload
 
 pytestmark = pytest.mark.integration
 
-_DRAFTERS = ("openai/deepseek-v4-pro", "openai/minimax-m3")
+_DRAFTERS = ("openai/deepseek-v4-pro", "openai/qwen3.8-27b:thinking")
 _PRODUCT = {
     "subject_codes": ["medtop:20000205"],
     "event_family": "product_service_change",

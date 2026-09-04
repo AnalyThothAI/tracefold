@@ -92,14 +92,6 @@ def _provider_model_kwargs(model_name: str, *, thinking: bool = False) -> dict[s
         # Qwen3 on llama.cpp / vLLM thinks by default and spends the whole ``max_tokens`` budget on reasoning
         # before the tool call; ``chat_template_kwargs`` is the OpenAI-compatible switch both servers honour.
         return {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
-    if leaf == "minimax-m3" and not thinking:
-        # MiniMax-M3 includes ``<think>`` reasoning in the response content by default.  The News Program expects
-        # the response body to contain only its strict structured output, so use MiniMax's OpenAI-compatible
-        # thinking switch for production prediction calls.
-        return {
-            "top_p": 0.95,
-            "extra_body": {"thinking": {"type": "disabled"}},
-        }
     return {}
 
 
@@ -107,10 +99,6 @@ def _provider_request_defaults(model_name: str) -> tuple[float | None, Structure
     leaf = str(model_name or "").rsplit("/", maxsplit=1)[-1].lower()
     if leaf.startswith("qwen") and leaf.endswith(":thinking"):
         return 0.0, "prompt_json"
-    if leaf == "minimax-m3":
-        # MiniMax-M3 rejects temperature=0 and does not advertise response_format support. Keep the exact JSON
-        # schema in the system message, then validate the bare JSON reply locally like every other route.
-        return 1.0, "prompt_json"
     if leaf.startswith("deepseek"):
         return 0.0, "json_object"
     return 0.0, "json_schema"

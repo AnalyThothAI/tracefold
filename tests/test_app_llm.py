@@ -87,26 +87,6 @@ def test_qwen_thinking_alias_is_called_without_a_disable_override() -> None:
     assert endpoint.structured_output == "prompt_json"
 
 
-def test_minimax_m3_disables_thinking_for_structured_outputs() -> None:
-    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.minimaxi.com/v1"))
-
-    endpoint = configured_lm_endpoint(settings, model_name="MiniMax-M3")
-
-    assert endpoint.model_name == "openai/MiniMax-M3"
-    assert endpoint.model_kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
-    assert endpoint.temperature == 1.0
-    assert endpoint.structured_output == "prompt_json"
-    assert endpoint.model_kwargs["top_p"] == 0.95
-
-
-def test_minimax_m3_can_explicitly_keep_thinking_enabled() -> None:
-    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.minimaxi.com/v1"))
-
-    endpoint = configured_lm_endpoint(settings, model_name="MiniMax-M3", thinking=True)
-
-    assert "extra_body" not in endpoint.model_kwargs
-
-
 @pytest.mark.parametrize(
     ("model", "base_url", "expected_mode", "expected_format", "expected_extra"),
     [
@@ -122,13 +102,6 @@ def test_minimax_m3_can_explicitly_keep_thinking_enabled() -> None:
             "https://deepseek.test/v1",
             "json_object",
             "object",
-            {"thinking": {"type": "disabled"}},
-        ),
-        (
-            "MiniMax-M3",
-            "https://minimax.test/v1",
-            "prompt_json",
-            "prompt",
             {"thinking": {"type": "disabled"}},
         ),
     ],

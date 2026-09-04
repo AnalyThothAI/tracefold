@@ -149,7 +149,10 @@ def test_draft_reviews_routes_the_qwen_thinking_alias_through_the_primary_cli_en
         model_dump=lambda mode="json": {"schema_id": "draft", "drafter": {}, "taxonomy_drafters": {}, "drafts": []},
         batch_sha256="b" * 64,
         drafter={},
-        taxonomy_drafters={"models": ["openai/deepseek-v4-pro", "openai/MiniMax-M3"], "disagreement_task_ids": []},
+        taxonomy_drafters={
+            "models": ["openai/deepseek-v4-pro", "openai/deepseek-v4-flash"],
+            "disagreement_task_ids": [],
+        },
         drafts=(),
     )
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: settings)
@@ -171,7 +174,7 @@ def test_draft_reviews_routes_the_qwen_thinking_alias_through_the_primary_cli_en
             "--rubric-model",
             "qwen3.8-27b:thinking",
             "--taxonomy-models",
-            "deepseek-v4-pro,MiniMax-M3",
+            "deepseek-v4-pro,deepseek-v4-flash",
             "--limit",
             "1",
             "--out",
@@ -182,12 +185,12 @@ def test_draft_reviews_routes_the_qwen_thinking_alias_through_the_primary_cli_en
 
     assert code == 0 and payload["data"]["tasks"] == 1
     assert payload["data"]["taxonomy_disagreement"] == 0
-    # Three endpoints resolved: the rubric model on the primary box, both blind drafters through the
-    # reflection endpoint, and neither blind model is the Stable task model.
+    # Three endpoints resolved: the rubric model on the primary box, and both blind drafters through the
+    # reflection endpoint because neither name resolves to the primary model (#534).
     assert [entry["model_name"] for entry in built] == [
         "openai/qwen3.8-27b:thinking",
         "openai/deepseek-v4-pro",
-        "openai/MiniMax-M3",
+        "openai/deepseek-v4-flash",
     ]
     assert {entry["api_base"] for entry in built[1:]} == {"https://reflection.test/v1"}
     assert captured["api_base"] == "https://primary.test/v1"

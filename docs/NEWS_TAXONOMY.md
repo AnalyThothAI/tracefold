@@ -115,19 +115,37 @@ owner-authorized AI adjudicator may accept an explicitly reviewed subset and is
 recorded as AI, never as human.
 
 Gold is drafted blind, twice (#501 D8). `news learning draft-reviews
---rubric-model M --taxonomy-models A,B` runs two drafters of different families,
-neither the Stable task model, each over the Program's own bounded taxonomy
-input — evidence and Gate facts, no card, no Stable label, no told ledger, no
-review — through the taxonomy Predictor's Signature and seed. Agreement is the
-draft; on disagreement the draft takes A, the batch marks
-`taxonomy_disagreement`, and the accepting reviewer decides through the
-existing `accept-drafts` edit. The accepted review's `taxonomy_review.drafts`
-keeps both labels under their model names, and a development freeze reports
-Cohen's κ over every dual-labelled cluster beside the corpus; κ is reported,
-never a gate. The #456 post-mortem is the reason: the rubric drafter labelled
-taxonomy while reading Stable's own label in `card_json`, so Stable-drafted
-batches agreed with Stable at 0.95–1.00 and Codex-drafted batches at 0.03–0.17,
-and the metric measured who drafted the label.
+--rubric-model M --taxonomy-models A,B` runs two drafters, each over the
+Program's own bounded taxonomy input — evidence and Gate facts, no card, no
+Stable label, no told ledger, no review — through the taxonomy Predictor's
+Signature and seed. Agreement is the draft; on disagreement the draft takes A,
+the batch marks `taxonomy_disagreement`, and the accepting reviewer decides
+through the existing `accept-drafts` edit. The accepted review's
+`taxonomy_review.drafts` keeps both labels under their model names, and a
+development freeze reports Cohen's κ over every dual-labelled cluster beside
+the corpus; κ is reported, never a gate. The #456 post-mortem is the reason:
+the rubric drafter labelled taxonomy while reading Stable's own label in
+`card_json`, so Stable-drafted batches agreed with Stable at 0.95–1.00 and
+Codex-drafted batches at 0.03–0.17, and the metric measured who drafted the
+label.
+
+A and B come only from the routes this machine already has (#534):
+`qwen3.8-27b:thinking` (local), `deepseek-v4-pro` and `deepseek-v4-flash`. The
+two names only have to differ, and no third family is introduced. The
+non-thinking production `qwen3.8-27b` is not a drafter because it *is* the
+Stable taxonomy route — same seed, same `evidence_json`, temperature 0 — so its
+label is already in the verdict and readiness reports that agreement for free as
+`stable_exact_n / stable_mismatch_n`. The default is `--rubric-model
+deepseek-v4-pro --taxonomy-models deepseek-v4-pro,qwen3.8-27b:thinking`: A is
+DeepSeek, so a disagreed draft leans away from the Stable family and leaves GEPA
+a target, and B is the local thinking Qwen at zero cost. The rubric model is
+DeepSeek rather than the thinking Qwen because the 2026-09-04 01:22 UTC smoke
+batch had 7 of 20 rubric drafts rejected by `RubricDraft` validation when
+`qwen3.8-27b:thinking` drafted the rubric under `prompt_json` — invented
+`trade_*` enum values and extra keys — against 0 of 40 blind taxonomy failures,
+and a rejected rubric discards that task's two paid taxonomy labels; the rubric
+drafter never labels taxonomy, so one model may hold both the rubric and
+drafter-A roles.
 
 The existing development Dataset projects four model-owned axes into each
 episode: `subject_codes`, `event_family`, `change_state`, and

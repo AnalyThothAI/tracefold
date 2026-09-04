@@ -15,12 +15,16 @@ owner-authorized reviewer reads it, edits what is wrong, and submits the approve
 review writer. The model's job is to turn "compose a judgment from scratch" into "confirm or reject one", not
 to acquire acceptance authority from drafting alone.
 
-Third (#501 D8): taxonomy Gold is drafted *blind*, twice. The rubric drafter used to label taxonomy while
-reading `card_json`, which carried Stable's own taxonomy, so the Gold measured which batch drafted it. Now
-two drafters of different families, neither the Stable task model, each read only the Program's own bounded
-taxonomy input — evidence and Gate facts, no card, no Stable output, no told ledger, no review — through the
-very Signature and seed the taxonomy Predictor runs. Agreement is the draft; disagreement is recorded, the
-draft takes drafter A, and the accepting reviewer decides.
+Third (#501 D8, #534): taxonomy Gold is drafted *blind*, twice. The rubric drafter used to label taxonomy
+while reading `card_json`, which carried Stable's own taxonomy, so the Gold measured which batch drafted it.
+Now two drafters, taken only from the routes the machine already has — `qwen3.8-27b:thinking` (local),
+`deepseek-v4-pro`, `deepseek-v4-flash`, two different names, no third family — each read only the Program's
+own bounded taxonomy input — evidence and Gate facts, no card, no Stable output, no told ledger, no review —
+through the very Signature and seed the taxonomy Predictor runs. The non-thinking `qwen3.8-27b` is not a
+drafter, because it *is* the Stable taxonomy route: same seed, same `evidence_json`, temperature 0, so its
+label is already in the verdict and readiness reports `stable_exact_n / stable_mismatch_n` for free.
+Agreement is the draft; disagreement is recorded, the draft takes drafter A, and the accepting reviewer
+decides.
 """
 
 from __future__ import annotations
