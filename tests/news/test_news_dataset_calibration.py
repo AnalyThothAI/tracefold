@@ -1,4 +1,4 @@
-"""#501 D8: inter-drafter agreement is computed from the sealed corpus at freeze time and only reported."""
+"""Freeze-time corpus arithmetic: #501 D8 inter-drafter agreement, and the #534 boundary/retention split."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-from tracefold.news.learning.contracts import DatasetCaseRef
-from tracefold.news.learning.dataset import DevelopmentDatasetStore
+from tracefold.news.learning.contracts import ClosedWindow, DatasetCaseRef
+from tracefold.news.learning.dataset import DatasetSpec, DevelopmentDatasetStore
 from tracefold.news.learning.profile import _PROFILE, development_coverage_blockers
 
 _GOLD = {
@@ -37,6 +37,9 @@ class _Repository:
             "event_id": f"event-{index}",
             "evidence_version": 1,
         }
+
+    def eligible_stable_arm_event_count(self, **_identities: Any) -> dict[str, int]:
+        return {"n": 0}
 
     def review_task_source(self, *, event_id: str, evidence_version: int, **_identities: Any) -> dict[str, Any]:
         return {
@@ -174,3 +177,81 @@ def test_load_case_rejects_review_evidence_and_verdict_identity_tampering() -> N
 
     with pytest.raises(ValueError, match="news_learning_verdict_identity_mismatch"):
         _store(_VerdictMismatch()).load_case(case)
+
+
+_SPEC = DatasetSpec(window=ClosedWindow(from_ms=1_788_432_350_195, to_ms=1_788_518_750_195), role="development")
+# Reviewer-owned dimensions only; the harness adds the code-written `taxonomy_*` keys per case.
+_PASSING = {"factual_fidelity": "pass", "direction": "pass", "reader_value": "pass"}
+
+
+class _CountsLedger:
+    def __init__(self, review: dict[str, Any]) -> None:
+        self._review = review
+
+    def reviews_by_id(self, review_ids: list[str]) -> dict[str, dict[str, Any]]:
+        return {review_id: self._review for review_id in review_ids}
+
+
+def _counts(
+    dimensions: dict[str, str],
+    *,
+    should_push: str = "uncertain",
+    expected_correction: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """One case, one cluster: every reported count is that single case's classification."""
+
+    store = _store(_Repository())
+    store._ledger = _CountsLedger({"dimensions": dimensions, "expected_correction": expected_correction or {}})
+    case = DatasetCaseRef(
+        case_id="case-0",
+        subject_kind="event",
+        event_id="event-0",
+        evidence_version=1,
+        evidence_sha256="a" * 64,
+        review_id="review-0",
+        cluster_id="cluster-0",
+        stratum="regional_direct_exception",
+        should_push=should_push,
+        opened_at_ms=1_788_432_350_195,
+    )
+    return store._dataset_counts(_SPEC, (case,))
+
+
+@pytest.mark.parametrize(
+    "dimension",
+    ["taxonomy_subject_codes", "taxonomy_event_family", "taxonomy_change_state", "taxonomy_assertion_status"],
+)
+def test_a_taxonomy_only_failure_is_retention_not_boundary(dimension: str) -> None:
+    """#534: `taxonomy_*` is Stable-versus-Gold arithmetic, not a reviewer verdict on Stable."""
+
+    counts = _counts({**_PASSING, dimension: "fail"})
+
+    assert counts["retention_cluster_n"] == 1
+    assert counts["boundary_cluster_n"] == 0
+    assert counts["negative_cluster_n"] == 0
+    assert counts["safety_cluster_n"] == 0
+
+
+def test_a_reviewer_dimension_failure_is_still_boundary() -> None:
+    counts = _counts({**_PASSING, "direction": "fail", "taxonomy_change_state": "fail"})
+
+    assert counts["boundary_cluster_n"] == 1
+    assert counts["retention_cluster_n"] == 0
+
+
+def test_must_hold_is_still_boundary_negative_and_safety() -> None:
+    counts = _counts({**_PASSING, "taxonomy_subject_codes": "pass"}, should_push="must_hold")
+
+    assert counts["boundary_cluster_n"] == 1
+    assert counts["retention_cluster_n"] == 0
+    assert counts["negative_cluster_n"] == 1
+    assert counts["safety_cluster_n"] == 1
+
+
+def test_expected_correction_and_safety_survive_the_taxonomy_exclusion() -> None:
+    corrected = _counts({**_PASSING, "taxonomy_event_family": "fail"}, expected_correction={"direction": "up"})
+    unsafe = _counts({**_PASSING, "factual_fidelity": "fail"})
+
+    assert corrected["boundary_cluster_n"] == 1
+    assert unsafe["boundary_cluster_n"] == 1
+    assert unsafe["safety_cluster_n"] == 1

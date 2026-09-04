@@ -2366,7 +2366,7 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
     # #504 D7: the four write-only production regression gates are gone; `must_push_regression` and
     # `stable_hard_gate` remain the release failures that read Gold.
     assert "regression_gates" not in report.evidence
-    assert report.evidence["evaluator_version"] == "news_candidate_evaluator_v5"
+    assert report.evidence["evaluator_version"] == "news_candidate_evaluator_v6"
 
     candidate_stability = report.evidence["stability"]["candidate"]
     assert len(candidate_stability) == len(development.cases) == len(_COMPILABLE_CORPUS)

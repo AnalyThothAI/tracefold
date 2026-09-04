@@ -712,9 +712,20 @@ class DevelopmentDatasetStore:
         for case in cases:
             review = reviews.get(case.review_id, {})
             dimensions = dict(review.get("dimensions") or {})
+            # Only reviewer-owned dimensions make a case boundary (#534). The five `taxonomy_*` values are
+            # not judgments: `review.drafter.taxonomy_dimensions` writes them per axis from whether Stable's
+            # taxonomy equals the accepted Gold, and `taxonomy_source_authority` is code-derived and always
+            # `pass` — so counting them as rubric defects turns `retention_clusters_min` into a quota of
+            # Stable taxonomy successes, exactly the "quota of Stable mistakes" #501 deleted from the
+            # profile. Blind Gold agrees with Stable on all four axes ~23-41 % of the time, which on
+            # 2026-09-04 read 259 boundary / 54 retention over 313 accepted cases against 142 retention here.
             is_boundary = (
                 case.should_push in {"must_push", "must_hold"}
-                or "fail" in dimensions.values()
+                or any(
+                    verdict == "fail"
+                    for dimension, verdict in dimensions.items()
+                    if not dimension.startswith("taxonomy_")
+                )
                 or bool(review.get("expected_correction"))
             )
             (boundary if is_boundary else retention).add(case.cluster_id)
