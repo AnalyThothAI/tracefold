@@ -109,8 +109,12 @@ DRAFTER_ID = "tracefold.news.review_drafter_v7"
 TAXONOMY_BLIND_DRAFTER_ID = "tracefold.news.taxonomy_blind_drafter_v1"
 # v5 (#501): the rubric drafter no longer labels taxonomy; each entry carries two blind taxonomy drafts,
 # the chosen draft, and a disagreement flag, and the batch names both blind drafters.
-ReviewDraftBatchSchema = Literal["tracefold.news.review_draft_batch.v5"]
-DRAFT_SCHEMA: Final[ReviewDraftBatchSchema] = "tracefold.news.review_draft_batch.v5"
+# v6 (#548 PR-B.1): each entry also carries `stable_taxonomy`, the label the code-written taxonomy_*
+# dimensions are computed against. Without it, accepting a draft could only copy the dimensions drafting
+# time wrote, which a reviewer's taxonomy edit had already made wrong. A v5 file carries no such field and
+# is refused by the schema check rather than accepted with stale dimensions.
+ReviewDraftBatchSchema = Literal["tracefold.news.review_draft_batch.v6"]
+DRAFT_SCHEMA: Final[ReviewDraftBatchSchema] = "tracefold.news.review_draft_batch.v6"
 
 _INSTRUCTION = """You are drafting a quality review of one already-published Chinese news card for a
 crypto/US-equity trading desk. An owner-authorized reviewer will accept or reject your draft; never assume it
@@ -288,7 +292,14 @@ class _ReviewDraftSignature(dspy.Signature):  # type: ignore[misc]
 
 
 class DraftedReview(BaseModel):
-    """One draft plus everything an authorized reviewer needs to accept it through ReviewDesk."""
+    """One draft plus everything an authorized reviewer needs to accept it through ReviewDesk.
+
+    `stable_taxonomy` is Stable's persisted label — the other side of the code-written taxonomy_*
+    dimensions — and is required rather than defaulted (#548 PR-B.1): the reviewer may edit `draft.taxonomy`
+    before accepting, and the dimensions can only be recomputed against a label the entry actually carries.
+    `None` is the real answer when Stable never labelled the Event, and yields `not_applicable` on every
+    axis, exactly as it did at drafting time.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -298,6 +309,7 @@ class DraftedReview(BaseModel):
     headline_zh: str
     source_authority: SourceAuthority
     draft: ReviewDraft
+    stable_taxonomy: ModelTaxonomyV1 | None
     error: str | None = None
 
 
@@ -442,6 +454,7 @@ class ReviewDrafter:
 def submission_payload(
     draft: ReviewDraft,
     *,
+    stable_taxonomy: ModelTaxonomyV1 | Mapping[str, Any] | None,
     source_authority: SourceAuthority = "unknown",
     draft_author: str = DRAFTER_ID,
 ) -> dict[str, Any]:
@@ -450,6 +463,12 @@ def submission_payload(
     Built here so the accept step never has to reshape model output by hand, and so the rubric's own
     validators — gold only on failed dimensions, evidence refs required for a fail — are what decide whether
     a draft is submittable at all.
+
+    `stable_taxonomy` is required, not optional (#548 PR-B.1). The five taxonomy_* dimensions are code
+    written from Stable's label against the draft's, and this function emits the *edited* `draft.taxonomy`.
+    Copying the labels drafting time computed therefore published a comparison of a label the reviewer had
+    already replaced — an edit that made the draft agree with Stable still submitted `fail`. They are
+    recomputed here, through the same `taxonomy_dimensions`, so the row states the comparison it names.
     """
 
     # Every label the rubric accepts, `not_applicable` included. Filtering to pass/fail looks tidier and is
@@ -457,6 +476,7 @@ def submission_payload(
     # `not_applicable` on most Events — dropping it makes the majority of drafts unsubmittable.
     # A model that answers anyway is silently dropped rather than trusted: the reviewer owns `why_*`.
     dimensions = {name: label for name, label in draft.dimensions.items() if name in DRAFTABLE_DIMENSIONS}
+    dimensions.update(taxonomy_dimensions(stable_taxonomy, draft.taxonomy))
     expected = draft.expected.model_dump(mode="json", exclude_none=True) if draft.expected else {}
     # `NoveltyJudgment` requires `duplicate_of` on a restatement and forbids it anywhere else. A model that
     # names the told entry while judging `new_fact` — or calls a restatement without naming one — would
@@ -531,20 +551,29 @@ def build_draft_batch(
             "headline_zh": str(task.get("headline_zh") or ""),
             "source_authority": cast(SourceAuthority, str(task.get("source_authority") or "unknown")),
         }
+        # Read before the first model call and carried on every entry: the accept step recomputes the
+        # taxonomy_* dimensions from it, so a batch that lost it could only publish a stale comparison.
+        stable_raw = task.get("stable_taxonomy")
+        stable = ModelTaxonomyV1.model_validate(_model_axes(stable_raw)) if isinstance(stable_raw, Mapping) else None
         blind_input = str(task["taxonomy_evidence_json"])
         label_a = drafter_a.draft(evidence_json=blind_input)
         label_b = drafter_b.draft(evidence_json=blind_input)
         if not isinstance(label_a, ModelTaxonomyV1) or not isinstance(label_b, ModelTaxonomyV1):
             failed = label_a if not isinstance(label_a, ModelTaxonomyV1) else label_b
-            drafts.append(DraftedReview(**identity, draft=_EMPTY_DRAFT, error=f"taxonomy_drafting_failed: {failed}"))
+            drafts.append(
+                DraftedReview(
+                    **identity,
+                    draft=_EMPTY_DRAFT,
+                    stable_taxonomy=stable,
+                    error=f"taxonomy_drafting_failed: {failed}",
+                )
+            )
             continue
         labelled_n += 1
         agreed = label_a == label_b
         agreement_n += agreed
         if not agreed:
             disagreement_task_ids.append(task_id)
-        stable_raw = task.get("stable_taxonomy")
-        stable = ModelTaxonomyV1.model_validate(_model_axes(stable_raw)) if isinstance(stable_raw, Mapping) else None
         if stable is not None:
             stable_agreement[drafter_a.model] += label_a == stable
             stable_agreement[drafter_b.model] += label_b == stable
@@ -554,7 +583,7 @@ def build_draft_batch(
             told_json=str(task.get("told_json") or "[]"),
         )
         if not isinstance(outcome, RubricDraft):
-            drafts.append(DraftedReview(**identity, draft=_EMPTY_DRAFT, error=outcome))
+            drafts.append(DraftedReview(**identity, draft=_EMPTY_DRAFT, stable_taxonomy=stable, error=outcome))
             continue
         review_draft = ReviewDraft(
             **outcome.model_dump(mode="json", exclude={"dimensions"}),
@@ -563,7 +592,7 @@ def build_draft_batch(
             taxonomy_drafts={drafter_a.model: label_a, drafter_b.model: label_b},
             taxonomy_disagreement=not agreed,
         )
-        drafts.append(DraftedReview(**identity, draft=review_draft))
+        drafts.append(DraftedReview(**identity, draft=review_draft, stable_taxonomy=stable))
     return ReviewDraftBatch(
         drafter={**drafter.identity, "calls": drafter.calls, "failures": drafter.failures},
         taxonomy_drafters={

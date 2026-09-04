@@ -30,7 +30,7 @@ from tracefold.news.review.drafter import (
 from tracefold.news.taxonomy import ModelTaxonomyV1
 
 NEWS_REVIEW_DRAFTER_ID = "tracefold.news.review_drafter_v7"
-NEWS_REVIEW_DRAFT_BATCH_SCHEMA = "tracefold.news.review_draft_batch.v5"
+NEWS_REVIEW_DRAFT_BATCH_SCHEMA = "tracefold.news.review_draft_batch.v6"
 
 _TAXONOMY = {
     "subject_codes": ["medtop:20000199"],
@@ -190,7 +190,7 @@ def test_a_draft_becomes_a_valid_submission_without_hand_reshaping() -> None:
     """The accept step must not have to massage model output; the rubric's validators decide."""
 
     draft = ReviewDraft.model_validate(_GOOD)
-    submission = EventRubricSubmission(**submission_payload(draft))
+    submission = EventRubricSubmission(**submission_payload(draft, stable_taxonomy=_TAXONOMY))
     assert submission.should_push == "should_push"
     assert submission.expected is not None and submission.expected.magnitude == 2
     assert submission.dimensions["magnitude"] == "fail"
@@ -205,10 +205,16 @@ def test_the_rubric_model_output_carries_no_taxonomy_and_no_taxonomy_dimensions(
     schema = RubricDraft.model_json_schema()
     assert "taxonomy_subject_codes" not in schema["$defs"]["DraftDimensions"]["properties"]
     assert "required" not in schema["$defs"]["DraftDimensions"]
-    # The submission still needs all five; the code-written labels supply them.
+    # The submission still needs all five, and `submission_payload` writes them from Stable's label
+    # against the draft's, so a rubric-only draft acquires them from code and never from the model
+    # (#548 PR-B.1: they are written at accept time, not copied from drafting time).
     rubric_only = ReviewDraft.model_validate({**_GOOD, "dimensions": _RUBRIC["dimensions"]})
+    payload = submission_payload(rubric_only, stable_taxonomy=_TAXONOMY)
+    assert {name: payload["dimensions"][name] for name in TAXONOMY_DIMENSIONS} == _TAXONOMY_DIMENSIONS_PASS
+    # And the rubric itself is what refuses a submission that lacks them.
+    stripped = {name: label for name, label in payload["dimensions"].items() if name not in TAXONOMY_DIMENSIONS}
     with pytest.raises(ValueError, match="news_review_taxonomy_dimension_required:taxonomy_"):
-        EventRubricSubmission(**submission_payload(rubric_only))
+        EventRubricSubmission(**{**payload, "dimensions": stripped})
 
 
 def test_model_copied_source_authority_cannot_enter_the_taxonomy_labels() -> None:
@@ -228,13 +234,13 @@ def test_gold_on_a_passed_dimension_is_refused_by_the_rubric_not_by_the_drafter(
         }
     )
     with pytest.raises(ValueError, match="news_review_expected_requires_failed_dimension:magnitude"):
-        EventRubricSubmission(**submission_payload(draft))
+        EventRubricSubmission(**submission_payload(draft, stable_taxonomy=_TAXONOMY))
 
 
 def test_a_failed_dimension_carries_evidence_refs() -> None:
     """The rubric refuses a `fail` without one, and the drafter cannot invent an operator's citation."""
 
-    payload = submission_payload(ReviewDraft.model_validate(_GOOD))
+    payload = submission_payload(ReviewDraft.model_validate(_GOOD), stable_taxonomy=_TAXONOMY)
     assert f"draft:{DRAFTER_ID}" in payload["evidence_refs"]
     payload_all_pass = submission_payload(
         ReviewDraft.model_validate(
@@ -243,13 +249,16 @@ def test_a_failed_dimension_carries_evidence_refs() -> None:
                 "dimensions": {"factual_fidelity": "pass", **_TAXONOMY_DIMENSIONS_PASS},
                 "expected": None,
             }
-        )
+        ),
+        stable_taxonomy=_TAXONOMY,
     )
     assert "evidence_refs" not in payload_all_pass
 
 
 def test_a_failed_dimension_names_the_batch_drafter_that_actually_proposed_it() -> None:
-    payload = submission_payload(ReviewDraft.model_validate(_GOOD), draft_author="teacher/qwen:thinking")
+    payload = submission_payload(
+        ReviewDraft.model_validate(_GOOD), stable_taxonomy=_TAXONOMY, draft_author="teacher/qwen:thinking"
+    )
 
     assert "draft:teacher/qwen:thinking" in payload["evidence_refs"]
     assert f"draft:{DRAFTER_ID}" not in payload["evidence_refs"]
@@ -261,7 +270,7 @@ def test_taxonomy_provenance_names_the_blind_drafters_and_carries_both_drafts() 
     draft = ReviewDraft.model_validate(
         {**_GOOD, "taxonomy_drafts": {"scripted/blind-b": _OTHER_TAXONOMY, "scripted/blind-a": _TAXONOMY}}
     )
-    payload = submission_payload(draft, draft_author="teacher/qwen:thinking")
+    payload = submission_payload(draft, stable_taxonomy=_TAXONOMY, draft_author="teacher/qwen:thinking")
 
     review = payload["taxonomy_review"]
     assert review["label_source"] == "model_draft"
@@ -273,7 +282,11 @@ def test_taxonomy_provenance_names_the_blind_drafters_and_carries_both_drafts() 
     assert submission.taxonomy_review.drafts["scripted/blind-b"].event_family == "other"
 
     # Without blind drafts (a hand-assembled draft) the rubric author stands.
-    solo = submission_payload(ReviewDraft.model_validate({**_GOOD, "taxonomy_drafts": {}}), draft_author="human/x")
+    solo = submission_payload(
+        ReviewDraft.model_validate({**_GOOD, "taxonomy_drafts": {}}),
+        stable_taxonomy=_TAXONOMY,
+        draft_author="human/x",
+    )
     assert solo["taxonomy_review"]["draft_author"] == "human/x"
     assert "drafts" not in solo["taxonomy_review"]
 
@@ -356,9 +369,61 @@ def test_agreeing_blind_drafts_become_the_draft_and_disagreement_takes_a() -> No
     assert split.taxonomy_drafters["identities"][0]["drafter_id"] == TAXONOMY_BLIND_DRAFTER_ID
     assert len(split.taxonomy_drafters["identities"][0]["instruction_sha256"]) == 64
     # Every entry is submittable as-is; the drafts travel with it.
-    payload = submission_payload(split.drafts[0].draft)
+    payload = submission_payload(split.drafts[0].draft, stable_taxonomy=split.drafts[0].stable_taxonomy)
     assert set(payload["taxonomy_review"]["drafts"]) == {"scripted/blind-a", "scripted/blind-b"}
     assert EventRubricSubmission(**payload).taxonomy.event_family == "product_service_change"
+
+
+def test_a_reviewer_taxonomy_edit_is_recomputed_into_the_submitted_dimensions() -> None:
+    """#548 PR-B.1. `taxonomy_dimensions` ran once, at drafting time, against the label the drafters wrote.
+
+    `submission_payload` then emitted the reviewer's *edited* `taxonomy` beside those stale labels, so a
+    reviewer who corrected `event_family` to Stable's value still submitted `taxonomy_event_family: fail`
+    — a Gold row stating a comparison that had not been made. The entry now carries `stable_taxonomy` and
+    the five code-written dimensions are computed at accept time, from the same function.
+    """
+
+    batch = build_draft_batch(
+        ReviewDrafter(_ScriptedDrafterLM()),
+        _tasks(1, stable=_TAXONOMY),
+        taxonomy_drafters=_blind_pair(_OTHER_TAXONOMY, _OTHER_TAXONOMY),
+    )
+    entry = batch.drafts[0]
+    assert entry.stable_taxonomy == ModelTaxonomyV1.model_validate(_TAXONOMY)
+    assert entry.draft.dimensions["taxonomy_event_family"] == "fail"
+
+    # P2P: an untouched draft submits exactly the dimensions the batch wrote.
+    unedited = submission_payload(entry.draft, stable_taxonomy=entry.stable_taxonomy)
+    assert {name: unedited["dimensions"][name] for name in TAXONOMY_DIMENSIONS} == {
+        name: entry.draft.dimensions[name]  # type: ignore[literal-required]
+        for name in TAXONOMY_DIMENSIONS
+    }
+    assert unedited["dimensions"]["taxonomy_event_family"] == "fail"
+
+    # F2P: the reviewer edits the label to Stable's, and the submitted comparison follows it.
+    edited = entry.draft.model_copy(update={"taxonomy": ModelTaxonomyV1.model_validate(_TAXONOMY)})
+    payload = submission_payload(edited, stable_taxonomy=entry.stable_taxonomy)
+    assert {name: payload["dimensions"][name] for name in TAXONOMY_DIMENSIONS} == _TAXONOMY_DIMENSIONS_PASS
+    submission = EventRubricSubmission(**payload)
+    assert submission.dimensions["taxonomy_event_family"] == "pass"
+    assert submission.taxonomy.event_family == _TAXONOMY["event_family"]
+    # The rubric's own `magnitude` fail is untouched by the taxonomy recompute.
+    assert payload["dimensions"]["magnitude"] == "fail"
+
+
+def test_an_event_stable_never_labelled_stays_not_applicable_on_every_axis() -> None:
+    """`None` is a carried answer, not a missing one: it is what drafting time compared against too."""
+
+    batch = build_draft_batch(
+        ReviewDrafter(_ScriptedDrafterLM()), _tasks(1, stable=None), taxonomy_drafters=_blind_pair()
+    )
+    entry = batch.drafts[0]
+
+    assert entry.stable_taxonomy is None
+    payload = submission_payload(entry.draft, stable_taxonomy=entry.stable_taxonomy)
+    assert {name: payload["dimensions"][name] for name in TAXONOMY_DIMENSIONS} == dict.fromkeys(
+        TAXONOMY_DIMENSIONS, "not_applicable"
+    )
 
 
 def test_identical_blind_drafter_models_are_refused_before_any_model_call() -> None:
@@ -468,7 +533,7 @@ def test_the_drafter_writes_nothing_to_the_review_plane() -> None:
 def test_submission_payload_keeps_the_labels_the_rubric_requires() -> None:
     """`timeliness` is `not_applicable` on most Events, and a push submission is invalid without it."""
 
-    payload = submission_payload(ReviewDraft.model_validate(_GOOD))
+    payload = submission_payload(ReviewDraft.model_validate(_GOOD), stable_taxonomy=_TAXONOMY)
     assert payload["dimensions"]["timeliness"] == "not_applicable"
     assert EventRubricSubmission(**payload).should_push == "should_push"
 
@@ -493,17 +558,19 @@ def test_novelty_is_normalised_so_the_rubric_can_accept_it() -> None:
     breaks either rule would be unacceptable with no repair path."""
 
     named_but_new = ReviewDraft.model_validate({**_GOOD, "novelty": {"judgment": "new_fact", "duplicate_of": "a" * 64}})
-    payload = submission_payload(named_but_new)
+    payload = submission_payload(named_but_new, stable_taxonomy=_TAXONOMY)
     assert payload["novelty"]["duplicate_of"] == ""
     assert EventRubricSubmission(**payload).novelty.judgment == "new_fact"
 
     unnamed_restatement = ReviewDraft.model_validate(
         {**_GOOD, "novelty": {"judgment": "restatement", "duplicate_of": ""}}
     )
-    payload = submission_payload(unnamed_restatement)
+    payload = submission_payload(unnamed_restatement, stable_taxonomy=_TAXONOMY)
     # Downgraded, not dropped: an unverifiable duplicate claim must not block the whole draft.
     assert payload["novelty"] == {"judgment": "uncertain", "duplicate_of": ""}
     assert EventRubricSubmission(**payload).novelty.judgment == "uncertain"
 
     proper = ReviewDraft.model_validate({**_GOOD, "novelty": {"judgment": "restatement", "duplicate_of": "b" * 64}})
-    assert EventRubricSubmission(**submission_payload(proper)).novelty.duplicate_of == "b" * 64
+    assert EventRubricSubmission(**submission_payload(proper, stable_taxonomy=_TAXONOMY)).novelty.duplicate_of == (
+        "b" * 64
+    )

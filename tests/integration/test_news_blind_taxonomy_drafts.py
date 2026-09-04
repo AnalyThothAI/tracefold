@@ -64,7 +64,9 @@ def _accept_blind_drafts(conn, *, hit_id: int, title: str, label_b: dict[str, ob
         }
     )
     # The fixture Event is Reuters-sourced; code derives the authority and the desk refuses any other.
-    payload = submission_payload(draft, source_authority="reputable_secondary")
+    # `stable_taxonomy` is the other side of the five code-written dimensions and is recomputed at accept
+    # time (#548 PR-B.1); here Stable agreed with drafter A, so every axis stays a pass.
+    payload = submission_payload(draft, stable_taxonomy=_PRODUCT, source_authority="reputable_secondary")
     submission = EventRubricSubmission.model_validate(payload)
     assert submission.taxonomy_review.draft_author == "+".join(_DRAFTERS)
     with repositories_for_connection(conn).transaction():

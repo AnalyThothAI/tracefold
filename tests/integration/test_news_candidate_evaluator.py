@@ -1634,12 +1634,47 @@ def test_frozen_dataset_replays_its_pin_after_new_evidence_without_a_verdict(con
         newer = repos.news.append_evidence_snapshot(event_id=event_id, now_ms=NOW + 2)
 
     assert int(newer["evidence_version"]) == int(development.cases[0].evidence_version or 0) + 1
-    assert conn.execute("SELECT 1 FROM news_review_task_source_v1 WHERE event_id = %s", (event_id,)).fetchone() is None
+    # #548 PR-B.2: the Event stays in the view, at the version its verdict judged. The newer snapshot is
+    # unjudged and is still not projected; before that revision the whole Event vanished from the view
+    # instead, which is what hid four accepted #534 Gold cases from the freeze.
+    projected = conn.execute(
+        "SELECT evidence_version FROM news_review_task_source_v1 WHERE event_id = %s", (event_id,)
+    ).fetchall()
+    assert [int(row["evidence_version"]) for row in projected] == [int(development.cases[0].evidence_version or 0)]
 
     after = datasets.development_compile_export(development.artifact_sha)
 
     assert after.episodes == before.episodes
     assert after.episode_projection_root_sha256 == before.episode_projection_root_sha256
+
+
+def test_a_member_join_after_the_verdict_does_not_hide_the_accepted_review_from_the_freeze(conn) -> None:
+    """#548 PR-B.2. A member join appends an evidence snapshot; triage is not re-run for that Event.
+
+    `news_review_task_source_v1` used to join the *newest* snapshot to the newest verdict on equal
+    `evidence_version`, so a `v2` snapshot beside a `v1` verdict matched nothing and the Event — with its
+    accepted review — disappeared from the view the freeze projects. `load_case` reads the snapshot by
+    version and never agreed with that. #534 lost four accepted Gold cases here (313 -> 309).
+    """
+
+    event_id = _accepted_event(conn, why="pass")
+    stable = _arm()
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.news.set_storyline_key(event_id=event_id, storyline_key="macro:member-joined", now_ms=NOW + 1)
+        newer = repos.news.append_evidence_snapshot(event_id=event_id, now_ms=NOW + 2)
+    assert int(newer["evidence_version"]) == 2
+
+    development = asyncio.run(
+        _datasets(conn, stable).freeze_dataset(
+            DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
+        )
+    )
+
+    assert [case.event_id for case in development.cases] == [event_id]
+    # The review judged `v1`, and that is the identity the frozen case carries.
+    assert int(development.cases[0].evidence_version or 0) == 1
+    assert development.cases[0].evidence_sha256 != str(newer["evidence_sha256"])
 
 
 def test_development_compile_export_rejects_a_forged_dataset_artifact_sha(conn) -> None:

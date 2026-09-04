@@ -225,6 +225,7 @@ def test_wheel_ships_the_packaged_resources_the_runtime_reads(built_distribution
         f"{alembic}versions/20260904_0360_trading_lane_gate_cut.py",
         f"{alembic}versions/20260904_0361_trading_runtime_identity_cut.py",
         f"{alembic}versions/20260904_0362_news_oi_clock_check_cut.py",
+        f"{alembic}versions/20260904_0363_news_review_task_source_judged_evidence.py",
     ]
     assert f"{DISTRIBUTION_NAME}/news/program/resources/registry.json" in members
     # #509: the storyline registry is package data the Gate and Triage read on every Event, so a wheel
@@ -272,7 +273,7 @@ def test_installed_distribution_reads_its_own_program_artifact(isolated_probe: d
 def test_installed_distribution_carries_the_alembic_tree(isolated_probe: dict[str, object]) -> None:
     assert isolated_probe["alembic_env_py"] is True
     assert isolated_probe["alembic_baseline_sql"] is True
-    assert isolated_probe["alembic_revisions"] == 23
+    assert isolated_probe["alembic_revisions"] == 24
 
 
 @pytest.mark.parametrize("entrypoint", ["console-script", "python-m"])

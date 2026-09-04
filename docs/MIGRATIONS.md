@@ -245,6 +245,29 @@ rather than deleting that fact, which is the correct refusal and the reason to
 roll forward instead. The walk to base still stops at `20260904_0361`, one
 revision later, and rolls 0362's re-added CHECKs back with it.
 
+`20260904_0363` recreates `news_review_task_source_v1` so the verdict is joined
+to the evidence snapshot it judged (#548 PR-B.2). The view took the *newest*
+snapshot per Event and then required `s.evidence_version = v.evidence_version`
+against the newest model triage verdict. A member joining an existing Event
+appends a snapshot but does not re-run triage, so an Event with a `v2` snapshot
+and a `v1` verdict satisfied neither side and vanished from the view — with its
+verdict, its delivery and its accepted review. `freeze` projects that view while
+`load_case` reads the snapshot by version, so the two disagreed about the same
+accepted review; #534 lost four accepted Gold cases exactly this way. The
+snapshot lateral is now keyed to `v.evidence_version`, and
+`(event_id, evidence_version)` is that table's primary key, so it still yields at
+most one row and the view still yields at most one row per Event.
+
+The result is a strict superset of the old one: when the newest snapshot is the
+judged one, both forms select the same row byte for byte, and only the Events the
+old form dropped are added. It writes and reads no row, changes no column, index,
+constraint or other object, and restates the view's `security_barrier`. It
+archives nothing, refuses nothing, needs no operator config step and touches no
+table the execution Runtime writes, so `make up` alone applies it. Its
+`downgrade` restores the previous definition exactly: a rule changed, not a fact,
+so the reversal only makes the freeze blind again to reviews whose Event has
+since gained a member.
+
 ## Database development standard
 
 1. The deployment has one non-superuser application login, `tracefold`.
