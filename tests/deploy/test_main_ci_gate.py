@@ -21,10 +21,22 @@ _DEPLOYS_APPLICATION_SOURCE = (
     # The subcommand, not the word anywhere in the line: `docker compose exec ... /run/secrets/...`
     # is a read, and matching `run` loosely classified all three read-only preflights as deployments.
     re.compile(r"docker compose(?:\s+--?\S+)*\s+(?:up|build|run)\b"),
+    # #537 PR-2 gave the execution runtime its own image, so `docker build`/`buildx build` is now a
+    # way to produce a deployable artefact that does not go through `docker compose build`.
+    re.compile(r"docker (?:buildx )?build\b"),
     re.compile(r"\btracefold db migrate\b"),
     re.compile(r"docker run\s[^;\n]*?tracefold"),
 )
+# The execution-runtime movers (#537 PR-2). They start a container from an image that is already in
+# the local store and can only have got there through `make runtime-build`, which is gated. They
+# never build, never migrate, and deliberately never call GitHub: the whole point is that bringing
+# the process that owns live exposure back up must not depend on an authenticated `gh`, a reachable
+# github.com, or a green check on a SHA that is not the one already running. `docker compose up
+# --no-build` is what makes that safe, and the assertions below pin it.
+_IMAGE_ONLY_TARGETS = {"runtime-up", "runtime-restart", "_runtime-up-locked"}
+_BUILDS_OR_MIGRATES = re.compile(r"docker (?:compose )?(?:buildx )?build\b|\btracefold db migrate\b")
 _PRIVATE_TARGET = re.compile(r"make --no-print-directory (_[a-z-]+)")
+_DELEGATED_TARGET = re.compile(r"make --no-print-directory ([a-z][a-z-]*|_[a-z-]+)")
 # `make --dry-run` prints recipes with their backslash continuations intact, so a command split
 # across physical lines would escape a line-anchored pattern. Joining them first is also what
 # lets the patterns above exclude newlines: one logical command is then one line, and
@@ -47,6 +59,21 @@ def _dry_run(target: str) -> str:
         timeout=60,
     ).stdout
     return _LINE_CONTINUATION.sub(" ", recipe)
+
+
+def _reachable_recipe(target: str, seen: frozenset[str] = frozenset()) -> str:
+    """Every recipe line this entry can reach, following its `make ...` delegations.
+
+    `make --dry-run` does not expand a nested `make` invocation, so a contract about what an entry
+    can do has to walk the chain itself: `runtime-restart` -> `runtime-up` -> `_runtime-up-locked`.
+    """
+
+    if target in seen:
+        return ""
+    recipe = _dry_run(target)
+    return recipe + "".join(
+        _reachable_recipe(nested, seen | {target}) for nested in set(_DELEGATED_TARGET.findall(recipe))
+    )
 
 
 def _repository(tmp_path: Path) -> Path:
@@ -422,6 +449,8 @@ def test_every_entry_that_deploys_application_source_requires_the_exact_main_gat
         if not any(pattern.search(recipe) for pattern in _DEPLOYS_APPLICATION_SOURCE):
             continue
         classified.append(target)
+        if target in _IMAGE_ONLY_TARGETS:
+            continue
         # A public entry may reach the verifier through the private target it takes the lock for,
         # which `make --dry-run` does not expand for it.
         reachable = recipe + "".join(_dry_run(private) for private in _PRIVATE_TARGET.findall(recipe))
@@ -437,4 +466,22 @@ def test_every_entry_that_deploys_application_source_requires_the_exact_main_gat
         "_up-locked",
         "_deploy-image-locked",
         "_db-migrate-locked",
+        "_runtime-build-locked",
     }
+
+
+def test_the_exempt_runtime_movers_only_ever_start_an_already_built_image() -> None:
+    """The exemption in the test above is only sound while these recipes cannot produce an artefact.
+
+    `make runtime-up` is how an operator restores the process that owns live Binance exposure. It
+    must work when GitHub is down, when `gh` is logged out, and when the SHA it is restoring is
+    deliberately older than `origin/main` — so it does not take the exact-main gate. What keeps that
+    honest is that it can only *move* an image: `--no-build`, no build recipe, no migration.
+    """
+
+    for target in sorted(_IMAGE_ONLY_TARGETS):
+        reachable = _reachable_recipe(target)
+        assert "docker compose up -d --no-build" in reachable, target
+        assert not _BUILDS_OR_MIGRATES.search(reachable), target
+        assert "require_main_ci" not in reachable, target
+        assert "gh " not in reachable, target

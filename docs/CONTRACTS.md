@@ -318,21 +318,24 @@ product lane.
 ## Operator lifecycle
 
 The fresh-clone operator contract is `make up`. It preflights `uv`, Docker,
-Compose, `curl`, an authenticated GitHub CLI, and daemon access; runs idempotent
-initialization; builds the frontend and backend image; performs fresh-volume role bootstrap; runs the
+Compose, `curl`, an authenticated GitHub CLI, a 3.13 project interpreter, host
+clock drift, and daemon access; runs idempotent initialization; builds the
+frontend and backend image; performs fresh-volume role bootstrap; runs the
 one-shot migration; starts Serve and Workers; and waits for required health and
-console boundaries. Execution credentials are not a deployment prerequisite
-in disabled mode. Paper/live enables the profile-gated Nautilus Runtime and
-requires its identity-bound readiness. A repeated invocation preserves config, passwords, and
-named-volume data, including across `make down`.
+console boundaries. Execution credentials are never a deployment prerequisite:
+the profile-gated Nautilus Runtime has its own image and its own
+`make runtime-build` / `runtime-up` / `runtime-restart` / `runtime-down` /
+`runtime-logs` / `runtime-status` lifecycle, and `make up` never names it. A
+repeated invocation preserves config, passwords, and named-volume data,
+including across `make down`.
 
-`make status` fails non-zero when PostgreSQL, migration, Serve, Workers, either
-required runtime readiness endpoint, or console HTML is missing or unhealthy.
-Disabled mode rejects a leftover Nautilus container. Paper/live additionally
-requires the Nautilus container/probe and the exact configured current Runtime
-profile, revision, image, config digest, and readiness gates.
-`make logs` follows the bounded startup services. `make down` stops the stack
-without deleting the named PostgreSQL volume. These targets do not auto-hard-cut
+`make status` is `make status-app` followed by `make runtime-status`, and fails
+non-zero when PostgreSQL, RabbitMQ, migration, Serve, Workers, either required
+runtime readiness endpoint, or console HTML is missing or unhealthy. Disabled
+mode rejects a leftover Nautilus container. Paper/live additionally requires the
+Nautilus container, its health, and its `/readyz`. `make logs` follows the
+bounded startup services. `make down` stops the stack without deleting the named
+PostgreSQL volume, and refuses while a Nautilus container exists. These targets do not auto-hard-cut
 an unknown non-empty database.
 
 `make deploy-image IMAGE_ID=sha256:<64 lowercase hex>` is the explicit

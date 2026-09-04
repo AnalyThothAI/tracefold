@@ -5,8 +5,9 @@ Requires Postgres reachable via the standard project config.
 
 Import note: the storage module uses psycopg directly (no SQLAlchemy engine).
 We follow the same pattern as tracefold/platform/postgres/alembic/env.py:
-build a postgresql+psycopg URL via local_docker_host_dsn / with_password_from_file
-and pass it to sqlalchemy.create_engine for inspection-only access.
+build a postgresql+psycopg URL via with_password_from_file and pass it to
+sqlalchemy.create_engine for inspection-only access. The configured DSN is a compose-network
+address, so run this against a reachable database by exporting TRACEFOLD_TEST_POSTGRES_DSN.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from sqlalchemy.engine import Connection
 from tracefold.platform.config.loader import load_settings
 from tracefold.platform.config.models import Settings
 from tracefold.platform.postgres.audit import NEWS_TABLES, TRADING_TABLES
-from tracefold.platform.postgres.client import local_docker_host_dsn, with_password_from_file
+from tracefold.platform.postgres.client import with_password_from_file
 from tracefold.platform.postgres.migrations import latest_migration_version
 
 OUTPUT = Path(__file__).resolve().parent.parent / "docs" / "generated" / "db-schema.md"
@@ -36,11 +37,9 @@ def _sqlalchemy_url(settings: Settings | None) -> str:
     else:
         if settings is None:
             settings = load_settings(require_ws_token=False)
-        dsn = local_docker_host_dsn(
-            with_password_from_file(
-                settings.storage.postgres.dsn,
-                settings.postgres_password_file(),
-            )
+        dsn = with_password_from_file(
+            settings.storage.postgres.dsn,
+            settings.postgres_password_file(),
         )
     if dsn.startswith("postgresql://"):
         return "postgresql+psycopg://" + dsn.removeprefix("postgresql://")

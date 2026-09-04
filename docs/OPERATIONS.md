@@ -41,12 +41,15 @@ credential. Verify the configured lifecycle with:
 
 ```text
 make up
+make runtime-build
+make runtime-up
 make status
-uv run tracefold trading status
+docker compose exec -T workers tracefold trading status
 ```
 
 Disabled status reports `alive=false`, `execution_safe=false`, and
-`entries_armed=false`; canonical deployment stops any stale Nautilus container.
+`entries_armed=false`; `make runtime-status` fails closed if a container is
+still running in that mode.
 Active safety additionally requires exactly one current account-slot owner,
 secure non-empty credential files, startup reconciliation, initialized
 Portfolio, no unexpected exposure, a fresh heartbeat, and the configured
@@ -88,22 +91,29 @@ stream per live thesis and none at rest. The nine risk numbers under
 reported on the projection and on the Runtime's start Observation; editing one
 needs a restart and nothing else.
 
-**A deploy is a restart.** Changing the image, the release or any
-`trading.execution.*` value does not require a new name, a flat account or a
-fresh `/resume`: `account_slot` plus `mode` is the execution identity, the
-account-slot advisory lock is what keeps two Runtimes apart, and control state
-lives on the slot. Entries stay exactly as the last accepted Command left them.
-`execution.mode: disabled` is the switch that means "do not trade".
+**A runtime replacement is a restart, and a product deploy is not one.**
+Changing the runtime image, the release or any `trading.execution.*` value does
+not require a new name, a flat account or a fresh `/resume`: `account_slot` plus
+`mode` is the execution identity, the account-slot advisory lock is what keeps
+two Runtimes apart, and control state lives on the slot. Entries stay exactly as
+the last accepted Command left them. `execution.mode: disabled` is the switch
+that means "do not trade". A News, Serve or Workers release does not restart the
+Runtime at all: `make up` never names the service, so the process keeps its
+position, its protective stop, and its `started_at_ns` across a product deploy
+(#537 D3).
 
 For the first Demo start on a slot, confirm the Binance account is
 authoritatively flat, populate the configured Binance files as regular
-mode-`0600` files, set `execution.mode: paper`, and run `make up`. A slot with
-no Command history starts with entries armed. Inspect `make status` and `trading
-status` before letting a Signal or `/long`/`/short` enter, and use
-`/pause REASON` if it should not. After the bounded Demo exercise, issue
-`/flatten account TTL_SECONDS`, require a later private Binance flat
-reconciliation, read the receipt out of `trading status` and the observation
-table (below), restore `execution.mode: disabled`, and run `make up` again. Demo
+mode-`0600` files, set `execution.mode: paper`, and run `make up` followed by
+`make runtime-build && make runtime-up`. A slot with no Command history starts
+with entries armed. Inspect `make status` and
+`docker compose exec -T workers tracefold trading status` before letting a
+Signal or `/long`/`/short` enter, and use `/pause REASON` if it should not.
+After the bounded Demo exercise, issue `/flatten account TTL_SECONDS`, require a
+later private Binance flat reconciliation, read the receipt out of `trading
+status` and the observation table (below), then run `make runtime-down` and
+restore `execution.mode: disabled`. `make runtime-down` is what stops trading;
+restoring the config afterwards is what stops the next `make runtime-up`. Demo
 evidence is not live-money evidence. Never select `live` or perform a live
 canary without separate explicit operator authority.
 
@@ -149,9 +159,11 @@ after its fill is what proves the position survived a restart.
 ### Trading operator control
 
 There are two operator ingresses and no `trading.control` configuration block.
-`tracefold trading issue` on the host is the manual one, authenticated by the
-local OS uid; `POST /api/trading/execution/commands` is the console one,
-authenticated by the bootstrap `ws_token`. #528 deleted the Telegram control
+`tracefold trading issue`, run **inside the Workers container**, is the manual
+one, authenticated by the container OS uid; `POST
+/api/trading/execution/commands` is the console one, authenticated by the
+bootstrap `ws_token`. The CLI reaches PostgreSQL over the compose network, which
+is the only network on which the configured DSN resolves (#537 D1). #528 deleted the Telegram control
 webhook, its allowlists and its secret file, and both never-run Trading
 notification senders: none of them had ever been enabled in production, and the
 delivery ledger they wrote to held zero rows. A config that still carries a
@@ -189,8 +201,13 @@ in proxy logs and browser history, authenticates reads only.
 The local fallback writer uses the identical parser and an OS UID identity:
 
 ```text
-uv run tracefold trading issue "/pause maintenance" --request-id ops-20260901-1 --requested-at-ns <unix-nanoseconds>
+docker compose exec -T workers tracefold trading issue "/pause maintenance" \
+  --request-id ops-20260901-1 --requested-at-ns <unix-nanoseconds>
 ```
+
+The same applies to `/flatten account`, `/halt`, `trading status`,
+`trading commands` and `trading observations`: every Trading CLI entry runs in
+the Workers container.
 
 Preserve both request fields exactly on retries.
 
@@ -250,10 +267,6 @@ only to an image compatible with the live schema. A non-flat incident rolls
 forward: the Runtime remains the sole authority until exposure is protected or
 closed, and `/flatten account` is the operator's convergence command.
 
-The deterministic PostgreSQL acceptance lane is `make trading-smoke`; it proves
-the real News -> Case -> Signal seam and the atomic Case/Signal handoff. It
-contacts no execution venue and is not Demo evidence.
-
 ## Operator lifecycle
 
 The canonical complete-product lifecycle is:
@@ -266,17 +279,83 @@ make down
 ```
 
 `make up` preflights Git, `uv`, Docker, Compose, `curl`, an authenticated GitHub
-CLI, and daemon access, runs
-idempotent initialization, builds one shared Python/React image, starts
-PostgreSQL when absent, requires the one-shot migration to succeed, starts
-Serve and Workers, and then runs the same fail-closed status gate. In disabled
-mode it stops any stale Nautilus container and requires no execution
-credentials. In paper/live mode it enables the explicit Compose execution
-profile, starts the one Nautilus process, and requires its identity-bound
-readiness. It
-does not recreate a running PostgreSQL container. On failure, use `make logs`. Operator config, two
-PostgreSQL password files, and named-volume data remain in place. `make down` stops
-containers without deleting that volume.
+CLI, the project interpreter (3.13, matching the image), host clock drift
+against the venue, and daemon access; runs idempotent initialization; builds one
+shared Python/React image; starts PostgreSQL when absent; requires the one-shot
+migration to succeed; starts Serve and Workers; and then runs the same
+fail-closed application status gate. It does not recreate a running PostgreSQL
+container, and it never names the `nautilus` service in any state: the execution
+runtime has its own image and its own lifecycle (below). If a Runtime is running
+and the source Alembic head is ahead of the live database, `make up` refuses
+before building, rather than migrating the schema beneath a process that owns an
+open position; `make runtime-down` first, or set
+`TRACEFOLD_MIGRATE_UNDER_RUNTIME=1` deliberately. An image whose digest cannot be
+read is a hard failure, not a warning: every receipt it wrote would record
+`image_digest=unversioned`. On failure, use `make logs`. Operator config, two
+PostgreSQL password files, and named-volume data remain in place. `make down`
+stops containers without deleting that volume, and refuses while a `nautilus`
+container exists, because `docker compose down` would delete it along with the
+project network.
+
+All twelve published Compose bindings (`TRACEFOLD_{POSTGRES,RABBITMQ,RABBITMQ_MGMT,API,WORKERS,NAUTILUS}_{HOST,PORT}`)
+are declared once in the Makefile with Compose's own defaults and exported from
+there. Do not export them in an operator shell and do not add a `.env`: an
+inconsistently exported port changes the rendered service definition, and
+Compose then recreates the container it belongs to — which is how the database
+container used to be recreated by a forgotten `export`. Override one for a
+single deployment on the command line (`make up TRACEFOLD_POSTGRES_PORT=...`)
+or change the default in the Makefile, in a commit.
+
+### Execution runtime lifecycle
+
+The Binance execution runtime is deployed on its own, from its own image:
+
+```bash
+make runtime-build     # gated build, tags tracefold-runtime:<main sha>
+make runtime-up        # stop the old container, start that tag, verify readiness
+make runtime-restart   # same, on the exact image the container is already running
+make runtime-status    # container, health, image, and /readyz identity
+make runtime-logs
+make runtime-down      # stop -t 90 and remove the container
+```
+
+`runtime-build` is the only one of the six that builds, reaches GitHub, or takes
+the exact-main gate; it holds the same deployment lock as `make up`.
+`runtime-up`, `runtime-restart` and `runtime-down` move an image that is already
+in the local store — `--no-build`, no migration, no GitHub call — because
+restoring the process that protects an open position must not depend on an
+authenticated `gh`, a reachable github.com, or a green check on a SHA that is
+deliberately not the one being restored.
+
+`make runtime-up` refuses before it stops anything if the configured execution
+mode is `disabled`, if the requested image is not in the local store, or if the
+image's Alembic head does not equal the live database head. It prints the image
+it is replacing, so the rollback command is the one on the screen:
+`make runtime-up RUNTIME_IMAGE=tracefold-runtime:<older sha>`. The same head
+comparison is what refuses a rollback across a schema change.
+
+The container's `stop_grace_period` is 90 s and every `stop` uses `-t 90`.
+Worst-case shutdown is three sequential 20 s Nautilus stop budgets plus the
+bridge's final projection write; at the old 40 s budget SIGKILL was the normal
+exit, which skips `singleton.release()` and leaves a ghost backend holding the
+account-slot advisory lock. Both long-lived Runtime sessions now carry TCP
+keepalives on the client and server side (idle 30 s, interval 10 s, count 3), so
+such a backend is reaped within about a minute instead of blocking the next
+start with `oi_runtime_account_slot_already_owned`.
+
+`restart: unless-stopped` stays. A bounded `on-failure:N` gives up after N
+transient failures, and what it would give up on is the process protecting an
+open position. A crash loop on a stale image costs one `SELECT version_num` per
+attempt, because the runtime asserts the Alembic head before it takes the lock
+or builds a node — and `make runtime-up`'s pre-stop comparison keeps it from
+entering that loop at all.
+
+The cutover order for a release that changes both halves is
+`make runtime-build` -> `make up` -> `make runtime-up`. A release that does not
+change the Trading schema needs no runtime step at all.
+
+Each container writes its own log file under `~/.tracefold/logs/`:
+`serve.log`, `workers.log`, `nautilus.log`.
 
 Fresh PostgreSQL bootstrap belongs only to the image's `initdb` phase. It
 creates one ordinary non-superuser `tracefold` application login from the
@@ -286,14 +365,17 @@ application process share that login; process identity is reported through
 `application_name`. Bootstrap is not a periodic reconciler and never mutates an
 unknown non-empty cluster.
 
-`make status` prints Compose state and returns non-zero unless PostgreSQL,
-migration, Serve, Workers, the Serve and Workers readiness endpoints, and the
-HTML console all pass. In active execution mode it also requires the Nautilus
-container, probe, current durable Runtime generation, and exact configured
-profile/revision/image/config identity; in disabled mode it rejects a leftover
-Nautilus process.
-It must not be replaced by a liveness-only `curl` or a
-Compose command whose exit status ignores an unhealthy Worker.
+`make status` is `make status-app` followed by `make runtime-status`.
+`status-app` prints Compose state and returns non-zero unless PostgreSQL,
+RabbitMQ, migration, Serve, Workers, the Serve and Workers readiness endpoints,
+and the HTML console all pass. `runtime-status` is read-only and returns
+non-zero when the execution mode is `paper`/`live` and no container is running,
+when the container is unhealthy or its `/readyz` fails, or when the mode is
+`disabled` and a container is still running; it prints the running image and the
+readiness identity. Deployment targets call `status-app` only, so a Runtime that
+is deliberately down never fails a News release. Neither may be replaced by a
+liveness-only `curl` or a Compose command whose exit status ignores an unhealthy
+Worker.
 
 ### Exact-image replacement with the current database schema
 
@@ -356,10 +438,13 @@ is observable exact-SHA verification and `ci-gate` is deployment authorization,
 not a GitHub-enforced pre-merge rule. A future platform change should require
 this one stable check name rather than introduce another project-owned planner.
 
-The target accepts no tag, short ID or registry reference. It never builds or pulls,
-and it checks the checkout, Compose inputs, active config, three migration heads,
-deployment lock, recreated container IDs, Workers readiness and durable deployment
-receipt before reporting success. A recorded previous image digest is only a
+The target accepts no tag, short ID or registry reference. It never builds or
+pulls, never touches the execution runtime, and it checks the checkout, Compose
+inputs, active config, three migration heads, deployment lock, recreated
+container IDs, Workers readiness and durable deployment receipt before reporting
+success. It does **not** require the image to carry current main's revision: the
+image an operator needs during an incident is by definition the previous one, and
+the Alembic heads are the compatibility rule. A recorded previous image digest is only a
 candidate: local retention and schema compatibility are still required.
 
 A schema-changing release cannot roll back to an older-schema image. Its Issue must
@@ -497,11 +582,12 @@ API () { curl -fsS -u "$USER:$PASS" "$@" http://127.0.0.1:15672/api/queues/%2F; 
 1. Prove the broker: `RMQ 'rabbitmqctl version'` must report 4.3 or newer. Native
    delayed retry does not exist before 4.3, and an older broker would silently
    retry immediately.
-2. Apply the policies while the old image is still running, from the checkout
-   rather than from the container: `uv run tracefold news bus-policy apply`, then
-   `uv run tracefold news bus-policy verify`. The deployed image predates the
-   command, and `uv run` reaches the same broker because the compose host name is
-   rewritten to its published loopback port. The command deliberately opens no
+2. Apply the policies while the old image is still running, from a container
+   built on the new checkout: `docker compose run --rm --no-deps rabbitmq-policy`,
+   then `docker compose run --rm --no-deps --entrypoint tracefold migrate news
+   bus-policy verify`. The deployed image predates the command, and a container
+   is what resolves the compose broker host name; a host-side `uv run` does not
+   (#537 D1). The command deliberately opens no
    AMQP connection and declares no topology, so it works while the queues still
    have their old shape. What it proves is the policy documents — every field of
    the checked-in entries, verbatim on the broker. A policy overrides a queue
@@ -547,10 +633,10 @@ API () { curl -fsS -u "$USER:$PASS" "$@" http://127.0.0.1:15672/api/queues/%2F; 
    curl -fsS -u "$USER:$PASS" -X DELETE http://127.0.0.1:15672/api/exchanges/%2F/news.retry
    ```
 
-   `uv run tracefold news bus-check` must then report empty `drift` lists and
+   `docker compose exec -T workers tracefold news bus-check` must then report empty `drift` lists and
    `policy_ok` on every queue.
 9. Cold-restart the stack (`docker compose restart rabbitmq workers`) and re-run
-   `make status`, `uv run tracefold news bus-check`, and the open-incident check
+   `make status`, `docker compose exec -T workers tracefold news bus-check`, and the open-incident check
    `SELECT cause_class, count(*) FROM news_opennews_incidents WHERE closed_at_ms
    IS NULL GROUP BY 1` — which the `0335` partial unique index now makes
    impossible to exceed one row per cause class.
@@ -738,8 +824,8 @@ For missing or stale live data:
 1. run `uv run tracefold config`;
 2. check `/healthz` and `/readyz`;
 3. inspect authenticated `/api/status`, then `/api/news/status`;
-4. run `uv run tracefold news bus-check` for per-queue depths;
-5. run `uv run tracefold news why <event_id>` for one Event's whole chain;
+4. run `docker compose exec -T workers tracefold news bus-check` for per-queue depths;
+5. run `docker compose exec -T workers tracefold news why <event_id>` for one Event's whole chain;
 6. trace one stable target from fact -> Event row -> API.
 
 | Symptom | Inspect first |
@@ -819,11 +905,14 @@ truth.
 Broker: RabbitMQ 4 (`rabbitmq:4-management` in compose; `news.broker.url` is
 the AMQP URL, `news.broker.name_prefix` prefixes every exchange/queue).
 `tracefold news bus-check` connects, declares the topology idempotently, and
-prints per-queue message/consumer counts. Outside a container the compose
-host names resolve to the published loopback ports (`postgres` ->
-`127.0.0.1:${TRACEFOLD_POSTGRES_PORT:-56532}`, `rabbitmq` ->
-`127.0.0.1:${TRACEFOLD_RABBITMQ_PORT:-5672}`), so the same `config.yaml`
-serves `docker compose exec` and host-side CLI runs. Connection/setup faults may
+prints per-queue message/consumer counts. Run it, and every other CLI command
+that reaches PostgreSQL or RabbitMQ, inside the Workers container
+(`docker compose exec -T workers tracefold ...`). The configured DSN and AMQP
+URL are compose-network addresses and are used exactly as written: the host
+rewriting that silently redirected `postgres` and `rabbitmq` to hard-coded
+loopback ports is deleted (#537 D1), because it read only
+`TRACEFOLD_POSTGRES_PORT` and therefore made the `/flatten` and `/halt` CLI
+channel unreachable on any custom bind address. Connection/setup faults may
 reconnect before consuming a delivery. Once a message task owns a delivery,
 handler-side `BrokerUnavailable` / `BrokerBackpressure` is a counted broker
 return, delayed by the existing policy and terminal only after the shared
@@ -1358,8 +1447,8 @@ snapshot.
 ## Migrations
 
 Alembic has one root, baseline `20260831_0340`, and current head
-`20260903_0358`, the additive judgment-CHECK opening to
-`news_triage_policy_v13` (#523). A fresh PostgreSQL 18 database applies the
+`20260903_0359`, the destructive drop of the never-written Trading notification
+delivery ledger (#528). A fresh PostgreSQL 18 database applies the
 baseline and every
 revision after it in order; each revision's own docstring carries its evidence.
 Four of them need an operator step before the upgrade runs: `20260901_0347`
@@ -1434,7 +1523,8 @@ Phase 0 is fail-closed:
 4. Prebuild the exact main image with
    `TRACEFOLD_BUILD_REVISION=<40-hex-main-sha>`, inspect its full
    `sha256:<64-hex>` image ID, export it as `TRACEFOLD_IMAGE_DIGEST`, then run
-   `make news-genesis-manifest`. Record `data.runtime_manifest_sha` from that
+   `docker compose run --rm --no-deps --entrypoint tracefold migrate db
+   news-genesis-manifest`. Record `data.runtime_manifest_sha` from that
    read-only command as the expected target runtime-manifest SHA. The command
    computes it inside that same configured image from the active operator
    config, stable bundle, compiled candidate set, image ID and runtime revision.
@@ -1478,7 +1568,7 @@ extra field, invalid identity, unverified snapshot, nonzero or unobserved queue
 count, a Git mismatch, an image/runtime-manifest mismatch or schema-object
 inventory drift before deleting anything.
 
-After deployment, require Alembic head `20260903_0358`; zero rows in every cleared
+After deployment, require Alembic head `20260903_0359`; zero rows in every cleared
 owner except the single new `news_learning_artifacts(kind='epoch_reset')` row
 and fresh singleton rows in `news_ingest_state` and
 `news_learning_retention_state`;
@@ -1753,7 +1843,7 @@ Live restore/audit procedure:
 1. Restore the PostgreSQL backup into an isolated database and migrate only to
    the image's recorded schema head; never set
    `tracefold.learning_retention_purge` or issue manual DELETEs.
-2. Run `uv run tracefold db audit --deep`; confirm migration head, exact News table
+2. Run `docker compose exec -T workers tracefold db audit --deep`; confirm migration head, exact News table
    set and role grants. Read `news_learning_retention_state` and retain its
    pre-restore snapshot for comparison.
 3. Select the latest manifest for each distinct `stable_bundle_sha`; for the
@@ -1812,7 +1902,7 @@ ORDER BY total_exec_time DESC
 LIMIT 20;
 ```
 
-`uv run tracefold db query-audit` verifies that every public HTTP route is
+`tracefold db query-audit` (in the Workers container) verifies that every public HTTP route is
 assigned to a bounded read-query family (`/readyz`, `/api/status`,
 `/api/news/*`; `/healthz`, `/metrics`, and `/api/bootstrap`
 are declared no-SQL) and checks that every query can be planned. `uv run
@@ -1825,12 +1915,12 @@ supplies the same bound statement builder used by its serving read; the App
 layer only composes those specs with route coverage, so an audit-only SQL
 approximation is not accepted.
 
-`uv run tracefold db audit` is the online fast path. It uses catalog/statistics
+`tracefold db audit` is the online fast path. It uses catalog/statistics
 row estimates plus O(1) migration, schema, role/grant, PostgreSQL-major,
 extension, and key-session-setting checks. It reports the externally declared
 container image identity without pretending PostgreSQL can attest that digest;
 it does not issue exact `COUNT(*)`
-against every business table. `uv run tracefold db audit --deep` adds those
+against every business table. `tracefold db audit --deep` adds those
 exact counts and is reserved for offline migration/restore evidence.
 
 Read/return amplification uses the root result-row count for hot page queries, and each query spec owns its

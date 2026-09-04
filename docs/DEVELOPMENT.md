@@ -162,7 +162,6 @@ their corrections remain in #319.
 | `make check` | static and pure drift checks | Ruff, format, mypy, compileall, pure architecture/contract | Docker, DB, RabbitMQ, network, Node, sleeps/process orchestration, duplicate checkers |
 | `make test` / `make test-fast` | broad hermetic final checkpoint; not an edit loop | unit, hermetic contract, semantic architecture, temporary files, controlled local CLI subprocesses | Testcontainers, real PG/RabbitMQ, uvicorn, multiprocess orchestration, external codegen, load/p95 benchmarks |
 | `make test-integration` | targeted real-dependency evidence | PostgreSQL, RabbitMQ, HTTP app/worker integration | unrelated deploy/e2e behavior |
-| `make trading-smoke` | the Trading PostgreSQL acceptance contract | #433-C real News→Case→Signal handoff, atomic Case/Signal settlement, and irreversible old-writer hard cut on real PostgreSQL | live provider truth and everything outside the focused Trading integration modules; it is a subset of `make test-integration`, never merge evidence on its own |
 | `make test-deploy` | deployment and operations behavior | Compose, locks, rollback, receipts, signals, fake executable simulation | broad hermetic checkpoint |
 | `make test-e2e` | Serve-process evidence | real PostgreSQL, uvicorn, readiness and HTTP read surfaces | Workers or broker behavior |
 | `make test-golden` | broker-driven production path | real RabbitMQ, production Workers wiring, PostgreSQL facts and HTTP read projection | provider/paid model truth |
@@ -398,8 +397,9 @@ uv run pytest -q \
 external resource. Larger public targets expose integration, deploy, E2E,
 golden, slow, scheduled, external-codegen, browser, and visual seams; choose
 them from the affected risk instead of running them in a fixed local ladder.
-`make trading-smoke` remains a named integration subset and `make test-all` a
-local convenience, neither merge evidence. Resource and lane wiring is owned by
+`make test-all` remains a local convenience, never merge evidence; the retired
+`make trading-smoke` was a self-described non-venue subset of
+`make test-integration` and is gone (#537 D). Resource and lane wiring is owned by
 [Local lane implementation](TESTING.md#local-lane-implementation).
 
 ### Historical pre-433-C evidence verification (retired)

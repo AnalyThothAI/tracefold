@@ -9,7 +9,7 @@ from tracefold.platform.observability import setup_logging
 
 def handle_serve(_args: object) -> int:
     settings = load_settings()
-    setup_logging(settings.log_file)
+    setup_logging(settings.log_file.with_name("serve.log"))
     uvicorn.run(
         create_app(settings=settings),
         host=settings.api.host,

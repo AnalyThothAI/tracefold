@@ -67,6 +67,8 @@ from tracefold.integrations.nautilus.oi_runtime.state import (
 from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrategy
 from tracefold.platform.config.models import Settings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
+from tracefold.platform.postgres.client import postgres_health_check
+from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.platform.runtime_identity import runtime_identity
 from tracefold.trading import EXECUTION_STRATEGY_ID, canonical_sha256
 from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
@@ -162,7 +164,8 @@ def run_nautilus(settings: Settings) -> None:
             "api_key": credentials.api_key,
         }
     )
-    with postgres_connection(settings, application_name="tracefold_nautilus_singleton") as conn:
+    with postgres_connection(settings, application_name="tracefold_nautilus_singleton", long_lived=True) as conn:
+        _require_current_schema(conn)
         singleton_repos = repositories_for_connection(conn)
         singleton = AccountSlotSingleton(
             account_slot=execution.account_slot,
@@ -184,6 +187,26 @@ def run_nautilus(settings: Settings) -> None:
             )
         finally:
             singleton.release()
+
+
+def _require_current_schema(conn: Any) -> None:
+    """Refuse to become the account-slot owner against a schema this build does not know.
+
+    The runtime no longer depends on the one-shot migration container (#537 D4), so nothing in the
+    Compose graph orders it after a migration any more. This is the replacement, and it is stronger:
+    an ordering edge only proves a migration ran at some point in this boot, while reading
+    `alembic_version` proves the database is at the head this image was built for. It runs before
+    `acquire()`, so a stale image takes no lock and builds no node — it costs one SELECT and exits.
+    """
+
+    health = postgres_health_check(conn, expected_migration_version=latest_migration_version())
+    if "error" in health or "detail" in health:
+        raise RuntimeError(f"oi_runtime_schema_probe_failed: {health.get('error')}: {health.get('detail')}")
+    if not health.get("ok"):
+        raise RuntimeError(
+            "oi_runtime_schema_head_mismatch: "
+            f"database={health.get('migration_version')} expected={health.get('expected_migration_version')}"
+        )
 
 
 async def _run_active_runtime(

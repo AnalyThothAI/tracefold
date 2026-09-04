@@ -112,14 +112,25 @@ def test_the_image_copies_the_flat_package_and_its_web_assets() -> None:
     assert not re.search(r"^COPY\s+" + LEGACY_PARENT + r"\b", dockerfile, flags=re.MULTILINE)
 
 
-def test_the_image_proves_its_own_import_from_outside_the_application_root() -> None:
-    """`/app` is a package root under the flat layout, so a probe that runs there proves nothing."""
+def test_each_image_stage_proves_its_own_import_from_outside_the_application_root() -> None:
+    """`/app` is a package root under the flat layout, so a probe that runs there proves nothing.
+
+    Two stages, two probes (#537 PR-2). The application stage still proves the console script and
+    the frontend bundle; the execution-runtime stage proves the one entry point it actually runs,
+    and must not mention a bundle it deliberately does not carry.
+    """
 
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    probe = re.search(r"^RUN cd / \\\n(?:.*\\\n)*.*$", dockerfile, flags=re.MULTILINE)
+    runtime_stage, application_stage = dockerfile.split("FROM base AS runtime", 1)[1].split("FROM base AS app", 1)
 
-    assert probe is not None, "the image never imports itself from outside /app"
-    body = probe.group(0)
+    application_probe = re.search(r"^RUN cd / \\\n(?:.*\\\n)*.*$", application_stage, flags=re.MULTILINE)
+    assert application_probe is not None, "the application image never imports itself from outside /app"
+    body = application_probe.group(0)
     assert f"{PACKAGE} --help" in body
     assert f'Path("/app/{PACKAGE}")' in body
     assert '"web" / "dist" / "index.html"' in body
+
+    runtime_probe = re.search(r"^RUN cd / \\\n(?:.*\\\n)*.*$", runtime_stage, flags=re.MULTILINE)
+    assert runtime_probe is not None, "the runtime image never imports itself from outside /app"
+    assert f"from {PACKAGE}.app.nautilus.root import run_nautilus" in runtime_probe.group(0)
+    assert "web/dist" not in runtime_stage

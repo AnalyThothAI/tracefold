@@ -35,12 +35,21 @@ the migration, Serve, and Workers containers so edits to the bind-mounted
 operator config take effect. An already running PostgreSQL container is not
 recreated; the operator files and named-volume data remain in place.
 
+The optional Binance execution runtime is **not** part of this lifecycle. It has
+its own image (`tracefold-runtime:<sha>`) and its own targets —
+`make runtime-build`, `runtime-up`, `runtime-restart`, `runtime-status`,
+`runtime-logs`, `runtime-down` — so a News, Serve or Workers release cannot
+restart the process that owns a live account. `make up` never names it, and
+`make down` refuses while its container exists. See `OPERATIONS.md`.
+
 ### Upgrading across a removed config key
 
 `NewsSettings` and the other config models are `extra="forbid"`, so a key that a
 release deletes does not become inert — it fails startup. When release notes
 retire a key, remove it from `~/.tracefold/config.yaml` **between** `git pull`
-and `make up`, or Serve and Workers refuse to start with `extra_forbidden`.
+and `make up`, or Serve and Workers refuse to start with `extra_forbidden`. The
+same file is bind-mounted read-only into the execution runtime, so the edit must
+also precede the next `make runtime-up`.
 
 #433-C is the one explicit exception to that manual rule. On its first normal
 run, `tracefold init` recognizes the exact former `trading.order` /
@@ -74,7 +83,7 @@ s = p.read_text()
 p.with_suffix(".yaml.bak").write_text(s)
 print(p.write_text(re.sub(r"^  opennews_strategy_ids:\n(?:  - .*\n)*", "", s, flags=re.M)))
 EOF
-uv run tracefold config   # confirm it parses before make up
+uv run tracefold config   # parses before make up and the next make runtime-up
 ```
 
 `trading.candidates.symbol_cooldown_seconds` and
@@ -91,7 +100,7 @@ s = p.read_text()
 p.with_suffix(".yaml.bak").write_text(s)
 p.write_text(re.sub(r"^ *(symbol_cooldown_seconds|max_rank_in_window):.*\n", "", s, flags=re.M))
 EOF
-uv run tracefold config   # confirm it parses before make up
+uv run tracefold config   # parses before make up and the next make runtime-up
 ```
 
 Note the same key name lived under `news.oi.max_rank_in_window` until #458 removed the whole `news.oi` section; it was **not**
@@ -100,7 +109,7 @@ The regex above is indentation-blind, so check the diff before `make up` if your
 file sets both.
 
 `news.triage.deadline_seconds` is retired in #129. Remove that line from an
-existing `news.triage` mapping before `make up`; keep `concurrency` and the
+existing `news.triage` mapping before `make up` and the next `make runtime-up`; keep `concurrency` and the
 optional whole-chain `circuit_failures` / `circuit_open_seconds`. The Program
 artifact now owns its primary and fallback route deadline, so carrying the old
 key fails `extra="forbid"` rather than silently overriding the artifact.
@@ -114,7 +123,6 @@ and empty Telegram and Binance execution placeholders:
 
 ```text
 telegram_bot_token
-telegram_webhook_secret
 binance_usdm_api_key
 binance_usdm_api_secret
 postgres_password
@@ -132,7 +140,7 @@ PostgreSQL passwords. Back up intentional config changes before using
 
 `tracefold init` is the sole default-config authority. There is no maintained
 static example or `.env` fallback. The generated default creates a local API
-token plus empty `telegram_bot_token` and `telegram_webhook_secret` placeholders but contains no live
+token plus an empty `telegram_bot_token` placeholder but contains no live
 model, OpenNews, Feishu, or Telegram credential, points
 `news.broker.url` at the compose RabbitMQ service, and leaves News push
 disabled. Edit only the operator-owned
@@ -156,10 +164,11 @@ The credentials a live deployment can hold are exactly: the OpenNews token
 (`news.opennews_token`), the direct model triple (`llm.api_key`,
 `llm.base_url`, `llm.news_triage_model`, plus the optional
 `llm.news_reader_card`, `llm.news_triage_fallback`, and
-`llm.news_reader_card_fallback` triples), the RabbitMQ URL (`news.broker.url`), the
-one push provider's configuration (`news.push.*`), Trading control's Telegram
-bot token and webhook secret (`trading.control.*` file references), the Binance
-execution pair, and the PostgreSQL role password files.
+`llm.news_reader_card_fallback` triples), the RabbitMQ URL (`news.broker.url`),
+the one push provider's configuration (`news.push.*`), the Binance execution
+pair, and the single PostgreSQL application password file. #528 deleted the
+Telegram control webhook and its secret; a config that still carries a
+`trading.control` block fails to load.
 
 The product process is usable without optional live credentials, but affected
 lanes report explicit degradation or unavailable evidence:
@@ -427,8 +436,8 @@ Useful live-data smoke checks:
 
 ```bash
 uv run tracefold config
-uv run tracefold news bus-check
-uv run tracefold db audit
+docker compose exec -T workers tracefold news bus-check
+docker compose exec -T workers tracefold db audit
 ```
 
 The first command confirms the real config paths. `news bus-check` proves the
@@ -459,8 +468,9 @@ judgment CHECK opening to triage policy v12 (#504), the `0353` rewrite of
 additive `0354` Runtime route catalogue, the destructive `0355` dead Case column
 drop, the destructive `0356` `account_slot` identity cut, the destructive
 `0357` cut of every JSON-shape CHECK, its four functions, the unread digests and
-the five readiness booleans (#520), and the additive `0358` judgment CHECK
-opening to triage policy v13 (#523), in order.
+the five readiness booleans (#520), the additive `0358` judgment CHECK
+opening to triage policy v13 (#523), and the destructive `0359` drop of the
+never-written Trading notification delivery ledger (#528), in order.
 Current source intentionally has no upgrade path from an earlier revision. To
 recover a pre-#449 backup, use the exact pre-cut image/source to restore and
 advance it to the old terminal `20260831_0340`, take a verified backup, perform
@@ -482,11 +492,46 @@ build as a BuildKit secret; when unset, it uses `gh auth token` if available.
 Public dependencies need neither. The token is not stored in an image layer or
 application config.
 
-Compose bind-mounts only role-appropriate files from `~/.tracefold/`. Serve
-receives only its SELECT credential; Workers receives only its DML credential;
-the migrate credential is absent from both steady containers. PostgreSQL data
-is pinned to the `tracefold-postgres` named volume, and `make down` does not
-delete it.
+Compose bind-mounts only role-appropriate files from `~/.tracefold/`. Since the
+#449 single-login cutover every application process shares one `tracefold`
+credential and is distinguished by `application_name`; only the execution
+runtime additionally receives the two Binance secret files. PostgreSQL data is
+pinned to the `tracefold-postgres` named volume, and `make down` does not delete
+it.
+
+Every published Compose binding is declared once in the Makefile, with Compose's
+own default, and exported from there:
+`TRACEFOLD_{POSTGRES,RABBITMQ,RABBITMQ_MGMT,API,WORKERS,NAUTILUS}_{HOST,PORT}`.
+There is no `.env` support and no operator-shell export step. Overriding a
+binding for one deployment is a command-line variable, and changing it
+permanently is a Makefile commit:
+
+```bash
+# publish PostgreSQL on a LAN address for this deployment only
+make up TRACEFOLD_POSTGRES_HOST=192.168.50.68 TRACEFOLD_POSTGRES_PORT=56533
+```
+
+Exporting one of these in a shell for one command and not the next changes the
+rendered service definition, and Compose then recreates the container it belongs
+to — which is exactly how the database container used to be recreated by a
+forgotten `export`.
+
+`.python-version` pins the project interpreter to 3.13, the image's interpreter
+and the one the locked cp313 `nautilus_trader` wheel is built for; `make
+preflight` asserts it and also checks host clock drift against the venue's own
+clock, because Binance rejects a signed request outside `recvWindow`.
+
+The Binance execution runtime is deployed separately, from its own
+`tracefold-runtime:<sha>` image: `make runtime-build` (gated build),
+`make runtime-up` (`stop -t 90` then `up --no-build --force-recreate`),
+`make runtime-restart`, `make runtime-status`, `make runtime-logs`, and
+`make runtime-down`. Its `stop_grace_period` is 90 s so the worst-case shutdown
+completes without SIGKILL. `make up` never names it and `make down` refuses
+while it exists.
+
+Any CLI command that reaches PostgreSQL or RabbitMQ runs inside a container
+(`docker compose exec -T workers tracefold ...`). The configured DSN and broker
+URL are compose-network addresses and are used exactly as written.
 
 Fresh-volume bootstrap is an `initdb` hook, not a steady service or a generic
 role-repair mechanism. Normal startup consists of PostgreSQL, RabbitMQ
@@ -516,8 +561,8 @@ inspects the local ID and requires the image, source, and live database Alembic
 heads to match (therefore rejecting every image on a different schema head
 mismatch), then validates that the target can parse the active config without
 printing it. It injects that exact ID as `TRACEFOLD_IMAGE_DIGEST`, stops Serve
-and Workers, and recreates migration, Serve, and Workers with `--no-build`.
-Before running `make status`, it verifies every recreated container image,
+and Workers, and recreates migration, Serve, and Workers with `--no-build`; it never touches the execution runtime.
+Before running `make status-app`, it verifies every recreated container image,
 Workers readiness identity, and the linked active/runtime-deployment receipt.
 It never downgrades PostgreSQL. See `OPERATIONS.md` for the receipt lookup and
 rollback runbook. Normal `make up` still builds and deploys the current checkout
@@ -545,9 +590,11 @@ npm ci
 npm run dev          # Vite console with API proxy to 127.0.0.1:8765
 ```
 
-For an intentional host-process backend loop, first provision PostgreSQL roles
-and set the four role DSNs in `~/.tracefold/config.yaml` to a database reachable
-from the host. This is for development against an already prepared database;
+For an intentional host-process backend loop, first provision the single
+`tracefold` application login and set `storage.postgres.dsn` in
+`~/.tracefold/config.yaml` to a database address reachable from the host. The
+DSN is used exactly as written — nothing rewrites a compose host name to a
+published loopback port any more (#537 D1). This is for development against an already prepared database;
 it does not bootstrap a blank cluster. Then use separate terminals:
 
 ```bash

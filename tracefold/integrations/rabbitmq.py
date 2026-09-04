@@ -55,7 +55,6 @@ from tracefold.news.telemetry import (
     NewsRabbitConsumerFatalReason,
     NewsRabbitPublishFailureReason,
 )
-from tracefold.platform.docker_host import local_docker_host_amqp_url
 
 log = logging.getLogger("tracefold.news.bus")
 
@@ -203,7 +202,7 @@ class RabbitMQBus:
         retry_delay_ms: int = broker_policy.RETRY_DELAY_MS,
         telemetry: NewsDurableEventTelemetryPort | None = None,
     ) -> None:
-        self._url = local_docker_host_amqp_url(url)
+        self._url = url
         self._prefix = name_prefix
         self._connect_timeout = connect_timeout_seconds
         self._retry_delay_ms = int(retry_delay_ms)

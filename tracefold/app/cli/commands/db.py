@@ -15,7 +15,6 @@ from tracefold.platform.config.loader import load_settings
 from tracefold.platform.postgres.audit import PostgresOperationalAudit
 from tracefold.platform.postgres.client import (
     connect_postgres,
-    local_docker_host_dsn,
     postgres_health_check,
     with_password_from_file,
 )
@@ -45,11 +44,9 @@ def handle_db(args: Namespace) -> tuple[int, dict[str, Any]]:
             },
         }
     if args.db_command == "migrate":
-        dsn = local_docker_host_dsn(
-            with_password_from_file(
-                settings.storage.postgres.dsn,
-                settings.postgres_password_file(),
-            )
+        dsn = with_password_from_file(
+            settings.storage.postgres.dsn,
+            settings.postgres_password_file(),
         )
         _prepare_news_genesis_evidence(settings, fresh_install=_database_is_unmigrated(dsn))
         upgrade_head(dsn)
