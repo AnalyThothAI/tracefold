@@ -31,9 +31,12 @@ _GATE_ROW: dict[str, Any] = {
     "stage": "venue",
     "reason": "instrument_unmapped",
     "retryable": False,
-    "gate_version": "trading_admission_v6",
-    "gate_config_digest": "d" * 64,
-    "evidence": {"market_key": "crypto:perp:DELL:USDT", "venue": "binance.usdm"},
+    "evidence": {
+        "market_key": "crypto:perp:DELL:USDT",
+        "venue": "binance.usdm",
+        "gate_version": "trading_admission_v9",
+        "gate_config_digest": "d" * 64,
+    },
     "first_evaluated_at_ms": NOW - 119_000,
     "last_evaluated_at_ms": NOW - 60_000,
     "attempt_count": 1,
@@ -69,6 +72,9 @@ class _Trading:
                 "manifest": {
                     "manifest_version": "trading_manifest_v11",
                     "market_key": "crypto:perp:SOL:USDT",
+                    "policy_id": "source_native_oi_smart_money_long_v5",
+                    "policy_version": "source_native_oi_smart_money_long_v5",
+                    "policy_config_digest": "b" * 64,
                     "primary_trigger": {"venue": "binance.usdm"},
                     "policy_config": {"min_oi_change_bps": 500},
                     "contexts": {
@@ -84,9 +90,6 @@ class _Trading:
                 "observed_at_ms": NOW - 2_000,
                 "case_created_at_ms": NOW - 1_000,
                 "decided_at_ms": NOW,
-                "strategy_id": "source_native_oi_smart_money_long_v4",
-                "strategy_version": "source_native_oi_smart_money_long_v4",
-                "strategy_config_digest": "b" * 64,
             }
         ]
 
@@ -107,7 +110,6 @@ class _Trading:
                 "direction": "long",
                 "observed_at_ns": NOW * 1_000_000,
                 "expires_at_ns": (NOW + 180_000) * 1_000_000,
-                "alpha_metadata": {"policy_rule": "smart_money_long"},
             }
         ]
 
@@ -279,8 +281,13 @@ def test_case_and_signal_are_separate_durable_aggregates(client: tuple[TestClien
     assert case["state"] == "SIGNAL_EMITTED"
     assert case["market_key"] == signal["market_key"] == "crypto:perp:SOL:USDT"
     assert signal["case_id"] == case["case_id"]
+    # #537 PR-3: the desk's policy identity is read from the manifest the lane froze, which is the copy
+    # `_decide_one` compares before it decides anything. The three columns beside it are gone.
+    assert case["policy_id"] == case["policy_version"] == "source_native_oi_smart_money_long_v5"
+    assert case["policy_config_digest"] == "b" * 64
     for forbidden in ("quantity", "notional", "leverage", "account", "route", "order"):
         assert forbidden not in signal
+    assert "alpha_metadata" not in signal
 
 
 def test_gate_renders_a_stored_evidence_key_no_schema_enumerates(client: tuple[TestClient, _Trading]) -> None:
@@ -291,9 +298,17 @@ def test_gate_renders_a_stored_evidence_key_no_schema_enumerates(client: tuple[T
     single = api.get("/api/trading/gate/evt-oi-dell", params={"token": TOKEN, "lane": "oi"}).json()["data"]
 
     assert [decision["gate_evidence"] for decision in decisions] == [
-        {"market_key": "crypto:perp:DELL:USDT", "venue": "binance.usdm"}
+        {
+            "market_key": "crypto:perp:DELL:USDT",
+            "venue": "binance.usdm",
+            "gate_version": "trading_admission_v9",
+            "gate_config_digest": "d" * 64,
+        }
     ]
     assert single["decision"]["gate_evidence"]["market_key"] == "crypto:perp:DELL:USDT"
+    # The rulebook that decided the row is one of those keys now, not two fields of its own (#537 PR-3).
+    assert "gate_version" not in decisions[0]
+    assert "gate_config_digest" not in decisions[0]
 
 
 def test_observations_are_empty_while_runtime_is_disabled(client: tuple[TestClient, _Trading]) -> None:

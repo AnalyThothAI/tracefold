@@ -452,8 +452,8 @@ def _gate_decision(row: dict[str, Any]) -> dict[str, Any]:
         "gate_stage": str(row["stage"]),
         "gate_reason": str(row["reason"]),
         "gate_retryable": bool(row["retryable"]),
-        "gate_version": str(row["gate_version"]),
-        "gate_config_digest": str(row["gate_config_digest"]).strip(),
+        # The rulebook that decided the row is inside `evidence`, where the console renders it with
+        # the numbers it read rather than as two fields of its own (#537 PR-3).
         "gate_evidence": row.get("evidence") or {},
         "gate_first_evaluated_at_ms": int(row["first_evaluated_at_ms"]),
         "gate_last_evaluated_at_ms": int(row["last_evaluated_at_ms"]),
@@ -481,9 +481,11 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
         "source_venue": trigger.get("venue"),
         "trigger_kind": str(row["trigger_kind"]),
         "manifest_version": manifest.get("manifest_version"),
-        "policy_id": str(row["strategy_id"]),
-        "policy_version": str(row["strategy_version"]),
-        "policy_config_digest": str(row["strategy_config_digest"]),
+        # From the manifest, which is what the lane compares a Case against before it decides one.
+        # Three columns beside it said the same thing and nothing read them (#537 PR-3).
+        "policy_id": _string_or_none(manifest.get("policy_id")),
+        "policy_version": _string_or_none(manifest.get("policy_version")),
+        "policy_config_digest": _string_or_none(manifest.get("policy_config_digest")),
         "policy_config": _frozen_config(manifest.get("policy_config")),
         "policy_checks": _policy_checks(row.get("policy_checks")),
         "state": str(row["state"]),
@@ -511,7 +513,6 @@ def _signal(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
         "observed_at_ns": int(row["observed_at_ns"]),
         "expires_at_ns": int(row["expires_at_ns"]),
         "expired": int(row["expires_at_ns"]) <= now_ns,
-        "alpha_metadata": row.get("alpha_metadata") or {},
     }
 
 

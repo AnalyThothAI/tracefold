@@ -4,11 +4,11 @@
 Case/Signal commit. It knows no execution profile, credential, account, balance, position, size,
 leverage, order, protection, capital grant or reservation.
 
-The one Runtime fact it reads is the published route catalogue on
-`trading_execution_runtime_state.routes`: which `market_key`s a configured Runtime can reach at all.
-That is a catalogue, not permission, sizing or a route choice — the lane still names no venue,
-instrument, account or quantity — and reading it is what keeps the turn's single Case freeze off a
-market whose only possible execution answer is `instrument_unmapped`.
+It reads no Runtime fact at all. The route catalogue it used to read was a second answer to a
+question the Runtime already answers by name on the entry path, one scan behind and needing a
+projection special case for "no catalogue published"; and the per-turn freeze budget it protected is
+gone with it (#537 PR-3). One undecided Case per underlying is the database's own partial unique
+index, not a rule restated here.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ from .contracts import (
 )
 from .market_context import PriceWindow, pre_move_bps, select_bar
 from .policy import ALPHA_POLICY, AlphaPolicy
-from .sources import SourceRejected, normalize_oi_source
+from .sources import SourceRejected, normalize_oi_source, telemetry_source
 from .storage.execution_stream import prepare_trade_signal
 from .storage.lane import SignalLaneSnapshot
 from .storage.root import TradingRepositories, TradingRepository
@@ -59,11 +59,7 @@ BAR_INTERVAL_MS: Final = 300_000
 COLD_READ_TIMEOUT_SECONDS: Final = 10.0
 COLD_WRITE_TIMEOUT_SECONDS: Final = 10.0
 SIGNAL_TTL_MS: Final = 180_000
-_SCAN_OVERLAP_FACTOR: Final = 3
-_CASE_LEASE_MS: Final = 60_000
-_MAX_FREEZES_PER_TURN: Final = 1
 _MAX_DECISIONS_PER_TURN: Final = 4
-_CASE_DECISION_TTL_MS: Final = 300_000
 _ADMISSION_RETENTION_MS: Final = 90 * 86_400_000
 
 
@@ -102,7 +98,14 @@ class SignalLaneConfig:
 
     @property
     def scan_horizon_ms(self) -> int:
-        return self.admission.max_age_ms * _SCAN_OVERLAP_FACTOR
+        """Exactly the window a frame can still be admitted in, and not a minute more.
+
+        It was three times that. A frame outside `max_age_ms` has one possible answer — `trigger_stale`
+        — and the ledger already holds it, so the two extra windows only re-asked a closed question:
+        the median frame was re-evaluated 439 times before the sweep closed it (#537 PR-3).
+        """
+
+        return self.admission.max_age_ms
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,7 +142,6 @@ class SignalLane:
         config: SignalLaneConfig,
         bars: BarFetcher,
         oi_projection: OiProjectionReader,
-        release_revision: str,
         clock: Callable[[], int] = now_ms,
         telemetry: TradingExternalDataTelemetryPort | None = None,
     ) -> None:
@@ -147,7 +149,6 @@ class SignalLane:
         self._config = config
         self._bars = bars
         self._oi_projection = oi_projection
-        self._release_revision = release_revision
         self._clock = clock
         self._telemetry = telemetry
         self._run_id = uuid.uuid4().hex
@@ -173,16 +174,9 @@ class SignalLane:
         results: dict[str, AdmissionResult] = {}
         admitted = self._admit(rows, snapshot=snapshot, now=now, results=results)
         created = 0
-        for candidate in admitted[:_MAX_FREEZES_PER_TURN]:
+        for candidate in admitted:
             if await self._freeze(candidate, now=now, results=results):
                 created += 1
-        for candidate in admitted[_MAX_FREEZES_PER_TURN:]:
-            results[candidate.source_key] = defer(
-                candidate,
-                stage="eligibility",
-                reason="lane_capacity_exhausted",
-                evidence={"lane_full": "freezes_per_turn"},
-            )
         await self._flush_admission(results, now)
         await self._maintain_admission(now)
 
@@ -217,7 +211,14 @@ class SignalLane:
         now: int,
         results: dict[str, AdmissionResult],
     ) -> list[OiTradeCandidate]:
-        admitted: dict[str, OiTradeCandidate] = {}
+        """Every frame in the window that may become a Case, newest first.
+
+        No per-turn budget and no per-underlying tournament. Both were software copies of a rule the
+        database already holds — `ux_trading_case_in_flight_underlying` — and freezing one Case per
+        turn is what made the budget necessary in the first place (#537 PR-3).
+        """
+
+        admitted: list[OiTradeCandidate] = []
         for row in rows:
             normalized = normalize_oi_source(row)
             if isinstance(normalized, SourceRejected):
@@ -235,42 +236,13 @@ class SignalLane:
                 normalized,
                 now_ms=now,
                 config=self._config.admission,
-                underlyings_in_flight=snapshot.underlyings_in_flight,
                 cased_source_keys=snapshot.cased_source_keys,
             )
             if verdict is not None:
                 results[normalized.source_key] = verdict
                 continue
-            executable = snapshot.executable_market_keys
-            candidate_market = market_key(normalized.base_symbol)
-            if executable is not None and candidate_market not in executable:
-                # Terminal: the catalogue is the venue's listing, so no later scan of the same frame
-                # reaches a different answer while this Runtime generation is the current one. A new
-                # catalogue arrives as a new Runtime start, and `gate_config_digest` is unchanged, so
-                # the row simply keeps this reason until a Source with a listed market arrives.
-                results[normalized.source_key] = reject(
-                    normalized,
-                    stage="eligibility",
-                    reason="instrument_unmapped",
-                    evidence={"market_key": candidate_market},
-                )
-                continue
-            incumbent = admitted.get(normalized.underlying_key)
-            if incumbent is None:
-                admitted[normalized.underlying_key] = normalized
-                continue
-            loser, winner = (
-                (incumbent, normalized)
-                if (normalized.observed_at_ms, normalized.source_key) > (incumbent.observed_at_ms, incumbent.source_key)
-                else (normalized, incumbent)
-            )
-            admitted[winner.underlying_key] = winner
-            results[loser.source_key] = defer(
-                loser,
-                stage="eligibility",
-                reason="superseded_by_newer_trigger",
-            )
-        return sorted(admitted.values(), key=lambda item: item.observed_at_ms, reverse=True)
+            admitted.append(normalized)
+        return sorted(admitted, key=lambda item: item.observed_at_ms, reverse=True)
 
     async def _freeze(
         self,
@@ -338,7 +310,6 @@ class SignalLane:
                 case_id=case_id,
                 manifest=manifest,
                 admission=self._admission_row(linked),
-                release_revision=self._release_revision,
                 now_ms=now,
             ),
             timeout_seconds=COLD_WRITE_TIMEOUT_SECONDS,
@@ -346,6 +317,10 @@ class SignalLane:
         if created:
             results.pop(candidate.source_key, None)
             return True
+        # The insert is `ON CONFLICT DO NOTHING` over every unique constraint the table has, so this
+        # is the one durable answer for both of them: this source already produced a Case, or its
+        # issuer already holds the one undecided Case that `ux_trading_case_in_flight_underlying`
+        # allows. Either way the frame is consumed and no later scan changes it.
         results[candidate.source_key] = reject(candidate, stage="freeze", reason="already_consumed")
         return False
 
@@ -356,7 +331,7 @@ class SignalLane:
             bars = await observe_provider_call(
                 self._telemetry,
                 name="trading_signal_lane",
-                source="binance" if candidate.venue == "binance.usdm" else "hyperliquid",
+                source=telemetry_source(candidate.venue),
                 call=self._bars(candidate, start, anchor_at_ms + BAR_INTERVAL_MS),
             )
         except Exception:
@@ -368,7 +343,7 @@ class SignalLane:
         now = self._clock()
         claimed = await self._db.tx(
             "trading_case_claim",
-            lambda repos: _trading(repos).claim_case(run_id=self._run_id, lease_ms=_CASE_LEASE_MS, now_ms=now),
+            lambda repos: _trading(repos).claim_case(run_id=self._run_id, now_ms=now),
             timeout_seconds=COLD_WRITE_TIMEOUT_SECONDS,
         )
         if claimed is None:
@@ -383,8 +358,9 @@ class SignalLane:
         policy = self._config.policy
         if manifest.policy_id != policy.policy_id or manifest.policy_version != policy.policy_version:
             return await self._block(case_id, "policy_identity_retired", now)
-        if now - int(claimed["created_at_ms"]) > _CASE_DECISION_TTL_MS:
-            return await self._block(case_id, "case_stale", now)
+        # One clock over the Case, and it is the Source's. A second budget measured from the freeze
+        # could only ever expire after this one at any `max_age_ms` an operator would set, so it never
+        # decided anything (#537 PR-3).
         source_deadline_ms = manifest.primary_trigger.observed_at_ms + self._config.admission.max_age_ms
         if now >= source_deadline_ms:
             return await self._block(case_id, "source_stale", now)
@@ -422,7 +398,6 @@ class SignalLane:
             direction="long",
             observed_at_ns=observed_at_ns,
             expires_at_ns=expires_at_ns,
-            alpha_metadata={"policy_rule": decision.rule},
         )
         committed = await self._db.tx(
             "trading_signal_commit",
@@ -465,7 +440,7 @@ class SignalLane:
         def _write(repos: TradingRepositories) -> None:
             trading = _trading(repos)
             for row in rows:
-                trading.record_gate_decision(now_ms=now, release_revision=self._release_revision, **row)
+                trading.record_gate_decision(now_ms=now, **row)
 
         await self._db.tx("trading_admission_write", _write, timeout_seconds=COLD_WRITE_TIMEOUT_SECONDS)
 

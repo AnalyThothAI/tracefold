@@ -10,7 +10,7 @@ from tracefold.platform.postgres.audit import (
     postgres_query_specs,
 )
 from tracefold.trading.storage.execution_stream import execution_stream_query_specs
-from tracefold.trading.storage.gate import GATE_DECISION_FOR_SOURCE_KEY_SQL, gate_decisions_since_sql
+from tracefold.trading.storage.gate import GATE_DECISION_FOR_SOURCE_KEY_SQL, GATE_DECISIONS_SINCE_SQL
 from tracefold.trading.storage.queries import (
     TRADING_CASE_COUNTS_SQL,
     TRADING_CASE_REASON_COUNTS_SQL,
@@ -201,17 +201,12 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_read_return_amplification=4.0,
         ),
         ReadQuerySpec(
-            # #269. One admission answer per source in the window, newest frame first. `DISTINCT ON`
-            # over the source key is what keeps the batch to one row per frame, matching the
-            # distributions the same page prints above it — a frame two configurations have looked at
-            # must not appear twice in a table whose total is a frame count.
-            #
-            # The subquery and the outer sort are both here on purpose: the dedup has to order by
-            # `source_key` and the table has to arrive in frame order, so the shipped read materialises
-            # the whole 24 h dedup set and re-sorts it. Flattening that into one `DISTINCT ON` with the
-            # limit inside would certify a plan that can stop early — a plan the route never runs.
+            # #269. One admission answer per source in the window, newest frame first. One row per
+            # frame is the table's own primary key now (#537 PR-3), so the shipped read is the index
+            # scan this certifies rather than a materialised `DISTINCT ON` set re-sorted by the outer
+            # query — the table a reader scrolls and the distribution above it cannot disagree.
             name="trading_gate_decisions_since",
-            sql=gate_decisions_since_sql(),
+            sql=GATE_DECISIONS_SINCE_SQL,
             params=("oi", since_ms, 401),
             max_read_return_amplification=20.0,
         ),

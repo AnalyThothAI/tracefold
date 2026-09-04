@@ -526,8 +526,6 @@
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `source_key` | `TEXT` | False | `None` |
-| `gate_version` | `TEXT` | False | `None` |
-| `gate_config_digest` | `CHAR(64)` | False | `None` |
 | `trigger_kind` | `TEXT` | False | `None` |
 | `underlying_key` | `TEXT` | True | `None` |
 | `source_observed_at_ms` | `BIGINT` | False | `None` |
@@ -540,7 +538,6 @@
 | `first_evaluated_at_ms` | `BIGINT` | False | `None` |
 | `last_evaluated_at_ms` | `BIGINT` | False | `None` |
 | `attempt_count` | `INTEGER` | False | `1` |
-| `release_revision` | `TEXT` | False | `None` |
 
 ## `trading_cases`
 
@@ -550,13 +547,10 @@
 | `underlying_key` | `TEXT` | False | `None` |
 | `trigger_kind` | `TEXT` | False | `None` |
 | `primary_source_key` | `TEXT` | False | `None` |
-| `supplemental_source_keys` | `JSONB` | False | `'[]'::jsonb` |
 | `manifest` | `JSONB` | False | `None` |
 | `manifest_sha256` | `TEXT` | False | `None` |
 | `state` | `TEXT` | False | `None` |
 | `run_id` | `TEXT` | True | `None` |
-| `lease_expires_at_ms` | `BIGINT` | True | `None` |
-| `attempt_count` | `INTEGER` | False | `0` |
 | `policy_decision` | `TEXT` | False | `None` |
 | `policy_reason` | `TEXT` | True | `None` |
 | `observed_at_ms` | `BIGINT` | False | `None` |
@@ -565,9 +559,6 @@
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `source_observed_at_ms` | `BIGINT` | True | `None` |
 | `trigger_persisted_at_ms` | `BIGINT` | True | `None` |
-| `strategy_id` | `TEXT` | False | `None` |
-| `strategy_version` | `TEXT` | False | `None` |
-| `strategy_config_digest` | `TEXT` | False | `None` |
 | `policy_checks` | `JSONB` | True | `None` |
 
 ## `trading_execution_observations`
@@ -627,7 +618,7 @@
 | `open_orders_count` | `INTEGER` | False | `None` |
 | `protection_status` | `TEXT` | False | `None` |
 | `account_snapshot` | `JSONB` | True | `None` |
-| `routes` | `JSONB` | False | `'[]'::jsonb` |
+| `routes_count` | `INTEGER` | False | `0` |
 
 ## `trading_operator_intents`
 
@@ -658,7 +649,6 @@
 | `direction` | `TEXT` | False | `None` |
 | `observed_at_ns` | `BIGINT` | False | `None` |
 | `expires_at_ns` | `BIGINT` | False | `None` |
-| `alpha_metadata` | `JSONB` | False | `None` |
 | `payload` | `JSONB` | False | `None` |
 
 ## `workers_runtime`

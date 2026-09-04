@@ -2294,18 +2294,18 @@ export interface components {
                 [key: string]: string;
             };
             /** Policy Config Digest */
-            policy_config_digest: string;
+            policy_config_digest?: string | null;
             /**
              * Policy Decision
              * @enum {string}
              */
             policy_decision: "long" | "no_trade" | "not_run";
             /** Policy Id */
-            policy_id: string;
+            policy_id?: string | null;
             /** Policy Reason */
             policy_reason?: string | null;
             /** Policy Version */
-            policy_version: string;
+            policy_version?: string | null;
             /** Pre Move Bps */
             pre_move_bps?: number | null;
             /** Source Venue */
@@ -2723,8 +2723,6 @@ export interface components {
             event_id?: string | null;
             /** Gate Attempt Count */
             gate_attempt_count?: number | null;
-            /** Gate Config Digest */
-            gate_config_digest?: string | null;
             /** Gate Evidence */
             gate_evidence?: {
                 [key: string]: string | number | boolean | string[] | null;
@@ -2741,8 +2739,6 @@ export interface components {
             gate_stage?: ("source" | "venue" | "eligibility" | "market_context" | "freeze") | null;
             /** Gate Status */
             gate_status?: ("DEFERRED" | "REJECTED" | "CASE_CREATED" | "EXPIRED") | null;
-            /** Gate Version */
-            gate_version?: string | null;
             /** Source Key */
             source_key: string;
             /** Source Observed At Ms */
@@ -2856,10 +2852,6 @@ export interface components {
         };
         /** TradingSignalData */
         TradingSignalData: {
-            /** Alpha Metadata */
-            alpha_metadata?: {
-                [key: string]: string | number | boolean;
-            };
             /** Case Id */
             case_id: string;
             /**

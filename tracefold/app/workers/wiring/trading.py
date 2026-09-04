@@ -24,11 +24,11 @@ from tracefold.app.workers.wiring.news_to_trading import news_oi_sources
 from tracefold.integrations.venues import fetch_binance_candles, fetch_hyperliquid_candles
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
-from tracefold.platform.runtime_identity import runtime_identity
 from tracefold.trading import OiTradeCandidate
 from tracefold.trading.contracts import Bar as TradingBar
 from tracefold.trading.contracts import OiCandidateRow
 from tracefold.trading.signal_lane import SignalLane
+from tracefold.trading.sources import source_venue
 
 SIGNAL_LANE_TASK_NAME = "trading-signal-lane"
 # The lane moves at the speed of a five-minute OI frame; two seconds is what makes a fresh frame reach
@@ -76,42 +76,36 @@ def _wire_signal_lane(
         config=signal_lane_config(settings),
         bars=_source_native_bars,
         oi_projection=read_news_oi_projection,
-        release_revision=runtime_identity().runtime_revision,
         telemetry=telemetry,
     )
 
 
 async def _source_native_candles(
-    source_venue: str, base_symbol: str, start_ms: int, end_ms: int
+    source_venue_key: str, base_symbol: str, start_ms: int, end_ms: int
 ) -> Sequence[TradingBar]:
     """Public bars from a Source's own venue, in that venue's own spelling of the market.
 
     Two vocabularies meet here and only here. A Source carries the provider's venue key
     (`binance.usdm`, `hyperliquid.perp`, `hyperliquid.xyz`) and `integrations.venues` answers to the
     price-plane key (`binance.perp`, `hl.perp`, `hl.xyz`), and the symbol is spelled differently on
-    each side too — `SOLUSDT` against `SOL`, `xyz:AAPL` against a bare ticker on the builder DEX.
-    Writing that translation twice, once for the pre-move read and once for the four-hour result read,
-    is how the two come to disagree about which book a Signal was measured on. It is one function.
+    each side too — `SOLUSDT` against `SOL`, `xyz:AAPL` against a bare ticker on the builder DEX. Both
+    translations are fields on `trading.sources.SourceVenue`, so this function chooses a client and
+    nothing else; the ladder of `if`s that used to spell them here was one of four copies of the same
+    table (#537 PR-3).
 
     This is evidence, never an execution route: nothing here chooses where an order would go. The
     return type is Trading's own `Bar` rather than the venue package's `Candle`, because a `Candle` is
     a News type and this seam belongs to neither capability's tables.
     """
 
-    if source_venue == "binance.usdm":
-        candles = await fetch_binance_candles(
-            f"{base_symbol}USDT", venue="binance.perp", start_ms=start_ms, end_ms=end_ms
-        )
-    elif source_venue in {"hyperliquid.perp", "hyperliquid.xyz"}:
-        builder_dex = source_venue == "hyperliquid.xyz"
-        candles = await fetch_hyperliquid_candles(
-            f"xyz:{base_symbol}" if builder_dex else base_symbol,
-            venue="hl.xyz" if builder_dex else "hl.perp",
-            start_ms=start_ms,
-            end_ms=end_ms,
-        )
-    else:
+    venue = source_venue(source_venue_key)
+    if venue is None:
         raise RuntimeError("trading_source_venue_unresolved")
+    symbol = venue.price_symbol(base_symbol)
+    if venue.telemetry_source == "binance":
+        candles = await fetch_binance_candles(symbol, venue=venue.price_venue, start_ms=start_ms, end_ms=end_ms)
+    else:
+        candles = await fetch_hyperliquid_candles(symbol, venue=venue.price_venue, start_ms=start_ms, end_ms=end_ms)
     return tuple(TradingBar(open_at_ms=c.open_at_ms, close_at_ms=c.close_at_ms, close=c.close) for c in candles)
 
 

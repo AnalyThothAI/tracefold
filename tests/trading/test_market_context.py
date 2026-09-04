@@ -139,7 +139,7 @@ def test_select_bar_reads_an_empty_window_as_missing() -> None:
 
 def test_pre_move_bps_measures_the_lookback_ending_at_the_anchor() -> None:
     bars = [_bar(ANCHOR_MS - DEFAULT_PRE_MOVE_LOOKBACK_MS, "100"), _bar(ANCHOR_MS, "103")]
-    assert pre_move_bps(bars, anchor_at_ms=ANCHOR_MS) == 300
+    assert pre_move_bps(bars, anchor_at_ms=ANCHOR_MS, window=PriceWindow()) == 300
 
 
 def test_pre_move_bps_honours_a_narrowed_window() -> None:
@@ -159,7 +159,7 @@ def test_pre_move_bps_needs_both_ends(present_at_ms: int) -> None:
     """Either end missing on its own is enough to refuse; neither guard carries the other."""
 
     bars = [_bar(ANCHOR_MS - present_at_ms, "100")]
-    assert pre_move_bps(bars, anchor_at_ms=ANCHOR_MS) is None
+    assert pre_move_bps(bars, anchor_at_ms=ANCHOR_MS, window=PriceWindow()) is None
 
 
 def test_select_bar_takes_the_latest_qualifying_bar_from_an_unordered_window() -> None:

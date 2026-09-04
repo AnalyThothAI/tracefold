@@ -133,8 +133,6 @@ class TradingGateDecisionData(ExactApiSchema):
     gate_stage: GateStage | None = None
     gate_reason: str | None = None
     gate_retryable: bool | None = None
-    gate_version: str | None = None
-    gate_config_digest: str | None = None
     # The admission ledger's `evidence` jsonb, rendered exactly as the deciding rule wrote it. Enumerating
     # its keys here made this a second shape check over a ledger that keeps rows for 90 days: `market_key`
     # (#510 PR-2) turned every `GET /api/trading/gate` into a 500 (#532). The rule that wrote a row owns
@@ -181,9 +179,11 @@ class TradingCaseData(ExactApiSchema):
     source_venue: str | None = None
     trigger_kind: str
     manifest_version: str | None = None
-    policy_id: str
-    policy_version: str
-    policy_config_digest: str
+    # The manifest's own policy identity. Nullable because the manifest is the only writer of it and a
+    # Case whose manifest names no policy must render as that, not 500 the route (#532, #537 PR-3).
+    policy_id: str | None = None
+    policy_version: str | None = None
+    policy_config_digest: str | None = None
     policy_config: dict[str, str] = Field(default_factory=dict)
     policy_checks: list[TradingPolicyCheckData] = Field(default_factory=list)
     state: str
@@ -219,7 +219,6 @@ class TradingSignalData(ExactApiSchema):
     observed_at_ns: int
     expires_at_ns: int
     expired: bool
-    alpha_metadata: dict[str, str | int | bool] = Field(default_factory=dict)
 
 
 class TradingSignalsData(ExactApiSchema):

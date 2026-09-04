@@ -19,47 +19,31 @@ from .gate import CandidateGateStorage
 
 @dataclass(frozen=True, slots=True)
 class SignalLaneSnapshot:
-    """Only durable facts needed to prevent duplicate or wasted Alpha work."""
+    """The one durable fact that prevents duplicate Alpha work: which sources already have a Case."""
 
     cased_source_keys: frozenset[str]
-    underlyings_in_flight: frozenset[str]
-    # The union of every published Runtime route catalogue, or `None` when no Runtime has published
-    # one. `None` and "empty catalogue" have to be different answers: with execution disabled there is
-    # no projection row at all, the Signal is a notification card, and refusing every market would
-    # silently delete the product.
-    executable_market_keys: frozenset[str] | None = None
 
 
 class LaneStorage(CandidateGateStorage, ExecutionStreamStorage):
     conn: Any
 
     def signal_lane_snapshot(self, *, since_ms: int) -> SignalLaneSnapshot:
+        """Which sources in the scan window already produced a Case. One read, one fact.
+
+        It also read every Runtime's published route catalogue, so the lane could refuse a market no
+        Runtime lists. The Runtime answers that itself, by name, on the entry path, and the projection
+        needed a `None`-means-no-catalogue special case that no other reader had (#537 PR-3).
+        """
+
         rows = self.conn.execute(
             """
-            SELECT primary_source_key, underlying_key, state
+            SELECT primary_source_key
               FROM trading_cases
              WHERE created_at_ms >= %s OR state IN ('PENDING', 'RUNNING')
             """,
             (int(since_ms),),
         ).fetchall()
-        # One read, two facts: whether this Source already has a Case, and whether any configured
-        # Runtime can execute its market at all. A Case frozen for a market no Runtime lists spends
-        # the turn's one freeze and comes back `instrument_unmapped`.
-        routes = self.conn.execute(
-            """
-            SELECT coalesce(jsonb_agg(DISTINCT market_key), '[]'::jsonb) AS market_keys
-              FROM trading_execution_runtime_state,
-                   LATERAL jsonb_array_elements_text(routes) AS market_key
-            """
-        ).fetchone()
-        executable = frozenset(str(value) for value in (routes["market_keys"] if routes is not None else ()))
-        return SignalLaneSnapshot(
-            cased_source_keys=frozenset(str(row["primary_source_key"]) for row in rows),
-            underlyings_in_flight=frozenset(
-                str(row["underlying_key"]) for row in rows if str(row["state"]) in {"PENDING", "RUNNING"}
-            ),
-            executable_market_keys=executable or None,
-        )
+        return SignalLaneSnapshot(cased_source_keys=frozenset(str(row["primary_source_key"]) for row in rows))
 
     def create_case(
         self,
@@ -67,21 +51,23 @@ class LaneStorage(CandidateGateStorage, ExecutionStreamStorage):
         case_id: str,
         manifest: TradingCaseManifest,
         admission: AdmissionRow,
-        release_revision: str,
         now_ms: int,
     ) -> bool:
-        """Insert one immutable Case and its CASE_CREATED admission row in one transaction."""
+        """Insert one immutable Case and its CASE_CREATED admission row in one transaction.
+
+        The policy identity is written once, inside `manifest`. It was also three columns beside it,
+        and the columns were never the ones `_decide_one` compared (#537 PR-3).
+        """
 
         trigger = manifest.primary_trigger
         cursor = self.conn.execute(
             """
             INSERT INTO trading_cases (
-              case_id, underlying_key, trigger_kind, strategy_id, strategy_version,
-              strategy_config_digest, primary_source_key, supplemental_source_keys,
+              case_id, underlying_key, trigger_kind, primary_source_key,
               manifest, manifest_sha256, state, policy_decision, policy_reason,
               observed_at_ms, source_observed_at_ms,
               trigger_persisted_at_ms, created_at_ms, updated_at_ms
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s,
+            ) VALUES (%s, %s, %s, %s, %s::jsonb, %s,
                       'PENDING', 'not_run', 'not_run', %s, %s, %s, %s, %s)
             ON CONFLICT DO NOTHING
             """,
@@ -89,11 +75,7 @@ class LaneStorage(CandidateGateStorage, ExecutionStreamStorage):
                 case_id,
                 manifest.underlying_key,
                 manifest.trigger_kind,
-                manifest.policy_id,
-                manifest.policy_version,
-                manifest.policy_config_digest,
                 trigger.source_key,
-                _dumps([]),
                 _dumps(manifest.model_dump(mode="json")),
                 manifest.digest(),
                 int(manifest.cutoff_ms),
@@ -107,8 +89,6 @@ class LaneStorage(CandidateGateStorage, ExecutionStreamStorage):
             return False
         self.record_gate_decision(
             source_key=admission["source_key"],
-            gate_version=admission["gate_version"],
-            gate_config_digest=admission["gate_config_digest"],
             trigger_kind=admission["trigger_kind"],
             underlying_key=admission["underlying_key"],
             source_observed_at_ms=admission["source_observed_at_ms"],
@@ -118,7 +98,6 @@ class LaneStorage(CandidateGateStorage, ExecutionStreamStorage):
             retryable=admission["retryable"],
             evidence=admission["evidence"],
             case_id=case_id,
-            release_revision=release_revision,
             now_ms=now_ms,
         )
         return True
@@ -203,12 +182,13 @@ class LaneStorage(CandidateGateStorage, ExecutionStreamStorage):
             raise RuntimeError("trading_case_signal_transition_failed")
         return True
 
-    def claim_case(self, *, run_id: str, lease_ms: int, now_ms: int) -> dict[str, Any] | None:
-        """Take the oldest claimable Case under a short lease.
+    def claim_case(self, *, run_id: str, now_ms: int) -> dict[str, Any] | None:
+        """Take the oldest undecided Case for this run.
 
-        A `RUNNING` Case whose lease expired may be reclaimed: re-running an undecided Case is safe,
-        and the state predicate on the terminal transition — not the lease — is what prevents two
-        workers handing the same Case over twice.
+        `run_id` is the claim and `state IN ('PENDING', 'RUNNING')` on the terminal transition is what
+        prevents two workers settling the same Case twice — the lease said so itself, and then expired
+        on a wall clock nothing else in this lane reads. Re-running an undecided Case is safe, so a
+        `RUNNING` row another run abandoned is simply claimed again by the next turn (#537 PR-3).
         """
 
         row = self.conn.execute(
@@ -216,20 +196,17 @@ class LaneStorage(CandidateGateStorage, ExecutionStreamStorage):
             UPDATE trading_cases
                SET state = 'RUNNING',
                    run_id = %s,
-                   lease_expires_at_ms = %s,
-                   attempt_count = attempt_count + 1,
                    updated_at_ms = %s
              WHERE case_id = (
                      SELECT case_id FROM trading_cases
-                      WHERE state = 'PENDING'
-                         OR (state = 'RUNNING' AND coalesce(lease_expires_at_ms, 0) < %s)
+                      WHERE state IN ('PENDING', 'RUNNING')
                       ORDER BY created_at_ms, case_id
                       FOR UPDATE SKIP LOCKED
                       LIMIT 1
                    )
          RETURNING *
             """,
-            (run_id, int(now_ms) + int(lease_ms), int(now_ms), int(now_ms)),
+            (run_id, int(now_ms)),
         ).fetchone()
         return dict(row) if row is not None else None
 
@@ -256,17 +233,15 @@ class LaneStorage(CandidateGateStorage, ExecutionStreamStorage):
             """
             INSERT INTO trading_cases (
               case_id, underlying_key, trigger_kind, primary_source_key,
-              supplemental_source_keys, manifest, manifest_sha256, state,
-              policy_decision, policy_reason, observed_at_ms, created_at_ms, updated_at_ms,
-              strategy_id, strategy_version, strategy_config_digest
+              manifest, manifest_sha256, state,
+              policy_decision, policy_reason, observed_at_ms, created_at_ms, updated_at_ms
             ) VALUES (
-              %s, 'restore:RESTORE', 'oi', 'restore-source', '[]'::jsonb,
+              %s, 'restore:RESTORE', 'oi', 'restore-source',
               '{"restore":"case","manifest_version":"trading_manifest_v11","market_key":"crypto:perp:RESTORE:USDT"}'::jsonb,
-              %s, 'SIGNAL_EMITTED', 'long', 'restore_drill',
-              10, 10, 10, 'restore_strategy', 'restore_v1', %s
+              %s, 'SIGNAL_EMITTED', 'long', 'restore_drill', 10, 10, 10
             )
             """,
-            (case_id, "a" * 64, "b" * 64),
+            (case_id, "a" * 64),
         )
 
     def latest_case_created_at_ms(self) -> int | None:

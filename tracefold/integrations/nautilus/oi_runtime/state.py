@@ -179,6 +179,11 @@ class RuntimeReadiness:
     ) -> RuntimeReadinessSnapshot:
         """Derive `execution_safe` and `entries_armed` from facts, never from a startup ritual.
 
+        This is the *only* derivation of either. The projection row carries exactly what this returns,
+        and the read model adds only its own freshness rule; two more copies of these gates, one in the
+        Runtime loop and one in the read projection, could each answer a different question about the
+        same instant (#537 PR-3).
+
         `execution_safe` means this Runtime's picture of the account is current and undisputed:
         startup reconciliation happened, the private scan behind it is still fresh, no exposure it
         does not own showed up, and it still holds the account slot. `entries_armed` adds only what

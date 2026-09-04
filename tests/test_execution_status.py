@@ -268,12 +268,42 @@ def test_transient_flat_and_unexpected_exposure_facts_remain_fail_closed() -> No
     assert paused_projection["entry_block_reason"] == "unexpected_exposure"
 
 
-def test_paused_entries_do_not_make_an_alive_safe_runtime_unready() -> None:
-    projection = execution_readiness_projection(
+def test_the_projection_carries_the_runtimes_own_arming_answer() -> None:
+    """#537 PR-3. The Runtime folds the control row into `entries_armed`; this reader does not re-fold it.
+
+    A pause the Runtime has acted on arrives here as the row it wrote. A pause it has not acted on yet
+    renders as the control row says — paused — beside the Runtime's own claim about itself, because
+    two derivations of one rule a heartbeat apart is how a console reports an arming state that no
+    process is actually in.
+    """
+
+    acted = execution_readiness_projection(
+        _execution(),
+        replace(_state(), entries_armed=False, entry_block_reason="entries_paused"),
+        _control(entries_paused=True),
+        now_ns=10_000_000_000,
+    )
+
+    assert acted["alive"] is True
+    assert acted["execution_safe"] is True
+    assert acted["entries_armed"] is False
+    assert acted["entry_block_reason"] == "entries_paused"
+    assert acted["entries_paused"] is True
+
+    not_yet = execution_readiness_projection(
         _execution(), _state(), _control(entries_paused=True), now_ns=10_000_000_000
     )
 
-    assert projection["alive"] is True
-    assert projection["execution_safe"] is True
-    assert projection["entries_armed"] is False
-    assert projection["entry_block_reason"] == "entries_paused"
+    assert not_yet["entries_armed"] is True
+    assert not_yet["entries_paused"] is True
+
+
+def test_the_runtime_catalogue_size_passes_straight_through() -> None:
+    """#537 PR-3. `routes_count` is a count the Runtime derived once, not a list this reader measures."""
+
+    projection = execution_readiness_projection(
+        _execution(), replace(_state(), routes_count=412), _control(), now_ns=10_000_000_000
+    )
+
+    assert projection["routes_count"] == 412
+    assert execution_readiness_projection(_execution("disabled"), None, None, now_ns=1)["routes_count"] == 0

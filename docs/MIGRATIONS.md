@@ -168,6 +168,29 @@ The dump is the only copy afterwards: `downgrade` refuses, and the nine columns
 and their payload keys are gone from the live rows as well. No operator config
 step goes with it, and the account need not be flat.
 
+`20260904_0360` deletes the lane columns no rule reads (#537 PR-3):
+`trading_cases.attempt_count`, `lease_expires_at_ms`, `supplemental_source_keys`,
+`strategy_id`, `strategy_version` and `strategy_config_digest`;
+`trading_candidate_gate_decisions.release_revision`, `gate_version` and
+`gate_config_digest`; and `trading_trade_signals.alpha_metadata`, whose key is
+also removed from every stored `payload` for the reason `0357`'s were. The
+admission primary key narrows to `(source_key)`, with the rulebook backfilled
+into `evidence` first, and any duplicate source key collapsing to the row every
+reader already showed — `CASE_CREATED` first, then the newest evaluation. The
+Runtime projection's `routes` array becomes `routes_count`.
+
+```bash
+pg_dump --data-only --table=trading_cases \
+  --table=trading_candidate_gate_decisions --table=trading_trade_signals \
+  --table=trading_execution_runtime_state \
+  > ~/.tracefold/backups/pre-0360-trading-lane-columns-$(date +%Y%m%d).sql
+```
+
+It refuses nothing and needs no operator config step, but it changes the schema
+the execution Runtime writes, so `make up` refuses to apply it while the Nautilus
+container is running: `make runtime-build`, then `make runtime-down` with the
+account flat, then `make up`, then `make runtime-up`.
+
 ## Database development standard
 
 1. The deployment has one non-superuser application login, `tracefold`.

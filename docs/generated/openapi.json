@@ -5372,8 +5372,15 @@
             "type": "object"
           },
           "policy_config_digest": {
-            "title": "Policy Config Digest",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Config Digest"
           },
           "policy_decision": {
             "enum": [
@@ -5385,8 +5392,15 @@
             "type": "string"
           },
           "policy_id": {
-            "title": "Policy Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Id"
           },
           "policy_reason": {
             "anyOf": [
@@ -5400,8 +5414,15 @@
             "title": "Policy Reason"
           },
           "policy_version": {
-            "title": "Policy Version",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
           },
           "pre_move_bps": {
             "anyOf": [
@@ -5465,9 +5486,6 @@
           "underlying_key",
           "base_symbol",
           "trigger_kind",
-          "policy_id",
-          "policy_version",
-          "policy_config_digest",
           "state",
           "policy_decision",
           "observed_at_ms",
@@ -6654,17 +6672,6 @@
             ],
             "title": "Gate Attempt Count"
           },
-          "gate_config_digest": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Gate Config Digest"
-          },
           "gate_evidence": {
             "additionalProperties": {
               "anyOf": [
@@ -6769,17 +6776,6 @@
               }
             ],
             "title": "Gate Status"
-          },
-          "gate_version": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Gate Version"
           },
           "source_key": {
             "title": "Source Key",
@@ -7105,23 +7101,6 @@
       "TradingSignalData": {
         "additionalProperties": false,
         "properties": {
-          "alpha_metadata": {
-            "additionalProperties": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "boolean"
-                }
-              ]
-            },
-            "title": "Alpha Metadata",
-            "type": "object"
-          },
           "case_id": {
             "title": "Case Id",
             "type": "string"

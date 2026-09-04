@@ -12,19 +12,23 @@ import { describe, expect, it } from "vitest";
 
 describe("Alpha labels", () => {
   it("names the current Alpha identity without falling back to a historical capital label", () => {
-    expect(policyLabel("source_native_oi_smart_money_long_v4")).toBe("来源原生 OI × 聪明钱 · 做多");
+    expect(policyLabel("source_native_oi_smart_money_long_v5")).toBe("来源原生 OI × 聪明钱 · 做多");
+    // A Case whose manifest names no policy renders as a dash, not as a crash: `/cases` reads the
+    // identity out of the frozen manifest now, and the manifest is the only writer of it (#537 PR-3).
+    expect(policyLabel(null)).toBe("—");
   });
 
   it("renders a retired policy identity as itself rather than translating what nothing writes", () => {
     /*
      * #528 PR-2 deleted the seven historical entries. Every surface that calls this reads a rolling 24 h
      * window and no writer has emitted them since V4, so a translation for them was a claim about the
-     * ledger the ledger no longer makes. The raw id is what an operator greps anyway.
+     * ledger the ledger no longer makes. The raw id is what an operator greps anyway. V4 joined them
+     * when #537 PR-3 deleted the profit threshold from the policy's identity.
      */
     expect(policyLabel("binance_oi_smart_money_long_v2")).toBe("binance_oi_smart_money_long_v2");
     expect(policyLabel("oi_momentum_v1")).toBe("oi_momentum_v1");
-    expect(policyLabel("source_native_oi_smart_money_long_v3")).toBe(
-      "source_native_oi_smart_money_long_v3",
+    expect(policyLabel("source_native_oi_smart_money_long_v4")).toBe(
+      "source_native_oi_smart_money_long_v4",
     );
   });
 
@@ -60,7 +64,10 @@ describe("execution labels", () => {
     expect(signalDispositionLabel("accepted")).toBe("已受理");
     expect(signalDispositionLabel("instrument_unmapped")).toBe("运行时目录里没有这个市场");
     expect(signalDispositionLabel("expired")).toBe("Signal 已过期");
-    expect(signalDispositionLabel("aggregate_risk_limit")).toBe("总风险已达上限");
+    expect(signalDispositionLabel("position_limit")).toBe("持仓数已达上限");
+    // A refusal the risk policy can no longer reach renders as itself: #537 PR-3 deleted
+    // `aggregate_risk_limit`, `leverage_limit` and the two post-rounding sizing checks.
+    expect(signalDispositionLabel("aggregate_risk_limit")).toBe("aggregate_risk_limit");
     // The entry path forwards the readiness gate's own word, so that vocabulary resolves here too.
     expect(signalDispositionLabel("unexpected_exposure")).toBe("出现无主敞口");
     expect(signalDispositionLabel("a_refusal_nobody_translated")).toBe(

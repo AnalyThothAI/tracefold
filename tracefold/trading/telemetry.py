@@ -7,9 +7,11 @@ from collections.abc import Awaitable
 from typing import Literal, Protocol
 
 TradingWorkSemantics = Literal["derived_work", "durable_event", "latest_state", "signal_truth"]
-TradingExternalDataName = Literal["trading_signal_lane", "trading_reconcile"]
-# One live provider. Hyperliquid stays in the vocabulary because the research replay measures it.
-TradingExternalDataSource = Literal["binance", "hyperliquid", "other"]
+# One runner measures a provider boundary: the Signal lane's source-native bar read.
+TradingExternalDataName = Literal["trading_signal_lane"]
+# The two provider families `sources.SOURCE_VENUES` resolves a source venue to, and nothing else: a
+# third value would be a source venue no rule in this package can name.
+TradingExternalDataSource = Literal["binance", "hyperliquid"]
 TradingExternalDataOutcome = Literal["error", "partial", "success"]
 TradingExternalDataProviderOutcome = Literal["error", "success"]
 
@@ -70,20 +72,11 @@ async def observe_provider_call[T](
     return result
 
 
-def external_data_source(exchange_id: str) -> TradingExternalDataSource:
-    if exchange_id == "binance":
-        return "binance"
-    if exchange_id == "hyperliquid":
-        return "hyperliquid"
-    return "other"
-
-
 __all__ = [
     "TradingExternalDataName",
     "TradingExternalDataOutcome",
     "TradingExternalDataSource",
     "TradingExternalDataTelemetryPort",
     "TradingWorkSemantics",
-    "external_data_source",
     "observe_provider_call",
 ]

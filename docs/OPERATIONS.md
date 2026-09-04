@@ -1321,8 +1321,9 @@ of pre-V3 history.
 ### Why an OI frame produced no case
 
 `trading_candidate_gate_decisions` — the admission ledger — holds one row per
-`(source_key, gate_version, gate_config_digest)` and answers this without a
-replay. It is the only answer: there is no counter beside it that can disagree.
+`source_key` and answers this without a replay. It is the only answer: there is
+no counter beside it that can disagree, and no second row for the same frame
+under a different rulebook.
 
 Start from `GET /api/trading/gate`:
 
@@ -1350,29 +1351,32 @@ failed against — or read the row directly:
 ```sql
 SELECT status, stage, reason, retryable, attempt_count, evidence, case_id
   FROM trading_candidate_gate_decisions
- WHERE source_key = 'oi:<event_id>:oi_signal_v1'
- ORDER BY last_evaluated_at_ms DESC;
+ WHERE source_key = 'oi:<event_id>:oi_signal_v1';
 ```
+
+`evidence` carries the rulebook that reached the answer — `gate_version` and
+`gate_config_digest` — beside the numbers it read (`20260904_0360`).
 
 `attempt_count` is how many times the scanner re-read that source, not how many
 times the answer changed: a terminal row keeps its status, stage, reason and
 evidence, and only the two evaluation counters move. `DEFERRED` is the only
 non-terminal state and means a later scan could genuinely answer differently
-(`market_data_unavailable`, `underlying_busy`, `instrument_unmapped`); the lane's own sweep
-turns one `EXPIRED` with `trigger_stale` once the frame is past the trigger
-budget, so an open row that never resolved reads as the clock's answer rather
-than as pending work. Retention is 90 days, purged in bounded batches by the
+(`market_data_unavailable` is the only rule that still writes one); the lane's
+own sweep turns it into `EXPIRED` with `trigger_stale` once the frame is past
+the trigger budget, so an open row that never resolved reads as the clock's
+answer rather than as pending work. Retention is 90 days, purged in bounded batches by the
 same turn.
 
 Two adjacent situations are *not* refusals and read as such:
-`decision: null` on the HTTP surface means no row under any `gate_version` —
-after a gate version bump that is the honest state — and a source whose case was
+`decision: null` on the HTTP surface means the lane has no row for that source at
+all — outside the 24-hour window, or never scanned — and a source whose case was
 already created reports `CASE_CREATED` with the `case_id`, which is the link to
 `trading_cases`.
 
-Changing a threshold does not rewrite history: `gate_config_digest` is half the
-key, so an edit starts a new row and the old one stays as the record of what the
-old rule decided.
+Changing a threshold does not rewrite an answer: a terminal row keeps the status,
+stage, reason and evidence it was decided with, including the digest of the
+configuration that decided it. Only a still-`DEFERRED` row can be answered
+differently by the next scan, which is what `DEFERRED` means.
 
 ### OI research replay
 
@@ -1447,9 +1451,9 @@ snapshot.
 ## Migrations
 
 Alembic has one root, baseline `20260831_0340`, and current head
-`20260903_0359`, the destructive drop of the never-written Trading notification
-delivery ledger (#528). A fresh PostgreSQL 18 database applies the
-baseline and every
+`20260904_0360`, the destructive cut of the lane columns no rule reads and of
+the admission ledger's two extra key columns (#537 PR-3). A fresh PostgreSQL 18
+database applies the baseline and every
 revision after it in order; each revision's own docstring carries its evidence.
 Four of them need an operator step before the upgrade runs: `20260901_0347`
 drops twenty-two read-only execution tables, `20260903_0355` drops the six
@@ -1458,8 +1462,17 @@ retired state or admission value, `20260903_0356` drops the profile and
 activation ledgers, and `20260903_0357` drops the JSON-shape CHECKs with the
 nine unread columns and their payload keys. All four archive to
 `~/.tracefold/backups/`
-first; [the migration guide](MIGRATIONS.md) carries the exact commands. This
-source may merge or deploy only after the supported pre-cut database
+first; [the migration guide](MIGRATIONS.md) carries the exact commands.
+
+`20260904_0360` needs no operator step and refuses nothing: it collapses any
+duplicate admission `source_key` to the row every reader already showed. It is
+still destructive — ten columns and one payload key go with it — so the same
+archive is taken before it runs. Because it changes the schema the execution
+Runtime writes, `make up` refuses to apply it while the Nautilus container is up:
+the deploy is `make runtime-build` -> `make runtime-down` (account flat) ->
+`make up` -> `make runtime-up`.
+
+This source may merge or deploy only after the supported pre-cut database
 is advanced to the old terminal revision with its recorded image, backed up,
 and put through the #449 stopped-writer role catalog cut while retaining the
 same Alembic identity and all business rows. The issue receipt records the old

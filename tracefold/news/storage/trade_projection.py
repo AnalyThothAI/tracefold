@@ -138,21 +138,6 @@ class TradeEvidenceCollectionHealthRow(TypedDict):
     expected_source_count: int
 
 
-class TradeEvidenceCatalogProjectionRow(TypedDict):
-    """One point-in-time listing row attached to its bounded evidence source."""
-
-    event_id: str
-    metric_version: str
-    source_observed_at_ms: int
-    venue: str
-    venue_symbol: str
-    base_symbol: str
-    instrument_class: str
-    quote_asset: str | None
-    status: str
-    last_seen_ms: int
-
-
 class TradeFixedWindowOiSourceRow(TypedDict):
     """Complete News-owned OI source identity for one fixed acceptance window."""
 
@@ -323,85 +308,6 @@ class TradeProjectionStorage:
             ),
         ).fetchall()
         return [_oi_projection_row(row) for row in rows]
-
-    def trade_evidence_catalog_rows(
-        self,
-        *,
-        metric_version: str,
-        start_observed_at_ms: int,
-        end_observed_at_ms: int,
-        known_at_or_before_ms: int,
-        available_at_or_before_ms: int,
-        source_limit: int,
-        catalog_limit: int,
-    ) -> list[TradeEvidenceCatalogProjectionRow]:
-        """Bulk point-in-time catalogues for the exact bounded evidence-source query."""
-
-        rows = self.conn.execute(
-            """
-            WITH sources AS (
-              SELECT s.event_id, s.metric_version, s.observed_at_ms, s.symbol, s.source_venue
-                FROM news_oi_signals s
-               WHERE s.metric_version = %(metric)s
-                 AND s.available_at_ms <= %(available)s
-                 AND s.observed_at_ms >= %(start)s
-                 AND s.observed_at_ms < %(end)s
-                 AND s.created_at_ms <= %(known)s
-               ORDER BY s.observed_at_ms, s.event_id
-               LIMIT %(source_limit)s
-            )
-            SELECT source.event_id, source.metric_version,
-                   source.observed_at_ms AS source_observed_at_ms,
-                   historical.venue, historical.venue_symbol, historical.base_symbol,
-                   historical.instrument_class, historical.quote_asset, historical.status,
-                   historical.observed_at_ms AS last_seen_ms
-              FROM sources source
-              JOIN LATERAL (
-                SELECT DISTINCT ON (event.venue, event.venue_symbol)
-                       event.venue, event.venue_symbol, event.base_symbol,
-                       event.instrument_class, event.quote_asset, event.status, event.observed_at_ms
-                  FROM news_market_instrument_listing_events event
-                 WHERE event.venue = CASE
-                         WHEN lower(coalesce(source.source_venue, '')) IN
-                           ('binance', 'binance.perp', 'binance.usdm') THEN 'binance.perp'
-                         WHEN lower(coalesce(source.source_venue, '')) IN
-                           ('hyperliquid', 'hl.perp', 'hyperliquid.perp') THEN 'hl.perp'
-                         ELSE ''
-                       END
-                   AND event.base_symbol = upper(btrim(source.symbol))
-                   AND event.observed_at_ms <= source.observed_at_ms
-                 ORDER BY event.venue, event.venue_symbol, event.observed_at_ms DESC
-              ) historical ON historical.status = 'trading' AND historical.instrument_class = 'crypto'
-             ORDER BY source.observed_at_ms, source.event_id, historical.venue,
-                      CASE historical.quote_asset WHEN 'USDT' THEN 0 WHEN 'USDC' THEN 1 ELSE 2 END,
-                      length(historical.venue_symbol), historical.venue_symbol
-             LIMIT %(catalog_limit)s
-            """,
-            {
-                "metric": metric_version,
-                "available": int(available_at_or_before_ms),
-                "start": int(start_observed_at_ms),
-                "end": int(end_observed_at_ms),
-                "known": int(known_at_or_before_ms),
-                "source_limit": int(source_limit),
-                "catalog_limit": int(catalog_limit),
-            },
-        ).fetchall()
-        return [
-            TradeEvidenceCatalogProjectionRow(
-                event_id=str(row["event_id"]),
-                metric_version=str(row["metric_version"]),
-                source_observed_at_ms=int(row["source_observed_at_ms"]),
-                venue=str(row["venue"]),
-                venue_symbol=str(row["venue_symbol"]),
-                base_symbol=str(row["base_symbol"]),
-                instrument_class=str(row["instrument_class"]),
-                quote_asset=None if row["quote_asset"] is None else str(row["quote_asset"]),
-                status=str(row["status"]),
-                last_seen_ms=int(row["last_seen_ms"]),
-            )
-            for row in rows
-        ]
 
     def trade_fixed_window_oi_sources(
         self,

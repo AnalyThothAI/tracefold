@@ -22,7 +22,6 @@ def _signal(**updates: object) -> TradeSignalV1:
         "direction": "long",
         "observed_at_ns": 1_000,
         "expires_at_ns": 2_000,
-        "alpha_metadata": {"policy": "oi-v1", "score_bps": 750},
     }
     payload.update(updates)
     return TradeSignalV1.model_validate(payload)
@@ -71,22 +70,21 @@ def test_trade_signal_is_engine_neutral_and_bounded() -> None:
     signal = _signal()
 
     assert signal.direction == "long"
-    assert signal.alpha_metadata == {"policy": "oi-v1", "score_bps": 750}
-    for forbidden in ("quantity", "notional", "leverage", "account", "exchange", "order_type"):
+    # `alpha_metadata` is forbidden like every other extra key now. It only ever carried the policy
+    # rule, which the Case that emitted the Signal records as `policy_reason` (#537 PR-3).
+    for forbidden in ("quantity", "notional", "leverage", "account", "exchange", "order_type", "alpha_metadata"):
         with pytest.raises(ValidationError):
             _signal(**{forbidden: "forbidden"})
 
     with pytest.raises(ValidationError, match="trade_signal_clock_invalid"):
         _signal(expires_at_ns=1_000)
-    with pytest.raises(ValidationError, match="execution_metadata_invalid"):
-        _signal(alpha_metadata={"nested": {"not": "bounded scalar metadata"}})
 
 
 def test_json_bounds_use_postgres_jsonb_text_bytes_at_exact_edges() -> None:
     metadata = {f"k{index}": "x" * 246 for index in range(8)}
     references = tuple(f"{index:02d}" + "x" * 250 for index in range(16))
 
-    assert _signal(alpha_metadata=metadata).alpha_metadata == metadata
+    assert _observation(summary=metadata).summary == metadata
     assert _observation(native_identity_references=references).native_identity_references == references
     # The same 16 references offered out of order and with a repeat: the contract normalizes rather
     # than refusing, because no CHECK restates the ordering rule any more (#520 PR-C).
@@ -96,7 +94,7 @@ def test_json_bounds_use_postgres_jsonb_text_bytes_at_exact_edges() -> None:
     oversized_metadata = metadata | {"k0": "x" * 247}
     oversized_references = (references[0] + "x", *references[1:])
     with pytest.raises(ValidationError, match="execution_metadata_invalid"):
-        _signal(alpha_metadata=oversized_metadata)
+        _observation(summary=oversized_metadata)
     with pytest.raises(ValidationError, match="execution_observation_native_identity_invalid"):
         _observation(native_identity_references=oversized_references)
 
@@ -105,7 +103,7 @@ def test_json_bounds_use_postgres_jsonb_text_bytes_at_exact_edges() -> None:
     ("factory", "updates", "message"),
     [
         (_signal, {"case_id": "case\x00id"}, "trade_signal_case_invalid"),
-        (_signal, {"alpha_metadata": {"note": "bad\x00value"}}, "execution_metadata_invalid"),
+        (_observation, {"summary": {"note": "bad\x00value"}}, "execution_metadata_invalid"),
         (_intent, {"reason": "bad\x00reason"}, "operator_intent_text_invalid"),
         (_observation, {"runtime_release": "bad\x00release"}, "execution_observation_release_invalid"),
         (

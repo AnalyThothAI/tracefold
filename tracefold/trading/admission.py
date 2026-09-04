@@ -9,18 +9,16 @@ venue identity for source-native public market context. Unknown venues fail befo
 This provenance never chooses an execution route. Editorial News frames are not admitted at all:
 they are not a Source of this lane and no code path offers one.
 
-**Routability is read, not chosen.** `instrument_unmapped` refuses a market that is absent from every
-catalogue the configured Runtimes have published on their own projection. Admission still selects no
-venue, no instrument and no route: it declines to spend the turn's one Case freeze on a market whose
-only possible answer is that the Runtime cannot reach it. When no Runtime has published a catalogue —
-execution disabled, or none started yet — there is nothing to read and the rule does not fire.
+**Routability is not read here.** The Runtime's own catalogue answers it, once, by name
+(`instrument_unmapped` on the entry path). Admission asked the same question first, from a `routes`
+projection it needed a special case for, and a Case that survived it could still be refused by the
+Runtime — two answers about one catalogue, one of them a scan behind (#537 PR-3).
 
 **What this module owns** is whether a Source may become a *trigger* now:
 
     source          the row is a usable, live OI fact at all
     venue           the frame's own venue is supported for source-native public context
-    eligibility     liquidity floor, freshness, idempotency, one undecided Case per underlying,
-                    and the market being present in a published Runtime catalogue
+    eligibility     liquidity floor, freshness, idempotency
     market_context  there is a candle at the cutoff to freeze a mark and a pre-move from
     freeze          the immutable Case was written
 
@@ -43,11 +41,13 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Literal, TypedDict
 
 from .contracts import OiTradeCandidate, TriggerKind, canonical_sha256, underlying_key
-from .sources import SourceRejected, normalize_source_venue
+from .sources import SOURCE_VENUE_KEYS, SourceRejected, normalize_source_venue
 
-# Bumped when a rule is added, removed, or changes what it means. It is half of the durable row's key,
-# so a new version re-decides every source rather than inheriting an answer from a rule that is gone.
-ADMISSION_VERSION: Final = "trading_admission_v8"
+# Bumped when a rule is added, removed, or changes what it means. It rides in the durable row's
+# `evidence` so a stored answer still names the rulebook that produced it; it is no longer part of the
+# row's key, because a re-decision under a new version overwrites the one answer about that source
+# rather than opening a second row beside it (#537 PR-3).
+ADMISSION_VERSION: Final = "trading_admission_v9"
 
 AdmissionStatus = Literal["DEFERRED", "REJECTED", "CASE_CREATED", "EXPIRED"]
 AdmissionStage = Literal["source", "venue", "eligibility", "market_context", "freeze"]
@@ -64,19 +64,9 @@ ADMISSION_REASONS: Final[frozenset[str]] = frozenset(
         "venue_unresolved",
         "trigger_stale",
         "oi_value_below_floor",
-        # One name for "this issuer already has an undecided Case". Signal TTL and execution risk are
-        # later boundaries and have their own names.
-        "underlying_busy",
         "market_data_unavailable",
         "market_data_invalid",
         "already_consumed",
-        "superseded_by_newer_trigger",
-        # No configured Runtime lists this market: a Case frozen for one spends the turn's single
-        # freeze on an entry that can only come back refused.
-        "instrument_unmapped",
-        # The per-turn Case budget refuses a Source that passed every rule about itself; calling that
-        # `underlying_busy` would blame the frame's own issuer for a different name being ahead of it.
-        "lane_capacity_exhausted",
         "case_created",
     }
 )
@@ -113,7 +103,7 @@ class AdmissionConfig:
         return {
             "max_age_ms": self.max_age_ms,
             "min_oi_value_usd": self.min_oi_value_usd,
-            "source_venues": ["binance.usdm", "hyperliquid.perp", "hyperliquid.xyz"],
+            "source_venues": list(SOURCE_VENUE_KEYS),
         }
 
     @property
@@ -125,8 +115,6 @@ class AdmissionRow(TypedDict):
     """The durable admission row, named field by field so the writer and the ledger cannot drift."""
 
     source_key: str
-    gate_version: str
-    gate_config_digest: str
     trigger_kind: TriggerKind
     underlying_key: str | None
     source_observed_at_ms: int
@@ -164,12 +152,17 @@ class AdmissionResult:
         return self.status != "DEFERRED"
 
     def row(self, *, gate_config_digest: str) -> AdmissionRow:
-        """This answer as the ledger stores it. One construction, so the two cannot describe different rules."""
+        """This answer as the ledger stores it. One construction, so the two cannot describe different rules.
+
+        The rulebook that produced the answer travels in `evidence`, beside the numbers it read. It
+        was two thirds of the row's key until #537 PR-3, on the promise that a version bump re-decides
+        every source in a new row. The ledger never did that — one row per source, whatever
+        configuration had looked at it — and the promise cost every reader a `DISTINCT ON` plus a rule
+        for which of two rows was *the* answer about a frame.
+        """
 
         return AdmissionRow(
             source_key=self.source_key,
-            gate_version=ADMISSION_VERSION,
-            gate_config_digest=gate_config_digest,
             trigger_kind=self.trigger_kind,
             underlying_key=self.underlying_key,
             source_observed_at_ms=self.source_observed_at_ms,
@@ -177,7 +170,11 @@ class AdmissionResult:
             stage=self.stage,
             reason=self.reason,
             retryable=self.retryable,
-            evidence=dict(self.evidence),
+            evidence={
+                "gate_version": ADMISSION_VERSION,
+                "gate_config_digest": gate_config_digest,
+                **dict(self.evidence),
+            },
             case_id=self.case_id,
         )
 
@@ -291,18 +288,20 @@ def admit_trigger(
     *,
     now_ms: int,
     config: AdmissionConfig,
-    underlyings_in_flight: Container[str] = (),
     cased_source_keys: Container[str] = (),
 ) -> AdmissionResult | None:
     """Whether this fact may start a Case *now*, or the one named reason it may not.
 
     `None` means "carry on to Case freeze". The order is deliberate. Idempotency first,
     because a Source that already produced a Case has a terminal answer and every rule below it would
-    be describing work that is already done. Then the frame's own frozen properties. The reversible
-    conditions come last.
+    be describing work that is already done. Then the frame's own frozen properties, then the clock.
+
+    There is no rule about another Case being undecided. The rule that deferred a frame whenever its
+    issuer already had a `PENDING` Case never once fired in the whole ledger: the lane decides every
+    Case it freezes in the same turn it freezes it, `already_consumed` answers the same source twice,
+    and the Runtime's `instrument_busy` answers a market that already has live exposure (#537 PR-3).
     """
 
-    key = candidate.underlying_key
     if candidate.source_key in cased_source_keys:
         return _result(
             candidate=candidate,
@@ -325,16 +324,6 @@ def admit_trigger(
             reason="trigger_stale",
             retryable=False,
             evidence={"age_ms": now_ms - candidate.observed_at_ms, "max_age_ms": config.max_age_ms},
-        )
-    # One reason for one current fact: this issuer already has an undecided Case.
-    if key in underlyings_in_flight:
-        return _result(
-            candidate=candidate,
-            status="DEFERRED",
-            stage="eligibility",
-            reason="underlying_busy",
-            retryable=True,
-            evidence={"holds": "case"},
         )
     return None
 

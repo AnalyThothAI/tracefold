@@ -231,7 +231,7 @@ describe("TradingPage", () => {
     expect(within(gate).getByText("≥500 万")).toBeVisible();
     expect(within(gate).getByText("5m")).toBeVisible();
     expect(gate).toHaveTextContent("binance.usdm · hyperliquid.perp · hyperliquid.xyz");
-    expect(gate).toHaveTextContent("trading_admission_v6");
+    expect(gate).toHaveTextContent("trading_admission_v9");
   });
 
   it("block 6 opens one Case's frozen evidence and says when the window itself was truncated", async () => {

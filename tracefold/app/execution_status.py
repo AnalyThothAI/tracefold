@@ -1,4 +1,11 @@
-"""One read projection for configured execution Runtime readiness."""
+"""One read projection for configured execution Runtime readiness.
+
+It re-derives nothing the Runtime already decided. `entries_armed` and `entry_block_reason` come off
+the projection row exactly as `RuntimeReadiness.snapshot` wrote them — that snapshot already folds in
+the control row the Runtime is holding — and the only thing added here is this reader's own freshness
+rule: a heartbeat past its budget makes the whole row a claim about a Runtime that may not be running,
+so `alive`, `execution_safe` and `entries_armed` all fall to false together (#537 PR-3).
+"""
 
 from __future__ import annotations
 
@@ -70,31 +77,16 @@ def execution_readiness_projection(
         and state.account_snapshot.inflight_orders_count == 0
         and state.account_snapshot.unknown_orders_count == 0
     )
+    # The operator's own switches, rendered as the durable control row states them. The Runtime reads
+    # the same row and its `entries_armed` already accounts for them; this is what an operator toggled,
+    # not a second derivation of what the Runtime did with it.
     current_control = control if control is not None and control.account_slot == execution.account_slot else None
     entries_paused = True if current_control is None else current_control.entries_paused
     emergency_halted = False if current_control is None else current_control.emergency_halted
     alive = bool(state.alive and not stale)
     execution_safe = bool(state.execution_safe and alive)
-    entries_armed = bool(
-        state.entries_armed
-        and execution_safe
-        and current_control is not None
-        and not entries_paused
-        and not emergency_halted
-    )
-    entry_block_reason: str | None
-    if stale:
-        entry_block_reason = "runtime_heartbeat_stale"
-    elif not execution_safe:
-        entry_block_reason = state.entry_block_reason or "execution_unsafe"
-    elif current_control is None:
-        entry_block_reason = "runtime_control_state_missing"
-    elif emergency_halted:
-        entry_block_reason = "emergency_halted"
-    elif entries_paused:
-        entry_block_reason = "entries_paused"
-    else:
-        entry_block_reason = state.entry_block_reason
+    entries_armed = bool(state.entries_armed and alive)
+    entry_block_reason = "runtime_heartbeat_stale" if stale else state.entry_block_reason
     base.update(
         {
             "alive": alive,
@@ -125,7 +117,7 @@ def execution_readiness_projection(
             "positions_count": state.positions_count,
             "open_orders_count": state.open_orders_count,
             "protection_status": state.protection_status,
-            "routes_count": len(state.routes),
+            "routes_count": state.routes_count,
             # When this projection stops being current, so a reader can compare one instant against
             # its own clock instead of running a timer per freshness rule (#528 PR-2 block 1).
             # The earlier of the two budgets below is the whole answer: past it, `alive` or

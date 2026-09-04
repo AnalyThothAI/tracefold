@@ -156,7 +156,6 @@ def test_risk_snapshot_uses_oldest_contributing_quote_and_pending_position_slot(
         baseline=DayStartBaseline("2030-03-17", Decimal("1000"), NOW_NS, "4" * 64),
         now_ns=NOW_NS,
         requested_risk_usd=Decimal("10"),
-        requested_leverage=2,
         candidate_is_new_position=True,
     )
     full = OiFuturesRiskPolicy(replace(context.profile.risk, max_positions=1)).evaluate_entry(
@@ -164,7 +163,6 @@ def test_risk_snapshot_uses_oldest_contributing_quote_and_pending_position_slot(
         baseline=DayStartBaseline("2030-03-17", Decimal("1000"), NOW_NS, "4" * 64),
         now_ns=NOW_NS,
         requested_risk_usd=Decimal("10"),
-        requested_leverage=2,
         candidate_is_new_position=True,
     )
 
@@ -210,12 +208,11 @@ def test_unowned_native_order_halts_new_risk() -> None:
         baseline=DayStartBaseline("2030-03-17", Decimal("1000"), NOW_NS, "4" * 64),
         now_ns=NOW_NS,
         requested_risk_usd=Decimal("10"),
-        requested_leverage=2,
         candidate_is_new_position=True,
     )
 
     assert external.client_order_id.value == "manual-ui-order"
-    assert decision.action == "halt"
+    assert decision.action == "refuse"
     assert decision.reason == "unexpected_exposure"
 
 
@@ -244,32 +241,28 @@ def test_day_loss_baseline_survives_policy_restart_and_fails_closed() -> None:
             baseline=baseline,
             now_ns=NOW_NS,
             requested_risk_usd=Decimal("10"),
-            requested_leverage=2,
             candidate_is_new_position=True,
         )
-        assert decision.action == "halt"
+        assert decision.action == "refuse"
         assert decision.reason == "daily_loss_limit"
 
 
 @pytest.mark.parametrize(
-    ("updates", "leverage", "reason"),
+    ("updates", "reason"),
     [
-        ({"current_positions": 3}, 2, "position_limit"),
-        ({}, 3, "leverage_limit"),
-        ({"market_observed_at_ns": NOW_NS - 10_000_000_001}, 2, "market_stale"),
-        ({"account_observed_at_ns": NOW_NS - 10_000_000_001}, 2, "account_stale"),
-        (
-            {"reconciliation_observed_at_ns": NOW_NS - 15_000_000_001},
-            2,
-            "reconciliation_stale",
-        ),
+        ({"current_positions": 3}, "position_limit"),
+        ({"market_observed_at_ns": NOW_NS - 10_000_000_001}, "market_stale"),
+        ({"account_observed_at_ns": NOW_NS - 10_000_000_001}, "account_stale"),
+        ({"reconciliation_observed_at_ns": NOW_NS - 15_000_000_001}, "reconciliation_stale"),
     ],
 )
-def test_closed_position_leverage_and_staleness_guards(
+def test_closed_position_and_staleness_guards(
     updates: dict[str, object],
-    leverage: int,
     reason: str,
 ) -> None:
+    """One refusal per fact, and no leverage refusal: the caller passed `max_leverage` as the request,
+    so `requested > max` compared a number with itself and could not fire (#537 PR-3)."""
+
     context = registered_oi_strategy()
     base = NautilusRiskFacts(
         equity_usd=Decimal("1000"),
@@ -290,11 +283,10 @@ def test_closed_position_leverage_and_staleness_guards(
         baseline=DayStartBaseline("2030-03-17", Decimal("1000"), NOW_NS, "4" * 64),
         now_ns=NOW_NS,
         requested_risk_usd=Decimal("10"),
-        requested_leverage=leverage,
         candidate_is_new_position=True,
     )
 
-    assert decision.action in {"deny", "halt"}
+    assert decision.action == "refuse"
     assert decision.reason == reason
 
 
@@ -332,14 +324,20 @@ def test_future_source_clocks_do_not_gate_entry(clock_updates: dict[str, int]) -
         ),
         now_ns=NOW_NS,
         requested_risk_usd=Decimal("10"),
-        requested_leverage=1,
         candidate_is_new_position=True,
     )
 
     assert decision.action == "allow"
 
 
-def test_aggregate_risk_reduces_then_denies_without_creating_a_reservation() -> None:
+def test_a_smaller_budget_is_an_allowance_and_an_exhausted_one_is_the_refusal() -> None:
+    """#537 PR-3. `reduce` and `allow` were one branch at the only caller, so they are one answer.
+
+    The number was always the whole of it: `allowed_risk_usd` is what sizing divides by the stop, and a
+    budget smaller than the request is that number, not a second verdict. Only an exhausted budget
+    refuses, and it refuses by the name the request itself would have — the risk is not positive.
+    """
+
     context = registered_oi_strategy()
     policy = OiFuturesRiskPolicy(context.profile.risk)
     baseline = DayStartBaseline("2030-03-17", Decimal("1000"), NOW_NS, "4" * 64)
@@ -356,27 +354,26 @@ def test_aggregate_risk_reduces_then_denies_without_creating_a_reservation() -> 
         unexpected_exposure=False,
     )
 
-    reduced = policy.evaluate_entry(
+    allowed = policy.evaluate_entry(
         facts=facts,
         baseline=baseline,
         now_ns=NOW_NS,
         requested_risk_usd=Decimal("10"),
-        requested_leverage=2,
         candidate_is_new_position=True,
     )
-    denied = policy.evaluate_entry(
+    exhausted = policy.evaluate_entry(
         facts=replace(facts, aggregate_risk_usd=Decimal("25")),
         baseline=baseline,
         now_ns=NOW_NS,
         requested_risk_usd=Decimal("10"),
-        requested_leverage=2,
         candidate_is_new_position=True,
     )
 
-    assert reduced.action == "reduce"
-    assert reduced.allowed_risk_usd == Decimal("5")
-    assert denied.action == "deny"
-    assert denied.reason == "aggregate_risk_limit"
+    assert allowed.action == "allow"
+    assert allowed.allowed_risk_usd == Decimal("5")
+    assert exhausted.action == "refuse"
+    assert exhausted.reason == "risk_non_positive"
+    assert exhausted.allowed_risk_usd == Decimal(0)
 
 
 def test_fixed_risk_quantity_floors_to_increment_without_exceeding_approved_risk() -> None:

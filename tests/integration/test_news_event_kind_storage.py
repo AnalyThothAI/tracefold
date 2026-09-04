@@ -301,16 +301,10 @@ def test_oi_trade_projection_requires_one_canonical_signal_and_source_identity(c
 
     # The verdict exists beside the frame and decides nothing here: the ledger row is the projection.
     assert [(row["symbol"], row["ingest_mode"], row["venue"]) for row in projected()] == [("BTC", "live", "binance")]
-    catalog_rows = news.trade_evidence_catalog_rows(
-        metric_version=OI_METRIC_VERSION,
-        start_observed_at_ms=NOW,
-        end_observed_at_ms=NOW + 1,
-        known_at_or_before_ms=NOW,
-        available_at_or_before_ms=NOW,
-        source_limit=20,
-        catalog_limit=100,
-    )
-    assert [(row["event_id"], row["venue_symbol"]) for row in catalog_rows] == [("projection-oi-event", "BTCUSDT")]
+    # `trade_evidence_catalog_rows` is gone with the fourth copy of the source-venue table it carried
+    # inside a SQL `CASE`. Nothing in `tracefold/` ever called it, and the copy had already drifted:
+    # it mapped no `hl.xyz` at all (#537 PR-3).
+    assert not hasattr(news, "trade_evidence_catalog_rows")
     source_rows = news.trade_fixed_window_oi_sources(
         metric_version=OI_METRIC_VERSION,
         start_observed_at_ms=NOW,

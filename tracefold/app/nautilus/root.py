@@ -334,10 +334,12 @@ async def _run_active_runtime(
             started_at_ns=started_at_ns,
             updated_at_ns=started_at_ns,
             account_snapshot=strategy.account_snapshot(projected_at_ns=started_at_ns),
-            # The catalogue this generation discovered, published where the Signal lane can read it.
-            # `_discover_routes` runs once per start, so a catalogue change is a new Runtime start and
-            # a new insert; the steady heartbeat never rewrites it.
-            routes=tuple(sorted(route.market_key for route in profile.routes)),
+            # How large the catalogue this generation discovered is. `_discover_routes` runs once per
+            # start, so a catalogue change is a new Runtime start and a new insert; the steady
+            # heartbeat never rewrites it. The keys themselves stay in the process that can act on
+            # them: `instrument_unmapped` on the entry path is the one answer about routability, and
+            # publishing the list so the Signal lane could pre-refuse a market was the second (#537).
+            routes_count=len(profile.routes),
         )
         _observe_runtime_start(audit=audit, state=state)
         projector = RuntimeStateProjector(initial=state, recovery_inputs=recovery_inputs)
@@ -411,17 +413,18 @@ async def _run_active_runtime(
                     )
                 )
                 next_reconciliation = loop.time() + reconciliation_interval
+            # `RuntimeReadiness.snapshot` is the one place this is derived: it already refuses to arm
+            # entries unless execution is safe, and it already names the first gate that failed. Two
+            # further copies of that rule — here and in the read projection — could each answer a
+            # different question about the same instant (#537 PR-3).
             strategy_readiness = strategy.readiness()
-            execution_safe = bool(strategy_readiness.execution_safe)
-            entries_armed = bool(strategy_readiness.entries_armed and execution_safe)
-            entry_block_reason = None if entries_armed else strategy_readiness.entry_block_reason or "entry_blocked"
             positions_count = len(reports.positions)
             state = replace(
                 state,
                 lifecycle_state="running",
                 alive=True,
-                execution_safe=execution_safe,
-                entries_armed=entries_armed,
+                execution_safe=strategy_readiness.execution_safe,
+                entries_armed=strategy_readiness.entries_armed,
                 startup_reconciled=strategy_readiness.startup_reconciled,
                 unexpected_exposure=strategy_readiness.unexpected_exposure,
                 account_flat=reports.account_flat,
@@ -433,7 +436,7 @@ async def _run_active_runtime(
                 ),
                 reconciliation_observed_at_ns=strategy_readiness.reconciliation_observed_at_ns,
                 heartbeat_at_ns=now_ns,
-                entry_block_reason=entry_block_reason,
+                entry_block_reason=strategy_readiness.entry_block_reason,
                 updated_at_ns=now_ns,
                 account_snapshot=strategy.account_snapshot(projected_at_ns=now_ns),
             )
@@ -751,7 +754,7 @@ def _observe_reconciliation(
 
 
 def _observe_runtime_start(*, audit: AuditSink, state: ExecutionRuntimeState) -> None:
-    accepted = audit.offer(
+    audit.offer(
         audit.factory.create(
             normalized_kind="readiness",
             occurred_at_ns=state.started_at_ns,
@@ -779,8 +782,6 @@ def _observe_runtime_start(*, audit: AuditSink, state: ExecutionRuntimeState) ->
             event_identity=f"runtime-start:{state.runtime_id}",
         )
     )
-    if not accepted:
-        raise RuntimeError("oi_runtime_start_receipt_unavailable")
 
 
 async def _await_node_started(*, node: TradingNode, node_task: asyncio.Task[None]) -> None:

@@ -14,7 +14,6 @@ from tracefold.platform.postgres.client import require_transaction
 
 from ..contracts import EXECUTION_STRATEGY_ID
 from ..execution_contracts import (
-    MARKET_KEY_PATTERN,
     ExecutionObservationV1,
     OperatorIntentV1,
     TradeSignalV1,
@@ -27,9 +26,6 @@ MAX_OBSERVATION_APPEND_BATCH = 128
 MAX_OBSERVATION_APPEND_BYTES = 1_048_576
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,127}$")
-_MARKET_KEY = re.compile(MARKET_KEY_PATTERN)
-# How many `market_key`s one Runtime generation may publish.
-MAX_EXECUTION_ROUTES = 1_024
 _OBSERVATION_BATCH_SAVEPOINT = "tracefold_execution_observation_batch"
 
 type StoredExecutionPayload = tuple[int, dict[str, Any]]
@@ -107,7 +103,6 @@ class PreparedTradeSignal:
     """Validated Signal input and canonical JSON prepared before the DB callback."""
 
     value: TradeSignalV1
-    metadata_json: str
     payload_json: str
 
 
@@ -254,11 +249,11 @@ class ExecutionRuntimeState:
     started_at_ns: int
     updated_at_ns: int
     account_snapshot: ExecutionAccountSnapshot | None = None
-    # Every `market_key` this Runtime generation can actually reach, sorted by code point and unique,
-    # as the Runtime discovered it at start. Fixed for the life of one `runtime_id`, like the release
-    # and the config digest beside it, so only the insert writes it. Empty means no catalogue is
-    # published and no catalogue is published and the Signal lane applies no routability rule.
-    routes: tuple[str, ...] = ()
+    # How many `market_key`s this Runtime generation discovered it can reach. A count, because a count
+    # is all any reader ever rendered: the Signal lane read the key list to pre-refuse a market, and
+    # the Runtime already answers that by name on the entry path (#537 PR-3). Fixed for the life of
+    # one `runtime_id`, like the release beside it, so only the insert writes it.
+    routes_count: int = 0
 
     def __post_init__(self) -> None:
         if _IDENTITY.fullmatch(self.account_slot) is None:
@@ -287,12 +282,7 @@ class ExecutionRuntimeState:
             raise ValueError("execution_runtime_entry_reason_invalid")
         if self.entry_block_reason is not None and _IDENTITY.fullmatch(self.entry_block_reason) is None:
             raise ValueError("execution_runtime_entry_reason_invalid")
-        if (
-            len(self.routes) > MAX_EXECUTION_ROUTES
-            or len(set(self.routes)) != len(self.routes)
-            or list(self.routes) != sorted(self.routes)
-            or any(_MARKET_KEY.fullmatch(value) is None for value in self.routes)
-        ):
+        if self.routes_count < 0:
             raise ValueError("execution_runtime_routes_invalid")
 
 
@@ -326,7 +316,6 @@ def prepare_trade_signal(
     direction: Literal["long", "short"],
     observed_at_ns: int,
     expires_at_ns: int,
-    alpha_metadata: dict[str, str | int | bool] | None = None,
 ) -> PreparedTradeSignal:
     value = TradeSignalV1(
         seq=1,
@@ -336,11 +325,9 @@ def prepare_trade_signal(
         direction=direction,
         observed_at_ns=observed_at_ns,
         expires_at_ns=expires_at_ns,
-        alpha_metadata=alpha_metadata or {},
     )
     return PreparedTradeSignal(
         value=value,
-        metadata_json=_dumps(value.alpha_metadata),
         payload_json=_dumps(value.model_dump(mode="json", exclude={"seq"})),
     )
 
@@ -429,8 +416,8 @@ class ExecutionStreamStorage:
             """
             INSERT INTO trading_trade_signals (
               signal_id, case_id, market_key, direction,
-              observed_at_ns, expires_at_ns, alpha_metadata, payload
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+              observed_at_ns, expires_at_ns, payload
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
             ON CONFLICT DO NOTHING
             RETURNING seq, payload
             """,
@@ -441,7 +428,6 @@ class ExecutionStreamStorage:
                 candidate.direction,
                 candidate.observed_at_ns,
                 candidate.expires_at_ns,
-                prepared.metadata_json,
                 prepared.payload_json,
             ),
         ).fetchone()
@@ -800,7 +786,7 @@ class ExecutionStreamStorage:
                    startup_reconciled, unexpected_exposure, account_flat,
                    positions_count, open_orders_count, protection_status,
                    reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
-                   started_at_ns, updated_at_ns, account_snapshot, routes
+                   started_at_ns, updated_at_ns, account_snapshot, routes_count
               FROM trading_execution_runtime_state
              WHERE account_slot = %s
              FOR UPDATE
@@ -813,7 +799,7 @@ class ExecutionStreamStorage:
                    startup_reconciled, unexpected_exposure, account_flat,
                    positions_count, open_orders_count, protection_status,
                    reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
-                   started_at_ns, updated_at_ns, account_snapshot, routes
+                   started_at_ns, updated_at_ns, account_snapshot, routes_count
               FROM trading_execution_runtime_state
              WHERE account_slot = %s
             """
@@ -832,11 +818,11 @@ class ExecutionStreamStorage:
               startup_reconciled, unexpected_exposure, account_flat,
               positions_count, open_orders_count, protection_status,
               reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
-              started_at_ns, updated_at_ns, account_snapshot, routes
+              started_at_ns, updated_at_ns, account_snapshot, routes_count
             ) VALUES (
               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s::jsonb, %s::jsonb
+              %s, %s, %s, %s::jsonb, %s
             )
             ON CONFLICT (account_slot) DO UPDATE SET
               mode = EXCLUDED.mode,
@@ -862,7 +848,7 @@ class ExecutionStreamStorage:
               started_at_ns = EXCLUDED.started_at_ns,
               updated_at_ns = EXCLUDED.updated_at_ns,
               account_snapshot = EXCLUDED.account_snapshot,
-              routes = EXCLUDED.routes
+              routes_count = EXCLUDED.routes_count
             """,
             self._runtime_state_values(value),
         )
@@ -937,7 +923,7 @@ class ExecutionStreamStorage:
                 if row["account_snapshot"] is None
                 else ExecutionAccountSnapshot.from_payload(dict(row["account_snapshot"]))
             ),
-            routes=tuple(str(value) for value in row["routes"]),
+            routes_count=int(row["routes_count"]),
         )
 
     @staticmethod
@@ -971,7 +957,7 @@ class ExecutionStreamStorage:
             value.started_at_ns,
             value.updated_at_ns,
             cls._account_snapshot_json(value.account_snapshot),
-            _dumps(list(value.routes)),
+            value.routes_count,
         )
 
     def ensure_execution_runtime_control_state(

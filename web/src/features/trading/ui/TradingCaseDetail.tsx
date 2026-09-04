@@ -21,7 +21,7 @@ export function TradingCaseDetail({ item }: { item: TradingCase }) {
     <section aria-label={`案例 ${item.base_symbol}`} className="trading-case-detail">
       <Card
         flush
-        hint={`${policyLabel(item.policy_id)} · ${item.policy_config_digest.slice(0, 12)}`}
+        hint={`${policyLabel(item.policy_id)} · ${(item.policy_config_digest ?? "").slice(0, 12) || "—"}`}
         title={`${item.base_symbol} · ${caseVerdict(item)}`}
       >
         <dl className="trading-case-facts">
