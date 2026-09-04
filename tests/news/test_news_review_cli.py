@@ -10,7 +10,7 @@ import pytest
 
 from tracefold.app.cli.commands import news_review
 from tracefold.app.cli.parser import build_parser
-from tracefold.news.review.drafter import DRAFT_SCHEMA
+from tracefold.news.review.drafter import DRAFT_SCHEMA, TAXONOMY_DIMENSIONS
 
 
 def _empty_batch() -> dict[str, Any]:
@@ -127,6 +127,9 @@ def test_accept_drafts_records_the_model_that_actually_authored_the_proposal(
                         "task_version": "1" * 64,
                         "event_id": "2" * 64,
                         "source_authority": "unknown",
+                        # Stable's own label: the accept step recomputes the five taxonomy_* dimensions
+                        # against it, and it disagrees with the draft on exactly `event_family` (#548 PR-B.1).
+                        "stable_taxonomy": {**other, "event_family": "market_access"},
                         "draft": draft,
                     }
                 ],
@@ -203,6 +206,63 @@ def test_accept_drafts_records_the_model_that_actually_authored_the_proposal(
     }
     assert result["data"]["selected_task_ids"] == ["evt.1"]
     assert result["data"]["explicit_first_bad_owner"] == "taxonomy"
+
+
+def test_accept_drafts_refuses_a_batch_written_before_stable_taxonomy_was_carried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#548 PR-B.1. The five taxonomy_* dimensions are recomputed from the entry's `stable_taxonomy`.
+
+    A batch written before that field existed can only be copied, and copying is exactly the defect: the
+    dimensions it carries were computed against a label the reviewer may since have edited. Both refusals
+    are stated — the whole `v5` file at the schema check, and a single entry that lost the field — and
+    neither reaches a database.
+    """
+
+    database_calls: list[tuple[Any, Any]] = []
+
+    def database(*args: Any, **kwargs: Any) -> None:
+        database_calls.append((args, kwargs))
+        raise AssertionError("database access is forbidden")
+
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", database)
+
+    old_batch = {**_empty_batch(), "schema_id": "tracefold.news.review_draft_batch.v5"}
+    monkeypatch.setattr(news_review, "_read_json_or_yaml", lambda _path: old_batch)
+    with pytest.raises(ValueError, match="news_review_accept_drafts_schema_invalid"):
+        news_review._handle_review_accept_drafts(_args(dry_run=True), object(), object())
+
+    entry_without_stable = {
+        **_empty_batch(),
+        "drafts": [
+            {
+                "task_id": "evt.1",
+                "task_version": "1" * 64,
+                "event_id": "2" * 64,
+                "source_authority": "unknown",
+                "draft": {
+                    "should_push": "should_hold",
+                    "dimensions": dict.fromkeys(TAXONOMY_DIMENSIONS, "pass") | {"factual_fidelity": "pass"},
+                    "novelty": {"judgment": "new_fact", "duplicate_of": ""},
+                    "taxonomy": {
+                        "subject_codes": [],
+                        "event_family": "other",
+                        "change_state": "unknown",
+                        "assertion_status": "unknown",
+                    },
+                    "confidence": 0.9,
+                },
+            }
+        ],
+    }
+    monkeypatch.setattr(news_review, "_read_json_or_yaml", lambda _path: entry_without_stable)
+
+    code, preview = news_review._handle_review_accept_drafts(_args(dry_run=True, only="evt.1"), object(), object())
+
+    assert code == 0
+    assert preview["data"]["would_submit"] == 0
+    assert preview["data"]["skipped"] == {"stable_taxonomy_missing": 1}
+    assert database_calls == []
 
 
 def test_review_submit_requires_and_uses_the_named_reviewer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

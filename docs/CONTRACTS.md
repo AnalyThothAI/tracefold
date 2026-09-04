@@ -1429,8 +1429,13 @@ free-text dimension as zero, and is counted/costed with no byte-equality fallbac
 hidden retry or cache. Magnitude, direction, assets, novelty and every
 TradeRelevance field stay exact; the strict byte-equality mean is reported
 alongside as `scores.case_macro_answered_byte_equality`.
-Reviews whose `evidence_version` has been superseded are not replayable and are
-excluded, the same rule `_load_case` already enforced.
+A review is replayable against the exact evidence version its verdict judged,
+which is the identity `_load_case` pins and, since #548 PR-B.2, the one
+`news_review_task_source_v1` projects: a later member join appends a snapshot
+without re-running triage and does not retract the judgment already made.
+Evidence that changed *under* the reviewed version — a different
+`evidence_sha256` or focus fact for that version — is still not replayable and is
+excluded.
 
 The `0336` genesis removed the retired replay fixture. Current metric evidence
 comes only from exact `news_judgment_v2` rows created in the post-genesis active
@@ -1455,7 +1460,10 @@ Development readiness separately requires a source-only 50-cluster calibration s
 primary reviewers per task and an independent adjudicator for every disagreement. Model drafts still cannot
 self-accept. `news review accept-drafts --dry-run` may preview an empty
 selection, while every non-dry-run requires a non-empty explicit `--only` list
-and `--reviewer` identity. An AI adjudicator is recorded as AI, never as human.
+and `--reviewer` identity. An entry that carries no `stable_taxonomy` is skipped
+as `stable_taxonomy_missing`; a reviewer's taxonomy edit is otherwise submitted
+beside dimensions that compare a label it replaced. An AI adjudicator is
+recorded as AI, never as human.
 
 `news learning snapshot|compare` was deleted in #343. #453 also deletes the
 standalone `news learning optimize` route and `news learning baseline
@@ -1518,10 +1526,15 @@ bounded taxonomy input through the taxonomy Predictor's Signature and seed,
 never from the card, Stable's label, the told ledger or a review — and the
 rubric model never labels taxonomy. Agreement is the draft; on disagreement the
 draft takes A and the entry is marked `taxonomy_disagreement`. The batch
-(`review_draft_batch.v5`) names both blind drafters, their agreement rate, each
+(`review_draft_batch.v6`) names both blind drafters, their agreement rate, each
 one's agreement with Stable and the disagreeing task ids; each accepted review's
-`taxonomy_review.drafts` keeps both labels. It drafts from the
-ReviewDesk queue over the `--hours` look-back window — the `--events-from` form
+`taxonomy_review.drafts` keeps both labels. Every entry also carries
+`stable_taxonomy`, Stable's own persisted label (`null` when Stable never
+labelled the Event), because the five code-written `taxonomy_*` dimensions are
+recomputed from it against the possibly edited `taxonomy` when the draft is
+accepted, never copied from drafting time. A `v5` file has no such field and is
+refused by `accept-drafts` rather than accepted with a stale comparison. It
+drafts from the ReviewDesk queue over the `--hours` look-back window — the `--events-from` form
 that drafted the Events a #193 experiment run had frozen went with that loop in
 #343. A batch refuses duplicate task identities before its first model call
 and reports `tasks` beside `unique_tasks`; one ReviewDesk task can therefore

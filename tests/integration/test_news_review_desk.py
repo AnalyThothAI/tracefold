@@ -730,6 +730,15 @@ def test_acceptance_is_bound_to_exact_task_version(conn) -> None:
 
 
 def test_unjudged_new_evidence_is_not_projected_as_a_current_review_task(conn) -> None:
+    """The task the desk offers is always a judged one, and #548 PR-B.2 changed which judged one.
+
+    A member join appends an evidence snapshot without re-running triage. The view used to take the
+    newest snapshot and require the newest verdict to have judged that exact version, so the whole Event
+    — its verdict, its delivery and its accepted review — left the desk and the freeze the moment a
+    member arrived. It now joins the verdict to the snapshot it actually judged, so the `v1` task stays
+    exactly as it was, still accepted, while the unjudged `v2` evidence is still not offered as a task.
+    """
+
     event_id = _open_event(conn)
     desk = ReviewDesk(conn, now_ms=NOW)
     first = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
@@ -750,7 +759,16 @@ def test_unjudged_new_evidence_is_not_projected_as_a_current_review_task(conn) -
         evidence = repos.news.append_evidence_snapshot(event_id=event_id, now_ms=NOW + 1)
     assert evidence["evidence_version"] == 2
 
-    assert desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"] == []
+    tasks = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"]
+    assert [task["task_id"] for task in tasks] == [first["task_id"]]
+    assert tasks[0]["task_version"] == first["task_version"]
+    assert tasks[0]["evidence_version"] == 1
+    assert tasks[0]["review_status"] == "accepted"
+    # The desk never offers the version nothing judged: the view holds the judged row and only that.
+    projected = conn.execute(
+        "SELECT evidence_version FROM news_review_task_source_v1 WHERE event_id = %s", (event_id,)
+    ).fetchall()
+    assert [int(row["evidence_version"]) for row in projected] == [1]
 
 
 def test_delivery_terminal_error_code_distinguishes_unknown_from_known_failure(conn) -> None:
@@ -1107,7 +1125,12 @@ def test_pairwise_queue_hides_arm_identity_and_appends_blind_acceptance(conn) ->
         )
         newer = repos.news.append_evidence_snapshot(event_id=event_id, now_ms=NOW + 2)
     assert int(newer["evidence_version"]) == int(source["evidence_version"]) + 1
-    assert conn.execute("SELECT 1 FROM news_review_task_source_v1 WHERE event_id = %s", (event_id,)).fetchone() is None
+    # #548 PR-B.2: the Event keeps the row its verdict judged when a later snapshot arrives; the newer,
+    # unjudged version is still not projected.
+    projected = conn.execute(
+        "SELECT evidence_version FROM news_review_task_source_v1 WHERE event_id = %s", (event_id,)
+    ).fetchall()
+    assert [int(row["evidence_version"]) for row in projected] == [int(source["evidence_version"])]
     # A validation case stays blind after its own acceptance.  The whole run
     # must be accepted and then re-sealed by CandidateEvaluator first.
     after = desk.evidence(ref, principal=PRINCIPAL)
