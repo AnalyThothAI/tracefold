@@ -144,6 +144,20 @@ def decimal_text(value: str | None) -> str:
     return text
 
 
+def signed_usd(value: str | None) -> str:
+    """`$3120.5`, `-$412.75`: the provider's own figure, with the sign outside the currency mark.
+
+    `$-412.75` reads as a price of minus-dollars; a reader scanning a PNL column needs the sign where
+    a sign goes. The digits are `decimal_text`'s -- exact, unrounded, unseparated -- because this
+    renders what a report said, not what a market is quoting.
+    """
+
+    text = decimal_text(value)
+    if not text:
+        return ""
+    return f"-${text[1:]}" if text.startswith("-") else f"${text}"
+
+
 def clip(value: object, limit: int) -> str:
     """Whitespace collapsed to single spaces, then bounded with an ellipsis rather than cut mid-word.
 
@@ -171,5 +185,6 @@ __all__ = [
     "decimal_text",
     "percent_from_bps",
     "price",
+    "signed_usd",
     "usd_compact",
 ]

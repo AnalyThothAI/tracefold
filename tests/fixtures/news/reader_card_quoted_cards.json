@@ -1,0 +1,645 @@
+{
+  "note": "Cards rendered by this branch's renderer for the #562 PR-B surfaces production has never sent: the market quote line, the report's own price and PNL, and the OI whale columns. Unlike reader_card_production_cards.json these are not a record of traffic -- they are the expected output, written down and reviewed line by line in the PR body, so a later change to any of them has to be deliberate.",
+  "generated_from": "claude/562-pr-b-market-quotes",
+  "entries": [
+    {
+      "id": "market-oi-quoted-with-whale-columns",
+      "source": "market",
+      "inputs": {
+        "track": {
+          "group_key": "oi|opennews|binance|WIF|oi_signal_v1|opennews_oi_source_v1|300000",
+          "market_kind": "oi",
+          "family": "oi",
+          "provider": "opennews",
+          "source_venue": "binance",
+          "venue_known": true,
+          "raw_instrument": "WIF",
+          "symbol": "WIF",
+          "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+        },
+        "reason": "first",
+        "observations": [
+          {
+            "item_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "market_kind": "oi",
+            "parse_status": "parsed",
+            "title": "WIF OI Rise 6.12%, OI Value 11.03M, Whale Long Profit 88.40%, Whale/OI Ratio 143.90%",
+            "event_at_ms": 1788549480000,
+            "received_at_ms": 1788549480000,
+            "provider": "opennews",
+            "source_strategy_id": "1019",
+            "source_venue": "binance",
+            "raw_instrument": "WIF",
+            "symbol": "WIF",
+            "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000",
+            "direction": "rise",
+            "oi_change_bps": 612,
+            "oi_value_usd": 11030000,
+            "whale_long_profit_bps": 8840,
+            "whale_oi_ratio_bps": 14390
+          }
+        ],
+        "detail_url": "https://console.example.com",
+        "action_changes": 0,
+        "quotes": [
+          {
+            "symbol": "WIF",
+            "price": "0.5432",
+            "change_pct": 7.91,
+            "change_basis": "rolling_24h",
+            "freshness": "fresh"
+          }
+        ]
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "持仓异动 · WIF"
+          },
+          "template": "blue"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "上升 6.12% · 03:18\nOI $11.03M · binance · oi_signal_v1|opennews_oi_source_v1|300000\n行情 WIF $0.5432 24h +7.91%\n鲸鱼多头盈利 88.4% · 鲸鱼持仓/OI 143.9%\nWIF · opennews oi（1 条报道） · 03:18"
+          },
+          {
+            "tag": "action",
+            "actions": [
+              {
+                "tag": "button",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "打开明细"
+                },
+                "type": "default",
+                "url": "https://console.example.com"
+              }
+            ]
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold 市场 · oi|opennews|binance|WIF|"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "market-oi-quote-stale-whale-still-shown",
+      "source": "market",
+      "inputs": {
+        "track": {
+          "group_key": "oi|opennews|binance|WIF|oi_signal_v1|opennews_oi_source_v1|300000",
+          "market_kind": "oi",
+          "family": "oi",
+          "provider": "opennews",
+          "source_venue": "binance",
+          "venue_known": true,
+          "raw_instrument": "WIF",
+          "symbol": "WIF",
+          "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+        },
+        "reason": "followup",
+        "observations": [
+          {
+            "item_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "market_kind": "oi",
+            "parse_status": "parsed",
+            "title": "WIF OI Rise 6.12%, OI Value 11.03M, Whale Long Profit 88.40%, Whale/OI Ratio 143.90%",
+            "event_at_ms": 1788549480000,
+            "received_at_ms": 1788549480000,
+            "provider": "opennews",
+            "source_strategy_id": "1019",
+            "source_venue": "binance",
+            "raw_instrument": "WIF",
+            "symbol": "WIF",
+            "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000",
+            "direction": "rise",
+            "oi_change_bps": 612,
+            "oi_value_usd": 11030000,
+            "whale_long_profit_bps": 8840,
+            "whale_oi_ratio_bps": 14390
+          }
+        ],
+        "detail_url": "https://console.example.com",
+        "action_changes": 0,
+        "quotes": [
+          {
+            "symbol": "WIF",
+            "price": "0.5432",
+            "change_pct": 7.91,
+            "change_basis": "rolling_24h",
+            "freshness": "stale"
+          }
+        ]
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "持仓异动 · 跟进 · WIF"
+          },
+          "template": "blue"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "上升 6.12% · 03:18\nOI $11.03M · binance · oi_signal_v1|opennews_oi_source_v1|300000\n鲸鱼多头盈利 88.4% · 鲸鱼持仓/OI 143.9%\nWIF · opennews oi（1 条报道） · 03:18"
+          },
+          {
+            "tag": "action",
+            "actions": [
+              {
+                "tag": "button",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "打开明细"
+                },
+                "type": "default",
+                "url": "https://console.example.com"
+              }
+            ]
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold 市场 · oi|opennews|binance|WIF|"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "market-oi-quoted-without-a-fresh-reference",
+      "source": "market",
+      "inputs": {
+        "track": {
+          "group_key": "oi|opennews|binance|WIF|oi_signal_v1|opennews_oi_source_v1|300000",
+          "market_kind": "oi",
+          "family": "oi",
+          "provider": "opennews",
+          "source_venue": "binance",
+          "venue_known": true,
+          "raw_instrument": "WIF",
+          "symbol": "WIF",
+          "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+        },
+        "reason": "first",
+        "observations": [
+          {
+            "item_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "market_kind": "oi",
+            "parse_status": "parsed",
+            "title": "WIF OI Rise 6.12%, OI Value 11.03M, Whale Long Profit 88.40%, Whale/OI Ratio 143.90%",
+            "event_at_ms": 1788549480000,
+            "received_at_ms": 1788549480000,
+            "provider": "opennews",
+            "source_strategy_id": "1019",
+            "source_venue": "binance",
+            "raw_instrument": "WIF",
+            "symbol": "WIF",
+            "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000",
+            "direction": "rise",
+            "oi_change_bps": 612,
+            "oi_value_usd": 11030000,
+            "whale_long_profit_bps": 8840,
+            "whale_oi_ratio_bps": 14390
+          }
+        ],
+        "detail_url": "https://console.example.com",
+        "action_changes": 0,
+        "quotes": [
+          {
+            "symbol": "WIF",
+            "price": "0.5432",
+            "freshness": "fresh"
+          }
+        ]
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "持仓异动 · WIF"
+          },
+          "template": "blue"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "上升 6.12% · 03:18\nOI $11.03M · binance · oi_signal_v1|opennews_oi_source_v1|300000\n行情 WIF $0.5432\n鲸鱼多头盈利 88.4% · 鲸鱼持仓/OI 143.9%\nWIF · opennews oi（1 条报道） · 03:18"
+          },
+          {
+            "tag": "action",
+            "actions": [
+              {
+                "tag": "button",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "打开明细"
+                },
+                "type": "default",
+                "url": "https://console.example.com"
+              }
+            ]
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold 市场 · oi|opennews|binance|WIF|"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "market-liquidation-reported-price-and-quote",
+      "source": "market",
+      "inputs": {
+        "track": {
+          "group_key": "liquidation|opennews|binance|DOGE|long",
+          "market_kind": "liquidation",
+          "family": "liquidation",
+          "provider": "opennews",
+          "source_venue": "binance",
+          "venue_known": true,
+          "raw_instrument": "DOGE",
+          "symbol": "DOGE",
+          "liquidated_position_side": "long"
+        },
+        "reason": "first",
+        "observations": [
+          {
+            "item_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "market_kind": "liquidation",
+            "parse_status": "parsed",
+            "title": "DOGE Large Long Liquidation 412.53K at $0.2181",
+            "event_at_ms": 1788549480000,
+            "received_at_ms": 1788549480000,
+            "provider": "opennews",
+            "source_strategy_id": "2083",
+            "source_venue": "binance",
+            "raw_instrument": "DOGE",
+            "symbol": "DOGE",
+            "liquidated_position_side": "long",
+            "notional_usd": "412530.00",
+            "price": "0.2181"
+          }
+        ],
+        "detail_url": "https://console.example.com",
+        "action_changes": 0,
+        "quotes": [
+          {
+            "symbol": "DOGE",
+            "price": "0.19980",
+            "change_pct": -3.2,
+            "change_basis": "rolling_24h",
+            "freshness": "fresh"
+          }
+        ]
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "强平 · DOGE"
+          },
+          "template": "red"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "binance · 多单被强平 1 笔 · 03:18\n最大单笔来源报告金额 $412530\n来源报告价 $0.2181\n行情 DOGE $0.1998 24h -3.20%\n各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。\nDOGE · opennews liquidation（1 条报道） · 03:18"
+          },
+          {
+            "tag": "action",
+            "actions": [
+              {
+                "tag": "button",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "打开明细"
+                },
+                "type": "default",
+                "url": "https://console.example.com"
+              }
+            ]
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold 市场 · liquidation|opennews|bin"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "market-smart-money-reported-price-pnl-and-day-basis-quote",
+      "source": "market",
+      "inputs": {
+        "track": {
+          "group_key": "smart_money|address|0x4d3a|hyperliquid|ETH",
+          "market_kind": "smart_money",
+          "family": "smart_money",
+          "provider": "opennews",
+          "source_venue": "hyperliquid",
+          "venue_known": true,
+          "raw_instrument": "ETH",
+          "symbol": "ETH",
+          "account_key": "0x4d3a",
+          "account_verified": true,
+          "trader_label": "Machi Big Brother",
+          "anchor_action": "open",
+          "anchor_position_side": "long"
+        },
+        "reason": "action_change",
+        "observations": [
+          {
+            "item_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "market_kind": "smart_money",
+            "parse_status": "parsed",
+            "title": "Machi Big Brother closed long ETH $1.25M with $412.75 loss",
+            "event_at_ms": 1788549522000,
+            "received_at_ms": 1788549522000,
+            "provider": "opennews",
+            "source_strategy_id": "2026",
+            "source_venue": "hyperliquid",
+            "raw_instrument": "ETH",
+            "symbol": "ETH",
+            "trader_label": "Machi Big Brother",
+            "account_address": "0x4d3a",
+            "action": "close",
+            "position_side": "long",
+            "notional_usd": "1250000.00",
+            "price": "3120.5",
+            "pnl_usd": "-412.75"
+          }
+        ],
+        "detail_url": "https://console.example.com",
+        "action_changes": 1,
+        "quotes": [
+          {
+            "symbol": "ETH",
+            "price": "3125.4",
+            "change_pct": 0.42,
+            "change_basis": "provider_day",
+            "freshness": "fresh"
+          }
+        ]
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "聪明钱 · 动作变化 · ETH"
+          },
+          "template": "turquoise"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "Machi Big Brother · hyperliquid · 03:18\n动作变化 1 次 · 首 开多 → 末 平多\n平多 $1250000\n来源报告价 $3120.5 · 已实现 PNL -$412.75\n行情 ETH $3,125.40 日内 +0.42%\nClose 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。\nETH · opennews smart_money（1 条报道） · 03:18"
+          },
+          {
+            "tag": "action",
+            "actions": [
+              {
+                "tag": "button",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "打开明细"
+                },
+                "type": "default",
+                "url": "https://console.example.com"
+              }
+            ]
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold 市场 · smart_money|address|0x4d"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "market-smart-money-reported-price-with-no-quote",
+      "source": "market",
+      "inputs": {
+        "track": {
+          "group_key": "smart_money|address|0x4d3a|hyperliquid|ETH",
+          "market_kind": "smart_money",
+          "family": "smart_money",
+          "provider": "opennews",
+          "source_venue": "hyperliquid",
+          "venue_known": true,
+          "raw_instrument": "ETH",
+          "symbol": "ETH",
+          "account_key": "0x4d3a",
+          "account_verified": true,
+          "trader_label": "Machi Big Brother",
+          "anchor_action": "open",
+          "anchor_position_side": "long"
+        },
+        "reason": "first",
+        "observations": [
+          {
+            "item_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "market_kind": "smart_money",
+            "parse_status": "parsed",
+            "title": "Machi Big Brother closed long ETH $1.25M with $412.75 loss",
+            "event_at_ms": 1788549522000,
+            "received_at_ms": 1788549522000,
+            "provider": "opennews",
+            "source_strategy_id": "2026",
+            "source_venue": "hyperliquid",
+            "raw_instrument": "ETH",
+            "symbol": "ETH",
+            "trader_label": "Machi Big Brother",
+            "account_address": "0x4d3a",
+            "action": "close",
+            "position_side": "long",
+            "notional_usd": "1250000.00",
+            "price": "3120.5",
+            "pnl_usd": "-412.75"
+          }
+        ],
+        "detail_url": "https://console.example.com",
+        "action_changes": 0,
+        "quotes": []
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "聪明钱 · ETH"
+          },
+          "template": "turquoise"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "Machi Big Brother · hyperliquid · 03:18\n平多 $1250000\n来源报告价 $3120.5 · 已实现 PNL -$412.75\nClose 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。\nETH · opennews smart_money（1 条报道） · 03:18"
+          },
+          {
+            "tag": "action",
+            "actions": [
+              {
+                "tag": "button",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "打开明细"
+                },
+                "type": "default",
+                "url": "https://console.example.com"
+              }
+            ]
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold 市场 · smart_money|address|0x4d"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "market-smart-money-positive-pnl",
+      "source": "market",
+      "inputs": {
+        "track": {
+          "group_key": "smart_money|address|0x4d3a|hyperliquid|ETH",
+          "market_kind": "smart_money",
+          "family": "smart_money",
+          "provider": "opennews",
+          "source_venue": "hyperliquid",
+          "venue_known": true,
+          "raw_instrument": "ETH",
+          "symbol": "ETH",
+          "account_key": "0x4d3a",
+          "account_verified": true,
+          "trader_label": "Machi Big Brother",
+          "anchor_action": "open",
+          "anchor_position_side": "long"
+        },
+        "reason": "first",
+        "observations": [
+          {
+            "item_id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "market_kind": "smart_money",
+            "parse_status": "parsed",
+            "title": "Machi Big Brother closed long ETH $1.25M with $412.75 loss",
+            "event_at_ms": 1788549522000,
+            "received_at_ms": 1788549522000,
+            "provider": "opennews",
+            "source_strategy_id": "2026",
+            "source_venue": "hyperliquid",
+            "raw_instrument": "ETH",
+            "symbol": "ETH",
+            "trader_label": "Machi Big Brother",
+            "account_address": "0x4d3a",
+            "action": "close",
+            "position_side": "long",
+            "notional_usd": "1250000.00",
+            "price": "3180.25",
+            "pnl_usd": "128500.40"
+          }
+        ],
+        "detail_url": "https://console.example.com",
+        "action_changes": 0,
+        "quotes": [
+          {
+            "symbol": "ETH",
+            "price": "3125.4",
+            "change_pct": 0.42,
+            "change_basis": "provider_day",
+            "freshness": "fresh"
+          }
+        ]
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "聪明钱 · ETH"
+          },
+          "template": "turquoise"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "Machi Big Brother · hyperliquid · 03:18\n平多 $1250000\n来源报告价 $3180.25 · 已实现 PNL $128500.4\n行情 ETH $3,125.40 日内 +0.42%\nClose 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。\nETH · opennews smart_money（1 条报道） · 03:18"
+          },
+          {
+            "tag": "action",
+            "actions": [
+              {
+                "tag": "button",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "打开明细"
+                },
+                "type": "default",
+                "url": "https://console.example.com"
+              }
+            ]
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold 市场 · smart_money|address|0x4d"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -28,6 +28,7 @@ import random
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -40,7 +41,11 @@ from tracefold.news.market_notifications import (
     TICK_SECONDS,
     MarketNotificationLoop,
 )
+from tracefold.news.market_review.instruments import Instrument
+from tracefold.news.market_review.pricing import Quote
 from tracefold.news.oi_signals import measurement_definition, oi_source_contract, parse_oi_signal
+from tracefold.news.pipeline.delivery import read_display_quotes
+from tracefold.news.reader_card import QUOTE_LINE_PREFIX
 from tracefold.news.smart_money import parse_smart_money
 from tracefold.news.source_contracts import MARKET_PROVIDER
 
@@ -58,6 +63,11 @@ LIQUIDATION_RECORDS = 111
 WALLETS = (("Machi Big Brother", "0x4d3a"), ("James Wynn", "0x8bd1"), ("qwatio", None))
 WALLET_SYMBOLS = ("ETH", "BTC", "HYPE")
 WALLET_RECORDS = 108
+
+# The symbols this corpus declares priceable. Deliberately a subset: production quotes what the
+# universe lists and what the collector reached this turn, so a report claiming every card carries a
+# price would be describing a market this repository has never seen.
+PRICED_SYMBOLS = (("BTC", "BTCUSDT", "68000"), ("ETH", "ETHUSDT", "3120.5"), ("WIF", "WIFUSDT", "0.5432"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,11 +341,70 @@ class _Db:
         del name, timeout_seconds
         return fn(repositories_for_connection(self.connection))
 
+    async def quotes_for_symbols(self, symbols: Any, *, now_ms: int) -> list[dict[str, Any]]:
+        """The composed port, over a quote collector that is running beside this replay.
+
+        The replay drives the notification loop, not the quote loop, so the snapshot for the priced
+        symbols is re-stamped at each read's own clock -- which is what a 20 s collector leaves
+        behind. Everything after that is the production path: the same read model decides freshness,
+        the same rows reach the card model, and a symbol the universe does not list answers
+        `unlisted` and costs its line.
+        """
+
+        _collect_quotes(self.connection, now_ms=now_ms)
+        return await read_display_quotes(self, symbols, now_ms=now_ms, name="news_market_quotes")
+
     async def tx(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float = 3.0) -> Any:
         del name, timeout_seconds
         repos = repositories_for_connection(self.connection)
         with repos.transaction():
             return fn(repos)
+
+
+def _list_instruments(connection: Any) -> None:
+    repos = repositories_for_connection(connection)
+    with repos.transaction():
+        repos.instruments.apply_snapshot(
+            [
+                Instrument(
+                    venue="binance.perp",
+                    venue_symbol=venue_symbol,
+                    base_symbol=symbol,
+                    instrument_class="crypto",
+                    quote_asset="USDT",
+                )
+                for symbol, venue_symbol, _ in PRICED_SYMBOLS
+            ],
+            now_ms=T0,
+        )
+
+
+def _collect_quotes(connection: Any, *, now_ms: int) -> None:
+    repos = repositories_for_connection(connection)
+    with repos.transaction():
+        repos.price.replace_source_snapshot(
+            source_key="binance.perp",
+            quotes=[
+                Quote(
+                    venue="binance.perp",
+                    venue_symbol=venue_symbol,
+                    base_symbol=symbol,
+                    price=Decimal(price),
+                    price_kind="last",
+                    instrument_class="crypto",
+                    quote_asset="USDT",
+                    change_pct=1.5,
+                    change_basis="rolling_24h",
+                    source_at_ms=now_ms,
+                    reference_at_ms=now_ms - 60_000,
+                )
+                for symbol, venue_symbol, price in PRICED_SYMBOLS
+            ],
+            target_count=len(PRICED_SYMBOLS),
+            source_at_ms=now_ms,
+            received_at_ms=now_ms,
+            now_ms=now_ms,
+        )
 
 
 @dataclass
@@ -352,12 +421,18 @@ class _Kind:
     sent: int = 0
     failed: int = 0
     unknown: int = 0
+    # Cards whose frozen snapshot carries the market's own price line (#562 PR-B).
+    quoted: int = 0
     first_latency_ms: list[int] = field(default_factory=list)
     followup_latency_ms: list[int] = field(default_factory=list)
 
     @property
     def cards(self) -> int:
         return self.first + self.followup + self.action_change + self.raw
+
+    @property
+    def quoted_share(self) -> str:
+        return "0%" if not self.cards else f"{100 * self.quoted / self.cards:.0f}%"
 
 
 def _tick_at_or_after(now_ms: int, event_ms: int) -> int:
@@ -404,6 +479,7 @@ def replay(postgres_module_clone_dsn: str) -> Iterator[dict[str, _Kind]]:
     connection = connect_postgres_test(read_only=False)
     try:
         clock = _Clock(corpus[0].at_ms)
+        _list_instruments(connection)
         loop = MarketNotificationLoop(db=_Db(connection), sender=_ReplaySender(rng), clock=clock)
         asyncio.run(loop.start())
         cursor = 0
@@ -444,11 +520,13 @@ def _report(connection: Any, corpus: list[_Record]) -> dict[str, _Kind]:
         if row["delivery_key"] is None:
             entry.still_merging += 1
     for row in connection.execute(
-        "SELECT group_key, trigger_reason, trigger_item_id, state, covered_count, first_attempt_at_ms"
+        "SELECT group_key, trigger_reason, trigger_item_id, state, covered_count, first_attempt_at_ms, card"
         "  FROM news_market_deliveries"
     ).fetchall():
         entry = report[families[str(row["group_key"])]]
         setattr(entry, str(row["trigger_reason"]), getattr(entry, str(row["trigger_reason"])) + 1)
+        if QUOTE_LINE_PREFIX in json.dumps(row["card"], ensure_ascii=False):
+            entry.quoted += 1
         entry.merged += max(0, int(row["covered_count"]) - 1)
         if str(row["state"]) in {"sent", "failed", "unknown"}:
             setattr(entry, str(row["state"]), getattr(entry, str(row["state"])) + 1)
@@ -467,18 +545,34 @@ def test_the_replay_reports_every_kind_at_raw_record_granularity(replay: dict[st
 
     lines = [
         "kind records first followup action_change raw merged still_merging "
-        "sent failed unknown cards first_p50_ms followup_p50_ms"
+        "sent failed unknown cards quoted quoted_share first_p50_ms followup_p50_ms"
     ]
     for kind in ("oi", "liquidation", "smart_money", "raw"):
         entry = replay[kind]
         lines.append(
             f"{kind} {entry.records} {entry.first} {entry.followup} {entry.action_change} {entry.raw} "
             f"{entry.merged} {entry.still_merging} {entry.sent} {entry.failed} {entry.unknown} "
-            f"{entry.cards} {_p50(entry.first_latency_ms)} {_p50(entry.followup_latency_ms)}"
+            f"{entry.cards} {entry.quoted} {entry.quoted_share} "
+            f"{_p50(entry.first_latency_ms)} {_p50(entry.followup_latency_ms)}"
         )
     with capsys.disabled():
         print("\n" + "\n".join(lines))
     assert all(replay[kind].records > 0 for kind in ("oi", "liquidation", "smart_money", "raw"))
+
+
+def test_the_quote_line_reaches_the_cards_whose_symbol_is_priced_and_no_others(replay: dict[str, _Kind]) -> None:
+    """The share column, with bounds rather than this run's exact number.
+
+    Three of the corpus's fifteen symbols are priced, so a quoted share of zero would mean the read
+    never reached a card and a share of one would mean a card was quoted for a symbol no venue
+    lists. `raw` cards carry no symbol at all and must never be quoted.
+    """
+
+    quoted = sum(entry.quoted for entry in replay.values())
+    assert 0 < quoted < sum(entry.cards for entry in replay.values())
+    for kind in ("oi", "liquidation", "smart_money"):
+        assert replay[kind].quoted > 0, kind
+    assert replay["raw"].quoted == 0
 
 
 def test_every_record_is_accounted_for_exactly_once(replay: dict[str, _Kind]) -> None:

@@ -18,9 +18,9 @@ two can never disagree because the projection is computed from those fields.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 from . import card_format as fmt
 from .outcome import DIRECTION_ZH, MAGNITUDE_ZH, NOVELTY_ZH
@@ -32,6 +32,9 @@ CardTone = Literal["bullish", "bearish", "neutral", "unclear", "none"]
 
 # One card's header is bounded by what every channel will show without folding.
 TITLE_MAX: Final = 100
+# How many assets one card names, on the facts line and on the quote line alike. A card is a summary;
+# the fifth asset is on the page it links to.
+CARD_ASSETS_MAX: Final = 4
 # The provider's own line on an unstructured card. The rest is on the detail page.
 RAW_TEXT_MAX: Final = 220
 
@@ -48,7 +51,12 @@ OI_DIRECTION_ZH: Final[dict[str, str]] = {"rise": "上升", "fall": "下降"}
 ACTION_ZH: Final[dict[str, str]] = {"open": "开", "close": "平"}
 SIDE_ZH: Final[dict[str, str]] = {"long": "多", "short": "空"}
 
-_QUOTE_LINE_PREFIX: Final = "行情 "
+QUOTE_LINE_PREFIX: Final = "行情 "
+# A crypto asset is its own market and carries no proxy mark; an `equity` / `commodity` / `index` tag
+# prices on a Binance TradFi perp or a Hyperliquid builder-DEX -- a real traded contract (95% of a
+# week's reactions found candles for them) but a proxy for a market that closes at 16:00 somewhere
+# else, and the reader is told which of the two they are looking at.
+_NATIVE_MARKET_CLASS: Final = "crypto"
 # The mark is about whose market this number comes from, not about the contract type -- BTC also
 # prices on a Binance perpetual, and for a crypto asset that *is* its own market, so it carries no
 # mark. A proxy-priced asset prices on a Binance TradFi perp or a Hyperliquid builder-DEX: a real
@@ -62,6 +70,22 @@ _PERP_MARK: Final = "（永续）"
 # row 5): a reader who saw a story about a name they cannot trade is better served by being told so
 # than by watching the card vanish, and both channels have to tell them the same thing.
 UNTRADEABLE_NOTICE_ZH: Final = "未找到可交易标的"
+
+# Two prices can appear on one market card and they are different claims. `来源报告价` is the number
+# inside the provider's own report -- the price it says the liquidation or the account action happened
+# at, exact and unrounded. `行情` is what the market is quoting now, read fresh from the same quote
+# snapshots the News card reads. Distinct labels and distinct number shapes, because a reader who
+# takes one for the other has been told the market moved when only the report was old (#562 §3).
+_REPORTED_PRICE_PREFIX: Final = "来源报告价 "
+_PNL_PREFIX: Final = "已实现 PNL "
+# NewsLiquid's own two published percentages, in its own terms. `Whale Long Profit` is that
+# percentage and nothing more -- not "every whale account is in profit", not a dollar PnL, not an
+# account count; `oi_signals.OiSourceContract` holds the full sentence.
+_WHALE_PROFIT_PREFIX: Final = "鲸鱼多头盈利 "
+# `占比` would claim a share of a whole, and this number is routinely above 100% (143.9% in the
+# production frame this repository tests against). It is the provider's `Whale/OI Ratio`: two
+# quantities divided, said as such.
+_WHALE_RATIO_PREFIX: Final = "鲸鱼持仓/OI "
 
 _LIQUIDATION_NOTE: Final = "各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。"
 _SMART_MONEY_NOTE: Final = "Close 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。"
@@ -112,7 +136,10 @@ class ReaderCardQuote:
     price: str
     change_pct: float | None = None
     change_basis: str | None = None
-    freshness: str = "fresh"
+    # No default freshness, and deliberately not `"fresh"`: a quote whose state nobody stated has not
+    # been shown to be current, and the one thing this field decides is whether a number reaches a
+    # reader. `reader_quotes` always carries the read model's own answer.
+    freshness: str = ""
     proxy_market: bool = False
 
 
@@ -141,6 +168,13 @@ class ReaderCardMarket:
     oi_value_usd: int | None = None
     side: str | None = None
     notional: str = ""
+    # The two OI columns the provider publishes beside the change and the value. Absent is absent: a
+    # frame that carries neither prints no line rather than two unknown placeholders.
+    whale_long_profit_bps: int | None = None
+    whale_oi_ratio_bps: int | None = None
+    # What the report itself said the price and the realised PNL were. Never a quote.
+    reported_price: str = ""
+    pnl: str = ""
     account: str = ""
     account_verified: bool = False
     actions: tuple[ReaderCardAction, ...] = ()
@@ -281,9 +315,22 @@ class ReaderCard:
         """The market families' own lines, without the facts line every family ends on.
 
         Public because a channel that builds its own footer needs the body without it (#562 PR-C).
+
+        Where the quote goes is a family decision, not a card-wide one (#562 PR-B). An OI card's
+        quote annotates the instrument its whole body is about, so it follows the measurement. A
+        liquidation or smart-money card first states what the *report* said -- its price, its PNL --
+        and the quote comes after as the comparison, never above the number it is compared with.
+
+        Absent lines are dropped here rather than by each caller. Every family has lines that exist
+        only when the report carried the fact -- a quote, a reported price, a whale pair, a largest
+        figure, an action timeline -- and a channel that joined the raw list would print a blank line
+        where the missing fact would have been.
         """
 
-        market, span = self.market, self._span()
+        return [line for line in self._market_lines() if line]
+
+    def _market_lines(self) -> list[str]:
+        market, span, quote = self.market, self._span(), quote_line(self.quotes)
         venue = market.venue or fmt.UNKNOWN_VENUE
         if self.header.family == "oi":
             direction = OI_DIRECTION_ZH.get(market.direction or "", market.direction or "")
@@ -292,12 +339,14 @@ class ReaderCard:
                 f"OI ${fmt.usd_compact(market.oi_value_usd)} · {venue} · "
                 f"{market.measurement or fmt.UNKNOWN_MEASUREMENT}"
             )
-            return [f"{head} · {span}", detail] if span else [head, detail]
+            return [f"{head} · {span}" if span else head, detail, quote, self._whale_line()]
         if self.header.family == "liquidation":
             side = market.side or ""
             return [
                 f"{venue} · {SIDE_ZH.get(side, side)}单被强平 {self.facts.report_count} 笔 · {span}",
                 f"最大单笔来源报告金额 ${market.notional}" if market.notional else "",
+                self._reported_line(),
+                quote,
                 _LIQUIDATION_NOTE,
             ]
         if self.header.family == "smart_money":
@@ -321,6 +370,8 @@ class ReaderCard:
                     else entry.label
                     for entry in market.actions
                 ),
+                self._reported_line(),
+                quote,
                 _SMART_MONEY_NOTE,
             ]
         return [
@@ -328,12 +379,66 @@ class ReaderCard:
             " · ".join(part for part in (venue, market.kind, _RAW_NOTE) if part),
         ]
 
+    def _reported_line(self) -> str:
+        """`来源报告价 $3120.5 · 已实现 PNL -$412.75`, or nothing when the report carried neither."""
+
+        market = self.market
+        parts = [
+            f"{_REPORTED_PRICE_PREFIX}${text}" if (text := fmt.decimal_text(market.reported_price)) else "",
+            f"{_PNL_PREFIX}{pnl}" if (pnl := fmt.signed_usd(market.pnl)) else "",
+        ]
+        return " · ".join(part for part in parts if part)
+
+    def _whale_line(self) -> str:
+        """The OI frame's two whale percentages, each printed only if the frame carried it."""
+
+        market = self.market
+        parts = [
+            f"{_WHALE_PROFIT_PREFIX}{fmt.percent_from_bps(market.whale_long_profit_bps)}"
+            if market.whale_long_profit_bps is not None
+            else "",
+            f"{_WHALE_RATIO_PREFIX}{fmt.percent_from_bps(market.whale_oi_ratio_bps)}"
+            if market.whale_oi_ratio_bps is not None
+            else "",
+        ]
+        return " · ".join(part for part in parts if part)
+
     def _span(self) -> str:
         if self.times.event_at_ms is None:
             return ""
         last = self.times.event_at_ms
         first = self.times.span_from_ms if self.times.span_from_ms is not None else last
         return fmt.clock(first) if first == last else f"{fmt.clock(first)}–{fmt.clock(last)}"
+
+
+def reader_quotes(quotes: Sequence[Mapping[str, Any]]) -> tuple[ReaderCardQuote, ...]:
+    """The quote read model's rows as card facts, bounded to the assets a card names.
+
+    One mapping for every card a reader receives: the News first card fills it from the assets its
+    verdict grounded, and the market card from the instrument its observation names (#562 PR-B). The
+    ticker the facts line already printed, not the contract's base symbol: the two lines annotate the
+    same assets and must line up. They differ for 0.34% of a week's priced assets -- all issuer
+    aliases (`XIAOMI` prices on `HK1810`), where the card's own ticker is the clearer of the two.
+    Freshness is carried, not applied: `quote_line` owns the rule that only a fresh quote reaches a
+    reader, so every channel drops a stale one the same way.
+    """
+
+    return tuple(
+        ReaderCardQuote(
+            symbol=str(quote.get("requested_symbol") or quote.get("symbol") or "").strip(),
+            price=str(quote.get("price") or ""),
+            change_pct=(
+                float(change)
+                if isinstance(change := quote.get("change_pct"), int | float) and not isinstance(change, bool)
+                else None
+            ),
+            change_basis=str(quote.get("change_basis") or "") or None,
+            freshness=str(quote.get("state") or ""),
+            proxy_market=str(quote.get("instrument_class") or "") != _NATIVE_MARKET_CLASS,
+        )
+        for quote in quotes[:CARD_ASSETS_MAX]
+        if isinstance(quote, Mapping)
+    )
 
 
 def quote_line(quotes: Sequence[ReaderCardQuote]) -> str:
@@ -361,14 +466,16 @@ def quote_line(quotes: Sequence[ReaderCardQuote]) -> str:
     for index, proxy in enumerate(proxies):
         if proxy:
             entries[index] += _PERP_MARK
-    return _QUOTE_LINE_PREFIX + " · ".join(entries)
+    return QUOTE_LINE_PREFIX + " · ".join(entries)
 
 
 __all__ = [
     "ACTION_ZH",
+    "CARD_ASSETS_MAX",
     "FAMILY_TITLE",
     "NOVELTY_ZH",
     "OI_DIRECTION_ZH",
+    "QUOTE_LINE_PREFIX",
     "RAW_TEXT_MAX",
     "SIDE_ZH",
     "TITLE_MAX",
@@ -385,4 +492,5 @@ __all__ = [
     "ReaderCardQuote",
     "ReaderCardTimes",
     "quote_line",
+    "reader_quotes",
 ]

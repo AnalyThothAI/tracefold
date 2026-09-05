@@ -17,8 +17,10 @@ import asyncio
 import json
 import re
 import threading
+import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -29,10 +31,14 @@ from tracefold.news.liquidations import parse_liquidation
 from tracefold.news.market_notifications import (
     REASON_SENDER_UNAVAILABLE,
     SEND_ATTEMPTS_MAX,
+    SEND_RETRY_BACKOFF_MS,
     MarketNotificationLoop,
     group_identity,
 )
+from tracefold.news.market_review.instruments import Instrument
+from tracefold.news.market_review.pricing import QUOTE_FRESH_MAX_AGE_MS, QUOTE_READ_TIMEOUT_SECONDS, Quote
 from tracefold.news.oi_signals import measurement_definition, oi_source_contract
+from tracefold.news.pipeline.delivery import read_display_quotes
 from tracefold.news.smart_money import parse_smart_money
 from tracefold.news.source_contracts import MARKET_PROVIDER
 
@@ -69,10 +75,45 @@ class _Db:
         self.holding = threading.Event()
         self.release = threading.Event()
         self.names: list[str] = []
+        # The quote plane's three failure shapes: a read that outlives its budget, and a port that
+        # raises before the read happens at all.
+        self.slow_reads: set[str] = set()
+        self.slow_seconds = 0.0
+        self.quote_failure: BaseException | None = None
+        # A port that honours no budget of its own, which is what the loop's own deadline is for.
+        self.quote_port_seconds = 0.0
+        # Runs once, inside the window this PR opens: after the due card's transaction has committed
+        # and released its row lock, and before the claim's compare-and-set.
+        self.before_quotes: Callable[[], None] | None = None
 
     async def read(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float = 3.0) -> Any:
         self.names.append(name)
-        return fn(repositories_for_connection(self.connection))
+
+        async def run() -> Any:
+            if name in self.slow_reads:
+                await asyncio.sleep(self.slow_seconds)
+            return fn(repositories_for_connection(self.connection))
+
+        # The deadline the caller asked for is really applied, so a test that overruns it overruns
+        # the same budget production overruns rather than a stand-in for one.
+        return await asyncio.wait_for(run(), timeout=timeout_seconds)
+
+    async def quotes_for_symbols(self, symbols: Any, *, now_ms: int) -> list[dict[str, Any]]:
+        """`MarketNotificationDatabasePort.quotes_for_symbols`, composed as Workers composes it.
+
+        `read_display_quotes` is the News first card's own session and 1.5 s budget, so what this
+        suite proves about the market card's quote is proved about the code the News card is quoted
+        with rather than about a second implementation of it.
+        """
+
+        if self.before_quotes is not None:
+            self.before_quotes, run = None, self.before_quotes
+            run()
+        if self.quote_failure is not None:
+            raise self.quote_failure
+        if self.quote_port_seconds:
+            await asyncio.sleep(self.quote_port_seconds)
+        return await read_display_quotes(self, symbols, now_ms=now_ms, name="news_market_quotes")
 
     async def tx(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float = 3.0) -> Any:
         self.names.append(name)
@@ -792,6 +833,339 @@ def _wallet_item(conn: Any, item_id: str, *, at_ms: int, action: str, side: str)
             provider_params_json='{"relatedAddress": "0x4d3a"}',
         )
         repos.news.insert_market_smart_money(fact=fact, ingest_mode="live", now_ms=at_ms)
+
+
+# --- the card's quote, on the same read model News is quoted from (#562 §2) ------------------------
+
+
+_PRICED = (("WIF", "WIFUSDT", "0.5432", 7.91), ("DOGE", "DOGEUSDT", "0.19980", -3.2))
+
+
+def _quotable(
+    conn: Any,
+    *,
+    received_at_ms: int = NOW,
+    reference_at_ms: int | None = NOW - 60_000,
+) -> None:
+    """The corpus's symbols priced in `news_quote_snapshots`, through the real writers.
+
+    One snapshot for the whole venue, because that is what a venue answers with: a second snapshot
+    naming only the other symbol would delist the first, which is `apply_snapshot`'s own rule.
+    """
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.instruments.apply_snapshot(
+            [
+                Instrument(
+                    venue="binance.perp",
+                    venue_symbol=venue_symbol,
+                    base_symbol=symbol,
+                    instrument_class="crypto",
+                    quote_asset="USDT",
+                )
+                for symbol, venue_symbol, _, _ in _PRICED
+            ],
+            now_ms=NOW,
+        )
+        repos.price.replace_source_snapshot(
+            source_key="binance.perp",
+            quotes=[
+                Quote(
+                    venue="binance.perp",
+                    venue_symbol=venue_symbol,
+                    base_symbol=symbol,
+                    price=Decimal(price),
+                    price_kind="last",
+                    instrument_class="crypto",
+                    quote_asset="USDT",
+                    change_pct=change_pct,
+                    change_basis="rolling_24h",
+                    source_at_ms=received_at_ms,
+                    reference_at_ms=reference_at_ms,
+                )
+                for symbol, venue_symbol, price, change_pct in _PRICED
+            ],
+            target_count=len(_PRICED),
+            source_at_ms=received_at_ms,
+            received_at_ms=received_at_ms,
+            now_ms=received_at_ms,
+        )
+
+
+def _card_body(conn: Any) -> str:
+    rows = _deliveries(conn)
+    assert len(rows) == 1
+    return next(element["content"] for element in rows[0]["card"]["elements"] if element["tag"] == "markdown")
+
+
+def test_a_fresh_quote_reaches_the_market_card_as_the_line_the_news_card_carries(conn: Any) -> None:
+    """The frozen snapshot itself, not a rendering of it: this is what the reader was sent."""
+
+    _quotable(conn)
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+    db = _Db(conn)
+    sender = _Sender()
+    asyncio.run(_loop(db, sender, clock=_Clock()).advance())
+
+    assert "行情 WIF $0.5432 24h +7.91%" in _card_body(conn)
+    # And the frame's own two whale columns, which were selected by SQL and dropped before #562.
+    assert "鲸鱼多头盈利 88.4% · 鲸鱼持仓/OI 143.9%" in _card_body(conn)
+    assert db.turns("news_market_quotes") == 1
+    assert _deliveries(conn)[0]["state"] == "sent"
+
+
+def test_a_liquidation_card_carries_the_reported_price_and_the_quote_under_different_labels(conn: Any) -> None:
+    """Both numbers, from two different planes, never written as one (#562 §3)."""
+
+    _quotable(conn)
+    _liquidation_item(conn, "liq-1", at_ms=NOW - 60_000, side="long")
+    asyncio.run(_loop(_Db(conn), _Sender(), clock=_Clock()).advance())
+
+    body = _card_body(conn)
+    assert "来源报告价 $0.2181" in body  # the provider's own report, exact and unrounded
+    assert "行情 DOGE $0.1998 24h -3.20%" in body
+
+
+def test_a_stale_quote_costs_its_line_and_the_card_is_sent_anyway(conn: Any) -> None:
+    """The rule is the read model's own, so this proves the age, not a re-implementation of it."""
+
+    _quotable(conn, received_at_ms=NOW - QUOTE_FRESH_MAX_AGE_MS - 1_000)
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+    db = _Db(conn)
+    sender = _Sender()
+    asyncio.run(_loop(db, sender, clock=_Clock()).advance())
+
+    assert db.turns("news_market_quotes") == 1  # it was asked, and the answer was not fresh
+    assert "行情" not in _card_body(conn)
+    assert len(sender.cards) == 1
+    assert _deliveries(conn)[0]["state"] == "sent"
+
+
+def test_a_quote_port_that_raises_never_holds_back_a_card_or_spends_an_attempt(conn: Any) -> None:
+    _quotable(conn)
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+    db = _Db(conn)
+    db.quote_failure = RuntimeError("quote_plane_down")
+    sender = _Sender()
+    asyncio.run(_loop(db, sender, clock=_Clock()).advance())
+
+    assert "行情" not in _card_body(conn)
+    assert len(sender.cards) == 1
+    row = _deliveries(conn)[0]
+    assert row["state"] == "sent"
+    assert row["attempts"] == 1  # the send was the first attempt, not a retry of a failed quote
+    assert row["settled_at_ms"] is not None
+
+
+def test_a_quote_read_that_overruns_its_budget_leaves_the_card_unquoted_and_on_time(conn: Any) -> None:
+    """The 1.5 s budget is the News budget, applied to the real read and not waited past."""
+
+    _quotable(conn)
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+    db = _Db(conn)
+    db.slow_reads = {"news_market_quotes"}
+    db.slow_seconds = QUOTE_READ_TIMEOUT_SECONDS + 0.5
+    sender = _Sender()
+
+    started = time.monotonic()
+    asyncio.run(_loop(db, sender, clock=_Clock()).advance())
+    elapsed = time.monotonic() - started
+
+    assert elapsed < QUOTE_READ_TIMEOUT_SECONDS + 0.5
+    assert "行情" not in _card_body(conn)
+    assert len(sender.cards) == 1
+    assert _deliveries(conn)[0]["attempts"] == 1
+
+
+def test_a_quote_port_that_honours_no_budget_of_its_own_is_still_cut_off_by_the_loop(conn: Any) -> None:
+    """The 1.5 s is the loop's promise to the reader, not the composition site's promise to the loop.
+
+    The port here sleeps for far longer than the budget and applies none of its own -- a plausible
+    future composition, and exactly what an unbounded external read would look like. The card must
+    still go out, unquoted, without waiting for it.
+    """
+
+    _quotable(conn)
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+    db = _Db(conn)
+    db.quote_port_seconds = 30.0
+    sender = _Sender()
+
+    started = time.monotonic()
+    asyncio.run(_loop(db, sender, clock=_Clock()).advance())
+    elapsed = time.monotonic() - started
+
+    assert elapsed < QUOTE_READ_TIMEOUT_SECONDS + 1.0
+    assert "行情" not in _card_body(conn)
+    assert len(sender.cards) == 1
+    assert _deliveries(conn)[0]["attempts"] == 1
+
+
+def test_a_retry_re_sends_the_frozen_card_and_asks_for_no_quote_at_all(conn: Any) -> None:
+    """A retry is the same card again. Re-quoting it would spend a read to change nothing."""
+
+    _quotable(conn)
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+    db = _Db(conn)
+    sender = _Sender()
+    sender.raise_with = _Refused("rate_limited", commit_phase="not_sent", retryable=True)
+    clock = _Clock()
+    asyncio.run(_loop(db, sender, clock=clock).advance())
+    assert db.turns("news_market_quotes") == 1
+
+    sender.raise_with = None
+    clock.advance(SEND_RETRY_BACKOFF_MS[0] + 1_000)
+    asyncio.run(_loop(db, sender, clock=clock).advance())
+
+    assert db.turns("news_market_quotes") == 1  # the frozen card was re-sent, not re-quoted
+    assert sender.cards[0] == sender.cards[1]
+    assert _deliveries(conn)[0]["attempts"] == 2
+
+
+def test_two_loops_racing_the_quote_read_send_one_card_and_spend_one_attempt(conn: Any) -> None:
+    """The claim is a compare-and-set, because the row lock no longer spans the read (#562 PR-B).
+
+    The quote read happens between the transaction that reads the due card and the one that freezes
+    it, so the `FOR UPDATE SKIP LOCKED` the reader took is released before the claim -- which is the
+    only reason a second process can be in this window at all. The test drives exactly that: the
+    first loop pauses where its quote read is, having committed its read of a card at attempt 0, and
+    a second loop then runs a whole turn on another connection, claims that card, has its send
+    refused and settles it back to `pending` with attempt 1 and a retry due 5 s later.
+
+    The first loop then resumes with a `DueCard` that describes a row that no longer exists: its
+    claim must lose. One card sent, one attempt spent, and the second attempt still waiting for its
+    backoff rather than being burned early against the first attempt's snapshot.
+    """
+
+    other = connect_postgres_test(read_only=False)
+    try:
+        _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+        _quotable(conn)
+        first, second = _Db(conn), _Db(other)
+        held_sender, racing_sender = _Sender(), _Sender()
+        # The winner's send is refused with an explicit rate limit, so it settles back to `pending`
+        # with attempts = 1: the exact row a stale reader would otherwise send a second time.
+        racing_sender.raise_with = _Refused("rate_limited", commit_phase="not_sent", retryable=True)
+
+        def race() -> None:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(lambda: asyncio.run(_loop(second, racing_sender, clock=_Clock()).advance())).result(
+                    timeout=30
+                )
+
+        first.before_quotes = race
+        asyncio.run(_loop(first, held_sender, clock=_Clock()).advance())
+
+        assert len(racing_sender.cards) == 1
+        # The loop that read the card first quoted it, lost the compare-and-set and sent nothing.
+        assert held_sender.cards == []
+        row = _deliveries(conn)[0]
+        assert row["state"] == "pending"
+        assert row["attempts"] == 1
+        assert row["next_attempt_at_ms"] == NOW + SEND_RETRY_BACKOFF_MS[0]
+        # And the frozen snapshot is still the one the winner rendered and sent.
+        assert row["card"] == racing_sender.cards[0]
+    finally:
+        other.close()
+
+
+def test_a_lost_claim_moves_to_the_next_due_card_rather_than_ending_the_turn(conn: Any) -> None:
+    """A turn that returned on a lost race would idle a whole tick behind one contended card."""
+
+    other = connect_postgres_test(read_only=False)
+    try:
+        _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+        _liquidation_item(conn, "liq-1", at_ms=NOW - 50_000, side="long")
+        db = _Db(conn)
+        sender = _Sender()
+        loop = _loop(db, sender, clock=_Clock())
+        lost: list[str] = []
+
+        def claim_the_first_card_elsewhere() -> None:
+            """A real claim by another process, in the window before this turn's own claim."""
+
+            due = _rows(other, "SELECT delivery_key FROM news_market_deliveries ORDER BY created_at_ms LIMIT 1")
+            lost.append(str(due[0]["delivery_key"]))
+            repos = repositories_for_connection(other)
+            with repos.transaction():
+                assert repos.news.market_begin_send(
+                    delivery_key=lost[0],
+                    card={"claimed": "elsewhere"},
+                    covered_count=1,
+                    covered_from_ms=NOW,
+                    covered_to_ms=NOW,
+                    attempts=0,
+                    due_at_ms=NOW,
+                    now_ms=NOW,
+                )
+
+        db.before_quotes = claim_the_first_card_elsewhere
+        asyncio.run(loop.advance())
+
+        assert len(lost) == 1
+        # One card lost its race and one card was still this turn's work; a turn that returned on the
+        # loss would have sent nothing at all and idled a whole tick behind one contended card.
+        assert len(sender.cards) == 1
+        states = {str(row["delivery_key"]): row["state"] for row in _deliveries(conn)}
+        assert states.pop(lost[0]) == "sending"  # held by the other process, never sent from here
+        assert list(states.values()) == ["sent"]
+    finally:
+        other.close()
+
+
+def test_the_quote_read_changes_no_notification_decision(conn: Any) -> None:
+    """§4 stays a function of the observations: what was decided is identical either way.
+
+    The same corpus is replayed twice into two databases -- once with every quote answered, once with
+    the quote port raising on every card -- and every durable decision is compared. A quote that could
+    reach `decide_group` would show up here as a different track, reason, count or due time.
+    """
+
+    def replay(*, quotes: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+        connection = connect_postgres_test(read_only=False)
+        try:
+            connection.execute("TRUNCATE news_items, news_market_tracks, news_market_deliveries CASCADE")
+            if quotes:
+                _quotable(connection)
+            db = _Db(connection)
+            if not quotes:
+                db.quote_failure = RuntimeError("quote_plane_down")
+            clock = _Clock()
+            sender = _Sender()
+            loop = _loop(db, sender, clock=clock)
+            _oi_item(connection, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+            _liquidation_item(connection, "liq-1", at_ms=NOW - 50_000, side="long")
+            asyncio.run(loop.advance())
+            _oi_item(connection, "oi-2", at_ms=NOW - 10_000, change_bps=1_400)
+            clock.advance(30_000)
+            asyncio.run(loop.advance())
+            decisions = _rows(
+                connection,
+                "SELECT delivery_key, group_key, trigger_reason, trigger_item_id, state, attempts,"
+                " covered_count, next_attempt_at_ms FROM news_market_deliveries ORDER BY delivery_key",
+            )
+            tracks = _rows(
+                connection,
+                "SELECT group_key, family, anchor_state, anchor_oi_change_bps, anchor_direction,"
+                " next_due_at_ms, pending_reason FROM news_market_tracks ORDER BY group_key",
+            )
+            bodies = sorted(
+                next(element["content"] for element in row["card"]["elements"] if element["tag"] == "markdown")
+                for row in _deliveries(connection)
+            )
+            return decisions, tracks, bodies
+        finally:
+            connection.close()
+
+    with_quotes = replay(quotes=True)
+    without_quotes = replay(quotes=False)
+    assert with_quotes[:2] == without_quotes[:2]
+    assert len(with_quotes[0]) == 3  # not vacuous: three cards, two families, one follow-up
+    # And not vacuous in the other direction either: the quoted run really did reach the reader with
+    # a price, so what the comparison above holds equal is a decision and not an unquoted card.
+    assert sum("行情" in body for body in with_quotes[2]) == 3
+    assert not any("行情" in body for body in without_quotes[2])
 
 
 # --- what the page then reads --------------------------------------------------------------------

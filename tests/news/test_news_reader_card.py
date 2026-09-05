@@ -7,6 +7,11 @@ Two claims, both about characters rather than structure:
   families are rebuilt through `ReaderCard` and the Feishu serializer and compared as JSON values --
   key order is PostgreSQL's, since the frozen snapshot is `jsonb`, so a canonical dump is the byte
   comparison that means anything here.
+* **What #562 PR-B added is written down rather than regenerated.** `reader_card_quoted_cards.json`
+  holds the market card surfaces production has never sent -- the quote line, the report's own price
+  and PNL, the OI whale columns -- rendered by this repository and reviewed line by line. The two
+  corpora above are untouched by that change: every card in them is rendered with no quote, and the
+  reported-price and whale fields none of their observations carry.
 * **The card and the console write a number the same way.** `card_money_format.json` is one table read
   by this module and by `web/tests/unit/features/news/newsPriceAlignment.test.ts`. Editing the rule on
   one surface without the other fails both.
@@ -31,6 +36,7 @@ import pytest
 from tracefold.news import card_format as fmt
 from tracefold.news.delivery import render_first_card
 from tracefold.news.market_notifications import MarketObservation, MarketTrack, render_market_card
+from tracefold.news.reader_card import ReaderCardQuote
 
 FIXTURES: Final = Path(__file__).resolve().parents[1] / "fixtures" / "news"
 PRODUCTION_CARDS: Final[list[dict[str, Any]]] = json.loads(
@@ -38,6 +44,9 @@ PRODUCTION_CARDS: Final[list[dict[str, Any]]] = json.loads(
 )
 BRANCH_CARDS: Final[dict[str, Any]] = json.loads(
     (FIXTURES / "reader_card_branch_cards.json").read_text(encoding="utf-8")
+)
+QUOTED_CARDS: Final[dict[str, Any]] = json.loads(
+    (FIXTURES / "reader_card_quoted_cards.json").read_text(encoding="utf-8")
 )
 MONEY_FORMAT: Final[dict[str, Any]] = json.loads((FIXTURES / "card_money_format.json").read_text(encoding="utf-8"))
 
@@ -56,6 +65,7 @@ def _render(entry: dict[str, Any]) -> dict[str, Any]:
         observations=[MarketObservation(**row) for row in inputs["observations"]],
         detail_url=inputs["detail_url"],
         action_changes=inputs["action_changes"],
+        quotes=[ReaderCardQuote(**quote) for quote in inputs.get("quotes", ())],
     )
 
 
@@ -186,6 +196,65 @@ def test_the_branch_corpus_names_the_base_it_was_generated_from_and_covers_what_
     for name in ("news-header-bounded-at-one-hundred", "market-oi-subject-bounded-at-one-hundred"):
         title = next(e for e in BRANCH_CARDS["entries"] if e["id"] == name)["card"]["header"]["title"]["content"]
         assert len(title) == 100
+
+
+@pytest.mark.parametrize("entry", QUOTED_CARDS["entries"], ids=lambda entry: entry["id"])
+def test_a_quoted_market_card_renders_as_this_branch_wrote_it_down(entry: dict[str, Any]) -> None:
+    """#562 PR-B's own corpus: the surfaces production has not sent yet, pinned character for character."""
+
+    assert _canonical(_render(entry)) == _canonical(entry["card"])
+
+
+def test_the_quoted_corpus_covers_the_three_families_and_the_lines_it_claims() -> None:
+    """Not vacuous: each new line is asserted where it belongs, and absent where it does not."""
+
+    lines = {entry["id"]: _body(entry["card"]) for entry in QUOTED_CARDS["entries"]}
+    assert len(lines) == len(QUOTED_CARDS["entries"]) == 7
+
+    oi = lines["market-oi-quoted-with-whale-columns"]
+    assert "行情 WIF $0.5432 24h +7.91%" in oi
+    assert "鲸鱼多头盈利 88.4% · 鲸鱼持仓/OI 143.9%" in oi
+    # A stale quote costs its line; the whale columns are facts of the frame and stay.
+    stale = lines["market-oi-quote-stale-whale-still-shown"]
+    assert "行情" not in stale and "鲸鱼多头盈利 88.4%" in stale
+    # A reference too old to date the window costs the percentage, never the price (#88).
+    assert "行情 WIF $0.5432\n" in lines["market-oi-quoted-without-a-fresh-reference"]
+
+    liquidation = lines["market-liquidation-reported-price-and-quote"]
+    assert "来源报告价 $0.2181" in liquidation
+    assert "行情 DOGE $0.1998 24h -3.20%" in liquidation
+
+    smart_money = lines["market-smart-money-reported-price-pnl-and-day-basis-quote"]
+    assert "来源报告价 $3120.5 · 已实现 PNL -$412.75" in smart_money
+    # Hyperliquid publishes the venue's own day, so the window is named `日内` rather than assumed.
+    assert "行情 ETH $3,125.40 日内 +0.42%" in smart_money
+    assert "行情" not in lines["market-smart-money-reported-price-with-no-quote"]
+    # The sign goes outside the currency mark, and a profit is not written as a negative loss.
+    assert "来源报告价 $3180.25 · 已实现 PNL $128500.4" in lines["market-smart-money-positive-pnl"]
+
+
+def test_the_two_older_corpora_are_untouched_by_the_market_quote() -> None:
+    """The claim that keeps this a hard cut rather than a rewrite of what was already sent.
+
+    Every market observation in the production and branch corpora predates the quote line, the
+    reported price and the whale columns: none of those fields exists in their inputs, so no card in
+    either file may print one. Their expected cards are asserted byte-for-byte above; this states
+    *why* they could stay byte-identical rather than leaving it to look like luck.
+    """
+
+    market = [
+        entry
+        for corpus in (PRODUCTION_CARDS, BRANCH_CARDS["entries"])
+        for entry in corpus
+        if entry["source"] == "market"
+    ]
+    assert len(market) == 46
+    for entry in market:
+        assert "quotes" not in entry["inputs"]
+        for row in entry["inputs"]["observations"]:
+            assert not {"price", "pnl_usd", "whale_long_profit_bps", "whale_oi_ratio_bps"} & set(row)
+        body = _body(entry["card"])
+        assert "行情" not in body and "来源报告价" not in body and "鲸鱼" not in body
 
 
 @pytest.mark.parametrize("case", MONEY_FORMAT["prices"], ids=lambda case: case["value"])

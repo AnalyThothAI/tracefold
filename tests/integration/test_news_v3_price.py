@@ -14,7 +14,6 @@ from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_judgment import scored_judgment
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.delivery import reader_quotes
 from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.market_review.pricing import (
     HORIZON_MS,
@@ -24,7 +23,7 @@ from tracefold.news.market_review.pricing import (
 )
 from tracefold.news.models import TriageVerdict
 from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
-from tracefold.news.reader_card import quote_line
+from tracefold.news.reader_card import quote_line, reader_quotes
 from tracefold.news.triage_rules import DecisionResult, DegradedJudgment
 
 pytestmark = pytest.mark.integration

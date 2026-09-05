@@ -1597,7 +1597,9 @@ primary and the Gate grounded, source（N 条报道）, and the leader item's
 publication time in the reader's zone (UTC+8). News derives this list
 from model-primary ∩ Gate-grounded assets. There is no second derivation: the
 deterministic OI branch that read a symbol back out of its ledger row went with
-the OI card (#553), and a market observation has no reader card at all. The third body line is the market's own number for those
+the OI card (#553). A market observation is a reader card too, built from the
+same value object and quoted from the same read model — see the market
+notification loop below (#562). The third body line is the market's own number for those
 same verified tickers — `行情 CL $86.43 24h +2.30%（永续）`. At delivery, an
 on-demand trade/candle point becomes the current number; if no contract
 produces one, an existing `fresh` Quote Snapshot may still provide the display
@@ -2909,6 +2911,49 @@ Sending goes through the one entry ordinary News uses. `InitialSendEntry` in
 `min_interval_seconds` and one lock, so both owners queue in arrival order and the
 provider never sees two sends at once. The market loop claims one card, releases
 its PostgreSQL connection, and only then calls the sender.
+
+The card carries the market's own price on the same terms the News card does.
+#553 kept market observations out of News's first-card preparation entirely, and
+the cost was a card about an instrument that never said what the instrument was
+worth: the OI symbol was already in the quote loop's target set, the liquidation
+and smart-money reports carried a price and a PNL that were projected and then
+dropped, and the OI frame's two whale columns were selected by SQL and never
+reached the card. #562 §2 revises that one clause — a market card still enters no
+model, no tradability check and no deletion logic, and its quote is one read-only
+lookup on the same `news_quote_snapshots` read model, with the same rule and the
+same code. `MarketNotificationDatabasePort.quotes_for_symbols` is the port; the
+Workers wiring satisfies it with `read_display_quotes` — the News first card's
+own session, budget and degradation — and the loop turns those rows into card
+facts with `reader_quotes`, which lives beside the value object it builds and is
+the one mapping both renderers use. There is no market-specific quote rule
+anywhere. Only
+a `fresh` quote is rendered, a percentage only when its reference is inside
+`QUOTE_REFERENCE_MAX_AGE_MS`, and stale, unavailable or unlisted leaves no line,
+no placeholder and no zero. The read is bounded by
+`QUOTE_READ_TIMEOUT_SECONDS`, which lives beside the other quote budgets in the
+pricing domain and is applied by the loop itself as well as by the shared read —
+"no card waits longer than this for a price" is the loop's promise to the reader,
+not something a composition site could quietly stop keeping. Every failure of the
+read — admission, overrun, timeout, a raising port — is the same answer as a stale
+quote: the card goes out unquoted, on its own attempt, with no retry consumed and
+no notification decision changed. It happens between two short transactions
+rather than inside the claiming one, so no transaction of this loop's is open
+across it, and a retry asks for nothing at all because it re-sends the card
+frozen at the first attempt.
+
+Because the read and the freeze are now two transactions, the `FOR UPDATE SKIP
+LOCKED` that finds the due card no longer spans the claim, so `market_begin_send`
+carries the predicate that lock used to provide: it updates only a row still at
+the attempt count and due time the card was *read* with. A card another process
+claimed, sent and re-queued in that window fails this compare-and-set instead of
+spending its second attempt early against the first attempt's snapshot, and the
+loop that lost moves on to the next due card rather than ending its turn. On the card the two planes are never written as one:
+`来源报告价` is the provider's own exact figure — the price a liquidation or an
+account action was reported at, and the smart-money report's realised PNL beside
+it — while `行情` is the market's current quote in the console's own characters.
+The OI card carries the frame's own `Whale Long Profit` and `Whale/OI Ratio`
+percentages on one line of their own, in the provider's terms and only when the
+frame carried them.
 
 The card's detail button needs an absolute URL or no button at all. A reader opens
 the card in Feishu or Telegram, where `/news/market/{item_id}` is not a link — the

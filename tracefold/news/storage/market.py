@@ -420,6 +420,12 @@ MARKET_DELIVERY_OBSERVATIONS_SQL = f"""
 # The snapshot is frozen on the first attempt only. A retry is the same card being sent again after a
 # failure that provably delivered nothing, and re-rendering it would change what the reader is told
 # between two attempts of one intent.
+#
+# This is also the claim, and the whole of it: the row was read in an earlier transaction (#562 PR-B
+# reads the quote between the two, holding no lock across it), so `FOR UPDATE SKIP LOCKED` no longer
+# spans the read and the write. The predicate carries the two values the reader saw -- the attempt
+# count and the due time -- so a card another process has since claimed, settled and re-queued fails
+# this update instead of spending its second attempt early against a snapshot from the first.
 MARKET_BEGIN_SEND_SQL = """
     UPDATE news_market_deliveries
        SET state = 'sending',
@@ -433,6 +439,8 @@ MARKET_BEGIN_SEND_SQL = """
            updated_at_ms = %s
      WHERE delivery_key = %s
        AND state = ANY (ARRAY['pending', 'unavailable'])
+       AND attempts = %s
+       AND next_attempt_at_ms <= %s
 """
 
 MARKET_SETTLE_DELIVERY_SQL = """
@@ -741,13 +749,17 @@ class MarketStorage:
         covered_count: int,
         covered_from_ms: int,
         covered_to_ms: int,
+        attempts: int,
+        due_at_ms: int,
         now_ms: int,
     ) -> bool:
-        """Freeze this card and claim the attempt. A retry keeps the snapshot it already froze.
+        """Freeze this card and claim the attempt, or answer False. A retry keeps its own snapshot.
 
-        The snapshot is written on the first attempt only. A second attempt is the *same* card being
-        sent again after a failure that provably delivered nothing; re-rendering it would silently
-        change what the reader is told between two attempts of one intent.
+        `attempts` and `due_at_ms` are the values this card was *read* with, and they make this a
+        compare-and-set rather than a blind update: only the reader that still describes the row may
+        claim it. The snapshot is written on the first attempt only -- a second attempt is the same
+        card being sent again after a failure that provably delivered nothing, and re-rendering it
+        would silently change what the reader is told between two attempts of one intent.
         """
 
         cursor = self.conn.execute(
@@ -761,6 +773,8 @@ class MarketStorage:
                 int(now_ms),
                 int(now_ms),
                 delivery_key,
+                int(attempts),
+                int(due_at_ms),
             ),
         )
         return bool(cursor.rowcount)
