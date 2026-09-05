@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import queue
 import signal
@@ -11,6 +12,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -279,7 +281,9 @@ def test_real_workers_signal_lane_never_reads_execution_credentials(tmp_path: Pa
 
 
 @pytest.mark.slow
-def test_real_trading_wiring_fault_fails_workers_startup_and_readiness(tmp_path: Path) -> None:
+def test_real_trading_wiring_fault_stays_inside_the_trading_capability(tmp_path: Path) -> None:
+    """#553 PR-3. A lane that cannot be composed is a Trading fault, not a Workers fault."""
+
     port = _free_port()
     process = _start_workers_process(
         "trading_wiring_fault",
@@ -287,11 +291,144 @@ def test_real_trading_wiring_fault_fails_workers_startup_and_readiness(tmp_path:
         extra_env={"TRACEFOLD_TEST_CONFIG_DIR": str(tmp_path)},
     )
     try:
+        _wait_ready(process, port)
+        capabilities = _readiness_payload(port)["capabilities"]
+        assert capabilities["trading_signal_lane"] == {
+            "state": "faulted",
+            "reason": "trading_signal_lane_wiring_failed:RuntimeError",
+        }
+        assert _runtime_row()["lifecycle_state"] == "running"
+        assert _runtime_capabilities()["trading_signal_lane"]["state"] == "faulted"
+
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=5.0) == 0
+    finally:
+        _ensure_process_stopped(process)
+
+
+@pytest.mark.slow
+def test_real_trading_lane_fault_keeps_news_fact_writes_and_reads_running(tmp_path: Path) -> None:
+    """#553 PR-3 acceptance 1: inject a Trading lane exception; ingestion, writes and reads continue."""
+
+    _create_test_fact_table()
+    port = _free_port()
+    process = _start_workers_process(
+        "trading_lane_fault",
+        port,
+        extra_env={"TRACEFOLD_TEST_CONFIG_DIR": str(tmp_path)},
+    )
+    try:
+        _wait_ready(process, port)
+        _wait_for_output(process, "TRADING_LANE_ABOUT_TO_FAIL")
+        _wait_capability(port, "trading_signal_lane", "faulted")
+
+        # The lane is gone; the process is not, and the News ingestion task beside it keeps
+        # committing facts. The count has to keep moving *after* the fault, not merely be non-zero.
+        after_fault = _test_fact_count()
+        _wait_until(lambda: _test_fact_count() > after_fault, "News fact writes stopped with the lane")
+
+        payload = _readiness_payload(port)
+        assert payload["ok"] is True
+        assert payload["capabilities"]["news_ingestion"] == {"state": "running", "reason": None}
+        assert payload["capabilities"]["trading_signal_lane"] == {
+            "state": "faulted",
+            "reason": "trading_signal_lane:RuntimeError",
+        }
+        # A running Deliverer task beside a sender that could not be built is still `unavailable`:
+        # declaring a task is not a claim that its capability works.
+        assert payload["capabilities"]["news_delivery"] == {
+            "state": "unavailable",
+            "reason": "news_item_push_telegram_bot_token_unavailable",
+        }
+        row = _runtime_row()
+        assert row["lifecycle_state"] == "running"
+        assert row["fatal_code"] is None
+        assert _runtime_capabilities()["trading_signal_lane"]["state"] == "faulted"
+
+        # A faulted lane must not be read back as a reason to switch off the healthy fact APIs.
+        settings = Settings(ws_token="secret", storage=postgres_settings_storage())
+        settings.set_config_dir(tmp_path / "app-home")
+        with TestClient(create_app(settings=settings)) as client:
+            status = client.get("/api/status", headers={"Authorization": "Bearer secret"})
+        assert status.status_code == 200
+        runtime = status.json()["data"]["runtime"]
+        assert runtime["ok"] is True
+        assert runtime["workers_runtime"]["state"] == "running"
+        assert runtime["workers_runtime"]["capabilities"]["trading_signal_lane"]["state"] == "faulted"
+
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=5.0) == 0
+        assert _runtime_row()["lifecycle_state"] == "stopped"
+    finally:
+        _ensure_process_stopped(process)
+
+
+@pytest.mark.slow
+def test_real_news_program_registration_fault_stays_inside_the_editorial_capability() -> None:
+    """#553 PR-3 acceptance 3: the Program manifest is editorial's, and nothing else waits on it."""
+
+    _create_test_fact_table()
+    port = _free_port()
+    process = _start_workers_process("manifest_registration_fault", port)
+    try:
+        _wait_for_output(process, "MANIFEST_REGISTRATION_ABOUT_TO_FAIL")
+        _wait_ready(process, port)
+        payload = _readiness_payload(port)
+        assert payload["runtime_manifest_sha"] is None
+        assert payload["capabilities"]["news_editorial"] == {
+            "state": "faulted",
+            "reason": "news_editorial_manifest_registration_failed:RuntimeError",
+        }
+        assert payload["capabilities"]["news_ingestion"] == {"state": "running", "reason": None}
+
+        after_fault = _test_fact_count()
+        _wait_until(lambda: _test_fact_count() > after_fault, "reception stopped with the Program")
+        assert _runtime_row()["lifecycle_state"] == "running"
+        assert _runtime_capabilities()["news_editorial"]["state"] == "faulted"
+
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=5.0) == 0
+    finally:
+        _ensure_process_stopped(process)
+
+
+@pytest.mark.slow
+def test_real_news_ingestion_task_fault_still_fails_the_workers_root() -> None:
+    """#553 PR-3. Reception and admission are the information entry, not an optional capability.
+
+    A receiver crash has always been healed by the process exiting and compose restarting it. Turning
+    that into a confined `faulted` capability would replace a self-healing restart with a permanent
+    ingestion outage behind a 200 `/readyz`, which is the opposite of what this PR is for.
+    """
+
+    port = _free_port()
+    process = _start_workers_process("ingestion_task_fault", port)
+    try:
+        _wait_ready(process, port)
+        _wait_for_output(process, "INGESTION_ABOUT_TO_FAIL", timeout_seconds=20.0)
         assert process.wait(timeout=10.0) != 0
         _assert_probe_closed(port)
         row = _runtime_row()
         assert row["lifecycle_state"] == "failed"
-        assert row["fatal_code"] == "startup_failed"
+        assert row["fatal_code"] == "child_failed"
+        # And it is not reported as a capability fault: nothing pretends one lane went down.
+        assert _runtime_capabilities().get("news_ingestion", {}).get("state") != "faulted"
+    finally:
+        _ensure_process_stopped(process)
+
+
+@pytest.mark.slow
+def test_real_shared_schema_failure_still_fails_the_workers_root() -> None:
+    """#553 PR-3 acceptance 5: confining capability faults did not delete the foundation checks."""
+
+    port = _free_port()
+    process = _start_workers_process("schema_mismatch", port)
+    try:
+        assert process.wait(timeout=10.0) != 0
+        _assert_probe_closed(port)
+        # The schema gate runs before the singleton row is claimed, so the refusal leaves no runtime
+        # to report on: no probe, no row, no capability report claiming anything works.
+        assert _optional_runtime_row() is None
     finally:
         _ensure_process_stopped(process)
 
@@ -408,19 +545,62 @@ def test_real_workers_runtime_heartbeat_stale_degrades_readiness_without_killing
 
 
 @pytest.mark.slow
-def test_real_workers_child_failure_closes_probe_and_persists_fatal_state() -> None:
+def test_real_optional_task_fault_stops_only_that_task_and_a_restart_drains_its_backlog(
+    tmp_path: Path,
+) -> None:
+    """#553 PR-3 acceptance 4, the shape #553 PR-2's market notification loop will register as.
+
+    An unexpected program error in one optional task stops that task, reports it, restarts nothing,
+    and leaves every other task committing. Recovery is an operator restart, and the work waiting in
+    PostgreSQL is still there when the task comes back.
+    """
+
+    _create_test_fact_table()
+    _create_test_backlog_table()
+    resume_gate = tmp_path / "resume-optional-task"
     port = _free_port()
-    process = _start_workers_process("child_failure", port)
+    process = _start_workers_process(
+        "optional_task_fault",
+        port,
+        extra_env={"TRACEFOLD_TEST_RESUME_GATE": str(resume_gate)},
+    )
     try:
         _wait_ready(process, port)
-        _wait_for_output(process, "ABOUT_TO_FAIL")
-        assert process.wait(timeout=5.0) != 0
-        _assert_probe_closed(port)
-        row = _runtime_row()
-        assert row["lifecycle_state"] == "failed"
-        assert row["fatal_code"] == "child_failed"
+        _wait_for_output(process, "OPTIONAL_TASK_ABOUT_TO_FAIL")
+        _wait_capability(port, "news_quotes", "faulted")
+
+        after_fault = _test_fact_count()
+        _wait_until(lambda: _test_fact_count() > after_fault, "healthy tasks stopped with the faulted one")
+        payload = _readiness_payload(port)
+        assert payload["ok"] is True
+        assert payload["capabilities"]["news_quotes"] == {
+            "state": "faulted",
+            "reason": "news_quotes:RuntimeError",
+        }
+        assert payload["capabilities"]["news_ingestion"] == {"state": "running", "reason": None}
+        # Nothing restarted it, so its PostgreSQL backlog is still unprocessed.
+        assert _unprocessed_backlog() >= 1
+
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=5.0) == 0
+        pending_at_stop = _unprocessed_backlog()
+        assert pending_at_stop >= 1
     finally:
         _ensure_process_stopped(process)
+
+    resume_gate.touch()
+    restarted = _start_workers_process(
+        "optional_task_fault",
+        _free_port(),
+        extra_env={"TRACEFOLD_TEST_RESUME_GATE": str(resume_gate)},
+    )
+    try:
+        _wait_for_output(restarted, "BACKLOG_DRAINED", timeout_seconds=15.0)
+        _wait_until(lambda: _unprocessed_backlog() == 0, "the restarted task did not drain its backlog")
+        restarted.send_signal(signal.SIGTERM)
+        assert restarted.wait(timeout=5.0) == 0
+    finally:
+        _ensure_process_stopped(restarted)
 
 
 @pytest.mark.slow
@@ -787,16 +967,109 @@ def _assert_probe_closed(port: int) -> None:
         _LOCAL_HTTP.open(f"http://127.0.0.1:{port}/healthz", timeout=0.2)
 
 
-def _runtime_row() -> dict[str, object]:
+def _readiness_payload(port: int) -> dict[str, object]:
+    """The Workers process's own public status document."""
+
+    url = f"http://127.0.0.1:{port}/readyz"
+    try:
+        with _LOCAL_HTTP.open(url, timeout=1.0) as response:
+            return dict(json.loads(response.read().decode("utf-8")))
+    except urllib.error.HTTPError as exc:
+        return dict(json.loads(exc.read().decode("utf-8")))
+
+
+def _wait_capability(
+    port: int,
+    capability: str,
+    state: str,
+    *,
+    timeout_seconds: float = 10.0,
+) -> None:
+    last: object = None
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        last = _readiness_payload(port).get("capabilities", {}).get(capability)
+        if isinstance(last, dict) and last.get("state") == state:
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"capability {capability} never reached {state!r}; last={last!r}")
+
+
+def _wait_until(predicate: Callable[[], bool], message: str, *, timeout_seconds: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.05)
+    raise AssertionError(message)
+
+
+def _create_test_fact_table() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS worker_runtime_test_facts(id bigserial PRIMARY KEY)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _create_test_backlog_table() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS worker_runtime_test_backlog("
+            "id bigserial PRIMARY KEY, processed boolean NOT NULL DEFAULT false)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _test_fact_count() -> int:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        row = conn.execute("SELECT count(*) AS count FROM worker_runtime_test_facts").fetchone()
+        assert row is not None
+        return int(row["count"])
+    finally:
+        conn.close()
+
+
+def _unprocessed_backlog() -> int:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        row = conn.execute("SELECT count(*) AS count FROM worker_runtime_test_backlog WHERE NOT processed").fetchone()
+        assert row is not None
+        return int(row["count"])
+    finally:
+        conn.close()
+
+
+def _runtime_capabilities() -> dict[str, dict[str, object]]:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        row = conn.execute("SELECT capabilities FROM workers_runtime WHERE singleton_key").fetchone()
+        assert row is not None
+        return dict(row["capabilities"])
+    finally:
+        conn.close()
+
+
+def _optional_runtime_row() -> dict[str, object] | None:
     conn = connect_postgres_test(read_only=False)
     try:
         row = conn.execute(
             "SELECT runtime_id, lifecycle_state, fatal_code FROM workers_runtime WHERE singleton_key"
         ).fetchone()
-        assert row is not None
-        return dict(row)
+        return None if row is None else dict(row)
     finally:
         conn.close()
+
+
+def _runtime_row() -> dict[str, object]:
+    row = _optional_runtime_row()
+    assert row is not None
+    return row
 
 
 def _ensure_process_stopped(process: subprocess.Popen[str]) -> None:

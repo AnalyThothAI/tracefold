@@ -22,7 +22,9 @@ class NewsPipeline:
     receiver: OpenNewsReceiver | None
     recovery: RecoveryRunner | None
     deduper: DeduperConsumer
-    triage: TriageConsumer
+    # Editorial is one capability among several: a Program that cannot be assembled or registered
+    # leaves no Triage consumer, and reception, admission and retention run on without it (#553 PR-3).
+    triage: TriageConsumer | None
     deliverer: DelivererConsumer
     janitor: JanitorLoop
     instruments: InstrumentSnapshotLoop | None = None
@@ -32,11 +34,17 @@ class NewsPipeline:
     reactions: EventReactionLoop | None = None
 
     @property
-    def runtime_manifest_sha(self) -> str:
-        return self.triage.runtime_manifest_sha
+    def runtime_manifest_sha(self) -> str | None:
+        return None if self.triage is None else self.triage.runtime_manifest_sha
 
     async def register_runtime_manifest(self) -> None:
-        await self.triage.register_runtime_manifest()
+        if self.triage is not None:
+            await self.triage.register_runtime_manifest()
+
+    def disable_editorial(self) -> None:
+        """Drop the Triage consumer after its Program failed to assemble or register."""
+
+        self.triage = None
 
     def runners(self) -> list[tuple[str, Callable[[asyncio.Event], Awaitable[None]]]]:
         """Ordered task declarations. The optional stages are bound to a local so the absent ones are
@@ -49,10 +57,11 @@ class NewsPipeline:
         if recovery is not None:
             out.append(("news-recovery", lambda stop: recovery.run(stop_event=stop)))
         deduper, triage, deliverer, janitor = self.deduper, self.triage, self.deliverer, self.janitor
+        out.append(("news-deduper", lambda stop: deduper.run(stop_event=stop)))
+        if triage is not None:
+            out.append(("news-triage", lambda stop: triage.run(stop_event=stop)))
         out.extend(
             [
-                ("news-deduper", lambda stop: deduper.run(stop_event=stop)),
-                ("news-triage", lambda stop: triage.run(stop_event=stop)),
                 ("news-deliverer", lambda stop: deliverer.run(stop_event=stop)),
                 ("news-janitor", lambda stop: janitor.run(stop_event=stop)),
             ]

@@ -258,6 +258,18 @@ snapshot lateral is now keyed to `v.evidence_version`, and
 `(event_id, evidence_version)` is that table's primary key, so it still yields at
 most one row and the view still yields at most one row per Event.
 
+`20260905_0364` adds `workers_runtime.capabilities`, a `jsonb` object keyed by
+capability name (#553 PR-3). Until that revision, `workers_runtime` could say
+only whether the Workers process was alive, which was enough while every
+business fault was fatal: a faulted Trading lane, an unconstructable push sender
+and an unassemblable News Program all ended as `lifecycle_state = 'failed'`. That
+PR stops those from killing the process, so the process now legitimately stays
+`running` beside one dead capability, and this column is where it says which. It
+is a defaulted column addition, compatible in both directions: a writer on the
+previous revision never names it and gets `'{}'`, which reads as "this runtime
+published no report" rather than as a fault. `downgrade` drops it and loses only
+the current process's report, which the next start republishes.
+
 The result is a strict superset of the old one: when the newest snapshot is the
 judged one, both forms select the same row byte for byte, and only the Events the
 old form dropped are added. It writes and reads no row, changes no column, index,

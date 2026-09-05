@@ -16,6 +16,16 @@ from tracefold.app.learning_runtime import (
 )
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
+from tracefold.app.workers.runtime import (
+    NEWS_DELIVERY,
+    NEWS_EDITORIAL,
+    NEWS_INGESTION,
+    NEWS_INSTRUMENTS,
+    NEWS_QUOTES,
+    NEWS_REACTIONS,
+    SHARED_RESOURCE_FAILURES,
+    CapabilityStates,
+)
 from tracefold.app.workers.wiring.database import (
     WorkerNewsColdDatabase,
     WorkerNewsDatabase,
@@ -105,9 +115,16 @@ async def _wire_news_pipeline(
     settings: Settings,
     db: WorkerDatabase,
     finite: FiniteOperations,
+    capabilities: CapabilityStates,
     telemetry: TelemetryRegistry | None = None,
 ) -> tuple[RabbitMQBus, NewsPipeline]:
-    """Broker-driven News V3: one RabbitMQ bus + consumers; models/providers are optional capabilities."""
+    """Broker-driven News V3: one RabbitMQ bus + consumers; models/providers are optional capabilities.
+
+    The bus is foundational for News here: reception, admission and delivery all publish through it, so
+    a broker that will not connect still refuses the process. What is *not* foundational is the
+    editorial Program and the push sender -- either can fail on its own and leave reception, fact
+    writes and reads running (#553 PR-3).
+    """
 
     bus = await _connect_news_bus(settings, telemetry=telemetry)
     news_db = WorkerNewsDatabase(db)
@@ -135,7 +152,7 @@ async def _wire_news_pipeline(
         else None
     )
 
-    arms = await _compose_program_arms(settings, db=db)
+    arms = await _program_arms_or_fault(settings, db=db, capabilities=capabilities)
     pipeline = _compose_news_pipeline(
         settings,
         bus=bus,
@@ -145,11 +162,81 @@ async def _wire_news_pipeline(
         reaction_db=reaction_db,
         finite=finite,
         arms=arms,
+        sender=_push_sender_or_fault(settings, capabilities=capabilities),
         receiver=receiver,
         recovery=recovery,
         telemetry=telemetry,
     )
+    # Reception and admission are the entry this whole PR exists to keep running; their tasks are
+    # foundational and never fault this capability. The bounded market-review loops are optional, and
+    # each owns its own key so a faulted one names itself instead of the other two.
+    capabilities.running(NEWS_INGESTION)
+    for capability, loop in (
+        (NEWS_INSTRUMENTS, pipeline.instruments),
+        (NEWS_QUOTES, pipeline.quotes),
+        (NEWS_REACTIONS, pipeline.reactions),
+    ):
+        if loop is None:
+            capabilities.disabled(capability, f"{capability}_not_configured")
+        else:
+            capabilities.running(capability)
     return bus, pipeline
+
+
+async def _program_arms_or_fault(
+    settings: Settings,
+    *,
+    db: WorkerDatabase,
+    capabilities: CapabilityStates,
+) -> _ProgramArms | None:
+    """Assemble the editorial Programs, or fault only the editorial capability.
+
+    The version check is unchanged and still refuses to run an unproven Program: what changes is the
+    blast radius. A mismatch, a missing artifact or a failed canary reconciliation now leaves the
+    Triage consumer unwired instead of killing reception, market facts and market notifications with
+    it (#553 PR-3). Model-unconfigured and model-request behavior is untouched: those already produce
+    a composed pipeline with no judge. A PostgreSQL failure is not confined -- see the `except` below.
+    """
+
+    try:
+        arms = await _compose_program_arms(settings, db=db)
+    except SHARED_RESOURCE_FAILURES:
+        # The canary reconciliation this performs is a control write. A pool timeout or a dropped
+        # connection there says PostgreSQL failed, not that the Program is wrong, and recording it as
+        # an editorial fault would hide a shared fault behind a green readiness.
+        raise
+    except Exception as exc:
+        logger.opt(exception=exc).error("News Program assembly failed; editorial capability faulted")
+        capabilities.faulted(NEWS_EDITORIAL, f"{NEWS_EDITORIAL}_assembly_failed:{type(exc).__name__}")
+        return None
+    capabilities.running(NEWS_EDITORIAL)
+    return arms
+
+
+def _push_sender_or_fault(
+    settings: Settings,
+    *,
+    capabilities: CapabilityStates,
+) -> FeishuNewsPushSender | TelegramNewsPushSender | None:
+    """Construct the push sender, or mark delivery unavailable and keep the fact chain running.
+
+    A missing webhook, an unreadable secret file or a malformed token is a configuration fact, not a
+    delivery: the Deliverer settles those Events `delivery_unavailable` rather than presenting them as
+    sent. Recovery is a corrected config plus a restart; there is no hot reload console (#553 PR-3).
+    """
+
+    try:
+        sender = _news_push_sender(settings)
+    except RuntimeError as exc:
+        reason = str(exc).removeprefix("news_push_unavailable:") or "news_item_push_configuration_invalid"
+        logger.error("News push sender unavailable reason={}", reason)
+        capabilities.unavailable(NEWS_DELIVERY, reason)
+        return None
+    if sender is None:
+        capabilities.disabled(NEWS_DELIVERY, "news_item_push_not_requested")
+    else:
+        capabilities.running(NEWS_DELIVERY)
+    return sender
 
 
 async def _connect_news_bus(
@@ -365,7 +452,8 @@ def _compose_news_pipeline(
     quote_db: QuoteDatabasePort,
     reaction_db: ReactionDatabasePort,
     finite: FiniteOperations,
-    arms: _ProgramArms,
+    arms: _ProgramArms | None,
+    sender: FeishuNewsPushSender | TelegramNewsPushSender | None,
     receiver: OpenNewsReceiver | None,
     recovery: RecoveryRunner | None,
     telemetry: TelemetryRegistry | None,
@@ -379,30 +467,34 @@ def _compose_news_pipeline(
             db=news_db,
             watchlist_symbols=watchlist_symbols,
         ),
-        triage=TriageConsumer(
-            bus=bus,
-            db=news_db,
-            judge=arms.judge,
-            program_version=PROGRAM_VERSION,
-            program_sha256=arms.stable_artifact.program_sha256,
-            watchlist_symbols=watchlist_symbols,
-            watchlist=sorted(watchlist_symbols),
-            concurrency=settings.news.triage.concurrency,
-            circuit_failures=settings.news.triage.circuit_failures,
-            circuit_open_seconds=settings.news.triage.circuit_open_seconds,
-            policy=DecidePolicy(**settings.news.policy.model_dump()),
-            stable_bundle_sha=arms.stable_bundle_sha,
-            canary_arms=arms.canary_arms,
-            runtime_manifest=arms.runtime_manifest,
+        triage=(
+            None
+            if arms is None
+            else TriageConsumer(
+                bus=bus,
+                db=news_db,
+                judge=arms.judge,
+                program_version=PROGRAM_VERSION,
+                program_sha256=arms.stable_artifact.program_sha256,
+                watchlist_symbols=watchlist_symbols,
+                watchlist=sorted(watchlist_symbols),
+                concurrency=settings.news.triage.concurrency,
+                circuit_failures=settings.news.triage.circuit_failures,
+                circuit_open_seconds=settings.news.triage.circuit_open_seconds,
+                policy=DecidePolicy(**settings.news.policy.model_dump()),
+                stable_bundle_sha=arms.stable_bundle_sha,
+                canary_arms=arms.canary_arms,
+                runtime_manifest=arms.runtime_manifest,
+            )
         ),
         deliverer=DelivererConsumer(
             bus=bus,
             db=news_db,
-            sender=_news_push_sender(settings),
+            sender=sender,
             finite_operations=finite,
             min_interval_seconds=settings.news.push.min_interval_seconds,
             price_fetcher_for=functools.partial(_delivery_price_fetcher_for, settings),
-            progression_verifier=arms.progression_verifier,
+            progression_verifier=None if arms is None else arms.progression_verifier,
             tradability_verifier=(
                 VenueCatalogTradabilityVerifier()
                 if settings.news.venues.enabled

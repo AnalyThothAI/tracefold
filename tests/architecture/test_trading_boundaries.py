@@ -376,7 +376,7 @@ def test_enabled_signal_wiring_reads_no_news_learning_arm() -> None:
 def test_workers_declares_one_signal_task_and_app_owns_its_loop() -> None:
     import asyncio
 
-    from tracefold.app.workers.task_contract import worker_business_runners
+    from tracefold.app.workers.task_contract import worker_business_tasks
     from tracefold.trading.signal_lane import LaneTurn, SignalLane
 
     turns = 0
@@ -388,11 +388,13 @@ def test_workers_declares_one_signal_task_and_app_owns_its_loop() -> None:
             return LaneTurn(outcome="HALTED", reason="disabled")
 
     async def exercise() -> None:
-        runners = worker_business_runners(news_pipeline=None, signal_lane=Lane())  # type: ignore[arg-type]
-        assert [label for label, _run in runners] == ["trading-signal-lane"]
+        tasks = worker_business_tasks(news_pipeline=None, signal_lane=Lane())  # type: ignore[arg-type]
+        # One task, and it answers for the Trading capability alone: a lane fault names Trading and
+        # stops there rather than travelling up as a Workers-wide fatal (#553 PR-3).
+        assert [(task.name, task.capability) for task in tasks] == [("trading-signal-lane", "trading_signal_lane")]
         stop = asyncio.Event()
         stop.set()
-        await asyncio.gather(*(run(stop) for _label, run in runners))
+        await asyncio.gather(*(task.run(stop) for task in tasks))
 
     asyncio.run(exercise())
     assert not hasattr(SignalLane, "run")

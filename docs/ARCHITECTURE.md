@@ -588,12 +588,24 @@ finishes.
 News consumers have no frontier lease; the broker's single-active-consumer and
 per-message ack are their fences.
 
-The loopback Workers readiness probe classifies a fatal News task as
-`news_consumer_fatal`, `news_receiver_fatal`, `news_broker_unavailable`, or
-`news_recovery_fatal` instead of flattening every child failure to
-`runtime_failed`. Recoverable Receiver broker incidents, Recovery
+Every business task the Workers root runs is declared in
+`app/workers/task_contract.py` against one named capability and a
+`foundational` flag (#553 PR-3). News reception, admission and retention are
+foundational: they are the information entry every other capability reads, so a
+program error there stays root fatal and the container restart that has always
+healed it still happens. Every other task is optional, owns exactly one
+capability key, and an unexpected program error inside it stops that task and
+records that capability `faulted`. A Trading lane exception, a push sender that
+cannot be constructed, and a News Program that cannot be assembled or registered
+are each confined to `trading_signal_lane`, `news_delivery` and
+`news_editorial`; reception, admission, retention and the read APIs beside them
+keep running, and nothing auto-restarts the stopped task. A PostgreSQL failure
+is never confined, in a task or in composition. The loopback readiness
+probe reports basic readiness and that capability report as two separate fields,
+so a faulted capability is never read back as a reason to switch a healthy fact
+API off; the console prints the report on 流水线状态. Recoverable Receiver broker incidents, Recovery
 provider/broker/database faults, and consumer-handler `BrokerUnavailable` /
-`BrokerBackpressure` failures do not kill the process. Receiver and Recovery
+`BrokerBackpressure` failures do not stop a task at all. Receiver and Recovery
 keep durable incident rows and `/api/news/status` recovery state until the
 history gap closes; a consumer handler returns the delivery through the same
 counted broker settlement as `TransientError`, so RabbitMQ delays it and
@@ -2636,7 +2648,9 @@ is deployed by its own `make runtime-*` targets from its own
 `tracefold-runtime:<sha>` image, so a News, Serve or Workers deploy neither stops
 nor recreates the process that owns exposure (#537 PR-2). Decision starts `STARTING`, advances to `RUNNING`
 with a durable heartbeat, and a real schema, wiring, policy or generation fault
-fails Workers startup or records `FAULTED` rather than becoming observer mode.
+records `FAULTED` -- on the Decision Plane's own row, and on the Workers
+capability report as `trading_signal_lane` -- rather than becoming observer mode
+or taking the Workers process down with it (#553 PR-3).
 
 Rollback is allowed only with venue-proven flat and a schema-compatible image.
 When exposure exists the only safe direction is roll-forward: the Runtime

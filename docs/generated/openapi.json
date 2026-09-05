@@ -6318,9 +6318,49 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "WorkersCapabilityData": {
+        "additionalProperties": false,
+        "description": "One Workers business capability, reported apart from whether the process itself is alive.\n\n`disabled` is an operator's configuration, `unavailable` is a capability that could not be\nconstructed from it, and `faulted` is one whose program stopped. None of them make the process\nunready, and none of them switch off the healthy fact APIs beside them (#553 PR-3).",
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "state": {
+            "enum": [
+              "running",
+              "faulted",
+              "unavailable",
+              "disabled"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "reason"
+        ],
+        "title": "WorkersCapabilityData",
+        "type": "object"
+      },
       "WorkersRuntimeData": {
         "additionalProperties": false,
         "properties": {
+          "capabilities": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/WorkersCapabilityData"
+            },
+            "title": "Capabilities",
+            "type": "object"
+          },
           "fatal_code": {
             "anyOf": [
               {
@@ -6433,7 +6473,8 @@
           "heartbeat_at_ms",
           "heartbeat_stale_after_ms",
           "fatal_code",
-          "unavailable_reason"
+          "unavailable_reason",
+          "capabilities"
         ],
         "title": "WorkersRuntimeData",
         "type": "object"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from contextlib import contextmanager
 from typing import Any
 
@@ -320,14 +321,14 @@ class _FakePriceRepository:
 
 
 class _FakeRepositories:
-    def __init__(self, news: _FakeNewsRepository) -> None:
+    def __init__(self, news: _FakeNewsRepository, workers_runtime_row: dict[str, Any] | None = None) -> None:
         self.news = news
         self.instruments = _FakeInstrumentsRepository()
         self.price = _FakePriceRepository()
+        self._workers_runtime_row = workers_runtime_row
 
-    @staticmethod
-    def workers_runtime_row() -> None:
-        return None
+    def workers_runtime_row(self) -> dict[str, Any] | None:
+        return self._workers_runtime_row
 
     def compile_news_search(self, *, q: str | None, symbol: str | None):
         from tracefold.news.search import compile_news_search
@@ -336,14 +337,20 @@ class _FakeRepositories:
 
 
 class _FakeRuntime:
-    def __init__(self, settings: Settings, news: _FakeNewsRepository) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        news: _FakeNewsRepository,
+        workers_runtime_row: dict[str, Any] | None = None,
+    ) -> None:
         self.settings = settings
         self._news = news
         self.telemetry = TelemetryRegistry()
+        self._workers_runtime_row = workers_runtime_row
 
     @contextmanager
     def repositories(self):
-        yield _FakeRepositories(self._news)
+        yield _FakeRepositories(self._news, self._workers_runtime_row)
 
 
 @pytest.fixture
@@ -1085,6 +1092,65 @@ def test_status_does_not_call_a_declared_target_available_without_running_worker
     data = response.json()["data"]
     assert data["workers_state"] is None
     assert data["delivery"]["delivery_available"] is False
+
+
+def _running_workers_row(now_ms: int, capabilities: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "runtime_id": "00000000-0000-0000-0000-0000000000aa",
+        "runtime_version": "2",
+        "lifecycle_state": "running",
+        "started_at_ms": now_ms - 1_000,
+        "heartbeat_at_ms": now_ms,
+        "fatal_code": None,
+        "capabilities": capabilities,
+    }
+
+
+@pytest.mark.parametrize(
+    ("delivery_capability", "available"),
+    [
+        ({"state": "running", "reason": None}, True),
+        ({"state": "unavailable", "reason": "news_item_push_telegram_bot_token_unavailable"}, False),
+        ({"state": "faulted", "reason": "news-deliverer:RuntimeError"}, False),
+    ],
+)
+def test_status_reports_delivery_from_the_sender_workers_actually_built(
+    delivery_capability: dict[str, Any],
+    available: bool,
+) -> None:
+    """#553 PR-3 acceptance 2. Serve validates the declared target; Workers built (or did not) the sender.
+
+    Only Workers reads the secure token file, so a target that is complete in `config.yaml` and
+    unreadable on disk is visible here and nowhere else. Presenting it as delivery-ready would be
+    presenting a field error as a delivery.
+    """
+
+    settings = Settings.model_validate(
+        {
+            "ws_token": TOKEN,
+            "news": {
+                "enabled": True,
+                "push": {
+                    "enabled": True,
+                    "telegram_bot_token_file": "telegram_bot_token",
+                    "telegram_chat_id": -1001234567890,
+                },
+            },
+        }
+    )
+    app = create_app(settings=settings)
+    app.state.service = _FakeRuntime(
+        settings,
+        _FakeNewsRepository(),
+        _running_workers_row(int(time.time() * 1000), {"news_delivery": delivery_capability}),
+    )
+
+    response = TestClient(app).get("/api/news/status", params={"token": TOKEN})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["workers_state"] == "running"
+    assert data["delivery"]["delivery_available"] is available
 
 
 def test_status_marks_an_invalid_dedicated_reader_endpoint_bad(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -44,7 +44,11 @@ def _arguments() -> argparse.Namespace:
         choices=(
             "inert",
             "manifest_barrier",
-            "child_failure",
+            "manifest_registration_fault",
+            "optional_task_fault",
+            "ingestion_task_fault",
+            "trading_lane_fault",
+            "schema_mismatch",
             "finite_overrun",
             "finite_never_returns",
             "finite_never_returns_failed_transition_once",
@@ -64,22 +68,42 @@ def _arguments() -> argparse.Namespace:
 
 
 class _TurnPipeline:
-    """Carry the test turns through the runtime's one business-task slot."""
+    """Carry the test turns through the runtime's business-task slots.
 
-    def __init__(self, turns: tuple[tuple[Any, float], ...]) -> None:
+    Turns run under real News task names because the Workers task contract maps a task name onto the
+    capability it answers for, and refuses a name it does not know. `news-deduper` is the admission
+    task: the one whose continued fact writes are the point of every confinement test here.
+    """
+
+    def __init__(self, turns: tuple[tuple[str, Any, float], ...]) -> None:
         self._turns = turns
 
+    @property
+    def runtime_manifest_sha(self) -> str | None:
+        return None
+
+    async def register_runtime_manifest(self) -> None:
+        return None
+
     def runners(self) -> list[tuple[str, Any]]:
-        return [
-            (f"test-turn-{index}", _turn_runner(turn, idle_seconds))
-            for index, (turn, idle_seconds) in enumerate(self._turns)
-        ]
+        return [(name, _turn_runner(turn, idle_seconds)) for name, turn, idle_seconds in self._turns]
+
+    def disable_editorial(self) -> None:
+        return None
 
     async def drain(self) -> None:
         return None
 
     async def close(self) -> None:
         return None
+
+
+class _RegistrationFaultPipeline(_TurnPipeline):
+    """A pipeline whose editorial Program manifest cannot be registered."""
+
+    async def register_runtime_manifest(self) -> None:
+        print("MANIFEST_REGISTRATION_ABOUT_TO_FAIL", flush=True)
+        raise RuntimeError("test_manifest_registration_fault")
 
 
 class _ManifestBarrierPipeline(_TurnPipeline):
@@ -123,6 +147,91 @@ class _ManifestBarrierPipeline(_TurnPipeline):
             conn.close()
 
 
+def _fact_writer(db: Any) -> Any:
+    """A business task that keeps committing real facts, so a confined fault can be measured."""
+
+    def insert() -> None:
+        with db.worker_session("test_fact_write") as repos, repos.transaction():
+            repos.conn.execute("INSERT INTO worker_runtime_test_facts(id) VALUES (DEFAULT)")
+
+    async def turn() -> bool:
+        await db.run_business("test_fact_write", insert, operation_timeout_seconds=2.0)
+        return True
+
+    return turn
+
+
+def _backlog_consumer(db: Any, *, resume_gate: Path) -> Any:
+    """The optional task standing in for #553 PR-2's market notification loop.
+
+    Its first run raises, which must stop this task alone. Its PostgreSQL backlog keeps growing while
+    it is stopped, and the operator restart -- the only recovery this PR offers -- drains it.
+    """
+
+    def drain() -> int:
+        with db.worker_session("test_backlog_drain") as repos, repos.transaction():
+            row = repos.conn.execute(
+                "UPDATE worker_runtime_test_backlog SET processed = true WHERE NOT processed RETURNING id"
+            ).fetchall()
+            return len(row)
+
+    def enqueue() -> None:
+        with db.worker_session("test_backlog_enqueue") as repos, repos.transaction():
+            repos.conn.execute("INSERT INTO worker_runtime_test_backlog(id) VALUES (DEFAULT)")
+
+    async def turn() -> bool:
+        await db.run_business("test_backlog_enqueue", enqueue, operation_timeout_seconds=2.0)
+        if not resume_gate.exists():
+            print("OPTIONAL_TASK_ABOUT_TO_FAIL", flush=True)
+            raise RuntimeError("test_optional_task_fault")
+        drained = await db.run_business("test_backlog_drain", drain, operation_timeout_seconds=2.0)
+        print(f"BACKLOG_DRAINED {drained}", flush=True)
+        return True
+
+    return turn
+
+
+def _declare_news_capabilities(
+    capabilities: Any,
+    *,
+    quotes: bool = False,
+    delivery: str = "disabled",
+) -> None:
+    """Stand in for what the real News composition declares about the tasks it just wired."""
+
+    from tracefold.app.workers.runtime import (
+        NEWS_DELIVERY,
+        NEWS_EDITORIAL,
+        NEWS_INGESTION,
+        NEWS_QUOTES,
+    )
+
+    capabilities.running(NEWS_INGESTION)
+    capabilities.running(NEWS_EDITORIAL)
+    capabilities.declare(
+        NEWS_DELIVERY,
+        delivery,
+        reason=(
+            "news_item_push_telegram_bot_token_unavailable"
+            if delivery == "unavailable"
+            else "news_item_push_not_requested"
+        ),
+    )
+    if quotes:
+        capabilities.running(NEWS_QUOTES)
+    else:
+        capabilities.disabled(NEWS_QUOTES, "news_quotes_not_configured")
+
+
+def _idle_turn() -> Any:
+    """A task that runs and does nothing, so only its presence is under test."""
+
+    async def turn() -> bool:
+        return False
+
+    return turn
+
+
 def _turn_runner(turn: Any, idle_seconds: float) -> Any:
     async def run(stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
@@ -139,7 +248,7 @@ def _turn_runner(turn: Any, idle_seconds: float) -> Any:
 def _components(
     workers_module: Any,
     *,
-    due_turns: tuple[tuple[Any, float], ...],
+    due_turns: tuple[tuple[str, Any, float], ...],
 ) -> Any:
     return workers_module._Components(
         news_pipeline=_TurnPipeline(due_turns),
@@ -303,16 +412,6 @@ async def _main() -> None:
         }:
             return _components(workers, due_turns=())
 
-        if arguments.mode == "child_failure":
-
-            async def fail() -> bool:
-                await asyncio.sleep(0.5)
-                print("ABOUT_TO_FAIL", flush=True)
-                await asyncio.sleep(0.1)
-                raise RuntimeError("test_child_failure")
-
-            return _components(workers, due_turns=((fail, 1.0),))
-
         finite = kwargs["finite"]
         if arguments.mode in {
             "finite_overrun",
@@ -333,7 +432,7 @@ async def _main() -> None:
                 )
                 return True
 
-            return _components(workers, due_turns=((overrun, 1.0),))
+            return _components(workers, due_turns=(("news-deduper", overrun, 1.0),))
 
         if arguments.mode == "control_overrun":
             return _components(workers, due_turns=())
@@ -364,7 +463,7 @@ async def _main() -> None:
             published = True
             return True
 
-        return _components(workers, due_turns=((provider_publication, 1.0),))
+        return _components(workers, due_turns=(("news-deduper", provider_publication, 1.0),))
 
     if arguments.mode == "manifest_barrier":
         release_gate = Path(os.environ["TRACEFOLD_TEST_MANIFEST_GATE"])
@@ -373,6 +472,70 @@ async def _main() -> None:
             return None, _ManifestBarrierPipeline(dsn=arguments.dsn, release_gate=release_gate)
 
         workers_wiring._wire_news_pipeline = wire_news_pipeline
+    elif arguments.mode == "manifest_registration_fault":
+        # The real `_wire_components` runs: what fails is the editorial Program registration, and the
+        # fact-writing ingestion task beside it must keep committing.
+        async def wire_registration_fault(**kwargs: Any) -> tuple[None, _RegistrationFaultPipeline]:
+            _declare_news_capabilities(kwargs["capabilities"])
+            return None, _RegistrationFaultPipeline((("news-deduper", _fact_writer(kwargs["db"]), 1.0),))
+
+        workers_wiring._wire_news_pipeline = wire_registration_fault
+    elif arguments.mode == "optional_task_fault":
+        resume_gate = Path(os.environ["TRACEFOLD_TEST_RESUME_GATE"])
+
+        async def wire_optional_task_fault(**kwargs: Any) -> tuple[None, _TurnPipeline]:
+            db = kwargs["db"]
+            _declare_news_capabilities(kwargs["capabilities"], quotes=True)
+            return None, _TurnPipeline(
+                (
+                    ("news-deduper", _fact_writer(db), 1.0),
+                    # `news-quotes` is an optional capability task with a capability all to itself,
+                    # which is the shape #553 PR-2's market notification loop registers as.
+                    ("news-quotes", _backlog_consumer(db, resume_gate=resume_gate), 1.0),
+                )
+            )
+
+        workers_wiring._wire_news_pipeline = wire_optional_task_fault
+    elif arguments.mode == "ingestion_task_fault":
+        # Reception and admission are the information entry, not a capability to switch off. A program
+        # error there must still end the process, so the container restart that has always healed it
+        # keeps happening instead of a permanent outage behind a 200 /readyz.
+        async def wire_ingestion_fault(**kwargs: Any) -> tuple[None, _TurnPipeline]:
+            _declare_news_capabilities(kwargs["capabilities"])
+
+            async def fail() -> bool:
+                # After readiness, so this is a receiver crashing in service rather than a startup
+                # refusal: the case where confinement would have replaced a restart with an outage.
+                await asyncio.sleep(0.5)
+                print("INGESTION_ABOUT_TO_FAIL", flush=True)
+                raise RuntimeError("test_ingestion_task_fault")
+
+            return None, _TurnPipeline((("news-receiver", fail, 1.0),))
+
+        workers_wiring._wire_news_pipeline = wire_ingestion_fault
+    elif arguments.mode == "trading_lane_fault":
+        from tracefold.trading.signal_lane import SignalLane
+
+        async def wire_trading_lane_fault(**kwargs: Any) -> tuple[None, _TurnPipeline]:
+            # A Deliverer task runs beside an `unavailable` sender on purpose: it settles those
+            # Events `delivery_unavailable` rather than dropping them, so declaring the task must not
+            # overwrite what composition recorded about the sender it could not build.
+            _declare_news_capabilities(kwargs["capabilities"], delivery="unavailable")
+            return None, _TurnPipeline(
+                (
+                    ("news-deduper", _fact_writer(kwargs["db"]), 1.0),
+                    ("news-deliverer", _idle_turn(), 1.0),
+                )
+            )
+
+        async def failing_advance(_self: Any) -> None:
+            print("TRADING_LANE_ABOUT_TO_FAIL", flush=True)
+            raise RuntimeError("test_trading_lane_fault")
+
+        workers_wiring._wire_news_pipeline = wire_trading_lane_fault
+        SignalLane.advance = failing_advance  # type: ignore[method-assign]
+    elif arguments.mode == "schema_mismatch":
+        workers.latest_migration_version = lambda: "00000000_0000"
     elif arguments.mode in {
         "trading_enabled",
         "trading_execution_requested",
@@ -390,9 +553,17 @@ async def _main() -> None:
         "trading_enabled",
         "trading_execution_requested",
         "trading_wiring_fault",
+        "trading_lane_fault",
+    }
+    news_process = arguments.mode in {
+        "manifest_barrier",
+        "manifest_registration_fault",
+        "optional_task_fault",
+        "ingestion_task_fault",
+        "trading_lane_fault",
     }
     settings = Settings(
-        news={"enabled": arguments.mode == "manifest_barrier"},
+        news={"enabled": news_process},
         trading={
             "enabled": trading_process,
             "execution": {"mode": "paper" if arguments.mode == "trading_execution_requested" else "disabled"},

@@ -34,6 +34,18 @@ class StatusDatabaseData(ExactApiSchema):
     error_code: Literal["database_unavailable", "schema_mismatch"] | None
 
 
+class WorkersCapabilityData(ExactApiSchema):
+    """One Workers business capability, reported apart from whether the process itself is alive.
+
+    `disabled` is an operator's configuration, `unavailable` is a capability that could not be
+    constructed from it, and `faulted` is one whose program stopped. None of them make the process
+    unready, and none of them switch off the healthy fact APIs beside them (#553 PR-3).
+    """
+
+    state: Literal["running", "faulted", "unavailable", "disabled"]
+    reason: str | None
+
+
 class WorkersRuntimeData(ExactApiSchema):
     runtime_id: str | None
     runtime_version: str | None
@@ -74,6 +86,9 @@ class WorkersRuntimeData(ExactApiSchema):
         ]
         | None
     )
+    # Keyed by capability name rather than by a closed Literal: a new optional Workers loop reports
+    # here without a public contract change, and an absent key means "this runtime published none".
+    capabilities: dict[str, WorkersCapabilityData]
 
 
 class ServeRuntimeData(ExactApiSchema):

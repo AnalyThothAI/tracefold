@@ -373,6 +373,13 @@ class DelivererConsumer:
         observed_at_ms = int(timing["observed_at_ms"]) if timing and timing.get("observed_at_ms") is not None else None
         progression_candidates = _progression_review_candidates(triage_row, tv)
         progression_review_pending = self._progression_verifier is not None and bool(progression_candidates)
+        progression_headline = _progression_from_headline(triage_row, tv)
+        # A progression claim is a *reviewed* claim. With no verifier -- none configured, or the
+        # editorial Program faulted and left one unwired (#553 PR-3) -- a claim the title band would
+        # have shown reads "not reviewed" rather than shipping as though a gate had passed it: a fault
+        # in one capability must not silently drop the gate another capability owns. Below the band
+        # there is no claim to gate, so nothing is pending either.
+        progression_unreviewed = self._progression_verifier is None and progression_headline is not None
         _, title_identity_confident = tradability_candidates(event=card, verdict=tv, symbols=shown)
         tradability_pending = (
             self._tradability_verifier is not None
@@ -385,9 +392,9 @@ class DelivererConsumer:
             market_scope=_reader_market_scope(tv),
             novelty=_reader_novelty(tv),
             progression_from_headline=(
-                None if progression_review_pending else _progression_from_headline(triage_row, tv)
+                None if progression_review_pending or progression_unreviewed else progression_headline
             ),
-            progression_review_state="pending" if progression_review_pending else None,
+            progression_review_state=("pending" if progression_review_pending or progression_unreviewed else None),
         )
         wait = self.min_interval - (time.monotonic() - self._last_send_at)
         if wait > 0:

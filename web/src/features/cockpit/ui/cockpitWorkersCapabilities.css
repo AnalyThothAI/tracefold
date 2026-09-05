@@ -1,0 +1,58 @@
+@layer app.features {
+  /* The console's shared signal vocabulary; this list introduces no colour of its own. */
+  .cockpit-capabilities {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+  }
+
+  .cockpit-capability {
+    --tone: var(--signal-neutral);
+    --tone-soft: var(--signal-neutral-soft);
+    align-items: baseline;
+    border-left: 2px solid var(--tone);
+    background: var(--tone-soft);
+    display: grid;
+    gap: 2px 10px;
+    grid-template-columns: minmax(0, 9rem) minmax(0, 1fr);
+    padding: 4px 8px;
+  }
+
+  .cockpit-capability[data-tone="done"] {
+    --tone: var(--signal-done);
+    --tone-soft: var(--signal-done-soft);
+  }
+
+  .cockpit-capability[data-tone="caution"] {
+    --tone: var(--signal-caution);
+    --tone-soft: var(--signal-caution-soft);
+  }
+
+  .cockpit-capability[data-tone="alert"] {
+    --tone: var(--signal-alert);
+    --tone-soft: var(--signal-alert-soft);
+  }
+
+  .cockpit-capability > dt {
+    color: var(--text-secondary);
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .cockpit-capability > dd {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    margin: 0;
+    min-width: 0;
+  }
+
+  .cockpit-capability > dd > code {
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+  }
+
+  .cockpit-capabilities-empty {
+    color: var(--text-secondary);
+  }
+}

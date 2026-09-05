@@ -657,3 +657,4 @@
 | `fatal_code` | `TEXT` | True | `None` |
 | `runtime_revision` | `TEXT` | False | `None` |
 | `image_digest` | `TEXT` | False | `None` |
+| `capabilities` | `JSONB` | False | `'{}'::jsonb` |

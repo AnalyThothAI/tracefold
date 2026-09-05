@@ -6,6 +6,9 @@ import pytest
 from psycopg import OperationalError
 
 from tracefold.app.workers import root as workers_module
+from tracefold.app.workers.runtime import CapabilityStates
+from tracefold.app.workers.task_contract import WorkerTask, worker_business_tasks
+from tracefold.app.workers.wiring.components import _capability_fault_reason
 from tracefold.news.bus import BrokerUnavailable
 from tracefold.platform.resource import ResourceCapability, ResourceOperationOverrun
 
@@ -31,27 +34,149 @@ def test_fatal_code_uses_typed_overrun_instead_of_error_text() -> None:
 
 
 @pytest.mark.parametrize(
-    ("task_name", "failure", "reason"),
+    ("capability", "failure", "reason"),
     [
-        ("news-deduper", RuntimeError("handler bug"), "news_consumer_fatal"),
-        ("news-receiver", RuntimeError("receiver bug"), "news_receiver_fatal"),
-        ("news-recovery", RuntimeError("recovery bug"), "news_recovery_fatal"),
-        ("news-janitor", RuntimeError("janitor bug"), "runtime_failed"),
-        ("trading-signal-lane", RuntimeError("signal bug"), "runtime_failed"),
+        ("news_delivery", RuntimeError("handler bug"), "news_delivery:RuntimeError"),
+        ("trading_signal_lane", ValueError("signal bug"), "trading_signal_lane:ValueError"),
+        (
+            "news_editorial",
+            ExceptionGroup("message task failed", [BrokerUnavailable("publish failed")]),
+            "news_editorial:news_broker_unavailable",
+        ),
     ],
 )
-def test_news_task_failure_has_specific_live_readiness_reason(
-    task_name: str,
+def test_a_faulted_capability_reports_what_stopped_it(
+    capability: str,
     failure: BaseException,
     reason: str,
 ) -> None:
-    assert workers_module._task_unavailable_reason(task_name, failure) == reason
+    assert _capability_fault_reason(capability, failure) == reason
 
 
-def test_broker_failure_has_priority_over_news_task_role() -> None:
-    grouped = ExceptionGroup("message task failed", [BrokerUnavailable("publish failed")])
+def test_a_business_task_program_error_faults_only_its_own_capability() -> None:
+    """#553 PR-3. The task stops and says so; the process root never sees the exception."""
 
-    assert workers_module._task_unavailable_reason("news-triage", grouped) == "news_broker_unavailable"
+    capabilities = CapabilityStates()
+    capabilities.running("trading_signal_lane")
+    capabilities.running("news_ingestion")
+    faults: list[None] = []
+
+    async def raising(_stop: asyncio.Event) -> None:
+        raise RuntimeError("lane bug")
+
+    async def on_fault() -> None:
+        faults.append(None)
+
+    asyncio.run(
+        workers_module._run_capability_task(
+            WorkerTask(
+                name="trading-signal-lane",
+                capability="trading_signal_lane",
+                run=raising,
+                foundational=False,
+            ),
+            stop_event=asyncio.Event(),
+            capabilities=capabilities,
+            on_fault=on_fault,
+        )
+    )
+
+    assert capabilities.payload()["trading_signal_lane"] == {
+        "state": "faulted",
+        "reason": "trading_signal_lane:RuntimeError",
+    }
+    assert capabilities.payload()["news_ingestion"] == {"state": "running", "reason": None}
+    assert faults == [None]
+
+
+def test_a_shared_resource_overrun_inside_a_business_task_is_still_root_fatal() -> None:
+    """Confining program errors is not deleting the foundation checks (#553 PR-3)."""
+
+    overrun = ResourceOperationOverrun(
+        capability=ResourceCapability.FINITE_OPERATION,
+        operation_name="never_returns",
+    )
+    capabilities = CapabilityStates()
+
+    async def raising(_stop: asyncio.Event) -> None:
+        raise overrun
+
+    async def on_fault() -> None:
+        raise AssertionError("an overrun must not be confined to a capability")
+
+    with pytest.raises(ResourceOperationOverrun):
+        asyncio.run(
+            workers_module._run_capability_task(
+                WorkerTask(
+                    name="news-quotes",
+                    capability="news_quotes",
+                    run=raising,
+                    foundational=False,
+                ),
+                stop_event=asyncio.Event(),
+                capabilities=capabilities,
+                on_fault=on_fault,
+            )
+        )
+
+    assert capabilities.payload() == {}
+    assert workers_module._fatal_code(overrun, phase="runtime") == "resource_operation_overrun"
+
+
+def test_every_news_ingestion_task_is_foundational_and_every_optional_one_owns_its_key() -> None:
+    """#553 PR-3. The information entry is not confinable, and a fault always names one capability."""
+
+    tasks = worker_business_tasks(news_pipeline=_AllStagesPipeline(), signal_lane=None)
+    by_name = {task.name: task for task in tasks}
+
+    assert {name for name, task in by_name.items() if task.foundational} == {
+        "news-receiver",
+        "news-recovery",
+        "news-deduper",
+        "news-janitor",
+    }
+    optional = [task.capability for task in tasks if not task.foundational]
+    assert optional == sorted(set(optional), key=optional.index)
+    assert len(optional) == len(set(optional)), "two optional tasks share one capability key"
+
+
+def test_the_root_refuses_to_confine_a_foundational_task() -> None:
+    async def never(_stop: asyncio.Event) -> None:  # pragma: no cover - never awaited
+        return None
+
+    async def on_fault() -> None:  # pragma: no cover - never awaited
+        return None
+
+    with pytest.raises(RuntimeError, match="workers_foundational_task_must_not_be_confined"):
+        asyncio.run(
+            workers_module._run_capability_task(
+                WorkerTask(name="news-receiver", capability="news_ingestion", run=never, foundational=True),
+                stop_event=asyncio.Event(),
+                capabilities=CapabilityStates(),
+                on_fault=on_fault,
+            )
+        )
+
+
+class _AllStagesPipeline:
+    """A News pipeline that declares every stage, so the task contract is checked whole."""
+
+    @staticmethod
+    def runners() -> list[tuple[str, object]]:
+        return [
+            (name, object())
+            for name in (
+                "news-receiver",
+                "news-recovery",
+                "news-deduper",
+                "news-triage",
+                "news-deliverer",
+                "news-janitor",
+                "news-instruments",
+                "news-quotes",
+                "news-reactions",
+            )
+        ]
 
 
 def test_control_loop_retries_a_transient_pooled_heartbeat_failure(
