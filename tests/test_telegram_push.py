@@ -1817,21 +1817,42 @@ def test_a_market_cards_console_button_keeps_the_origin_the_operator_configured(
 
 
 def test_a_market_card_shows_the_market_number_its_model_carries() -> None:
-    """#562 PR-B lands the quote on market cards; this channel renders whatever the card carries."""
+    """#562 PR-B lands the quote on market cards; this channel renders whatever the card carries.
+
+    The quote is one of the family's own body lines rather than a block this channel places, so it
+    sits where the OI family puts it -- under the measurement -- and a card whose quote is not fresh
+    reads exactly as it did before the quote existed. There is no second copy of that placement here
+    and none of the fresh-only rule either.
+    """
 
     from tracefold.news.reader_card import ReaderCardQuote
 
+    fixture = _fixture_market_card("market-oi-action-change-billions")
     card = replace(
-        _fixture_market_card("market-oi-action-change-billions"),
+        fixture,
         quotes=(
-            ReaderCardQuote(symbol="BTC", price="74553.10", change_pct=7.91, change_basis="rolling_24h"),
+            ReaderCardQuote(
+                symbol="BTC", price="74553.10", change_pct=7.91, change_basis="rolling_24h", freshness="fresh"
+            ),
             ReaderCardQuote(symbol="ETH", price="2300", freshness="stale"),
         ),
+        market=replace(fixture.market, whale_long_profit_bps=8_840, whale_oi_ratio_bps=14_390),
     )
 
     text = _sent_text(card)
 
-    assert "\n\n行情 BTC $74,553.10 24h +7.91%\n\n" in text
+    assert text == (
+        "🔵 <b>持仓异动 · 动作变化 · BTC</b>\n\n"
+        "sideways 0% · 01:00\n"
+        "OI $12.40B · binance · oi_signal_v1|opennews_oi_source_v1|300000\n"
+        "行情 BTC $74,553.10 24h +7.91%\n"
+        "鲸鱼多头盈利 88.4% · 鲸鱼持仓/OI 143.9%\n\n"
+        "事件时间  01:00\n"
+        "推送时间  17:27\n"
+        "🔗 <b>来源</b>  opennews oi · 1 条报道\n"
+        '🔗 <a href="https://console.example.com/news">打开明细</a>'
+    )
+    # The stale second quote costs its own entry and nothing else, on this channel as on Feishu.
     assert "ETH" not in text
 
 

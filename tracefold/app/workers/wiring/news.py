@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import functools
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -50,7 +51,7 @@ from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
 from tracefold.news.market_notifications import TICK_SECONDS, MarketNotificationLoop
 from tracefold.news.market_review.loops import QuoteDatabasePort, ReactionDatabasePort
 from tracefold.news.pipeline.admission import DeduperConsumer
-from tracefold.news.pipeline.delivery import DelivererConsumer
+from tracefold.news.pipeline.delivery import DelivererConsumer, read_display_quotes
 from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
@@ -78,6 +79,28 @@ from tracefold.platform.runtime_identity import runtime_identity
 
 if TYPE_CHECKING:
     from tracefold.integrations.rabbitmq import RabbitMQBus
+
+
+@dataclass(frozen=True, slots=True)
+class _MarketNotificationDatabase:
+    """`MarketNotificationDatabasePort`: the News lane, plus the one read a market card needs.
+
+    The market loop may not name a repository, a table or a price module, so "quote these symbols"
+    is a port and this is the composition that satisfies it -- with the News first card's own read:
+    the same session, the same 1.5 s budget, the same degradation. There is no market-specific quote
+    rule anywhere, which is the point (#562).
+    """
+
+    lane: WorkerNewsDatabase
+
+    async def read[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float = 3.0) -> T:
+        return await self.lane.read(name, fn, timeout_seconds=timeout_seconds)
+
+    async def tx[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float = 3.0) -> T:
+        return await self.lane.tx(name, fn, timeout_seconds=timeout_seconds)
+
+    async def quotes_for_symbols(self, symbols: Sequence[str], *, now_ms: int) -> list[dict[str, Any]]:
+        return await read_display_quotes(self.lane, symbols, now_ms=now_ms, name="news_market_quotes")
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,7 +219,7 @@ async def _wire_news_pipeline(
     # `api.public_url` is the console's public origin, and this is the only place it is read: with one
     # the card carries its 打开明细 button, without one the card carries the item id instead (#553).
     market_notifications = MarketNotificationLoop(
-        db=news_db,
+        db=_MarketNotificationDatabase(news_db),
         sender=pipeline.deliverer.send_entry,
         console_base_url=settings.api.public_url,
     )

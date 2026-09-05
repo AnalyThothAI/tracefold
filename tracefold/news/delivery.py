@@ -38,13 +38,14 @@ from .feishu_card import feishu_card
 from .market_review.pricing import parse_price, quote_change_24h_bps, return_bps
 from .models import ReaderMarketMovement, ReaderTradeTarget
 from .reader_card import (
+    CARD_ASSETS_MAX,
     ReaderCard,
     ReaderCardFacts,
     ReaderCardHeader,
     ReaderCardLink,
     ReaderCardNote,
-    ReaderCardQuote,
     ReaderCardTimes,
+    reader_quotes,
 )
 
 _URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
@@ -52,14 +53,11 @@ _HANDLE_RE = re.compile(r"(?<!\w)@[\w]{1,32}")
 _MARKDOWN_RE = re.compile(r"[*_`#>\[\]()]")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _SPACE_RE = re.compile(r"\s+")
-_MAX_ASSETS = 4
+# How many assets a card names, owned by the card model: the facts line, the quote line and the
+# grounded-asset fallback are three views of one bound.
+_MAX_ASSETS = CARD_ASSETS_MAX
 _SOURCE_BUTTON_LABEL = "打开来源"
 _ESCALATE_MARK = "⚡"
-# A crypto asset is its own market and carries no proxy mark; an `equity` / `commodity` / `index` tag
-# prices on a Binance TradFi perp or a Hyperliquid builder-DEX — a real traded contract (95% of a
-# week's reactions found candles for them) but a proxy for a market that closes at 16:00 somewhere
-# else, and the reader is told which of the two they are looking at.
-_NATIVE_MARKET_CLASS = "crypto"
 
 
 def sanitize_ai_text(value: object, *, limit: int, fallback: str = "") -> str:
@@ -178,34 +176,6 @@ def reader_market_movements(
     return tuple(movements)
 
 
-def reader_quotes(quotes: Sequence[Mapping[str, Any]]) -> tuple[ReaderCardQuote, ...]:
-    """The quote read model's rows as card facts, bounded to the assets a card names.
-
-    The ticker the facts line already printed, not the contract's base symbol: the two lines annotate
-    the same assets and must line up. They differ for 0.34% of a week's priced assets — all issuer
-    aliases (`XIAOMI` prices on `HK1810`), where the card's own ticker is the clearer of the two.
-    Freshness is carried, not applied: `reader_card.quote_line` owns the rule that only a fresh quote
-    reaches a reader, so every channel drops a stale one the same way.
-    """
-
-    return tuple(
-        ReaderCardQuote(
-            symbol=str(quote.get("requested_symbol") or quote.get("symbol") or "").strip(),
-            price=str(quote.get("price") or ""),
-            change_pct=(
-                float(change)
-                if isinstance(change := quote.get("change_pct"), int | float) and not isinstance(change, bool)
-                else None
-            ),
-            change_basis=str(quote.get("change_basis") or "") or None,
-            freshness=str(quote.get("state") or ""),
-            proxy_market=str(quote.get("instrument_class") or "") != _NATIVE_MARKET_CLASS,
-        )
-        for quote in quotes[:_MAX_ASSETS]
-        if isinstance(quote, Mapping)
-    )
-
-
 def card_assets(verdict: Mapping[str, Any], grounded_assets: Sequence[str]) -> list[str]:
     """Assets shown on the card: the verdict's primary assets that the Gate grounded (code fact ∩ model claim);
     when the model named no grounded primary, the grounded assets themselves — never provider noise alone.
@@ -317,7 +287,6 @@ __all__ = [
     "card_assets",
     "news_reader_card",
     "reader_market_movements",
-    "reader_quotes",
     "reader_trade_targets",
     "render_first_card",
     "sanitize_ai_text",

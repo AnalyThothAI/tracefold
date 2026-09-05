@@ -28,6 +28,7 @@ the card because a reader wants it, and is never compared against a host stamp t
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -38,6 +39,7 @@ from urllib.parse import urlsplit
 from . import card_format as fmt
 from .delivery_contracts import COMMIT_PHASE_NOT_SENT
 from .feishu_card import feishu_card
+from .market_review.pricing import QUOTE_READ_TIMEOUT_SECONDS
 from .reader_card import (
     ReaderCard,
     ReaderCardAction,
@@ -46,7 +48,9 @@ from .reader_card import (
     ReaderCardLink,
     ReaderCardMarket,
     ReaderCardNote,
+    ReaderCardQuote,
     ReaderCardTimes,
+    reader_quotes,
 )
 
 # --- v1 engineering defaults (#553 §4). Not tuned parameters, and not claimed to be optimal. ---
@@ -144,6 +148,7 @@ __all__ = [
     "TICK_SECONDS",
     "TRIGGER_REASONS",
     "ClaimedCard",
+    "DueCard",
     "GroupTurn",
     "IntentPlan",
     "MarketNotificationDatabasePort",
@@ -162,6 +167,7 @@ __all__ = [
     "market_detail_url",
     "market_reader_card",
     "notification_status",
+    "quote_symbols",
     "render_market_card",
     "retry_delay_ms",
     "split_by_group",
@@ -191,6 +197,8 @@ class MarketObservation:
     direction: str | None = None
     oi_change_bps: int | None = None
     oi_value_usd: int | None = None
+    whale_long_profit_bps: int | None = None
+    whale_oi_ratio_bps: int | None = None
     liquidated_position_side: str | None = None
     notional_usd: str | None = None
     price: str | None = None
@@ -218,6 +226,8 @@ class MarketObservation:
             direction=_text(row.get("direction")),
             oi_change_bps=_integer(row.get("oi_change_bps")),
             oi_value_usd=_integer(row.get("oi_value_usd")),
+            whale_long_profit_bps=_integer(row.get("whale_long_profit_bps")),
+            whale_oi_ratio_bps=_integer(row.get("whale_oi_ratio_bps")),
             liquidated_position_side=_text(row.get("liquidated_position_side")),
             notional_usd=_text(row.get("notional_usd")),
             price=_text(row.get("price")),
@@ -777,6 +787,20 @@ def _absolute_http_url(value: str | None) -> str | None:
     return candidate
 
 
+def quote_symbols(track: MarketTrack, observations: Sequence[MarketObservation]) -> tuple[str, ...]:
+    """The one asset this card can be quoted on, or nothing at all.
+
+    The normalized `symbol` only, never `raw_instrument`: the quote read model resolves a symbol tag
+    to a contract, and asking it about `BTCUSDT-PERP` would spend a database read to be told the tag
+    is unlisted. A card whose instrument was never normalized simply carries no quote line, which is
+    the same answer a stale quote gets.
+    """
+
+    latest = observations[-1] if observations else None
+    symbol = track.symbol or (latest.symbol if latest is not None else None)
+    return (symbol,) if symbol else ()
+
+
 def market_reader_card(
     *,
     track: MarketTrack,
@@ -784,6 +808,7 @@ def market_reader_card(
     observations: Sequence[MarketObservation],
     detail_url: str | None = None,
     action_changes: int = 0,
+    quotes: Sequence[ReaderCardQuote] = (),
 ) -> ReaderCard:
     """One intent's bounded summary, in facts.
 
@@ -792,6 +817,11 @@ def market_reader_card(
     absolute console URL there is no button: the note line prints the item id instead, which is what
     an operator needs to reach the same page, and Telegram's own adapter already refuses a link it
     cannot open.
+
+    `quotes` are the same rows the News first card is built from, already turned into card facts by
+    the same function, and they are display-only: an empty sequence is the ordinary answer whenever
+    the read was stale, unavailable or simply not attempted, and it costs the line and nothing else
+    (#562 §2). The card model applies the fresh-only rule, so nothing here filters them.
     """
 
     first, latest = observations[0], observations[-1]
@@ -817,6 +847,7 @@ def market_reader_card(
             source=(latest.provider or "", track.market_kind),
             report_count=len(observations),
         ),
+        quotes=tuple(quotes),
         market=_reader_market(track=track, observations=observations, action_changes=action_changes),
         link=ReaderCardLink(url=link, label=DETAIL_BUTTON_LABEL) if link is not None else None,
         note=ReaderCardNote(id=track.group_key, detail_id=latest.item_id),
@@ -840,6 +871,13 @@ def _reader_market(
         oi_value_usd=latest.oi_value_usd,
         side=track.liquidated_position_side,
         notional=max((fmt.decimal_text(item.notional_usd) for item in observations), default=""),
+        whale_long_profit_bps=latest.whale_long_profit_bps,
+        whale_oi_ratio_bps=latest.whale_oi_ratio_bps,
+        # The newest report's own numbers, matching the event time the card is stamped with. An
+        # older covered report priced a different moment, and a card that mixed the two would be
+        # quoting one report's price beside another report's clock.
+        reported_price=latest.price or "",
+        pnl=latest.pnl_usd or "",
         account=track.trader_label or track.account_key or "",
         account_verified=track.account_verified,
         actions=tuple(
@@ -865,6 +903,7 @@ def render_market_card(
     observations: Sequence[MarketObservation],
     detail_url: str | None = None,
     action_changes: int = 0,
+    quotes: Sequence[ReaderCardQuote] = (),
 ) -> dict[str, Any]:
     """The intent's `ReaderCard` in the wire shape the delivery ledger freezes and Feishu accepts.
 
@@ -881,6 +920,7 @@ def render_market_card(
             observations=observations,
             detail_url=detail_url,
             action_changes=action_changes,
+            quotes=quotes,
         )
     )
 
@@ -894,11 +934,19 @@ def render_market_card(
 
 
 class MarketNotificationDatabasePort(Protocol):
-    """The narrow News database lane, in the two shapes this loop uses."""
+    """The narrow News database lane, in the three shapes this loop uses."""
 
     async def read[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float = 3.0) -> T: ...
 
     async def tx[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float = 3.0) -> T: ...
+
+    # One read-only quote-snapshot row per symbol, by the rule the News first card is quoted with.
+    # Ports, not imports: what this loop needs is a *fresh quote for these symbols*, and the
+    # composition site satisfies it out of the same `news_quote_snapshots` read model News reads,
+    # with the same 1.5 s budget and the same "any failure is no quote" degradation (#562 §3). The
+    # rows are the read model's own; `reader_quotes` turns them into this card's facts, exactly as
+    # the News card does. Nothing here may write a quote, wait for one, or let one reach a decision.
+    async def quotes_for_symbols(self, symbols: Sequence[str], *, now_ms: int) -> Sequence[Mapping[str, Any]]: ...
 
 
 class PreparedCardSender(Protocol):
@@ -929,6 +977,29 @@ class SendOutcome:
     receipt: Mapping[str, Any] | None = None
     error: str | None = None
     retry_in_ms: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DueCard:
+    """One due intent as it was read, before anything about it is frozen.
+
+    It exists so the quote read can happen *between* two short transactions rather than inside the
+    claiming one. A quote is display-only and is allowed to be slow; a transaction holding the
+    delivery row while a second read runs is not. News reads its quotes outside every transaction
+    too, and this keeps the market card's read no greedier than that (#562 §3).
+    """
+
+    delivery_key: str
+    group_key: str
+    market_kind: str
+    trigger_reason: str
+    attempts: int
+    # The stamp this row was found due at. Carried, not re-derived: it is half of the compare-and-set
+    # that replaces the row lock the old single-transaction claim held.
+    read_at_ms: int
+    track: MarketTrack
+    observations: tuple[MarketObservation, ...]
+    frozen_card: Mapping[str, Any] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1104,9 +1175,18 @@ class MarketNotificationLoop:
             if not self.sender.available:
                 held = int(await self.db.tx("news_market_notify_hold", _hold_unavailable(stamp)))
                 return replace(turn, held_unavailable=held)
-            claimed = await self.db.tx("news_market_notify_claim", _claim_due(self, stamp))
-            if claimed is None:
+            due = await self.db.tx("news_market_notify_due", _due_card(self, stamp))
+            if due is None:
                 return turn
+            # Between the two transactions on purpose: the card is quoted with no database
+            # transaction of this loop's open, and whatever the read answers, the claim below runs.
+            quotes = await self._quotes(due, stamp)
+            claimed = await self.db.tx("news_market_notify_claim", _claim_due(self, due, quotes, stamp))
+            if claimed is None:
+                # Another process claimed this card between the read and the compare-and-set. Nothing
+                # was sent and no attempt was spent, and the *next* due card is still this turn's
+                # work -- ending the turn here would idle a whole tick behind one lost race.
+                continue
             # The PostgreSQL connection is released before the external call: the send entry queues
             # fairly with ordinary News, and a slow provider never holds a database slot.
             outcome = await self._send(claimed)
@@ -1121,7 +1201,9 @@ class MarketNotificationLoop:
             )
         return turn
 
-    def _claim(self, repos: Any, now_ms: int) -> ClaimedCard | None:
+    def _due(self, repos: Any, now_ms: int) -> DueCard | None:
+        """The next due intent and everything needed to render it. Nothing is frozen here."""
+
         news = repos.news
         # A sender exists again, so cards held for its absence become due. They were never attempted,
         # so no attempt was consumed and each group still has exactly one merged card.
@@ -1139,37 +1221,93 @@ class MarketNotificationLoop:
             news.market_discard_delivery(delivery_key=key)
             return None
         track_row = news.market_track(group_key=str(row["group_key"]))
-        track = _track_from_row(track_row) if track_row is not None else group_identity(observations[-1])
-        reason = str(row["trigger_reason"])
+        attempts = int(row["attempts"] or 0)
+        return DueCard(
+            delivery_key=key,
+            group_key=str(row["group_key"]),
+            market_kind=str(row["market_kind"]),
+            trigger_reason=str(row["trigger_reason"]),
+            attempts=attempts,
+            read_at_ms=now_ms,
+            track=_track_from_row(track_row) if track_row is not None else group_identity(observations[-1]),
+            observations=tuple(observations),
+            frozen_card=dict(row["card"]) if attempts > 0 and row["card"] else None,
+        )
+
+    async def _quotes(self, due: DueCard, now_ms: int) -> tuple[ReaderCardQuote, ...]:
+        """The card's assets at the market's own price, or nothing -- never a delay and never a retry.
+
+        A retry re-sends the card frozen at the first attempt, so it asks for nothing: re-quoting a
+        snapshot that will not be re-rendered would spend a read to change nothing, and the card
+        model a channel renders beside that snapshot must describe the same card the snapshot froze.
+        Every failure the port can have is the same answer as a stale quote -- no line -- because a
+        market card exists to tell a reader what a provider reported, and a price the console could
+        not produce is not a reason to withhold that (#562 §2).
+
+        The deadline is applied *here* rather than trusted to the port. The composition site passes
+        the same budget to its own read, but "no card waits longer than this for a price" is the
+        loop's promise to the reader, and a port that honoured no budget at all would otherwise stall
+        the send lane for as long as it liked.
+        """
+
+        symbols = () if due.frozen_card is not None else quote_symbols(due.track, due.observations)
+        if not symbols:
+            return ()
+        try:
+            rows = await asyncio.wait_for(
+                self.db.quotes_for_symbols(symbols, now_ms=now_ms),
+                timeout=QUOTE_READ_TIMEOUT_SECONDS,
+            )
+        except Exception:  # display-only, exactly as News treats it: every failure is no line
+            return ()
+        return reader_quotes(rows)
+
+    def _claim(self, repos: Any, due: DueCard, quotes: Sequence[ReaderCardQuote], now_ms: int) -> ClaimedCard | None:
+        """Freeze this card and claim the attempt. A retry keeps the snapshot it already froze.
+
+        `market_begin_send` is the claim, and it compares against the attempt count and due time this
+        card was read with. The row lock the old single-transaction claim held died with the reading
+        transaction, so a card another process has since claimed, settled and re-queued must fail
+        here rather than spend its second attempt early against the first attempt's snapshot. A lost
+        compare-and-set sends nothing, consumes no attempt and leaves the row exactly as it is.
+        """
+
+        news = repos.news
+        track, observations = due.track, list(due.observations)
         card = market_reader_card(
             track=track,
-            reason=reason,
+            reason=due.trigger_reason,
             observations=observations,
             detail_url=market_detail_url(self.console_base_url, observations[-1].item_id),
             action_changes=action_changes(observations, since=(track.anchor_action, track.anchor_position_side)),
+            quotes=quotes,
         )
         # The snapshot a retry sends is the one the first attempt froze, and `market_begin_send`
         # refuses to overwrite it. The card model beside it is built from the same observation set --
         # `market_adopt_unclaimed` hands new observations to the group's *un-started* card, so an
         # intent that has been attempted covers a fixed set -- and is what a channel that renders the
-        # model serializes for itself (#562 PR-C).
-        channel_payload = dict(row["card"]) if int(row["attempts"] or 0) > 0 and row["card"] else feishu_card(card)
-        news.market_begin_send(
-            delivery_key=key,
+        # model serializes for itself (#562 PR-C). A retry reads no quote at all, so the model it
+        # rebuilds carries the same (absent) quote line the frozen snapshot was rendered with.
+        channel_payload = due.frozen_card or feishu_card(card)
+        if not news.market_begin_send(
+            delivery_key=due.delivery_key,
             card=channel_payload,
             covered_count=len(observations),
             covered_from_ms=observations[0].received_at_ms,
             covered_to_ms=observations[-1].received_at_ms,
+            attempts=due.attempts,
+            due_at_ms=due.read_at_ms,
             now_ms=now_ms,
-        )
-        news.market_set_track_attempt(group_key=str(row["group_key"]), delivery_key=key, attempt_at_ms=now_ms)
+        ):
+            return None
+        news.market_set_track_attempt(group_key=due.group_key, delivery_key=due.delivery_key, attempt_at_ms=now_ms)
         latest = observations[-1]
         return ClaimedCard(
-            delivery_key=key,
-            group_key=str(row["group_key"]),
-            market_kind=str(row["market_kind"]),
-            trigger_reason=reason,
-            attempts=int(row["attempts"] or 0) + 1,
+            delivery_key=due.delivery_key,
+            group_key=due.group_key,
+            market_kind=due.market_kind,
+            trigger_reason=due.trigger_reason,
+            attempts=due.attempts + 1,
             card=card,
             channel_payload=channel_payload,
             covered_count=len(observations),
@@ -1264,9 +1402,18 @@ def _hold_unavailable(now_ms: int) -> Callable[[Any], int]:
     return run
 
 
-def _claim_due(loop: MarketNotificationLoop, now_ms: int) -> Callable[[Any], ClaimedCard | None]:
+def _due_card(loop: MarketNotificationLoop, now_ms: int) -> Callable[[Any], DueCard | None]:
+    def run(repos: Any) -> DueCard | None:
+        return loop._due(repos, now_ms)
+
+    return run
+
+
+def _claim_due(
+    loop: MarketNotificationLoop, due: DueCard, quotes: Sequence[ReaderCardQuote], now_ms: int
+) -> Callable[[Any], ClaimedCard | None]:
     def run(repos: Any) -> ClaimedCard | None:
-        return loop._claim(repos, now_ms)
+        return loop._claim(repos, due, quotes, now_ms)
 
     return run
 

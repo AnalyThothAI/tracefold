@@ -35,10 +35,12 @@ from tracefold.news.market_notifications import (
     group_identity,
     market_detail_url,
     notification_status,
+    quote_symbols,
     render_market_card,
     retry_delay_ms,
     split_by_group,
 )
+from tracefold.news.reader_card import ReaderCardQuote
 
 T0 = 1_780_000_000_000
 
@@ -673,6 +675,142 @@ def test_a_raw_body_line_drops_a_market_kind_the_frame_never_carried() -> None:
     body = card["elements"][0]["content"]
     assert "场所未知 · 未结构化，保留供应商原文" in body
     assert " ·  · " not in body
+
+
+# --- §5.2 the card's numbers: what the report said, and what the market says ----------------------
+
+
+def _fresh(symbol: str, price: str, change: float | None = 7.91) -> ReaderCardQuote:
+    """Freshness is stated, never defaulted: the value object fails closed without it."""
+
+    return ReaderCardQuote(symbol=symbol, price=price, change_pct=change, change_basis="rolling_24h", freshness="fresh")
+
+
+def _body(card: dict) -> str:
+    return card["elements"][0]["content"]
+
+
+def test_an_oi_card_carries_the_same_quote_line_a_news_card_carries() -> None:
+    """#562 §2: the market card's price comes from the same read model, in the same characters."""
+
+    observation = replace(oi(at_ms=T0, change_bps=600), whale_long_profit_bps=8_840, whale_oi_ratio_bps=14_390)
+    card = render_market_card(
+        track=group_identity(observation),
+        reason="first",
+        observations=[observation],
+        quotes=[_fresh("WIF", "0.5432")],
+    )
+    lines = _body(card).splitlines()
+    assert lines[2] == "行情 WIF $0.5432 24h +7.91%"
+    # The provider's own two OI percentages, in its own terms, on one line of their own.
+    # `占比` would claim a share of a whole; the provider's own ratio is above 100% here.
+    assert lines[3] == "鲸鱼多头盈利 88.4% · 鲸鱼持仓/OI 143.9%"
+
+
+def test_an_oi_frame_without_the_whale_columns_prints_no_whale_line() -> None:
+    """Absent is absent: two unknown placeholders are worse than the line not being there."""
+
+    observation = oi(at_ms=T0, change_bps=600)
+    assert observation.whale_long_profit_bps is None
+    body = _body(render_market_card(track=group_identity(observation), reason="first", observations=[observation]))
+    assert "鲸鱼" not in body
+
+
+def test_a_liquidation_card_separates_the_reported_price_from_the_live_quote() -> None:
+    """Two prices, two claims, two labels. Conflating them would report a move nobody made."""
+
+    observation = replace(liquidation(at_ms=T0, instrument="DOGE"), price="0.14215")
+    card = render_market_card(
+        track=group_identity(observation),
+        reason="first",
+        observations=[observation],
+        quotes=[_fresh("DOGE", "0.141980", -3.2)],
+    )
+    lines = _body(card).splitlines()
+    assert lines[2] == "来源报告价 $0.14215"
+    assert lines[3] == "行情 DOGE $0.14198 24h -3.20%"
+    # The report's own figure is exact and unrounded; the quote is the console's own rendering. The
+    # two are never the same characters, so neither can be read as the other.
+    assert "$0.14215" not in lines[3]
+
+
+def test_a_smart_money_card_carries_the_reported_price_its_pnl_and_the_quote() -> None:
+    observation = replace(wallet(at_ms=T0, action="close", side="long"), pnl_usd="-412.75")
+    card = render_market_card(
+        track=group_identity(observation),
+        reason="first",
+        observations=[observation],
+        quotes=[_fresh("ETH", "3125.4", 0.42)],
+    )
+    lines = _body(card).splitlines()
+    assert lines[2] == "来源报告价 $3120.5 · 已实现 PNL -$412.75"
+    assert lines[3] == "行情 ETH $3,125.40 24h +0.42%"
+
+
+def test_a_report_that_carried_no_price_or_pnl_prints_no_reported_line() -> None:
+    observation = replace(wallet(at_ms=T0), price=None)
+    body = _body(render_market_card(track=group_identity(observation), reason="first", observations=[observation]))
+    assert "来源报告价" not in body and "PNL" not in body
+
+
+def test_a_quote_whose_state_nobody_stated_is_not_treated_as_fresh() -> None:
+    """The value object fails closed: only a quote that says it is current reaches a reader."""
+
+    observation = oi(at_ms=T0, change_bps=600)
+    body = _body(
+        render_market_card(
+            track=group_identity(observation),
+            reason="first",
+            observations=[observation],
+            quotes=[ReaderCardQuote(symbol="WIF", price="0.5432")],
+        )
+    )
+    assert "行情" not in body
+
+
+@pytest.mark.parametrize("state", ["stale", "unavailable", "unlisted"])
+def test_a_quote_that_is_not_fresh_costs_its_line_and_nothing_else(state: str) -> None:
+    """The News rule, unchanged and unrestated: only `fresh` reaches a reader (#88)."""
+
+    observation = replace(liquidation(at_ms=T0), price="0.14215")
+    quoted = render_market_card(
+        track=group_identity(observation),
+        reason="first",
+        observations=[observation],
+        quotes=[ReaderCardQuote(symbol="DOGE", price="0.14198", change_pct=-3.2, freshness=state)],
+    )
+    plain = render_market_card(track=group_identity(observation), reason="first", observations=[observation])
+    assert "行情" not in _body(quoted)
+    assert quoted == plain  # a card with no usable quote is byte-identical to one that asked for none
+
+
+def test_the_newest_report_is_the_one_the_card_prices() -> None:
+    """The card is stamped with the newest report's clock, so it prints that report's own price."""
+
+    observations = [
+        replace(wallet(at_ms=T0, item_id="a"), price="3000.0"),
+        replace(wallet(at_ms=T0 + 10_000, item_id="b"), price="3120.5"),
+    ]
+    body = _body(render_market_card(track=group_identity(observations[0]), reason="first", observations=observations))
+    assert "来源报告价 $3120.5" in body and "3000" not in body
+
+
+@pytest.mark.parametrize(
+    ("track_symbol", "observation_symbol", "expected"),
+    [
+        ("WIF", "WIF", ("WIF",)),
+        (None, "ETH", ("ETH",)),
+        (None, None, ()),
+    ],
+)
+def test_a_card_asks_the_quote_read_only_about_a_normalized_symbol(
+    track_symbol: str | None, observation_symbol: str | None, expected: tuple[str, ...]
+) -> None:
+    """`raw_instrument` is never asked about: the read model resolves symbol tags, not venue tickers."""
+
+    observation = replace(oi(at_ms=T0, change_bps=600), symbol=observation_symbol, raw_instrument="WIFUSDT-PERP")
+    track = replace(group_identity(observation), symbol=track_symbol, raw_instrument="WIFUSDT-PERP")
+    assert quote_symbols(track, [observation]) == expected
 
 
 # --- §5.2 the card's link to the console ---------------------------------------------------------

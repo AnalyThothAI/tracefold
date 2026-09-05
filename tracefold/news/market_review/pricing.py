@@ -56,6 +56,10 @@ QUOTE_PERIOD_SECONDS: Final = 20.0
 # moves 0.023% per turn. Five minutes of that is 0.35%, against the 6x payload it would cost to chase.
 QUOTE_DAY_PERIOD_SECONDS: Final = 300.0
 QUOTE_TURN_DEADLINE_SECONDS: Final = 10.0
+# How long a *card* may wait for a display quote before going out without one. It belongs beside the
+# other quote budgets rather than inside either renderer: the News first card and the market card
+# have one answer between them, and each applies it itself (#562 §3).
+QUOTE_READ_TIMEOUT_SECONDS: Final = 1.5
 # The 24 h reference is read on the 300 s day cadence above, so a 360 s window left exactly one missed
 # read between "the percentage is there" and "the card shows no 24 h change at all" -- 60 s of slack for
 # a read that is optional by construction and never enters the turn deadline. 600 s gives it a whole
@@ -490,6 +494,7 @@ __all__ = [
     "QUOTE_LOOKBACK_MS",
     "QUOTE_MAX_FUTURE_SKEW_MS",
     "QUOTE_PERIOD_SECONDS",
+    "QUOTE_READ_TIMEOUT_SECONDS",
     "QUOTE_REFERENCE_MAX_AGE_MS",
     "QUOTE_REQUEST_SYMBOL_MAX",
     "QUOTE_SOURCE_GROUP_MAX",

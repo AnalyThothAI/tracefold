@@ -9,7 +9,7 @@ News "标的" block with three `暂无` prices, the event time was stripped so t
 time, and every family colour but green/red/grey collapsed to a white circle (#562 §1, §5 row 14).
 
 What it may know is the card model and the reader-facing formats (`ReaderCard`, `card_clock`,
-`LINKABLE_TICKER_RE`, `quote_line`) plus the transport contracts. It may not know a renderer, a
+`LINKABLE_TICKER_RE`) plus the transport contracts. It may not know a renderer, a
 delivery pipeline or the market loop; `tests/architecture/test_backend_boundaries.py` holds that.
 """
 
@@ -41,7 +41,6 @@ from tracefold.news import (
     ReaderTradeTarget,
     TelegramDeliveryReceipt,
     card_clock,
-    quote_line,
 )
 
 _TELEGRAM_API_ORIGIN = "https://api.telegram.org"
@@ -521,15 +520,12 @@ def _telegram_message(
         # A market card's body is the model's own lines: the OI change and its measurement, the
         # liquidation count and largest reported figure, the account and its action timeline, or the
         # provider's unstructured text. This channel has no market layout of its own to impose.
+        # The market's own number is one of those lines, placed by the family that owns it (#562
+        # PR-B): a liquidation card reads its reported price and then the quote. A News card states
+        # the same 24h change inside its asset block instead, and would otherwise say it twice.
         body = "\n".join(_escape_html(line) for line in card.market_lines())
         if body:
             sections.append(body)
-        # The families whose card has no per-asset movement block show the market's own number here,
-        # the moment their card carries one (#562 PR-B). A News card states the same 24h change
-        # inside its asset block and would otherwise say it twice.
-        quotes = quote_line(card.quotes)
-        if quotes:
-            sections.append(_escape_html(quotes))
 
     groups: list[str] = []
     if news and card.facts.tickers:

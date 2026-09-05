@@ -18,7 +18,6 @@ from tracefold.news.card_format import CHANGE_BASIS_LABEL
 from tracefold.news.delivery import (
     card_assets,
     reader_market_movements,
-    reader_quotes,
     reader_trade_targets,
     render_first_card,
     sanitize_ai_text,
@@ -46,7 +45,7 @@ from tracefold.news.models import ReaderMarketMovement, ReaderReceipt, ReaderTra
 from tracefold.news.opennews import source_artifact_identity
 from tracefold.news.outcome import OVERRIDE_RULE_ZH, storyline_key_zh, throttled_by_zh
 from tracefold.news.pipeline.admission import _event_identity
-from tracefold.news.reader_card import quote_line
+from tracefold.news.reader_card import quote_line, reader_quotes
 from tracefold.news.similarity import similarity
 from tracefold.news.triage_rules import (
     DEFAULT_POLICY,

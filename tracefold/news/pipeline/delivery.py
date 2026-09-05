@@ -13,7 +13,14 @@ from typing import Any, ClassVar, Protocol, runtime_checkable
 from ..bus import Q_DELIVER, BusMessage, DeferError, PermanentError, TransientError, now_ms
 from ..delivery import card_assets, news_reader_card, reader_market_movements, reader_trade_targets
 from ..feishu_card import feishu_card
-from ..market_review.pricing import Candle, PriceInstrument, PricePoint, parse_change_pct, select_candle
+from ..market_review.pricing import (
+    QUOTE_READ_TIMEOUT_SECONDS,
+    Candle,
+    PriceInstrument,
+    PricePoint,
+    parse_change_pct,
+    select_candle,
+)
 from ..models import Novelty, ReaderDeliveryPresentation, ReaderMarketScope, TelegramDeliveryReceipt
 from ..progression_review import PROGRESSION_REVIEW_TIMEOUT_SECONDS, ProgressionReview, ProgressionVerifier
 from ..reader_card import ReaderCard
@@ -28,10 +35,6 @@ from ..tradability import (
 )
 from .runtime import NewsDatabasePort, _sleep_or_stop
 
-# The quote read gets its own short session. A price is display-only and must
-# never delay, retry, or suppress a delivery; every failure degrades to no
-# market line while the card proceeds normally (#113).
-_QUOTE_READ_TIMEOUT_SECONDS = 1.5
 _DELIVERY_CANDLE_TIMEOUT_SECONDS = 2.0
 _DELIVERY_PRICE_SOURCE_TIMEOUT_SECONDS = 2.0
 _DELIVERY_CANDLE_GAP_MS = 90_000
@@ -42,6 +45,37 @@ _DELIVERY_STARTUP_RECONCILE_RETRY_SECONDS = 0.25
 _PROGRESSION_REVIEW_CANDIDATE_MAX = 8
 
 logger = logging.getLogger(__name__)
+
+
+async def read_display_quotes(
+    db: NewsDatabasePort,
+    symbols: Sequence[str],
+    *,
+    now_ms: int,
+    name: str,
+) -> list[dict[str, Any]]:
+    """One `news_quote_snapshots` row per symbol, on one short session, or nothing at all.
+
+    This is the whole of the quote rule shared by the News first card and the market card (#562 §3):
+    one bounded read, no transaction held across it, the pricing domain's own budget, and any
+    failure -- admission, overrun, timeout, a repository raising -- degrading to no quote rather than
+    to a placeholder, a zero or a retry. What "fresh" and "24 h" mean is *not* restated here: the
+    read model applies the freshness and reference-age rules in SQL, and `reader_card.quote_line`
+    drops anything not fresh, so there is exactly one place each of those constants is read.
+    """
+
+    if not symbols:
+        return []
+    try:
+        rows = await db.read(
+            name,
+            lambda repos: repos.price.quotes_for_symbols(list(symbols), now_ms=now_ms),
+            timeout_seconds=QUOTE_READ_TIMEOUT_SECONDS,
+        )
+    except Exception:  # price is display-only; all failures degrade to no line
+        return []
+    return [dict(row) for row in rows or [] if isinstance(row, Mapping)]
+
 
 DeliveryCandleFetcher = Callable[[str, int, int], Awaitable[Sequence[Candle]]]
 DeliveryCandleFetcherFor = Callable[[str], DeliveryCandleFetcher | None]
@@ -777,7 +811,7 @@ class DelivererConsumer:
             row = await self.db.read(
                 "news_delivery_progression_parent",
                 lambda repos: repos.news.delivery(event_id=parent_event_id, kind="first"),
-                timeout_seconds=_QUOTE_READ_TIMEOUT_SECONDS,
+                timeout_seconds=QUOTE_READ_TIMEOUT_SECONDS,
             )
             if (
                 not isinstance(row, Mapping)
@@ -849,15 +883,7 @@ class DelivererConsumer:
             return []
         if self._price_fetcher_for is not None:
             return await self._point_market_data(shown, stamp, news_at_ms=news_at_ms)
-        try:
-            rows = await self.db.read(
-                "news_delivery_quotes",
-                lambda repos: repos.price.quotes_for_symbols(shown, now_ms=stamp),
-                timeout_seconds=_QUOTE_READ_TIMEOUT_SECONDS,
-            )
-        except Exception:  # price is display-only; all failures degrade to no line
-            return []
-        quotes = [dict(row) for row in rows or [] if isinstance(row, Mapping)]
+        quotes = await read_display_quotes(self.db, shown, now_ms=stamp, name="news_delivery_quotes")
         if self._candle_fetcher_for is None:
             return quotes
         news_target_ms = (
@@ -915,7 +941,7 @@ class DelivererConsumer:
                     repos.price.quotes_for_symbols(shown, now_ms=stamp),
                     repos.price.instruments_for_symbols(shown),
                 ),
-                timeout_seconds=_QUOTE_READ_TIMEOUT_SECONDS,
+                timeout_seconds=QUOTE_READ_TIMEOUT_SECONDS,
             )
         except Exception:
             return []
