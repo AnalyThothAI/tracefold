@@ -204,8 +204,11 @@ class DevelopmentDatasetStore:
         episodes = self._project_episodes(cases, seed)
         # Inter-drafter agreement over every dual-labelled cluster the corpus carries (#501 D8). Reported
         # beside the corpus and never a gate: the holdout decides, and an operator reads κ to decide
-        # whether the codebook needs repair before a run is paid for.
-        calibration = self._calibration_receipt(episodes) if spec.role == "development" else None
+        # whether the codebook needs repair before a run is paid for. Beside *every* corpus with dual
+        # drafts, not development alone (#548): a held-out corpus is drafted by the same two blind models
+        # and its κ is what says whether the codebook held outside the training window. `None` still means
+        # "this corpus carries no dual-labelled cluster", and no gate reads either answer.
+        calibration = self._calibration_receipt(episodes)
         if calibration is not None:
             counts["calibration"] = dict(calibration)
         distributions, objective_counts = self._dataset_distributions(episodes, cases)

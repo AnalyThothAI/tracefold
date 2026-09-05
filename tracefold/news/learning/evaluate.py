@@ -57,6 +57,7 @@ from .metric import (
 from .objective import (
     _expected_delivery,
     development_split_profile_counts,
+    elect_cluster_representative_case_ids,
     production_decision,
 )
 from .profile import _PROFILE, EVALUATOR_VERSION, TRUSTED_ROOT_SHA, development_coverage_blockers
@@ -111,25 +112,53 @@ def _taxonomy_release_evidence(
     #501 removed the "every Stable-correct control must stay exact" failure: the absolute per-cluster rule
     was the same logic that made selection unreachable, and the per-axis delta gate below already refuses
     a candidate that is worse than Stable on any axis.
+
+    The population is one elected representative per connected fact cluster — the same one the Objective
+    Plan optimizes and the freeze summarizes, elected here by the plan's own
+    `elect_cluster_representative_case_ids` (#548). Feeding `summarize_taxonomy` one row per case made it
+    fail closed with `news_taxonomy_summary_cluster_conflict` on corpora the freeze accepted, because two
+    media members of one fact legitimately carry different accepted Gold. Shadowed members stay audit
+    facts in `news_learning_cases`; they cast no second vote here. A case only one arm answered is out of
+    both summaries, so Stable and candidate are compared on identical cases and the deltas below subtract
+    two numbers measured over the same clusters.
     """
 
-    rows: dict[str, list[dict[str, Any]]] = {"stable": [], "candidate": []}
+    eligible: list[dict[str, Any]] = []
     for item in observations:
         case_ref = dict(item.get("case_ref") or {})
         review = reviews.get(str(case_ref.get("review_id") or ""), {})
         gold = _review_taxonomy(review)
         if gold is None:
             continue
-        case_id = str(case_ref.get("case_id") or "")
-        cluster_id = str(case_ref.get("cluster_id") or "")
         stable = _output_taxonomy(dict(item.get("stable") or {}))
         candidate = _output_taxonomy(dict(item.get("candidate") or {}))
-        if stable is not None:
-            rows["stable"].append({"case_id": case_id, "cluster_id": cluster_id, "gold": gold, "predicted": stable})
-        if candidate is not None:
-            rows["candidate"].append(
-                {"case_id": case_id, "cluster_id": cluster_id, "gold": gold, "predicted": candidate}
-            )
+        if stable is None or candidate is None:
+            continue
+        eligible.append(
+            {
+                "case_id": str(case_ref.get("case_id") or ""),
+                "cluster_id": str(case_ref.get("cluster_id") or ""),
+                "now_ms": int(case_ref.get("opened_at_ms") or 0),
+                "review": review,
+                "gold": gold,
+                "stable": stable,
+                "candidate": candidate,
+            }
+        )
+    elected = elect_cluster_representative_case_ids(eligible)
+    rows: dict[str, list[dict[str, Any]]] = {
+        arm: [
+            {
+                "case_id": row["case_id"],
+                "cluster_id": row["cluster_id"],
+                "gold": row["gold"],
+                "predicted": row[arm],
+            }
+            for row in eligible
+            if row["case_id"] in elected
+        ]
+        for arm in ("stable", "candidate")
+    }
 
     stable_summary = summarize_taxonomy(rows["stable"])
     candidate_summary = summarize_taxonomy(rows["candidate"])

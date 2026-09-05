@@ -1926,7 +1926,11 @@ endpoint is touched. Its v4 report separately publishes `objective.compilable` a
 the elected cluster representatives — the same one-vote-per-connected-fact-cluster population the freeze's
 dataset distributions summarize — so per-case Gold that legitimately differs between media members of one
 fact (`announced` versus `effective`, a subject-code superset) cannot make readiness refuse a corpus the
-freeze accepted (#534). The population is every case with valid accepted Gold and a replayable Stable
+freeze accepted (#534). The release evaluator's `taxonomy` release evidence is summarized over that same
+elected cluster-representative population, for both arms alike, so Stable and candidate are compared on
+identical cases and an offline or held-out evaluation cannot fail closed where readiness and the freeze
+passed (#548). Inter-drafter κ is computed for every corpus that carries dual drafts, held-out ones
+included. The population is every case with valid accepted Gold and a replayable Stable
 answer (#501 D9) — `included`, with `stable_exact` recorded as a diagnostic — because the #456 target/control rule (explicit-owner mismatches versus Stable-exact
 controls) measured which batch drafted the label rather than the Program. #501 also deleted the
 60/60 and 30/30 target/control floors and the 50-cluster calibration gate: GEPA needs Gold-bearing

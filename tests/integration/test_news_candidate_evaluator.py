@@ -4140,3 +4140,210 @@ def test_a_validation_freeze_publishes_its_gold_bearing_primary_clusters(conn) -
     assert validation.counts["primary_cluster_n"] == cluster_n
     assert "optimizer_cluster_n" in development.counts
     assert "primary_cluster_n" not in development.counts
+
+
+# Two wires stating one material fact. `_connected_fact_clusters` unions on normalized text, so these are
+# one connected fact cluster whose two accepted reviews carry different — and individually valid — Gold.
+# Neither family appears anywhere else in these fixtures, so the summary's support proves which member the
+# evaluator elected.
+_CONFLICTING_FACT_TITLE = "One material fact two wires stated with different accepted taxonomy Gold"
+_SHADOWED_FAMILY = "geopolitical_conflict"
+_ELECTED_FAMILY = "market_access"
+
+
+def _conflicting_gold_cluster(conn, *, opened_at_ms: int) -> None:
+    """Seal one fact cluster carrying two members whose accepted Gold legitimately differs.
+
+    Production shape (#534): a wire says `announced` and the follow-up says `effective`, or the second
+    member's subject codes are a superset. Both are correct about their own member and the freeze accepts
+    the corpus, because it summarizes one elected representative per cluster. Here the two members differ
+    on `event_family` for the same reason and with the same consequence.
+
+    The later submission is the elected one: both carry `must_push`, so the safety term of
+    `_representative_sort_key` ties and the most recent statement of the fact wins.
+    """
+
+    desk = ReviewDesk(conn, now_ms=NOW)
+    for index, family in enumerate((_SHADOWED_FAMILY, _ELECTED_FAMILY)):
+        with repositories_for_connection(conn).transaction():
+            desk.submit(
+                None,
+                ExternalMissSubmission(
+                    source_url=f"https://example.test/wire/{index}",
+                    title=_CONFLICTING_FACT_TITLE,
+                    occurred_at_ms=opened_at_ms + index * 60_000,
+                    rubric=_miss_rubric(family),
+                ),
+                principal=PRINCIPAL,
+                idempotency_key=str(uuid.uuid4()),
+            )
+
+
+def _conflicting_cluster_members(development) -> tuple[Any, Any]:
+    """The frozen (elected, shadowed) members of the conflicting cluster, by the plan's own preference.
+
+    The sealed `cluster_id` is the connected component's own hash, not the per-case text hash, so the
+    cluster is found by being the one component this corpus gives two members.
+    """
+
+    by_cluster: dict[str, list[Any]] = {}
+    for case in development.cases:
+        by_cluster.setdefault(case.cluster_id, []).append(case)
+    multi = [members for members in by_cluster.values() if len(members) > 1]
+    assert len(multi) == 1 and len(multi[0]) == 2
+    elected, shadowed = sorted(multi[0], key=lambda case: -case.opened_at_ms)
+    assert elected.opened_at_ms > shadowed.opened_at_ms
+    return elected, shadowed
+
+
+def _elected_gold_axes(store: DevelopmentDatasetStore, development, elected: Any) -> dict[str, dict[str, str]]:
+    """Every case's Gold keyed by title, with the conflicting title pinned to the elected member's Gold."""
+
+    axes = _gold_axes(store, development.cases)
+    axes.update(_gold_axes(store, [elected]))
+    return axes
+
+
+def test_an_offline_evaluation_elects_one_representative_of_a_conflicting_gold_cluster(conn) -> None:
+    """#548: the freeze sealed this corpus, so the evaluator must not fail closed summarizing it.
+
+    Before this change `_taxonomy_release_evidence` handed `summarize_taxonomy` one row per case, and two
+    members of one fact carrying different Gold raised `news_taxonomy_summary_cluster_conflict` after every
+    model call had already been paid for. The population is now the Objective Plan's own elected
+    representatives — the same one the readiness report (#534) and the freeze's distributions summarize.
+
+    That the *elected* member is the one scored is not asserted by restating the rule: the candidate arm
+    answers each title with the elected member's Gold, so a perfect candidate score is only reachable if
+    the elected member, and not the shadowed one, is the row the summary compares.
+    """
+
+    _accepted_compilable_event(conn)
+    _reviewed_misses(conn, total=4, stable_wrong=2)
+    _conflicting_gold_cluster(conn, opened_at_ms=NOW - 90 * 60_000)
+    stable = _arm()
+    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        bootstrap._datasets.freeze_dataset(
+            DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
+        )
+    )
+    cluster_n = 4 + 1 + len(_COMPILABLE_CORPUS)
+    assert development.counts["case_n"] == cluster_n + 1
+    assert development.counts["independent_cluster_n"] == cluster_n
+    elected, shadowed = _conflicting_cluster_members(development)
+
+    candidate = _taxonomy_only_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+    )
+    report = asyncio.run(
+        CandidateEvaluator(
+            conn,
+            stable=stable,
+            judges=_taxonomy_judges(
+                stable,
+                candidate.candidate_arm,
+                candidate_axes_by_title=_elected_gold_axes(bootstrap._datasets, development, elected),
+            ),
+            candidate_catalog=(candidate,),
+        ).evaluate(
+            EvaluationRequest(
+                development_dataset_sha=development.artifact_sha,
+                candidate_sha=candidate.candidate_sha,
+                stage="offline",
+            )
+        )
+    )
+
+    taxonomy = report.evidence["taxonomy"]
+    # One vote per connected fact cluster, and the *same* vote on both arms: the deltas below subtract two
+    # numbers measured over identical cases.
+    assert taxonomy["stable"]["cluster_n"] == taxonomy["candidate"]["cluster_n"] == cluster_n
+    assert taxonomy["stable"]["case_n"] == taxonomy["candidate"]["case_n"] == cluster_n
+    assert taxonomy["candidate"]["taxonomy_overall"] == 1.0
+    assert taxonomy["candidate"]["four_axis_exact_accuracy"] == 1.0
+    support = taxonomy["stable"]["support"]["event_family"]
+    assert support[_ELECTED_FAMILY] == 1
+    assert _SHADOWED_FAMILY not in support
+    assert _SHADOWED_FAMILY in taxonomy["stable"]["zero_support"]["event_family"]
+    assert taxonomy["candidate"]["support"] == taxonomy["stable"]["support"]
+
+    # The shadowed member is not deleted, hidden or re-labelled: it stays a persisted audit fact of this
+    # exact run, and casts no second vote.
+    persisted = {
+        row["case_id"]
+        for row in conn.execute(
+            "SELECT case_id FROM news_learning_cases WHERE run_sha = %s", (report.run_sha,)
+        ).fetchall()
+    }
+    assert {elected.case_id, shadowed.case_id} <= persisted
+    assert len(persisted) == cluster_n + 1
+
+
+def test_a_taxonomy_only_holdout_elects_one_representative_of_a_conflicting_gold_cluster(conn) -> None:
+    """#548: the held-out corpus has the same shape, and its per-axis primary must be reachable.
+
+    `d27f0d97…` carries six such clusters, so the holdout would have died exactly where the offline run
+    did. The primary here counts the cluster once on both arms and scores the elected member.
+    """
+
+    _accepted_compilable_event(conn)
+    _reviewed_misses(conn, total=24, stable_wrong=12)
+    _conflicting_gold_cluster(conn, opened_at_ms=NOW - 90 * 60_000)
+    stable = _arm()
+    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        bootstrap._datasets.freeze_dataset(
+            DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
+        )
+    )
+    cluster_n = 24 + 1 + len(_COMPILABLE_CORPUS)
+    assert development.counts["independent_cluster_n"] == cluster_n
+    elected, _shadowed = _conflicting_cluster_members(development)
+
+    candidate = _taxonomy_only_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+    )
+    validation_sha = _insert_validation_dataset(
+        conn,
+        development=development,
+        candidate=candidate,
+        window_duration_hours=24.0,
+        eligible_event_n=200,
+    )
+    _insert_stage_pass(conn, candidate_sha=candidate.candidate_sha, stage="offline")
+    report = asyncio.run(
+        CandidateEvaluator(
+            conn,
+            stable=stable,
+            judges=_taxonomy_judges(
+                stable,
+                candidate.candidate_arm,
+                candidate_axes_by_title=_elected_gold_axes(bootstrap._datasets, development, elected),
+            ),
+            candidate_catalog=(candidate,),
+        ).evaluate(
+            _holdout_request(
+                development_sha=development.artifact_sha,
+                validation_sha=validation_sha,
+                candidate_sha=candidate.candidate_sha,
+            )
+        )
+    )
+
+    primary = report.evidence["primary"]
+    assert primary["endpoint"] == "taxonomy_axis_evidence"
+    assert primary["primary_cluster_n"] == primary["candidate_cluster_n"] == cluster_n
+    assert cluster_n >= _PROFILE["validation"]["primary_clusters_min"]
+    assert primary["taxonomy_overall_delta"] > 0
+    assert primary["regressed_axes"] == []
+    assert report.evidence["taxonomy"]["candidate"]["taxonomy_overall"] == 1.0
+    assert report.evidence["taxonomy"]["stable"]["support"]["event_family"][_ELECTED_FAMILY] == 1
+    assert _SHADOWED_FAMILY not in report.evidence["taxonomy"]["stable"]["support"]["event_family"]
+    assert "validation_primary_review_insufficient" not in report.evidence["blockers"]
+    assert report.evidence["failures"] == []
