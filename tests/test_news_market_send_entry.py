@@ -29,12 +29,8 @@ from tracefold.integrations.feishu import (
     generate_feishu_signature,
 )
 from tracefold.integrations.telegram import TelegramDeliveryError, TelegramNewsPushSender
-from tracefold.news.market_notifications import (
-    COMMIT_PHASE_NOT_SENT,
-    COMMIT_PHASE_UNKNOWN,
-    SEND_ATTEMPTS_MAX,
-    classify_send_failure,
-)
+from tracefold.news.delivery_contracts import COMMIT_PHASE_NOT_SENT, COMMIT_PHASE_UNKNOWN
+from tracefold.news.market_notifications import SEND_ATTEMPTS_MAX, classify_send_failure
 from tracefold.news.pipeline.delivery import InitialSendEntry
 
 FEISHU_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/0123456789abcdef"

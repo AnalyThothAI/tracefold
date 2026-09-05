@@ -6,8 +6,8 @@ configuration constants remain under their owning modules instead of becoming an
 
 from __future__ import annotations
 
+from .delivery_contracts import COMMIT_PHASE_NOT_SENT, COMMIT_PHASE_UNKNOWN
 from .market_contracts import MARKET_PAGE_MAX, MARKET_WINDOW_DEFAULT_MS, MARKET_WINDOW_MAX_MS
-from .market_notifications import COMMIT_PHASE_NOT_SENT, COMMIT_PHASE_UNKNOWN
 from .models import (
     NewsFeedEntry,
     ReaderDeliveryPresentation,

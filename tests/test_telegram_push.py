@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -114,7 +116,7 @@ def test_sender_posts_scannable_sections_and_links_the_normalized_source_text() 
         "🎯 <b>标的</b>  BTC\n"
         "新闻后 暂无\n"
         "1h 暂无，\n"
-        "24h +7.91%\n\n"
+        "24h 暂无\n\n"
         "🧭 <b>方向</b>  明显利多\n\n"
         '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道'
     )
@@ -614,7 +616,7 @@ def test_sender_renders_exact_binance_tickers_as_html_links() -> None:
         f"🎯 <b>标的</b>  {ticker}\n"
         "新闻后 暂无\n"
         "1h 暂无，\n"
-        "24h +7.91%\n\n"
+        "24h 暂无\n\n"
         "🧭 <b>方向</b>  明显利多\n\n"
         '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道'
     )
@@ -850,6 +852,91 @@ def test_sender_normalizes_only_proven_source_domains(origin: str, source_url: s
     sender.send_card(card)
 
     assert f'<a href="{source_url}">{label}</a>' in str(observed["text"])
+
+
+def test_day_change_is_never_reparsed_out_of_the_rendered_market_line() -> None:
+    """#562: the 24 h number is the computed movement's or it is 暂无.
+
+    The adapter used to regex `24h +7.91%` back out of the card line it had just stripped, which made a
+    rendered string a fourth source for a number the quote read model already owns. A card that arrives
+    without a movement for an asset now says so, exactly as it already did for 新闻后 and 1h.
+    """
+
+    observed: dict[str, object] = {}
+    card = _card()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        observed.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+    )
+    sender.prepare()
+    sender.send_card(card, presentation=ReaderDeliveryPresentation())
+
+    assert "24h +7.91%" in str(card["elements"][0]["content"])
+    text = str(observed["text"])
+    assert "24h 暂无" in text
+    assert "7.91%" not in text
+
+
+def test_a_trade_link_cannot_leave_the_venue_its_own_template_names() -> None:
+    """#562: one host allowlist -- the venue template here -- and every interpolated segment encoded.
+
+    The adapter no longer parses the URL it just built to re-check the host, port, query and path that
+    `reader_trade_targets` and this template already decided. What keeps a hostile contract identity
+    inside `www.binance.com` is structural: the host and prefix are literals and the rest is quoted.
+    """
+
+    observed: dict[str, object] = {}
+    card = _card()
+    card["elements"][0]["content"] = "业绩改善\n利多 · 影响明显 · ETH · rtpr.io · 14:32"
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        observed.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+    )
+    sender.prepare()
+    sender.send_card(
+        card,
+        presentation=ReaderDeliveryPresentation(
+            trade_targets=(
+                ReaderTradeTarget(
+                    ticker="ETH",
+                    venue="binance.spot",
+                    venue_symbol="ETHUSDT?next=https://evil.example/x",
+                    base_symbol="ETH",
+                    quote_asset="USDT?next=https://evil.example/x",
+                ),
+            ),
+        ),
+    )
+
+    href = next(url for url in re.findall(r'<a href="([^"]+)"', str(observed["text"])) if "binance" in url)
+    assert href.startswith("https://www.binance.com/en/trade/ETH_")
+    assert urlsplit(href).hostname == "www.binance.com"
+    assert not urlsplit(href).query and not urlsplit(href).fragment
+    assert "/x" not in href.removeprefix("https://www.binance.com/en/trade/")
 
 
 def test_sender_never_turns_untrusted_ticker_destinations_into_links() -> None:

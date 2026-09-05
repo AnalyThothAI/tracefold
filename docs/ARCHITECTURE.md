@@ -409,6 +409,7 @@ tracefold.news
   triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback
   program/            SemanticJudge, artifact/registry, seed instructions, chat transport, artifact_tool
   delivery.py / control.py  cards, control commands
+  delivery_contracts.py  what one send attempt proved: the `commit_phase` vocabulary both adapters carry
   pipeline/
     admission.py      the atomic Deduper transaction and raw-queue consumer
     receiver.py / recovery.py  live OpenNews ingest and official-history recovery
@@ -2918,7 +2919,10 @@ could invent would be reachable (#553).
 What a failed send *proved* is decided in the adapter and nowhere else. Feishu and
 Telegram now carry `commit_phase` beside the code ordinary News still records: a
 pre-connect failure, an explicit vendor rejection and a 429 are `not_sent`; a
-write/read timeout, an unparsable answer and a provider 5xx are `unknown`. Only
+write/read timeout, an unparsable answer and a provider 5xx are `unknown`. That
+two-string vocabulary lives in `tracefold/news/delivery_contracts.py` rather than in
+the loop that first needed it — an adapter naming its own failure must not import the
+business loop it serves, and the architecture test holds that direction (#562). Only
 `not_sent` is retried, at most three real attempts with 5 s and then 30 s held in
 PostgreSQL. An `unknown` card is never re-sent and never reported as delivered —
 the provider may well have it — but it does not lock the group either: its

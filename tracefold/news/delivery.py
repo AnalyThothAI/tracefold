@@ -32,7 +32,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from math import isfinite
 from typing import Any, Literal
 
-from .market_review.pricing import parse_price, return_bps
+from .market_review.pricing import parse_price, quote_change_24h_bps, return_bps
 from .models import ReaderMarketMovement, ReaderTradeTarget
 from .outcome import DIRECTION_ZH, MAGNITUDE_ZH, NOVELTY_ZH
 
@@ -216,24 +216,12 @@ def reader_market_movements(
         one_hour_state: Literal["available", "unavailable"] = (
             "available" if return_1h_bps is not None else "unavailable"
         )
-        change_24h_bps: int | None = None
-        change_pct = quote.get("change_pct")
-        if (
-            quote.get("state") == "fresh"
-            and quote.get("change_basis") == "rolling_24h"
-            and isinstance(change_pct, int | float)
-            and not isinstance(change_pct, bool)
-            and isfinite(float(change_pct))
-        ):
-            change_24h_bps = int(
-                (Decimal(str(change_pct)) * Decimal(100)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-            )
         movements.append(
             ReaderMarketMovement(
                 ticker=ticker,
                 after_news_bps=after_news_bps,
                 return_1h_bps=return_1h_bps,
-                change_24h_bps=change_24h_bps,
+                change_24h_bps=quote_change_24h_bps(quote),
                 one_hour_state=one_hour_state,
             )
         )

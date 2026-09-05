@@ -12,7 +12,7 @@ from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from ..bus import Q_DELIVER, BusMessage, DeferError, PermanentError, TransientError, now_ms
 from ..delivery import card_assets, reader_market_movements, reader_trade_targets, render_first_card
-from ..market_review.pricing import Candle, PriceInstrument, PricePoint, return_bps, select_candle
+from ..market_review.pricing import Candle, PriceInstrument, PricePoint, parse_change_pct, select_candle
 from ..models import Novelty, ReaderDeliveryPresentation, ReaderMarketScope, TelegramDeliveryReceipt
 from ..progression_review import PROGRESSION_REVIEW_TIMEOUT_SECONDS, ProgressionReview, ProgressionVerifier
 from ..source_contracts import EVENT_KINDS
@@ -1129,13 +1129,6 @@ class DelivererConsumer:
                 news_target_ms=news_target,
             )
             quote["venue_symbol"] = match.venue_symbol
-            day = points.get(stamp - 24 * _ONE_HOUR_MS)
-            if day is not None:
-                day_bps = return_bps(day.price, points[stamp].price)
-                if day_bps is not None:
-                    quote["change_pct"] = float(day_bps) / 100.0
-                    quote["change_basis"] = "rolling_24h"
-                    quote["change_basis_zh"] = "24 小时"
             if first_partial is None:
                 first_partial = quote
             if all(target in points for target in targets):
@@ -1256,9 +1249,10 @@ class DelivererConsumer:
             quote["price_one_hour_before_push_basis"] = hour.basis
         day = points.get(stamp - 24 * _ONE_HOUR_MS)
         if day is not None:
-            day_bps = return_bps(day.price, current.price)
-            if day_bps is not None:
-                quote["change_pct"] = float(day_bps) / 100.0
+            # `pricing.parse_change_pct` is the only place two prices become a day change (#562).
+            change_pct = parse_change_pct(current.price, day.price)
+            if change_pct is not None:
+                quote["change_pct"] = change_pct
                 quote["change_basis"] = "rolling_24h"
                 quote["change_basis_zh"] = "24 小时"
         if news_target_ms is not None:

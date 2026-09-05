@@ -40,8 +40,6 @@ _PRIVATE_CHANNEL_ID_RE = re.compile(r"^-100[1-9][0-9]{5,15}$")
 _TELEGRAM_TIME_RE = re.compile(r"^[0-2][0-9]:[0-5][0-9]$")
 _REPORTING_ORIGIN_RE = re.compile(r"^(?P<origin>.+)（(?P<count>[1-9][0-9]*) 条报道）$")
 _LINKABLE_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,19}$")
-_BINANCE_FUTURES_PATH_RE = re.compile(r"^/en/futures/[A-Z0-9]{2,40}$")
-_BINANCE_SPOT_PATH_RE = re.compile(r"^/en/trade/[A-Z0-9]{1,20}_[A-Z0-9]{1,20}$")
 _TELEGRAM_HTML_TAG_RE = re.compile(r'</?(?:b|strong|blockquote)>|<a href="[^"]+">|</a>')
 _BOT_API_METHODS = frozenset({"getChat", "getMe", "getChatMember", "sendMessage", "editMessageText", "deleteMessage"})
 _DIRECTION_LABELS = frozenset({"利多", "利空", "中性", "不明确", "方向待定"})
@@ -582,7 +580,6 @@ def _telegram_message(
         metadata_groups.extend(
             _telegram_asset_blocks(
                 facts.assets,
-                market_line=market_line,
                 ticker_links=ticker_links,
                 market_movements=market_movements,
                 market_data_pending=market_data_pending,
@@ -708,7 +705,6 @@ def _telegram_facts(value: str) -> _TelegramFacts:
 def _telegram_asset_blocks(
     assets: Sequence[str],
     *,
-    market_line: str,
     ticker_links: Mapping[str, str],
     market_movements: Sequence[ReaderMarketMovement],
     market_data_pending: bool,
@@ -740,11 +736,7 @@ def _telegram_asset_blocks(
         else:
             after_news = "暂无"
             one_hour = "暂无"
-            change_match = re.search(
-                rf"(?<![A-Z0-9.-]){re.escape(asset)}\s+\$[0-9,.]+\s+24h\s+(?P<pct>[+-]?[0-9]+(?:\.[0-9]+)?%)(?![A-Z0-9.-])",
-                market_line,
-            )
-            day_change = _escape_html(change_match.group("pct")) if change_match is not None else "暂无"
+            day_change = "暂无"
         blocks.append(f"🎯 <b>标的</b>  {ticker}\n新闻后 {after_news}\n1h {one_hour}，\n24h {day_change}")
     return blocks
 
@@ -909,28 +901,18 @@ def _safe_https_url(value: str) -> bool:
     )
 
 
-def _safe_binance_trade_url(value: str) -> bool:
-    try:
-        parsed = urlsplit(value)
-        port = parsed.port
-    except ValueError:
-        return False
-    return bool(
-        parsed.scheme == "https"
-        and parsed.hostname == "www.binance.com"
-        and port in {None, 443}
-        and parsed.username is None
-        and parsed.password is None
-        and not parsed.query
-        and not parsed.fragment
-        and (
-            _BINANCE_FUTURES_PATH_RE.fullmatch(parsed.path) is not None
-            or _BINANCE_SPOT_PATH_RE.fullmatch(parsed.path) is not None
-        )
-    )
-
-
 def _trade_target_links(trade_targets: Sequence[ReaderTradeTarget]) -> dict[str, str]:
+    """The one host allowlist for reader trade actions: a venue this adapter knows, one fixed template.
+
+    `news.delivery.reader_trade_targets` already decided which catalogue contract may become a reader
+    action and what its identity looks like. This function used to build a URL from that decision and
+    then parse its own string back to re-check the host, the port, the userinfo, the query and the path
+    -- a second copy of a rule that had already been applied (#562). What replaces it is structural:
+    the host and path prefix are literals here and every interpolated segment is either matched against
+    the code-owned ticker grammar or percent-encoded, so a built link cannot leave the venue it names
+    no matter what a target carries.
+    """
+
     links: dict[str, str] = {}
     for target in trade_targets:
         if not isinstance(target, ReaderTradeTarget):
@@ -946,9 +928,9 @@ def _trade_target_links(trade_targets: Sequence[ReaderTradeTarget]) -> dict[str,
         ):
             continue
         if target.venue == "binance.perp":
-            url = f"https://www.binance.com/en/futures/{venue_symbol}"
+            url = f"https://www.binance.com/en/futures/{quote(venue_symbol, safe='')}"
         elif target.venue == "binance.spot":
-            url = f"https://www.binance.com/en/trade/{base_symbol}_{quote_asset}"
+            url = f"https://www.binance.com/en/trade/{base_symbol}_{quote(quote_asset, safe='')}"
         elif target.venue in {"hl.perp", "hl.spot", "hl.builder"}:
             url = f"https://app.hyperliquid.xyz/trade/{quote(venue_symbol, safe=':@')}"
         elif target.venue == "okx.perp":
@@ -963,36 +945,8 @@ def _trade_target_links(trade_targets: Sequence[ReaderTradeTarget]) -> dict[str,
             url = f"https://www.bitget.com/spot/{quote(venue_symbol.lower(), safe='')}"
         else:
             continue
-        if _safe_trade_url(url):
-            links.setdefault(ticker, url)
+        links.setdefault(ticker, url)
     return links
-
-
-def _safe_trade_url(value: str) -> bool:
-    if _safe_binance_trade_url(value):
-        return True
-    try:
-        parsed = urlsplit(value)
-        port = parsed.port
-    except ValueError:
-        return False
-    allowed_paths = {
-        "app.hyperliquid.xyz": ("/trade/",),
-        "www.okx.com": ("/trade-swap/", "/trade-spot/"),
-        "app.lighter.xyz": ("/trade/",),
-        "www.bitget.com": ("/futures/usdt/", "/spot/"),
-    }
-    prefixes = allowed_paths.get(str(parsed.hostname or ""))
-    return bool(
-        prefixes
-        and parsed.scheme == "https"
-        and port in {None, 443}
-        and parsed.username is None
-        and parsed.password is None
-        and not parsed.query
-        and not parsed.fragment
-        and any(parsed.path.startswith(prefix) and len(parsed.path) > len(prefix) for prefix in prefixes)
-    )
 
 
 __all__ = ["TelegramDeliveryError", "TelegramNewsPushSender"]
