@@ -57,6 +57,12 @@ _QUOTE_LINE_PREFIX: Final = "行情 "
 # for the line: a trailing mark after `BTC ... · SAMSUNG ...` could belong to either.
 _PERP_MARK: Final = "（永续）"
 
+# What an authoritative five-venue absence puts on a card that already reached its reader. It is the
+# card's own sentence rather than one channel's, because it replaced *deleting* the message (#562 §5
+# row 5): a reader who saw a story about a name they cannot trade is better served by being told so
+# than by watching the card vanish, and both channels have to tell them the same thing.
+UNTRADEABLE_NOTICE_ZH: Final = "未找到可交易标的"
+
 _LIQUIDATION_NOTE: Final = "各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。"
 _SMART_MONEY_NOTE: Final = "Close 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。"
 _SMART_MONEY_UNVERIFIED: Final = "（来源标签，非已核实地址）"
@@ -177,6 +183,9 @@ class ReaderCard:
     link: ReaderCardLink | None = None
     note: ReaderCardNote = field(default_factory=ReaderCardNote)
     times: ReaderCardTimes = field(default_factory=ReaderCardTimes)
+    # Set by the enrichment edit when the venue catalogues answered, authoritatively, that nothing on
+    # this card can be traded. It leads the card, above the copy, in every channel.
+    untradeable: bool = False
 
     def title(self) -> str:
         """The header text, bounded.
@@ -214,11 +223,31 @@ class ReaderCard:
     def body_lines(self) -> tuple[str, ...]:
         """The card's reader-visible lines, in order, with the empty ones already dropped."""
 
+        notice = UNTRADEABLE_NOTICE_ZH if self.untradeable else ""
         if self.header.family == "news":
-            lines = [self.lead, self._facts_line(), quote_line(self.quotes)]
+            lines = [notice, self.lead, self._facts_line(), quote_line(self.quotes)]
         else:
-            lines = [*self._market_lines(), self._facts_line()]
+            lines = [notice, *self.market_lines(), self._facts_line()]
         return tuple(line for line in lines if line)
+
+    # -- the card's own words ---------------------------------------------------------------------
+    #
+    # A channel that lays the facts out itself instead of taking `body_lines` (Telegram, #562 PR-C)
+    # still writes them in the card's vocabulary rather than a table of its own: the adapter used to
+    # keep `影响明显` -> `明显` and a set of direction words next to a regex that read them back out
+    # of rendered text, so a word could be renamed here and silently stop being recognised there.
+
+    def direction_word(self) -> str:
+        """`利多`, or nothing at all: a degraded card and every market card claim no direction."""
+
+        direction = self.facts.direction
+        return DIRECTION_ZH.get(direction, direction) if direction is not None else ""
+
+    def magnitude_word(self) -> str:
+        """`影响明显`. `0` is a magnitude the model stated, not a missing one."""
+
+        magnitude = self.facts.magnitude
+        return MAGNITUDE_ZH.get(magnitude, str(magnitude)) if magnitude is not None else ""
 
     # -- line composition -------------------------------------------------------------------------
 
@@ -234,12 +263,12 @@ class ReaderCard:
         facts, market = self.facts, self.header.family != "news"
         parts: list[str] = []
         if facts.direction is not None and facts.magnitude is not None:
-            parts.append(DIRECTION_ZH.get(facts.direction, facts.direction))
+            parts.append(self.direction_word())
             # 28.8% of a week's cards advanced a story the reader already had one for, and the card
             # said nothing about it (#113). `新进展` is the model's own `novelty`, not a count.
             if facts.novelty == "progression":
                 parts.append(NOVELTY_ZH["progression"])
-            parts.append(MAGNITUDE_ZH.get(facts.magnitude, str(facts.magnitude)))
+            parts.append(self.magnitude_word())
         if facts.tickers:
             parts.append(" ".join(facts.tickers))
         origin = " ".join(part for part in facts.source if part) or fmt.UNKNOWN_ORIGIN
@@ -248,7 +277,12 @@ class ReaderCard:
             parts.append(fmt.clock(self.times.event_at_ms or 0))
         return " · ".join(parts)
 
-    def _market_lines(self) -> list[str]:
+    def market_lines(self) -> list[str]:
+        """The market families' own lines, without the facts line every family ends on.
+
+        Public because a channel that builds its own footer needs the body without it (#562 PR-C).
+        """
+
         market, span = self.market, self._span()
         venue = market.venue or fmt.UNKNOWN_VENUE
         if self.header.family == "oi":
@@ -333,10 +367,12 @@ def quote_line(quotes: Sequence[ReaderCardQuote]) -> str:
 __all__ = [
     "ACTION_ZH",
     "FAMILY_TITLE",
+    "NOVELTY_ZH",
     "OI_DIRECTION_ZH",
     "RAW_TEXT_MAX",
     "SIDE_ZH",
     "TITLE_MAX",
+    "UNTRADEABLE_NOTICE_ZH",
     "CardFamily",
     "CardTone",
     "ReaderCard",

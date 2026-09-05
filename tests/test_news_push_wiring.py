@@ -50,7 +50,7 @@ def test_worker_reads_the_secure_token_and_binds_the_configured_channel(
     captured: dict[str, Any] = {}
     sender = object()
 
-    def build_sender(*, bot_token: str, chat_id: int) -> object:
+    def build_sender(*, bot_token: str, chat_id: int | str) -> object:
         captured.update(bot_token=bot_token, chat_id=chat_id)
         return sender
 
@@ -106,6 +106,61 @@ def test_a_chat_id_that_is_not_a_private_channel_is_a_delivery_reason_not_a_dead
     token_file.chmod(0o600)
     settings = _settings(tmp_path)
     settings.news.push.telegram_chat_id = -100123  # too short to be a channel id
+
+    composed = news_wiring._news_push_sender(settings)
+
+    assert composed.sender is None
+    assert composed.reason == "news_item_push_telegram_sender_invalid"
+
+
+def test_a_public_channel_name_is_the_target_the_adapter_is_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#562 §5 rows 1 and 11: an operator who publishes their channel configures its `@name`."""
+
+    token_file = tmp_path / "telegram_bot_token"
+    token_file.write_text(BOT_TOKEN, encoding="utf-8")
+    token_file.chmod(0o600)
+    captured: dict[str, Any] = {}
+    sender = object()
+
+    def build_sender(*, bot_token: str, chat_id: int | str) -> object:
+        captured.update(bot_token=bot_token, chat_id=chat_id)
+        return sender
+
+    monkeypatch.setattr(news_wiring, "TelegramNewsPushSender", build_sender)
+    settings = _settings(tmp_path)
+    settings.news.push.telegram_chat_id = "@tracefold_feed"
+
+    composed = news_wiring._news_push_sender(settings)
+
+    assert composed.sender is sender and composed.reason is None
+    assert captured == {"bot_token": BOT_TOKEN, "chat_id": "@tracefold_feed"}
+
+
+def test_a_chat_target_of_no_known_shape_is_a_delivery_reason_not_a_dead_process(tmp_path: Path) -> None:
+    """A value that is neither an id nor an `@name` loads, and costs exactly the delivery capability.
+
+    #562 §5 rows 1 and 8. `Settings` used to refuse `"@feed"` outright, which is the same outage as a
+    mistyped digit: the process could not start, so nothing was left running to report the fault.
+    """
+
+    token_file = tmp_path / "telegram_bot_token"
+    token_file.write_text(BOT_TOKEN, encoding="utf-8")
+    token_file.chmod(0o600)
+    settings = Settings.model_validate(
+        {
+            "news": {
+                "enabled": True,
+                "push": {
+                    "enabled": True,
+                    "telegram_bot_token_file": "telegram_bot_token",
+                    "telegram_chat_id": "not-a-channel",
+                },
+            }
+        }
+    )
+    settings.set_config_dir(tmp_path)
 
     composed = news_wiring._news_push_sender(settings)
 

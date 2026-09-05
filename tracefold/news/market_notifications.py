@@ -869,7 +869,9 @@ def render_market_card(
     """The intent's `ReaderCard` in the wire shape the delivery ledger freezes and Feishu accepts.
 
     The same structure ordinary News sends, from the same value object and the same serializer, so
-    both configured adapters render it with no market branch of their own.
+    both configured adapters render it with no market branch of their own. The loop builds the two
+    shapes separately -- the frozen snapshot only on the first attempt (#562 PR-C) -- and this
+    composition is the single entry point the production-card byte regression pins the pair through.
     """
 
     return feishu_card(
@@ -910,7 +912,13 @@ class PreparedCardSender(Protocol):
     @property
     def available(self) -> bool: ...
 
-    async def send_prepared_card(self, card: Mapping[str, Any], *, operation: str) -> Mapping[str, Any]: ...
+    async def send_prepared_card(
+        self,
+        card: ReaderCard,
+        *,
+        channel_payload: Mapping[str, Any],
+        operation: str,
+    ) -> Mapping[str, Any]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -932,7 +940,8 @@ class ClaimedCard:
     market_kind: str
     trigger_reason: str
     attempts: int
-    card: Mapping[str, Any]
+    card: ReaderCard
+    channel_payload: Mapping[str, Any]
     covered_count: int
     anchor_oi_change_bps: int | None
     anchor_direction: str | None
@@ -1132,20 +1141,22 @@ class MarketNotificationLoop:
         track_row = news.market_track(group_key=str(row["group_key"]))
         track = _track_from_row(track_row) if track_row is not None else group_identity(observations[-1])
         reason = str(row["trigger_reason"])
-        card = (
-            dict(row["card"])
-            if int(row["attempts"] or 0) > 0 and row["card"]
-            else render_market_card(
-                track=track,
-                reason=reason,
-                observations=observations,
-                detail_url=market_detail_url(self.console_base_url, observations[-1].item_id),
-                action_changes=action_changes(observations, since=(track.anchor_action, track.anchor_position_side)),
-            )
+        card = market_reader_card(
+            track=track,
+            reason=reason,
+            observations=observations,
+            detail_url=market_detail_url(self.console_base_url, observations[-1].item_id),
+            action_changes=action_changes(observations, since=(track.anchor_action, track.anchor_position_side)),
         )
+        # The snapshot a retry sends is the one the first attempt froze, and `market_begin_send`
+        # refuses to overwrite it. The card model beside it is built from the same observation set --
+        # `market_adopt_unclaimed` hands new observations to the group's *un-started* card, so an
+        # intent that has been attempted covers a fixed set -- and is what a channel that renders the
+        # model serializes for itself (#562 PR-C).
+        channel_payload = dict(row["card"]) if int(row["attempts"] or 0) > 0 and row["card"] else feishu_card(card)
         news.market_begin_send(
             delivery_key=key,
-            card=card,
+            card=channel_payload,
             covered_count=len(observations),
             covered_from_ms=observations[0].received_at_ms,
             covered_to_ms=observations[-1].received_at_ms,
@@ -1160,6 +1171,7 @@ class MarketNotificationLoop:
             trigger_reason=reason,
             attempts=int(row["attempts"] or 0) + 1,
             card=card,
+            channel_payload=channel_payload,
             covered_count=len(observations),
             anchor_oi_change_bps=latest.oi_change_bps,
             anchor_direction=latest.direction,
@@ -1171,7 +1183,11 @@ class MarketNotificationLoop:
         """Every failure of the send is a delivery state, never a fault of this loop."""
 
         try:
-            receipt = await self.sender.send_prepared_card(claimed.card, operation="news_market_delivery_send")
+            receipt = await self.sender.send_prepared_card(
+                claimed.card,
+                channel_payload=claimed.channel_payload,
+                operation="news_market_delivery_send",
+            )
         except Exception as exc:
             return classify_send_failure(exc, attempts=claimed.attempts)
         return SendOutcome(state="sent", receipt=dict(receipt))

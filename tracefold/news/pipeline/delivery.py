@@ -11,10 +11,12 @@ from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from ..bus import Q_DELIVER, BusMessage, DeferError, PermanentError, TransientError, now_ms
-from ..delivery import card_assets, reader_market_movements, reader_trade_targets, render_first_card
+from ..delivery import card_assets, news_reader_card, reader_market_movements, reader_trade_targets
+from ..feishu_card import feishu_card
 from ..market_review.pricing import Candle, PriceInstrument, PricePoint, parse_change_pct, select_candle
 from ..models import Novelty, ReaderDeliveryPresentation, ReaderMarketScope, TelegramDeliveryReceipt
 from ..progression_review import PROGRESSION_REVIEW_TIMEOUT_SECONDS, ProgressionReview, ProgressionVerifier
+from ..reader_card import ReaderCard
 from ..source_contracts import EVENT_KINDS
 from ..telemetry import NewsWorkSemantics
 from ..tradability import (
@@ -38,12 +40,6 @@ _DELIVERY_EDIT_TIMEOUT_SECONDS = 8.0
 _DELIVERY_EDIT_RECONCILE_SECONDS = 30.0
 _DELIVERY_STARTUP_RECONCILE_RETRY_SECONDS = 0.25
 _PROGRESSION_REVIEW_CANDIDATE_MAX = 8
-# What an authoritative five-venue absence puts on the card. It replaces deleting the card: the
-# tradability review is the same review, run at the same moment, on the same evidence -- what changed
-# is that a model-derived candidate list plus a text heuristic no longer takes a card the reader has
-# already read out of their channel. A reader who saw a story about a name they cannot trade is better
-# served by being told that than by watching the message vanish (#562 §5 row 5).
-_UNTRADEABLE_NOTICE_ZH = "未找到可交易标的"
 
 logger = logging.getLogger(__name__)
 
@@ -73,25 +69,6 @@ def _reader_novelty(verdict: Mapping[str, Any]) -> Novelty | None:
     if value == "restatement":
         return "restatement"
     return None
-
-
-def _with_untradeable_notice(card: dict[str, Any]) -> dict[str, Any]:
-    """Lead the enrichment edit with the catalogue's answer, leaving every other block untouched.
-
-    The notice goes at the top of the markdown block, above the copy and clear of the facts line the
-    block ends with, so both configured adapters print it with no channel branch of their own.
-    """
-
-    elements = list(card.get("elements") or ())
-    for index, element in enumerate(elements):
-        if not isinstance(element, Mapping) or element.get("tag") != "markdown":
-            continue
-        content = str(element.get("content") or "")
-        if content.startswith(_UNTRADEABLE_NOTICE_ZH):
-            return card
-        elements[index] = {**dict(element), "content": f"{_UNTRADEABLE_NOTICE_ZH}\n{content}".strip()}
-        return {**card, "elements": elements}
-    return card
 
 
 def _progression_review_candidates(
@@ -166,8 +143,9 @@ class NewsPushSender(Protocol):
 
     def send_card(
         self,
-        card: Mapping[str, Any],
+        card: ReaderCard,
         *,
+        channel_payload: Mapping[str, Any],
         presentation: ReaderDeliveryPresentation | None = None,
     ) -> Mapping[str, Any]: ...
 
@@ -181,8 +159,9 @@ class EditableNewsPushSender(Protocol):
     def edit_card(
         self,
         receipt: Mapping[str, Any],
-        card: Mapping[str, Any],
+        card: ReaderCard,
         *,
+        channel_payload: Mapping[str, Any],
         presentation: ReaderDeliveryPresentation | None = None,
     ) -> Mapping[str, Any]: ...
 
@@ -249,13 +228,18 @@ class InitialSendEntry:
 
     async def send_prepared_card(
         self,
-        card: Mapping[str, Any],
+        card: ReaderCard,
         *,
+        channel_payload: Mapping[str, Any],
         presentation: ReaderDeliveryPresentation | None = None,
         operation: str = "news_delivery_send",
         prepare: bool = True,
     ) -> Mapping[str, Any]:
-        """Send one already-rendered card. Nothing here enriches or settles it.
+        """Send one already-built card. Nothing here enriches or settles it.
+
+        Both shapes of the same card travel together: the `ReaderCard` a channel serializes for
+        itself, and the channel payload the ledger froze, which the channel that owns that wire shape
+        posts verbatim. Neither is derived from the other here.
 
         The caller owns idempotency and the receipt, exactly as the Deliverer always has: this is the
         target check, the pacing and the provider call, and no part of either domain's decision.
@@ -289,7 +273,8 @@ class InitialSendEntry:
                 receipt: Mapping[str, Any] = await self._finite.run(
                     operation,
                     sender.send_card,
-                    dict(card),
+                    card,
+                    channel_payload=dict(channel_payload),
                     presentation=presentation,
                     timeout_seconds=self._timeout_seconds,
                 )
@@ -453,7 +438,7 @@ class DelivererConsumer:
         quotes = (
             [] if progressive_sender is not None else await self._market_data(shown, now_ms(), news_at_ms=news_at_ms)
         )
-        card_payload = render_first_card(
+        reader_card = news_reader_card(
             event=card,
             verdict=tv,
             decision=str(triage_row["final_decision"]),
@@ -462,6 +447,9 @@ class DelivererConsumer:
             degraded=bool(triage_row.get("degraded")),
             quotes=quotes,
         )
+        # One card, two shapes: the model each channel renders for itself, and the Feishu JSON the
+        # ledger freezes as this delivery's evidence and Feishu posts unchanged (#562 PR-C).
+        card_payload = feishu_card(reader_card)
         presentation = (
             replace(base_presentation, market_data_state="pending")
             if progressive_sender is not None
@@ -497,7 +485,12 @@ class DelivererConsumer:
             # `prepare=False`: the target was validated above, before `begin_delivery`, which is
             # where this consumer wants a bad channel to fail. Preparing again here would be a second
             # no-op call per delivery.
-            result = await self.send_entry.send_prepared_card(card_payload, presentation=presentation, prepare=False)
+            result = await self.send_entry.send_prepared_card(
+                reader_card,
+                channel_payload=card_payload,
+                presentation=presentation,
+                prepare=False,
+            )
             receipt = dict(result)
         except Exception as exc:
             error_code = getattr(exc, "code", None) or f"news_delivery_failed:{type(exc).__name__}"
@@ -597,7 +590,7 @@ class DelivererConsumer:
                             match.requested_symbol for match in tradability_review.matches if match.requested_symbol
                         )
                     )
-            card_payload = render_first_card(
+            reader_card = news_reader_card(
                 event=context.event,
                 verdict=context.verdict,
                 decision=context.decision,
@@ -605,23 +598,25 @@ class DelivererConsumer:
                 assets=resolved_shown,
                 degraded=context.degraded,
                 quotes=quotes,
+                # The catalogue's authoritative "nothing here can be traded" is a fact about the card,
+                # so it is set on the card and every channel prints it (#562 PR-C/PR-E). The identity
+                # confidence is still the one the deletion path was gated on: an authoritative absence
+                # is only worth printing about a candidate specific enough to be a ticker. What changed
+                # is what it authorises -- a line on the card, not its removal.
+                untradeable=(
+                    tradability_review is not None
+                    and tradability_review.state == "absent"
+                    and tradability_review.deletion_safe
+                    and not reader_trade_targets(quotes)
+                ),
             )
+            card_payload = feishu_card(reader_card)
             if displayed_progression_review is not None:
                 card_payload["progression_review"] = displayed_progression_review.model_dump(
                     mode="json", exclude_none=True
                 )
             if tradability_review is not None:
                 card_payload["tradability_review"] = tradability_review.model_dump(mode="json", exclude_none=True)
-            if (
-                tradability_review is not None
-                and tradability_review.state == "absent"
-                # Still the identity confidence the deletion path was gated on: an authoritative
-                # absence is only worth printing about a candidate specific enough to be a ticker.
-                # What changed is what it authorises -- a line on the card, not its removal.
-                and tradability_review.deletion_safe
-                and not reader_trade_targets(quotes)
-            ):
-                card_payload = _with_untradeable_notice(card_payload)
             presentation = replace(
                 context.presentation,
                 trade_targets=reader_trade_targets(quotes),
@@ -673,7 +668,8 @@ class DelivererConsumer:
                         "news_delivery_edit",
                         context.sender.edit_card,
                         context.receipt.canonical(),
-                        card_payload,
+                        reader_card,
+                        channel_payload=card_payload,
                         presentation=presentation,
                         timeout_seconds=_DELIVERY_EDIT_TIMEOUT_SECONDS,
                         allow_shutdown=True,

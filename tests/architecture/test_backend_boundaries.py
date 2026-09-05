@@ -411,6 +411,36 @@ def test_delivery_adapters_never_import_the_market_notification_loop() -> None:
     assert violations == []
 
 
+def test_delivery_adapters_import_the_card_model_and_never_a_renderer_or_a_loop() -> None:
+    """#562 PR-C: a channel serializer stands beside the other one, never downstream of it.
+
+    The Telegram adapter used to be handed Feishu's card JSON and read the card back out of it, so the
+    two channels were in series and every market card lost its family, its event time and its market
+    body on the way through the second parse. Both adapters now serialize the same `ReaderCard`. What
+    that leaves them allowed to know is the card model and the reader-facing formats
+    (`reader_card`, `card_format`, `delivery_contracts`, and the values module carrying the presentation
+    and the receipt): not the two renderers that fill the card, not the pipeline that delivers it, and
+    not the market loop that owns the other one.
+    """
+
+    forbidden = ("tracefold.news.delivery", "tracefold.news.pipeline", "tracefold.news.market_notifications")
+    violations = [
+        f"{path.relative_to(ROOT)} -> {imported}"
+        for path in _python_files(SRC / "integrations")
+        for imported in _imports(path)
+        for module in forbidden
+        if imported == module or imported.startswith(f"{module}.")
+    ]
+    assert violations == []
+
+    from tracefold import news
+
+    for name in ("ReaderCard", "quote_line", "card_clock", "LINKABLE_TICKER_RE", "NOVELTY_ZH"):
+        assert name in news.__all__
+    for renderer in ("render_first_card", "render_market_card", "feishu_card"):
+        assert renderer not in news.__all__
+
+
 def test_business_dependency_dag_is_one_way() -> None:
     violations: dict[str, list[str]] = {}
     for owner, allowed in ALLOWED_BUSINESS_DEPENDENCIES.items():

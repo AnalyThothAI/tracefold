@@ -17,7 +17,7 @@ import asyncio
 import json
 import re
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -107,8 +107,15 @@ class _Sender:
     def set_available(self, value: bool) -> None:
         self._available = value
 
-    async def send_prepared_card(self, card: Any, *, operation: str = "") -> dict[str, Any]:
-        self.cards.append(dict(card))
+    async def send_prepared_card(
+        self,
+        card: Any,
+        *,
+        channel_payload: Mapping[str, Any],
+        operation: str = "",
+    ) -> dict[str, Any]:
+        del card
+        self.cards.append(dict(channel_payload))
         if self.raise_with is not None:
             raise self.raise_with
         return {"provider": "test", "message_id": len(self.cards)}

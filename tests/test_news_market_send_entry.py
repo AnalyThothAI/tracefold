@@ -30,14 +30,20 @@ from tracefold.integrations.feishu import (
 )
 from tracefold.integrations.telegram import TelegramDeliveryError, TelegramNewsPushSender
 from tracefold.news.delivery_contracts import COMMIT_PHASE_NOT_SENT, COMMIT_PHASE_UNKNOWN
+from tracefold.news.feishu_card import feishu_card
 from tracefold.news.market_notifications import SEND_ATTEMPTS_MAX, classify_send_failure
 from tracefold.news.pipeline.delivery import InitialSendEntry
+from tracefold.news.reader_card import ReaderCard, ReaderCardHeader
 
 FEISHU_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/0123456789abcdef"
 SIGNING_SECRET = "replay-signing-secret"
 BOT_TOKEN = "123456:abcdefghijklmnopqrstuvwxyzABCDE_12345"
 CHAT_ID = -1001234567890
 BOT_ID = 123456
+# The card model every send now carries beside its frozen channel payload (#562 PR-C). These tests are
+# about pacing, fairness and what a failure proved, so the card itself only has to be one.
+CARD = ReaderCard(header=ReaderCardHeader(family="oi", subject="BTC"))
+CARD_PAYLOAD = feishu_card(CARD)
 
 
 class _SlowSender:
@@ -52,14 +58,14 @@ class _SlowSender:
     def prepare(self) -> None:
         return None
 
-    def send_card(self, card: Any, *, presentation: Any = None) -> dict[str, Any]:
-        del presentation
+    def send_card(self, card: Any, *, channel_payload: Mapping[str, Any], presentation: Any = None) -> dict[str, Any]:
+        del card, presentation
         self.concurrent += 1
         self.max_concurrent = max(self.max_concurrent, self.concurrent)
         try:
             time.sleep(self.seconds)
-            self.calls.append(str(card.get("owner")))
-            return {"provider": "test", "owner": card.get("owner")}
+            self.calls.append(str(channel_payload.get("owner")))
+            return {"provider": "test", "owner": channel_payload.get("owner")}
         finally:
             self.concurrent -= 1
 
@@ -85,8 +91,8 @@ async def _serialises() -> None:
     sender = _SlowSender(seconds=0.02)
     entry, finite = await _entry(sender)
     await asyncio.gather(
-        *(entry.send_prepared_card({"owner": f"market-{index}"}) for index in range(4)),
-        entry.send_prepared_card({"owner": "news"}),
+        *(entry.send_prepared_card(CARD, channel_payload={"owner": f"market-{index}"}) for index in range(4)),
+        entry.send_prepared_card(CARD, channel_payload={"owner": "news"}),
     )
     finite.close()
     assert sender.max_concurrent == 1
@@ -102,7 +108,7 @@ async def _paces_both() -> None:
     entry, finite = await _entry(sender, min_interval_seconds=0.05)
     started = time.monotonic()
     for index in range(4):
-        await entry.send_prepared_card({"owner": f"card-{index}"})
+        await entry.send_prepared_card(CARD, channel_payload={"owner": f"card-{index}"})
     elapsed = time.monotonic() - started
     finite.close()
     # Three gaps between four sends. Two independent pacers would have halved this.
@@ -119,11 +125,14 @@ async def _no_starvation() -> None:
     sender = _SlowSender(seconds=0.005)
     entry, finite = await _entry(sender)
     # One market card is in flight; a News card queues behind it, then twenty more market cards.
-    first = asyncio.create_task(entry.send_prepared_card({"owner": "market-0"}))
+    first = asyncio.create_task(entry.send_prepared_card(CARD, channel_payload={"owner": "market-0"}))
     await asyncio.sleep(0)
-    news = asyncio.create_task(entry.send_prepared_card({"owner": "news"}))
+    news = asyncio.create_task(entry.send_prepared_card(CARD, channel_payload={"owner": "news"}))
     await asyncio.sleep(0)
-    burst = [asyncio.create_task(entry.send_prepared_card({"owner": f"market-{index}"})) for index in range(1, 21)]
+    burst = [
+        asyncio.create_task(entry.send_prepared_card(CARD, channel_payload={"owner": f"market-{index}"}))
+        for index in range(1, 21)
+    ]
     await asyncio.gather(first, news, *burst)
     finite.close()
     assert sender.calls.index("news") == 1
@@ -202,12 +211,12 @@ async def _measure(*, news_cards: int, market_cards: int, burst: bool = False) -
 
     async def news_card() -> None:
         started = time.monotonic()
-        await entry.send_prepared_card({"owner": "news"})
+        await entry.send_prepared_card(CARD, channel_payload={"owner": "news"})
         latencies.append((time.monotonic() - started) * 1000)
 
     async def market_card(index: int) -> None:
         await asyncio.sleep(0.0 if burst else index * _PRODUCTION_INTERVAL)
-        await entry.send_prepared_card({"owner": "market"})
+        await entry.send_prepared_card(CARD, channel_payload={"owner": "market"})
 
     # The market cards are queued first, so the News cards that follow them wait behind the depth
     # they created -- which is exactly the shape of a recovery drain.
@@ -298,7 +307,9 @@ def test_the_entry_prepares_an_unprepared_target_before_it_sends() -> None:
     async def send() -> Mapping[str, Any]:
         entry, finite = await _entry(sender)
         try:
-            return await entry.send_prepared_card({"header": {"title": {"content": "市场"}}, "elements": []})
+            return await entry.send_prepared_card(
+                CARD, channel_payload={"header": {"title": {"content": "市场"}}, "elements": []}
+            )
         finally:
             finite.close()
 
@@ -318,7 +329,7 @@ class _RefusingPrepare:
         self.prepared_at.append(time.monotonic())
         raise RuntimeError("news_delivery_telegram_preflight_transport_failed")
 
-    def send_card(self, card: Any, *, presentation: Any = None) -> dict[str, Any]:
+    def send_card(self, card: Any, *, channel_payload: Mapping[str, Any], presentation: Any = None) -> dict[str, Any]:
         raise AssertionError("send must not be reached when the target check failed")
 
     def close(self) -> None:
@@ -342,7 +353,7 @@ def test_a_failing_target_check_is_still_paced() -> None:
         try:
             for _ in range(2):
                 with pytest.raises(RuntimeError, match="preflight_transport_failed"):
-                    await entry.send_prepared_card({"owner": "market"})
+                    await entry.send_prepared_card(CARD, channel_payload={"owner": "market"})
         finally:
             finite.close()
 
@@ -360,7 +371,7 @@ def test_a_feishu_success_signs_the_request_and_returns_a_receipt() -> None:
         seen.append(json.loads(request.content))
         return httpx.Response(200, json={"code": 0, "msg": "success"})
 
-    receipt = _feishu(handle).send_card({"config": {}, "elements": []})
+    receipt = _feishu(handle).send_card(CARD, channel_payload={"config": {}, "elements": []})
     assert receipt["provider"] == "feishu"
     assert receipt["code"] == 0
     body = seen[0]
@@ -421,7 +432,7 @@ def test_feishu_states_what_each_failure_proved_without_changing_its_code(
     handler: Any, code: str, commit_phase: str, retryable: bool
 ) -> None:
     with pytest.raises(NewsPushExternalError) as raised:
-        _feishu(handler).send_card({"config": {}, "elements": []})
+        _feishu(handler).send_card(CARD, channel_payload={"config": {}, "elements": []})
     # The code ordinary News records is untouched; the evidence beside it is new.
     assert raised.value.code == code
     assert raised.value.commit_phase == commit_phase
@@ -438,9 +449,9 @@ def test_a_feishu_connect_failure_is_provably_not_sent_and_a_read_timeout_is_not
         raise httpx.ReadTimeout("no answer", request=request)
 
     with pytest.raises(NewsPushExternalError) as never_left:
-        _feishu(refuse_connection).send_card({"config": {}, "elements": []})
+        _feishu(refuse_connection).send_card(CARD, channel_payload={"config": {}, "elements": []})
     with pytest.raises(NewsPushExternalError) as no_answer:
-        _feishu(time_out_reading).send_card({"config": {}, "elements": []})
+        _feishu(time_out_reading).send_card(CARD, channel_payload={"config": {}, "elements": []})
 
     # One code, as before, and two different truths about the message.
     assert never_left.value.code == no_answer.value.code == "news_delivery_feishu_transport_failed"
@@ -453,7 +464,7 @@ def test_a_feishu_connect_failure_is_provably_not_sent_and_a_read_timeout_is_not
 def test_telegram_carries_the_same_commit_semantics() -> None:
     """Not a market-specific sender: the same three answers, from the other adapter's own path."""
 
-    card = {"header": {"title": {"content": "x"}}, "elements": []}
+    card = CARD
 
     def business_rejection(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"ok": False, "description": "chat not found"})
@@ -465,17 +476,17 @@ def test_telegram_carries_the_same_commit_semantics() -> None:
         raise httpx.ConnectError("no route", request=request)
 
     with pytest.raises(TelegramDeliveryError) as rejected:
-        _telegram(business_rejection).send_card(card)
+        _telegram(business_rejection).send_card(card, channel_payload=CARD_PAYLOAD)
     assert rejected.value.code == "news_delivery_telegram_business_rejected"
     assert rejected.value.commit_phase == COMMIT_PHASE_NOT_SENT
     assert rejected.value.retryable is False
 
     with pytest.raises(TelegramDeliveryError) as unknown:
-        _telegram(read_timeout).send_card(card)
+        _telegram(read_timeout).send_card(card, channel_payload=CARD_PAYLOAD)
     assert unknown.value.commit_phase == COMMIT_PHASE_UNKNOWN
 
     with pytest.raises(TelegramDeliveryError) as never_left:
-        _telegram(connect_failure).send_card(card)
+        _telegram(connect_failure).send_card(card, channel_payload=CARD_PAYLOAD)
     assert never_left.value.commit_phase == COMMIT_PHASE_NOT_SENT
     assert never_left.value.retryable is True
 
@@ -528,7 +539,7 @@ def test_telegram_status_handling_matches_feishus_case_for_case(
         return httpx.Response(status, json=body)
 
     with pytest.raises(TelegramDeliveryError) as raised:
-        _telegram(handle).send_card({"header": {"title": {"content": "x"}}, "elements": []})
+        _telegram(handle).send_card(CARD, channel_payload=CARD_PAYLOAD)
     assert raised.value.code == code
     assert raised.value.commit_phase == commit_phase
     assert raised.value.retryable is retryable
@@ -544,7 +555,7 @@ def test_the_market_classifier_reads_the_adapters_own_evidence_end_to_end() -> N
         raise httpx.ReadTimeout("no answer", request=request)
 
     try:
-        _feishu(rate_limited).send_card({"config": {}, "elements": []})
+        _feishu(rate_limited).send_card(CARD, channel_payload={"config": {}, "elements": []})
     except NewsPushExternalError as exc:
         first = classify_send_failure(exc, attempts=1)
         spent = classify_send_failure(exc, attempts=SEND_ATTEMPTS_MAX)
@@ -553,7 +564,7 @@ def test_the_market_classifier_reads_the_adapters_own_evidence_end_to_end() -> N
     assert spent.state == "failed"
 
     try:
-        _feishu(unreadable).send_card({"config": {}, "elements": []})
+        _feishu(unreadable).send_card(CARD, channel_payload={"config": {}, "elements": []})
     except NewsPushExternalError as exc:
         unknown = classify_send_failure(exc, attempts=1)
     assert unknown.state == "unknown"
@@ -568,7 +579,7 @@ async def _no_sender() -> None:
     entry, finite = await _entry(None)
     assert entry.available is False
     with pytest.raises(RuntimeError, match="news_delivery_sender_unavailable"):
-        await entry.send_prepared_card({"owner": "market"})
+        await entry.send_prepared_card(CARD, channel_payload={"owner": "market"})
     finite.close()
 
 

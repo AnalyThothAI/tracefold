@@ -298,8 +298,14 @@ class _ReplaySender:
     def available(self) -> bool:
         return True
 
-    async def send_prepared_card(self, card: Any, *, operation: str = "") -> dict[str, Any]:
-        del card, operation
+    async def send_prepared_card(
+        self,
+        card: Any,
+        *,
+        channel_payload: Any = None,
+        operation: str = "",
+    ) -> dict[str, Any]:
+        del card, channel_payload, operation
         roll = self.rng.random()
         if roll < 0.04:
             raise _Refused("news_delivery_feishu_business_rate_limited", commit_phase="not_sent", retryable=True)

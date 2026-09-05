@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -575,8 +576,9 @@ class _RecordingSender:
     def prepare(self) -> None:
         return None
 
-    def send_card(self, card: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
-        self.sent.append(dict(card))
+    def send_card(self, card: Any, *, channel_payload: Mapping[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        del card
+        self.sent.append(dict(channel_payload))
         if self.fail_send:
             raise RuntimeError("provider refused the send")
         return {"provider": "test", "message_id": len(self.sent), "pushed_at_ms": now_ms()}
