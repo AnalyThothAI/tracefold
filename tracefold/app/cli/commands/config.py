@@ -75,6 +75,9 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                 "api": {
                     "host": settings.api.host,
                     "port": settings.api.port,
+                    # Not a secret, and an operator debugging a market card with no button needs to
+                    # read exactly what this deployment calls its console (#553).
+                    "public_url": settings.api.public_url,
                     "ws_token_configured": bool(settings.ws_token),
                 },
                 "store": {

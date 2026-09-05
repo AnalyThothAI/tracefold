@@ -193,7 +193,13 @@ async def _wire_news_pipeline(
     # guard for both, which is what makes the operator's one pacing number mean one thing. It runs
     # whether or not that entry has a sender -- with none, observations keep arriving, keep merging
     # per group, and their cards say `unavailable` instead of consuming an attempt (#553 §5.3).
-    market_notifications = MarketNotificationLoop(db=news_db, sender=pipeline.deliverer.send_entry)
+    # `api.public_url` is the console's public origin, and this is the only place it is read: with one
+    # the card carries its 打开明细 button, without one the card carries the item id instead (#553).
+    market_notifications = MarketNotificationLoop(
+        db=news_db,
+        sender=pipeline.deliverer.send_entry,
+        console_base_url=settings.api.public_url,
+    )
     capabilities.running(MARKET_NOTIFICATIONS)
     return bus, pipeline, market_notifications
 

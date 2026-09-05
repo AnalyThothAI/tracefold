@@ -20,6 +20,24 @@ class ApiConfig(BaseModel):
 
     host: str = "0.0.0.0"  # noqa: S104 -- configurable API bind address; defaults to all interfaces intentionally
     port: int = 8765
+    # The console's public origin, as a reader reaches it -- not `host`/`port`, which is the uvicorn
+    # bind address and says nothing about the address a browser outside this process can open. Only
+    # the operator knows it (reverse proxy, LAN host, tunnel), so there is no default: unset means the
+    # deployment has not named one, and a market card is then sent without its detail button (#553).
+    public_url: str | None = None
+
+    @field_validator("public_url", mode="before")
+    @classmethod
+    def parse_public_url(cls, value: Any) -> str | None:
+        candidate = str(value or "").strip().rstrip("/")
+        if not candidate:
+            return None
+        parsed = urlsplit(candidate)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("api_public_url_not_absolute_http")
+        if parsed.query or parsed.fragment:
+            raise ValueError("api_public_url_has_query_or_fragment")
+        return candidate
 
 
 class PostgresConfig(BaseModel):

@@ -806,5 +806,77 @@ def test_init_refuses_a_config_symlink_without_touching_its_target(tmp_path, mon
     assert not (app_home / "config.pre-433c.yaml").exists()
 
 
+# --- api.public_url: the console origin the operator names, and nothing defaults (#553) ---
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        ("https://tracefold.example.com", "https://tracefold.example.com"),
+        ("https://tracefold.example.com/", "https://tracefold.example.com"),
+        ("http://192.0.2.10:8765/", "http://192.0.2.10:8765"),
+        ("https://ops.example.com/tracefold/", "https://ops.example.com/tracefold"),
+        ("  https://tracefold.example.com  ", "https://tracefold.example.com"),
+    ],
+)
+def test_the_console_public_url_keeps_its_path_and_drops_one_trailing_slash(configured, expected):
+    assert Settings.model_validate({"api": {"public_url": configured}}).api.public_url == expected
+
+
+@pytest.mark.parametrize("configured", [None, "", "   "])
+def test_an_unset_console_public_url_is_none_not_a_guessed_address(configured):
+    assert Settings.model_validate({"api": {"public_url": configured}}).api.public_url is None
+    assert Settings().api.public_url is None
+
+
+@pytest.mark.parametrize(
+    ("configured", "code"),
+    [
+        ("/news/market", "api_public_url_not_absolute_http"),
+        ("tracefold.example.com", "api_public_url_not_absolute_http"),
+        ("ftp://tracefold.example.com", "api_public_url_not_absolute_http"),
+        ("https:///news", "api_public_url_not_absolute_http"),
+        ("https://tracefold.example.com/?tab=market", "api_public_url_has_query_or_fragment"),
+        ("https://tracefold.example.com/#/news", "api_public_url_has_query_or_fragment"),
+    ],
+)
+def test_a_console_public_url_a_reader_could_not_open_is_refused_at_load(configured, code):
+    """Config is the last place this can be caught: the card is built where no operator is watching."""
+
+    with pytest.raises(ValidationError, match=code):
+        Settings.model_validate({"api": {"public_url": configured}})
+
+
+def test_the_generated_default_names_the_console_key_without_choosing_an_address():
+    payload = yaml.safe_load(default_config_yaml())
+
+    assert "public_url" in payload["api"]
+    assert payload["api"]["public_url"] is None
+    assert Settings.model_validate(payload).api.public_url is None
+
+
+def test_config_reports_the_console_public_url_it_is_running_under(tmp_path, monkeypatch):
+    """`tracefold config` is where an operator reads why a market card has no button."""
+
+    config_path = write_runtime_config(tmp_path, ws_token="secret")
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    payload["api"] = {"public_url": "https://tracefold.example.com/"}
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    stdout = io.StringIO()
+
+    assert main(["config"], stdout=stdout) == 0
+    assert json.loads(stdout.getvalue())["data"]["api"]["public_url"] == "https://tracefold.example.com"
+
+
+def test_config_reports_a_null_console_public_url_when_the_operator_has_named_none(tmp_path, monkeypatch):
+    write_runtime_config(tmp_path, ws_token="secret")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    stdout = io.StringIO()
+
+    assert main(["config"], stdout=stdout) == 0
+    assert json.loads(stdout.getvalue())["data"]["api"]["public_url"] is None
+
+
 if __name__ == "__main__":
     unittest.main()

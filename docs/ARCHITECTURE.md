@@ -2906,12 +2906,14 @@ its PostgreSQL connection, and only then calls the sender.
 The card's detail button needs an absolute URL or no button at all. A reader opens
 the card in Feishu or Telegram, where `/news/market/{item_id}` is not a link — the
 first real market card in production carried exactly that relative path and no
-client could follow it. Nothing an operator configures holds the console's public
-origin (`api.host`/`api.port` is a bind address, and the `base_url` fields belong
-to the LLM providers), so `market_detail_url` answers None, the card is rendered
-without the action element, and its note line prints the item id instead.
-Constructing the loop with a `console_base_url` is what puts the button back: an
-operator decision, not a default this repository can invent (#553).
+client could follow it. The operator names the console's public origin in
+`api.public_url` — `api.host`/`api.port` is the uvicorn bind address and says
+nothing about the address a browser outside the process can open — and the Workers
+News wiring is the one place that reads it, passing it as the market loop's
+`console_base_url`. A deployment that has not named one leaves `market_detail_url`
+answering None: the card is rendered without the action element and its note line
+prints the item id instead. There is no default, because no default this repository
+could invent would be reachable (#553).
 
 What a failed send *proved* is decided in the adapter and nowhere else. Feishu and
 Telegram now carry `commit_phase` beside the code ordinary News still records: a
