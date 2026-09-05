@@ -213,6 +213,38 @@ def test_a_postgresql_failure_during_program_assembly_is_not_an_editorial_fault(
     assert NEWS_EDITORIAL not in capabilities.payload()
 
 
+def test_the_market_loop_is_composed_with_the_console_origin_the_operator_named(tmp_path: Path) -> None:
+    """#553. The wiring is the only place `api.public_url` is read; the card cannot invent one."""
+
+    token_file = tmp_path / "telegram_bot_token"
+    token_file.write_text(BOT_TOKEN, encoding="utf-8")
+    token_file.chmod(0o600)
+    settings = _settings(tmp_path)
+    settings.api.public_url = "https://tracefold.example.com"
+
+    _, _, market_loop = asyncio.run(
+        _wire_news_pipeline_with_stub_bus(settings=settings, capabilities=CapabilityStates())
+    )
+
+    assert market_loop.console_base_url == "https://tracefold.example.com"
+
+
+def test_a_deployment_that_named_no_console_composes_the_market_loop_without_one(tmp_path: Path) -> None:
+    """Unset is not a guess. The loop is still composed and still sends -- without the detail button."""
+
+    token_file = tmp_path / "telegram_bot_token"
+    token_file.write_text(BOT_TOKEN, encoding="utf-8")
+    token_file.chmod(0o600)
+    settings = _settings(tmp_path)
+    assert settings.api.public_url is None
+
+    _, _, market_loop = asyncio.run(
+        _wire_news_pipeline_with_stub_bus(settings=settings, capabilities=CapabilityStates())
+    )
+
+    assert market_loop.console_base_url is None
+
+
 def test_a_program_that_cannot_be_assembled_faults_editorial_and_leaves_the_rest_composed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

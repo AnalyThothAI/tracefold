@@ -758,10 +758,9 @@ def market_detail_url(console_base_url: str | None, item_id: str) -> str | None:
 
     The card is opened in Feishu or Telegram, not in the console's own origin, so a relative path is
     not a link there at all: the first market card sent in production carried `/news/market/<id>` and
-    no client could follow it. This repository has no operator setting that holds the console's public
-    origin -- `api.host`/`api.port` is a bind address, and the `base_url` fields belong to the LLM
-    providers -- so a deployment that has not been given one gets a card with no button rather than a
-    dead one, and the note line carries the item id the operator can look up (#553).
+    no client could follow it. The operator names the origin in `api.public_url` -- `api.host`/`port`
+    is a bind address, not an address a reader can open -- and a deployment that has not named one
+    gets a card with no button rather than a dead one, its note line carrying the item id (#553).
     """
 
     base = _absolute_http_url(console_base_url)
@@ -1073,8 +1072,8 @@ class MarketNotificationLoop:
     ) -> None:
         self.db = db
         self.sender = sender
-        # The public origin of the operator console, when the deployment has one. Nothing configures
-        # it today; `market_detail_url` decides what that means for the card.
+        # The public origin of the operator console, when the deployment has one: `api.public_url`,
+        # passed by the Workers wiring. `market_detail_url` decides what unset means for the card.
         self.console_base_url = console_base_url
         self._clock = clock or (lambda: int(time.time() * 1000))
 

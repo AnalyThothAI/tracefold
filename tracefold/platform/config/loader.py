@@ -285,6 +285,10 @@ ws_token: "{token}"
 api:
   host: "0.0.0.0"
   port: 8765
+  # The console's public origin, as a reader outside this host reaches it, e.g.
+  # "https://tracefold.example.com". Left unset, market push cards carry the item
+  # id instead of a 打开明细 button. Not a bind address, and no default is guessed.
+  public_url:
 
 storage:
   postgres:

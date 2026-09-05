@@ -29,7 +29,12 @@ make down              # stop containers; preserve config, passwords, and databa
 ```
 
 The console is available at `http://127.0.0.1:8765/`. PostgreSQL, public HTTP,
-and Workers metrics/readiness are bound to loopback by default. A second
+and Workers metrics/readiness are bound to loopback by default. `api.host` and
+`api.port` are that bind address and nothing else; the address a reader outside
+the host opens is `api.public_url`, which only the operator knows and which
+nothing defaults. It must be an absolute `http(s)` URL with no query or fragment
+(a trailing slash is dropped), and News market push cards link to it — left
+unset, they carry the item id and no button. See `OPERATIONS.md`. A second
 `make up` rebuilds the shared application image and deliberately recreates only
 the migration, Serve, and Workers containers so edits to the bind-mounted
 operator config take effect. An already running PostgreSQL container is not

@@ -1190,6 +1190,22 @@ Diagnose News in this order:
    complete and Workers is running. If push is explicitly enabled with an
    absent or insecure Telegram token file, Workers fails startup; inspect
    `workers_state` and Workers logs instead of treating the target as available.
+
+   A market push card carries its 打开明细 button only when this deployment has
+   named its console. `api.public_url` is that name — the origin a reader outside
+   the host opens, not the `api.host`/`api.port` bind address — and the Workers
+   News wiring passes it to the market notification loop. Unset, every market card
+   is sent with the item id on its note line and no button; there is no default,
+   because a guessed origin would be a dead link in Feishu. Set it in
+   `~/.tracefold/config.yaml` and restart Workers:
+
+   ```yaml
+   api:
+     public_url: "https://tracefold.example.com"   # absolute http(s), no query or fragment
+   ```
+
+   `uv run tracefold config` reports the effective value under `api.public_url`
+   (`null` when unset); it is not a secret (#553).
 6. `tracefold news review queue --view coverage --hours 168` first checks
    whether there is enough same-version production evidence and accepted
    review coverage to make a quality claim. Work the deterministic strata with

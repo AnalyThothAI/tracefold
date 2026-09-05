@@ -699,9 +699,9 @@ def test_without_a_console_url_there_is_no_button_and_the_note_carries_the_item_
     """The production defect, and the honest answer to it.
 
     The first real market card went out with `/news/market/<item_id>` on the button: no Feishu or
-    Telegram client can follow a relative path, and this repository has no operator setting holding
-    the console's public origin. A card with no button and the item id printed on it is reachable;
-    a dead button is not.
+    Telegram client can follow a relative path, and a deployment whose operator has not named its
+    console in `api.public_url` has no origin to build one from. A card with no button and the item
+    id printed on it is reachable; a dead button is not.
     """
 
     item_id = "b" * 64
