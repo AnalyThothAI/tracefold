@@ -545,6 +545,42 @@ def test_real_workers_runtime_heartbeat_stale_degrades_readiness_without_killing
 
 
 @pytest.mark.slow
+def test_real_market_notification_task_fault_stops_only_that_task() -> None:
+    """#553 PR-2's own task, through the real process: the wrapper, the registration, the capability.
+
+    `run_market_notifications` runs the startup sweep once, ticks, and re-raises the first unexpected
+    program error out of `advance()` rather than swallowing it. The Workers root then records
+    `market_notifications` faulted and leaves the ingestion task beside it committing -- which is the
+    whole reason the loop is an optional capability task and not part of the information entry.
+    """
+
+    _create_test_fact_table()
+    port = _free_port()
+    process = _start_workers_process("market_notifications_fault", port)
+    try:
+        _wait_ready(process, port)
+        # The marker only prints on the second turn, so reaching it proves the startup sweep
+        # completed and the loop ticked on the stop event at least once before it failed.
+        _wait_for_output(process, "MARKET_TASK_ABOUT_TO_FAIL")
+        _wait_capability(port, "market_notifications", "faulted")
+
+        after_fault = _test_fact_count()
+        _wait_until(lambda: _test_fact_count() > after_fault, "ingestion stopped with the market task")
+        payload = _readiness_payload(port)
+        assert payload["ok"] is True
+        assert payload["capabilities"]["market_notifications"] == {
+            "state": "faulted",
+            "reason": "market_notifications:RuntimeError",
+        }
+        assert payload["capabilities"]["news_ingestion"] == {"state": "running", "reason": None}
+
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=5.0) == 0
+    finally:
+        _ensure_process_stopped(process)
+
+
+@pytest.mark.slow
 def test_real_optional_task_fault_stops_only_that_task_and_a_restart_drains_its_backlog(
     tmp_path: Path,
 ) -> None:

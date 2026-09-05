@@ -2,8 +2,9 @@
 
 Migration evidence:
 
-- category: three additive nullable columns and one CHECK on `news_items`, three partial indexes on it,
-  two new tables, and one bounded backfill over the retained market subset
+- category: three additive nullable columns and one CHECK on `news_items`, four partial indexes on it,
+  two new tables with four indexes between them, one foreign key each way, and one bounded backfill
+  over the retained market subset
 - why_database_must_change: the notification rules in #553 §4 are stateful across restarts -- "has this
   group been told about", "what did the last card actually cover", "is a send still owed" -- and none
   of that state exists anywhere today. It has to be in PostgreSQL rather than in the loop's memory for
@@ -33,12 +34,14 @@ Migration evidence:
 - lock_timeout: 5s set locally by the revision
 - estimated_rows: production holds 2 741 `news_items`, of which about 640 are market records in the
   retained window; the backfill marks exactly those `historical`. Both new tables start empty
-- estimated_bytes: three nullable `text` columns on `news_items`, three partial indexes covering only
-  the market subset, and two empty tables. Single-digit megabytes at the measured row counts
-- rewrite_or_index_build: `ADD COLUMN` with no default does not rewrite the heap. The three index
-  builds are partial -- `market_notify_state = 'pending'`, and the two market-only predicates -- so
-  each covers a few hundred rows rather than the whole table, and all are ordinary in-transaction
-  builds at these row counts
+- estimated_bytes: three nullable `text` columns on `news_items`, four partial indexes covering only
+  the market subset, and two empty tables with four indexes between them. Single-digit megabytes at
+  the measured row counts
+- rewrite_or_index_build: `ADD COLUMN` with no default does not rewrite the heap. The four
+  `news_items` index builds are all partial -- `market_notify_state = 'pending'` and three
+  market-only predicates -- so each covers a few hundred rows rather than the whole table, and every
+  build is an ordinary in-transaction one at these row counts. The four indexes on the two new tables
+  are built empty
 - preflight_and_maintenance_boundary: writers must be stopped. The admission path starts writing
   `market_notify_state` for every new market Item, and a process on the old code would leave the
   column NULL against the new CHECK, so every market admission would fail. `make up` stops Workers,
@@ -79,10 +82,13 @@ def upgrade() -> None:
     op.execute("SET LOCAL statement_timeout = '120s'")
 
     _market_notification_markers()
+    # The backlog is marked before the CHECK is added, because the CHECK now genuinely refuses a NULL
+    # marker: adding it first would refuse every market Item already here.
+    _mark_pre_enable_backlog_historical()
+    _market_notify_state_check()
     _market_tracks()
     _market_deliveries()
     _market_notify_delivery_reference()
-    _mark_pre_enable_backlog_historical()
 
 
 def _market_notification_markers() -> None:
@@ -92,27 +98,6 @@ def _market_notification_markers() -> None:
           ADD COLUMN market_notify_state text,
           ADD COLUMN market_notify_group_key text,
           ADD COLUMN market_notify_delivery_key text
-        """
-    )
-    # `market_kind IS NULL` is "this Item is ordinary news", and ordinary news has no notification
-    # state at all -- its deliveries are `news_deliveries` and its own Event decides them. The rest of
-    # the CHECK is the state machine written down: only a processed observation can name a group or a
-    # card, and a card is only ever named by an observation that was grouped first.
-    op.execute(
-        """
-        ALTER TABLE public.news_items
-          ADD CONSTRAINT news_items_market_notify_state_check
-            CHECK (
-              (market_kind IS NULL
-                 AND market_notify_state IS NULL
-                 AND market_notify_group_key IS NULL
-                 AND market_notify_delivery_key IS NULL)
-              OR (market_kind IS NOT NULL
-                 AND market_notify_state = ANY (
-                       ARRAY['pending'::text, 'historical'::text, 'processed'::text])
-                 AND (market_notify_state = 'processed' OR market_notify_group_key IS NULL)
-                 AND (market_notify_state = 'processed' OR market_notify_delivery_key IS NULL)
-                 AND (market_notify_delivery_key IS NULL OR market_notify_group_key IS NOT NULL)))
         """
     )
     # The take query, and the only index it needs: the backlog is ordered by the host's own receive
@@ -139,6 +124,45 @@ def _market_notification_markers() -> None:
         CREATE INDEX ix_news_items_market_notify_delivery
             ON public.news_items (market_notify_delivery_key)
          WHERE market_notify_delivery_key IS NOT NULL
+        """
+    )
+    # "Does this group still have any observation at all" -- the retention pass's anti-join. The two
+    # indexes above are both partial on a delivery key and neither can answer it.
+    op.execute(
+        """
+        CREATE INDEX ix_news_items_market_notify_group_key
+            ON public.news_items (market_notify_group_key)
+         WHERE market_notify_group_key IS NOT NULL
+        """
+    )
+
+
+def _market_notify_state_check() -> None:
+    """The marker's own state machine, added once every existing row already satisfies it."""
+
+    # `market_kind IS NULL` is "this Item is ordinary news", and ordinary news has no notification
+    # state at all -- its deliveries are `news_deliveries` and its own Event decides them. The rest of
+    # the CHECK is the state machine written down: only a processed observation can name a group or a
+    # card, and a card is only ever named by an observation that was grouped first.
+    op.execute(
+        """
+        ALTER TABLE public.news_items
+          ADD CONSTRAINT news_items_market_notify_state_check
+            CHECK (
+              (market_kind IS NULL
+                 AND market_notify_state IS NULL
+                 AND market_notify_group_key IS NULL
+                 AND market_notify_delivery_key IS NULL)
+              OR (market_kind IS NOT NULL
+                 -- `COALESCE`, not a bare comparison: a NULL marker makes `= ANY (...)` evaluate to
+                 -- NULL, and a CHECK passes on NULL. Without this an old writer -- one that does not
+                 -- know the column -- would insert a market Item with no marker and never be
+                 -- refused, and the loop would never see the observation.
+                 AND COALESCE(market_notify_state, '') = ANY (
+                       ARRAY['pending'::text, 'historical'::text, 'processed'::text])
+                 AND (market_notify_state = 'processed' OR market_notify_group_key IS NULL)
+                 AND (market_notify_state = 'processed' OR market_notify_delivery_key IS NULL)
+                 AND (market_notify_delivery_key IS NULL OR market_notify_group_key IS NOT NULL)))
         """
     )
 
@@ -177,6 +201,8 @@ def _market_tracks() -> None:
             anchor_attempt_at_ms bigint,
             anchor_oi_change_bps bigint,
             anchor_direction text,
+            anchor_action text,
+            anchor_position_side text,
             open_delivery_key text,
             next_due_at_ms bigint,
             pending_reason text NOT NULL DEFAULT '',
@@ -285,16 +311,21 @@ def _market_deliveries() -> None:
          WHERE state = ANY (ARRAY['pending'::text, 'unavailable'::text])
         """
     )
+    # The foreign key's own index. Retention deletes 500 Items per transaction and every one of them
+    # makes PostgreSQL look for referencing cards; without this that is a sequential scan per row.
     op.execute(
         """
-        CREATE INDEX ix_news_market_deliveries_group
-            ON public.news_market_deliveries (group_key, created_at_ms DESC)
+        CREATE INDEX ix_news_market_deliveries_trigger
+            ON public.news_market_deliveries (trigger_item_id)
         """
     )
+    # The status block's window is on `created_at_ms`, so that is what its index leads with. An index
+    # on `(market_kind, settled_at_ms)` could not serve it -- and a second index on `group_key` alone
+    # would duplicate what the unique partial index above already answers.
     op.execute(
         """
-        CREATE INDEX ix_news_market_deliveries_kind_settled
-            ON public.news_market_deliveries (market_kind, settled_at_ms DESC)
+        CREATE INDEX ix_news_market_deliveries_created
+            ON public.news_market_deliveries (created_at_ms, market_kind)
         """
     )
 

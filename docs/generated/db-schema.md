@@ -456,6 +456,8 @@
 | `anchor_attempt_at_ms` | `BIGINT` | True | `None` |
 | `anchor_oi_change_bps` | `BIGINT` | True | `None` |
 | `anchor_direction` | `TEXT` | True | `None` |
+| `anchor_action` | `TEXT` | True | `None` |
+| `anchor_position_side` | `TEXT` | True | `None` |
 | `open_delivery_key` | `TEXT` | True | `None` |
 | `next_due_at_ms` | `BIGINT` | True | `None` |
 | `pending_reason` | `TEXT` | False | `''::text` |

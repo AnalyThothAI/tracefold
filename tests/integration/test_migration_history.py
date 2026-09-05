@@ -19,6 +19,7 @@ from alembic.script import ScriptDirectory
 from tests.postgres_test_utils import connect_postgres_test, prepare_test_migration_database
 from tests.postgres_test_utils import postgres_migration_test_dsn as postgres_test_dsn
 from tests.postgres_test_utils import test_postgres_dsn as admin_postgres_test_dsn
+from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import (
     ObservationFactory,
     day_start_baseline_from_observation,
@@ -1809,5 +1810,132 @@ def test_the_backfill_and_the_live_classifier_agree_on_every_fixture() -> None:
             # read, and the backfill records that no parser was run. A conflict is the one reason both
             # can state, because it is decided before any parser is consulted.
             assert (migrated_reason == MARKET_CATEGORY_CONFLICT) is (expected_conflict is not None), item_id
+    finally:
+        conn.close()
+
+
+def test_the_market_notification_marker_separates_the_pre_enable_backlog_from_live_records() -> None:
+    """`20260905_0366` is enable-time: what was already here is history, what arrives next is a to-do.
+
+    The revision cannot ask the loop which observations a reader has already seen, because before it
+    ran no loop existed. What it can say is that every market record that predates it belongs to a
+    window nobody was being alerted for, and alerting on a two-day-old OI frame at enable time
+    interrupts a reader with something they cannot act on (#553 §4.1.5). This proves both halves on
+    one database: the backlog seeded *before* the upgrade is `historical` and stays out of the take
+    query, and a record admitted *after* it is `pending` and is the first thing the loop reads.
+    """
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260905_0365")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            for item_id, kind in (("backlog-oi", "oi"), ("backlog-liq", "liquidation")):
+                conn.execute(
+                    """
+                    INSERT INTO news_items (
+                      item_id, source_id, source_item_key, title, raw_first_line, description,
+                      reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
+                      first_ingest_mode, trace_id, created_at_ms, updated_at_ms,
+                      market_kind, market_source_strategy_id, market_parse_status, market_parse_error
+                    ) VALUES (
+                      %s, 'opennews', %s, %s, %s, '', 'opennews', 1000, 1000, '{}'::jsonb, '[]'::jsonb,
+                      'live', 'trace', 1000, 1000, %s, '1019', 'raw', 'market_backfill_not_reparsed'
+                    )
+                    """,
+                    (item_id, item_id, item_id, item_id, kind),
+                )
+            # Ordinary news sits beside them and must come out of the upgrade with no marker at all:
+            # its delivery is its Event's, and this column is not part of that decision.
+            conn.execute(
+                """
+                INSERT INTO news_items (
+                  item_id, source_id, source_item_key, title, raw_first_line, description,
+                  reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
+                  first_ingest_mode, trace_id, created_at_ms, updated_at_ms
+                ) VALUES (
+                  'backlog-news', 'opennews', 'backlog-news', 'ordinary', 'ordinary', '', 'opennews',
+                  1000, 1000, '{}'::jsonb, '[]'::jsonb, 'live', 'trace', 1000, 1000
+                )
+                """
+            )
+
+        command.upgrade(config, "head")
+
+        marked = {
+            str(row["item_id"]): row["market_notify_state"]
+            for row in conn.execute("SELECT item_id, market_notify_state FROM news_items ORDER BY item_id").fetchall()
+        }
+        assert marked == {
+            "backlog-liq": "historical",
+            "backlog-news": None,
+            "backlog-oi": "historical",
+        }
+        # The take query is the marker, so the backlog is not in it -- no card is ever prepared for
+        # an observation that arrived before anyone was listening.
+        backlog = conn.execute(
+            "SELECT count(*) AS pending FROM news_items WHERE market_notify_state = 'pending'"
+        ).fetchone()
+        assert int(backlog["pending"]) == 0
+
+        # And the writer that runs after the revision produces the other half.
+        repos = repositories_for_connection(conn)
+        with repos.transaction():
+            for item_id, mode in (("live-oi", "live"), ("recovered-oi", "recovery")):
+                repos.news.upsert_item(
+                    item_id=item_id,
+                    source_id="opennews",
+                    source_item_key=item_id,
+                    title=item_id,
+                    raw_first_line=item_id,
+                    description="",
+                    canonical_url=None,
+                    reporting_origin="opennews",
+                    published_at_ms=2000,
+                    observed_at_ms=2000,
+                    provider_metadata_json="{}",
+                    strategy_ids_json="[]",
+                    ingest_mode=mode,
+                    trace_id="trace",
+                    now_ms=2000,
+                    market_kind="oi",
+                    market_source_strategy_id="1019",
+                    market_parse_status="parsed",
+                    market_parse_error=None,
+                )
+        admitted = {
+            str(row["item_id"]): row["market_notify_state"]
+            for row in conn.execute(
+                "SELECT item_id, market_notify_state FROM news_items WHERE item_id IN ('live-oi', 'recovered-oi')"
+            ).fetchall()
+        }
+        assert admitted == {"live-oi": "pending", "recovered-oi": "historical"}
+
+        # A replay of a record the backlog already marked does not put it back on the to-do list.
+        with repos.transaction():
+            repos.news.upsert_item(
+                item_id="backlog-oi",
+                source_id="opennews",
+                source_item_key="backlog-oi",
+                title="backlog-oi",
+                raw_first_line="backlog-oi",
+                description="",
+                canonical_url=None,
+                reporting_origin="opennews",
+                published_at_ms=1000,
+                observed_at_ms=1000,
+                provider_metadata_json="{}",
+                strategy_ids_json="[]",
+                ingest_mode="live",
+                trace_id="trace",
+                now_ms=3000,
+                market_kind="oi",
+                market_source_strategy_id="1019",
+                market_parse_status="parsed",
+                market_parse_error=None,
+            )
+        replayed = conn.execute("SELECT market_notify_state FROM news_items WHERE item_id = 'backlog-oi'").fetchone()
+        assert replayed["market_notify_state"] == "historical"
     finally:
         conn.close()

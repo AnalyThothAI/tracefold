@@ -29,7 +29,6 @@ the card because a reader wants it, and is never compared against a host stamp t
 from __future__ import annotations
 
 import hashlib
-import itertools
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -117,6 +116,7 @@ __all__ = [
     "COMMIT_PHASE_UNKNOWN",
     "DELIVERY_STATES",
     "LIQUIDATION_WINDOW_MS",
+    "MARKET_TRACK_FIELDS",
     "NOTIFY_STATES",
     "NOTIFY_STATE_HISTORICAL",
     "NOTIFY_STATE_PENDING",
@@ -148,6 +148,7 @@ __all__ = [
     "MarketTurn",
     "PreparedCardSender",
     "SendOutcome",
+    "action_changes",
     "classify_send_failure",
     "decide_group",
     "delivery_key",
@@ -255,6 +256,12 @@ class MarketTrack:
     anchor_attempt_at_ms: int | None = None
     anchor_oi_change_bps: int | None = None
     anchor_direction: str | None = None
+    # What the last delivered card ended on, which is where the next card's action timeline starts.
+    # Not `current_action`: that is the newest observation, written every turn, and by the time a
+    # change card is claimed it already holds the new action -- so counting changes against it would
+    # report zero for exactly the card whose subject is the change (§4.4).
+    anchor_action: str | None = None
+    anchor_position_side: str | None = None
     open_delivery_key: str | None = None
     next_due_at_ms: int | None = None
     pending_reason: str = ""
@@ -306,7 +313,7 @@ def group_family(observation: MarketObservation) -> MarketFamily:
         return "oi"
     if observation.liquidated_position_side:
         return "liquidation"
-    if observation.action and observation.position_side and observation.trader_label:
+    if observation.action and observation.position_side and (observation.trader_label or observation.account_address):
         return "smart_money"
     return "raw"
 
@@ -500,6 +507,8 @@ def _carry(track: MarketTrack | None, identity: MarketTrack) -> MarketTrack:
         anchor_attempt_at_ms=track.anchor_attempt_at_ms,
         anchor_oi_change_bps=track.anchor_oi_change_bps,
         anchor_direction=track.anchor_direction,
+        anchor_action=track.anchor_action,
+        anchor_position_side=track.anchor_position_side,
         current_action=track.current_action,
         current_position_side=track.current_position_side,
         open_delivery_key=track.open_delivery_key,
@@ -678,7 +687,15 @@ def _decide_raw(
 
 
 def _window_end(track: MarketTrack, window_ms: int) -> int | None:
-    if track.anchor_attempt_at_ms is None:
+    """The follow-up window, or None when there is nothing to follow up on.
+
+    An attempt that ended `failed` told nobody, so the next report is a first card and §4.3's
+    "first report immediately" applies to it -- a window anchored on an attempt whose card never
+    arrived would delay the reader for a send they never saw. An `unknown` attempt does anchor a
+    window: the whole point of `unknown` is that it may well have been delivered.
+    """
+
+    if track.anchor_attempt_at_ms is None or track.anchor_state == "":
         return None
     return int(track.anchor_attempt_at_ms) + window_ms
 
@@ -697,7 +714,11 @@ def notification_status(
     """
 
     if delivery_state:
-        return delivery_state, str(delivery_error or track_reason or "")
+        # A settled card carries its own error or nothing at all. Borrowing the track's live holding
+        # reason here would print `liquidation_followup_window_open` beside a card that was delivered
+        # ten minutes ago -- the reason the *group* is currently merging, attached to an observation
+        # whose own outcome is already known.
+        return delivery_state, str(delivery_error or "")
     if notify_state == NOTIFY_STATE_PENDING:
         return "unprocessed", REASON_UNPROCESSED
     if notify_state == NOTIFY_STATE_HISTORICAL:
@@ -818,9 +839,15 @@ def _card_lines(
         account = track.trader_label or track.account_key or "未标注账户"
         verified = "" if track.account_verified else "（来源标签，非已核实地址）"
         actions = _action_line(observations)
-        change_line = (
-            f"动作变化 {action_changes} 次 · 首 {_action(first)} → 末 {_action(latest)}" if action_changes else ""
+        # "首" is where the described timeline starts, which is what the last delivered card ended
+        # on when there is one. Reading it off the first covered observation would print `开空 → 开空`
+        # for a card whose whole subject is that the account stopped closing shorts.
+        opened = (
+            _action_label(track.anchor_action, track.anchor_position_side)
+            if track.anchor_action is not None
+            else _action(first)
         )
+        change_line = f"动作变化 {action_changes} 次 · 首 {opened} → 末 {_action(latest)}" if action_changes else ""
         return [
             f"{account}{verified} · {venue} · {span}",
             change_line,
@@ -842,10 +869,11 @@ def _action_line(observations: Sequence[MarketObservation]) -> str:
 
 
 def _action(observation: MarketObservation) -> str:
-    return (
-        f"{_ACTION_ZH.get(observation.action or '', observation.action or '')}"
-        f"{_SIDE_ZH.get(observation.position_side or '', observation.position_side or '')}"
-    )
+    return _action_label(observation.action, observation.position_side)
+
+
+def _action_label(action: str | None, side: str | None) -> str:
+    return f"{_ACTION_ZH.get(action or '', action or '')}{_SIDE_ZH.get(side or '', side or '')}"
 
 
 def _span(first_ms: int, last_ms: int) -> str:
@@ -944,8 +972,8 @@ class ClaimedCard:
     covered_count: int
     anchor_oi_change_bps: int | None
     anchor_direction: str | None
-    current_action: str | None
-    current_position_side: str | None
+    anchor_action: str | None
+    anchor_position_side: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1146,7 +1174,7 @@ class MarketNotificationLoop:
                 reason=reason,
                 observations=observations,
                 detail_url=f"{self.detail_url_base}/{observations[-1].item_id}",
-                action_changes=_action_changes(observations),
+                action_changes=action_changes(observations, since=(track.anchor_action, track.anchor_position_side)),
             )
         )
         news.market_begin_send(
@@ -1169,8 +1197,8 @@ class MarketNotificationLoop:
             covered_count=len(observations),
             anchor_oi_change_bps=latest.oi_change_bps,
             anchor_direction=latest.direction,
-            current_action=latest.action,
-            current_position_side=latest.position_side,
+            anchor_action=latest.action,
+            anchor_position_side=latest.position_side,
         )
 
     async def _send(self, claimed: ClaimedCard) -> SendOutcome:
@@ -1202,8 +1230,8 @@ class MarketNotificationLoop:
             anchor_delivery_key=claimed.delivery_key,
             anchor_oi_change_bps=claimed.anchor_oi_change_bps,
             anchor_direction=claimed.anchor_direction,
-            current_action=claimed.current_action,
-            current_position_side=claimed.current_position_side,
+            anchor_action=claimed.anchor_action,
+            anchor_position_side=claimed.anchor_position_side,
             pending_reason="",
             now_ms=now_ms,
         )
@@ -1223,8 +1251,8 @@ class MarketNotificationLoop:
                 anchor_delivery_key=key,
                 anchor_oi_change_bps=None if latest is None else latest.oi_change_bps,
                 anchor_direction=None if latest is None else latest.direction,
-                current_action=None if latest is None else latest.action,
-                current_position_side=None if latest is None else latest.position_side,
+                anchor_action=None if latest is None else latest.action,
+                anchor_position_side=None if latest is None else latest.position_side,
                 pending_reason=REASON_SEND_INTERRUPTED,
                 now_ms=now_ms,
             )
@@ -1270,15 +1298,30 @@ def _settle_send(
     return run
 
 
-def _action_changes(observations: Sequence[MarketObservation]) -> int:
+def action_changes(
+    observations: Sequence[MarketObservation], *, since: tuple[str | None, str | None] = (None, None)
+) -> int:
+    """How many times the reported action changed across what this card speaks for.
+
+    `since` is what the last delivered card ended on. Without it a change card whose previous segment
+    was entirely covered by the card before it would count zero changes -- the segment starts *at* the
+    change -- and the card would omit the count §4.4 requires it to show.
+    """
+
     changes = 0
-    for previous, current in itertools.pairwise(observations):
-        if previous.action != current.action or previous.position_side != current.position_side:
+    previous_action, previous_side = since
+    for observation in observations:
+        if previous_action is not None and (
+            observation.action != previous_action or observation.position_side != previous_side
+        ):
             changes += 1
+        previous_action, previous_side = observation.action, observation.position_side
     return changes
 
 
-_TRACK_FIELDS: Final[tuple[str, ...]] = (
+# The track's own columns, named once. The upsert statement, the row reader and the row writer all
+# build from this tuple, so a column added to `MarketTrack` cannot reach one of them and miss another.
+MARKET_TRACK_FIELDS: Final[tuple[str, ...]] = (
     "group_key",
     "market_kind",
     "family",
@@ -1301,6 +1344,8 @@ _TRACK_FIELDS: Final[tuple[str, ...]] = (
     "anchor_attempt_at_ms",
     "anchor_oi_change_bps",
     "anchor_direction",
+    "anchor_action",
+    "anchor_position_side",
     "open_delivery_key",
     "next_due_at_ms",
     "pending_reason",
@@ -1308,7 +1353,7 @@ _TRACK_FIELDS: Final[tuple[str, ...]] = (
 
 
 def _track_from_row(row: Mapping[str, Any]) -> MarketTrack:
-    values = {field: row[field] for field in _TRACK_FIELDS}
+    values = {field: row[field] for field in MARKET_TRACK_FIELDS}
     values["venue_known"] = bool(values["venue_known"])
     values["account_verified"] = bool(values["account_verified"])
     values["last_observed_at_ms"] = int(values["last_observed_at_ms"] or 0)
@@ -1319,4 +1364,4 @@ def _track_from_row(row: Mapping[str, Any]) -> MarketTrack:
 
 
 def _track_as_row(track: MarketTrack) -> dict[str, Any]:
-    return {field: getattr(track, field) for field in _TRACK_FIELDS}
+    return {field: getattr(track, field) for field in MARKET_TRACK_FIELDS}

@@ -667,7 +667,12 @@ export function newsMarketItemFixture(overrides: Partial<NewsMarketItem> = {}): 
     notification_covered_item_ids: [observation.item_id],
     notification_delivery: {
       attempts: 1,
-      card: { header: { title: { content: "持仓异动 WIF", tag: "plain_text" }, template: "blue" } },
+      card: {
+        elements: [
+          { content: "上升 6.71% · 14:20\nOI $11.03M · binance · oi_signal_v1", tag: "markdown" },
+        ],
+        header: { template: "blue", title: { content: "持仓异动 WIF", tag: "plain_text" } },
+      },
       covered_count: 2,
       covered_from_ms: observation.received_at_ms - 600_000,
       covered_to_ms: observation.received_at_ms,

@@ -108,6 +108,49 @@ describe("NewsMarketPage", () => {
     expect(screen.getByText("liquidation_followup_window_open")).toBeInTheDocument();
   });
 
+  it("renders the frozen card and the observations it covered, not just their count", async () => {
+    /*
+     * #553 PR-2. The operator's real-channel receipt check is "does the message my channel received
+     * match the snapshot the ledger froze". That comparison is impossible if the console only prints
+     * how many observations the card spoke for, so both the card's own lines and the covered ids are
+     * on the page.
+     */
+    renderMarket();
+    const rows = await screen.findAllByRole("button", { expanded: false });
+    fireEvent.click(rows[0]);
+
+    const snapshot = await screen.findByText("持仓异动 WIF");
+    expect(snapshot).toBeInTheDocument();
+    expect(screen.getByText(/发送快照 · 2 条观测/)).toBeInTheDocument();
+    expect(screen.getByText(/覆盖观测 · 1/)).toBeInTheDocument();
+    expect(screen.getByText("mkt-oi-wif-3")).toBeInTheDocument();
+  });
+
+  it("says so when a prepared card has not frozen a snapshot yet", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/market\/.+$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsMarketItemFixture({
+            notification_covered_item_ids: [],
+            notification_delivery: {
+              ...newsMarketItemFixture().notification_delivery!,
+              attempts: 0,
+              card: {},
+              state: "pending",
+            },
+          }),
+        }),
+      ),
+    );
+    renderMarket();
+    const rows = await screen.findAllByRole("button", { expanded: false });
+    fireEvent.click(rows[0]);
+
+    expect(await screen.findByText(/快照要到首次尝试才冻结/)).toBeInTheDocument();
+    expect(screen.getByText(/还没有认领任何观测/)).toBeInTheDocument();
+  });
+
   it("keeps the parse answer and the push answer in separate cells", async () => {
     renderMarket();
     const rows = await screen.findAllByRole("button", { expanded: false });

@@ -286,11 +286,18 @@ class InitialSendEntry:
         *,
         presentation: ReaderDeliveryPresentation | None = None,
         operation: str = "news_delivery_send",
+        prepare: bool = True,
     ) -> Mapping[str, Any]:
-        """Send one already-rendered card. Nothing here prepares, enriches or settles it.
+        """Send one already-rendered card. Nothing here enriches or settles it.
 
         The caller owns idempotency and the receipt, exactly as the Deliverer always has: this is the
-        pacing and the provider call, and no part of either domain's decision.
+        target check, the pacing and the provider call, and no part of either domain's decision.
+
+        `prepare=False` is for a caller that already validated the target *earlier on purpose*. The
+        Deliverer does: it prepares before it writes its durable `sending` row, so a bad channel
+        settles the Event without one. A caller with no such moment -- the market loop -- takes the
+        default, because Telegram refuses `send_card` outright on an unvalidated target and a card
+        that skipped the check would fail on a channel that is in fact fine.
         """
 
         sender = self._sender
@@ -300,6 +307,11 @@ class InitialSendEntry:
             wait = self.min_interval - (time.monotonic() - self._last_send_at)
             if wait > 0:
                 await asyncio.sleep(wait)
+            if prepare:
+                # Idempotent -- a validated target returns immediately -- and the adapter invalidates
+                # it again the moment a send fails, so a rotated token is re-checked rather than
+                # cached for the life of the process.
+                await self._finite.run("news_delivery_prepare", sender.prepare, timeout_seconds=self._timeout_seconds)
             try:
                 receipt: Mapping[str, Any] = await self._finite.run(
                     operation,
@@ -330,16 +342,15 @@ class DelivererConsumer:
         price_fetcher_for: DeliveryPriceFetcherFor | None = None,
         progression_verifier: ProgressionVerifier | None = None,
         tradability_verifier: TradabilityVerifier | None = None,
-        send_entry: InitialSendEntry | None = None,
     ) -> None:
         self.bus = bus
         self.db = db
         self.sender = sender
         self.finite = finite_operations
         self.min_interval = float(min_interval_seconds)
-        # Composition passes the entry it also gave the market loop; a caller that passes none gets
-        # its own, which is the same behaviour this class had before it was shared.
-        self.send_entry = send_entry or InitialSendEntry(
+        # The Deliverer owns the entry and composition hands the same object to the market loop, so
+        # there is one pacer for the process rather than one per caller who remembered to share it.
+        self.send_entry = InitialSendEntry(
             sender=sender, finite_operations=finite_operations, min_interval_seconds=min_interval_seconds
         )
         self._candle_fetcher_for = candle_fetcher_for
@@ -524,7 +535,10 @@ class DelivererConsumer:
         try:
             # The shared entry paces this send and serialises it against the market loop's. News
             # keeps reading `code` and nothing else about the failure, exactly as before.
-            result = await self.send_entry.send_prepared_card(card_payload, presentation=presentation)
+            # `prepare=False`: the target was validated above, before `begin_delivery`, which is
+            # where this consumer wants a bad channel to fail. Preparing again here would be a second
+            # no-op call per delivery.
+            result = await self.send_entry.send_prepared_card(card_payload, presentation=presentation, prepare=False)
             receipt = dict(result)
         except Exception as exc:
             error_code = getattr(exc, "code", None) or f"news_delivery_failed:{type(exc).__name__}"

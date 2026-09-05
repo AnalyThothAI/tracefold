@@ -27,7 +27,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Final, TypedDict
 
 from ..market_contracts import MARKET_TIMELINE_MAX, MARKET_WINDOW_ROW_CAP
-from ..market_notifications import notification_status
+from ..market_notifications import MARKET_TRACK_FIELDS, notification_status
 from ..oi_contracts import OI_METRIC_VERSION
 from ..source_contracts import MARKET_KINDS
 from .sql_values import _dumps
@@ -313,33 +313,13 @@ MARKET_SOURCES_SQL = f"""
 """  # noqa: S608 -- interpolates only this module's own observation projection
 
 
-_TRACK_COLUMNS: Final[tuple[str, ...]] = (
-    "group_key",
-    "market_kind",
-    "family",
-    "provider",
-    "source_venue",
-    "venue_known",
-    "raw_instrument",
-    "symbol",
-    "measurement_definition",
-    "liquidated_position_side",
-    "account_key",
-    "account_verified",
-    "trader_label",
-    "current_action",
-    "current_position_side",
-    "last_observed_at_ms",
-    "last_observed_item_id",
-    "anchor_state",
-    "anchor_delivery_key",
-    "anchor_attempt_at_ms",
-    "anchor_oi_change_bps",
-    "anchor_direction",
-    "open_delivery_key",
-    "next_due_at_ms",
-    "pending_reason",
-)
+# `MarketTrack`'s own columns, in the module that defines them. Building the statement from the tuple
+# rather than restating it is what makes a new column impossible to add to the dataclass and forget
+# in the INSERT, the VALUES and the conflict update at once.
+_TRACK_COLUMNS: Final[tuple[str, ...]] = MARKET_TRACK_FIELDS
+_TRACK_INSERT = ", ".join(_TRACK_COLUMNS)
+_TRACK_VALUES = ", ".join(f"%({column})s" for column in _TRACK_COLUMNS)
+_TRACK_UPDATE = ",\n      ".join(f"{column} = EXCLUDED.{column}" for column in _TRACK_COLUMNS[1:])
 
 # The loop's take query. `market_notify_state = 'pending'` is a marker, not a cursor: an Item stays in
 # this answer until the loop has grouped it, whatever order its transaction became visible in.
@@ -351,53 +331,13 @@ MARKET_NOTIFY_BACKLOG_SQL = f"""
 
 MARKET_TRACK_SQL = "SELECT * FROM news_market_tracks WHERE group_key = %s"
 
-MARKET_TRACK_UPSERT_SQL = """
-    INSERT INTO news_market_tracks (
-      group_key, market_kind, family, provider,
-      source_venue, venue_known, raw_instrument, symbol,
-      measurement_definition, liquidated_position_side, account_key, account_verified,
-      trader_label, current_action, current_position_side, last_observed_at_ms,
-      last_observed_item_id, anchor_state, anchor_delivery_key, anchor_attempt_at_ms,
-      anchor_oi_change_bps, anchor_direction, open_delivery_key, next_due_at_ms,
-      pending_reason,
-      created_at_ms, updated_at_ms
-    ) VALUES (
-      %(group_key)s, %(market_kind)s, %(family)s, %(provider)s,
-      %(source_venue)s, %(venue_known)s, %(raw_instrument)s, %(symbol)s,
-      %(measurement_definition)s, %(liquidated_position_side)s, %(account_key)s, %(account_verified)s,
-      %(trader_label)s, %(current_action)s, %(current_position_side)s, %(last_observed_at_ms)s,
-      %(last_observed_item_id)s, %(anchor_state)s, %(anchor_delivery_key)s, %(anchor_attempt_at_ms)s,
-      %(anchor_oi_change_bps)s, %(anchor_direction)s, %(open_delivery_key)s, %(next_due_at_ms)s,
-      %(pending_reason)s,
-      %(now_ms)s, %(now_ms)s
-    )
+MARKET_TRACK_UPSERT_SQL = f"""
+    INSERT INTO news_market_tracks ({_TRACK_INSERT}, created_at_ms, updated_at_ms)
+    VALUES ({_TRACK_VALUES}, %(now_ms)s, %(now_ms)s)
     ON CONFLICT (group_key) DO UPDATE SET
-      market_kind = EXCLUDED.market_kind,
-      family = EXCLUDED.family,
-      provider = EXCLUDED.provider,
-      source_venue = EXCLUDED.source_venue,
-      venue_known = EXCLUDED.venue_known,
-      raw_instrument = EXCLUDED.raw_instrument,
-      symbol = EXCLUDED.symbol,
-      measurement_definition = EXCLUDED.measurement_definition,
-      liquidated_position_side = EXCLUDED.liquidated_position_side,
-      account_key = EXCLUDED.account_key,
-      account_verified = EXCLUDED.account_verified,
-      trader_label = EXCLUDED.trader_label,
-      current_action = EXCLUDED.current_action,
-      current_position_side = EXCLUDED.current_position_side,
-      last_observed_at_ms = EXCLUDED.last_observed_at_ms,
-      last_observed_item_id = EXCLUDED.last_observed_item_id,
-      anchor_state = EXCLUDED.anchor_state,
-      anchor_delivery_key = EXCLUDED.anchor_delivery_key,
-      anchor_attempt_at_ms = EXCLUDED.anchor_attempt_at_ms,
-      anchor_oi_change_bps = EXCLUDED.anchor_oi_change_bps,
-      anchor_direction = EXCLUDED.anchor_direction,
-      open_delivery_key = EXCLUDED.open_delivery_key,
-      next_due_at_ms = EXCLUDED.next_due_at_ms,
-      pending_reason = EXCLUDED.pending_reason,
+      {_TRACK_UPDATE},
       updated_at_ms = EXCLUDED.updated_at_ms
-"""
+"""  # noqa: S608 -- interpolates only this module's own column identifiers
 
 MARKET_MARK_PROCESSED_SQL = """
     UPDATE news_items
@@ -517,14 +457,17 @@ MARKET_TRACK_ATTEMPT_SQL = """
      WHERE group_key = %s
 """
 
+# `current_action` is deliberately not written here. It is the newest observation, and by the time a
+# card settles the loop may already have recorded a later one; overwriting it with what this card
+# covered would move the group's idea of "now" backwards.
 MARKET_TRACK_ANCHOR_SQL = """
     UPDATE news_market_tracks
        SET anchor_state = %s,
            anchor_delivery_key = %s,
            anchor_oi_change_bps = COALESCE(%s, anchor_oi_change_bps),
            anchor_direction = COALESCE(%s, anchor_direction),
-           current_action = COALESCE(%s, current_action),
-           current_position_side = COALESCE(%s, current_position_side),
+           anchor_action = COALESCE(%s, anchor_action),
+           anchor_position_side = COALESCE(%s, anchor_position_side),
            pending_reason = %s,
            updated_at_ms = %s
      WHERE group_key = %s
@@ -535,6 +478,10 @@ MARKET_HOLD_UNAVAILABLE_SQL = """
        SET state = 'unavailable', error = %s, updated_at_ms = %s
      WHERE state = 'pending'
        AND next_attempt_at_ms <= %s
+"""
+
+MARKET_HELD_EXISTS_SQL = """
+    SELECT 1 FROM news_market_deliveries WHERE state = 'unavailable' LIMIT 1
 """
 
 MARKET_RELEASE_UNAVAILABLE_SQL = """
@@ -863,8 +810,8 @@ class MarketStorage:
         anchor_delivery_key: str,
         anchor_oi_change_bps: int | None,
         anchor_direction: str | None,
-        current_action: str | None,
-        current_position_side: str | None,
+        anchor_action: str | None,
+        anchor_position_side: str | None,
         pending_reason: str,
         now_ms: int,
     ) -> bool:
@@ -881,8 +828,8 @@ class MarketStorage:
                 anchor_delivery_key,
                 anchor_oi_change_bps,
                 anchor_direction,
-                current_action,
-                current_position_side,
+                anchor_action,
+                anchor_position_side,
                 pending_reason,
                 int(now_ms),
                 group_key,
@@ -897,8 +844,16 @@ class MarketStorage:
         return int(cursor.rowcount or 0)
 
     def market_release_unavailable(self, *, now_ms: int) -> int:
-        """A sender exists again: every held card becomes due, still as one card per group."""
+        """A sender exists again: every held card becomes due, still as one card per group.
 
+        Read first. This runs on every claim tick for the life of the process, and an unconditional
+        `UPDATE` would be forty thousand empty write transactions a day for the one moment a sender
+        actually comes back. The probe is an index-only lookup on the same partial index the write
+        uses.
+        """
+
+        if self.conn.execute(MARKET_HELD_EXISTS_SQL).fetchone() is None:
+            return 0
         cursor = self.conn.execute(MARKET_RELEASE_UNAVAILABLE_SQL, (int(now_ms),))
         return int(cursor.rowcount or 0)
 

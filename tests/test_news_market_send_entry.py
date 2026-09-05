@@ -13,6 +13,7 @@ Ordinary News is unchanged by both: it still reads `code` and only `code`.
 from __future__ import annotations
 
 import asyncio
+import json
 import statistics
 import time
 from typing import Any
@@ -21,7 +22,11 @@ import httpx
 import pytest
 
 from tracefold.app.workers.capabilities import FiniteOperations
-from tracefold.integrations.feishu import FeishuNewsPushSender, NewsPushExternalError
+from tracefold.integrations.feishu import (
+    FeishuNewsPushSender,
+    NewsPushExternalError,
+    generate_feishu_signature,
+)
 from tracefold.integrations.telegram import TelegramDeliveryError, TelegramNewsPushSender
 from tracefold.news.market_notifications import (
     COMMIT_PHASE_NOT_SENT,
@@ -32,6 +37,7 @@ from tracefold.news.market_notifications import (
 from tracefold.news.pipeline.delivery import InitialSendEntry
 
 FEISHU_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/0123456789abcdef"
+SIGNING_SECRET = "replay-signing-secret"
 BOT_TOKEN = "123456:abcdefghijklmnopqrstuvwxyzABCDE_12345"
 CHAT_ID = -1001234567890
 BOT_ID = 123456
@@ -127,59 +133,81 @@ async def _no_starvation() -> None:
 
 
 def test_mixed_stream_ordinary_news_latency_with_and_without_market_load(capsys) -> None:
-    """The acceptance measurement: ordinary News percentiles, alone and beside market cards.
+    """The acceptance measurement, at the interval an operator actually configures.
 
-    Three loads, because two of them are real and they are not the same question. `production` is the
-    rate the offline replay actually measured -- 244 cards over 72 h, which is under one an hour
-    against a News stream sending continuously. `recovery` is the honest worst case: after an outage
-    every group's merged content becomes one card at once, so the entry sees a burst the size of the
-    group count. Both are reported; only the first is asserted as bounded, because the second is a
-    queue and a queue's depth is what a reader waits behind by definition.
+    `news.push.min_interval_seconds` defaults to 0.6 s, and at that setting the interval -- not the
+    provider -- is what a card waits for. Measuring at zero would have measured the stub instead.
 
-    What holds in every load is the thing fairness means here: no market card is admitted ahead of a
-    News card that was already waiting (proved next door), and every News card is still sent.
+    Three arms. `unloaded` is ordinary News alone. `replayed_rate` adds market traffic at *more* than
+    the rate the offline replay measured -- that replay produced 246 cards in 72 h, about one every
+    seventeen minutes, so a market card inside a five-second window is already an overstatement --
+    and is the arm that describes production. `recovery_burst` is the honest worst case: after an
+    outage every group's merged content becomes due at once, so a News card queues behind the whole
+    drain, and its wait is the queue depth times the interval. That is a law rather than a constant,
+    which is why it is asserted as one: it is what says a 60-card drain delays a News card by about
+    36 s at this setting.
     """
 
-    news_only = asyncio.run(_measure_news_latency(market_cards=0))
-    production = asyncio.run(_measure_news_latency(market_cards=1))
-    recovery = asyncio.run(_measure_news_latency(market_cards=60, burst=True))
+    unloaded = asyncio.run(_measure(news_cards=4, market_cards=0))
+    replayed_rate = asyncio.run(_measure(news_cards=4, market_cards=1))
+    burst = asyncio.run(_measure(news_cards=1, market_cards=_BURST_CARDS, burst=True))
+    interval_ms = _PRODUCTION_INTERVAL * 1000
     report = {
-        "news_only": {"p50_ms": _p(news_only, 50), "p95_ms": _p(news_only, 95), "cards": len(news_only)},
-        "production": {"p50_ms": _p(production, 50), "p95_ms": _p(production, 95), "cards": len(production)},
-        "recovery_burst": {"p50_ms": _p(recovery, 50), "p95_ms": _p(recovery, 95), "cards": len(recovery)},
-        "send_seconds": _SEND_SECONDS,
+        "min_interval_seconds": _PRODUCTION_INTERVAL,
+        "unloaded": {"p50_ms": _p(unloaded, 50), "p95_ms": _p(unloaded, 95), "cards": len(unloaded)},
+        "replayed_rate": {
+            "p50_ms": _p(replayed_rate, 50),
+            "p95_ms": _p(replayed_rate, 95),
+            "cards": len(replayed_rate),
+        },
+        "recovery_burst": {
+            "cards_ahead": _BURST_CARDS,
+            "measured_wait_ms": _p(burst, 50),
+            "per_card_ms": round(_p(burst, 50) / _BURST_CARDS, 1),
+            "extrapolated_60_card_drain_ms": round(60 * _p(burst, 50) / _BURST_CARDS),
+        },
     }
     with capsys.disabled():
         print(f"\nmixed-stream ordinary News initial-send latency: {report}")
 
-    # The first-card count is unchanged by any load: a market card never displaces a News card.
-    assert len(news_only) == len(production) == len(recovery) == 20
-    # At the measured market rate the added wait is bounded by the one send it can queue behind.
-    assert _p(production, 95) <= _p(news_only, 95) + 3 * _SEND_SECONDS * 1000
+    # Every News card is still sent under every load: a market card never displaces one.
+    assert len(unloaded) == len(replayed_rate) == 4
+    # At the replayed rate the added wait is bounded by the one send it can queue behind.
+    assert _p(replayed_rate, 95) <= _p(unloaded, 95) + 2 * interval_ms
+    # And the burst arm is the interval times the depth, which is the law the 36 s figure comes from.
+    queued = _p(burst, 50)
+    assert (_BURST_CARDS - 1) * interval_ms <= queued <= (_BURST_CARDS + 2) * interval_ms
 
 
+# The operator's configured default (`news.push.min_interval_seconds`). Measuring anywhere else would
+# be measuring the stub's own latency rather than the pacing that actually decides a reader's wait.
+_PRODUCTION_INTERVAL = 0.6
+# Enough depth to measure the law without spending a minute of wall clock proving arithmetic.
+_BURST_CARDS = 8
 _SEND_SECONDS = 0.002
 
 
-async def _measure_news_latency(*, market_cards: int, burst: bool = False) -> list[float]:
+async def _measure(*, news_cards: int, market_cards: int, burst: bool = False) -> list[float]:
+    """Ordinary-News initial-send latency under one load, through the real shared entry."""
+
     sender = _SlowSender(seconds=_SEND_SECONDS)
-    entry, finite = await _entry(sender)
+    entry, finite = await _entry(sender, min_interval_seconds=_PRODUCTION_INTERVAL)
     latencies: list[float] = []
 
-    async def news_card(index: int) -> None:
-        await asyncio.sleep(index * 0.004)
+    async def news_card() -> None:
         started = time.monotonic()
         await entry.send_prepared_card({"owner": "news"})
         latencies.append((time.monotonic() - started) * 1000)
 
     async def market_card(index: int) -> None:
-        await asyncio.sleep(0.0 if burst else index * 0.04)
+        await asyncio.sleep(0.0 if burst else index * _PRODUCTION_INTERVAL)
         await entry.send_prepared_card({"owner": "market"})
 
-    await asyncio.gather(
-        *(news_card(index) for index in range(20)),
-        *(market_card(index) for index in range(market_cards)),
-    )
+    # The market cards are queued first, so the News card that follows them waits behind the depth
+    # they created -- which is exactly the shape of a recovery drain.
+    market = [asyncio.create_task(market_card(index)) for index in range(market_cards)]
+    await asyncio.sleep(0)
+    await asyncio.gather(*(news_card() for _ in range(news_cards)), *market)
     finite.close()
     return latencies
 
@@ -195,7 +223,11 @@ def _p(values: list[float], percentile: int) -> float:
 
 
 def _feishu(handler: Any) -> FeishuNewsPushSender:
-    return FeishuNewsPushSender(webhook_url=FEISHU_URL, transport=httpx.MockTransport(handler))
+    """The real adapter with a real signing secret: the whole `send_card` path bar the socket."""
+
+    return FeishuNewsPushSender(
+        webhook_url=FEISHU_URL, signing_secret=SIGNING_SECRET, transport=httpx.MockTransport(handler)
+    )
 
 
 def _telegram_preflight(request: httpx.Request) -> httpx.Response | None:
@@ -231,11 +263,23 @@ def _telegram(on_send: Any) -> TelegramNewsPushSender:
     return sender
 
 
-def test_a_feishu_success_is_a_receipt_and_never_reaches_the_classifier() -> None:
-    sender = _feishu(lambda request: httpx.Response(200, json={"code": 0, "msg": "success"}))
-    receipt = sender.send_card({"config": {}, "elements": []})
+def test_a_feishu_success_signs_the_request_and_returns_a_receipt() -> None:
+    """The signature is part of the seam: an unsigned body is a request Feishu rejects."""
+
+    seen: list[dict[str, Any]] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"code": 0, "msg": "success"})
+
+    receipt = _feishu(handle).send_card({"config": {}, "elements": []})
     assert receipt["provider"] == "feishu"
     assert receipt["code"] == 0
+    body = seen[0]
+    assert body["msg_type"] == "interactive"
+    assert body["sign"] == generate_feishu_signature(
+        timestamp_seconds=int(body["timestamp"]), signing_secret=SIGNING_SECRET
+    )
 
 
 @pytest.mark.parametrize(
@@ -346,6 +390,60 @@ def test_telegram_carries_the_same_commit_semantics() -> None:
         _telegram(connect_failure).send_card(card)
     assert never_left.value.commit_phase == COMMIT_PHASE_NOT_SENT
     assert never_left.value.retryable is True
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "code", "commit_phase", "retryable"),
+    [
+        pytest.param(
+            429,
+            {"ok": False},
+            "news_delivery_telegram_http_failed",
+            COMMIT_PHASE_NOT_SENT,
+            True,
+            id="telegram_429_is_a_refusal",
+        ),
+        pytest.param(
+            503,
+            {"ok": False},
+            "news_delivery_telegram_http_failed",
+            COMMIT_PHASE_UNKNOWN,
+            False,
+            id="telegram_5xx_proves_nothing",
+        ),
+        pytest.param(
+            403,
+            {"ok": False},
+            "news_delivery_telegram_http_rejected",
+            COMMIT_PHASE_NOT_SENT,
+            False,
+            id="telegram_4xx_is_provably_not_sent",
+        ),
+        pytest.param(
+            200,
+            None,
+            "news_delivery_telegram_response_invalid",
+            COMMIT_PHASE_UNKNOWN,
+            False,
+            id="telegram_unparsable_body_proves_nothing",
+        ),
+    ],
+)
+def test_telegram_status_handling_matches_feishus_case_for_case(
+    status: int, body: dict[str, Any] | None, code: str, commit_phase: str, retryable: bool
+) -> None:
+    """Same three answers from the same statuses: neither adapter is the market's special case."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if body is None:
+            return httpx.Response(status, content=b"not json")
+        return httpx.Response(status, json=body)
+
+    with pytest.raises(TelegramDeliveryError) as raised:
+        _telegram(handle).send_card({"header": {"title": {"content": "x"}}, "elements": []})
+    assert raised.value.code == code
+    assert raised.value.commit_phase == commit_phase
+    assert raised.value.retryable is retryable
 
 
 def test_the_market_classifier_reads_the_adapters_own_evidence_end_to_end() -> None:

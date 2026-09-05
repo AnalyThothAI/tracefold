@@ -27,6 +27,7 @@ from tracefold.news.market_notifications import (
     IntentPlan,
     MarketObservation,
     MarketTrack,
+    action_changes,
     classify_send_failure,
     decide_group,
     delivery_key,
@@ -410,19 +411,36 @@ def test_liquidation_window_is_anchored_on_the_send_attempt_not_on_the_newest_re
     assert group.send(now_ms=T0 + LIQUIDATION_WINDOW_MS) is not None
 
 
-def test_a_liquidation_card_nobody_received_leaves_the_next_one_reading_first() -> None:
-    """The window is anchored on the attempt, but the reason names what the reader is about to get."""
+def test_a_liquidation_card_nobody_received_leaves_the_next_report_immediate() -> None:
+    """§4.3 首条立即. A failed card told nobody, so the next report is a first card, not a follow-up.
+
+    The window is anchored on the last send *attempt*, which did happen -- but an attempt whose card
+    never arrived cannot make a reader wait, or an outage would be paid for twice: once by the card
+    they never got and again by the minute before the next one.
+    """
 
     group = _Group()
     group.observe(liquidation(at_ms=T0, item_id="liq-0"))
     assert group.send(now_ms=T0, outcome="failed") is not None
 
-    # Inside the window the attempt opened, so this is the merging branch -- and it is still a first
-    # card, because the one before it told nobody.
     group.observe(liquidation(at_ms=T0 + 5_000, item_id="liq-5"))
-    card = group.send(now_ms=T0 + LIQUIDATION_WINDOW_MS)
+    card = group.send(now_ms=T0 + 5_000)
     assert card is not None
     assert card.reason == "first"
+
+
+def test_an_unknown_liquidation_card_does_anchor_its_window() -> None:
+    """The other half: `unknown` may well have been delivered, so it is not a free pass."""
+
+    group = _Group()
+    group.observe(liquidation(at_ms=T0, item_id="liq-0"))
+    assert group.send(now_ms=T0, outcome="unknown") is not None
+
+    group.observe(liquidation(at_ms=T0 + 5_000, item_id="liq-5"))
+    assert group.send(now_ms=T0 + 5_000) is None
+    followup = group.send(now_ms=T0 + LIQUIDATION_WINDOW_MS)
+    assert followup is not None
+    assert followup.reason == "followup"
 
 
 def test_liquidation_sides_and_venues_are_separate_groups_and_never_suppress_each_other() -> None:
@@ -506,6 +524,31 @@ def test_smart_money_change_card_shows_the_change_count_and_the_first_and_last_a
     assert "不代表账户已全部清仓" in text
 
 
+def test_the_change_count_starts_from_what_the_last_delivered_card_ended_on() -> None:
+    """A segment that begins *at* the change has no transition inside it -- and still shows one.
+
+    Counting only within the covered set reports zero for exactly the card whose subject is the
+    change, which is the one §4.4 requires the count on.
+    """
+
+    covered = [wallet(at_ms=T0 + 10_000, action="open", side="short", item_id="b")]
+    assert action_changes(covered) == 0
+    assert action_changes(covered, since=("close", "short")) == 1
+
+    card = render_market_card(
+        track=replace(group_identity(covered[0]), anchor_action="close", anchor_position_side="short"),
+        reason="action_change",
+        observations=covered,
+        detail_url="/news/market/b",
+        action_changes=action_changes(covered, since=("close", "short")),
+    )
+    printed = card["elements"][0]["content"]
+    assert "动作变化 1 次" in printed
+    # "首" is where the timeline starts, which is what the last card ended on -- not the first record
+    # of a segment that begins at the change.
+    assert "首 平空 → 末 开空" in printed
+
+
 def test_smart_money_accounts_never_suppress_one_another() -> None:
     machi = _Group()
     other = _Group()
@@ -544,6 +587,18 @@ def test_smart_money_unknown_venue_is_its_own_group_and_is_labelled() -> None:
         track=unknown, reason="first", observations=[wallet(at_ms=T0, venue=None)], detail_url="/x"
     )
     assert "场所未知" in card["elements"][0]["content"]
+
+
+def test_a_reported_address_is_an_account_even_when_the_provider_sent_no_label() -> None:
+    """§4.4 puts the stable address first. A missing display label is not a missing identity."""
+
+    unlabelled = replace(wallet(at_ms=T0, address="0xabc"), trader_label=None)
+    assert group_family(unlabelled) == "smart_money"
+    identity = group_identity(unlabelled)
+    assert identity.account_verified is True
+    assert identity.account_key == "0xabc"
+    # And a record with neither is genuinely unidentifiable, so it stays its own raw card.
+    assert group_family(replace(unlabelled, account_address=None)) == "raw"
 
 
 def test_smart_money_action_and_side_are_not_part_of_the_notification_group() -> None:
@@ -666,6 +721,7 @@ def test_an_exception_with_no_commit_evidence_at_all_is_unknown() -> None:
         pytest.param("processed", "sent", ("sent", ""), id="delivered"),
         pytest.param("processed", "unknown", ("unknown", ""), id="result_unreadable"),
         pytest.param("processed", "unavailable", ("unavailable", ""), id="no_sender"),
+        pytest.param("processed", "pending", ("pending", ""), id="attempted_and_awaiting_retry"),
     ],
 )
 def test_notification_status_names_the_rule_holding_an_observation(
@@ -675,9 +731,21 @@ def test_notification_status_names_the_rule_holding_an_observation(
         notify_state=notify_state,
         delivery_state=delivery_state,
         delivery_error=None,
-        track_reason="liquidation_followup_window_open" if delivery_state is None else None,
+        # The track's live reason is always present, because it always is in the read model's join.
+        # A settled card must not borrow it.
+        track_reason="liquidation_followup_window_open",
     )
-    assert (status, reason if delivery_state is None else "") == expected
+    assert (status, reason) == expected
+
+
+def test_a_settled_card_reports_its_own_error_and_nothing_else() -> None:
+    status, reason = notification_status(
+        notify_state="processed",
+        delivery_state="failed",
+        delivery_error="news_delivery_feishu_business_rejected",
+        track_reason="liquidation_followup_window_open",
+    )
+    assert (status, reason) == ("failed", "news_delivery_feishu_business_rejected")
 
 
 def test_a_raw_record_that_was_delivered_is_both_raw_and_sent() -> None:

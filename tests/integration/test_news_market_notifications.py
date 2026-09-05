@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
@@ -30,6 +33,7 @@ from tracefold.news.market_notifications import (
     group_identity,
 )
 from tracefold.news.oi_signals import measurement_definition, oi_source_contract
+from tracefold.news.smart_money import parse_smart_money
 from tracefold.news.source_contracts import MARKET_PROVIDER
 
 pytestmark = pytest.mark.integration
@@ -49,11 +53,21 @@ class _Db:
 
     `tx` opens a real transaction, so a callable that raises leaves PostgreSQL exactly as it was --
     which is the mechanism half of "a notification failure rolls back no facts".
+
+    Three injection points, and they prove different things. `fail_on` raises *before* the callable,
+    which is a turn that never started. `fail_after` raises after it returned but before the commit,
+    which is the one that matters: it is the only way to show that the marker, the track and the
+    intent are one transaction rather than three that happened to succeed. `hold_on` keeps the
+    transaction open so another connection meets it under a real lock.
     """
 
     def __init__(self, connection: Any) -> None:
         self.connection = connection
         self.fail_on: set[str] = set()
+        self.fail_after: set[str] = set()
+        self.hold_on: str | None = None
+        self.holding = threading.Event()
+        self.release = threading.Event()
         self.names: list[str] = []
 
     async def read(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float = 3.0) -> Any:
@@ -66,7 +80,16 @@ class _Db:
         with repos.transaction():
             if name in self.fail_on:
                 raise RuntimeError(f"injected_failure:{name}")
-            return fn(repos)
+            result = fn(repos)
+            if name in self.fail_after:
+                raise RuntimeError(f"injected_failure_after:{name}")
+            if self.hold_on == name:
+                self.holding.set()
+                assert self.release.wait(10), "the holding transaction was never released"
+            return result
+
+    def turns(self, name: str) -> int:
+        return self.names.count(name)
 
 
 class _Sender:
@@ -119,52 +142,57 @@ def _oi_item(conn: Any, item_id: str, *, at_ms: int, change_bps: int, ingest_mod
 
     repos = repositories_for_connection(conn)
     with repos.transaction():
-        news = repos.news
-        news.upsert_item(
-            item_id=item_id,
-            source_id="opennews",
-            source_item_key=item_id,
-            title=f"WIF OI Rise {change_bps / 100}%, OI Value 11.03M, Whale Long Profit 88.40%, Whale/OI Ratio 143.90%",
-            raw_first_line=item_id,
-            description="",
-            canonical_url=None,
-            reporting_origin="opennews",
-            published_at_ms=at_ms,
-            observed_at_ms=at_ms,
-            provider_metadata_json="{}",
-            strategy_ids_json="[]",
-            ingest_mode=ingest_mode,
-            trace_id="trace",
-            now_ms=at_ms,
-            market_kind="oi",
-            market_source_strategy_id="1019",
-            market_parse_status="parsed",
-            market_parse_error=None,
-            provider_params_json=json.dumps({"rule": "oi_rise"}),
-        )
-        source = oi_source_contract({"strategies": [{"id": "1019"}]})
-        assert source is not None
-        news.insert_oi_signal(
-            event_id=f"event-{item_id}",
-            metric_version="oi_signal_v1",
-            symbol="WIF",
-            raw_instrument="WIF",
-            direction="rise",
-            oi_change_bps=change_bps,
-            oi_value_usd=11_030_000,
-            whale_long_profit_bps=8_840,
-            whale_oi_ratio_bps=14_390,
-            observed_at_ms=at_ms,
-            received_at_ms=at_ms,
-            now_ms=at_ms,
-            provider=MARKET_PROVIDER,
-            source_strategy_id=source.strategy_id,
-            source_contract_version=source.contract_version,
-            measurement_window_ms=source.measurement_window_ms,
-            measurement_definition=measurement_definition(source),
-            source_item_id=item_id,
-            source_venue="binance",
-        )
+        _write_oi(repos.news, item_id, at_ms=at_ms, change_bps=change_bps, ingest_mode=ingest_mode)
+
+
+def _write_oi(news: Any, item_id: str, *, at_ms: int, change_bps: int, ingest_mode: str = "live") -> None:
+    """The Item and its typed fact, without owning the transaction they go in."""
+
+    news.upsert_item(
+        item_id=item_id,
+        source_id="opennews",
+        source_item_key=item_id,
+        title=f"WIF OI Rise {change_bps / 100}%, OI Value 11.03M, Whale Long Profit 88.40%, Whale/OI Ratio 143.90%",
+        raw_first_line=item_id,
+        description="",
+        canonical_url=None,
+        reporting_origin="opennews",
+        published_at_ms=at_ms,
+        observed_at_ms=at_ms,
+        provider_metadata_json="{}",
+        strategy_ids_json="[]",
+        ingest_mode=ingest_mode,
+        trace_id="trace",
+        now_ms=at_ms,
+        market_kind="oi",
+        market_source_strategy_id="1019",
+        market_parse_status="parsed",
+        market_parse_error=None,
+        provider_params_json=json.dumps({"rule": "oi_rise"}),
+    )
+    source = oi_source_contract({"strategies": [{"id": "1019"}]})
+    assert source is not None
+    news.insert_oi_signal(
+        event_id=f"event-{item_id}",
+        metric_version="oi_signal_v1",
+        symbol="WIF",
+        raw_instrument="WIF",
+        direction="rise",
+        oi_change_bps=change_bps,
+        oi_value_usd=11_030_000,
+        whale_long_profit_bps=8_840,
+        whale_oi_ratio_bps=14_390,
+        observed_at_ms=at_ms,
+        received_at_ms=at_ms,
+        now_ms=at_ms,
+        provider=MARKET_PROVIDER,
+        source_strategy_id=source.strategy_id,
+        source_contract_version=source.contract_version,
+        measurement_window_ms=source.measurement_window_ms,
+        measurement_definition=measurement_definition(source),
+        source_item_id=item_id,
+        source_venue="binance",
+    )
 
 
 def _rows(conn: Any, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
@@ -212,20 +240,81 @@ def test_a_notification_failure_leaves_the_committed_fact_and_the_backlog_untouc
     assert len(sender.cards) == 1
 
 
-def test_an_observation_committed_late_is_not_skipped_by_the_take_query(conn: Any) -> None:
-    """A marker, not a high-water mark: a stamp cursor would have passed this row for ever."""
+def test_the_group_turn_commits_its_marker_track_and_intent_together_or_not_at_all(conn: Any) -> None:
+    """§4.1.3. Failing *after* the turn succeeded is the only way to prove it is one transaction.
 
-    _oi_item(conn, "oi-new", at_ms=NOW - 10_000, change_bps=600)
-    sender = _Sender()
+    A failure before the callable proves nothing -- nothing ran. This one lets the marker, the track
+    and the intent all be written and then rolls the transaction back, so a design that used three
+    transactions would leave a track behind with no marker and no card.
+    """
+
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
     db = _Db(conn)
-    asyncio.run(_loop(db, sender, clock=_Clock()).advance())
-    assert _notify_state(conn, "oi-new") == "processed"
+    db.fail_after = {"news_market_notify_group"}
 
-    # Now a transaction that began earlier finally commits, with an *older* stamp than the one just
-    # processed. Its observation is in the next turn's answer because the marker says so.
-    _oi_item(conn, "oi-late", at_ms=NOW - 3_600_000, change_bps=610)
-    asyncio.run(_loop(db, sender, clock=_Clock()).advance())
-    assert _notify_state(conn, "oi-late") == "processed"
+    with pytest.raises(RuntimeError, match="injected_failure_after"):
+        asyncio.run(_loop(db, _Sender(), clock=_Clock()).advance())
+
+    assert _notify_state(conn, "oi-1") == "pending"
+    assert _rows(conn, "SELECT group_key FROM news_market_tracks") == []
+    assert _deliveries(conn) == []
+
+
+def test_one_group_is_one_transaction_per_turn(conn: Any) -> None:
+    """Two groups in one intake are two turns; one group reported twice is still one."""
+
+    _oi_item(conn, "oi-a", at_ms=NOW - 60_000, change_bps=600)
+    _oi_item(conn, "oi-b", at_ms=NOW - 50_000, change_bps=620)
+    _liquidation_item(conn, "liq-a", at_ms=NOW - 40_000, side="long")
+    db = _Db(conn)
+    asyncio.run(_loop(db, _Sender(), clock=_Clock()).advance())
+
+    assert db.turns("news_market_notify_group") == 2
+    assert db.turns("news_market_notify_backlog") == 1
+
+
+def test_an_observation_committed_late_is_not_skipped_by_the_take_query(conn: Any) -> None:
+    """A marker, not a high-water mark: a stamp cursor would have passed this row for ever.
+
+    The late writer's transaction is genuinely open across the first turn -- on its own connection,
+    invisible, holding a stamp an hour older than anything the loop is about to process -- and commits
+    only afterwards. A cursor over `observed_at_ms` or `created_at_ms` would have advanced past that
+    stamp during the first turn and would never look below it again.
+    """
+
+    writer = connect_postgres_test(read_only=False)
+    try:
+        sender = _Sender()
+        db = _Db(conn)
+        _oi_item(conn, "oi-new", at_ms=NOW - 10_000, change_bps=600)
+
+        started = threading.Event()
+        commit = threading.Event()
+
+        def late_writer() -> None:
+            repos = repositories_for_connection(writer)
+            with repos.transaction():
+                _write_oi(repos.news, "oi-late", at_ms=NOW - 3_600_000, change_bps=610)
+                started.set()
+                assert commit.wait(10)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending_write = pool.submit(late_writer)
+            assert started.wait(10)
+
+            # Turn one cannot see the uncommitted row, and processes the newer one.
+            asyncio.run(_loop(db, sender, clock=_Clock()).advance())
+            assert _notify_state(conn, "oi-new") == "processed"
+            assert _rows(conn, "SELECT item_id FROM news_items WHERE item_id = 'oi-late'") == []
+
+            commit.set()
+            pending_write.result(timeout=30)
+
+        # Turn two finds it by its marker, an hour below where turn one stopped.
+        asyncio.run(_loop(db, sender, clock=_Clock()).advance())
+        assert _notify_state(conn, "oi-late") == "processed"
+    finally:
+        writer.close()
 
 
 def test_a_recovery_observation_is_readable_and_never_alerted(conn: Any) -> None:
@@ -259,8 +348,13 @@ def test_a_confirmed_delivery_key_is_never_executed_twice_across_turns_or_proces
     assert [row["delivery_key"] for row in _deliveries(conn)] == [first[0]["delivery_key"]]
 
 
-def test_two_processes_racing_on_one_group_open_one_card_between_them(conn: Any) -> None:
-    """The unique partial index is the referee, not a read-then-write in either process."""
+def test_a_second_process_over_the_same_committed_state_opens_no_second_card(conn: Any) -> None:
+    """Sequential, deliberately: this is the *committed-state* half, not the contended one.
+
+    A second process that reads the same tables after the first has finished must find the group
+    already answered -- no second "first" card, and no second send. The contended half, where two
+    claims meet inside one transaction, is next door.
+    """
 
     other = connect_postgres_test(read_only=False)
     try:
@@ -271,6 +365,79 @@ def test_two_processes_racing_on_one_group_open_one_card_between_them(conn: Any)
         asyncio.run(_loop(_Db(other), sender, clock=_Clock()).advance())
         assert len(_deliveries(conn)) == 1
         assert len(sender.cards) == 1
+    finally:
+        other.close()
+
+
+def test_two_processes_contending_one_due_card_produce_exactly_one_send(conn: Any) -> None:
+    """The cross-process guard, met under a real lock rather than in sequence.
+
+    Two mechanisms, and the test holds a transaction open to reach each. Inside the claim transaction
+    the row is locked, and the second process's `FOR UPDATE SKIP LOCKED` steps over it rather than
+    waiting. Once that transaction commits the row reads `sending`, which the due scan does not
+    select -- and that is the one that matters in production, because the claim commits *before* the
+    network call, so the whole send window is guarded by the state and not by a lock.
+    """
+
+    other = connect_postgres_test(read_only=False)
+    try:
+        _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+        sender = _Sender()
+        first = _Db(conn)
+        second = _Db(other)
+        first.hold_on = "news_market_notify_claim"
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            holder = pool.submit(lambda: asyncio.run(_loop(first, sender, clock=_Clock()).advance()))
+            assert first.holding.wait(10), "the first loop never reached its claim transaction"
+
+            # The row is locked by an uncommitted claim. The second loop must step over it, not wait.
+            asyncio.run(_loop(second, sender, clock=_Clock()).advance())
+            assert len(sender.cards) == 0
+
+            first.release.set()
+            holder.result(timeout=30)
+
+        assert len(sender.cards) == 1
+        rows = _deliveries(conn)
+        assert len(rows) == 1
+        assert rows[0]["attempts"] == 1
+        assert rows[0]["state"] == "sent"
+
+        # And once more, now that it is settled: still one card, still one attempt.
+        asyncio.run(_loop(second, sender, clock=_Clock()).advance())
+        assert len(sender.cards) == 1
+        assert _deliveries(conn)[0]["attempts"] == 1
+    finally:
+        other.close()
+
+
+def test_a_card_being_sent_is_not_offered_to_another_process(conn: Any) -> None:
+    """The claim commits before the network call, so `sending` is what guards the send window."""
+
+    other = connect_postgres_test(read_only=False)
+    try:
+        _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+        sender = _Sender()
+        first = _Db(conn)
+        second = _Db(other)
+        # Hold the *settlement*: by then the claim has committed and the row reads `sending`.
+        first.hold_on = "news_market_notify_settle"
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            holder = pool.submit(lambda: asyncio.run(_loop(first, sender, clock=_Clock()).advance()))
+            assert first.holding.wait(10)
+            in_flight = _rows(other, "SELECT state, attempts FROM news_market_deliveries")
+            assert in_flight == [{"state": "sending", "attempts": 1}]
+
+            asyncio.run(_loop(second, sender, clock=_Clock()).advance())
+            assert len(sender.cards) == 1
+
+            first.release.set()
+            holder.result(timeout=30)
+
+        assert len(sender.cards) == 1
+        assert _deliveries(conn)[0]["state"] == "sent"
     finally:
         other.close()
 
@@ -317,7 +484,23 @@ def test_new_observations_merge_into_an_un_started_card_and_a_frozen_one_refuses
     asyncio.run(_loop(db, sender, clock=clock).advance())
     after = _deliveries(conn)
     assert len(after) == 2
-    assert next(row for row in after if row["delivery_key"] == sent[0]["delivery_key"])["card"] == frozen
+    frozen_row = next(row for row in after if row["delivery_key"] == sent[0]["delivery_key"])
+    assert frozen_row["card"] == frozen
+    assert frozen_row["covered_count"] == 3
+    # The set the frozen card speaks for is unchanged, and the later observation is on the new card.
+    still_covered = _rows(
+        conn,
+        "SELECT item_id FROM news_items WHERE market_notify_delivery_key = %s ORDER BY item_id",
+        (sent[0]["delivery_key"],),
+    )
+    assert [row["item_id"] for row in still_covered] == ["oi-1", "oi-2", "oi-3"]
+    successor = next(row for row in after if row["delivery_key"] != sent[0]["delivery_key"])
+    joined = _rows(
+        conn,
+        "SELECT item_id FROM news_items WHERE market_notify_delivery_key = %s",
+        (successor["delivery_key"],),
+    )
+    assert [row["item_id"] for row in joined] == ["oi-4"]
 
 
 # --- what each send answer durably means ---------------------------------------------------------
@@ -341,8 +524,14 @@ def test_a_retryable_provably_not_sent_failure_retries_the_same_card_at_most_thr
 
     clock.advance(5_000)
     asyncio.run(_loop(db, sender, clock=clock).advance())
+    second = _deliveries(conn)[0]
+    assert second["attempts"] == 2
+    assert second["next_attempt_at_ms"] == clock.at_ms + 30_000
+    # And the longer wait is a due time too: nothing is retried before it either.
+    clock.advance(29_000)
+    asyncio.run(_loop(db, sender, clock=clock).advance())
     assert _deliveries(conn)[0]["attempts"] == 2
-    clock.advance(30_000)
+    clock.advance(1_000)
     asyncio.run(_loop(db, sender, clock=clock).advance())
 
     spent = _deliveries(conn)[0]
@@ -464,8 +653,16 @@ def test_an_outage_merges_per_group_and_recovery_sends_one_summary_for_each(conn
     # Each summary is labelled with the span it speaks for, which is what makes it honest.
     covered = sorted(row["covered_count"] for row in recovered)
     assert covered == [1, 2, 6]
-    for row in recovered:
-        assert row["covered_from_ms"] <= row["covered_to_ms"]
+    assert {row["attempts"] for row in recovered} == {1}
+    summary = next(row for row in recovered if row["covered_count"] == 6)
+    # A summary of six observations spans real time, and the card says so in its own text.
+    assert summary["covered_from_ms"] < summary["covered_to_ms"]
+    # ... and the card prints that span rather than a single moment, which is what makes a summary
+    # of an outage readable: an en-dashed pair of clock times, and the two differ.
+    printed = summary["card"]["elements"][0]["content"]
+    span = re.search(r"(\d{2}:\d{2})–(\d{2}:\d{2})", printed)
+    assert span is not None, printed
+    assert span.group(1) != span.group(2)
 
     # Nothing was dropped: every observation is accounted for by exactly one card.
     orphans = _rows(
@@ -517,6 +714,77 @@ def _liquidation_item(conn: Any, item_id: str, *, at_ms: int, side: str) -> None
             provider_params_json="{}",
         )
         news.insert_market_liquidation(fact=fact, ingest_mode="live", now_ms=at_ms)
+
+
+def test_an_action_change_card_shows_the_change_even_when_its_segment_starts_at_it(conn: Any) -> None:
+    """§4.4's change count, through the real claim rather than through a hand-passed argument.
+
+    The previous segment is delivered in full first, so the change card covers exactly one
+    observation and contains no transition of its own. The count comes from the anchor -- what the
+    last delivered card ended on -- which is the only place it can come from.
+    """
+
+    clock = _Clock()
+    sender = _Sender()
+    db = _Db(conn)
+    _wallet_item(conn, "sm-close", at_ms=NOW - 120_000, action="close", side="short")
+    asyncio.run(_loop(db, sender, clock=clock).advance())
+    assert len(sender.cards) == 1
+
+    track = _rows(conn, "SELECT anchor_action, anchor_position_side, current_action FROM news_market_tracks")
+    assert track == [{"anchor_action": "close", "anchor_position_side": "short", "current_action": "close"}]
+
+    # Well past the window, so this is a change card rather than a merged follow-up.
+    clock.advance(120_000)
+    _wallet_item(conn, "sm-open", at_ms=NOW - 60_000, action="open", side="short")
+    asyncio.run(_loop(db, sender, clock=clock).advance())
+
+    change = next(row for row in _deliveries(conn) if row["trigger_reason"] == "action_change")
+    assert change["covered_count"] == 1
+    printed = change["card"]["elements"][0]["content"]
+    assert "动作变化 1 次" in printed
+    assert "首 平空" in printed
+    assert "末 开空" in printed
+
+
+def _wallet_item(conn: Any, item_id: str, *, at_ms: int, action: str, side: str) -> None:
+    title = f"Machi Big Brother {action.title()} {side.title()} ETH $1,250,000.00, Price $3,120.50"
+    fact = parse_smart_money(
+        title,
+        item_id=item_id,
+        fact_id=item_id,
+        source_strategy_id="2026",
+        provider_source="hyperliquid",
+        related_address="0x4d3a",
+        event_at_ms=at_ms,
+        received_at_ms=at_ms,
+    )
+    assert fact is not None, title
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.news.upsert_item(
+            item_id=item_id,
+            source_id="opennews",
+            source_item_key=item_id,
+            title=title,
+            raw_first_line=title,
+            description="",
+            canonical_url=None,
+            reporting_origin="opennews",
+            published_at_ms=at_ms,
+            observed_at_ms=at_ms,
+            provider_metadata_json="{}",
+            strategy_ids_json="[]",
+            ingest_mode="live",
+            trace_id="trace",
+            now_ms=at_ms,
+            market_kind="smart_money",
+            market_source_strategy_id="2026",
+            market_parse_status="parsed",
+            market_parse_error=None,
+            provider_params_json='{"relatedAddress": "0x4d3a"}',
+        )
+        repos.news.insert_market_smart_money(fact=fact, ingest_mode="live", now_ms=at_ms)
 
 
 # --- what the page then reads --------------------------------------------------------------------

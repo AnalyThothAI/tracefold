@@ -46,6 +46,7 @@ def _arguments() -> argparse.Namespace:
             "manifest_barrier",
             "manifest_registration_fault",
             "optional_task_fault",
+            "market_notifications_fault",
             "ingestion_task_fault",
             "trading_lane_fault",
             "schema_mismatch",
@@ -196,10 +197,12 @@ def _declare_news_capabilities(
     *,
     quotes: bool = False,
     delivery: str = "disabled",
+    market: bool = False,
 ) -> None:
     """Stand in for what the real News composition declares about the tasks it just wired."""
 
     from tracefold.app.workers.runtime import (
+        MARKET_NOTIFICATIONS,
         NEWS_DELIVERY,
         NEWS_EDITORIAL,
         NEWS_INGESTION,
@@ -221,6 +224,10 @@ def _declare_news_capabilities(
         capabilities.running(NEWS_QUOTES)
     else:
         capabilities.disabled(NEWS_QUOTES, "news_quotes_not_configured")
+    if market:
+        capabilities.running(MARKET_NOTIFICATIONS)
+    else:
+        capabilities.disabled(MARKET_NOTIFICATIONS, "news_disabled")
 
 
 def _idle_turn() -> Any:
@@ -502,6 +509,41 @@ async def _main() -> None:
             )
 
         workers_wiring._wire_news_pipeline = wire_optional_task_fault
+    elif arguments.mode == "market_notifications_fault":
+        # The real market task: the real `run_market_notifications` wrapper, the real registration in
+        # `worker_business_tasks`, and the real `market_notifications` capability. Only `advance()` is
+        # replaced, because a program error inside it is the thing under test (#553 PR-2).
+        from tracefold.news.market_notifications import MarketNotificationLoop, MarketTurn
+
+        class _FailingMarketLoop(MarketNotificationLoop):
+            def __init__(self) -> None:
+                self.turns = 0
+                self.swept = False
+
+            async def start(self) -> int:
+                # The startup sweep runs once, before any turn, and after Workers ownership is held.
+                self.swept = True
+                return 0
+
+            async def advance(self) -> MarketTurn:
+                assert self.swept, "advance() ran before the startup sweep"
+                self.turns += 1
+                if self.turns < 2:
+                    # One healthy turn first, so the failure below is a loop failing in service
+                    # rather than one that never started.
+                    return MarketTurn()
+                print("MARKET_TASK_ABOUT_TO_FAIL", flush=True)
+                raise RuntimeError("test_market_notifications_fault")
+
+        async def wire_market_fault(**kwargs: Any) -> tuple[None, _TurnPipeline, Any]:
+            _declare_news_capabilities(kwargs["capabilities"], market=True)
+            return (
+                None,
+                _TurnPipeline((("news-deduper", _fact_writer(kwargs["db"]), 1.0),)),
+                _FailingMarketLoop(),
+            )
+
+        workers_wiring._wire_news_pipeline = wire_market_fault
     elif arguments.mode == "ingestion_task_fault":
         # Reception and admission are the information entry, not a capability to switch off. A program
         # error there must still end the process, so the container restart that has always healed it
@@ -569,6 +611,7 @@ async def _main() -> None:
         "manifest_barrier",
         "manifest_registration_fault",
         "optional_task_fault",
+        "market_notifications_fault",
         "ingestion_task_fault",
         "trading_lane_fault",
     }
