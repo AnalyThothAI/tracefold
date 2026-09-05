@@ -110,16 +110,12 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
         retired_priority_sort = client.get("/api/news/feed?sort=priority", headers=headers)
         detail = client.get(f"/api/news/events/{event_ids[0]}", headers=headers)
         missing = client.get("/api/news/events/does-not-exist", headers=headers)
-        oi_all = client.get("/api/news/feed?admission=telemetry_deterministic&oi=all&limit=10", headers=headers)
-        oi_parse_failed = client.get(
-            "/api/news/feed?admission=telemetry_deterministic&oi=parse_failed&limit=10", headers=headers
-        )
-        # #458 retired `pushed` and `withheld`. The route reads the storage lane's vocabulary rather than
-        # restating it, so a request for a retired tab is a named 400 instead of a filter that quietly
-        # narrows nothing.
-        oi_retired = client.get(
-            "/api/news/feed?admission=telemetry_deterministic&oi=withheld&limit=10", headers=headers
-        )
+        # #553 retired the whole `?oi=` vocabulary with the lane it named. A market observation is not
+        # an Event, so the market monitor reads `/api/news/market` and the feed refuses the parameter
+        # by name rather than accepting one that narrows nothing.
+        retired_oi = client.get("/api/news/feed?oi=all&limit=10", headers=headers)
+        retired_market_admission = client.get("/api/news/feed?admission=telemetry_deterministic", headers=headers)
+        market = client.get("/api/news/market?limit=10", headers=headers)
         bad_admission = client.get("/api/news/feed?admission=bogus", headers=headers)
         bad_param = client.get("/api/news/feed?story_id=1", headers=headers)
         status = client.get("/api/news/status", headers=headers)
@@ -147,25 +143,21 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
         "outcome": None,
         "hours": None,
         "direction": None,
-        # #207: the deterministic OI lane's outcome. Absent here means the whole lane, the same way every
-        # other filter reads — the monitor is the only caller that sets it.
-        "oi": None,
     }
 
-    # #207: every `oi` value identifies the 持仓异动 monitor, so the outcome-group aggregate is skipped —
-    # including for `all`, which narrows nothing and is the tab displayed most. `counts` describes the feed's
-    # task tabs; the monitor's tabs are gates and it reads their counts from `/api/news/status`.
-    assert oi_all.status_code == 200
-    assert oi_all.json()["data"]["filters"]["oi"] == "all"
-    assert oi_all.json()["data"]["counts"] is None
-    assert oi_parse_failed.status_code == 200
-    assert oi_parse_failed.json()["data"]["filters"]["oi"] == "parse_failed"
-    assert oi_parse_failed.json()["data"]["counts"] is None
-    assert oi_retired.status_code == 400
-    assert oi_retired.json()["error"] == "news_feed_oi_invalid"
-    # `all` narrows nothing: it serves the same rows the admission filter alone would.
-    assert {row["event_id"] for row in oi_all.json()["data"]["events"]} >= {
-        row["event_id"] for row in oi_parse_failed.json()["data"]["events"]
+    assert retired_oi.status_code == 400
+    assert retired_oi.json()["error"] == "unsupported_query_param"
+    assert retired_market_admission.status_code == 400
+    assert retired_market_admission.json()["error"] == "news_feed_admission_invalid"
+    # The market surface answers over PostgreSQL alone: no Event, no verdict, no Trading read.
+    assert market.status_code == 200
+    market_data = market.json()["data"]
+    assert market_data["notifications_connected"] is False
+    assert {source["market_kind"] for source in market_data["sources"]} == {
+        "oi",
+        "liquidation",
+        "smart_money",
+        "unknown_market",
     }
     assert {row["outcome"]["kind"] for row in feed_data["events"]} <= {
         "held_recovery",
@@ -245,7 +237,15 @@ def test_api_projects_deterministic_event_assets_from_postgres_to_feed_and_detai
             (event_id,),
         )
         for seeded_event_id in event_ids:
-            repos.news.record_event_assets(event_id=seeded_event_id, assets=[("BTR", "perp")])
+            repos.conn.execute(
+                """
+                INSERT INTO news_event_assets (symbol, event_id, market_type, opened_at_ms)
+                SELECT 'BTR', e.event_id, 'perp', e.opened_at_ms
+                  FROM news_events e WHERE e.event_id = %s
+                ON CONFLICT DO NOTHING
+                """,
+                (seeded_event_id,),
+            )
         repos.instruments.apply_snapshot(
             [
                 Instrument(

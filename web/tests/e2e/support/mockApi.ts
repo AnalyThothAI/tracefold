@@ -4,25 +4,25 @@ import {
   newsEventFixture,
   newsFeedEventFixture,
   newsFeedFixture,
-  newsOiFrameFixture,
-  newsSymbolOiFrameFixture,
-  newsOutcomeFixture,
+  newsMarketFixture,
+  newsMarketGroupFixture,
+  newsMarketItemFixture,
+  newsMarketObservationFixture,
   newsQuoteFixture,
-  newsReactionFixture,
   newsStatusFixture,
   newsSymbolFixture,
-  newsTriageFixture,
 } from "@tests/fixtures/newsFixture";
 import {
   TRADING_NOW_MS,
   tradingCasesForUnderlying,
   tradingExecutionFixture,
   tradingExecutionsFixture,
-  tradingGateFixture,
   tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
 
 const NOW = 1_777_746_300_000;
+/* The market fixtures' own clock, so a group's window reads as minutes rather than as a month of drift. */
+const MARKET_NOW = 1_779_000_000_000;
 const unhandledApiRequests = new WeakMap<Page, string[]>();
 
 export type MockApiOptions = {
@@ -68,21 +68,20 @@ export async function installMockApi(
     }
     if (path === "/api/bootstrap") return fulfill(route, { ws_token: "secret" });
     if (path === "/api/status") return fulfill(route, statusData());
-    // The OI monitor asks the same endpoint for one admission (#207), and the rows it gets back carry the
-    // `oi` block. Serving the ordinary feed there would exercise only the degraded path.
     if (path === "/api/news/feed") {
-      const symbol = url.searchParams.get("symbol");
-      if (url.searchParams.get("admission") === "telemetry_deterministic") {
-        return fulfill(route, newsOiFeedData(url.searchParams.get("oi")));
-      }
-      return fulfill(
-        route,
-        symbol && !options.emptyFeed
-          ? newsSymbolFeedData(symbol)
-          : newsFeedData(prepended, options.emptyFeed),
-      );
+      return fulfill(route, newsFeedData(prepended, options.emptyFeed));
     }
     if (path === "/api/news/status") return fulfill(route, newsStatusFixture());
+    // #553 PR-1: market observations are their own endpoint. The mock narrows on `kind` because the page's
+    // filter is a real request, and a mock that ignored it would let a browser-side split pass a baseline.
+    if (path === "/api/news/market") return fulfill(route, marketData(url));
+    if (path.startsWith("/api/news/market/")) {
+      const itemId = decodeURIComponent(path.split("/").pop() ?? "");
+      return fulfill(
+        route,
+        newsMarketItemFixture({ observation: newsMarketObservationFixture({ item_id: itemId }) }),
+      );
+    }
     if (path === "/api/news/quotes") return fulfill(route, newsQuotesData(url));
     if (path.startsWith("/api/news/events/")) return fulfill(route, newsEventDetailData(path));
     // #207 PR-W1: identity is keyed on the path segment, so the token page's baseline names the base the
@@ -115,15 +114,6 @@ export async function installMockApi(
         truth: "intent_recorded_not_runtime_or_venue",
       });
     }
-    // #269: the admission ledger the OI audit reads for a whole page of frames at once.
-    if (path === "/api/trading/gate") return fulfill(route, tradingGateFixture());
-    if (path.startsWith("/api/trading/gate/")) {
-      return fulfill(route, {
-        decision: null,
-        event_id: path.split("/").pop() ?? "",
-        joinable: false,
-      });
-    }
     if (path.startsWith("/api/news/symbols/")) {
       return fulfill(
         route,
@@ -149,19 +139,6 @@ function recordUnhandledApiRequest(page: Page, url: URL) {
   const requests = unhandledApiRequests.get(page) ?? [];
   requests.push(`${url.pathname}${url.search}`);
   unhandledApiRequests.set(page, requests);
-}
-
-/**
- * The feed as the token page asks for it: this name's own OI frame on the same clock as its news.
- *
- * Production serves this shape: the page's own tab strip counts an OI 帧 lane, and answering a symbol
- * query with the generic rows every other route gets made it read 0 on every baseline.
- */
-function newsSymbolFeedData(symbol: string) {
-  const feed = newsFeedData();
-  // The clock the case is on: this frame is the one it was opened from (`case_observed_at_ms`).
-  const frame = newsSymbolOiFrameFixture(symbol, TRADING_NOW_MS - 400_000);
-  return { ...feed, events: [frame, ...feed.events] };
 }
 
 function newsFeedData(prepended: string[] = [], empty = false) {
@@ -193,88 +170,87 @@ function newsFeedData(prepended: string[] = [], empty = false) {
 }
 
 /**
- * Three frames, so the monitor's baseline shows the four measurements across a range of values and the
- * unparseable shape rather than one row repeated. Since #458 the lane has one judged rule and one failure
- * rule, so the tabs are 全部 and 解析失败.
+ * Four groups, so the baseline shows every kind the endpoint serves and both parse states rather than one
+ * row repeated: a parsed OI run, a liquidation, a smart-money print, and an unknown source retained raw.
  */
-function newsOiFeedData(oi: string | null) {
-  const frames = [
-    newsOiFrameFixture(),
-    newsOiFrameFixture({
-      assets: [{ base_symbol: "DOGE", listed: true, symbol: "DOGE", venue: "binance.perp" }],
-      event_id: "evt-oi-doge",
-      leader_title:
-        "DOGE OI Rise 2.08%, OI Value 892.31M, Whale Long Profit 63.00%, Whale/OI Ratio 54.20%",
-      oi: {
-        ...newsOiFrameFixture().oi!,
-        oi_change_bps: 208,
-        oi_value_usd: 892_310_000,
-        symbol: "DOGE",
-        whale_long_profit_bps: 6_300,
-        whale_oi_ratio_bps: 5_420,
-      },
-      outcome: newsOutcomeFixture({
-        group: "held",
-        kind: "dropped",
-        reason_zh: "持仓异动按客观规则判断",
-        text_zh: "未推送",
-      }),
-      reaction: newsReactionFixture({
-        p0: "0.2180",
-        return_1h_bps: 84,
-        return_4h_bps: -31,
-      }),
-      triage: newsTriageFixture({
-        assets: [{ role: "primary", symbol: "DOGE" }],
-        direction: "bullish",
-        direction_zh: "利多",
-        final_decision: "drop",
-        headline_zh: "▲ DOGE 持仓异动2.08%",
-        override_rule: "telemetry_deterministic",
-      }),
-    }),
-    newsOiFrameFixture({
-      assets: [],
-      event_id: "evt-oi-pengu",
-      leader_title:
-        "PENGU OI Rise 3.4%, OI Value --, Whale Long Profit 55.10%, Whale/OI Ratio 71.00%",
-      oi: {
-        failure_stage: "template_match",
+function marketData(url: URL) {
+  const groups = [
+    newsMarketGroupFixture(),
+    newsMarketGroupFixture({
+      first_event_at_ms: MARKET_NOW - 260_000,
+      latest: newsMarketObservationFixture({
+        event_at_ms: MARKET_NOW - 240_000,
+        group_key: "liquidation:DOGE",
+        item_id: "mkt-liq-doge-1",
+        market_kind: "liquidation",
+        notional_usd: "412530.00",
         oi_change_bps: null,
         oi_value_usd: null,
-        parsed: false,
-        parser_version: "oi_signal_parser_v1",
-        rule: "oi_parse_failed",
-        // The template never matched, so nothing — not even the subject — was read out of the title.
-        symbol: null,
-        title_sha256: "9f2c41ab7d10",
+        liquidated_position_side: "long",
+        price: "0.2181",
+        received_at_ms: MARKET_NOW - 239_000,
+        symbol: "DOGE",
+        title: "DOGE Long Liquidation 412.53K at 0.2181",
         whale_long_profit_bps: null,
         whale_oi_ratio_bps: null,
-      },
-      outcome: newsOutcomeFixture({
-        group: "held",
-        kind: "dropped",
-        reason_zh: "持仓异动供应商格式无法解析，已安全拦截",
-        text_zh: "未推送",
       }),
-      reaction: null,
-      triage: newsTriageFixture({
-        assets: [],
-        // An unparseable frame carries no direction: nothing was measured, so nothing is stated (#207).
-        direction: "neutral",
-        direction_zh: "中性",
-        error_code: "oi_parse_failed",
-        final_decision: "drop",
-        headline_zh: "持仓异动帧无法解析",
-        override_rule: "telemetry_deterministic",
+      observation_count: 1,
+    }),
+    newsMarketGroupFixture({
+      first_event_at_ms: MARKET_NOW - 620_000,
+      latest: newsMarketObservationFixture({
+        account_address: "0x9f2c41ab7d10",
+        action: "open",
+        event_at_ms: MARKET_NOW - 600_000,
+        group_key: "smart_money:0x9f2c",
+        item_id: "mkt-sm-1",
+        market_kind: "smart_money",
+        notional_usd: "1250000.00",
+        oi_change_bps: null,
+        oi_value_usd: null,
+        position_side: "long",
+        received_at_ms: MARKET_NOW - 599_000,
+        symbol: "ETH",
+        title: "Smart money opened ETH long 1.25M",
+        trader_label: "whale-0x9f2c",
+        whale_long_profit_bps: null,
+        whale_oi_ratio_bps: null,
       }),
+      observation_count: 2,
+    }),
+    /*
+     * A source with no parser. It is retained with its raw line and a stated reason, and it is a kind
+     * rather than a failure — the baseline exists so that stays visible.
+     */
+    newsMarketGroupFixture({
+      first_event_at_ms: MARKET_NOW - 1_820_000,
+      latest: newsMarketObservationFixture({
+        event_at_ms: MARKET_NOW - 1_800_000,
+        group_key: "unknown_market:2026",
+        item_id: "mkt-unknown-1",
+        market_kind: "unknown_market",
+        oi_change_bps: null,
+        oi_value_usd: null,
+        parse_error: "no_parser_for_source",
+        parse_status: "raw",
+        received_at_ms: MARKET_NOW - 1_799_000,
+        symbol: null,
+        title: "PENGU OI Rise 3.4%, OI Value --, Whale Long Profit 55.10%",
+        whale_long_profit_bps: null,
+        whale_oi_ratio_bps: null,
+      }),
+      observation_count: 1,
     }),
   ];
-  const wanted = { parse_failed: 2 }[oi ?? ""];
-  return {
-    ...newsFeedFixture(),
-    events: wanted == null ? frames : [frames[wanted]],
-  };
+  const kinds = (url.searchParams.get("kind") ?? "").split(",").filter(Boolean);
+  const market = newsMarketFixture({ groups });
+  return kinds.length
+    ? {
+        ...market,
+        filters: { ...market.filters, kind: url.searchParams.get("kind") },
+        groups: groups.filter((group) => kinds.includes(group.market_kind)),
+      }
+    : market;
 }
 
 function newsEventDetailData(path: string) {

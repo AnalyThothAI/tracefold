@@ -12,7 +12,6 @@ from tracefold.news import (
     EVENT_FAMILIES,
     EVENT_KINDS,
     IPTC_SUBJECT_CODES,
-    OI_OUTCOMES,
     SOURCE_AUTHORITIES,
 )
 
@@ -29,9 +28,6 @@ _FeedEnvelope = api_schemas.ApiEnvelope[feed_schemas.NewsFeedData]
 _ADMISSIONS = {
     "candidate",
     "listing_deterministic",
-    "telemetry_deterministic",
-    "liquidation_deterministic",
-    "unsupported_market_contract",
     "suppressed_pr_template",
     "suppressed_low_signal",
     "recovery",
@@ -59,7 +55,6 @@ def get_news_feed(
     hours: Annotated[int, Query(ge=0, le=168)] = 0,
     # Wide enough to hold a full rule key: someone reaching for `oi_parse_failed` should get
     # the named `news_feed_oi_invalid` rather than a shape error that says nothing about the vocabulary.
-    oi: Annotated[str, Query(max_length=40)] = "",
     direction: Annotated[str, Query(max_length=40)] = "",
 ) -> Response:
     _validate_query_params(
@@ -79,15 +74,12 @@ def get_news_feed(
             "cursor",
             "outcome",
             "hours",
-            "oi",
             "direction",
             "token",
         },
     )
     if admission and admission not in _ADMISSIONS:
         raise ApiBadRequest("news_feed_admission_invalid", field="admission")
-    if oi and oi not in OI_OUTCOMES:
-        raise ApiBadRequest("news_feed_oi_invalid", field="oi")
     event_families = _parse_csv_filter(
         event_family,
         allowed=EVENT_FAMILIES,
@@ -154,7 +146,6 @@ def get_news_feed(
                 cursor=cursor or None,
                 outcome=outcome or None,
                 hours=hours or None,
-                oi=oi or None,
                 directions=directions,
             )
         except ValueError as exc:

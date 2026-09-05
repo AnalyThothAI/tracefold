@@ -163,6 +163,10 @@ describe("NewsPage", () => {
   });
 
   it("labels the drawer from the persisted Event kind", async () => {
+    /*
+     * Two kinds since #553 PR-1, and the badge still reads the persisted one rather than the admission:
+     * 强平 / OI 帧 / 未支持市场 are market observations now, and no Event carries those words at all.
+     */
     const detail = newsEventDetailFixture();
     server.use(
       http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
@@ -172,8 +176,8 @@ describe("NewsPage", () => {
             ...detail,
             event: {
               ...detail.event,
-              admission: "telemetry_deterministic",
-              event_kind: "liquidation",
+              admission: "listing_deterministic",
+              event_kind: "listing",
             },
           },
         }),
@@ -184,9 +188,9 @@ describe("NewsPage", () => {
     fireEvent.click(await screen.findByRole("link", { name: /央行政策转向，风险资产承压/ }));
 
     const drawer = await screen.findByRole("dialog");
-    const kind = (await within(drawer).findByText("强平")).closest(".news-kind");
-    expect(kind).toHaveAttribute("data-kind", "liquidation");
-    expect(kind).toHaveTextContent("强平");
+    const kind = (await within(drawer).findByText("上币/下币")).closest(".news-kind");
+    expect(kind).toHaveAttribute("data-kind", "listing");
+    expect(kind).toHaveTextContent("上币/下币");
   });
 
   it("shows a deterministic ledger asset with current price and 24H change in one quote batch", async () => {
@@ -460,14 +464,14 @@ describe("NewsPage", () => {
 
     renderNews(
       <NewsPage token="test-token" view="feed" />,
-      "/news?q=bitcoin&outcome=held&hours=168&direction=bullish,neutral&event_kind=liquidation,listing",
+      "/news?q=bitcoin&outcome=held&hours=168&direction=bullish,neutral&event_kind=listing",
     );
 
     await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ });
     await waitFor(() => expect(observed.direction).toBe("bullish,neutral"));
     expect(observed).toEqual({
       direction: "bullish,neutral",
-      event_kind: "listing,liquidation",
+      event_kind: "listing",
       hours: "168",
       outcome: "held",
       q: "bitcoin",
@@ -477,22 +481,29 @@ describe("NewsPage", () => {
       "true",
     );
     expect(screen.getByRole("button", { name: "时间范围，最近 7 天" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "筛选 · 4" }));
+    fireEvent.click(screen.getByRole("button", { name: "筛选 · 3" }));
     expect(screen.getByRole("button", { name: "▲ 利多" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "◆ 中性" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "上币/下币" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    expect(screen.getByRole("button", { name: "强平" })).toHaveAttribute("aria-pressed", "true");
-    for (const label of ["新闻", "上币/下币", "OI 帧", "强平", "未支持市场"]) {
+    /*
+     * The channel control offers the two Event kinds and nothing else (#553 PR-1). OI 帧 / 强平 /
+     * 未支持市场 were removed with the Events themselves — the observations behind those words are on
+     * 市场事实 and cannot be reached by an `event_kind` filter at all.
+     */
+    for (const label of ["新闻", "上币/下币"]) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+    }
+    for (const label of ["OI 帧", "强平", "未支持市场"]) {
+      expect(screen.queryByRole("button", { name: label })).not.toBeInTheDocument();
     }
 
     fireEvent.click(screen.getByRole("button", { name: "◆ 中性" }));
     await waitFor(() => expect(observed.direction).toBe("bullish"));
-    fireEvent.click(screen.getByRole("button", { name: "未支持市场" }));
-    await waitFor(() => expect(observed.event_kind).toBe("listing,liquidation,unsupported_market"));
+    fireEvent.click(screen.getByRole("button", { name: "新闻" }));
+    await waitFor(() => expect(observed.event_kind).toBe("news,listing"));
     fireEvent.click(screen.getByRole("button", { name: "清除" }));
     await waitFor(() => {
       expect(observed.direction).toBeNull();

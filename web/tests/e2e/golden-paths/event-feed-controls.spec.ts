@@ -50,12 +50,12 @@ test("Event feed controls preserve the approved disclosure and URL contract", as
   const filterPanel = page.locator(".news-filter-panel");
   await expect(filterPanel).toBeVisible();
   await filterPanel.getByRole("button", { name: "▲ 利多" }).click();
-  await filterPanel.getByRole("button", { name: "OI 帧" }).click();
+  await filterPanel.getByRole("button", { name: "上币/下币" }).click();
   await expect(filterPanel.getByRole("button", { name: "▲ 利多" })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
-  await expect(filterPanel.getByRole("button", { name: "OI 帧" })).toHaveAttribute(
+  await expect(filterPanel.getByRole("button", { name: "上币/下币" })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
@@ -64,7 +64,7 @@ test("Event feed controls preserve the approved disclosure and URL contract", as
 
   await page.reload();
   await expect.poll(() => new URL(page.url()).searchParams.get("direction")).toBe("bullish");
-  await expect.poll(() => new URL(page.url()).searchParams.get("event_kind")).toBe("oi");
+  await expect.poll(() => new URL(page.url()).searchParams.get("event_kind")).toBe("listing");
   await page.getByRole("button", { name: "筛选 · 2" }).click();
   await page.getByRole("button", { name: "清除" }).click();
   await expect.poll(() => new URL(page.url()).searchParams.get("direction")).toBeNull();

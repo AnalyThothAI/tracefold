@@ -18,6 +18,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, TypedDict
 
+# A fact this ledger reconstructed rather than received is excluded from every read below (#553).
+# `historical` rows carry their original provider and host stamps but became durable at the rebuild
+# moment, so treating one as a trigger would author a Case from a measurement no scan could have seen
+# at the time -- and replaying a frozen window would then disagree with what the live lane did. They
+# stay fully readable through the market surface, which is where a reader asks about them.
+#
 # One read's ceiling per lane. The consumer's widest configured horizon is `max_age + max(lookback)` —
 # 65 minutes at the shipped configuration — and the measured live rate through these exact predicates
 # is about eleven rows an hour on the News lane and nothing like a full lane on the OI one, so this is
@@ -110,7 +116,8 @@ class TradeProjectionStorage:
             SELECT ingest.connected, ingest.last_frame_at_ms, ingest.last_error_code,
                    (SELECT count(*)
                       FROM news_oi_signals signal
-                     WHERE signal.observed_at_ms >= %(start)s
+                     WHERE NOT signal.historical
+                       AND signal.observed_at_ms >= %(start)s
                        AND signal.observed_at_ms < %(end)s
                        AND signal.available_at_ms <= %(available)s
                        AND signal.source_venue = ANY(%(venues)s)) AS expected_source_count
@@ -182,6 +189,7 @@ class TradeProjectionStorage:
               FROM news_oi_signals s
               JOIN news_items i ON i.item_id = s.source_item_id
              WHERE s.metric_version = %s
+               AND NOT s.historical
                AND s.created_at_ms > %s
                AND s.created_at_ms <= %s
              ORDER BY s.created_at_ms DESC, s.event_id DESC
@@ -234,6 +242,7 @@ class TradeProjectionStorage:
               FROM news_oi_signals s
               JOIN news_items i ON i.item_id = s.source_item_id
              WHERE s.metric_version = %s
+               AND NOT s.historical
                AND s.available_at_ms <= %s
                AND s.observed_at_ms >= %s
                AND s.observed_at_ms < %s
@@ -269,6 +278,7 @@ class TradeProjectionStorage:
                    s.observed_at_ms, s.available_at_ms, s.created_at_ms
               FROM news_oi_signals s
              WHERE s.metric_version = %s
+               AND NOT s.historical
                AND s.observed_at_ms >= %s AND s.observed_at_ms < %s
                AND s.available_at_ms <= %s AND s.created_at_ms <= %s
              ORDER BY s.observed_at_ms, s.event_id

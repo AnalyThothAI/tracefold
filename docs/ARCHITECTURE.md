@@ -245,6 +245,16 @@ Material facts include:
   operator's OpenNews account and persisted in `news_items` (provenance union,
   provider metadata, raw first line, first ingest mode). Tracefold applies no
   local Strategy allowlist.
+- market: the same `news_items` row is also where a market observation lives
+  (#553). A frame from a market Strategy carries `market_kind`
+  (`oi|liquidation|smart_money|unknown_market`), `market_source_strategy_id`,
+  `market_parse_status` (`parsed|raw`), `market_parse_error` and the frame's own
+  `provider_params`, and one typed fact row is written beside it in the same
+  transaction: `news_oi_signals`, `news_market_liquidations` or
+  `news_market_smart_money`. `market_kind IS NULL` is exactly "this Item is
+  ordinary news", and one CHECK states that pair as one fact. All three ledgers
+  are cascade children of `news_items`, so a typed fact cannot outlive the
+  record it was parsed from.
 
 The two Price Review read models are derived and rebuildable, with different
 lifecycles on purpose (#88). `news_quote_snapshots` is last-value-wins current
@@ -268,18 +278,28 @@ rows when its business payload is unchanged. `news_events` is rebuildable by
 replaying `news_items` through the Deduper: `admit_frame` expands every
 first-seen Strategy tuple retained on the material Item, while `tracefold news
 replay` applies the same classifier and Deduper policy to saved provider hits.
-Its durable `event_kind` is the closed source
-classification `news|listing|oi|liquidation|unsupported_market`; exact,
+Its durable `event_kind` is the closed editorial
+classification `news|listing` (#553); exact,
 artifact and near-duplicate joins are restricted to the same kind so source
-contracts cannot collapse into each other. Its nullable durable
-`source_contract_reason` records only `source_contract_drift` or
-`unsupported_market_contract`. A missing value means the current writer parsed
-the selected contract (or it needs no strict parser). Migration `0336`
-physically deletes every pre-genesis Event, including rows that carried the
-retired `source_contract_unverified` value. An OI signal row is derived read-model evidence,
-not a second material fact source. At insertion it freezes the exact source Item,
-source venue, actual availability clock, and learning epoch; evidence capture never
-reconstructs those fields from a later Event leader or the currently active epoch.
+contracts cannot collapse into each other. The three market kinds it used to
+hold — `oi`, `liquidation`, `unsupported_market` — are not Event kinds any more:
+those frames are stored as market Items and open no Event, so an Event's
+`source_contract_reason` is `NULL` on everything the current writer can open.
+The column survives only because
+`news_event_evidence_current_contract_check` names the evidence card's keys
+exactly. Migration `0336`
+physically deleted every pre-genesis Event, including rows that carried the
+retired `source_contract_unverified` value.
+
+`news_oi_signals` is the OI measurement ledger, written at admission from the
+Item and never from an Event. Migration `20260905_0364` dropped its `event_id`
+foreign key — the column stays as the opaque source identifier a frozen Trading
+Case already resolves — and made `(source_item_id, metric_version)` its
+observation key, so one provider record parsed under one metric version is one
+row. At insertion it freezes the exact source Item, provider, source venue,
+native `raw_instrument`, `measurement_definition` and actual availability clock;
+evidence capture never reconstructs those fields from a later Event leader. The
+`learning_epoch` column is gone with the Event-shaped write path.
 Its three timestamps are three separately recorded facts and no rule orders them:
 `observed_at_ms` is the provider's own publication stamp carried unmodified from
 `news_items.published_at_ms` through `news_events.opened_at_ms` and arriving at
@@ -289,9 +309,11 @@ of this host's is recorded as measured rather than clamped or refused (#544).
 OpenNews's raw `coins` annotation remains
 source evidence in `news_items.provider_metadata`; the Gate derives the bounded
 `grounded_assets` from it. `news_event_assets` is the durable Event-market
-identity ledger: it contains those Gate-grounded symbols and the primary symbol
-a deterministic judge records when provider evidence is empty. The read API
+identity ledger of those Gate-grounded symbols. The read API
 exposes the evidence and the resolved ledger projection as different fields.
+Market observations are not in it at all: they carry their own `symbol` and
+`raw_instrument` on the typed fact, which is the identity `/api/news/market`
+groups and renders.
 
 OpenNews connection state in `news_ingest_state`, explicit incident intervals
 in `news_opennews_incidents`,
@@ -363,6 +385,9 @@ tracefold.news
     tokens.py / minhash.py  comparison tokens and MinHash 32x4 band keys
     gate.py / storyline.py  deterministic admission, scheduling metadata, grounded assets, storyline keys
   similarity.py       Program-bound reader-card similarity; relocation waits for an approved identity migration
+  source_contracts.py  the one classifier: `EVENT_KINDS` vs `MARKET_KINDS`, and `market_route()`
+  market_contracts.py  the market read surface's own bounds and its two status vocabularies
+  oi_signals.py / liquidations.py / smart_money.py  the three market parsers; no judge, no card
   market_review/
     instruments.py / pricing.py  instrument and quote/reaction domain contracts
     loops.py           current Quotes on ordinary DB admission; Event Reactions on one-slot heavy admission
@@ -395,6 +420,7 @@ tracefold.news
   storage/
     events.py / decisions.py  material facts/evidence and verdict/delivery ledgers
     feed.py / operations.py   bounded public reads and ingest/retention operations
+    market.py                 the market read model: Items + typed facts, grouped and paged
     feed_sql.py / query_specs.py  production Feed SQL and its audited bound statements
     trade_projection.py       News-owned point-in-time handoff queried by App for Trading
     learning.py / root.py     learning persistence and the concrete repository composition
@@ -467,20 +493,25 @@ port it needs from the process — `NewsDatabasePort`, `QuoteDatabasePort`,
 the lane, the deadline default and the error vocabulary. A business module never
 names `worker_session`, `run_news` or `heavy_business`: no import edge was never
 the same thing as no dependency. The handoff itself is two independent frozen
-row contracts, News's `news_trade_projection_v14` and Trading's own candidate
-input rows, translated field by field in `news_to_trading.py`, so a rename on
-either side fails at the seam rather than inside a runner. Version 14 publishes
-the deterministic OI ledger and nothing else: sixteen keys read from
+row contracts, News's `OiTradeProjectionRow` and Trading's own `OiCandidateRow`,
+translated field by field in `news_to_trading.py`, so a rename on
+either side fails at the seam rather than inside a runner. The `TypedDict`s *are*
+the SELECT lists, and #537 PR-4 deleted the version string that used to sit above
+them: it restated in prose what the types already state and was never compared
+with anything in production. The OI row publishes the deterministic ledger and
+nothing else: sixteen keys read from
 `news_oi_signals` joined to the source Item for its `first_ingest_mode`, plus a
 bounded bulk point-in-time instrument catalogue and the complete fixed-window OI
 source universe. The triage verdict, the learning epoch, the six `jsonb`
 equalities that re-proved the ledger against the verdict's copy of it and the
-four News version literals are gone (#510): a frame reaches Trading without
+four News version literals are gone (#510); #553 then removed the Event the
+ledger hung off entirely, so the read is one ledger written at admission and one
+Item column. A frame reaches Trading without
 passing through the editorial pipeline or the active learning arm, so a News
 policy or Program identity move is no longer a Trading contract change. Ingest
 provenance is published and never filtered here — the Signal lane refuses a
-recovery frame by name; editorial News and liquidation have no Signal-lane
-projection.
+recovery frame by name; editorial News, liquidations and smart-money reports have
+no Signal-lane projection.
 The live OI handoff reads that projection through the News cold adapter, closes
 the News transaction, and then lets the Trading adapter open its own bounded
 transactions. No callback receives both repositories and there is no
@@ -649,14 +680,19 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
      (routing key raw.opennews.<strategy_id>; recovery frames use raw.recovery.<strategy_id>)
   -> q:news.raw [single-active-consumer] Deduper:
        Item upsert (provenance union) -> content-block title + pinned normalization
-       -> exact normalized source-contract classification and durable event_kind
+       -> source-contract classification (opennews_source_classifier_v2); the frame's
+          primary Strategy decides which of the two planes it is on
+       -> market plane (oi | liquidation | smart_money | unknown_market): one transaction
+          writes the Item with its market columns and one typed fact row, then stops.
+          No title/minhash dedupe, no Gate, no storyline, no evidence snapshot, no
+          verdict, no Event, no broker publish. Live and recovery are the same path.
+       -> editorial plane (news | listing): durable event_kind
        -> same-kind exact fingerprint / MinHash 32x4 LSH near-duplicate + strong-fact veto
        -> Event new|member (dedupe_family window) -> Gate (provider-graded grounded_assets,
-          registry macro/energy flags, PR-template veto, low-signal switch) -> preliminary
+          registry macro/energy flags, PR-template veto) -> preliminary
           storyline key; a stronger later member re-gates a suppressed Event
-       -> publish event.<dedupe_family>.<queue_priority> for every admitted candidate,
-          listing, OI or liquidation Event; unsupported_market is a named held
-          Event and never reaches Triage; the suffix affects broker scheduling only
+       -> publish event.<dedupe_family>.<queue_priority> for every admitted candidate
+          or listing Event; the suffix affects broker scheduling only
   -> q:news.triage [prefetch = news.triage.concurrency, handled concurrently] Triage:
        SemanticJudge.judge(TriageContext) -> current EventSemantics with nested
           NewsTaxonomyV1 + TradeRelevanceV1
@@ -687,6 +723,9 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
               bounded learning-evidence retention on the one-slot heavy gate,
      broker snapshot (depth, ready/unacked, delayed, pending dead letters, byte share, policy match)
   -> Serve: /api/news/feed, /api/news/events/{event_id}, /api/news/status
+  -> Serve, beside all of it: /api/news/market and /api/news/market/{item_id} read the
+     market Items and their typed facts directly, asking nothing of Gate, Triage,
+     the broker, a model or Trading
 ```
 
 Feed search is a Serve-only read concern. A pure News-owned planner classifies
@@ -791,15 +830,16 @@ the Gate, Triage, `decide()`, a throttle key or a ranking signal. Since card v10
 any decision, and absent rather than approximated when no fresh value exists —
 68.7% of a week's cards carried one.
 
-OI telemetry has no provider coin tag, so `grounded_assets` remains empty. Its
-deterministic parser records the verified primary in `news_event_assets` in the
-same transaction as the Verdict (#267). That row is the shared Event-market
-identity consumed by Reaction planning, symbol filters, Feed/detail projection,
-reader history and delivery; `news_oi_signals(event_id, oi_signal_v1)` remains
-the separate frame ledger, and since #510 it is the whole of what the Trading
-Signal lane reads. The Quote planner unions recent live OI symbols into
+An OI frame has no provider coin tag and now opens no Event, so it writes nothing
+to `news_event_assets` (#553): the deterministic judge that used to record its
+verified primary there in the same transaction as a Verdict (#267) is deleted
+along with the Verdict. The symbol lives on the fact instead —
+`news_oi_signals.symbol` beside the provider's own `raw_instrument` — keyed by
+`(source_item_id, oi_signal_v1)`, and that ledger is the whole of what the
+Trading Signal lane reads (#510) and what `/api/news/market?kind=oi` renders. The
+Quote planner unions recent live OI symbols into
 its existing bounded working set.
-The price remains display-only: it cannot change OI judgment, policy, rank, or
+The price remains display-only: it cannot change a market fact, a policy or
 delivery eligibility, and a stale or unavailable quote silently removes the
 行情 line.
 
@@ -955,20 +995,42 @@ days that age is bimodal (2491 within 10 s, 7 beyond 16 h, nothing between) and
 never negative. `published_at_ms` is untouched: `opened_at_ms` derives from it
 and anchors `reaction_v1`.
 
-Before Gate, one pure OpenNews source classifier matches the normalized
-`strategy_id + strategy_name + source_type + engine_type` tuple exactly. It is
-the sole owner of the five route families: ordinary News and listing continue
-through Gate and the generic Program, OI and liquidation select their existing
-strict deterministic parsers, and an unbound scoreless market/wallet contract
-or known tuple drift becomes the named held `unsupported_market_contract`.
-Parser failure is `source_contract_drift` and never falls back to a model.
-Recovery runs the same classifier and, when history carries the complete tuple,
-the same side-effect-free parser and persists that reason; it does not write the
-live OI rank fact and never delivers. A provider history row missing a tuple
-field fails closed as drift rather than inferring a contract from its id.
-Ordinary and deterministic recovery keep `admission=recovery`, while
-unsupported contracts retain the named `unsupported_market_contract`
-admission. Event identity v6 namespaces every FactUnit by route, so different
+Before Gate, one pure OpenNews source classifier
+(`opennews_source_classifier_v2`) decides which of the two planes a frame is on.
+It owns six families in two disjoint vocabularies (#553): `news_v1` and
+`listing_v1` are the `EVENT_KINDS`, and `oi_v1`, `liquidation_v1`,
+`smart_money_v1` and `unknown_market` are the `MARKET_KINDS`.
+
+The market families key on the provider's Strategy id alone — `1019` OI, `2000`
+and `2083` liquidation, `2026` smart money. The four-tuple binding they used to
+carry made a display name load-bearing: when the provider renamed `Large-scale
+liquidation`, every frame under that id fell out of its own contract and was
+recorded as drift, which is a fact about the provider's console rather than
+about what the frame measures. The name, source type and engine type are
+recorded on the fact and gate nothing. Listing stays a generic route: the exact
+`1353` tuple or any `engine_type = listing` frame. A scoreless `market`/`wallet`
+frame this repository has no template for is `unknown_market` — stored,
+readable, and never sent to the model wearing a news costume. Everything else is
+`news_v1`.
+
+`market_route()` reads the frame's *primary* Strategy, so an Item that
+accumulates a market Strategy across replays does not drag an already-classified
+news frame into the market plane, and a market frame is never handed to the
+model because a second tuple looks like news. A frame naming two different
+market families at once is stored as `unknown_market` with
+`market_parse_error = market_category_conflict`: reinterpreting one family's
+numbers under another's semantics is the one thing that function must never do
+quietly. A template that does not match is `parse_status = raw` with the
+parser's named reason, not a refusal — `Withdraw USDC` is a real account report,
+and deleting a fact to protect a parser is the wrong trade.
+
+Recovery runs the identical path for a market frame: same classifier, same
+parser, same single transaction, no Event either way, so a recovered OI
+measurement now produces the ledger row the Event-shaped write path never did.
+Ordinary editorial recovery keeps `admission=recovery`; the three market
+admissions (`telemetry_deterministic`, `liquidation_deterministic`,
+`unsupported_market_contract`) are deleted and survive only on historical rows.
+Event identity v6 namespaces every FactUnit by route, so different
 contracts for one provider record cannot merge by arrival order. There is no
 source registry, queue, worker, ID-only routing, or pre-v6 identity bridge.
 Migration `0336` deletes the historical classifications and every Event marked
@@ -1348,9 +1410,10 @@ and `restates` (the ledger index a restatement points at; -1 otherwise) —
 the reader-facing memory Triage has (issue #61): dedup is byte/word-level,
 novelty is the semantic last line against the same fact told again from
 another outlet or under another storyline key. Magnitude remains a Program
-output. Policy v11 owns ordinary model action from one atomic `ScoredJudgment`;
-OI, liquidation and degraded judgments each carry their own typed
-`DecisionResult`. A *grounded* restatement is handled first, and
+output. Policy v11 owns ordinary model action from one atomic `ScoredJudgment`, and a
+degraded judgment carries its own typed `DecisionResult`. The OI and liquidation
+judgments that used to sit beside it are gone with the Events they decided
+(#553). A *grounded* restatement is handled first, and
 the existing stale-source and content-similarity protections remain after
 action selection. The action section is exactly:
 
@@ -1364,8 +1427,9 @@ action selection. The action section is exactly:
 5. `background|none` -> `drop`;
 6. every other combination -> `trade_relevance_inconsistent`.
 
-OI and liquidation never enter this list: their typed judgments own one
-code-derived result, and degraded handling owns one objective baseline result.
+No market observation enters this list, or any other part of Triage: it opens
+no Event, so there is nothing to decide. Degraded handling owns one objective
+baseline result.
 
 `realtime_eligible` requires magnitude >= 2; tradability `direct` or
 `second_order`; non-empty channels and affected markets; and either a
@@ -1433,8 +1497,8 @@ restarts the full Program with its own route deadline; the complete chain
 therefore makes at most eight visible provider attempts. Client-side
 cache and hidden provider retries are disabled so the trace count equals real
 attempts. Missing or invalid `novelty` fails closed; the genesis deleted
-pre-current Program traces. OI and liquidation use their typed
-deterministic judgments and bypass the Program. An ordinary Program failure is
+pre-current Program traces. Market frames never reach the Program because they
+never reach Triage. An ordinary Program failure is
 degraded, not silent: code-owned listing or grounded-watchlist objectives may
 use the wire headline; every other failure drops as
 `degraded_no_objective_guard`, even when the provider score or queue priority is
@@ -1527,10 +1591,10 @@ words — direction label, `新进展` when the verdict's `novelty` is `progress
 (#113: 28.8% of a week's cards advanced a story the reader already had one for
 and the card said nothing), magnitude label, the tickers the model called
 primary and the Gate grounded, source（N 条报道）, and the leader item's
-publication time in the reader's zone (UTC+8). Ordinary News derives this list
-from model-primary ∩ Gate-grounded assets; deterministic OI derives one symbol
-from its matching rank-ledger row only when the current Event kind and full OI Program
-identity also match. The third body line is the market's own number for those
+publication time in the reader's zone (UTC+8). News derives this list
+from model-primary ∩ Gate-grounded assets. There is no second derivation: the
+deterministic OI branch that read a symbol back out of its ledger row went with
+the OI card (#553), and a market observation has no reader card at all. The third body line is the market's own number for those
 same verified tickers — `行情 CL $86.43 24h +2.30%（永续）`. At delivery, an
 on-demand trade/candle point becomes the current number; if no contract
 produces one, an existing `fresh` Quote Snapshot may still provide the display
@@ -1959,8 +2023,10 @@ Promotion is monotonic: development screen -> future temporal validation ->
 blind pairwise review -> 24 h shadow -> deterministic 10% canary -> stable.
 Every stage requires the prior sealed PASS. One Event is assigned to exactly
 one production arm before Program execution and runs exactly one assigned
-Program. Canary selector `news_canary_selector_v2` excludes recovery, deterministic listing and
-telemetry, but includes queue-high Events. Startup, resume and assignment bind
+Program. Canary selector `news_canary_selector_v2` is live-only and excludes the
+three admissions `recovery`, `listing_deterministic` and
+`telemetry_deterministic` — the last of which no current frame can take — but
+includes queue-high Events. Startup, resume and assignment bind
 and validate selector version, eligibility-profile SHA, rolling-profile SHA and
 the exact runtime manifest; any drift trips the activation. A
 candidate artifact/schema fault trips the canary to stable, and activation,
@@ -2140,8 +2206,13 @@ venue's clock against this host's — `news_oi_signals_available_clock_check`,
 which made a frame whose exchange clock ran a few hundred milliseconds ahead an
 unstorable row and a dead Workers process, and
 `news_market_liquidations_time_order`, which never fired only because the parser
-dropped such a frame before the ledger could see it (#544). `20260904_0362` is
-the current single head.
+dropped such a frame before the ledger could see it (#544). `20260904_0363`
+rekeys the `news_review_task_source_v1` lateral to the evidence version the
+verdict actually judged (#548), and `20260905_0364` moves market observations
+onto `news_items` and its three typed ledgers, freeing the OI ledger from
+`news_events` (#553). `20260905_0364` is
+the current single head; each revision's own docstring carries its evidence, and
+`docs/MIGRATIONS.md` carries the operator sequence.
 
 Every new schema change is again a normal linear, immutable, forward-only
 revision after the baseline. Exact-image replacement requires source, image,
@@ -2656,92 +2727,145 @@ Rollback is allowed only with venue-proven flat and a schema-compatible image.
 When exposure exists the only safe direction is roll-forward: the Runtime
 retains sole authority until it protects or closes the position.
 
-## Open-interest telemetry (#137)
+## Market observations (#137, #553)
 
-OpenNews strategy `1019` (`OI Event Monitor`) pushes a fixed-format frame about
-190 times a day: `{SYM} OI Rise {x}%, OI Value {y}, Whale Long Profit {z}%,
-Whale/OI Ratio {w}%`. The shared classifier admits it as
-`telemetry_deterministic` only when the complete normalized tuple is exactly
-`1019 / OI Event Monitor / market / market`; `1019` alone has no routing
-authority.
+Four OpenNews Strategies report the market rather than the news: `1019`
+(`OI Event Monitor`), `2000` (`实时清算`) and `2083` (`Large-scale liquidation`)
+for forced trades, and `2026` (`聪明钱监控`) for what one labelled account did.
+Any other scoreless `market`/`wallet` Strategy this repository has no template
+for joins them as `unknown_market`. None of them opens a News Event.
 
-Those four numbers are the whole message, so Triage judges the frame by
-arithmetic instead of spending two structured model calls re-reading them.
-`tracefold.news.oi_signals` parses it and returns one typed `OiJudgment`
-containing its presentation Verdict, parsed signal, rule and sole
-`DecisionResult`. Since #458 there is one rule and one outcome: a parsed frame
-is `stored` with a magnitude-0 directional presentation and a `drop` result, and
-an unparseable one is `oi_parse_failed`, also `drop`.
+They are a **sibling plane of the editorial one**, not a lane inside it. A
+market frame is admitted by `admit_market_item` in one transaction that writes
+the `news_items` row with its market columns and one typed fact row, and then
+stops: no title or MinHash dedupe, no Gate, no storyline, no evidence snapshot,
+no verdict, no Event, no broker publish, no model call, no delivery. Live and
+recovery run the identical path. Every one of those steps answers an editorial
+question, and two OI frames for the same symbol differing only in their four
+numbers *are* two measurements — collapsing them is losing data, not
+deduplicating it.
 
-The lane had a second rule until then — a strict `whale_oi_ratio_bps` threshold
-and an opening-rank ceiling inside a rolling 4 h window — which decided whether
-a reader was interrupted. It was removed rather than retuned, for two measured
-reasons. Over 48 h it and Trading's Alpha policy selected disjoint sets: seven
-frames were pushed to the reader that the capital lane had refused, and none of
-the five it admitted. And #459 then checked the provider's own number against
-Binance's open-interest history: the reported five-minute move is substantially
-price rather than position, and entered at a price a taker can actually get
-those frames returned −276 bps at 4 h against a +82 bps baseline. The reader-
-facing card returns as the Signal card once #433-E powers on the Runtime; until
-then this lane pushes nothing, and the frame table, the Trading candidate feed
-and the audit trail are unchanged.
+### What is stored
 
-The typed arithmetic judgment is materialized outside PostgreSQL and follows the
-same prepared Verdict write as ordinary News, preserving the shared receipts,
-`event_outcome`, the feed, the counters and the audit trail on the single path
-they were built for. Nothing is published to the delivery consumer, because
-Triage publishes only on `push`.
+`news_items` carries the observation itself: `market_kind`
+(`oi|liquidation|smart_money|unknown_market`), `market_source_strategy_id`,
+`market_parse_status` (`parsed|raw`), `market_parse_error`, and
+`provider_params`, the frame's own payload, which the old metadata whitelist
+dropped before persistence so no consumer could read `relatedAddress` or
+`strategy.metrics` back at any precision. `market_kind IS NULL` is exactly "this
+Item is ordinary news" and the other three columns are meaningless without it,
+so `news_items_market_parse_status_check` states the pair as one fact:
+`parse_status = 'parsed'` exactly when `parse_error IS NULL`. A partial index
+`ix_news_items_market_observed` covers the market subset in reverse arrival
+order.
 
-The ordinary-News content check still does not run on this lane. Every telemetry
-headline is one template: two cards about unrelated symbols score 0.33 against
-the 0.25 threshold, and two frames for one symbol score 0.41, so the check would
-collapse the lane into roughly one row per symbol per window and lose
-observations the frame table exists to hold. A byte-identical repeat is still
-collapsed upstream by the exact fingerprint. Listing frames keep the different
-exemption they were given in #72, which is per instrument rather than blanket,
-because two notices for the same instrument really are one fact.
+Three typed tables hold the numbers, and they stay three tables — a shared
+supertable would need a column for every kind's semantics and a NULL for every
+other kind's:
 
-The ledger row is an idempotent append keyed on `(event_id, metric_version)`;
-the prepared verdict follows in its own short transaction. No advisory lock is
-taken for it any more: the lock existed so "count this symbol's earlier eligible
-frames -> decide -> insert" could not miss a concurrent sibling, and nothing is
-counted now.
+- `news_oi_signals` — one measurement per `(source_item_id, metric_version)`.
+  Migration `20260905_0364` dropped its `event_id` foreign key (the column
+  remains as the opaque source identifier a frozen Trading Case resolves) and
+  its `learning_epoch`, and added `provider`, `raw_instrument`,
+  `received_at_ms`, `measurement_definition` and `historical`. It was reachable
+  only through `news_events` before, so a recovery frame — which never reached
+  Triage — produced no row at all, and a frame the title deduper merged into
+  another Event produced none either; `0364` reconstructs both populations from
+  `news_event_members` and flags them `historical = true`.
+- `news_market_liquidations` — one row per Item, unique and cascade-owned.
+  `0364` deleted the venue allowlist that admitted `binance` and `hyperliquid`
+  and refused everything else, which had discarded 13 of the 143 real
+  liquidation reports in the retained window; renamed `venue` to nullable
+  `source_venue`, the provider's own string stored as sent; and added
+  `provider`, `raw_instrument`, `source_strategy_id` and `available_at_ms`.
+  Supporting a venue's *information* is not the same claim as trading there.
+- `news_market_smart_money` — new in `0364`: one account, one action
+  (`open|close`), one side (`long|short`), one instrument, the reported notional,
+  the price and an optional realized PnL, with the same source-contract columns
+  the other two carry.
 
-`news_oi_signals` is the frame ledger and nothing more: a derived read model with
-one writer, idempotent by `event_id`, rebuildable by re-parsing the Item, and
-cascade-deleted with it. It is also the entire News surface the Trading Signal
-lane consumes (#510), joined only to the source Item for its ingest mode. `rank_in_window` was dropped from it in migration
-`20260901_0344` with the rule that computed it, and
-`news_oi_signals_available_clock_check` in `20260904_0362` with the clock
-assumption that wrote it (#544). Two consequences of judging
-these frames rather than suppressing them are deliberate and worth stating:
-every 1019 frame carries a verdict, so `news.retention` keeps its Item for 365
-days instead of purging at 30 (~70k small rows a year), and every frame is
-readable on the OI monitor with its four measurements. The decision itself lives
-in `news_verdicts` like every other decision.
+All three are cascade children of `news_items`, so a typed fact cannot outlive
+the record it was parsed from. Before `0364` the liquidation table had no
+foreign key at all and a purged Item left its liquidation behind as unreachable
+evidence; that revision deletes the orphans it cannot adopt.
 
-`news_market_liquidations` records the same shape of pair for a forced trade:
-`event_at_ms` is the venue's own stamp and `received_at_ms` is when this host read
-the frame, and nothing orders them. The parser refuses a non-positive
-`event_at_ms`, because that is a missing stamp rather than an early one, and it
-refuses an unknown venue or an ambiguous unit; it does not refuse a venue clock
-that runs ahead of ours, which used to discard a liquidation that had already
-happened (#544). `source_latency_ms` in the verdict trace stays a reported
-non-negative metric and floors such a frame at zero.
+### The parsers, and what is no longer beside them
 
-Strategy provenance and parser success are separate contracts. Every live `oi_v1`
-frame bypasses near-duplicate matching so provider format drift reaches Triage;
-an unparseable frame fails closed without a model call and persists the named
-`oi_parse_failed` rule/error. Its trace and structured warning carry strategy
-id, OpenNews/provider source, a title SHA-256 rather than raw text, parser
-version, source-classifier version and failure stage. Status exposes 24 h
-received, parsed and parse-failed counts — there is no pushed count, because
-there is no push — while ordinary OI prose keeps the normal Deduper and model
-path.
+`tracefold.news.oi_signals` parses `{SYM} OI Rise {x}%, OI Value {y}, Whale Long
+Profit {z}%, Whale/OI Ratio {w}%` — about 190 frames a day — into four integers
+under `oi_signal_parser_v1`, and `oi_source_contract()` proves the provider's
+own measurement window. `liquidations.py` and `smart_money.py` do the same for
+their one-line templates under `liquidation_parser_v1` /
+`opennews_liquidation_source_v2` and `smart_money_parser_v1` /
+`opennews_smart_money_source_v1`. Liquidations and smart-money reports key their
+fact on `sha256(item_id, fact_id, parser_version)`; an OI row keeps the
+`sha256(news_event_identity_v6, item_id, fact_id, 'oi')` string in `event_id`
+that every existing row and every frozen Trading Case already carries, and its
+observation key is `(source_item_id, metric_version)`.
 
-Two places treat these Events specially and both are explicit: they are exempt
-from near-duplicate matching (two frames for one symbol differ only in their
-numbers, which is their entire content, and would otherwise merge), and they are
-excluded from `news_review_task_source_v1` and the model-health denominators,
-because an arithmetic judgment is not model output and rating one teaches the
-optimizer nothing.
+What #553 deleted from `oi_signals.py` is the *judge*: the pseudo
+`TriageVerdict`, the reader headline, the rule names, the `DecisionResult` and
+the Program identity. `_JudgmentOrigin` is now `model|degraded` only, and
+`judgment_origin = 'oi'|'liquidation'` survives on historical `news_verdicts`
+rows and in the CHECK that validates them. The `news_oi_signal_v3` and
+`news_liquidation_fact_v2` program versions are retired for the same reason.
+
+The lane had already lost its threshold in #458 — a strict `whale_oi_ratio_bps`
+floor and an opening-rank ceiling inside a rolling 4 h window, which decided
+whether a reader was interrupted. It was removed rather than retuned for two
+measured reasons. Over 48 h it and Trading's Alpha policy selected disjoint
+sets: seven frames were pushed to the reader that the capital lane had refused,
+and none of the five it admitted. And #459 checked the provider's own number
+against Binance's open-interest history: the reported five-minute move is
+substantially price rather than position, and entered at a price a taker can
+actually get, those frames returned −276 bps at 4 h against a +82 bps baseline.
+Judging what was left — "the template matched" — through a verdict, an Event and
+a policy version was the cost #553 removed.
+
+A template this code cannot prove is not an error the reader should be denied.
+`parse_status` becomes `raw`, the named reason is recorded
+(`oi_template_unmatched`, `liquidation_template_unmatched`,
+`smart_money_template_unmatched`, `unknown_market_source`, or
+`market_category_conflict` when one frame names two market families), and the
+Item is stored exactly as it arrived.
+
+### How it is read
+
+`tracefold.news.storage.market` is the read model, and it goes through no
+verdict, reader-history snapshot, Event leader or model: an observation exists
+because the provider reported it and this process stored it. The list collapses
+*consecutive* observations of the same group, and the group is per kind — an OI
+group is one provider, venue, native instrument and measurement definition; a
+liquidation group swaps the definition for the liquidated side; a smart-money
+group is one account acting one way on one instrument. A uniform "latest row per
+symbol" would let one account's Close bury another account's Open and a Binance
+liquidation bury an OKX one. An observation with no trustworthy group fields is
+its own group: unknown does not merge with unknown. Collapsing is a property of
+the whole window rather than of a page — otherwise one group would appear twice
+with two different counts either side of a page boundary — so the window is read
+under `MARKET_WINDOW_ROW_CAP` (5,000 rows, roughly three times a full 168 h
+window at the measured 208 observations a day) and the groups are paged out of
+it.
+
+`/api/news/market` and `/api/news/market/{item_id}` are the whole reader surface;
+`docs/CONTRACTS.md` pins their grammar. `notification_status` is reported beside
+`parse_status` and never folded into it, and in PR-1 it is the constant
+`not_connected`: storing and reading market facts is this change, sending them is
+PR-2's, and a field that says so is the honest form of "not wired yet" — the
+alternative is a page that looks like it weighed the observation and decided not
+to send it.
+
+Trading is unchanged by all of this and reads the same ledger it always did:
+`news_oi_signals` through `tracefold/app/workers/wiring/news_to_trading.py`, at
+App composition, with no Event in between and no News judgment, Program, policy
+or cohort identity on the candidate.
+
+### Retention
+
+A market Item lives on the `news.retention.judged_days` tier whatever happened
+to it. It has no verdict, no review and no learning case, so the evidence
+predicate that promotes an ordinary Item can never preserve one; under
+`raw_days` alone every OI frame, liquidation report and account report would
+expire in 30 days while the ordinary news it sits beside kept a year. Which
+retention an observation gets is a decision about the observation, not a reward
+for having been judged. The typed facts follow their Item through the cascade.

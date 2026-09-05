@@ -20,7 +20,6 @@ from tracefold.app.workers.wiring.news_to_trading import news_oi_sources, to_oi_
 from tracefold.news import OI_METRIC_VERSION
 from tracefold.news.bus import RK_RAW_LIVE, BusMessage, new_trace_id, now_ms
 from tracefold.news.pipeline.admission import DeduperConsumer
-from tracefold.news.pipeline.triage import TriageConsumer
 from tracefold.trading.admission import ADMISSION_VERSION
 from tracefold.trading.contracts import Bar, CaseState, OiCandidateRow
 from tracefold.trading.signal_lane import BAR_INTERVAL_MS, SignalLane, SignalLaneConfig
@@ -151,35 +150,29 @@ def _raw_message() -> BusMessage:
     )
 
 
-def _judge_frame(conn: Any) -> str:
+def _admit_frame(conn: Any) -> str:
+    """Run the admission consumer alone and return the ledger row's published source identity.
+
+    Triage is deliberately absent (#553). An OI observation is stored with its typed fact in the
+    admission transaction, so the whole News→Trading seam is answerable with no Event, no verdict,
+    no reader history and no model configured anywhere in the process.
+    """
+
     bus = RecordingBus()
     database = NewsDatabase(conn)
     asyncio.run(DeduperConsumer(bus=bus, db=database, watchlist_symbols=frozenset({OI_SYMBOL})).handle(_raw_message()))
     conn.commit()
-    triage = TriageConsumer(
-        bus=bus,
-        db=database,
-        judge=None,
-        program_version="news_semantic_program_seam_v1",
-        program_sha256="9" * 64,
-        watchlist_symbols=frozenset({OI_SYMBOL}),
-        watchlist=[OI_SYMBOL],
-        concurrency=1,
-        circuit_failures=3,
-        circuit_open_seconds=60.0,
-        runtime_manifest={"manifest_sha": "e" * 64},
-    )
-    events = bus.of_kind("event")
-    assert events
-    for message in events:
-        asyncio.run(triage.handle(message))
-    conn.commit()
-    return str(events[0].payload["event_id"])
+    assert bus.of_kind("event") == [], "a market observation publishes nothing: there is no Event to triage"
+    row = conn.execute(
+        "SELECT event_id FROM news_oi_signals WHERE metric_version = %s", (OI_METRIC_VERSION,)
+    ).fetchone()
+    assert row is not None
+    return str(row["event_id"])
 
 
 def test_news_frame_mapper_and_signal_lane_commit_one_current_pair(clean: Any) -> None:
     conn = clean
-    event_id = _judge_frame(conn)
+    event_id = _admit_frame(conn)
     repos = repositories_for_connection(conn)
     rows = repos.news.trade_candidate_oi_rows(
         metric_version=OI_METRIC_VERSION,
@@ -236,8 +229,9 @@ def test_news_frame_mapper_and_signal_lane_commit_one_current_pair(clean: Any) -
 def _numeric_oi_fact(conn: Any, *, event_id: str, item_id: str, observed_at_ms: int, symbol: str = OI_SYMBOL) -> None:
     """One News OI ledger row and the Item it was parsed from, and nothing else.
 
-    No verdict, no editorial pipeline output, no learning epoch and no active-arm row: the
-    deterministic numbers and their source Item are the whole of what Trading reads.
+    No Event, no verdict, no editorial pipeline output and no active-arm row: the deterministic
+    numbers and their source Item are the whole of what Trading reads. The Event this helper used to
+    open went with the foreign key that demanded it (#553).
     """
 
     repos = repositories_for_connection(conn)
@@ -259,56 +253,32 @@ def _numeric_oi_fact(conn: Any, *, event_id: str, item_id: str, observed_at_ms: 
             ingest_mode="live",
             trace_id="trace",
             now_ms=observed_at_ms,
-        )
-        news.insert_event(
-            event_id=event_id,
-            leader_item_id=item_id,
-            dedupe_family="market",
-            event_kind="oi",
-            comparison_fingerprint=event_id,
-            comparison_title=OI_TITLE,
-            leader_title=OI_TITLE,
-            focus_fact_id=f"fact:{event_id}",
-            focus_fact_text=OI_TITLE,
-            focus_fact_context="",
-            focus_fact_method="whole_item",
-            focus_span_start=0,
-            focus_span_end=len(OI_TITLE),
-            opened_at_ms=observed_at_ms,
-            expires_at_ms=observed_at_ms + 3_600_000,
-            admission="candidate",
-            queue_priority="normal",
-            provider_score=90,
-            engine_type="market",
-            asset_class="crypto",
-            grounded_assets=(),
-            grounded_assets_json="[]",
-            watchlist_hits=(),
-            watchlist_hits_json="[]",
-            macro_lexicon=False,
-            storyline_key=f"story:{event_id}",
-            context_line="",
-            ingest_mode="live",
-            trace_id="trace",
-            band_keys=(event_id,),
-            now_ms=observed_at_ms,
+            market_kind="oi",
+            market_source_strategy_id="1019",
+            market_parse_status="parsed",
+            market_parse_error=None,
         )
         news.insert_oi_signal(
             event_id=event_id,
             metric_version=OI_METRIC_VERSION,
             symbol=symbol,
+            raw_instrument=symbol,
             direction="rise",
             oi_change_bps=720,
             oi_value_usd=32_170_000,
             whale_long_profit_bps=8_021,
             whale_oi_ratio_bps=10_071,
             observed_at_ms=observed_at_ms,
+            received_at_ms=observed_at_ms,
             now_ms=observed_at_ms,
+            provider="opennews",
             source_strategy_id="1019",
             source_contract_version="opennews_oi_source_v1",
             measurement_window_ms=300_000,
+            measurement_definition="oi_signal_v1|opennews_oi_source_v1|300000",
             source_item_id=item_id,
             source_venue="binance",
+            historical=False,
         )
 
 

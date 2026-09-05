@@ -125,6 +125,11 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         # #207 PR-W1: identity only. The token page's Events, price and rank window each keep their own
         # endpoint, so nothing here is a second answer to a question one of them already answers.
         "/api/news/symbols/{base}": ("get", "ApiEnvelope_NewsSymbolData_"),
+        # #553: market observations are stored facts and this is where they are read. The collapsed
+        # list and one Item in full are separate response types because neither answer contains the
+        # other — the list carries a group's newest member, the Item carries its whole timeline.
+        "/api/news/market": ("get", "ApiEnvelope_NewsMarketData_"),
+        "/api/news/market/{item_id}": ("get", "ApiEnvelope_NewsMarketItemData_"),
     }
 
     assert {path for path in schema["paths"] if path.startswith("/api/news/")} == set(expected)
@@ -139,6 +144,11 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
     assert set(event_responses) == {"200", "404", "422"}
     assert event_responses["404"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/ApiEnvelope_NewsEventDetailData_"
+    }
+    market_item_responses = schema["paths"]["/api/news/market/{item_id}"]["get"]["responses"]
+    assert set(market_item_responses) == {"200", "404", "422"}
+    assert market_item_responses["404"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ApiEnvelope_NewsMarketItemData_"
     }
 
     components = schema["components"]["schemas"]
@@ -162,8 +172,12 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "NewsDeliveryStatusData",
         "NewsDuplicatesWithheld24hData",
         "NewsLearningRetentionStatusData",
-        "NewsFeedOiData",
-        "NewsOiStatusData",
+        "NewsMarketData",
+        "NewsMarketFiltersData",
+        "NewsMarketGroupData",
+        "NewsMarketItemData",
+        "NewsMarketObservationData",
+        "NewsMarketSourceData",
         "NewsOutcomeData",
         "NewsTimelineStepData",
         "NewsHealthData",
@@ -213,9 +227,6 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "ingest",
         "broker",
         "pipeline",
-        # #207: the deterministic OI lane, whose gate names live in the judge's trace rather than in
-        # `pipeline.dropped_by_rule`.
-        "oi",
         "delivery",
         "learning_retention",
         "watchlist",
@@ -224,13 +235,45 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "price",
         "measured_at_ms",
     }
-    assert set(components["NewsOiStatusData"]["properties"]) == {"by_rule_24h"}
-    # No threshold is republished here at all. #331 removed the capital lane's floors — a Case's own
-    # frozen checks are the only thing a reader may compare it against — and #458 removed the News push
-    # gates themselves, so the lane has no operator-owned number left to serve.
-    assert "NewsOiTradeFloorsData" not in components
-    assert "NewsOiPolicyData" not in components
+    # No OI-shaped response type is left anywhere. #331 removed the capital lane's floors — a Case's
+    # own frozen checks are the only thing a reader may compare it against — #458 removed the News push
+    # gates themselves, and #553 removed the lane: an OI observation is a market fact with its own
+    # surface, not an Event with a status section beside the editorial pipeline's.
+    for retired in ("NewsOiStatusData", "NewsFeedOiData", "NewsOiTradeFloorsData", "NewsOiPolicyData"):
+        assert retired not in components, retired
     assert "NewsOiWindowSymbolData" not in components
+    assert set(components["NewsMarketData"]["properties"]) == {
+        "groups",
+        "next_cursor",
+        "sources",
+        "filters",
+        "notifications_connected",
+    }
+    assert set(components["NewsMarketItemData"]["properties"]) == {
+        "observation",
+        "provider_params",
+        "description",
+        "raw_first_line",
+        "notification_status",
+        "notification_reason",
+        "timeline",
+        "notifications_connected",
+    }
+    assert set(components["NewsMarketFiltersData"]["properties"]) == {"kind", "from_ms", "to_ms", "limit"}
+    # Two independent pairs, on the group and on the Item alike: what the parser proved, and what the
+    # sender did. A client cannot derive either from the other, which is why neither is folded away.
+    assert {"parse_status", "parse_error"} <= set(components["NewsMarketObservationData"]["properties"])
+    assert {"notification_status", "notification_reason"} <= set(components["NewsMarketGroupData"]["required"])
+    assert components["NewsMarketObservationData"]["properties"]["market_kind"]["enum"] == [
+        "oi",
+        "liquidation",
+        "smart_money",
+        "unknown_market",
+    ]
+    # Provider decimals cross the wire as their exact stored text; a JSON number would round a notional
+    # the ledger holds precisely.
+    for money in ("notional_usd", "price", "pnl_usd"):
+        assert components["NewsMarketObservationData"]["properties"][money]["anyOf"][0] == {"type": "string"}, money
     state = components["NewsStatusData"]["properties"]["state"]
     assert state["enum"] == ["ready", "degraded", "warming", "unavailable"]
 
@@ -245,14 +288,16 @@ def test_news_contract_hard_cuts_story_brief_rss_and_title_translation_surfaces(
 
     news_components = {name for name in components if "News" in name}
     retired_markers = ("Story", "Brief", "Rss", "Source", "TitleTranslation", "TitlePresentation", "Notification")
-    source_contract_components = {
+    # `Source` is a retired-RSS marker, so every current name carrying it is listed here by hand: the
+    # two source-contract funnel counts, and #553's per-kind market intake summary. A new `News*Source*`
+    # type has to be added deliberately, which is the point.
+    named_source_components = {
         "NewsSourceContractStageCountsData",
         "NewsSourceContracts24hData",
+        "NewsMarketSourceData",
     }
     assert not {
-        name
-        for name in news_components - source_contract_components
-        if any(marker in name for marker in retired_markers)
+        name for name in news_components - named_source_components if any(marker in name for marker in retired_markers)
     }
     for path in ("/api/news/stories/{story_id}", "/api/news/brief", "/api/news/sources", "/api/radar"):
         assert path not in schema["paths"]
@@ -262,12 +307,14 @@ def test_news_contract_hard_cuts_story_brief_rss_and_title_translation_surfaces(
     assert {
         "event_id",
         "event_kind",
-        "source_contract_reason",
         "leader_title",
         "admission",
         "storyline_key",
     } <= set(event_properties)
-    assert {"priority", "family", "dedupe_family"}.isdisjoint(event_properties)
+    # #553: `source_contract_reason` named why a market frame was refused an Event. Market frames are
+    # stored as facts now rather than refused, so the field could only ever have been null.
+    assert {"priority", "family", "dedupe_family", "source_contract_reason"}.isdisjoint(event_properties)
+    assert components["NewsEventData"]["properties"]["event_kind"]["enum"] == ["news", "listing"]
 
 
 @pytest.mark.contract
@@ -294,16 +341,12 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
         "cursor",
         "outcome",
         "hours",
-        # #207: which gate the deterministic OI judge applied. `final_decision` collapses a threshold withhold and
-        # an unparseable provider frame into one `drop`, so the monitor's tabs cannot be built from it.
-        "oi",
         "direction",
     }
     assert parameters["q"]["schema"]["maxLength"] == 200
     assert parameters["symbol"]["schema"]["maxLength"] == 32
     assert parameters["outcome"]["schema"]["pattern"] == "^(pushed|held|pending)?$"
     assert parameters["hours"]["schema"]["maximum"] == 168
-    assert parameters["oi"]["schema"]["maxLength"] == 40
     limit = parameters["limit"]["schema"]
     assert limit == {"default": 50, "maximum": 100, "minimum": 1, "title": "Limit", "type": "integer"}
     assert {"reporting_origin", "provider_score_gt"}.isdisjoint(parameters)
@@ -322,7 +365,6 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
         "limit",
         "outcome",
         "hours",
-        "oi",
         "direction",
     }
     assert set(filters["required"]) == {"limit"}

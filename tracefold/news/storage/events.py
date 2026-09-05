@@ -9,7 +9,7 @@ from typing import Any, cast
 # S608 exemptions below interpolate only code-owned limits/admission literals; provider values stay bound.
 from ..models import ADMITTED_ADMISSIONS
 from ..opennews import source_artifact_identity
-from ..source_contracts import EventKind, SourceContractReason
+from ..source_contracts import EventKind
 from .feed_sql import CURRENT_EVENT_CARD_SQL
 from .sql_values import _ADMITTED_SQL, _dumps
 
@@ -111,6 +111,9 @@ def prepare_evidence_snapshot(
             "leader_item_id",
             "dedupe_family",
             "event_kind",
+            # Still projected: `news_event_evidence_current_contract_check` names the card's keys
+            # exactly, and every stored snapshot carries this one. It is `NULL` on every Event this
+            # code can now open, because only market frames ever had a reason and they open none.
             "source_contract_reason",
             "comparison_fingerprint",
             "comparison_title",
@@ -223,16 +226,34 @@ class EventStorage:
         trace_id: str,
         now_ms: int,
         source_artifact_id: str = "",
+        market_kind: str | None = None,
+        market_source_strategy_id: str | None = None,
+        market_parse_status: str | None = None,
+        market_parse_error: str | None = None,
+        provider_params_json: str = "{}",
     ) -> bool:
-        """Insert or merge provenance. Returns True when the Item is new."""
+        """Insert or merge provenance. Returns True when the Item is new.
+
+        The market columns and the business payload are written once and never rewritten (#553). A
+        provider replay of the same record is the same observation: merging a later parse status or a
+        later payload into an admitted fact would let a parser change what the provider was recorded
+        as having said. `provider_metadata.strategies` still merges, because an Item genuinely can be
+        reported under a second Strategy later, and that is metadata about the record rather than the
+        record itself.
+        """
 
         row = self.conn.execute(
             """
             INSERT INTO news_items (
               item_id, source_id, source_item_key, title, raw_first_line, description, canonical_url,
               reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
-              first_ingest_mode, trace_id, created_at_ms, updated_at_ms, source_artifact_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s)
+              first_ingest_mode, trace_id, created_at_ms, updated_at_ms, source_artifact_id,
+              market_kind, market_source_strategy_id, market_parse_status, market_parse_error,
+              provider_params
+            ) VALUES (
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s, %s::jsonb
+            )
             ON CONFLICT (item_id) DO UPDATE SET
               provider_metadata = jsonb_set(
                 news_items.provider_metadata,
@@ -265,6 +286,19 @@ class EventStorage:
                 SELECT COALESCE(jsonb_agg(DISTINCT value ORDER BY value), '[]'::jsonb)
                   FROM jsonb_array_elements_text(news_items.provenance || EXCLUDED.provenance) AS t(value)
               ),
+              market_kind = COALESCE(news_items.market_kind, EXCLUDED.market_kind),
+              market_source_strategy_id = CASE
+                WHEN news_items.market_kind IS NULL THEN EXCLUDED.market_source_strategy_id
+                ELSE news_items.market_source_strategy_id END,
+              market_parse_status = CASE
+                WHEN news_items.market_kind IS NULL THEN EXCLUDED.market_parse_status
+                ELSE news_items.market_parse_status END,
+              market_parse_error = CASE
+                WHEN news_items.market_kind IS NULL THEN EXCLUDED.market_parse_error
+                ELSE news_items.market_parse_error END,
+              provider_params = CASE
+                WHEN news_items.provider_params = '{}'::jsonb THEN EXCLUDED.provider_params
+                ELSE news_items.provider_params END,
               updated_at_ms = GREATEST(news_items.updated_at_ms, EXCLUDED.updated_at_ms)
             RETURNING (xmax = 0) AS inserted
             """,
@@ -286,6 +320,11 @@ class EventStorage:
                 int(now_ms),
                 int(now_ms),
                 source_artifact_id,
+                market_kind,
+                market_source_strategy_id,
+                market_parse_status,
+                market_parse_error,
+                provider_params_json,
             ),
         ).fetchone()
         return bool(row["inserted"])
@@ -299,7 +338,6 @@ class EventStorage:
         fingerprint: str,
         item_id: str,
         opened_after_ms: int,
-        source_contract_reason: SourceContractReason | None = None,
     ) -> dict[str, Any] | None:
         """The Event another Item built from this same source artifact and this same fact (#154).
 
@@ -324,14 +362,12 @@ class EventStorage:
         # represents.
         row = self.conn.execute(
             """
-            SELECT e.event_id, e.opened_at_ms, e.expires_at_ms, e.admission, e.published_at_ms,
-                   e.source_contract_reason
+            SELECT e.event_id, e.opened_at_ms, e.expires_at_ms, e.admission, e.published_at_ms
               FROM news_items i
               JOIN news_event_members m ON m.item_id = i.item_id
               JOIN news_events e ON e.event_id = m.event_id
              WHERE i.source_artifact_id = %s AND i.item_id <> %s
                AND e.dedupe_family = %s AND e.event_kind = %s AND e.comparison_fingerprint = %s
-               AND e.source_contract_reason IS NOT DISTINCT FROM %s
                AND e.opened_at_ms >= %s
                AND (
                  SELECT s.provenance = 'observed'
@@ -349,7 +385,6 @@ class EventStorage:
                 dedupe_family,
                 event_kind,
                 fingerprint,
-                source_contract_reason,
                 int(opened_after_ms),
                 sorted(ADMITTED_ADMISSIONS),
             ),
@@ -363,15 +398,12 @@ class EventStorage:
         event_kind: EventKind,
         fingerprint: str,
         now_ms: int,
-        source_contract_reason: SourceContractReason | None = None,
     ) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
-            SELECT e.event_id, e.opened_at_ms, e.expires_at_ms, e.admission, e.published_at_ms,
-                   e.source_contract_reason
+            SELECT e.event_id, e.opened_at_ms, e.expires_at_ms, e.admission, e.published_at_ms
               FROM news_events e
              WHERE e.dedupe_family = %s AND e.event_kind = %s
-               AND source_contract_reason IS NOT DISTINCT FROM %s
                AND e.comparison_fingerprint = %s AND e.expires_at_ms > %s
                AND (
                  SELECT s.provenance = 'observed'
@@ -382,7 +414,7 @@ class EventStorage:
                )
              ORDER BY opened_at_ms ASC LIMIT 1
             """,
-            (dedupe_family, event_kind, source_contract_reason, fingerprint, int(now_ms)),
+            (dedupe_family, event_kind, fingerprint, int(now_ms)),
         ).fetchone()
         return dict(row) if row else None
 
@@ -393,7 +425,6 @@ class EventStorage:
         event_kind: EventKind,
         band_keys: Sequence[str],
         now_ms: int,
-        source_contract_reason: SourceContractReason | None = None,
     ) -> list[dict[str, Any]]:
         pairs = [(index, key) for index, key in enumerate(band_keys)]
         if not pairs:
@@ -410,7 +441,6 @@ class EventStorage:
             SELECT e.event_id, e.comparison_title, e.leader_title, e.opened_at_ms, e.grounded_assets
               FROM news_events e JOIN hits ON hits.event_id = e.event_id
              WHERE e.event_kind = %s
-               AND e.source_contract_reason IS NOT DISTINCT FROM %s
                AND (
                  SELECT s.provenance = 'observed'
                     AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
@@ -427,7 +457,6 @@ class EventStorage:
                 dedupe_family,
                 int(now_ms),
                 event_kind,
-                source_contract_reason,
             ),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -466,19 +495,18 @@ class EventStorage:
         trace_id: str,
         band_keys: Sequence[str],
         now_ms: int,
-        source_contract_reason: SourceContractReason | None = None,
     ) -> None:
         self.conn.execute(
             """
             INSERT INTO news_events (
-              event_id, leader_item_id, dedupe_family, event_kind, source_contract_reason,
+              event_id, leader_item_id, dedupe_family, event_kind,
               comparison_fingerprint, comparison_title, leader_title,
               focus_fact_id, focus_fact_text, focus_fact_context, focus_fact_method, focus_span_start, focus_span_end,
               opened_at_ms, last_member_at_ms, expires_at_ms, member_count, admission, queue_priority,
               provider_score_max, engine_type, asset_class, grounded_assets, watchlist_hits, macro_lexicon,
               storyline_key, context_line, ingest_mode, trace_id, created_at_ms, updated_at_ms
             ) VALUES (
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s,
               %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s
             )
             """,
@@ -487,7 +515,6 @@ class EventStorage:
                 leader_item_id,
                 dedupe_family,
                 event_kind,
-                source_contract_reason,
                 comparison_fingerprint,
                 comparison_title,
                 leader_title,
@@ -542,39 +569,6 @@ class EventStorage:
                 """,
                 (symbol.upper().replace("XYZ-", ""), event_id, int(opened_at_ms)),
             )
-
-    def record_event_assets(self, *, event_id: str, assets: Sequence[tuple[str, str | None]]) -> None:
-        """Attach symbols a *deterministic* judge resolved to an Event the Gate could not ground (#267).
-
-        `news_event_assets` answers "which assets does this Event concern", and four planes read it:
-        the Reaction planner's due scan, the feed's `?symbol=` filter behind the token page, the
-        instrument-grounding funnel, and reader history's canonical-asset overlap. The telemetry lanes
-        were absent from all four for the same reason — an OI frame's wire text is
-        `NVDA OI Rise 4.55%, OI Value 32.17M, …`, which the admission Gate cannot ground, so
-        `grounded_assets` is `[]` and no row was ever written. The canonical symbol exists a moment
-        later, when the deterministic parser resolves it, and until now nothing carried it back here.
-
-        The anchor is read from the Event row rather than passed in, so the column cannot disagree
-        with the Event whose reaction horizons are measured from it.
-
-        `ON CONFLICT DO NOTHING` keeps this idempotent under redelivery, which matters because Triage
-        can settle the same Event twice; the row is identical either way.
-        """
-
-        rows = [(str(symbol or "").strip().upper().removeprefix("XYZ-"), market_type) for symbol, market_type in assets]
-        rows = [row for row in rows if row[0]]
-        if not rows:
-            return
-        self.conn.execute(
-            """
-            INSERT INTO news_event_assets (symbol, event_id, market_type, opened_at_ms)
-            SELECT q.symbol, e.event_id, q.market_type, e.opened_at_ms
-              FROM news_events e, unnest(%s::text[], %s::text[]) AS q(symbol, market_type)
-             WHERE e.event_id = %s
-            ON CONFLICT DO NOTHING
-            """,
-            ([row[0] for row in rows], [row[1] for row in rows], event_id),
-        )
 
     def add_member(
         self,

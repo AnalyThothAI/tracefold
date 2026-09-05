@@ -55,6 +55,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/news/market": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get News Market
+         * @description Market observations in one window, consecutive observations of a group collapsed.
+         *
+         *     The window is absolute rather than a "last N hours" offset, because a reader reviewing what
+         *     arrived on Tuesday is asking a question a rolling offset cannot express. It defaults to the last
+         *     72 h, spans at most 168 h in one request, and may sit anywhere inside the retention -- the span
+         *     bound is what one page may scan, not how far back the data goes.
+         *
+         *     "Not pushed" is not a filter and never becomes one. Whether a card was sent is reported per group
+         *     and is not a precondition for reading the observation.
+         */
+        get: operations["get_news_market_api_news_market_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/news/market/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get News Market Item
+         * @description One observation in full, with its group's retained timeline.
+         *
+         *     Read by Item identity, so it is not bound by the list's window: a link into a group that last
+         *     reported nine days ago still opens.
+         */
+        get: operations["get_news_market_item_api_news_market__item_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/news/quotes": {
         parameters: {
             query?: never;
@@ -323,6 +374,26 @@ export interface components {
         /** ApiEnvelope[NewsFeedData] */
         ApiEnvelope_NewsFeedData_: {
             data?: components["schemas"]["NewsFeedData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[NewsMarketData] */
+        ApiEnvelope_NewsMarketData_: {
+            data?: components["schemas"]["NewsMarketData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[NewsMarketItemData] */
+        ApiEnvelope_NewsMarketItemData_: {
+            data?: components["schemas"]["NewsMarketItemData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -648,7 +719,7 @@ export interface components {
              * Event Kind
              * @enum {string}
              */
-            event_kind: "news" | "listing" | "oi" | "liquidation" | "unsupported_market";
+            event_kind: "news" | "listing";
             /**
              * Focus Fact Context
              * @default
@@ -714,8 +785,6 @@ export interface components {
              * @default
              */
             reporting_origin: string;
-            /** Source Contract Reason */
-            source_contract_reason: ("source_contract_drift" | "unsupported_market_contract") | null;
             /**
              * Storyline Key
              * @default
@@ -926,7 +995,7 @@ export interface components {
              * Event Kind
              * @enum {string}
              */
-            event_kind: "news" | "listing" | "oi" | "liquidation" | "unsupported_market";
+            event_kind: "news" | "listing";
             /**
              * Focus Fact Context
              * @default
@@ -979,7 +1048,6 @@ export interface components {
             macro_lexicon: boolean;
             /** Member Count */
             member_count: number;
-            oi?: components["schemas"]["NewsFeedOiData"] | null;
             /** Opened At Ms */
             opened_at_ms: number;
             outcome: components["schemas"]["NewsOutcomeData"];
@@ -995,8 +1063,6 @@ export interface components {
              * @default
              */
             reporting_origin: string;
-            /** Source Contract Reason */
-            source_contract_reason: ("source_contract_drift" | "unsupported_market_contract") | null;
             /**
              * Storyline Key
              * @default
@@ -1026,8 +1092,6 @@ export interface components {
             hours?: number | null;
             /** Limit */
             limit: number;
-            /** Oi */
-            oi?: ("all" | "pushed" | "withheld" | "parse_failed") | null;
             /** Outcome */
             outcome?: ("pushed" | "held" | "pending") | null;
             /** Q */
@@ -1038,39 +1102,6 @@ export interface components {
             subject_code?: string | null;
             /** Symbol */
             symbol?: string | null;
-        };
-        /**
-         * NewsFeedOiData
-         * @description #207: the deterministic open-interest judgment behind one `telemetry_deterministic` row.
-         *
-         *     `None` on every other admission. The server assembles these fields from the typed judgment atom and its
-         *     current source metadata, so the browser never re-runs `oi_signal_parser_v1` over `leader_title`.
-         *
-         *     The two shapes are told apart by `parsed`: a judged frame carries the four measurements, an unparseable
-         *     one carries the provider-contract failure instead. Neither carries a threshold any more (#458): the lane
-         *     stopped deciding whether a reader is told, so there is no number left for a frame to say it ran under.
-         */
-        NewsFeedOiData: {
-            /** Failure Stage */
-            failure_stage?: string | null;
-            /** Oi Change Bps */
-            oi_change_bps?: number | null;
-            /** Oi Value Usd */
-            oi_value_usd?: number | null;
-            /** Parsed */
-            parsed: boolean;
-            /** Parser Version */
-            parser_version?: string | null;
-            /** Rule */
-            rule: string;
-            /** Symbol */
-            symbol?: string | null;
-            /** Title Sha256 */
-            title_sha256?: string | null;
-            /** Whale Long Profit Bps */
-            whale_long_profit_bps?: number | null;
-            /** Whale Oi Ratio Bps */
-            whale_oi_ratio_bps?: number | null;
         };
         /** NewsFeedSearchData */
         NewsFeedSearchData: {
@@ -1289,24 +1320,199 @@ export interface components {
             /** Updated At Ms */
             updated_at_ms?: number | null;
         };
+        /** NewsMarketData */
+        NewsMarketData: {
+            filters: components["schemas"]["NewsMarketFiltersData"];
+            /** Groups */
+            groups: components["schemas"]["NewsMarketGroupData"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /**
+             * Notifications Connected
+             * @default false
+             */
+            notifications_connected: boolean;
+            /** Sources */
+            sources: components["schemas"]["NewsMarketSourceData"][];
+        };
+        /** NewsMarketFiltersData */
+        NewsMarketFiltersData: {
+            /** From Ms */
+            from_ms: number;
+            /** Kind */
+            kind?: string | null;
+            /** Limit */
+            limit: number;
+            /** To Ms */
+            to_ms: number;
+        };
+        /**
+         * NewsMarketGroupData
+         * @description One run of consecutive observations of the same group, collapsed to its newest member.
+         */
+        NewsMarketGroupData: {
+            /** First Event At Ms */
+            first_event_at_ms: number;
+            /** Group Key */
+            group_key: string;
+            /** Last Event At Ms */
+            last_event_at_ms: number;
+            latest: components["schemas"]["NewsMarketObservationData"];
+            /**
+             * Market Kind
+             * @enum {string}
+             */
+            market_kind: "oi" | "liquidation" | "smart_money" | "unknown_market";
+            /** Notification Reason */
+            notification_reason: string;
+            /** Notification Status */
+            notification_status: string;
+            /** Observation Count */
+            observation_count: number;
+        };
+        /**
+         * NewsMarketItemData
+         * @description One observation in full: the stored provider payload and its group's timeline.
+         */
+        NewsMarketItemData: {
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Notification Reason */
+            notification_reason: string;
+            /** Notification Status */
+            notification_status: string;
+            /**
+             * Notifications Connected
+             * @default false
+             */
+            notifications_connected: boolean;
+            observation: components["schemas"]["NewsMarketObservationData"];
+            /** Provider Params */
+            provider_params: {
+                [key: string]: unknown;
+            };
+            /**
+             * Raw First Line
+             * @default
+             */
+            raw_first_line: string;
+            /** Timeline */
+            timeline: components["schemas"]["NewsMarketObservationData"][];
+        };
+        /**
+         * NewsMarketObservationData
+         * @description One provider record and whatever the parser could prove about it.
+         */
+        NewsMarketObservationData: {
+            /** Account Address */
+            account_address?: string | null;
+            /** Action */
+            action?: string | null;
+            /** Available At Ms */
+            available_at_ms?: number | null;
+            /** Direction */
+            direction?: string | null;
+            /** Event At Ms */
+            event_at_ms: number;
+            /** Forced Order Side */
+            forced_order_side?: string | null;
+            /** Group Key */
+            group_key: string;
+            /**
+             * Historical
+             * @default false
+             */
+            historical: boolean;
+            /** Ingest Mode */
+            ingest_mode: string;
+            /** Item Id */
+            item_id: string;
+            /** Liquidated Position Side */
+            liquidated_position_side?: string | null;
+            /**
+             * Market Kind
+             * @enum {string}
+             */
+            market_kind: "oi" | "liquidation" | "smart_money" | "unknown_market";
+            /** Measurement Definition */
+            measurement_definition?: string | null;
+            /** Notional Usd */
+            notional_usd?: string | null;
+            /** Oi Change Bps */
+            oi_change_bps?: number | null;
+            /** Oi Value Usd */
+            oi_value_usd?: number | null;
+            /** Parse Error */
+            parse_error?: string | null;
+            /**
+             * Parse Status
+             * @enum {string}
+             */
+            parse_status: "parsed" | "raw";
+            /** Pnl Usd */
+            pnl_usd?: string | null;
+            /** Position Side */
+            position_side?: string | null;
+            /** Price */
+            price?: string | null;
+            /** Provider */
+            provider?: string | null;
+            /** Raw Instrument */
+            raw_instrument?: string | null;
+            /** Received At Ms */
+            received_at_ms: number;
+            /** Source Strategy Id */
+            source_strategy_id?: string | null;
+            /** Source Venue */
+            source_venue?: string | null;
+            /** Symbol */
+            symbol?: string | null;
+            /** Title */
+            title: string;
+            /** Trader Label */
+            trader_label?: string | null;
+            /** Whale Long Profit Bps */
+            whale_long_profit_bps?: number | null;
+            /** Whale Oi Ratio Bps */
+            whale_oi_ratio_bps?: number | null;
+        };
+        /** NewsMarketSourceData */
+        NewsMarketSourceData: {
+            /**
+             * Groups
+             * @default 0
+             */
+            groups: number;
+            /** Last Received At Ms */
+            last_received_at_ms?: number | null;
+            /**
+             * Market Kind
+             * @enum {string}
+             */
+            market_kind: "oi" | "liquidation" | "smart_money" | "unknown_market";
+            /**
+             * Parsed
+             * @default 0
+             */
+            parsed: number;
+            /**
+             * Raw
+             * @default 0
+             */
+            raw: number;
+            /**
+             * Received
+             * @default 0
+             */
+            received: number;
+        };
         /** NewsModelEditorialData */
         NewsModelEditorialData: {
             relevance: components["schemas"]["NewsTradeRelevanceData"];
             taxonomy: components["schemas"]["NewsTaxonomyData"];
-        };
-        /**
-         * NewsOiStatusData
-         * @description #137's deterministic telemetry lane, as the 持仓异动 monitor reads it.
-         *
-         *     `by_rule_24h` is scoped to OI and keyed on the typed judgment's own rule names; the general pipeline
-         *     reason map remains a cross-lane aggregate. Since #458 there are two of them — `stored` and
-         *     `oi_parse_failed` — because the lane judges the provider's format and nothing else.
-         */
-        NewsOiStatusData: {
-            /** By Rule 24H */
-            by_rule_24h?: {
-                [key: string]: number;
-            };
         };
         /**
          * NewsOutcomeData
@@ -1445,26 +1651,6 @@ export interface components {
              * @default 0
              */
             tagged_24h: number;
-            /**
-             * Telemetry Events 24H
-             * @default 0
-             */
-            telemetry_events_24h: number;
-            /**
-             * Telemetry Parse Failed 24H
-             * @default 0
-             */
-            telemetry_parse_failed_24h: number;
-            /**
-             * Telemetry Parsed 24H
-             * @default 0
-             */
-            telemetry_parsed_24h: number;
-            /**
-             * Telemetry Received 24H
-             * @default 0
-             */
-            telemetry_received_24h: number;
             /**
              * Throttled 24H
              * @default 0
@@ -1776,11 +1962,6 @@ export interface components {
         /** NewsSourceContractStageCountsData */
         NewsSourceContractStageCountsData: {
             /**
-             * Parse Failed
-             * @default 0
-             */
-            parse_failed: number;
-            /**
              * Parsed
              * @default 0
              */
@@ -1791,23 +1972,18 @@ export interface components {
              */
             received: number;
             /**
-             * Unsupported
-             * @default 0
-             */
-            unsupported: number;
-            /**
              * Verdict
              * @default 0
              */
             verdict: number;
         };
-        /** NewsSourceContracts24hData */
+        /**
+         * NewsSourceContracts24hData
+         * @description The editorial Event funnel. Market intake is reported by `/api/news/market` from the facts.
+         */
         NewsSourceContracts24hData: {
-            liquidation_v1?: components["schemas"]["NewsSourceContractStageCountsData"];
             listing_v1?: components["schemas"]["NewsSourceContractStageCountsData"];
             news_v1?: components["schemas"]["NewsSourceContractStageCountsData"];
-            oi_v1?: components["schemas"]["NewsSourceContractStageCountsData"];
-            unsupported_market?: components["schemas"]["NewsSourceContractStageCountsData"];
         };
         /** NewsStatusData */
         NewsStatusData: {
@@ -1820,7 +1996,6 @@ export interface components {
             learning_retention: components["schemas"]["NewsLearningRetentionStatusData"];
             /** Measured At Ms */
             measured_at_ms: number;
-            oi?: components["schemas"]["NewsOiStatusData"];
             pipeline: components["schemas"]["NewsPipelineStatusData"];
             price?: components["schemas"]["NewsPriceStatusData"];
             /** Reasons 24H */
@@ -2775,7 +2950,6 @@ export interface operations {
                 cursor?: string;
                 outcome?: string;
                 hours?: number;
-                oi?: string;
                 direction?: string;
             };
             header?: never;
@@ -2791,6 +2965,81 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_NewsFeedData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_news_market_api_news_market_get: {
+        parameters: {
+            query?: {
+                kind?: string;
+                from_ms?: number;
+                to_ms?: number;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_NewsMarketData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_news_market_item_api_news_market__item_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_NewsMarketItemData_"];
+                };
+            };
+            /** @description No market Item with this identity is retained. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_NewsMarketItemData_"];
                 };
             };
             /** @description Validation Error */

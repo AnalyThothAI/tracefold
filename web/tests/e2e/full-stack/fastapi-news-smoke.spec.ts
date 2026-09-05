@@ -53,7 +53,7 @@ test("FastAPI serves the console, installs bootstrap bearer, and renders one New
     reason: "Changing route scope intentionally supersedes the prior polling reads.",
   });
   await page.goto(
-    "/news?symbol=NOPE&event_family=other&outcome=held&hours=1&direction=bullish&event_kind=oi",
+    "/news?symbol=NOPE&event_family=other&outcome=held&hours=1&direction=bullish&event_kind=listing",
   );
   const searchedFeedPromise = page.waitForResponse((response) => {
     const url = new URL(response.url());

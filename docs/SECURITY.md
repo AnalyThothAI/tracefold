@@ -332,10 +332,21 @@ existence, enablement, delivery completeness, or lossless history.
 
 Accepted event metadata is bounded to provider score/signal/grade/assets/source
 and the deterministic matching Strategy ID/name/source-type/observed-engine-type
-provenance union. The full Strategy definition and metrics payload are never
-copied into public data. Provider ratings and provenance are descriptive
-NewsItem metadata after admission and cannot change fact identity, Event
-membership, priority, or feed ordering. Disconnect, overflow, outage, and
+provenance union. That normalized projection is what the editorial plane reads,
+and the Strategy definition is still never copied into it. A **market** frame
+additionally stores its own `params` object on `news_items.provider_params`, and
+`GET /api/news/market/{item_id}` serves it to the authenticated operator (#553
+PR-1): `relatedAddress` and `strategy.metrics` are the account and the
+full-precision numbers the observation is about, and a stored fact nobody can
+read back at the provider's own precision is not evidence. `params` is the
+business payload of one `strategy.triggered` frame and carries no transport or
+authentication material — the provider token lives in the connection URL and the
+request headers, neither of which reaches the parser — so what is refused there
+is shapes PostgreSQL's `jsonb` cannot hold, not values. It is bounded by the
+transport's own `OPENNEWS_MAX_FRAME_BYTES` and by no second, smaller ceiling
+that would silently truncate a payload the transport accepted. Provider ratings
+and provenance are descriptive NewsItem metadata after admission and cannot
+change fact identity, Event membership, priority, or feed ordering. Disconnect, overflow, outage, and
 provider non-delivery create sanitized typed incidents with bounded cause,
 close-code, interval, and recovery state. Reconnect restores current WSS health
 but never marks an interval recovered without official Strategy-hit evidence;

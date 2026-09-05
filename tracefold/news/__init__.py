@@ -6,6 +6,14 @@ configuration constants remain under their owning modules instead of becoming an
 
 from __future__ import annotations
 
+from .market_contracts import (
+    MARKET_PAGE_MAX,
+    MARKET_TIMELINE_MAX,
+    MARKET_WINDOW_DEFAULT_MS,
+    MARKET_WINDOW_MAX_MS,
+    NOTIFICATION_REASON_NOT_CONNECTED,
+    NOTIFICATION_STATUS_NOT_CONNECTED,
+)
 from .models import (
     NewsFeedEntry,
     ReaderDeliveryPresentation,
@@ -16,7 +24,7 @@ from .models import (
     TelegramDeliveryReceipt,
     TriageVerdict,
 )
-from .oi_contracts import OI_METRIC_VERSION, OI_OUTCOMES
+from .oi_contracts import OI_METRIC_VERSION
 from .opennews import (
     OpenNewsEvent,
     OpenNewsExpectedError,
@@ -40,7 +48,7 @@ from .progression_review import (
     PROGRESSION_REVIEW_TIMEOUT_SECONDS,
     ProgressionVerifier,
 )
-from .source_contracts import EVENT_KINDS, EventKind, SourceContractReason
+from .source_contracts import EVENT_KINDS, MARKET_KINDS, EventKind, MarketKind
 from .taxonomy import (
     ASSERTION_STATUSES,
     CHANGE_STATES,
@@ -68,9 +76,15 @@ __all__ = [
     "EVENT_FAMILIES",
     "EVENT_KINDS",
     "IPTC_SUBJECT_CODES",
+    "MARKET_KINDS",
+    "MARKET_PAGE_MAX",
+    "MARKET_TIMELINE_MAX",
+    "MARKET_WINDOW_DEFAULT_MS",
+    "MARKET_WINDOW_MAX_MS",
     "NEWS_RETRIEVAL_SHA256",
+    "NOTIFICATION_REASON_NOT_CONNECTED",
+    "NOTIFICATION_STATUS_NOT_CONNECTED",
     "OI_METRIC_VERSION",
-    "OI_OUTCOMES",
     "PROGRESSION_REVIEW_REASON_MAX_CHARS",
     "PROGRESSION_REVIEW_TIMEOUT_SECONDS",
     "REQUIRED_TRADABILITY_VENUES",
@@ -79,6 +93,7 @@ __all__ = [
     "EditorialEnvelope",
     "EventKind",
     "IPTCCodebookSha",
+    "MarketKind",
     "ModelTaxonomyV1",
     "NewsFeedEntry",
     "NewsTaxonomyV1",
@@ -100,7 +115,6 @@ __all__ = [
     "SemanticJudgeError",
     "SemanticJudgment",
     "SourceAuthority",
-    "SourceContractReason",
     "TelegramDeliveryReceipt",
     "TradabilityMatch",
     "TradabilityReview",

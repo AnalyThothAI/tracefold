@@ -39,16 +39,17 @@ test.describe("desktop sidebar navigation", () => {
 
     await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "交易" })).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" })).toBeVisible();
-    // #256/#460: three working surfaces in two groups, with neither Alpha 判定 nor ReviewDesk duplicated.
+    await expect(primaryNavigation.getByRole("link", { name: "市场事实" })).toBeVisible();
+    // #256/#460/#553 PR-1: three working surfaces in one group, with neither Alpha 判定 nor ReviewDesk.
     await expect(primaryNavigation.getByRole("link")).toHaveCount(3);
     await expect(primaryNavigation.getByRole("link", { name: "Alpha 判定" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "学习复盘" })).toHaveCount(0);
-    // When the lane last froze a Case, and the explicit execution mode, ride beside the label
-    // without renaming it. The clock is rendered in the viewer's timezone, so match its shape.
-    await expect(primaryNavigation.getByRole("link", { name: "交易" })).toContainText(
-      /\d{2}-\d{2} \d{2}:\d{2} · disabled/,
-    );
+    /*
+     * The label stands alone. The `tradingEnvironment` badge that rode beside it — the lane's last-Case
+     * clock and the execution mode — cost every News route a 15 s poll of `/api/trading/status` for two
+     * words the desk states first (#537 PR-5), and no destination carries a badge now.
+     */
+    await expect(primaryNavigation.getByRole("link", { name: "交易" })).toHaveText("交易");
     await expect(primaryNavigation.getByRole("link", { name: "Macro" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "Ops" })).toHaveCount(0);
 
@@ -63,11 +64,12 @@ test.describe("desktop sidebar navigation", () => {
     await page.goto("/news");
 
     const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
-    await primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" }).click();
-    await expect(page).toHaveURL(/\/news\/oi$/);
-    await expect(
-      primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" }),
-    ).toHaveAttribute("aria-current", "page");
+    await primaryNavigation.getByRole("link", { name: "市场事实" }).click();
+    await expect(page).toHaveURL(/\/news\/market$/);
+    await expect(primaryNavigation.getByRole("link", { name: "市场事实" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
 
     await expectSidebarRouteChange(page, "事件流", "/news");
     /*
@@ -110,9 +112,9 @@ test.describe("desktop sidebar navigation", () => {
     allowBrowserFailure(page, {
       kind: "requestfailed",
       // `trading/orders` has not existed since #475; `/trading` reads status, cases and executions,
-      // and `/news/oi` reads gate. No News route reads trading status at all since #537 PR-5.
+      // and `/trading` is the only reader of gate since #553 PR-1. No News route reads trading at all.
       match:
-        /^GET \/api\/(?:status|news\/(?:feed|status|quotes)|trading\/(?:status|cases|executions|gate)) \(net::ERR_FAILED\)$/,
+        /^GET \/api\/(?:status|news\/(?:feed|market|status|quotes)|trading\/(?:status|cases|executions|gate)) \(net::ERR_FAILED\)$/,
       reason:
         "This case intentionally aborts the known post-bootstrap reads to prove navigation survives.",
     });
@@ -145,16 +147,17 @@ test.describe("mobile bottom navigation", () => {
     await expect(primaryNavigation).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "Radar" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" })).toBeVisible();
+    await expect(primaryNavigation.getByRole("link", { name: "市场事实" })).toBeVisible();
     // #207: the pipeline status page kept its route and lost its slot — the topbar lamp is the way in.
     await expect(primaryNavigation.getByRole("link", { name: "流水线状态" })).toHaveCount(0);
 
-    await primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" }).click();
-    await expect(page).toHaveURL(/\/news\/oi$/);
+    await primaryNavigation.getByRole("link", { name: "市场事实" }).click();
+    await expect(page).toHaveURL(/\/news\/market$/);
     await expect(primaryNavigation).toBeVisible();
-    await expect(
-      primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" }),
-    ).toHaveAttribute("aria-current", "page");
+    await expect(primaryNavigation.getByRole("link", { name: "市场事实" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
 
     await primaryNavigation.getByRole("link", { name: "事件流" }).click();
     await expect(page).toHaveURL(/\/news(?:\?|$)/);

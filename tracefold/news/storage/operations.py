@@ -51,10 +51,24 @@ _RAW_RETENTION_PRESERVATION_SQL = """
       )
 """
 
+# A market Item lives on the judged tier whatever happened to it (#553). It has no verdict, no review
+# and no learning case, so the evidence predicate below can never preserve one -- under `raw_days`
+# alone every OI frame, liquidation report and account report would expire in 30 days while the
+# ordinary news it sits beside keeps a year. Which retention an observation gets is a decision about
+# the observation, not a reward for having been judged.
+_MARKET_RETENTION_SQL = """
+  AND (
+        %s::bigint IS NULL
+        OR i.market_kind IS NULL
+        OR i.observed_at_ms < %s
+      )
+"""
+
 RAW_RETENTION_CANDIDATE_SQL = f"""
     SELECT i.item_id, i.observed_at_ms
       FROM news_items i
      WHERE i.observed_at_ms < %s
+       {_MARKET_RETENTION_SQL}
        {_RAW_RETENTION_PRESERVATION_SQL}
      ORDER BY i.observed_at_ms, i.item_id
      LIMIT %s
@@ -64,6 +78,7 @@ _RAW_RETENTION_DELETE_SQL = f"""
     DELETE FROM news_items i
      WHERE i.item_id = ANY(%s)
        AND i.observed_at_ms < %s
+       {_MARKET_RETENTION_SQL}
        {_RAW_RETENTION_PRESERVATION_SQL}
  RETURNING i.item_id, i.observed_at_ms
 """  # noqa: S608
@@ -394,27 +409,30 @@ class OperationsStorage:
 
         Deleting `news_items` cascades to `news_events` (leader FK) and from there to verdicts, deliveries,
         members, assets, bands, snapshots and reviews, so one retention number decides the lifetime of the
-        whole learning plane. An Item is evidence when *any* Event it belongs to — as leader or as a later
-        member, which is what a rebuild of the Triage input needs — carries a verdict or review. Passing no
-        ``judged_cutoff_ms`` keeps the old one-tier behaviour for callers that do not care.
+        whole learning plane. It also cascades to all three market fact tables, each of which now has its
+        own foreign key, so a typed fact cannot outlive the record it was parsed from. An Item is evidence
+        when *any* Event it belongs to — as leader or as a later member, which is what a rebuild of the
+        Triage input needs — carries a verdict or review. A market Item is kept for the judged period
+        outright. Passing no ``judged_cutoff_ms`` keeps the old one-tier behaviour for callers that do not
+        care.
         """
 
         size = int(batch_size)
         if not 1 <= size <= RAW_RETENTION_BATCH_MAX:
             raise ValueError("news_raw_retention_batch_invalid")
         judged = None if judged_cutoff_ms is None else int(judged_cutoff_ms)
-        candidate_params = (int(cutoff_ms), judged, judged, judged, size)
+        candidate_params = (int(cutoff_ms), judged, judged, judged, judged, judged, size)
         candidates = self.conn.execute(RAW_RETENTION_CANDIDATE_SQL, candidate_params).fetchall()
         candidate_ids = [str(row["item_id"]) for row in candidates]
         deleted = []
         if candidate_ids:
             deleted = self.conn.execute(
                 _RAW_RETENTION_DELETE_SQL,
-                (candidate_ids, int(cutoff_ms), judged, judged, judged),
+                (candidate_ids, int(cutoff_ms), judged, judged, judged, judged, judged),
             ).fetchall()
         backlog = self.conn.execute(
             RAW_RETENTION_CANDIDATE_SQL,
-            (int(cutoff_ms), judged, judged, judged, size + 1),
+            (int(cutoff_ms), judged, judged, judged, judged, judged, size + 1),
         ).fetchall()
         return {
             "candidate_items": len(candidate_ids),

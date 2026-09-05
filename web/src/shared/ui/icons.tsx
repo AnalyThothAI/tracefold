@@ -7,7 +7,7 @@ import { forwardRef, type ReactNode } from "react";
  * Generic actions — Search, RefreshCw, PanelLeft, Chevron, Check, X, ExternalLink, SlidersHorizontal —
  * stay on lucide and are never redrawn here: they are already at this spec, and a second hand-drawn copy
  * only introduces drift. What lucide cannot supply is the vocabulary this console is read in. A newspaper
- * and a heartbeat say "news" and "activity"; the destinations are 事件流 and OI 来源与准入审计, and neither glyph
+ * and a heartbeat say "news" and "activity"; the destinations are 事件流 and 市场事实, and neither glyph
  * draws the word it stands for.
  *
  * Every icon here is on the same 24 grid with a 2px round-capped stroke and takes its colour from
@@ -60,11 +60,11 @@ export const EventStreamIcon = forwardRef<SVGSVGElement, LucideProps>((props, re
 EventStreamIcon.displayName = "EventStreamIcon";
 
 /**
- * OI 来源与准入审计. A trace with one spike in it: the provider emits a frame when its own trigger fires, and this
- * page is where a reader checks that the trace itself parsed, passed the gates and occupied a push slot.
+ * 市场事实. A trace with one spike in it: a provider emits a market record when its own trigger fires, and
+ * this page is where a reader checks what arrived, what parsed out of it, and whether it was pushed.
  *
- * A flat line would say "monitoring"; the spike is the frame. The glyph never leans up or down as a price
- * would — open interest rising is not price rising (#104).
+ * A flat line would say "monitoring"; the spike is the observation. The glyph never leans up or down as a
+ * price would — open interest rising is not price rising (#104).
  */
 export const TelemetryPulseIcon = forwardRef<SVGSVGElement, LucideProps>((props, ref) => (
   <TracefoldIcon ref={ref} {...props}>

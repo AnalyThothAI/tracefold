@@ -14,6 +14,11 @@ import type {
   NewsQuote,
   NewsReaction,
   NewsSymbol,
+  NewsMarket,
+  NewsMarketGroup,
+  NewsMarketItem,
+  NewsMarketObservation,
+  NewsMarketSource,
 } from "@features/news/api/newsQueries";
 
 export const NEWS_NOW_MS = 1_779_000_000_000;
@@ -43,7 +48,6 @@ export function newsFeedEventFixture(overrides: Partial<NewsFeedEvent> = {}): Ne
     engine_type: "news",
     event_id: "evt-global-policy",
     event_kind: "news",
-    source_contract_reason: null,
     focus_fact_context: "Central banks respond as the policy outlook changes.",
     focus_fact_id: "fact-global-policy",
     focus_fact_method: "single",
@@ -162,7 +166,6 @@ export function newsEventFixture(overrides: Partial<NewsEvent> = {}): NewsEvent 
     engine_type: feedEvent.engine_type,
     event_id: feedEvent.event_id,
     event_kind: feedEvent.event_kind,
-    source_contract_reason: feedEvent.source_contract_reason,
     focus_fact_context: feedEvent.focus_fact_context,
     focus_fact_id: feedEvent.focus_fact_id,
     focus_fact_method: feedEvent.focus_fact_method,
@@ -486,22 +489,12 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       decided_push_24h: 40,
       model_triage_24h: 41,
       source_classifier_version: "opennews_source_classifier_v1",
+      // The editorial funnel, and only that (#553 PR-1). Market intake is counted off the stored
+      // observations and reported per kind by `/api/news/market`, never here.
       source_contracts_24h: {
-        news_v1: { received: 170, parsed: 170, parse_failed: 0, unsupported: 0, verdict: 100 },
-        listing_v1: { received: 8, parsed: 8, parse_failed: 0, unsupported: 0, verdict: 8 },
-        oi_v1: { received: 141, parsed: 140, parse_failed: 1, unsupported: 0, verdict: 140 },
-        liquidation_v1: { received: 1, parsed: 1, parse_failed: 0, unsupported: 0, verdict: 1 },
-        unsupported_market: { received: 0, parsed: 0, parse_failed: 0, unsupported: 0, verdict: 0 },
+        news_v1: { received: 170, parsed: 170, verdict: 100 },
+        listing_v1: { received: 8, parsed: 8, verdict: 8 },
       },
-      telemetry_parse_failed_24h: 1,
-      telemetry_parsed_24h: 139,
-      // Three numbers that must not agree, because they count three different things and the 全部 tab has
-      // to read the right one: `received` counts provider items before the Gate (142), `events` counts the
-      // Events those became and is the table's own universe (141 — one of them is still awaiting a
-      // verdict), and `oi.by_rule_24h` sums to 140 judged verdicts. A fixture where they matched would let
-      // the tab read any of the three and still pass.
-      telemetry_received_24h: 142,
-      telemetry_events_24h: 141,
       dropped_by_rule: { noise: 60, below_threshold: 20 },
       events_1h: 12,
       events_24h: 320,
@@ -531,15 +524,6 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       triage_p50_ms: 640,
       triage_p95_ms: 1_900,
     },
-    // #207: the deterministic OI lane. `by_rule_24h` is keyed on the judge's own rule names — those cannot
-    // come from `dropped_by_rule`, which groups `override_rule` and reads `telemetry_deterministic` for
-    // every OI verdict. Since #458 there are two of them, and neither is a threshold.
-    oi: {
-      by_rule_24h: {
-        stored: 139,
-        oi_parse_failed: 1,
-      },
-    },
     state: "ready",
     watchlist: ["BTC", "ETH", "SOL"],
     workers_state: "running",
@@ -548,90 +532,144 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
 }
 
 /**
- * One judged telemetry frame, as the feed serves it (#207/#137). The `oi` block is the judge's own trace
- * read back, so a test that wants the unparseable shape overrides `rule` and the fields that shape actually
- * carries rather than inventing new ones.
- */
-/**
- * The OI frame the trading fixture opened `symbol`'s case on (#282).
+ * One market observation, as `/api/news/market` serves it (#553 PR-1).
  *
- * The token page joins 交易视角 to its newest case by the `event_id` the ledger published, and the trading
- * fixture writes `evt-oi-{base}`. Mocks that answered a symbol query with rows carrying neither that id nor
- * an `oi` block left the panel with no frame to read, which is not a state the server can produce for a
- * name whose case exists — the page's own tab strip counts an OI 帧 lane.
- *
- * `openedAtMs` is the caller's because the two fixture files keep clocks a hundred days apart. A frame left
- * on the news clock rendered as the case's own frame while carrying a timestamp from before the case, which
- * is a state the pipeline cannot produce and the panel would nonetheless have printed.
+ * The default is the parsed OI shape. A test that wants the retained-but-unparsed shape overrides
+ * `parse_status`, `parse_error` and drops the measurements, rather than inventing fields the row never
+ * carries: `unknown_market` has no parser at all, and that is a kind rather than a failure.
  */
-export function newsSymbolOiFrameFixture(symbol: string, openedAtMs?: number): NewsFeedEvent {
-  const template = newsOiFrameFixture();
+export function newsMarketObservationFixture(
+  overrides: Partial<NewsMarketObservation> = {},
+): NewsMarketObservation {
   return {
-    ...template,
-    assets: [{ base_symbol: symbol, listed: true, symbol, venue: "binance.perp" }],
-    event_id: `evt-oi-${symbol.toLowerCase()}`,
-    opened_at_ms: openedAtMs ?? template.opened_at_ms,
-    leader_title: template.leader_title.replace("WIF", symbol),
-    oi: template.oi ? { ...template.oi, symbol } : null,
+    event_at_ms: NEWS_NOW_MS - 120_000,
+    group_key: "oi:WIF",
+    historical: false,
+    ingest_mode: "live",
+    item_id: "mkt-oi-wif-3",
+    market_kind: "oi",
+    oi_change_bps: 671,
+    oi_value_usd: 11_030_000,
+    parse_error: null,
+    parse_status: "parsed",
+    provider: "opennews",
+    received_at_ms: NEWS_NOW_MS - 118_000,
+    source_venue: "binance",
+    symbol: "WIF",
+    title: "WIF OI Rise 6.71%, OI Value 11.03M, Whale Long Profit 88.40%, Whale/OI Ratio 143.90%",
+    whale_long_profit_bps: 8_840,
+    whale_oi_ratio_bps: 14_390,
+    ...overrides,
   };
 }
 
-export function newsOiFrameFixture(overrides: Partial<NewsFeedEvent> = {}): NewsFeedEvent {
-  return newsFeedEventFixture({
-    admission: "telemetry_deterministic",
-    event_kind: "oi",
-    /*
-     * The provider/Gate evidence stays empty, while the public projection carries the deterministic asset
-     * that Triage durably recorded in `news_event_assets` (#267/#287). They are intentionally different facts.
-     */
-    assets: [{ base_symbol: "WIF", listed: true, symbol: "WIF", venue: "binance.perp" }],
-    delivery: { error_code: null, settled_at_ms: NEWS_NOW_MS - 20_000, state: "sent" },
-    event_id: "evt-oi-wif",
-    grounded_assets: [],
-    leader_title:
-      "WIF OI Rise 6.71%, OI Value 11.03M, Whale Long Profit 88.40%, Whale/OI Ratio 143.90%",
-    oi: {
-      failure_stage: null,
-      oi_change_bps: 671,
-      oi_value_usd: 11_030_000,
-      parsed: true,
-      parser_version: null,
-      // The only place the feed carries the frame's subject for this lane.
-      symbol: "WIF",
-      rule: "stored",
-      title_sha256: null,
-      whale_long_profit_bps: 8_840,
-      whale_oi_ratio_bps: 14_390,
-    },
-    reaction: newsReactionFixture({
-      p0: "0.8412",
-      return_1h_bps: 203,
-      return_4h_bps: 145,
-      state: "complete",
-    }),
-    triage: newsTriageFixture({
-      /*
-       * Empty, because that is what the feed serves. `_triage_summary` builds the slim shape for a feed
-       * row and only the Event detail's `full=True` shape carries `assets`. A fixture that filled it here
-       * let `/news/oi` read its SYMBOL column from a field production never sends, and the tests passed.
-       */
-      assets: [],
-      // `evaluate_oi` maps a rising frame to `bullish`. Keeping the fixture self-consistent matters here:
-      // the direction word and the OI change are two different measurements and a test that let them
-      // disagree would be asserting a screen the pipeline cannot produce.
-      direction: "bullish",
-      direction_zh: "利多",
-      headline_zh: "▲ WIF 持仓异动6.71%｜持仓1103万｜鲸鱼占比143.9%｜鲸鱼多头盈利88.4%｜4h内第1次",
-      magnitude: 2,
-      magnitude_zh: "影响明显",
-      override_rule: "telemetry_deterministic",
-      scope: "single_name",
-      scope_zh: "单一标的",
-      why_zh: "",
-    }),
-    watchlist_hits: [],
+/**
+ * One run of consecutive observations of a group, collapsed to its newest member.
+ *
+ * `notification_status` and `notification_reason` are open server strings written by the notification
+ * owner, and they are kept apart from `parse_status` here for the same reason the page keeps them apart:
+ * a record that parsed cleanly and was not pushed is not a parse failure.
+ */
+export function newsMarketGroupFixture(overrides: Partial<NewsMarketGroup> = {}): NewsMarketGroup {
+  const latest = overrides.latest ?? newsMarketObservationFixture();
+  return {
+    first_event_at_ms: NEWS_NOW_MS - 900_000,
+    group_key: latest.group_key,
+    last_event_at_ms: latest.event_at_ms,
+    market_kind: latest.market_kind,
+    notification_reason: "notifications_not_connected",
+    notification_status: "not_sent",
+    observation_count: 3,
     ...overrides,
-  });
+    latest,
+  };
+}
+
+export function newsMarketSourceFixture(
+  overrides: Partial<NewsMarketSource> = {},
+): NewsMarketSource {
+  return {
+    groups: 24,
+    last_received_at_ms: NEWS_NOW_MS - 118_000,
+    market_kind: "oi",
+    parsed: 61,
+    raw: 0,
+    received: 61,
+    ...overrides,
+  };
+}
+
+/**
+ * The market page as one read: groups, the per-kind intake summary, and whether anything is listening.
+ *
+ * `notifications_connected` defaults to `false` because that is what production answers today. The page
+ * must render it rather than state it, so a test that flips this must see the sentence change.
+ */
+export function newsMarketFixture(overrides: Partial<NewsMarket> = {}): NewsMarket {
+  return {
+    filters: {
+      from_ms: NEWS_NOW_MS - 72 * 3_600_000,
+      kind: null,
+      limit: 50,
+      to_ms: NEWS_NOW_MS,
+    },
+    groups: [newsMarketGroupFixture()],
+    next_cursor: null,
+    notifications_connected: false,
+    sources: [
+      newsMarketSourceFixture(),
+      newsMarketSourceFixture({
+        groups: 9,
+        last_received_at_ms: NEWS_NOW_MS - 240_000,
+        market_kind: "liquidation",
+        parsed: 12,
+        raw: 0,
+        received: 12,
+      }),
+      newsMarketSourceFixture({
+        groups: 2,
+        last_received_at_ms: NEWS_NOW_MS - 600_000,
+        market_kind: "smart_money",
+        parsed: 4,
+        raw: 0,
+        received: 4,
+      }),
+      // No parser, so every record is retained raw. `raw` is the shape, not a failure count.
+      newsMarketSourceFixture({
+        groups: 1,
+        last_received_at_ms: NEWS_NOW_MS - 1_800_000,
+        market_kind: "unknown_market",
+        parsed: 0,
+        raw: 2,
+        received: 2,
+      }),
+    ],
+    ...overrides,
+  };
+}
+
+export function newsMarketItemFixture(overrides: Partial<NewsMarketItem> = {}): NewsMarketItem {
+  const observation = overrides.observation ?? newsMarketObservationFixture();
+  return {
+    description: "Open interest rose over the provider's own trigger window.",
+    notification_reason: "notifications_not_connected",
+    notification_status: "not_sent",
+    notifications_connected: false,
+    provider_params: { rule: "oi_rise", window_minutes: 15 },
+    raw_first_line: observation.title,
+    timeline: [
+      observation,
+      newsMarketObservationFixture({
+        event_at_ms: observation.event_at_ms - 600_000,
+        item_id: "mkt-oi-wif-2",
+        oi_change_bps: 512,
+        title:
+          "WIF OI Rise 5.12%, OI Value 10.41M, Whale Long Profit 86.10%, Whale/OI Ratio 139.20%",
+      }),
+    ],
+    ...overrides,
+    observation,
+  };
 }
 
 export function newsQuoteFixture(overrides: Partial<NewsQuote> = {}): NewsQuote {

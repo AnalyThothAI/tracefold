@@ -292,23 +292,34 @@ def test_quote_working_set_includes_recent_oi_ledger_symbols(conn) -> None:
     # The ordinary grounded lane also names DOGE; the UNION must still return one symbol and obey the
     # caller's existing bound rather than multiplying provider work.
     _event(conn, "ev-news-doge", symbols=("DOGE",), opened_at_ms=NOW - 1, delivered=False)
-    _event(conn, "ev-oi", symbols=(), opened_at_ms=NOW, delivered=False)
+    # The OI arm reaches the ledger through the Item that produced it (#553). There is no Event: a
+    # market observation opens none, and the working set was reading one only because the foreign key
+    # forced it to.
     conn.execute(
-        "UPDATE news_events SET admission = 'telemetry_deterministic', storyline_key = 'asset:DOGE' "
-        "WHERE event_id = 'ev-oi'"
+        """
+        INSERT INTO news_items (
+          item_id, source_id, source_item_key, title, raw_first_line, description, reporting_origin,
+          published_at_ms, observed_at_ms, provider_metadata, provenance, first_ingest_mode, trace_id,
+          created_at_ms, updated_at_ms, market_kind, market_source_strategy_id, market_parse_status
+        ) VALUES (
+          'i-ev-oi', 'opennews', 'i-ev-oi', 'DOGE OI Rise', '', '', 'opennews', %s, %s,
+          '{}'::jsonb, '[]'::jsonb, 'live', 'trace', %s, %s, 'oi', '1019', 'parsed'
+        )
+        """,
+        (NOW, NOW, NOW, NOW),
     )
     conn.execute(
         """
         INSERT INTO news_oi_signals (
-          event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd,
-          whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, created_at_ms,
-          source_item_id, source_venue, available_at_ms, learning_epoch
+          event_id, metric_version, symbol, raw_instrument, direction, oi_change_bps, oi_value_usd,
+          whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, received_at_ms, created_at_ms,
+          provider, measurement_definition, source_item_id, source_venue, available_at_ms, historical
         ) VALUES (
-          'ev-oi', 'oi_signal_v1', 'DOGE', 'rise', 864, 73010000, 8060, 21097, %s, %s,
-          'i-ev-oi', 'binance', %s, 'unproven'
+          'ev-oi', 'oi_signal_v1', 'DOGE', 'DOGE', 'rise', 864, 73010000, 8060, 21097, %s, %s, %s,
+          'opennews', 'oi_signal_v1|unproven|unproven', 'i-ev-oi', 'binance', %s, false
         )
         """,
-        (NOW, NOW, NOW),
+        (NOW, NOW, NOW, NOW),
     )
     conn.commit()
 
@@ -575,52 +586,26 @@ def test_the_due_scan_covers_held_events_and_stops_at_terminal_rows(conn) -> Non
     assert {row["event_id"] for row in repos.price.due_reactions(now_ms=NOW, limit=100)} == {"dropped"}
 
 
-def test_a_telemetry_frame_reaches_the_price_plane_only_once_its_asset_is_recorded(conn) -> None:
-    """#267, at the seam where it actually failed: the write and the read must agree.
+def test_the_price_plane_plans_a_reaction_from_the_events_own_grounded_asset(conn) -> None:
+    """`due_reactions` walks Event-assets, not verdicts, and the Gate's grounding is what writes them.
 
-    A telemetry Event arrives with `grounded_assets = []` because the admission Gate cannot ground
-    `TRUMP OI Rise 4.55%, OI Value 32.17M, …`. Until the deterministic judge's own primary is written
-    back, `due_reactions` — which walks Event-assets, not verdicts — has nothing to plan, which is why
-    production had 0 reactions against 112 frames and a frame table with three permanently empty
-    columns.
+    #267 added a second writer so a deterministic market judge could attach the primary its Event's
+    Gate could not ground. That judge, and the Events it judged, are gone (#553): a market observation
+    opens no Event, so it reaches no reaction horizon and there is nothing left to write back. What
+    remains is the one path that was always true for editorial Events.
     """
 
     _universe(conn, _instrument("binance.perp", "TRUMPUSDT", "TRUMP"))
-    _event(
-        conn,
-        "oi-frame",
-        symbols=("TRUMP",),
-        opened_at_ms=NOW - 2 * HOUR,
-        admission="telemetry_deterministic",
-        event_kind="oi",
-        ground_assets=False,
-    )
+    _event(conn, "grounded-frame", symbols=("TRUMP",), opened_at_ms=NOW - 2 * HOUR)
     repos = repositories_for_connection(conn)
-    assert repos.price.due_reactions(now_ms=NOW, limit=100) == []
-
-    with repos.transaction():
-        repos.news.record_event_assets(event_id="oi-frame", assets=[("trump", "perp")])
 
     due = repos.price.due_reactions(now_ms=NOW, limit=100)
-    assert [(row["event_id"], row["symbol"]) for row in due] == [("oi-frame", "TRUMP")]
-    # The anchor is the Event's own, so the 1 H and 4 H horizons are measured from the frame, and the
-    # judge's primary is what the review's event-level sample is taken over.
+
+    assert [(row["event_id"], row["symbol"]) for row in due] == [("grounded-frame", "TRUMP")]
+    # The anchor is the Event's own, so the 1 H and 4 H horizons are measured from the frame.
     assert due[0]["anchor_at_ms"] == NOW - 2 * HOUR
     assert due[0]["is_primary"] is True
-    # Idempotent: Triage settles a redelivered Event again and the row is identical either way.
-    with repos.transaction():
-        repos.news.record_event_assets(event_id="oi-frame", assets=[("TRUMP", "perp")])
-    assert len(repos.price.due_reactions(now_ms=NOW, limit=100)) == 1
-
-
-def test_recording_an_asset_for_an_event_that_does_not_exist_writes_nothing(conn) -> None:
-    """The anchor comes from the Event row, so no Event means no row rather than a guessed timestamp."""
-
-    repos = repositories_for_connection(conn)
-    with repos.transaction():
-        repos.news.record_event_assets(event_id="never-admitted", assets=[("TRUMP", "perp")])
-        repos.news.record_event_assets(event_id="never-admitted", assets=[("", None)])
-    assert conn.execute("SELECT count(*) AS n FROM news_event_assets").fetchone()["n"] == 0
+    assert not hasattr(repos.news, "record_event_assets")
 
 
 def test_reaction_writes_are_idempotent_and_never_lose_a_persisted_price_point(conn) -> None:

@@ -1,0 +1,74 @@
+@layer app.features {
+  /* A reading surface, not the thirteen-track frame table it replaced: the rows wrap instead of scrolling
+     sideways, so the page keeps the console's ordinary 1240px measure. */
+  .news-panel.news-market-shell {
+    max-width: 1240px;
+  }
+
+  .news-market-body {
+    display: grid;
+    gap: 12px;
+  }
+
+  /* Two notes, side by side, from two different reads. Neither may grow into the other's failure. */
+  .news-market-notes {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .news-market-note {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    gap: 4px 8px;
+    align-items: baseline;
+    margin: 0;
+    padding: 9px 12px;
+    border-radius: var(--radius-lg);
+    background: var(--surface-panel);
+    box-shadow: var(--ring-panel);
+  }
+
+  .news-market-note > small {
+    color: var(--text-subtle);
+    font: 700 var(--font-size-eyebrow)/1 var(--font-mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .news-market-note > b {
+    color: var(--text-primary);
+    font-size: var(--font-size-meta);
+    font-weight: 660;
+  }
+
+  .news-market-note[data-tone="done"] > b {
+    color: var(--signal-done);
+  }
+
+  .news-market-note[data-tone="caution"] > b {
+    color: var(--signal-caution);
+  }
+
+  .news-market-note > em {
+    min-width: 0;
+    color: var(--text-subtle);
+    font-size: var(--font-size-mono-meta);
+    font-style: normal;
+    line-height: 1.45;
+  }
+
+  @media (max-width: 767px) {
+    .news-market-notes {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .news-market-note {
+      grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .news-market-note > em {
+      grid-column: 1 / -1;
+    }
+  }
+}

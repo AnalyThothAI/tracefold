@@ -17,8 +17,8 @@ const existingGlobalUtilityClasses = new Set(["lucide", "sr-only"]);
 const featureClassPrefixes: Record<string, string[]> = {
   cockpit: ["brand", "brand-", "center-column", "cockpit-", "searchbar", "topbar", "topbar-"],
   news: ["news-"],
-  // #207 PR-W4: the capital lane is its own feature with its own namespace. The 成案 badge is rendered on a
-  // News surface but keeps `trading-` — the words in it are the ledger's, and so is the ownership.
+  // #207 PR-W4: the capital lane is its own feature with its own namespace. Nothing it owns renders on
+  // a News surface any more (#553 PR-1), and the prefix stays because the words are still the ledger's.
   trading: ["trading-"],
 };
 

@@ -1,4 +1,3 @@
-import { TradingCaseBadge } from "@features/trading";
 import { newsPath, newsSymbolPath } from "@shared/routing/paths";
 import { useRouteReferrer } from "@shared/routing/routeReferrer";
 import { Card } from "@shared/ui/Card";
@@ -77,7 +76,7 @@ export function NewsEventDetailPage({ eventId, token }: { eventId: string; token
       ) : null}
       {detail ? (
         <NewsQuoteReadState query={quotesQuery}>
-          <EventDocument detail={detail} quotes={quotes} token={token} />
+          <EventDocument detail={detail} quotes={quotes} />
         </NewsQuoteReadState>
       ) : null}
     </NewsPageShell>
@@ -87,11 +86,9 @@ export function NewsEventDetailPage({ eventId, token }: { eventId: string; token
 function EventDocument({
   detail,
   quotes,
-  token,
 }: {
   detail: NewsEventDetail;
   quotes: Record<string, NewsQuote>;
-  token: string;
 }) {
   const { event, outcome, triage } = detail;
   const headline = triage?.headline_zh?.trim() || event.leader_title;
@@ -109,17 +106,6 @@ function EventDocument({
             <NewsKindBadge kind={event.event_kind} />
             <NewsOutcomeBadge outcome={outcome} size="lg" variant="chip" />
             {outcome.reason_zh ? <span>{outcome.reason_zh}</span> : null}
-            {/*
-             * Did the Signal lane admit this? It renders nothing at all for a model-lane Event,
-             * because that question genuinely cannot be asked there — only the deterministic lane's source
-             * key is reconstructible from an `event_id`, and a 未成案 chip would report a refusal that never
-             * happened.
-             */}
-            <TradingCaseBadge
-              eventId={event.event_id}
-              lane={event.admission === "telemetry_deterministic" ? "oi" : "news"}
-              token={token}
-            />
           </span>
           <time
             className="news-detail-hero-time"

@@ -23,12 +23,14 @@ describe("route-aware shell figures", () => {
     ]);
   });
 
-  it("uses the telemetry ledger alone on the OI monitor", () => {
-    expect(topbarFigures("/news/oi", news)).toEqual([
-      // #458: the lane has no push decision of its own, so the chrome counts what it parsed. A figure
-      // left on `telemetry_push_24h` would have read a permanent 0 as "the feed went quiet".
-      { label: "PARSED 24H", tone: "accent", value: 139 },
-    ]);
+  it("prints no chrome figure on 市场事实, because status has none to give", () => {
+    /*
+     * #553 PR-1. The figure here read `pipeline.telemetry_parsed_24h`, which is not a status field any
+     * more: market intake is counted off the stored observations and reported per kind by
+     * `/api/news/market`, which the page itself leads with. The only ways to keep a figure were a second
+     * poll of the page's own endpoint from the frame, or a number nothing publishes.
+     */
+    expect(topbarFigures("/news/market", news)).toEqual([]);
   });
 
   it("uses operational latency on the status surface", () => {
@@ -47,7 +49,7 @@ describe("route-aware shell figures", () => {
      */
     expect(topbarFigures("/trading", news)).toEqual([]);
     expect(topbarFigures.length).toBe(2);
-    for (const route of ["/news", "/news/oi", "/news/status", "/trading"]) {
+    for (const route of ["/news", "/news/market", "/news/status", "/trading"]) {
       for (const figure of topbarFigures(route, news)) {
         expect(figure.label).not.toMatch(/CASE|EXECUTION|SIGNAL|成案/);
       }

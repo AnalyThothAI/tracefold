@@ -239,3 +239,107 @@ def test_raw_retention_keeps_30_day_judged_corpus_and_expires_it_after_365_days(
         ).fetchone() == {"n": 0}
     finally:
         conn.close()
+
+
+def _seed_market_item(repos, *, item_id: str, at_ms: int, parsed: bool) -> None:
+    """One market Item with its typed OI fact, or one raw card with neither."""
+
+    repos.news.upsert_item(
+        item_id=item_id,
+        source_id="opennews",
+        source_item_key=f"key-{item_id}",
+        title="TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%",
+        raw_first_line="",
+        description="",
+        canonical_url=None,
+        reporting_origin="OpenNews",
+        published_at_ms=at_ms,
+        observed_at_ms=at_ms,
+        provider_metadata_json="{}",
+        strategy_ids_json="[]",
+        ingest_mode="live",
+        trace_id=f"trace-{item_id}",
+        now_ms=at_ms,
+        market_kind="oi" if parsed else "unknown_market",
+        market_source_strategy_id="1019" if parsed else "9999",
+        market_parse_status="parsed" if parsed else "raw",
+        market_parse_error=None if parsed else "unknown_market_source",
+    )
+    if not parsed:
+        return
+    repos.news.insert_oi_signal(
+        event_id=f"event-{item_id}",
+        metric_version="oi_signal_v1",
+        symbol="TRUMP",
+        raw_instrument="TRUMP",
+        direction="rise",
+        oi_change_bps=455,
+        oi_value_usd=32_170_000,
+        whale_long_profit_bps=8_021,
+        whale_oi_ratio_bps=10_071,
+        observed_at_ms=at_ms,
+        received_at_ms=at_ms,
+        now_ms=at_ms,
+        provider="opennews",
+        source_strategy_id="1019",
+        source_contract_version="opennews_oi_source_v1",
+        measurement_window_ms=300_000,
+        measurement_definition="oi_signal_v1|opennews_oi_source_v1|300000",
+        source_item_id=item_id,
+        source_venue="binance",
+        historical=False,
+    )
+
+
+def test_market_items_live_on_the_judged_tier_whatever_their_parse_status(postgres_clone_dsn: str) -> None:
+    """#553 §3.4. A market Item has no verdict, so `raw_days` alone would expire all of them.
+
+    Under the preservation predicate a market Item can never be evidence: it leads no Event, so no
+    verdict, review or learning case can reach it. Thirty days later every OI frame, liquidation
+    report and account report would be gone while the ordinary news beside it kept a year. Which
+    retention an observation gets is a decision about the observation, not a reward for being judged
+    -- and a raw card is retained exactly as long as a parsed one.
+    """
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repos = repositories_for_connection(conn)
+        with repos.transaction():
+            _seed_market_item(repos, item_id="market-parsed-recent", at_ms=NOW_MS - 60 * DAY_MS, parsed=True)
+            _seed_market_item(repos, item_id="market-raw-recent", at_ms=NOW_MS - 60 * DAY_MS, parsed=False)
+            _seed_market_item(repos, item_id="market-parsed-ancient", at_ms=NOW_MS - 400 * DAY_MS, parsed=True)
+            _seed_current_event(repos, event_id="news-unjudged", at_ms=NOW_MS - 60 * DAY_MS, judged=False)
+
+        with repos.transaction():
+            result = repos.news.purge_before(
+                cutoff_ms=NOW_MS - 30 * DAY_MS,
+                judged_cutoff_ms=NOW_MS - 365 * DAY_MS,
+                batch_size=500,
+            )
+
+        surviving = {
+            row["item_id"]
+            for row in conn.execute(
+                "SELECT item_id FROM news_items WHERE item_id LIKE 'market-%' OR item_id = 'item-news-unjudged'"
+            ).fetchall()
+        }
+        assert surviving == {"market-parsed-recent", "market-raw-recent"}
+        assert result["deleted_items"] >= 2
+        # The typed fact left with the Item it was parsed from, and no orphan stayed behind.
+        orphans = conn.execute(
+            """
+            SELECT count(*) AS n
+              FROM news_oi_signals s
+             WHERE NOT EXISTS (SELECT 1 FROM news_items i WHERE i.item_id = s.source_item_id)
+            """
+        ).fetchone()
+        assert orphans["n"] == 0
+        assert (
+            conn.execute(
+                "SELECT count(*) AS n FROM news_oi_signals WHERE source_item_id = 'market-parsed-recent'"
+            ).fetchone()["n"]
+            == 1
+        )
+        conn.commit()
+    finally:
+        conn.close()

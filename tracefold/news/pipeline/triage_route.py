@@ -13,16 +13,16 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, assert_never
 
 from ..events.storyline import STORYLINE_REGISTRY_SHA256
-from ..liquidations import LiquidationJudgment
 from ..models import GATE_POLICY_VERSION, TriageVerdict
-from ..oi_signals import OiJudgment
 from ..program.contracts import ScoredJudgment, SemanticJudge, TriageContext
 from ..reader_history import ReaderHistorySnapshot
 from ..triage_rules import DecidePolicy, DecisionResult, DegradedJudgment, GateFacts, fallback_verdict
 from .triage_audit import _reader_history_trace, _told_trace
 
-_TriageJudgment = ScoredJudgment | OiJudgment | LiquidationJudgment | DegradedJudgment
-_JudgmentOrigin = Literal["model", "oi", "liquidation", "degraded"]
+_TriageJudgment = ScoredJudgment | DegradedJudgment
+# What the editorial pipeline can produce. `oi` and `liquidation` were origins here for as long as
+# market frames wore a verdict; they are stored facts now and produce no judgment at all (#553).
+_JudgmentOrigin = Literal["model", "degraded"]
 
 
 @dataclass
@@ -84,7 +84,7 @@ class _TriageSettle:
     @property
     def verdict(self) -> TriageVerdict:
         judgment = self.judgment
-        if isinstance(judgment, (ScoredJudgment, OiJudgment, LiquidationJudgment, DegradedJudgment)):
+        if isinstance(judgment, (ScoredJudgment, DegradedJudgment)):
             return judgment.verdict
         return assert_never(judgment)
 
@@ -93,10 +93,6 @@ class _TriageSettle:
         judgment = self.judgment
         if isinstance(judgment, ScoredJudgment):
             return "model"
-        if isinstance(judgment, OiJudgment):
-            return "oi"
-        if isinstance(judgment, LiquidationJudgment):
-            return "liquidation"
         if isinstance(judgment, DegradedJudgment):
             return "degraded"
         return assert_never(judgment)
@@ -106,7 +102,7 @@ class _TriageSettle:
         judgment = self.judgment
         if isinstance(judgment, ScoredJudgment):
             return judgment.scored_judgment_sha256
-        if isinstance(judgment, (OiJudgment, LiquidationJudgment, DegradedJudgment)):
+        if isinstance(judgment, DegradedJudgment):
             return judgment.judgment_sha256
         return assert_never(judgment)
 
@@ -115,7 +111,7 @@ class _TriageSettle:
         judgment = self.judgment
         if isinstance(judgment, ScoredJudgment):
             raise TypeError("news_model_judgment_requires_transactional_status")
-        if isinstance(judgment, (OiJudgment, LiquidationJudgment, DegradedJudgment)):
+        if isinstance(judgment, DegradedJudgment):
             return judgment.decision
         return assert_never(judgment)
 

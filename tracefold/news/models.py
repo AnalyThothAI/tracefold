@@ -16,14 +16,15 @@ GATE_POLICY_VERSION = "news_gate_v6"
 TRIAGE_POLICY_VERSION = "news_triage_policy_v13"
 DELIVERY_CARD_VERSION = "news_delivery_card_v11"
 
+# What the editorial Gate can decide about one Event. Three market admissions left this vocabulary
+# with the Events they described (#553): a market observation is stored with its typed fact at
+# admission and is never gated, queued or judged, so it has no admission to carry. The strings remain
+# on historical rows and `outcome.py` still renders them; nothing new is written under them.
 Admission = Literal[
     "candidate",
     "listing_deterministic",
-    "telemetry_deterministic",
-    "liquidation_deterministic",
     "suppressed_pr_template",
     "suppressed_low_signal",
-    "unsupported_market_contract",
     "recovery",
 ]
 # The admissions that go on to Triage. `listing_deterministic` is an admitted state, not a suppression: the funnel,
@@ -31,11 +32,7 @@ Admission = Literal[
 # admitted, but the Deduper published only `candidate`, so every exchange listing/delisting frame died between
 # the Gate and the queue (#72: 19 events, 0 verdicts, 0 deliveries since launch). One constant, so it cannot
 # drift again.
-# Admitted means "goes to Triage". `telemetry_deterministic` earns its place there the same way
-# `listing_deterministic` does: the frame is judged, just not by a model (#137).
-ADMITTED_ADMISSIONS: Final[frozenset[str]] = frozenset(
-    {"candidate", "listing_deterministic", "telemetry_deterministic", "liquidation_deterministic"}
-)
+ADMITTED_ADMISSIONS: Final[frozenset[str]] = frozenset({"candidate", "listing_deterministic"})
 # How long the Janitor keeps trying to rescue an Event that was created but never reached the Triage queue
 # (commit-then-crash, or a publish failure). Measured event -> delivery latency is p50 4.2 s / p95 16.8 s, so this
 # is ~100x the p95: it can only fire on a genuinely stranded Event, never on a slow one. Past it the Event is not

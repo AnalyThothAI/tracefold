@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 from fastapi.routing import APIRoute
@@ -15,7 +15,9 @@ from tracefold.app.http.schemas import events as event_schemas
 from tracefold.app.http.schemas import feed as feed_schemas
 from tracefold.app.http.schemas import news_common as news_common_schemas
 from tracefold.app.http.schemas import status as status_schemas
+from tracefold.news import EVENT_KINDS, MARKET_KINDS
 from tracefold.news.market_review.instruments import InstrumentSearchIdentity
+from tracefold.news.models import Admission
 from tracefold.news.storage.feed import _triage_assets
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
@@ -27,7 +29,6 @@ def _event(event_id: str = "ev-1") -> dict[str, Any]:
     return {
         "event_id": event_id,
         "event_kind": "news",
-        "source_contract_reason": None,
         "leader_title": "Copper surges toward record on LME",
         "leader_url": "https://example.test/copper",
         "leader_description": "",
@@ -86,7 +87,6 @@ class _FakeNewsRepository:
                 "limit": kwargs["limit"],
                 "outcome": kwargs.get("outcome"),
                 "hours": kwargs.get("hours"),
-                "oi": kwargs.get("oi"),
                 "direction": ",".join(kwargs.get("directions") or ()) or None,
             },
             "search": search.public_metadata() if search else None,
@@ -147,7 +147,6 @@ class _FakeNewsRepository:
                 "open_incidents": [],
             },
             "pipeline": {"events_1h": 0, "events_24h": 0},
-            "oi": {"by_rule_24h": {"stored": 3, "oi_parse_failed": 7}},
             "delivery": {
                 "sent_24h": 0,
                 "sent_1h": 0,
@@ -380,6 +379,10 @@ def test_news_exposes_read_routes_and_no_write_route_at_all() -> None:
         ("GET", "/api/news/quotes"),
         # #207 PR-W1: what one base_symbol *is*, for the token page every asset chip now links to.
         ("GET", "/api/news/symbols/{base}"),
+        # #553: a market observation is a stored fact, not an Event, and this is the only surface that
+        # serves one. The feed cannot answer the same question a second time and disagree.
+        ("GET", "/api/news/market"),
+        ("GET", "/api/news/market/{item_id}"),
     }
 
 
@@ -453,8 +456,6 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "limit",
         "outcome",
         "hours",
-        # #207: the deterministic OI lane's outcome, which `final_decision` cannot express.
-        "oi",
         "direction",
     }
     assert set(feed_schemas.NewsFeedEventData.model_fields) - set(event_schemas.NewsEventData.model_fields) == {
@@ -463,10 +464,13 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "delivery",
         # #88: the fixed post-Event return. The *current* quote is deliberately not a feed field.
         "reaction",
-        # #207: the deterministic OI judgment, read back from the trace it wrote; null on every other admission.
-        "oi",
     }
-    assert "family" not in event_schemas.NewsEventData.model_fields
+    # #553: `source_contract_reason` named why a market frame was refused an Event. Nothing is refused
+    # now -- a market frame is stored as a fact instead -- so the field would only ever be null.
+    assert {"family", "source_contract_reason"}.isdisjoint(event_schemas.NewsEventData.model_fields)
+    # The two OI-shaped response types went with the lane that produced them.
+    assert not hasattr(feed_schemas, "NewsFeedOiData")
+    assert not hasattr(status_schemas, "NewsOiStatusData")
     assert set(news_common_schemas.NewsTriageSummaryData.model_fields).isdisjoint(
         {"event_type", "event_type_zh", "actionable", "model_decision", "model_decision_zh", "title_zh"}
     )
@@ -494,27 +498,32 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "published_at_ms",
         "created_at_ms",
     }
+    # #553: this funnel counts the two Event families and nothing else. Market intake is counted from
+    # the stored facts by `/api/news/market`, so there is no second tally here to disagree with them,
+    # and no `parse_failed`/`unsupported` stage -- an unparsed market frame is a stored raw fact now,
+    # not a refusal.
     assert set(status_schemas.NewsSourceContractStageCountsData.model_fields) == {
         "received",
         "parsed",
-        "parse_failed",
-        "unsupported",
         "verdict",
     }
-    assert set(status_schemas.NewsSourceContracts24hData.model_fields) == {
-        "news_v1",
-        "listing_v1",
-        "oi_v1",
-        "liquidation_v1",
-        "unsupported_market",
-    }
+    assert set(status_schemas.NewsSourceContracts24hData.model_fields) == {"news_v1", "listing_v1"}
     assert set(status_schemas.NewsDuplicatesWithheld24hData.model_fields) == {"all"}
     with pytest.raises(ValueError):
         status_schemas.NewsDuplicatesWithheld24hData.model_validate({"throttled": 1})
     assert {"source_classifier_version", "source_contracts_24h"} <= set(
         status_schemas.NewsPipelineStatusData.model_fields
     )
-    assert {"funnel_parsed_24h", "novelty_defaulted_24h"}.isdisjoint(status_schemas.NewsPipelineStatusData.model_fields)
+    assert {
+        "funnel_parsed_24h",
+        "novelty_defaulted_24h",
+        # #553: the four telemetry counters measured market frames against an Event funnel they never
+        # enter now. They are not reconstructed here; the facts are counted where they are stored.
+        "telemetry_received_24h",
+        "telemetry_parsed_24h",
+        "telemetry_parse_failed_24h",
+        "telemetry_events_24h",
+    }.isdisjoint(status_schemas.NewsPipelineStatusData.model_fields)
     assert set(status_schemas.NewsFunnelData.model_fields) == {
         "received",
         "admitted",
@@ -584,9 +593,6 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "ingest",
         "broker",
         "pipeline",
-        # #207: the deterministic OI lane, read by the 持仓异动 monitor. Its gate names live in the judge's
-        # trace, so `pipeline.dropped_by_rule` — which groups `override_rule` — can never carry them.
-        "oi",
         "delivery",
         "learning_retention",
         "watchlist",
@@ -751,7 +757,6 @@ def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) ->
         "limit": 5,
         "outcome": None,
         "hours": None,
-        "oi": None,
         "direction": None,
     }
     assert body["data"]["events"][0]["event_id"] == "ev-1"
@@ -856,7 +861,7 @@ def test_feed_forwards_all_current_filters_in_canonical_order(client) -> None:
             "source_authority": "unknown,issuer_first_party",
             "subject_code": "medtop:16000000,medtop:04000000",
             "final_decision": "throttled,push",
-            "event_kind": "unsupported_market,liquidation,oi,listing,news",
+            "event_kind": "listing,news",
         },
     )
 
@@ -869,7 +874,7 @@ def test_feed_forwards_all_current_filters_in_canonical_order(client) -> None:
     assert forwarded["source_authority"] == ("issuer_first_party", "unknown")
     assert forwarded["subject_code"] == ("medtop:04000000", "medtop:16000000")
     assert forwarded["final_decision"] == ("push", "throttled")
-    assert forwarded["event_kind"] == ("news", "listing", "oi", "liquidation", "unsupported_market")
+    assert forwarded["event_kind"] == ("news", "listing")
     filters = response.json()["data"]["filters"]
     assert filters["direction"] == "bullish,neutral"
     assert filters["event_family"] == "financial_results,other"
@@ -878,17 +883,44 @@ def test_feed_forwards_all_current_filters_in_canonical_order(client) -> None:
     assert filters["source_authority"] == "issuer_first_party,unknown"
     assert filters["subject_code"] == "medtop:04000000,medtop:16000000"
     assert filters["final_decision"] == "push,throttled"
-    assert filters["event_kind"] == "news,listing,oi,liquidation,unsupported_market"
+    assert filters["event_kind"] == "news,listing"
 
 
-@pytest.mark.parametrize("admission", ["liquidation_deterministic", "unsupported_market_contract"])
-def test_feed_accepts_every_material_deterministic_admission(client, admission: str) -> None:
+@pytest.mark.parametrize("admission", sorted(get_args(Admission)))
+def test_feed_accepts_every_admission_the_gate_can_still_produce(client, admission: str) -> None:
+    """The filter vocabulary is read from the Gate's own, so no admitted Event can become unreachable.
+
+    #553 deleted the three market admissions with the lane that set them. Deriving the parameters from
+    `Admission` rather than restating them is what keeps the console's tabs and the Gate from drifting
+    apart again: a sixth admission that no filter can spell would serve an empty list forever.
+    """
+
     http, news = client
 
     response = http.get("/api/news/feed", params={"token": TOKEN, "admission": admission})
 
     assert response.status_code == 200
     assert news.calls[0][1]["admission"] == admission
+
+
+def test_the_feed_is_no_longer_a_second_copy_of_the_live_market(client) -> None:
+    """#553: an OI or liquidation observation is served by `/api/news/market` and by nothing else.
+
+    While those frames became Events, the same provider record was readable twice -- once as a market
+    row and once as an editorial Event -- and the two copies aged apart, each carrying a state the
+    other could contradict. The feed keeps exactly one read of its own, over a vocabulary in which the
+    market kinds cannot be spelled at all.
+    """
+
+    http, news = client
+
+    assert http.get("/api/news/feed", params={"token": TOKEN}).status_code == 200
+    assert [name for name, _ in news.calls] == ["list_feed", "event_asset_symbols"]
+    assert set(MARKET_KINDS).isdisjoint(EVENT_KINDS)
+    for market_kind in MARKET_KINDS:
+        rejected = http.get("/api/news/feed", params={"token": TOKEN, "event_kind": market_kind})
+        assert rejected.status_code == 400, market_kind
+        assert rejected.json() == {"ok": False, "error": "news_feed_event_kind_invalid", "field": "event_kind"}
 
 
 def test_feed_reports_tab_counts_on_the_first_page_only(client) -> None:
@@ -911,9 +943,15 @@ def test_feed_reports_tab_counts_on_the_first_page_only(client) -> None:
         ({"source_authority": "blog"}, "news_feed_source_authority_invalid", "source_authority"),
         ({"subject_code": "topic:1"}, "news_feed_subject_code_invalid", "subject_code"),
         ({"final_decision": "maybe"}, "news_feed_final_decision_invalid", "final_decision"),
-        # #207: the OI outcome is a closed set. An unknown value must not fall through to "no filter" —
-        # that would serve the whole lane under a tab whose count says otherwise.
-        ({"oi": "whale_ratio_below_threshold"}, "news_feed_oi_invalid", "oi"),
+        # #553: the three market admissions are gone with the lane that set them. A stale console link
+        # must be named invalid rather than fall through to "no filter", which would serve the whole
+        # feed under a tab whose count says otherwise.
+        ({"admission": "telemetry_deterministic"}, "news_feed_admission_invalid", "admission"),
+        ({"admission": "liquidation_deterministic"}, "news_feed_admission_invalid", "admission"),
+        ({"admission": "unsupported_market_contract"}, "news_feed_admission_invalid", "admission"),
+        # #553: `?oi=` was the OI lane's own tab filter, and the parameter is refused rather than
+        # ignored — a silently dropped filter serves an unfiltered feed under a filtered heading.
+        ({"oi": "stored"}, "unsupported_query_param", "oi"),
         ({"direction": "up"}, "news_feed_direction_invalid", "direction"),
         ({"direction": "bullish,bullish"}, "news_feed_direction_invalid", "direction"),
         ({"event_kind": "social"}, "news_feed_event_kind_invalid", "event_kind"),
@@ -956,20 +994,29 @@ def test_feed_resolves_every_tag_even_when_the_universe_knows_none_of_them(clien
 
 
 def test_deterministic_event_assets_project_to_feed_and_detail(client) -> None:
-    """The durable Event-asset ledger is public even when the provider grounded no coin tag (#287)."""
+    """The durable Event-asset ledger is public even when the provider grounded no coin tag (#287).
+
+    `listing_deterministic` is the one deterministic admission left after #553, and it is exactly the
+    case that needs this: an exchange notice names its ticker in prose the Gate does not tag.
+    """
 
     http, news = client
     news.events = [
-        {**_event("ev-oi"), "grounded_assets": [], "admission": "telemetry_deterministic"},
+        {
+            **_event("ev-listing"),
+            "event_kind": "listing",
+            "grounded_assets": [],
+            "admission": "listing_deterministic",
+        },
         _event("ev-news"),
     ]
-    news.event_assets_by_id = {"ev-oi": ["BTR"], "ev-news": ["COPPER", "SPOT"]}
+    news.event_assets_by_id = {"ev-listing": ["BTR"], "ev-news": ["COPPER", "SPOT"]}
 
     feed = http.get("/api/news/feed", params={"token": TOKEN})
-    detail = http.get("/api/news/events/ev-oi", params={"token": TOKEN})
+    detail = http.get("/api/news/events/ev-listing", params={"token": TOKEN})
 
     assert feed.status_code == detail.status_code == 200
-    feed_event = next(event for event in feed.json()["data"]["events"] if event["event_id"] == "ev-oi")
+    feed_event = next(event for event in feed.json()["data"]["events"] if event["event_id"] == "ev-listing")
     detail_event = detail.json()["data"]["event"]
     expected = [{"symbol": "BTR", "base_symbol": "BTR", "venue": "binance.perp", "listed": True}]
     assert feed_event["grounded_assets"] == detail_event["grounded_assets"] == []
@@ -1416,27 +1463,3 @@ def test_status_reports_the_price_plane_beside_the_pipeline(client) -> None:
     # The backlog SLO has to be *served*, not merely declared: the envelope drops unset fields, so a schema
     # default with no repository value disappears from the response entirely.
     assert data["price"]["oldest_due_age_ms"] == 0
-
-
-def test_status_reports_the_oi_lane_as_counts_and_never_as_a_threshold(client) -> None:
-    """#207/#458: what the 持仓异动 monitor reads, in one section of the status the console already polls.
-
-    Since #458 that section is one map. The lane has no operator-owned threshold left to echo, and no
-    rank window to report occupancy in — publishing either would put a gate on the console that no
-    code applies.
-    """
-
-    api, _ = client
-    data = api.get("/api/news/status", params={"token": TOKEN}).json()["data"]
-
-    # The rule names are the judge's own, from its trace. `pipeline.dropped_by_rule` groups
-    # `override_rule`, which `decide()` sets to the admission for every OI verdict, so it can never
-    # carry them.
-    assert data["oi"]["by_rule_24h"] == {"stored": 3, "oi_parse_failed": 7}
-    assert "stored" not in data["pipeline"].get("dropped_by_rule", {})
-    assert set(data["oi"]) == {"by_rule_24h"}
-    # No `trade_floors` (#331) and no `policy` (#458). Both invited a console to compare a Case frozen
-    # last week against a number edited yesterday; the second one now names nothing at all.
-    assert "trade_floors" not in data["oi"]
-    assert "policy" not in data["oi"]
-    assert "window_occupancy" not in data["oi"]

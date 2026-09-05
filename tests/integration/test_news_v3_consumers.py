@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import re
 import time
 from contextlib import contextmanager
@@ -944,18 +943,20 @@ def test_handoff_scan_bounds_keep_the_deadline_in_pending_until_strict_expiry(co
     conn.commit()
 
 
-def test_strategy_1019_parse_failure_is_persisted_and_counted_without_a_model(
+def test_a_market_frame_that_matched_no_template_is_stored_raw_and_calls_no_model(
     conn,
-    caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """#553. A provider format change is a fact about the frame, not a reason to lose it.
+
+    The frame used to reach Triage, produce a pseudo verdict whose whole content was "this did not
+    parse", and leave no ledger row. Now the Item is stored with its reason and the model is never
+    consulted -- there is nothing here a model could answer.
+    """
+
     stamp = now_ms()
     bus = FakeBus()
     judge = ExplodingJudge()
-    telemetry_logger = logging.getLogger("tracefold.news")
-    monkeypatch.setattr(telemetry_logger, "disabled", False)
-    monkeypatch.setattr(telemetry_logger, "propagate", True)
-    caplog.set_level(logging.WARNING, logger="tracefold.news")
     raw = BusMessage(
         kind="raw",
         message_id="raw:179-parse-failed",
@@ -978,42 +979,32 @@ def test_strategy_1019_parse_failure_is_persisted_and_counted_without_a_model(
     )
 
     asyncio.run(_deduper(conn, bus).handle(raw))
-    event_message = bus.published[-1]
-    event_id = str(event_message.payload["event_id"])
-    asyncio.run(_triage(conn, bus, judge=judge).handle(event_message))
     conn.commit()
 
-    verdict = conn.execute(
-        "SELECT final_decision, override_rule, error_code, program_version, trace "
-        "FROM news_verdicts WHERE event_id = %s",
-        (event_id,),
+    assert bus.published == []
+    item = conn.execute(
+        "SELECT item_id, market_kind, market_parse_status, market_parse_error, market_source_strategy_id"
+        " FROM news_items WHERE source_item_key = '179999001'"
     ).fetchone()
-    assert verdict is not None
-    assert (verdict["final_decision"], verdict["override_rule"], verdict["error_code"]) == (
-        "drop",
-        "oi_parse_failed",
-        "oi_parse_failed",
+    assert item is not None
+    assert (item["market_kind"], item["market_parse_status"]) == ("oi", "raw")
+    assert item["market_parse_error"] == "oi_template_unmatched"
+    assert item["market_source_strategy_id"] == "1019"
+    assert (
+        conn.execute(
+            "SELECT count(*) AS n FROM news_oi_signals WHERE source_item_id = %s", (item["item_id"],)
+        ).fetchone()["n"]
+        == 0
     )
-    assert verdict["program_version"] == "news_oi_signal_v3"
-    assert verdict["trace"]["oi_signal"] == {
-        "parsed": False,
-        "strategy_id": "1019",
-        "provider": "opennews",
-        "provider_source": "binance",
-        "title_sha256": "3cbadc25cd510bd837cfcfae89b6c48040cfd9ffd18cafd13031cc660ee8786b",
-        "parser_version": "oi_signal_parser_v1",
-        "source_classifier_version": "opennews_source_classifier_v1",
-        "failure_stage": "source_contract_drift",
-    }
-    assert conn.execute("SELECT 1 FROM news_oi_signals WHERE event_id = %s", (event_id,)).fetchone() is None
     assert judge.calls == 0
-    assert "news_oi_parse_failed" in caplog.text and "provider format changed" not in caplog.text
-    assert not [message for message in bus.published if message.routing_key == RK_VERDICT_PUSH]
 
-    pipeline = repositories_for_connection(conn).news.status_snapshot(now_ms=stamp + 1)["pipeline"]
-    assert pipeline["telemetry_received_24h"] >= 1
-    assert pipeline["telemetry_parse_failed_24h"] >= 1
-    assert pipeline["dropped_by_rule"]["oi_parse_failed"] >= 1
+    news = repositories_for_connection(conn).news
+    observed = conn.execute("SELECT observed_at_ms FROM news_items WHERE item_id = %s", (item["item_id"],)).fetchone()[
+        "observed_at_ms"
+    ]
+    sources = {row["market_kind"]: row for row in news.market_sources(from_ms=observed, to_ms=observed + 1)}
+    assert sources["oi"]["received"] >= 1
+    assert sources["oi"]["raw"] >= 1
 
 
 def test_triage_materialization_and_canonical_json_run_outside_real_transactions(
@@ -1024,20 +1015,23 @@ def test_triage_materialization_and_canonical_json_run_outside_real_transactions
 
     stamp = now_ms()
     bus = FakeBus()
+    # An ordinary News frame with no model configured. The market frame this used to ride on opens no
+    # Event any more (#553), and the boundary being measured is the editorial one either way.
     raw = BusMessage(
         kind="raw",
         message_id="raw:179-transaction-boundary",
-        routing_key=RK_RAW_LIVE.format(strategy_id="1019"),
+        routing_key=RK_RAW_LIVE.format(strategy_id="1018"),
         payload={
             "params": {
                 "id": 179_999_002,
-                "engineType": "market",
-                "text": "ETH OI provider format changed",
-                "source": "binance",
+                "engineType": "news",
+                "score": 92,
+                "text": "A regulator approves a spot ETF for the second time this year",
+                "source": "wire",
                 "ts": stamp,
-                "strategy": {"id": 1019, "name": "OI Event Monitor", "sourceType": "market"},
+                "strategy": {"id": 1018, "name": "News Score > 70", "sourceType": "news"},
             },
-            "strategy_id": "1019",
+            "strategy_id": "1018",
             "ingest_mode": "live",
             "observed_at_ms": stamp,
         },
@@ -1067,7 +1061,7 @@ def test_triage_materialization_and_canonical_json_run_outside_real_transactions
     triage = TriageConsumer(
         bus=bus,
         db=boundary,
-        judge=ExplodingJudge(),
+        judge=None,
         program_version=PROGRAM_VERSION,
         program_sha256=PROGRAM_SHA256,
         watchlist_symbols=WATCHLIST,

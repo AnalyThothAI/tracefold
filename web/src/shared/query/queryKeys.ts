@@ -39,11 +39,14 @@ export const queryKeys = {
   newsFeedHistory: (filters: NewsFeedQueryKeyFilters, firstCursor: string) =>
     ["news-feed-history", ...newsFeedIdentity(filters), firstCursor] as const,
   newsEvent: (eventId: string) => ["news-event", eventId] as const,
-  // #207: the OI monitor's own slice of the feed. Its own key, because it is a different filter set on a
-  // different rhythm and must not evict the feed page a reader is scrolled into.
-  newsOiFeed: (outcome: string) => ["news-oi-feed", outcome] as const,
-  newsOiFeedHistory: (outcome: string, firstCursor: string) =>
-    ["news-oi-feed-history", outcome, firstCursor] as const,
+  // #553 PR-1: market observations are their own endpoint and their own key. The kind filter is part of the
+  // identity because every filter is a real request — the per-kind `sources` strip describes the whole
+  // window, so a browser-side split would leave it disagreeing with the rows under it.
+  newsMarket: (kind: string) => ["news-market", kind] as const,
+  newsMarketHistory: (kind: string, firstCursor: string) =>
+    ["news-market-history", kind, firstCursor] as const,
+  // One expanded group's Item. Not polled: a stored provider payload cannot change.
+  newsMarketItem: (itemId: string) => ["news-market-item", itemId] as const,
   newsStatus: () => ["news-status"] as const,
   // #207 PR-W1: identity only, and identity does not change on a poll — the token page's Events, price and
   // rank window each keep their own key and their own rhythm.
@@ -57,7 +60,4 @@ export const queryKeys = {
   // #528 PR-2: one key for the folded execution read model — the desk's Signal rows and Command rows
   // arrive in the same response, so they cannot disagree about the window they describe.
   tradingExecutions: () => ["trading-executions"] as const,
-  tradingGateSource: (eventId: string) => ["trading-gate-source", eventId] as const,
-  // #269: the admission ledger's own window, shared by the frame table and the leverage list.
-  tradingGate: () => ["trading-gate"] as const,
 };

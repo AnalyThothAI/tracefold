@@ -888,10 +888,13 @@ News:
 ```text
 OpenNews account Strategy WSS (whatever the account has enabled; no local allowlist)
   -> Receiver publishes each accepted frame to RabbitMQ (confirms)
-  -> q:news.raw [SAC] Deduper: Item upsert -> exact source contract + event_kind
+  -> q:news.raw [SAC] Deduper: Item upsert -> source contract (classifier v2)
+     -> market frame (oi | liquidation | smart_money | unknown_market): Item + one typed
+        fact row in one transaction, then stop. No Gate, no Event, no publish, live
+        and recovery alike; read back by /api/news/market
+     -> editorial frame (news | listing): durable event_kind
      -> title/identity -> same-kind Event new|member -> Gate -> storyline key
      -> publish event.<family>.<queue_priority> for admitted Events
-        (unsupported_market persists and stops here)
   -> q:news.triage Triage (prefetch news.triage.concurrency):
      SemanticJudge.judge(TriageContext) -> EventSemantics.v2 + TradeRelevanceV1 -> SemanticNormalizer
      -> ReaderCard.v2
@@ -907,35 +910,39 @@ OpenNews account Strategy WSS (whatever the account has enabled; no local allowl
   -> /api/news/feed + /api/news/events/{event_id} + /api/news/status
 ```
 
-`opennews_source_classifier_v1` is a pure step inside the existing Deduper, not
-a registry, queue or worker. Diagnose every first-seen Strategy tuple retained
-on the normalized Item by its `id`, `name`, `source_type` and `engine_type`,
-plus the Event's durable
-`event_kind`. A known id with a changed tuple is `source_contract_drift`; an
-unbound scoreless market/wallet frame is `unsupported_market_contract`. Both
-persist in nullable `news_events.source_contract_reason` and intentionally
-produce no Triage message, model call or delivery. Recovery applies the same
-classifier and, for a complete history tuple, the same strict parser without
-writing the live OI rank fact; it never delivers. The official hits contract
+`opennews_source_classifier_v2` is a pure step inside the existing Deduper, not
+a registry, queue or worker. It sorts a frame onto one of two planes. An
+editorial frame gets a durable `news_events.event_kind` of `news` or `listing`.
+A market frame — Strategy `1019`, `2000`, `2083`, `2026`, or any other scoreless
+market/wallet Strategy — gets no Event at all: diagnose it on the Item, by
+`news_items.market_kind`, `market_source_strategy_id`, `market_parse_status` and
+`market_parse_error`, or through `/api/news/market`, which shows the same four
+fields per observation. A provider rename no longer breaks a market contract:
+the family keys on the Strategy id alone, and the name, source type and engine
+type are recorded on the fact rather than gating it (#553). `parse_status = raw`
+with a named reason means the template did not match, not that the observation
+was refused — the frame is stored and readable either way. Recovery applies the
+same classifier and the same parsers in the same single transaction, so a
+recovered measurement now produces the ledger row the old Event-shaped path
+never wrote; it never delivers. The official hits contract
 omits `total` on an empty first page; the adapter normalizes only that exact
 shape to zero. Other envelope, pagination, and hit failures remain closed and
 persist as `opennews_history_payload_<reason>` rather than one broad payload
 error. An accepted history hit must carry a normalized provider record ID and
 published timestamp; Recovery indexes the raw row with the same ID normalizer
 used by the canonical parser. Repeated rows for the same normalized provider
-record ID coalesce to the first row in provider order. A history hit missing
-`source_type` or another tuple field is named drift and must not be repaired by
-guessing from Strategy id. Ordinary and deterministic recovery remains
-`admission=recovery`, while a newly observed unsupported contract retains its
-named `admission=unsupported_market_contract`. The hard cut does not rewrite a
+record ID coalesce to the first row in provider order. Editorial recovery
+remains `admission=recovery`; the three market admissions
+(`telemetry_deterministic`, `liquidation_deterministic`,
+`unsupported_market_contract`) are deleted and appear only on rows written
+before #553, whose Chinese labels `tracefold.news.outcome` still carries so the
+console can render them. The hard cut does not rewrite a
 verdict/delivery ledger before genesis. Migration `0336` then deletes that
 entire pre-genesis ledger and requires all News queues to be empty, including
 stale Event references, before it runs.
 Migration `0336` deletes pre-cut deterministic rows that lacked durable typed
 success evidence. Current Admission and Triage therefore see only the current
-source contract. The OI signal row
-used during migration is a derived read-model row, not an alternate material
-truth.
+source contract.
 
 Broker: RabbitMQ 4 (`rabbitmq:4-management` in compose; `news.broker.url` is
 the AMQP URL, `news.broker.name_prefix` prefixes every exchange/queue).
@@ -1048,8 +1055,10 @@ carries `model_fallback_from`, and the worker logs one warning per Event; only
 a chain where both routes fail degrades, with `primary_error` retaining the
 first route's code.
 
-The degraded path is never silent: only deterministic listing/telemetry and a
-grounded watchlist hit fail open. Score, macro words and queue priority cannot
+The degraded path is never silent: only a deterministic listing admission and a
+grounded watchlist hit fail open (`degraded_listing_objective` /
+`degraded_watchlist_objective`). Market frames are not in this sentence at all —
+they never reach the model, so they have no degraded path (#553). Score, macro words and queue priority cannot
 rescue failure; everything else drops as `degraded_no_objective_guard` with `degraded=true` and
 is counted in `triage_degraded_24h`. Each Program call records Predictor,
 route/attempt, resolved provider/model identity, request/input/instruction/demo/
@@ -1101,9 +1110,16 @@ Diagnose News in this order:
 1. `/api/news/status.state` and `ingest`: `connected`, `last_frame_at_ms`,
    `open_incidents`, and `recovery.pending_count/reason/last_error_code`. Which Strategies are feeding the pipeline is a question for
    the OpenNews dashboard, not for Tracefold.
-2. For a market-contract frame, inspect its normalized four-field Strategy
-   identity, `event_kind`, `source_contract_reason`, admission, classifier version and parser
-   version. Do not retry a named unsupported contract into the model lane.
+2. For a market frame there is no Event to inspect. Read the Item instead:
+   `market_kind`, `market_source_strategy_id`, `market_parse_status` and
+   `market_parse_error`, or open `/api/news/market` — the list reports the same
+   four fields per observation plus per-kind `received`/`parsed`/`raw`/`groups`
+   for the window, and `/api/news/market/{item_id}` adds the stored
+   `provider_params`. A `raw` observation is a template this repository cannot
+   prove, not a refusal, and it is never retried into the model lane.
+   Notifications are not connected in #553 PR-1: every group reports
+   `notification_status = not_connected`, which is a statement about the loop,
+   not about the observation.
 3. `tracefold news bus-check`: consumers attached to every queue (Deduper and
    Deliverer show exactly one), `news.dead` depth, each queue's `delayed`
    (native retry backlog), `dead_letter_pending` (at-least-once dead letters the
@@ -1148,10 +1164,13 @@ Diagnose News in this order:
    raise `storyline_budget_max`. The day's receipt is the two D5 SQL numbers
    in #504 (`storyline_hour_p95`, `told_saturated_push_share`) against the
    300-500 / 50-60 product target, which is a receipt metric and not a gate.
-   For strategy 1019, compare `telemetry_received_24h`,
-   `telemetry_parsed_24h`, `telemetry_parse_failed_24h`, and
-   `telemetry_push_24h`; `dropped_by_rule.oi_parse_failed` is a provider parser
-   contract fault, not ordinary model noise.
+   Strategy 1019 is no longer in these numbers at all: the four
+   `pipeline.telemetry_*_24h` counters and the whole `status.oi` block counted
+   Events, and a market frame opens none (#553). Use
+   `/api/news/market?kind=oi` — its `sources[]` row carries `received`,
+   `parsed`, `raw`, `groups` and `last_received_at_ms` for the requested window,
+   and a rising `raw` count with `parse_error = oi_template_unmatched` is
+   provider format drift rather than model noise.
 5. `delivery`: `sent_1h`, `terminal_24h`, `last_error_code`
    (`delivery_unavailable` = push disabled or the selected provider configuration unavailable;
    `ambiguous_after_crash` = a send whose ack was lost). Historical rows can
@@ -1502,8 +1521,8 @@ snapshot.
 ## Migrations
 
 Alembic has one root, baseline `20260831_0340`, and current head
-`20260904_0360`, the destructive cut of the lane columns no rule reads and of
-the admission ledger's two extra key columns (#537 PR-3). A fresh PostgreSQL 18
+`20260905_0364`, which moves market observations onto `news_items` and its three
+typed ledgers (#553). A fresh PostgreSQL 18
 database applies the baseline and every
 revision after it in order; each revision's own docstring carries its evidence.
 Four of them need an operator step before the upgrade runs: `20260901_0347`
@@ -1514,6 +1533,10 @@ activation ledgers, and `20260903_0357` drops the JSON-shape CHECKs with the
 nine unread columns and their payload keys. All four archive to
 `~/.tracefold/backups/`
 first; [the migration guide](MIGRATIONS.md) carries the exact commands.
+`20260905_0364` needs no archive step, but it does need writers stopped: the OI
+ledger gains a unique key the old writer does not know and the liquidation table
+renames a column the old writer names, so run it inside the ordinary `make up`
+stop rather than against a live Workers process.
 
 `20260904_0360` needs no operator step and refuses nothing: it collapses any
 duplicate admission `source_key` to the row every reader already showed. It is
@@ -1832,10 +1855,22 @@ retention metrics report deleted rows, batches, wall time, capped backlog
 sample, whether the sample hit its cap, and oldest eligible age. Each batch,
 band expiry, and learning-retention call uses a separate cold transaction.
 
-`news_market_liquidations` is a separate immutable normalized replay ledger,
-not an Item-owned child. Item retention may remove its provider envelope but
-must leave the typed liquidation fact, source identity and frozen live/recovery
-ingest provenance intact.
+All three typed market ledgers are Item-owned children since migration
+`20260905_0364` (#553): `news_market_liquidations` and `news_market_smart_money`
+have a unique `item_id` foreign key with `ON DELETE CASCADE`, and
+`news_oi_signals.source_item_id` already had one. Purging an Item therefore
+takes its typed fact with it, which is the point — a liquidation whose Item was
+gone used to survive as unreachable evidence, and `0364` deletes the orphans it
+cannot adopt.
+
+Market Items are exempt from the raw tier. `RAW_RETENTION_CANDIDATE_SQL` and its
+`DELETE` both carry a predicate that lets a row with a non-null `market_kind`
+expire only past the judged cutoff, so an OI frame, a liquidation report or an
+account report is retained for `judged_days` regardless of verdict, push or
+parse status. A market observation can never carry a verdict or an accepted
+review, so the ordinary evidence predicate could never promote one, and under
+`raw_days` alone every one of them would expire in 30 days while the news beside
+it kept a year.
 
 Learning evidence follows #118's separate deterministic policy:
 

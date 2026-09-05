@@ -10,7 +10,6 @@ import {
 } from "@features/news/api/newsQueries";
 import {
   TRADING_REFETCH_MS,
-  useTradingGateSourceWithToken,
   useTradingStatusWithToken,
 } from "@features/trading/api/tradingQueries";
 import { queryKeys } from "@shared/query/queryKeys";
@@ -84,11 +83,6 @@ describe("query hook category contracts", () => {
       key: queryKeys.newsEvent(""),
       name: "missing Event identity",
       useObservedQuery: () => useNewsEventWithToken("token", null),
-    },
-    {
-      key: queryKeys.tradingGateSource(""),
-      name: "missing Trading Source identity",
-      useObservedQuery: () => useTradingGateSourceWithToken("token", null, "oi"),
     },
   ])("disables conditional queries for $name", ({ useObservedQuery, key }) => {
     expect(captureQueryOptions(useObservedQuery, key).enabled).toBe(false);

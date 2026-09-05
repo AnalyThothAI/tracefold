@@ -6,6 +6,7 @@ from typing import Final
 
 # S608 exemptions below compose only the module's fixed feed predicate list; all request values stay bound.
 from ..models import ADMITTED_ADMISSIONS, OUTBOX_MAX_AGE_MS
+from ..source_contracts import EVENT_KINDS
 
 ADMITTED_SQL: Final = ", ".join(f"'{value}'" for value in sorted(ADMITTED_ADMISSIONS))
 # Feed task tabs mirror OUTCOME_GROUP in outcome.py over the feed's joined rows. Keeping these predicates
@@ -31,9 +32,12 @@ OUTCOME_GROUP_SQL: Final = {
     "pending": f"COALESCE(d.state, '') <> 'sent' AND ({_PENDING_CORE_SQL})",
     "held": f"COALESCE(d.state, '') <> 'sent' AND NOT ({_PENDING_CORE_SQL})",
 }
-# Both feed laterals expose the judged OI rule under this alias. The page and count builders must spell it
-# identically because downstream filters append a predicate over ``t.oi_rule`` to either statement.
-OI_RULE_SQL: Final = "v.trace #>> '{judgment,rule}' AS oi_rule"
+# The News feed is the editorial Event feed and nothing else (#553). Market observations are stored as
+# facts beside their Item and read through `/api/news/market`; a feed row for one would be a second copy
+# of live market data under an editorial vocabulary it never had. Events of a retired market kind stay in
+# PostgreSQL as immutable evidence, and this predicate is what stops the live feed reading them back.
+EVENT_KIND_SQL: Final = ", ".join(f"'{value}'" for value in EVENT_KINDS)
+EDITORIAL_EVENT_SQL: Final = f"e.event_kind IN ({EVENT_KIND_SQL})"
 ASSET_SEARCH_PREDICATE: Final = (
     "EXISTS (SELECT 1 FROM news_event_assets a WHERE a.event_id = e.event_id AND a.symbol = ANY(%s))"
 )
@@ -46,7 +50,7 @@ CURRENT_EVENT_CARD_SQL: Final = """
            e.storyline_key, e.context_line, e.search_doc, e.published_at_ms, e.followup_of,
            e.ingest_mode, e.trace_id, e.created_at_ms, e.updated_at_ms, e.focus_fact_id,
            e.focus_fact_text, e.focus_fact_context, e.focus_fact_method, e.focus_span_start,
-           e.focus_span_end, e.event_kind, e.source_contract_reason,
+           e.focus_span_end, e.event_kind,
            i.description AS leader_description, i.canonical_url AS leader_url, i.reporting_origin,
            i.provider_metadata, i.provenance, i.published_at_ms AS leader_published_at_ms,
            i.raw_first_line
@@ -87,7 +91,7 @@ def feed_page_sql(where_sql: str) -> str:
 
     return f"""
         WITH clock AS (SELECT %s::bigint AS handoff_now_ms)
-        SELECT e.event_id, e.event_kind, e.source_contract_reason, e.leader_title,
+        SELECT e.event_id, e.event_kind, e.leader_title,
                e.opened_at_ms, e.last_member_at_ms, e.member_count,
                e.admission, e.provider_score_max, e.engine_type, e.asset_class, e.grounded_assets,
                e.watchlist_hits, e.storyline_key, e.context_line, e.published_at_ms, e.ingest_mode,
@@ -98,8 +102,6 @@ def feed_page_sql(where_sql: str) -> str:
                t.verdict ->> 'direction' AS direction, (t.verdict ->> 'magnitude')::int AS magnitude,
                t.verdict ->> 'headline_zh' AS headline_zh, t.verdict ->> 'scope' AS scope,
                t.verdict AS triage_verdict, t.editorial AS model_editorial,
-               t.trace -> 'judgment' AS oi_judgment,
-               t.trace -> 'oi_signal' AS oi_metadata,
                d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms, d.error_code AS delivery_error_code
           FROM clock CROSS JOIN news_events e
           JOIN news_items i ON i.item_id = e.leader_item_id
@@ -114,7 +116,7 @@ def feed_page_sql(where_sql: str) -> str:
           LEFT JOIN LATERAL (
             SELECT v.final_decision, v.override_rule, v.throttled_by, v.degraded, v.error_code,
                    v.created_at_ms, v.published_at_ms, v.verdict, v.editorial, v.trace,
-                   v.verdict ->> 'direction' AS direction, {OI_RULE_SQL}
+                   v.verdict ->> 'direction' AS direction
               FROM news_verdicts v
              WHERE v.event_id = e.event_id AND v.stage = 'triage'
                AND v.judgment_contract_version = 'news_judgment_v2'
@@ -148,7 +150,7 @@ def feed_counts_sql(where_sql: str) -> str:
            AND current_evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
           LEFT JOIN LATERAL (
             SELECT v.final_decision, v.editorial, v.created_at_ms, v.published_at_ms,
-                   v.verdict ->> 'direction' AS direction, {OI_RULE_SQL}
+                   v.verdict ->> 'direction' AS direction
               FROM news_verdicts v
              WHERE v.event_id = e.event_id AND v.stage = 'triage'
                AND v.judgment_contract_version = 'news_judgment_v2'
@@ -163,8 +165,9 @@ __all__ = [
     "ADMITTED_SQL",
     "ASSET_SEARCH_PREDICATE",
     "CURRENT_EVENT_CARD_SQL",
+    "EDITORIAL_EVENT_SQL",
+    "EVENT_KIND_SQL",
     "EVENT_VERDICTS_SQL",
-    "OI_RULE_SQL",
     "OUTCOME_GROUP_SQL",
     "STATUS_INGEST_SQL",
     "STATUS_LEARNING_RETENTION_SQL",

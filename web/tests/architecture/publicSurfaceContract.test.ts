@@ -15,14 +15,14 @@ describe("public browser surface", () => {
       "*",
       "news",
       "news/events/:eventId",
-      "news/oi",
+      "news/market",
       "news/status",
       "news/symbols/:base",
       "trading",
     ]);
 
     const navigation = APP_NAVIGATION_GROUPS.flatMap((group) => group.items);
-    expect(navigation.map((item) => item.to)).toEqual(["/news", "/trading", "/news/oi"]);
+    expect(navigation.map((item) => item.to)).toEqual(["/news", "/news/market", "/trading"]);
     expect(navigation.flatMap((item) => item.children ?? [])).toEqual([]);
   });
 
@@ -37,11 +37,14 @@ describe("public browser surface", () => {
 
     // #537 PR-5 deleted three GET routes nothing in the browser called: the Signal list and the two
     // raw execution projections, all three of them shapes over ledgers `/api/trading/executions`
-    // already reads folded.
+    // already reads folded. #553 PR-1 added the two market reads: OI frames, liquidations, smart money
+    // and unknown market sources are stored facts, not Events, so the feed cannot serve them.
     expect(apiPaths).toEqual([
       "/api/bootstrap",
       "/api/news/events/{event_id}",
       "/api/news/feed",
+      "/api/news/market",
+      "/api/news/market/{item_id}",
       "/api/news/quotes",
       "/api/news/status",
       "/api/news/symbols/{base}",

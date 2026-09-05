@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from tracefold.news import EventKind, SourceContractReason
+from tracefold.news import EventKind
 
 from .common import ExactApiSchema
 from .news_common import (
@@ -69,7 +69,6 @@ class NewsEventReactionData(ExactApiSchema):
 class NewsEventData(ExactApiSchema):
     event_id: str
     event_kind: EventKind
-    source_contract_reason: SourceContractReason | None
     leader_title: str
     leader_url: str | None = None
     leader_description: str = ""
@@ -137,7 +136,7 @@ class NewsVerdictData(ExactApiSchema):
     stage: str
     policy_version: str
     judgment_contract_version: Literal["news_judgment_v2"]
-    judgment_origin: Literal["model", "oi", "liquidation", "degraded"]
+    judgment_origin: Literal["model", "oi", "liquidation", "degraded"]  # historical origins remain readable
     judgment_sha256: str = Field(pattern=_SHA256_PATTERN)
     verdict: NewsPresentationVerdictData
     model_editorial: NewsModelEditorialData | None = None

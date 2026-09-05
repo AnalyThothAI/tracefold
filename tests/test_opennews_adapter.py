@@ -18,6 +18,7 @@ from tracefold.news.opennews import (
     parse_opennews_message,
     parse_opennews_strategy_hits,
     parse_opennews_strategy_list,
+    provider_params,
 )
 from tracefold.news.pipeline import runtime as news_pipeline_runtime
 from tracefold.news.source_contracts import classify_source_contract
@@ -154,7 +155,7 @@ def test_market_strategy_is_normalized_before_the_exact_source_classifier() -> N
         ],
     }
     contract = classify_source_contract(event.provider_metadata)
-    assert (contract.source_contract_family, contract.event_kind, contract.reason) == ("oi_v1", "oi", None)
+    assert (contract.source_contract_family, contract.market_kind, contract.event_kind) == ("oi_v1", "oi", None)
 
 
 def test_official_strategy_history_adapter_uses_exact_authenticated_endpoints() -> None:
@@ -221,11 +222,12 @@ def test_official_strategy_history_adapter_uses_exact_authenticated_endpoints() 
         expected_page=2,
     )
     assert [event.provider_record_id for event in parsed_hits.events] == ["3568500"]
-    # The official history shape in this fixture omits Strategy.sourceType.
-    # Recovery must preserve that absence and fail closed, never infer a
-    # deterministic contract from id/name/engine alone.
+    # The official history shape in this fixture omits Strategy.sourceType, and the recovery frame is
+    # still the same measurement (#553). A market family is keyed on the provider's own Strategy id
+    # alone, so a history page that carries less decoration than a live frame reaches the same
+    # contract rather than falling out of it — which is what left recovery with no OI fact at all.
     contract = classify_source_contract(parsed_hits.events[0].provider_metadata)
-    assert (contract.event_kind, contract.reason) == ("unsupported_market", "source_contract_drift")
+    assert (contract.source_contract_family, contract.market_kind) == ("oi_v1", "oi")
     assert parsed_hits.has_more is False
     assert [request.url.path for request in requests] == [
         "/open/strategy_list",
@@ -692,6 +694,13 @@ def test_strategy_normalization_keeps_only_bounded_provider_metadata() -> None:
             }
         ],
     }
+    # The normalized projection above is a Gate input and stays a whitelist. The frame's own payload is
+    # kept whole beside it (#553), because a market observation's `relatedAddress` and
+    # `strategy.metrics` are what the observation is about and no whitelist could have known to keep
+    # them. The two answer different questions and neither is the other's redaction.
+    assert event.provider_params["strategy"]["metrics"] == {"must": "not-survive"}
+    assert event.provider_params["coins"][0]["private"] == "must-not-survive"
+    assert event.provider_params["strategy"]["soundId"] == "must-not-survive"
 
 
 def test_malformed_article_url_keeps_strategy_report_linkless() -> None:
@@ -900,3 +909,18 @@ def test_strategy_list_skips_an_odd_row_and_still_raises_on_a_bad_envelope() -> 
 
     with pytest.raises(OpenNewsHistoryError):
         parse_opennews_strategy_list({"success": False, "data": []})
+
+
+def test_a_provider_key_the_database_cannot_hold_is_dropped_rather_than_failing_the_frame() -> None:
+    """One malformed key must not stop the ingest of every frame behind it (#553).
+
+    `provider_params` is written straight into `jsonb`, so a NUL byte or a lone surrogate — in a key
+    just as much as in a value — would abort the admission transaction. The shape is refused; the
+    observation is not.
+    """
+
+    kept = provider_params({"good": "value", "bad\udc00key": "x", "nul\x00key": "y", "v": "\udc00"})
+
+    assert kept["good"] == "value"
+    assert kept["v"] is None
+    assert [key for key in kept if key not in {"good", "v"}] == []

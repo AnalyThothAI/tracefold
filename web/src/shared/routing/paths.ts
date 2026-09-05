@@ -10,8 +10,12 @@ export function newsStatusPath(): string {
   return "/news/status";
 }
 
-export function newsOiPath(): string {
-  return "/news/oi";
+/**
+ * 市场事实 (#553 PR-1). Market observations are facts read from `/api/news/market`, not Events, so this is
+ * the only surface that reads them and there is no `/news/oi` behind it.
+ */
+export function newsMarketPath(): string {
+  return "/news/market";
 }
 
 /**

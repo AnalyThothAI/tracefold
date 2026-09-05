@@ -385,17 +385,9 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
           <KeyValueRow k="triage_24h" v={String(status.pipeline.triage_24h)} />
           <KeyValueRow k="triage_degraded_24h" v={String(status.pipeline.triage_degraded_24h)} />
           <KeyValueRow k="throttled_24h" v={String(status.pipeline.throttled_24h)} />
-          {/* #207: the deterministic OI lane's four counts, so its shape is visible from the pipeline page
-              even though the lane has its own destination. The gate-by-gate breakdown lives there. */}
-          <KeyValueRow
-            k="telemetry_received_24h"
-            v={String(status.pipeline.telemetry_received_24h)}
-          />
-          <KeyValueRow k="telemetry_parsed_24h" v={String(status.pipeline.telemetry_parsed_24h)} />
-          <KeyValueRow
-            k="telemetry_parse_failed_24h"
-            v={String(status.pipeline.telemetry_parse_failed_24h)}
-          />
+          {/* The three `telemetry_*_24h` counters left with the lane (#553 PR-1). Market intake is counted
+              off the stored observations and reported per kind by `/api/news/market`, which 市场事实
+              renders; restating it here would be a second, differently-sourced number for one fact. */}
           <KeyValueRow
             k="duplicates_withheld_24h"
             v={`${status.pipeline.duplicates_withheld_24h?.all ?? 0} 全量比对`}

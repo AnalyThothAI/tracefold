@@ -37,6 +37,9 @@ _MAX_COINS = 32
 _MAX_HEADLINE_LEN = 500
 _MAX_DESCRIPTION_LEN = 400
 _MIN_DESCRIPTION_LEN = 40
+# A frame nested deeper than this is malformed, not rich: the deepest real shape is
+# `params.strategy.metrics.<name>.value`, four levels down.
+_MAX_PARAMS_DEPTH = 16
 _STATUS_URL_RE = re.compile(
     r"^https?://(?:www\.)?(?:x|twitter)\.com/[^/]+/status(?:es)?/(?P<status>\d{5,25})(?:[/?#]|$)",
     re.IGNORECASE,
@@ -109,6 +112,18 @@ class OpenNewsEvent:
     provider_record_id: str
     observation_kind: Literal["report"]
     provider_metadata: dict[str, Any]
+    # The frame's own business payload, kept whole (#553). `provider_metadata` above is the
+    # normalized projection the ordinary News branch reads and it is deliberately a whitelist: it
+    # keeps `score/source/signal/grade/coins/strategies` and drops everything else, which is correct
+    # for a Gate input and wrong for a market observation. `relatedAddress` -- the wallet an account
+    # report is about -- and `strategy.metrics` -- the provider's own full-precision numbers -- were
+    # both dropped there, so no consumer could read them back at any precision. The two serve
+    # different purposes and neither is an alternate truth.
+    #
+    # No size rule of its own: the transport already refuses a frame over
+    # `OPENNEWS_MAX_FRAME_BYTES`, and inventing a second, smaller ceiling here would silently
+    # truncate a payload the transport accepted.
+    provider_params: dict[str, Any]
     entry: NewsFeedEntry
     raw_text: str = ""
     # The artifact the frame is *about*, not the frame: two provider records carrying the same tweet share it.
@@ -282,6 +297,7 @@ def parse_opennews_message(message: object) -> OpenNewsEvent | None:
             strategy=strategy,
             strategy_id=strategy_id,
         ),
+        provider_params=provider_params(params),
         entry=entry,
         raw_text=raw_text[:20_000],
         source_artifact_id=artifact_id,
@@ -396,6 +412,60 @@ def _canonical_description(
     if collapse_javascript_whitespace(description.lower()) == collapse_javascript_whitespace(title.lower()):
         return ""
     return web_usv_string(utf16_slice(description, _MAX_DESCRIPTION_LEN))
+
+
+def provider_params(params: Mapping[str, Any]) -> dict[str, Any]:
+    """The frame's business payload as JSON PostgreSQL will accept, and nothing else.
+
+    Business content only: this is the `params` object of one `strategy.triggered` frame, which is
+    what the provider says happened. HTTP and authentication material never appears in it -- the
+    token lives in the connection URL and the headers, neither of which reaches this function -- so
+    there is nothing here to redact, only shapes PostgreSQL's `jsonb` cannot hold.
+
+    What is refused, and why each one is a shape rather than a value judgement: a NUL byte, which
+    `jsonb` rejects outright; a string PostgreSQL's UTF-8 decoder would refuse; a non-finite float,
+    which has no JSON spelling; and nesting past `_MAX_PARAMS_DEPTH`, which is a malformed frame
+    rather than a deep one. Unknown keys are kept exactly as sent: an extension this code has never
+    seen is the case the column exists for.
+    """
+
+    sanitized = _json_value(params, depth=0)
+    return sanitized if isinstance(sanitized, dict) else {}
+
+
+def _utf8_encodable(value: str) -> bool:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _json_value(value: object, *, depth: int) -> Any:
+    if depth > _MAX_PARAMS_DEPTH:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if isfinite(value) else None
+    if isinstance(value, str):
+        cleaned = value.replace("\x00", "")
+        return cleaned if _utf8_encodable(cleaned) else None
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            # A key is held to the same two shape rules as a value. It has to be: a lone surrogate in
+            # a key reaches PostgreSQL as an unencodable string and aborts the admission transaction,
+            # which would let one malformed frame stop the ingest of every frame behind it.
+            if not isinstance(key, str) or "\x00" in key or not _utf8_encodable(key):
+                continue
+            result[key] = _json_value(item, depth=depth + 1)
+        return result
+    if isinstance(value, list | tuple):
+        return [_json_value(item, depth=depth + 1) for item in value]
+    return None
 
 
 def _provider_metadata(
@@ -521,4 +591,5 @@ __all__ = [
     "parse_opennews_message",
     "parse_opennews_strategy_hits",
     "parse_opennews_strategy_list",
+    "provider_params",
 ]
