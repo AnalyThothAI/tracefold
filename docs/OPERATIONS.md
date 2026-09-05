@@ -2032,13 +2032,18 @@ assigned to a bounded read-query family (`/readyz`, `/api/status`,
 `/api/news/*`; `/healthz`, `/metrics`, and `/api/bootstrap`
 are declared no-SQL) and checks that every query can be planned. `uv run
 tracefold db query-audit --analyze` executes those read-only queries with JSON
-`EXPLAIN (ANALYZE, BUFFERS)` and fails on an estimated large-table sequential
+`EXPLAIN (ANALYZE, BUFFERS)` and fails on a large-table sequential
 scan, any temporary read/write blocks, or read/return amplification above the
 budget declared by that production query. An empty development database proves only SQL and route coverage;
 production-scale plans need a production-sized database. Each runtime owner
 supplies the same bound statement builder used by its serving read; the App
 layer only composes those specs with route coverage, so an audit-only SQL
-approximation is not accepted.
+approximation is not accepted. `/api/news/status` is the worked example: the
+eleven statements `status_snapshot` executes are eleven named specs holding the
+same constants the production read executes, and a contract test drives that read
+against a recording connection so SQL and bound parameters both have to match
+(#570 A2). The instrument, asset-usage and price reads the HTTP route composes
+after the snapshot are still unregistered.
 
 `tracefold db audit` is the online fast path. It uses catalog/statistics
 row estimates plus O(1) migration, schema, role/grant, PostgreSQL-major,
@@ -2048,10 +2053,26 @@ it does not issue exact `COUNT(*)`
 against every business table. `tracefold db audit --deep` adds those
 exact counts and is reserved for offline migration/restore evidence.
 
-Read/return amplification uses the root result-row count for hot page queries, and each query spec owns its
-budget. The two bounded News search count specs use aggregate-input amplification because their production contract deliberately returns one
-aggregate row after scanning the same 168-hour AssetSearch or TextSearch predicate as the first page; the
-catalog rejects that basis for every other query.
+Rows scanned and rows returned are separate measurements in the report, and a
+scan is judged on the first (#570 A1). A node's `Actual Rows` is what it handed
+upward after its own filter; `scanned_rows` adds what it discarded -- `Rows
+Removed by Filter`, an index recheck, a join filter at the scan -- with the loop
+count multiplying each per-loop average. `large_seq_scans` names a sequential
+scan by the table rows it actually read, never by `Plan Rows`: that is the
+planner's estimate of node *output*, so a filter discarding 50,000 rows to return
+none has a `Plan Rows` in the hundreds and used to be recorded as zero rows read.
+`discarded_rows`, `scan_output_rows`, root `shared_hit_blocks`/`shared_read_blocks`
+(root only, because buffer counters are cumulative over children) and execution
+time are reported beside it rather than folded into one number.
+
+Read/return amplification divides those scanned rows by the rows the statement's
+own result is built from, and each query spec owns its budget. The denominator
+comes from the plan, not from a per-query flag: an aggregate with no `Group Key`
+returns one row whatever it reads, so its own input is the honest denominator --
+asking a bounded `count(*)` to return as many rows as it counted is a threshold
+no correct aggregate can meet. A grouped aggregate keeps the rows it returns,
+because that result grows with what it read, and an unbounded aggregate is caught
+by the sequential-scan rule beside it rather than by an allow-list.
 
 Use ad hoc `EXPLAIN (ANALYZE, BUFFERS)` only on a representative bounded
 query. Since `ANALYZE` executes mutating SQL, wrap `INSERT`, `UPDATE`, `DELETE`,

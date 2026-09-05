@@ -14,8 +14,15 @@ from .feed_sql import (
     ASSET_SEARCH_PREDICATE,
     EDITORIAL_EVENT_CARD_SQL,
     EVENT_VERDICTS_SQL,
+    STATUS_DELIVERY_SQL,
+    STATUS_FUNNEL_REVIEWS_SQL,
+    STATUS_FUNNEL_SUPPRESSED_SQL,
+    STATUS_FUNNEL_TOTALS_SQL,
+    STATUS_FUNNEL_VERDICTS_SQL,
     STATUS_INGEST_SQL,
     STATUS_LEARNING_RETENTION_SQL,
+    STATUS_PIPELINE_SQL,
+    STATUS_SOURCE_CONTRACTS_SQL,
     TEXT_SEARCH_PREDICATE,
     feed_counts_sql,
     feed_page_sql,
@@ -31,6 +38,7 @@ from .market import (
     MARKET_TIMELINE_SQL,
 )
 from .operations import (
+    OPEN_INCIDENTS_SQL,
     RAW_RETENTION_CANDIDATE_SQL,
     RECOVERY_BACKLOG_LIMIT,
     pending_recovery_incidents_statement,
@@ -110,7 +118,6 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             name="news_feed_asset_search_counts",
             sql=feed_counts_sql(f"{search_base} AND {ASSET_SEARCH_PREDICATE}"),
             params=(now_ms, week_ago, ["BTC"]),
-            amplification_basis="aggregate_input",
             max_read_return_amplification=2.0,
         ),
         ReadQuerySpec(
@@ -129,7 +136,6 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             name="news_feed_text_search_counts",
             sql=feed_counts_sql(f"{search_base} AND {TEXT_SEARCH_PREDICATE}"),
             params=(now_ms, week_ago, "bitcoin"),
-            amplification_basis="aggregate_input",
             max_read_return_amplification=2.0,
         ),
         ReadQuerySpec(
@@ -200,10 +206,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         ReadQuerySpec(
             name="news_status_incidents_open",
-            sql=(
-                "SELECT incident_id, cause_class, opened_at_ms FROM news_opennews_incidents"
-                " WHERE closed_at_ms IS NULL ORDER BY incident_id"
-            ),
+            sql=OPEN_INCIDENTS_SQL,
             max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
@@ -212,19 +215,52 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             params=recovery_backlog_params,
             max_read_return_amplification=20.0,
         ),
+        # #570 A2. Every statement `status_snapshot` executes, as the constant it executes. The two
+        # specs that stood here were a `count(news_verdicts)` and a `count(news_deliveries)` sketch: a
+        # green audit certified plans the status route never ran, while the route's real correlated
+        # latest-Evidence subquery, its percentile aggregates and its four funnel passes were planned by
+        # nobody. Their names went with them -- the pipeline read is not one count over 24 h, and the
+        # delivery read answers 24 h and 1 h in the same statement.
         ReadQuerySpec(
-            name="news_status_pipeline_24h",
-            sql="SELECT count(*) AS n FROM news_verdicts WHERE stage = 'triage' "
-            "AND judgment_contract_version = 'news_judgment_v2' AND created_at_ms >= %s",
+            name="news_status_pipeline",
+            sql=STATUS_PIPELINE_SQL,
+            params=(hour_ago, day_ago, day_ago),
+            max_read_return_amplification=20.0,
+        ),
+        ReadQuerySpec(
+            name="news_status_source_contracts",
+            sql=STATUS_SOURCE_CONTRACTS_SQL,
             params=(day_ago,),
             max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
-            name="news_status_delivery_1h",
-            sql="SELECT count(*) AS n FROM news_deliveries delivery"
-            " JOIN news_events event ON event.event_id = delivery.event_id"
-            " WHERE delivery.state = 'sent' AND delivery.settled_at_ms >= %s",
-            params=(hour_ago,),
+            name="news_status_delivery",
+            sql=STATUS_DELIVERY_SQL,
+            params=(day_ago, hour_ago, day_ago, day_ago, day_ago),
+            max_read_return_amplification=20.0,
+        ),
+        ReadQuerySpec(
+            name="news_status_funnel_suppressed",
+            sql=STATUS_FUNNEL_SUPPRESSED_SQL,
+            params=(day_ago,),
+            max_read_return_amplification=20.0,
+        ),
+        ReadQuerySpec(
+            name="news_status_funnel_verdicts",
+            sql=STATUS_FUNNEL_VERDICTS_SQL,
+            params=(day_ago,),
+            max_read_return_amplification=20.0,
+        ),
+        ReadQuerySpec(
+            name="news_status_funnel_reviews",
+            sql=STATUS_FUNNEL_REVIEWS_SQL,
+            params=(day_ago,),
+            max_read_return_amplification=20.0,
+        ),
+        ReadQuerySpec(
+            name="news_status_funnel_totals",
+            sql=STATUS_FUNNEL_TOTALS_SQL,
+            params=(day_ago,),
             max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(

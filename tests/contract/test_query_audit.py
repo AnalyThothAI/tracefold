@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import inspect
 import json
 import re
 from pathlib import Path
@@ -7,7 +9,10 @@ from typing import Any
 
 import pytest
 
-from tracefold.app.query_audit import query_audit_catalog
+from tracefold.app.query_audit import PUBLIC_ROUTE_QUERY_COVERAGE, query_audit_catalog
+from tracefold.news.storage import feed_sql
+from tracefold.news.storage.feed import FeedStorage
+from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.postgres.audit import (
     PostgresQueryAudit,
     QueryAuditCatalog,
@@ -35,8 +40,14 @@ _NEWS_QUERY_NAMES = (
     "news_status_ingest",
     "news_status_incidents_open",
     "news_status_recovery_backlog",
-    "news_status_pipeline_24h",
-    "news_status_delivery_1h",
+    # #570 A2: the statements a status request executes, not the two counts that stood for them.
+    "news_status_pipeline",
+    "news_status_source_contracts",
+    "news_status_delivery",
+    "news_status_funnel_suppressed",
+    "news_status_funnel_verdicts",
+    "news_status_funnel_reviews",
+    "news_status_funnel_totals",
     "news_status_learning_retention",
     "news_quote_snapshot_read",
     # #553: three statements per market list request and four per detail request. The timeline, the
@@ -146,8 +157,13 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_status_ingest",
         "news_status_incidents_open",
         "news_status_recovery_backlog",
-        "news_status_pipeline_24h",
-        "news_status_delivery_1h",
+        "news_status_pipeline",
+        "news_status_source_contracts",
+        "news_status_delivery",
+        "news_status_funnel_suppressed",
+        "news_status_funnel_verdicts",
+        "news_status_funnel_reviews",
+        "news_status_funnel_totals",
         "news_status_learning_retention",
     )
     # #510 PR-5a: a console read the route plans two ways is certified twice, because the audit must
@@ -169,7 +185,6 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         route.startswith(("/api/news/stories", "/api/news/brief", "/api/news/sources"))
         for route in catalog.query_routes
     )
-    assert [query.name for query in catalog.queries if query.amplification_basis == "aggregate_input"] == []
 
 
 def test_trading_status_asks_trading_cases_for_one_indexed_row() -> None:
@@ -190,26 +205,6 @@ def test_default_news_query_specs_cover_every_news_route_query():
         if route.startswith("/api/news/"):
             assert set(route_queries) <= names, route
     assert set(_NEWS_QUERY_NAMES) <= names
-    assert [query.name for query in catalog.queries if query.amplification_basis == "aggregate_input"] == [
-        "news_feed_asset_search_counts",
-        "news_feed_text_search_counts",
-    ]
-
-
-def test_app_catalog_rejects_unapproved_aggregate_input_queries():
-    def news_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
-        del now_ms
-        return (
-            ReadQuerySpec(
-                name="news_status_pipeline_24h",
-                sql="SELECT 1",
-                amplification_basis="aggregate_input",
-                max_read_return_amplification=20.0,
-            ),
-        )
-
-    with pytest.raises(ValueError, match="only bounded aggregate reads"):
-        query_audit_catalog(now_ms=0, news_query_specs=news_specs)
 
 
 def test_trading_console_audit_explains_the_statements_the_routes_execute():
@@ -261,6 +256,78 @@ def test_trading_console_audit_explains_the_statements_the_routes_execute():
     assert all("before_ms" not in sql and "before_ns" not in sql for sql, _ in audited)
 
 
+def test_status_audit_explains_the_statements_the_status_route_executes():
+    """#570 A2: `/api/news/status` is audited by driving the production status read, not a sketch of it.
+
+    Two registered specs used to stand for the whole page: a `count(news_verdicts)` and a
+    `count(news_deliveries)` that no route runs. The statements it does run -- the correlated
+    latest-Evidence subquery, the percentile aggregates, the four funnel passes -- were planned by
+    nobody, so a green `db query-audit --analyze` said nothing about the slowest read on the surface.
+
+    Running `status_snapshot` against a recording connection is what makes that unrepeatable: the SQL and
+    the bound parameters both have to match, so a copy that drifts in either fails here, and a statement
+    added to the route without a spec fails on the count.
+    """
+
+    now_ms = 123_456
+    queries = {query.name: query for query in query_audit_catalog(now_ms=now_ms).queries}
+    conn = RecordingStatementConn()
+
+    NewsRepository(conn).status_snapshot(now_ms=now_ms)
+
+    audited = [
+        (queries[name].sql, tuple(queries[name].params))
+        for name in PUBLIC_ROUTE_QUERY_COVERAGE["/api/news/status"]
+        if name != "workers_runtime"
+    ]
+    executed = [(sql, () if params is None else tuple(params)) for sql, params in conn.statements]
+    assert sorted(executed, key=repr) == sorted(audited, key=repr)
+    # Not vacuous: the pipeline read really is the whole status statement, not a count of one table.
+    pipeline = queries["news_status_pipeline"].sql
+    assert "percentile_cont(0.95)" in pipeline
+    assert "news_event_evidence_snapshots" in pipeline
+    assert queries["news_status_funnel_totals"].sql.count("news_event_evidence_snapshots") == 2
+
+
+def test_status_audit_reads_its_sql_from_the_production_module_only():
+    """The status route may not hold SQL of its own; renaming the shared constant breaks this test.
+
+    Byte-identity above proves the two agree today. This proves they cannot disagree tomorrow: every
+    statement the status read executes is a module constant it imports, so there is one place the SQL
+    comes from and an edit there moves the route and its audit together.
+    """
+
+    module = ast.parse(Path(inspect.getfile(FeedStorage)).read_text(encoding="utf-8"))
+    storage = next(node for node in module.body if isinstance(node, ast.ClassDef) and node.name == "FeedStorage")
+    status_methods = [
+        node
+        for node in storage.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"status_snapshot", "_funnel_24h", "_source_contracts_24h"}
+    ]
+    referenced = {
+        call.args[0].id if isinstance(call.args[0], ast.Name) else None
+        for method in status_methods
+        for call in ast.walk(method)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "execute"
+    }
+
+    assert len(status_methods) == 3
+    assert None not in referenced, "a status statement is written inline instead of imported"
+    assert referenced == {
+        "STATUS_INGEST_SQL",
+        "STATUS_PIPELINE_SQL",
+        "STATUS_SOURCE_CONTRACTS_SQL",
+        "STATUS_DELIVERY_SQL",
+        "STATUS_FUNNEL_SUPPRESSED_SQL",
+        "STATUS_FUNNEL_VERDICTS_SQL",
+        "STATUS_FUNNEL_REVIEWS_SQL",
+        "STATUS_FUNNEL_TOTALS_SQL",
+        "STATUS_LEARNING_RETENTION_SQL",
+    }
+    assert all(getattr(feed_sql, name) for name in referenced)
+
+
 def test_query_audit_covers_every_public_openapi_route():
     root = Path(__file__).resolve().parents[2]
     openapi = json.loads((root / "docs/generated/openapi.json").read_text())
@@ -298,11 +365,18 @@ def test_audited_public_and_high_risk_queries_name_their_columns():
 
 
 def test_analyzed_query_audit_rejects_large_seq_scan_temp_spill_and_amplification():
+    """#570 A1: the sequential scan is large because of what it read, not what the planner expected out.
+
+    This plan used to be judged on `Plan Rows` 50,000 -- a planner *output* estimate -- and on 500 rows
+    read. It is now judged on the 50,000 rows the node actually passed through its filter, which is the
+    same number the counterexample in #570 had the audit report as zero.
+    """
+
     conn = RecordingJsonPlanConn(
         {
             "Plan": {
-                "Node Type": "Aggregate",
-                "Actual Rows": 1,
+                "Node Type": "Sort",
+                "Actual Rows": 500,
                 "Actual Loops": 1,
                 "Temp Read Blocks": 2,
                 "Temp Written Blocks": 3,
@@ -310,8 +384,9 @@ def test_analyzed_query_audit_rejects_large_seq_scan_temp_spill_and_amplificatio
                     {
                         "Node Type": "Seq Scan",
                         "Relation Name": "events",
-                        "Plan Rows": 50_000,
+                        "Plan Rows": 250,
                         "Actual Rows": 500,
+                        "Rows Removed by Filter": 49_500,
                         "Actual Loops": 1,
                     }
                 ],
@@ -327,6 +402,7 @@ def test_analyzed_query_audit_rejects_large_seq_scan_temp_spill_and_amplificatio
             ReadQuerySpec(name="bounded_read", sql="SELECT 1", max_read_return_amplification=20.0)
         ),
     ).run(analyze=True)
+    metrics = payload["queries"][0]["metrics"]
 
     assert payload["ok"] is False
     assert set(payload["queries"][0]["violations"]) == {
@@ -334,9 +410,62 @@ def test_analyzed_query_audit_rejects_large_seq_scan_temp_spill_and_amplificatio
         "temp_spill",
         "read_return_amplification_exceeded",
     }
+    assert metrics["scanned_rows"] == 50_000
+    assert metrics["scan_output_rows"] == 500
+    assert metrics["discarded_rows"] == 49_500
+    assert metrics["read_return_amplification"] == 100.0
+    assert metrics["large_seq_scans"] == [
+        {
+            "relation": "events",
+            "scanned_rows": 50_000,
+            "returned_rows": 500,
+            "discarded_rows": 49_500,
+            "loops": 1,
+        }
+    ]
 
 
-def test_analyzed_query_audit_counts_bitmap_heap_rows_not_index_candidates():
+def test_analyzed_query_audit_multiplies_per_loop_rows_and_filters_by_the_loop_count():
+    """A repeated inner scan reads its rows once per loop, and discards them once per loop too."""
+
+    conn = RecordingJsonPlanConn(
+        {
+            "Plan": {
+                "Node Type": "Nested Loop",
+                "Actual Rows": 12,
+                "Actual Loops": 1,
+                "Plans": [
+                    {
+                        "Node Type": "Seq Scan",
+                        "Relation Name": "events",
+                        "Actual Rows": 2,
+                        "Rows Removed by Filter": 18,
+                        "Actual Loops": 1_000,
+                    }
+                ],
+            },
+            "Planning Time": 0.5,
+            "Execution Time": 2.0,
+        }
+    )
+
+    payload = PostgresQueryAudit(
+        conn,
+        catalog=_single_query_catalog(
+            ReadQuerySpec(name="looped_read", sql="SELECT 1", max_read_return_amplification=20.0)
+        ),
+    ).run(analyze=True)
+    metrics = payload["queries"][0]["metrics"]
+
+    assert metrics["scan_output_rows"] == 2_000
+    assert metrics["scanned_rows"] == 20_000
+    assert payload["queries"][0]["violations"] == [
+        "unexpected_large_table_seq_scan",
+        "read_return_amplification_exceeded",
+    ]
+
+
+def test_analyzed_query_audit_counts_bitmap_heap_rows_and_its_rechecks_not_index_candidates():
     conn = RecordingJsonPlanConn(
         {
             "Plan": {
@@ -348,6 +477,7 @@ def test_analyzed_query_audit_counts_bitmap_heap_rows_not_index_candidates():
                         "Node Type": "Bitmap Heap Scan",
                         "Relation Name": "events",
                         "Actual Rows": 116,
+                        "Rows Removed by Index Recheck": 34,
                         "Actual Loops": 1,
                         "Plans": [
                             {
@@ -384,55 +514,47 @@ def test_analyzed_query_audit_counts_bitmap_heap_rows_not_index_candidates():
             ReadQuerySpec(name="bitmap_read", sql="SELECT 1", max_read_return_amplification=20.0)
         ),
     ).run(analyze=True)
+    metrics = payload["queries"][0]["metrics"]
 
+    # The index candidates a bitmap never fetches are still not rows read from the table; the heap rows
+    # the recheck threw away are.
     assert payload["ok"] is True
-    assert payload["queries"][0]["metrics"]["read_rows"] == 116
-    assert payload["queries"][0]["metrics"]["read_return_amplification"] == 2.32
+    assert metrics["scan_output_rows"] == 116
+    assert metrics["scanned_rows"] == 150
+    assert metrics["read_return_amplification"] == 3.0
 
 
-def test_analyzed_query_audit_defaults_to_returned_rows_for_aggregate_amplification():
-    conn = RecordingJsonPlanConn(_aggregate_plan(input_rows=500, returned_rows=1))
+def test_analyzed_query_audit_lets_the_plan_name_the_amplification_denominator():
+    """#570 A1: a bounded scalar aggregate is not a query that returned too few rows.
 
-    payload = PostgresQueryAudit(
-        conn,
-        catalog=_single_query_catalog(
-            ReadQuerySpec(name="aggregate_read", sql="SELECT 1", max_read_return_amplification=20.0)
-        ),
-    ).run(analyze=True)
-    readiness = payload["queries"][0]
+    Asking `count(*)` over 500 bounded rows to return 500 rows is a threshold no correct aggregate can
+    meet, and the old catalog answered that with a two-name allow-list. The plan already says which
+    statements fold: an aggregate with no `Group Key` returns one row whatever it reads, so its own
+    input is its denominator. A grouped aggregate keeps the rows it returns, because that result grows
+    with the data it read.
+    """
 
-    assert readiness["ok"] is False
-    assert readiness["metrics"]["amplification_basis"] == "returned_rows"
-    assert readiness["metrics"]["amplification_basis_rows"] == 1
-    assert readiness["metrics"]["read_return_amplification"] == 500.0
-    assert readiness["violations"] == ["read_return_amplification_exceeded"]
+    conn = RecordingJsonPlanConn(_scalar_aggregate_plan(input_rows=500, returned_rows=1))
+    grouped = RecordingJsonPlanConn(_grouped_aggregate_plan(input_rows=500, returned_rows=4))
+    catalog = _single_query_catalog(
+        ReadQuerySpec(name="bounded_aggregate", sql="SELECT 1", max_read_return_amplification=20.0)
+    )
 
+    folded = PostgresQueryAudit(conn, catalog=catalog).run(analyze=True)["queries"][0]
+    by_group = PostgresQueryAudit(grouped, catalog=catalog).run(analyze=True)["queries"][0]
 
-def test_analyzed_query_audit_can_use_explicit_aggregate_input_amplification():
-    conn = RecordingJsonPlanConn(_aggregate_plan(input_rows=500, returned_rows=1))
-
-    payload = PostgresQueryAudit(
-        conn,
-        catalog=_single_query_catalog(
-            ReadQuerySpec(
-                name="bounded_aggregate",
-                sql="SELECT 1",
-                amplification_basis="aggregate_input",
-                max_read_return_amplification=20.0,
-            )
-        ),
-    ).run(analyze=True)
-    facets = payload["queries"][0]
-
-    assert facets["ok"] is True
-    assert facets["metrics"]["amplification_basis"] == "aggregate_input"
-    assert facets["metrics"]["amplification_basis_rows"] == 500
-    assert facets["metrics"]["read_return_amplification"] == 1.0
-    assert facets["violations"] == []
+    assert folded["ok"] is True
+    assert folded["metrics"]["amplification_basis"] == "aggregate_input"
+    assert folded["metrics"]["amplification_basis_rows"] == 500
+    assert folded["metrics"]["read_return_amplification"] == 1.0
+    assert by_group["ok"] is False
+    assert by_group["metrics"]["amplification_basis"] == "returned_rows"
+    assert by_group["metrics"]["amplification_basis_rows"] == 4
+    assert by_group["metrics"]["read_return_amplification"] == 125.0
 
 
 def test_each_query_owns_its_amplification_budget():
-    conn = RecordingJsonPlanConn(_aggregate_plan(input_rows=10, returned_rows=1))
+    conn = RecordingJsonPlanConn(_filtered_scan_plan(scanned_rows=10, returned_rows=1))
     query = ReadQuerySpec(
         name="tight_read",
         sql="SELECT 1",
@@ -549,6 +671,9 @@ class RecordingStatementConn:
     def fetchall(self):
         return []
 
+    def fetchone(self):
+        return None
+
 
 class RecordingJsonPlanConn:
     def __init__(self, statement):
@@ -570,6 +695,16 @@ def _single_query_catalog(query: ReadQuerySpec) -> QueryAuditCatalog:
     )
 
 
+def _scalar_aggregate_plan(*, input_rows: int, returned_rows: int) -> dict:
+    return _aggregate_plan(input_rows=input_rows, returned_rows=returned_rows)
+
+
+def _grouped_aggregate_plan(*, input_rows: int, returned_rows: int) -> dict:
+    plan = _aggregate_plan(input_rows=input_rows, returned_rows=returned_rows)
+    plan["Plan"]["Group Key"] = ["events.event_kind"]
+    return plan
+
+
 def _aggregate_plan(*, input_rows: int, returned_rows: int) -> dict:
     return {
         "Plan": {
@@ -585,6 +720,23 @@ def _aggregate_plan(*, input_rows: int, returned_rows: int) -> dict:
                     "Actual Loops": 1,
                 }
             ],
+        },
+        "Planning Time": 0.5,
+        "Execution Time": 2.0,
+    }
+
+
+def _filtered_scan_plan(*, scanned_rows: int, returned_rows: int) -> dict:
+    """One indexed scan that reads `scanned_rows` and hands `returned_rows` upward."""
+
+    return {
+        "Plan": {
+            "Node Type": "Index Scan",
+            "Relation Name": "events",
+            "Index Name": "idx_events_opened",
+            "Actual Rows": returned_rows,
+            "Rows Removed by Filter": scanned_rows - returned_rows,
+            "Actual Loops": 1,
         },
         "Planning Time": 0.5,
         "Execution Time": 2.0,

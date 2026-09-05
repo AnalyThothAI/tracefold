@@ -6,12 +6,14 @@ from psycopg import sql
 from tests.postgres_test_utils import connect_postgres_test, postgres_migration_test_dsn
 from tracefold.app.query_audit import query_audit_catalog
 from tracefold.platform.postgres.audit import (
+    LARGE_SEQ_SCAN_ROWS,
     NEWS_TABLES,
     TRADING_TABLES,
     PostgresOperationalAudit,
     PostgresQueryAudit,
     ProjectionValidationAudit,
     QueryAuditCatalog,
+    ReadQuerySpec,
 )
 from tracefold.platform.postgres.migrations import latest_migration_version
 
@@ -191,3 +193,106 @@ def _vacuum_analyze(conn, table_name: str) -> None:
         conn.execute(f"VACUUM (ANALYZE) {table_name}")
     finally:
         raw_conn.autocommit = False
+
+
+# #570 A1's isolated counterexample, as a regression. 50,000 rows, one id index, `ANALYZE`, and two
+# read-only statements whose real plans are fed to the real audit. Parallel gather is off so the plan is
+# the single-worker shape the numbers below describe.
+_COUNTEREXAMPLE_ROWS = 50_000
+_COUNTEREXAMPLE_BUDGET = 100.0
+
+
+def _counterexample_catalog(*queries: ReadQuerySpec) -> QueryAuditCatalog:
+    return QueryAuditCatalog(
+        queries=queries,
+        query_routes={"/audit": tuple(query.name for query in queries)},
+        no_sql_routes=frozenset(),
+    )
+
+
+def test_query_audit_classifies_the_570_counterexample_plans_from_real_postgresql(
+    tmp_path,
+    postgres_clone_dsn: str,
+):
+    """The filtered full scan is a large scan; the bounded aggregate is not an amplified read.
+
+    Before this change the audit read `Actual Rows` -- a node's *output* -- as the rows it had read, and
+    judged sequential scans on `Plan Rows`, the planner's estimate of that same output. A filter that
+    discarded all 50,000 rows was therefore recorded as zero rows read with no violation, while a
+    `count(*)` over 500 bounded rows was reported as a 500x amplified read because it returned one row.
+    Both are real PostgreSQL plans, not fixtures.
+    """
+
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        conn.execute("SET max_parallel_workers_per_gather = 0")
+        conn.execute("CREATE TABLE audit_scan (id bigint PRIMARY KEY, payload text NOT NULL)")
+        conn.execute(
+            "INSERT INTO audit_scan (id, payload) SELECT g, 'row-' || g FROM generate_series(1, %s) AS g",
+            (_COUNTEREXAMPLE_ROWS,),
+        )
+        _vacuum_analyze(conn, "audit_scan")
+        payload = PostgresQueryAudit(
+            conn,
+            catalog=_counterexample_catalog(
+                ReadQuerySpec(
+                    name="filtered_full_scan",
+                    sql="SELECT id FROM audit_scan WHERE id::text = %s",
+                    params=("missing",),
+                    max_read_return_amplification=_COUNTEREXAMPLE_BUDGET,
+                ),
+                ReadQuerySpec(
+                    name="bounded_aggregate",
+                    sql="SELECT count(*) AS n FROM audit_scan WHERE id <= %s",
+                    params=(500,),
+                    max_read_return_amplification=_COUNTEREXAMPLE_BUDGET,
+                ),
+                ReadQuerySpec(
+                    name="bounded_index_page",
+                    sql="SELECT id FROM audit_scan WHERE id <= %s ORDER BY id LIMIT 50",
+                    params=(500,),
+                    max_read_return_amplification=_COUNTEREXAMPLE_BUDGET,
+                ),
+                ReadQuerySpec(
+                    name="single_row_lookup",
+                    sql="SELECT id, payload FROM audit_scan WHERE id = %s",
+                    params=(42,),
+                    max_read_return_amplification=_COUNTEREXAMPLE_BUDGET,
+                ),
+            ),
+        ).run(analyze=True)
+    finally:
+        conn.execute("DROP TABLE IF EXISTS audit_scan")
+        conn.commit()
+        conn.close()
+
+    audited = {item["name"]: item for item in payload["queries"]}
+    full_scan = audited["filtered_full_scan"]
+    aggregate = audited["bounded_aggregate"]
+
+    # (a) Output 0, filter discarded 50,000. Reported as zero rows read and no violation before.
+    assert full_scan["metrics"]["returned_rows"] == 0
+    assert full_scan["metrics"]["scan_output_rows"] == 0
+    assert full_scan["metrics"]["scanned_rows"] == _COUNTEREXAMPLE_ROWS
+    assert full_scan["metrics"]["discarded_rows"] == _COUNTEREXAMPLE_ROWS
+    assert [scan["relation"] for scan in full_scan["metrics"]["large_seq_scans"]] == ["audit_scan"]
+    assert full_scan["violations"] == [
+        "unexpected_large_table_seq_scan",
+        "read_return_amplification_exceeded",
+    ]
+
+    # (b) 500 bounded rows in, one row out. Reported as a 500x amplified read before.
+    assert aggregate["metrics"]["returned_rows"] == 1
+    assert aggregate["metrics"]["scanned_rows"] == 500
+    assert aggregate["metrics"]["amplification_basis"] == "aggregate_input"
+    assert aggregate["metrics"]["amplification_basis_rows"] == 500
+    assert aggregate["metrics"]["read_return_amplification"] == 1.0
+    assert aggregate["violations"] == []
+
+    # The bounded reads beside them keep passing, and neither is a folded aggregate.
+    for name in ("bounded_index_page", "single_row_lookup"):
+        assert audited[name]["violations"] == [], name
+        assert audited[name]["metrics"]["amplification_basis"] == "returned_rows", name
+        assert audited[name]["metrics"]["large_seq_scans"] == [], name
+    assert payload["ok"] is False
+    assert payload["thresholds"]["large_seq_scan_rows"] == LARGE_SEQ_SCAN_ROWS

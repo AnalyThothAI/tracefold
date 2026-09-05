@@ -71,13 +71,23 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_event_asset_projection",
         "news_reaction_attach",
     ),
+    # #570 A2. The eleven statements `FeedStorage.status_snapshot` executes, each named as the constant
+    # the production read executes, plus the Workers row the route folds in beside them. Two of these
+    # names used to stand for the whole page and neither was a statement the route runs: a route name is
+    # not SQL coverage. The instrument, asset-usage and price reads the route composes after the snapshot
+    # are still unregistered; #570 A2 names them and they are not in this change.
     "/api/news/status": (
         "workers_runtime",
         "news_status_ingest",
         "news_status_incidents_open",
         "news_status_recovery_backlog",
-        "news_status_pipeline_24h",
-        "news_status_delivery_1h",
+        "news_status_pipeline",
+        "news_status_source_contracts",
+        "news_status_delivery",
+        "news_status_funnel_suppressed",
+        "news_status_funnel_verdicts",
+        "news_status_funnel_reviews",
+        "news_status_funnel_totals",
         "news_status_learning_retention",
     ),
     # One statement over `trading_cases`, where the two 24 h `count(*)` scans this route also ran on
@@ -130,16 +140,6 @@ def query_audit_catalog(
         *execution_stream_query_specs(),
         *_trading_query_specs(now_ms=int(now_ms)),
     )
-    allowed_aggregate_input_queries = {
-        # The production first-page feed aggregates are time-bounded and scan exactly the predicate whose
-        # page they describe. Their one returned row is not the right amplification denominator; the bounded
-        # input is. Both SQL statements are built by FeedStorage's own production statement builder.
-        "news_feed_asset_search_counts",
-        "news_feed_text_search_counts",
-    }
-    aggregate_input_queries = {query.name for query in queries if query.amplification_basis == "aggregate_input"}
-    if aggregate_input_queries - allowed_aggregate_input_queries:
-        raise ValueError("only bounded aggregate reads may use aggregate-input amplification")
     return QueryAuditCatalog(
         queries=queries,
         query_routes=dict(PUBLIC_ROUTE_QUERY_COVERAGE),

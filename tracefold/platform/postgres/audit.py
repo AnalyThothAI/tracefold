@@ -3,14 +3,17 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from psycopg import sql
 
 from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.platform.validation import require_nonnegative_int
 
-LARGE_SEQ_SCAN_PLAN_ROWS = 10_000
+# A sequential scan is judged by the table rows it actually read, never by `Plan Rows`: that is the
+# planner's estimate of what the node would *output*, and a filter that discards 50,000 rows to return
+# none has a `Plan Rows` in the hundreds (#570 A1).
+LARGE_SEQ_SCAN_ROWS = 10_000
 
 APPLICATION_ROLE = "tracefold"
 BOOTSTRAP_ROLE = "tracefold_app"
@@ -21,8 +24,6 @@ RETIRED_APPLICATION_ROLES = (
     "tracefold_nautilus",
 )
 
-AmplificationBasis = Literal["returned_rows", "aggregate_input"]
-
 
 @dataclass(frozen=True, slots=True)
 class ReadQuerySpec:
@@ -31,7 +32,6 @@ class ReadQuerySpec:
     name: str
     sql: str
     params: Any = ()
-    amplification_basis: AmplificationBasis = "returned_rows"
     max_read_return_amplification: float | None = None
 
     def __post_init__(self) -> None:
@@ -391,7 +391,7 @@ class PostgresQueryAudit:
             "engine": "postgresql",
             "analyze": bool(analyze),
             "thresholds": {
-                "large_seq_scan_plan_rows": LARGE_SEQ_SCAN_PLAN_ROWS,
+                "large_seq_scan_rows": LARGE_SEQ_SCAN_ROWS,
                 "temp_blocks": 0,
             },
             "route_coverage": {
@@ -411,14 +411,7 @@ class PostgresQueryAudit:
                 raise RuntimeError("query_audit_amplification_budget_missing")
             rows = self.conn.execute(f"{prefix} {query.sql}", query.params).fetchall()
             plan = _json_plan(rows)
-            metrics = (
-                _plan_metrics(
-                    plan,
-                    amplification_basis=query.amplification_basis,
-                )
-                if analyze
-                else None
-            )
+            metrics = _plan_metrics(plan) if analyze else None
             violations = (
                 _plan_violations(
                     metrics,
@@ -531,11 +524,23 @@ def _json_plan(rows: list[Any]) -> Any:
     return value
 
 
-def _plan_metrics(
-    plan_payload: Any,
-    *,
-    amplification_basis: str = "returned_rows",
-) -> dict[str, Any]:
+def _plan_metrics(plan_payload: Any) -> dict[str, Any]:
+    """Fold one `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` plan into separately named evidence.
+
+    Rows scanned and rows produced are different measurements and are reported as different keys
+    (#570 A1). A node's `Actual Rows` is what it *handed upward* after its own filter; the rows it read
+    to get there are that plus every row it discarded -- `Rows Removed by Filter`, an index recheck, a
+    join filter evaluated at the scan -- and each of those is a per-loop average, so the loop count
+    multiplies all of them. A filtered scan that reads 50,000 rows and returns none used to be recorded
+    as zero rows read.
+
+    The amplification denominator comes from the plan, not from a per-query flag. A scalar aggregate
+    returns one row whatever it reads, so its own input is the only honest denominator; asking a bounded
+    `count(*)` to return as many rows as it counted is a threshold no correct aggregate can meet. What
+    keeps that from excusing an unbounded aggregate is the sequential-scan rule beside it, which now
+    judges the rows actually read.
+    """
+
     statement = _plan_statement(plan_payload)
     root = statement.get("Plan")
     if not isinstance(root, dict):
@@ -544,72 +549,83 @@ def _plan_metrics(
             "execution_time_ms": None,
             "planning_time_ms": None,
             "returned_rows": 0,
-            "read_rows": 0,
-            "amplification_basis": amplification_basis,
+            "scanned_rows": 0,
+            "scan_output_rows": 0,
+            "discarded_rows": 0,
+            "amplification_basis": "returned_rows",
             "amplification_basis_rows": 0,
             "read_return_amplification": 0.0,
+            "shared_hit_blocks": 0,
+            "shared_read_blocks": 0,
             "temp_read_blocks": 0,
             "temp_written_blocks": 0,
             "large_seq_scans": [],
         }
     nodes = list(_walk_plan_nodes(root))
-    returned_rows = _executed_rows(root)
+    returned_rows = _output_rows(root)
     relation_scans = [
         node for node in nodes if node.get("Relation Name") and "Scan" in str(node.get("Node Type") or "")
     ]
-    read_rows = sum(_executed_rows(node) for node in relation_scans)
-    basis_rows = _amplification_basis_rows(
-        root,
-        nodes,
-        amplification_basis=amplification_basis,
-    )
-    denominator = max(1, basis_rows)
-    amplification = read_rows / denominator
+    scan_output_rows = sum(_output_rows(node) for node in relation_scans)
+    scanned_rows = sum(_scanned_rows(node) for node in relation_scans)
+    basis, basis_rows = _amplification_basis(nodes, returned_rows=returned_rows)
+    amplification = scanned_rows / max(1, basis_rows)
     large_seq_scans = [
         {
             "relation": str(node.get("Relation Name") or ""),
-            "plan_rows": int(node.get("Plan Rows") or 0),
-            "actual_rows": _executed_rows(node),
+            "scanned_rows": _scanned_rows(node),
+            "returned_rows": _output_rows(node),
+            "discarded_rows": _scanned_rows(node) - _output_rows(node),
+            "loops": _loops(node),
         }
         for node in nodes
-        if str(node.get("Node Type") or "") == "Seq Scan"
-        and int(node.get("Plan Rows") or 0) >= LARGE_SEQ_SCAN_PLAN_ROWS
+        if str(node.get("Node Type") or "") == "Seq Scan" and _scanned_rows(node) >= LARGE_SEQ_SCAN_ROWS
     ]
     return {
         "plan_json_valid": True,
         "execution_time_ms": _optional_float(statement.get("Execution Time")),
         "planning_time_ms": _optional_float(statement.get("Planning Time")),
         "returned_rows": returned_rows,
-        "read_rows": read_rows,
-        "amplification_basis": amplification_basis,
+        "scanned_rows": scanned_rows,
+        "scan_output_rows": scan_output_rows,
+        "discarded_rows": scanned_rows - scan_output_rows,
+        "amplification_basis": basis,
         "amplification_basis_rows": basis_rows,
         "read_return_amplification": round(amplification, 6),
+        # Buffer counters are cumulative over each node's children, so only the root is read; summing the
+        # tree would count the same block once per ancestor.
+        "shared_hit_blocks": int(root.get("Shared Hit Blocks") or 0),
+        "shared_read_blocks": int(root.get("Shared Read Blocks") or 0),
         "temp_read_blocks": int(root.get("Temp Read Blocks") or 0),
         "temp_written_blocks": int(root.get("Temp Written Blocks") or 0),
         "large_seq_scans": large_seq_scans,
     }
 
 
-def _amplification_basis_rows(
-    root: dict[str, Any],
-    nodes: list[dict[str, Any]],
-    *,
-    amplification_basis: str,
-) -> int:
-    returned_rows = _executed_rows(root)
-    if amplification_basis == "returned_rows":
-        return returned_rows
-    if amplification_basis != "aggregate_input":
-        raise ValueError(f"unsupported amplification basis: {amplification_basis}")
-    aggregate_input_rows = max(
+def _amplification_basis(nodes: list[dict[str, Any]], *, returned_rows: int) -> tuple[str, int]:
+    """Name the rows the statement's own result is built from, and how the plan said so."""
+
+    folded_input_rows = max(
         (
-            sum(_executed_rows(child) for child in node.get("Plans") or () if isinstance(child, dict))
+            sum(_output_rows(child) for child in node.get("Plans") or () if isinstance(child, dict))
             for node in nodes
-            if "Aggregate" in str(node.get("Node Type") or "")
+            if _folds_to_one_row(node)
         ),
         default=0,
     )
-    return aggregate_input_rows or returned_rows
+    if folded_input_rows > returned_rows:
+        return "aggregate_input", folded_input_rows
+    return "returned_rows", returned_rows
+
+
+def _folds_to_one_row(node: dict[str, Any]) -> bool:
+    """A scalar aggregate: one row out per group, and there is exactly one group.
+
+    A grouped aggregate is excluded on purpose. Its result grows with the data it reads, so the rows it
+    returns remain the denominator that can catch a group-by over a whole table.
+    """
+
+    return "Aggregate" in str(node.get("Node Type") or "") and not node.get("Group Key")
 
 
 def _plan_violations(
@@ -644,8 +660,36 @@ def _walk_plan_nodes(node: dict[str, Any]) -> Iterator[dict[str, Any]]:
             yield from _walk_plan_nodes(child)
 
 
-def _executed_rows(node: dict[str, Any]) -> int:
-    return int(node.get("Actual Rows") or 0) * int(node.get("Actual Loops") or 0)
+# Every row a node reads and then throws away, named by the plan key that reports it. All three are
+# per-loop averages, like `Actual Rows` itself, so the loop count multiplies them the same way.
+_DISCARDED_ROW_KEYS = (
+    "Rows Removed by Filter",
+    "Rows Removed by Index Recheck",
+    "Rows Removed by Join Filter",
+)
+
+
+def _loops(node: dict[str, Any]) -> int:
+    return int(float(node.get("Actual Loops") or 0))
+
+
+def _output_rows(node: dict[str, Any]) -> int:
+    """The rows this node handed upward, over every loop of it."""
+
+    return round(_per_loop(node, "Actual Rows") * _loops(node))
+
+
+def _scanned_rows(node: dict[str, Any]) -> int:
+    """The rows this node read, over every loop: what it returned plus what it discarded."""
+
+    per_loop = _per_loop(node, "Actual Rows") + sum(_per_loop(node, key) for key in _DISCARDED_ROW_KEYS)
+    return round(per_loop * _loops(node))
+
+
+def _per_loop(node: dict[str, Any], key: str) -> float:
+    """One per-loop plan counter. PostgreSQL 18 reports fractional averages, so this stays a float."""
+
+    return float(node.get(key) or 0)
 
 
 def _optional_float(value: Any) -> float | None:

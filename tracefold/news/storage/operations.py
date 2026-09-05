@@ -84,6 +84,14 @@ _RAW_RETENTION_DELETE_SQL = f"""
 """  # noqa: S608
 
 
+# The open-incident list `/api/news/status` renders, and the statement its query audit plans. The audit
+# used to carry a copy that omitted `planned`, which is a different projection of the same rows (#570 A2).
+OPEN_INCIDENTS_SQL = (
+    "SELECT incident_id, cause_class, opened_at_ms, planned FROM news_opennews_incidents"
+    " WHERE closed_at_ms IS NULL ORDER BY incident_id"
+)
+
+
 def pending_recovery_incidents_statement(*, limit: int) -> tuple[str, tuple[int]]:
     """Return the exact bounded statement shared by Recovery, status, and query audit."""
 
@@ -346,10 +354,7 @@ class OperationsStorage:
         return bool(cursor.rowcount)
 
     def open_incidents(self) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT incident_id, cause_class, opened_at_ms, planned FROM news_opennews_incidents"
-            " WHERE closed_at_ms IS NULL ORDER BY incident_id"
-        ).fetchall()
+        rows = self.conn.execute(OPEN_INCIDENTS_SQL).fetchall()
         return [dict(r) for r in rows]
 
     def expire_bands(self, *, now_ms: int, batch_size: int = 500) -> int:
