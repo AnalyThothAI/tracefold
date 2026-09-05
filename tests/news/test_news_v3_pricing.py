@@ -53,6 +53,7 @@ from tracefold.news.market_review.pricing import (
     price_kind_for,
     quote_asset_rank,
     quote_asset_rank_sql,
+    quote_change_24h_bps,
     quote_freshness,
     reference_freshness,
     return_bps,
@@ -126,6 +127,20 @@ def test_day_change_is_derived_from_the_providers_own_previous_close() -> None:
     assert parse_change_pct(Decimal("110"), "100") == pytest.approx(10.0)
     assert parse_change_pct(Decimal("110"), None) is None
     assert parse_change_pct(None, "100") is None
+
+
+def test_the_reader_day_change_is_read_off_the_quote_rather_than_derived_again() -> None:
+    """#562: one derivation of the 24 h number, and one place that says which quotes have one."""
+
+    fresh = {"state": "fresh", "change_basis": "rolling_24h", "change_pct": -5.114}
+    assert quote_change_24h_bps(fresh) == -511
+    assert quote_change_24h_bps({**fresh, "change_pct": 0.005}) == 1  # half up, as the card always rounded
+    assert quote_change_24h_bps({**fresh, "state": "stale"}) is None
+    assert quote_change_24h_bps({**fresh, "change_basis": "provider_day"}) is None
+    assert quote_change_24h_bps({**fresh, "change_pct": None}) is None
+    assert quote_change_24h_bps({**fresh, "change_pct": True}) is None
+    assert quote_change_24h_bps({**fresh, "change_pct": float("nan")}) is None
+    assert quote_change_24h_bps({}) is None
 
 
 def test_quote_freshness_uses_the_oldest_applicable_clock_at_read_time() -> None:

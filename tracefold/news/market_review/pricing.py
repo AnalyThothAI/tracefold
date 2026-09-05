@@ -18,7 +18,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from decimal import ROUND_HALF_EVEN, Decimal, DivisionByZero, InvalidOperation
+from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal, DivisionByZero, InvalidOperation
+from math import isfinite
 from typing import Any, Final, Literal
 
 # Reference tiers (`us.listed`) are excluded where candidates are selected — in the repository's SQL,
@@ -277,7 +278,13 @@ def parse_price(value: Any) -> Decimal | None:
 
 
 def parse_change_pct(current: Decimal | None, previous: Any) -> float | None:
-    """Hyperliquid publishes yesterday's close, not a percentage, so the day change is derived here."""
+    """The one derivation of a day change from two prices.
+
+    Hyperliquid publishes yesterday's close rather than a percentage, which is why this exists at all;
+    #562 made it the only copy. The price loop calls it for a snapshot quote and the delivery read calls
+    it for a contract first priced at push time, so a card and the console cannot disagree about the
+    number because two functions rounded it differently.
+    """
 
     prior = parse_price(previous)
     if current is None or prior is None:
@@ -286,6 +293,26 @@ def parse_change_pct(current: Decimal | None, previous: Any) -> float | None:
         return float((current / prior - 1) * 100)
     except (InvalidOperation, DivisionByZero):
         return None
+
+
+def quote_change_24h_bps(quote: Mapping[str, Any]) -> int | None:
+    """The reader's 24 h number in integer basis points, read off the quote that already carries it.
+
+    The percentage is computed once, by `parse_change_pct`, where the quote is built. Every reader
+    surface asks this instead of dividing two prices a second time, re-rounding a stored percentage of
+    its own accord, or parsing `24h +7.91%` back out of a rendered card line (#562).
+
+    Only a fresh quote whose change declares the rolling 24 h window has one. A stale price, a
+    provider-day window and a missing percentage all answer None, and the caller then leaves the line
+    empty rather than printing a zero.
+    """
+
+    if str(quote.get("state") or "") != "fresh" or str(quote.get("change_basis") or "") != "rolling_24h":
+        return None
+    value = quote.get("change_pct")
+    if isinstance(value, bool) or not isinstance(value, int | float) or not isfinite(float(value)):
+        return None
+    return int((Decimal(str(value)) * Decimal(100)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 # ---------------------------------------------------------------------------- candles and returns
@@ -492,6 +519,7 @@ __all__ = [
     "price_kind_zh",
     "quote_asset_rank",
     "quote_asset_rank_sql",
+    "quote_change_24h_bps",
     "quote_freshness",
     "quote_state_zh",
     "reaction_reason_zh",

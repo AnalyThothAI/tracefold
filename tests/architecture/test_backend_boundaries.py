@@ -182,10 +182,6 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # which provider family answers a venue and how that venue spells the market off it, rather
         # than keeping a fourth copy of that mapping.
         "tracefold.trading.sources",
-        # #472: which execution observation is worth an operator card is a Trading judgment, so the
-        # notifier reads the policy rather than restating it. The renderer had its own copy of that
-        # predicate and it drifted from both the SQL and the Runtime for the life of the feature.
-        "tracefold.trading.notification_policy",
         "tracefold.trading.storage.root",
     ),
     "app.nautilus": (
@@ -390,6 +386,29 @@ def test_private_business_import_rules_follow_consumer_families() -> None:
     assert _private_import_allowed("tracefold.app.repository_session", "tracefold.news.storage.root")
     assert _private_import_allowed("tracefold.app.http.routes.review", "tracefold.news.review.desk")
     assert not _private_import_allowed("tracefold.app.http.routes.review", "tracefold.news.storage.root")
+
+
+def test_delivery_adapters_never_import_the_market_notification_loop() -> None:
+    """#562: what a failed send proved is a transport contract, not something a business loop lends out.
+
+    `COMMIT_PHASE_*` was defined in `news/market_notifications.py` and reached the Feishu and Telegram
+    adapters through the package root, so importing `tracefold.news` for a two-string vocabulary pulled
+    in the market loop -- a dependency pointing from the transport into the business rules it serves.
+    """
+
+    from tracefold.news import delivery_contracts, market_notifications
+
+    assert set(delivery_contracts.__all__) == {"COMMIT_PHASE_NOT_SENT", "COMMIT_PHASE_UNKNOWN"}
+    assert [name for name in market_notifications.__all__ if name.startswith("COMMIT_PHASE")] == []
+
+    loop = "tracefold.news.market_notifications"
+    violations = [
+        f"{path.relative_to(ROOT)} -> {imported}"
+        for path in [*_python_files(SRC / "integrations"), SRC / "news" / "__init__.py"]
+        for imported in _imports(path)
+        if imported == loop or imported.startswith(f"{loop}.")
+    ]
+    assert violations == []
 
 
 def test_business_dependency_dag_is_one_way() -> None:

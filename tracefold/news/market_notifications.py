@@ -35,6 +35,8 @@ from dataclasses import dataclass, replace
 from typing import Any, Final, Literal, Protocol
 from urllib.parse import urlsplit
 
+from .delivery_contracts import COMMIT_PHASE_NOT_SENT
+
 # --- v1 engineering defaults (#553 §4). Not tuned parameters, and not claimed to be optimal. ---
 
 # The work tick. A cadence for the loop, not an SLA on the provider's network or on the sender.
@@ -102,19 +104,9 @@ REASON_SMART_MONEY_WINDOW: Final = "smart_money_followup_window_open"
 REASON_SENDER_UNAVAILABLE: Final = "market_sender_unavailable"
 REASON_SEND_INTERRUPTED: Final = "market_send_interrupted"
 
-# What one failed attempt proved about the message itself, carried on the adapter's own exception.
-# `not_sent` is a claim the adapter can defend -- the request never left, or the provider answered
-# with a refusal. `unknown` is everything else, including a read timeout and a provider 5xx: the
-# request was written and the answer was not read, so "it was not delivered" is not a fact. The
-# ordinary News path keeps reading `code` alone and is unchanged by these.
-COMMIT_PHASE_NOT_SENT: Final = "not_sent"
-COMMIT_PHASE_UNKNOWN: Final = "unknown"
-
 __all__ = [
     "BACKLOG_BATCH_MAX",
     "CARD_METRIC_LINES_MAX",
-    "COMMIT_PHASE_NOT_SENT",
-    "COMMIT_PHASE_UNKNOWN",
     "DELIVERY_STATES",
     "LIQUIDATION_WINDOW_MS",
     "MARKET_TRACK_FIELDS",
