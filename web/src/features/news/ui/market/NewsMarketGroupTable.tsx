@@ -7,6 +7,7 @@ import {
   useNewsMarketItemWithToken,
   type NewsMarket,
   type NewsMarketGroup,
+  type NewsMarketItem,
   type NewsMarketKind,
   type NewsMarketObservation,
 } from "../../api/newsQueries";
@@ -189,6 +190,30 @@ function PushChip({ reason, status }: { reason: string; status: string }) {
 }
 
 /**
+ * What the notification owner recorded for this one observation.
+ *
+ * Server strings, printed as written, for the same reason `PushChip` prints them: the operator greps
+ * these. A card that was sent shows the snapshot's own numbers — how many observations it spoke for and
+ * how many attempts it took — because "sent" without them cannot be checked against the timeline below.
+ */
+function notificationTrace(item: NewsMarketItem): Array<[string, string]> {
+  const delivery = item.notification_delivery;
+  const entries: Array<[string, unknown]> = [
+    ["notification_status", item.notification_status || "—"],
+    ["notification_reason", item.notification_reason || "—"],
+    ["trigger_reason", delivery?.trigger_reason],
+    ["covered_count", delivery?.covered_count],
+    ["attempts", delivery?.attempts],
+    ["error", delivery?.error],
+    ["receipt_provider", delivery?.receipt_provider],
+    ["settled_at_ms", delivery?.settled_at_ms],
+  ];
+  return entries
+    .filter(([, value]) => value !== null && value !== undefined && value !== "")
+    .map(([key, value]) => [key, String(value)]);
+}
+
+/**
  * One expanded group, read by the newest observation's Item identity.
  *
  * The detail endpoint carries the group's retained timeline, so expanding is one request rather than one
@@ -231,13 +256,12 @@ function GroupDetail({ itemId, token }: { itemId: string; token: string }) {
         <small className="news-market-detail-label">已入库字段</small>
         <TraceList entries={marketObservationTrace(item.observation)} />
         <small className="news-market-detail-label">推送</small>
-        <TraceList
-          entries={[
-            ["notifications_connected", String(item.notifications_connected)],
-            ["notification_status", item.notification_status || "—"],
-            ["notification_reason", item.notification_reason || "—"],
-          ]}
-        />
+        <TraceList entries={notificationTrace(item)} />
+        {item.notification_delivery ? (
+          <p className="news-market-detail-empty">
+            这张卡覆盖 {item.notification_delivery.covered_count} 条观测，本条在其中。
+          </p>
+        ) : null}
       </div>
 
       <div className="news-market-detail-panel">

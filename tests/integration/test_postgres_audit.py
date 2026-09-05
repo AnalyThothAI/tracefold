@@ -147,6 +147,10 @@ def test_projection_validation_checks_bounded_public_models(tmp_path, postgres_c
     assert set(initial["checks"]) == {
         "news_ingest_state_mismatch",
         "news_delivery_state_mismatch",
+        # #553 PR-2: the same bounded-model question for the market card ledger, plus the claim only
+        # it can make -- an observation may not point at a card that is not there.
+        "news_market_delivery_state_mismatch",
+        "news_market_coverage_mismatch",
     }
     assert stale["ok"] is False
     assert stale["checks"]["news_ingest_state_mismatch"] == 1

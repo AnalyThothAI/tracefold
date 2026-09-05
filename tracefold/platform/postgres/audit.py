@@ -81,6 +81,8 @@ NEWS_TABLES = (
     "news_oi_signals",
     "news_market_liquidations",
     "news_market_smart_money",
+    "news_market_tracks",
+    "news_market_deliveries",
     "news_event_evidence_snapshots",
     "news_learning_epochs",
     "news_learning_artifacts",
@@ -474,10 +476,34 @@ class ProjectionValidationAudit:
                  OR (state IN ('sent', 'terminal') AND settled_at_ms IS NULL)
                  OR (state = 'sent' AND error_code IS NOT NULL)
                  OR jsonb_typeof(card) <> 'object'
+            ),
+            -- #553 PR-2. The same bounded-model question for the market ledger, plus the two claims
+            -- that are only meaningful here: a receipt belongs to `sent` alone -- `unknown` having
+            -- one would make it indistinguishable from a delivery -- and an observation may not point
+            -- at a card that is not there.
+            market_delivery_mismatch AS (
+              SELECT count(*)::integer AS count
+              FROM news_market_deliveries
+              WHERE (state = 'sending' AND settled_at_ms IS NOT NULL)
+                 OR (state IN ('sent', 'failed', 'unknown') AND settled_at_ms IS NULL)
+                 OR (state = 'sent' AND error IS NOT NULL)
+                 OR ((state = 'sent') <> (receipt IS NOT NULL))
+                 OR (attempts = 0) <> (card = '{}'::jsonb)
+                 OR jsonb_typeof(card) <> 'object'
+            ),
+            market_coverage_mismatch AS (
+              SELECT count(*)::integer AS count
+              FROM news_items i
+              WHERE i.market_notify_delivery_key IS NOT NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM news_market_deliveries d
+                   WHERE d.delivery_key = i.market_notify_delivery_key)
             )
             SELECT
               (SELECT count FROM ingest_mismatch) AS news_ingest_state_mismatch,
-              (SELECT count FROM delivery_mismatch) AS news_delivery_state_mismatch
+              (SELECT count FROM delivery_mismatch) AS news_delivery_state_mismatch,
+              (SELECT count FROM market_delivery_mismatch) AS news_market_delivery_state_mismatch,
+              (SELECT count FROM market_coverage_mismatch) AS news_market_coverage_mismatch
             """
         ).fetchone()
         bounded_checks = {str(name): int(value or 0) for name, value in dict(bounded_models or {}).items()}

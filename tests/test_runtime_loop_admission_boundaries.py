@@ -6,7 +6,7 @@ import pytest
 from psycopg import OperationalError
 
 from tracefold.app.workers import root as workers_module
-from tracefold.app.workers.runtime import CapabilityStates
+from tracefold.app.workers.runtime import MARKET_NOTIFICATIONS, CapabilityStates
 from tracefold.app.workers.task_contract import WorkerTask, worker_business_tasks
 from tracefold.app.workers.wiring.components import _capability_fault_reason
 from tracefold.news.bus import BrokerUnavailable
@@ -126,7 +126,14 @@ def test_a_shared_resource_overrun_inside_a_business_task_is_still_root_fatal() 
 def test_every_news_ingestion_task_is_foundational_and_every_optional_one_owns_its_key() -> None:
     """#553 PR-3. The information entry is not confinable, and a fault always names one capability."""
 
-    tasks = worker_business_tasks(news_pipeline=_AllStagesPipeline(), signal_lane=None)
+    # #553 PR-2's market notification loop is the newest optional task, and it is declared beside the
+    # Signal lane rather than through `runners()`. Passing one here is what puts its capability key
+    # inside the uniqueness assertion below, where a key reused from another loop would be caught.
+    tasks = worker_business_tasks(
+        news_pipeline=_AllStagesPipeline(),
+        signal_lane=None,
+        market_notifications=_StubMarketNotifications(),
+    )
     by_name = {task.name: task for task in tasks}
 
     assert {name for name, task in by_name.items() if task.foundational} == {
@@ -135,7 +142,10 @@ def test_every_news_ingestion_task_is_foundational_and_every_optional_one_owns_i
         "news-deduper",
         "news-janitor",
     }
+    assert by_name["market-notifications"].capability == MARKET_NOTIFICATIONS
+    assert by_name["market-notifications"].foundational is False
     optional = [task.capability for task in tasks if not task.foundational]
+    assert MARKET_NOTIFICATIONS in optional
     assert optional == sorted(set(optional), key=optional.index)
     assert len(optional) == len(set(optional)), "two optional tasks share one capability key"
 
@@ -156,6 +166,16 @@ def test_the_root_refuses_to_confine_a_foundational_task() -> None:
                 on_fault=on_fault,
             )
         )
+
+
+class _StubMarketNotifications:
+    """The loop's shape as the task contract uses it: one `advance()`, one startup sweep."""
+
+    async def start(self) -> int:  # pragma: no cover - the task is declared, never run here
+        return 0
+
+    async def advance(self) -> None:  # pragma: no cover - the task is declared, never run here
+        return None
 
 
 class _AllStagesPipeline:

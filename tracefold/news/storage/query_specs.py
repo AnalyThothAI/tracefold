@@ -21,8 +21,12 @@ from .feed_sql import (
     feed_page_sql,
 )
 from .market import (
+    MARKET_DELIVERY_ITEM_IDS_SQL,
+    MARKET_DELIVERY_SQL,
+    MARKET_DELIVERY_SUMMARY_SQL,
     MARKET_GROUPS_SQL,
     MARKET_ITEM_SQL,
+    MARKET_NOTIFY_BACKLOG_SQL,
     MARKET_SOURCES_SQL,
     MARKET_TIMELINE_SQL,
 )
@@ -246,10 +250,39 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_read_return_amplification=100.0,
         ),
         ReadQuerySpec(
+            name="news_market_delivery_summary",
+            sql=MARKET_DELIVERY_SUMMARY_SQL,
+            params=(week_ago, now_ms),
+            max_read_return_amplification=100.0,
+        ),
+        ReadQuerySpec(
             name="news_market_item",
             sql=MARKET_ITEM_SQL,
             params=("0" * 64,),
             max_read_return_amplification=4.0,
+        ),
+        ReadQuerySpec(
+            name="news_market_item_delivery",
+            sql=MARKET_DELIVERY_SQL,
+            params=("0" * 32,),
+            max_read_return_amplification=4.0,
+        ),
+        ReadQuerySpec(
+            name="news_market_item_covered",
+            sql=MARKET_DELIVERY_ITEM_IDS_SQL,
+            params=("0" * 32,),
+            max_read_return_amplification=20.0,
+        ),
+        # #553 PR-2. The notification loop's take query, verbatim. It serves no route, but it runs
+        # every two seconds for the life of the process, so it is the market read most able to grow
+        # without anyone noticing if its partial index stopped being used. The due scan beside it is a
+        # single-row lookup on its own partial index and is not registered here, because the only
+        # statement worth auditing is the real one and the real one takes a row lock.
+        ReadQuerySpec(
+            name="news_market_notify_backlog",
+            sql=MARKET_NOTIFY_BACKLOG_SQL,
+            params=(100,),
+            max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
             name="news_market_group_timeline",

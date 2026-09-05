@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import functools
 import time
 from dataclasses import dataclass
@@ -17,6 +19,7 @@ from tracefold.app.learning_runtime import (
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.runtime import (
+    MARKET_NOTIFICATIONS,
     NEWS_DELIVERY,
     NEWS_EDITORIAL,
     NEWS_INGESTION,
@@ -44,6 +47,7 @@ from tracefold.integrations.telegram import TelegramNewsPushSender
 from tracefold.integrations.venues import VenueCatalogTradabilityVerifier
 from tracefold.news import ProgressionVerifier
 from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
+from tracefold.news.market_notifications import TICK_SECONDS, MarketNotificationLoop
 from tracefold.news.market_review.loops import QuoteDatabasePort, ReactionDatabasePort
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.delivery import DelivererConsumer
@@ -110,6 +114,11 @@ def configured_runtime_manifest_sha(
     )
 
 
+# App owns the tick, as it owns the Signal lane's: the loop exposes one business action.
+MARKET_NOTIFICATIONS_TASK_NAME = "market-notifications"
+MARKET_NOTIFICATION_POLL_SECONDS = TICK_SECONDS
+
+
 async def _wire_news_pipeline(
     *,
     settings: Settings,
@@ -117,7 +126,7 @@ async def _wire_news_pipeline(
     finite: FiniteOperations,
     capabilities: CapabilityStates,
     telemetry: TelemetryRegistry | None = None,
-) -> tuple[RabbitMQBus, NewsPipeline]:
+) -> tuple[RabbitMQBus, NewsPipeline, MarketNotificationLoop]:
     """Broker-driven News V3: one RabbitMQ bus + consumers; models/providers are optional capabilities.
 
     The bus is foundational for News here: reception, admission and delivery all publish through it, so
@@ -180,7 +189,47 @@ async def _wire_news_pipeline(
             capabilities.disabled(capability, f"{capability}_not_configured")
         else:
             capabilities.running(capability)
-    return bus, pipeline
+    # The market loop shares the Deliverer's send entry rather than owning a sender: one initial-send
+    # guard for both, which is what makes the operator's one pacing number mean one thing. It runs
+    # whether or not that entry has a sender -- with none, observations keep arriving, keep merging
+    # per group, and their cards say `unavailable` instead of consuming an attempt (#553 §5.3).
+    market_notifications = MarketNotificationLoop(db=news_db, sender=pipeline.deliverer.send_entry)
+    capabilities.running(MARKET_NOTIFICATIONS)
+    return bus, pipeline, market_notifications
+
+
+async def run_market_notifications(
+    loop: MarketNotificationLoop,
+    *,
+    stop_event: asyncio.Event,
+    poll_seconds: float = MARKET_NOTIFICATION_POLL_SECONDS,
+) -> None:
+    """Poll `advance()` until the process stops. The loop owns no clock and no timer of its own.
+
+    The startup sweep runs once here, after the root has taken Workers ownership, because that is the
+    only moment a row still reading `sending` can be read as "nobody is sending this".
+
+    An exception out of `advance()` is an infrastructure fault by construction -- every business
+    outcome of a send is a durable row, and a failed send never raises -- so it ends this run of the
+    loop and is raised rather than swallowed. The Workers root records `market_notifications` as
+    `faulted`, the task stops, and News reception, market fact writes and every read carry on beside
+    it (#553 PR-3). Nothing restarts it: the to-do list is in PostgreSQL, so an operator restart after
+    the fix resumes from exactly where this process stopped.
+
+    No new external-data counter is emitted. What every turn did is already durable and queryable:
+    one row per card in `news_market_deliveries`, with its attempts, its receipt and its error. A
+    parallel counter would be a second, weaker answer to a question PostgreSQL already answers.
+    """
+
+    await loop.start()
+    while not stop_event.is_set():
+        try:
+            await loop.advance()
+        except Exception:
+            logger.exception("market notification turn failed")
+            raise
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop_event.wait(), timeout=max(0.05, float(poll_seconds)))
 
 
 async def _program_arms_or_fault(

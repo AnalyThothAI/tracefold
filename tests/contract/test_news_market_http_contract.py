@@ -20,12 +20,9 @@ from tracefold.app.http.app import create_app
 from tracefold.app.http.schemas import market as market_schemas
 from tracefold.news import MARKET_KINDS, MARKET_PAGE_MAX, MARKET_WINDOW_DEFAULT_MS, MARKET_WINDOW_MAX_MS
 
-# Read from the owning module, not from the News package surface: they are what `news` and its storage
-# report until PR-2 wires the loop, and `tracefold.app` has no use for either.
-from tracefold.news.market_contracts import (
-    NOTIFICATION_REASON_NOT_CONNECTED,
-    NOTIFICATION_STATUS_NOT_CONNECTED,
-)
+# Read from the owning module, not from the News package surface: the notification vocabulary belongs
+# to the rules that write it, and `tracefold.app` forwards the strings without ever naming one.
+from tracefold.news.market_notifications import REASON_UNPROCESSED
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 
@@ -35,6 +32,8 @@ OI_ITEM_ID = "a" * 64
 LIQUIDATION_ITEM_ID = "b" * 64
 RAW_ITEM_ID = "c" * 64
 UNKNOWN_ITEM_ID = "d" * 64
+# A `delivery_key` is the loop's own 32-hex identity, not an Item identity.
+DELIVERY_KEY = "9" * 32
 
 
 def _observation(item_id: str, *, market_kind: str, group_key: str, **overrides: Any) -> dict[str, Any]:
@@ -52,6 +51,10 @@ def _observation(item_id: str, *, market_kind: str, group_key: str, **overrides:
         received_at_ms=1_800_000_001_000,
         provider="opennews",
         historical=False,
+        # The second, independent pair. Nothing was attempted for this observation, so it names the
+        # rule that is holding it rather than a send outcome it does not have.
+        notification_status="unprocessed",
+        notification_reason=REASON_UNPROCESSED,
     )
     observation.update(overrides)
     return observation
@@ -86,7 +89,14 @@ LIQUIDATION_OBSERVATION = _observation(
     notional_usd="1234567.89",
     price="61234.5",
     received_at_ms=1_800_000_005_000,
+    notification_status="sent",
+    notification_reason="",
+    notify_group_key="liquidation|opennews|okx|BTC-USDT-SWAP|long",
+    delivery_key=DELIVERY_KEY,
 )
+# A raw card that *was* delivered. It is here to hold the two pairs apart: nothing about a failed
+# parse stops the provider's own line from being worth a reader's attention, and the notification pair
+# below is therefore not derivable from the parse pair beside it.
 RAW_OBSERVATION = _observation(
     RAW_ITEM_ID,
     market_kind="unknown_market",
@@ -96,6 +106,10 @@ RAW_OBSERVATION = _observation(
     parse_error="unknown_market_source",
     title="未知市场策略推送",
     received_at_ms=1_800_000_002_000,
+    notification_status="sent",
+    notification_reason="",
+    notify_group_key=f"raw|unknown_market|{RAW_ITEM_ID}",
+    delivery_key="f" * 32,
 )
 # The same liquidation group one observation earlier, which is what the detail page's timeline expands.
 LIQUIDATION_EARLIER = {
@@ -103,6 +117,29 @@ LIQUIDATION_EARLIER = {
     "item_id": "e" * 64,
     "notional_usd": "990000.00",
     "received_at_ms": 1_800_000_004_000,
+}
+# The stored delivery row, as the storage read returns it -- receipt included. What the route may
+# publish from it is a strictly smaller thing, which is what the detail test below asserts.
+DELIVERY: dict[str, Any] = {
+    "delivery_key": DELIVERY_KEY,
+    "group_key": LIQUIDATION_OBSERVATION["group_key"],
+    "market_kind": "liquidation",
+    "trigger_reason": "first",
+    "trigger_item_id": LIQUIDATION_ITEM_ID,
+    "state": "sent",
+    "attempts": 1,
+    "covered_count": 2,
+    "covered_from_ms": 1_800_000_004_000,
+    "covered_to_ms": 1_800_000_005_000,
+    "card": {"title": "OKX BTC-USDT-SWAP 强平", "body": "1,234,567.89 USDT"},
+    "error": None,
+    "receipt": {"provider": "telegram", "chat_id_sha256": "a" * 64, "message_id": 4242},
+    "first_attempt_at_ms": 1_800_000_006_000,
+    "last_attempt_at_ms": 1_800_000_006_000,
+    "next_attempt_at_ms": None,
+    "settled_at_ms": 1_800_000_006_000,
+    "created_at_ms": 1_800_000_005_500,
+    "updated_at_ms": 1_800_000_006_000,
 }
 
 
@@ -118,8 +155,9 @@ def _group(observation: dict[str, Any], *, observation_count: int = 1) -> dict[s
         # re-scanned into a second group on the following page.
         "oldest_received_at_ms": observation["received_at_ms"] - (observation_count - 1),
         "oldest_item_id": observation["item_id"],
-        "notification_status": NOTIFICATION_STATUS_NOT_CONNECTED,
-        "notification_reason": NOTIFICATION_REASON_NOT_CONNECTED,
+        # The run's newest member answers for the run, exactly as the storage read does.
+        "notification_status": observation["notification_status"],
+        "notification_reason": observation["notification_reason"],
     }
 
 
@@ -143,8 +181,10 @@ class _FakeNewsRepository:
                 "provider_params": {"strategy_id": "2083", "instrument": "BTC-USDT-SWAP", "side": "long"},
                 "description": "OKX BTC-USDT-SWAP 多头强平 1,234,567.89 USDT",
                 "raw_first_line": "OKX 强平",
-                "notification_status": NOTIFICATION_STATUS_NOT_CONNECTED,
-                "notification_reason": NOTIFICATION_REASON_NOT_CONNECTED,
+                "notification_status": "sent",
+                "notification_reason": "",
+                "notification_delivery": DELIVERY,
+                "notification_covered_item_ids": [LIQUIDATION_ITEM_ID, "e" * 64],
             }
         }
 
@@ -188,6 +228,14 @@ class _FakeNewsRepository:
                 "raw": counted.get(kind, (0, 0, 0, 0))[2],
                 "groups": counted.get(kind, (0, 0, 0, 0))[3],
                 "last_received_at_ms": 1_800_000_009_000 if kind in counted else None,
+                # What a reader was told about that intake, beside what arrived.
+                "merged": 1 if kind == "liquidation" else 0,
+                "sent": 1 if kind in ("liquidation", "unknown_market") else 0,
+                "failed": 0,
+                "unknown": 0,
+                "last_sent_at_ms": 1_800_000_006_000 if kind in ("liquidation", "unknown_market") else None,
+                "last_failed_at_ms": None,
+                "last_unknown_at_ms": None,
             }
             for kind in MARKET_KINDS
         ]
@@ -249,7 +297,6 @@ def test_the_market_list_reports_what_was_parsed_and_what_was_sent_as_two_separa
         "next_cursor",
         "sources",
         "filters",
-        "notifications_connected",
         "scan_truncated",
     }
     assert [group["market_kind"] for group in data["groups"]] == ["oi", "liquidation", "unknown_market"]
@@ -258,12 +305,13 @@ def test_the_market_list_reports_what_was_parsed_and_what_was_sent_as_two_separa
     parsed, raw = data["groups"][0], data["groups"][2]
     assert (parsed["latest"]["parse_status"], parsed["latest"]["parse_error"]) == ("parsed", None)
     assert (raw["latest"]["parse_status"], raw["latest"]["parse_error"]) == ("raw", "unknown_market_source")
-    # PR-1 stores and reads the facts; the notification loop is PR-2's. Both groups say so identically,
-    # which is what proves the pair is not derived from the parse outcome beside it.
-    for group in data["groups"]:
-        assert group["notification_status"] == NOTIFICATION_STATUS_NOT_CONNECTED
-        assert group["notification_reason"] == NOTIFICATION_REASON_NOT_CONNECTED
-    assert data["notifications_connected"] is False
+    # The two pairs cross: the parsed OI run has no card yet, and the run whose parse failed was
+    # delivered as the provider's own line. Neither pair can be derived from the other.
+    pairs = {
+        group["market_kind"]: (group["notification_status"], group["notification_reason"]) for group in data["groups"]
+    }
+    assert pairs["oi"] == ("unprocessed", REASON_UNPROCESSED)
+    assert pairs["unknown_market"] == ("sent", "")
     assert [source["market_kind"] for source in data["sources"]] == list(MARKET_KINDS)
     assert response.headers.get("etag")
 
@@ -281,7 +329,7 @@ def test_a_group_that_was_never_sent_is_still_a_readable_observation(client) -> 
     response = http.get("/api/news/market", params={"token": TOKEN})
     filtered = http.get(
         "/api/news/market",
-        params={"token": TOKEN, "notification_status": NOTIFICATION_STATUS_NOT_CONNECTED},
+        params={"token": TOKEN, "notification_status": "unprocessed"},
     )
 
     assert response.status_code == 200
@@ -483,8 +531,9 @@ def test_the_market_detail_returns_the_provider_payload_the_typed_fact_and_the_w
         "raw_first_line",
         "notification_status",
         "notification_reason",
+        "notification_delivery",
+        "notification_covered_item_ids",
         "timeline",
-        "notifications_connected",
     }
     assert set(data["observation"]) == set(market_schemas.NewsMarketObservationData.model_fields)
     assert data["provider_params"] == {"strategy_id": "2083", "instrument": "BTC-USDT-SWAP", "side": "long"}
@@ -494,8 +543,17 @@ def test_the_market_detail_returns_the_provider_payload_the_typed_fact_and_the_w
     assert data["observation"]["forced_order_side"] == "sell"
     assert data["observation"]["notional_usd"] == "1234567.89"
     assert data["observation"]["price"] == "61234.5"
-    assert data["notification_status"] == NOTIFICATION_STATUS_NOT_CONNECTED
-    assert data["notifications_connected"] is False
+    assert (data["notification_status"], data["notification_reason"]) == ("sent", "")
+    # The card that spoke for this observation, and the observations it covered. The receipt itself is
+    # never published -- only which provider answered -- because a receipt carries channel identifiers
+    # and the console's question is whether a reader was told, not how to address the message.
+    delivery = data["notification_delivery"]
+    assert set(delivery) == set(market_schemas.NewsMarketDeliveryData.model_fields)
+    assert "receipt" not in delivery
+    assert delivery["receipt_provider"] == "telegram"
+    assert (delivery["delivery_key"], delivery["state"], delivery["attempts"]) == (DELIVERY_KEY, "sent", 1)
+    assert delivery["card"] == DELIVERY["card"]
+    assert data["notification_covered_item_ids"] == [LIQUIDATION_ITEM_ID, "e" * 64]
     # The timeline is the group's own, newest first, and is read by the group key the Item carries.
     assert news.calls[1] == ("market_group_timeline", {"group_key": LIQUIDATION_OBSERVATION["group_key"]})
     assert [entry["item_id"] for entry in data["timeline"]] == [LIQUIDATION_ITEM_ID, "e" * 64]

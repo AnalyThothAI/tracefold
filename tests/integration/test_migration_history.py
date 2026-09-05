@@ -40,7 +40,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260905_0365"
+HEAD = "20260905_0366"
 
 
 def _config():
@@ -122,6 +122,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260905_0365",
         "20260905_0364",
         "20260904_0363",
         "20260904_0362",
@@ -148,32 +149,33 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260901_0341",
         BASELINE,
     ]
-    assert revisions[0].down_revision == "20260905_0364"
-    assert revisions[1].down_revision == "20260904_0363"
-    assert revisions[2].down_revision == "20260904_0362"
-    assert revisions[3].down_revision == "20260904_0361"
-    assert revisions[4].down_revision == "20260904_0360"
-    assert revisions[5].down_revision == "20260903_0359"
-    assert revisions[6].down_revision == "20260903_0358"
-    assert revisions[7].down_revision == "20260903_0357"
-    assert revisions[8].down_revision == "20260903_0356"
-    assert revisions[9].down_revision == "20260903_0355"
-    assert revisions[10].down_revision == "20260903_0354"
-    assert revisions[11].down_revision == "20260903_0353"
-    assert revisions[12].down_revision == "20260903_0352"
-    assert revisions[13].down_revision == "20260902_0351"
-    assert revisions[14].down_revision == "20260902_0350"
-    assert revisions[15].down_revision == "20260902_0349"
-    assert revisions[16].down_revision == "20260902_0348"
-    assert revisions[17].down_revision == "20260901_0347"
-    assert revisions[18].down_revision == "20260901_0346"
-    assert revisions[19].down_revision == "20260901_0345"
-    assert revisions[20].down_revision == "20260901_0344"
-    assert revisions[21].down_revision == "20260901_0343"
-    assert revisions[22].down_revision == "20260901_0342"
-    assert revisions[23].down_revision == "20260901_0341"
-    assert revisions[24].down_revision == BASELINE
-    assert revisions[25].down_revision is None
+    assert revisions[0].down_revision == "20260905_0365"
+    assert revisions[1].down_revision == "20260905_0364"
+    assert revisions[2].down_revision == "20260904_0363"
+    assert revisions[3].down_revision == "20260904_0362"
+    assert revisions[4].down_revision == "20260904_0361"
+    assert revisions[5].down_revision == "20260904_0360"
+    assert revisions[6].down_revision == "20260903_0359"
+    assert revisions[7].down_revision == "20260903_0358"
+    assert revisions[8].down_revision == "20260903_0357"
+    assert revisions[9].down_revision == "20260903_0356"
+    assert revisions[10].down_revision == "20260903_0355"
+    assert revisions[11].down_revision == "20260903_0354"
+    assert revisions[12].down_revision == "20260903_0353"
+    assert revisions[13].down_revision == "20260903_0352"
+    assert revisions[14].down_revision == "20260902_0351"
+    assert revisions[15].down_revision == "20260902_0350"
+    assert revisions[16].down_revision == "20260902_0349"
+    assert revisions[17].down_revision == "20260902_0348"
+    assert revisions[18].down_revision == "20260901_0347"
+    assert revisions[19].down_revision == "20260901_0346"
+    assert revisions[20].down_revision == "20260901_0345"
+    assert revisions[21].down_revision == "20260901_0344"
+    assert revisions[22].down_revision == "20260901_0343"
+    assert revisions[23].down_revision == "20260901_0342"
+    assert revisions[24].down_revision == "20260901_0341"
+    assert revisions[25].down_revision == BASELINE
+    assert revisions[26].down_revision is None
     assert sorted(path.name for path in VERSIONS.glob("*.py")) == [
         "20260831_0340_baseline.py",
         "20260901_0341_trading_signal_hard_cut.py",
@@ -201,6 +203,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260904_0363_news_review_task_source_judged_evidence.py",
         "20260905_0364_workers_runtime_capabilities.py",
         "20260905_0365_news_market_facts_at_admission.py",
+        "20260905_0366_news_market_notification_tracks.py",
     ]
 
 
@@ -232,13 +235,15 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    # `20260905_0365` is now the first refusal the walk to base meets, and it is the head, so the walk
-    # stops before reversing anything: it adds the market columns, the smart-money ledger and the
-    # reconstructed OI observations, and every one of those holds evidence that exists nowhere else.
-    # `20260905_0364`'s dropped capability column, `20260904_0363`'s restored view and
-    # `20260904_0362`'s re-added CHECKs are all reversible and all behind it, as are the two refusals
+    # `20260905_0366` is now the first refusal the walk to base meets, and it is the head, so the walk
+    # stops before reversing anything: it adds the notification to-do list and the delivery ledger,
+    # whose receipts are the only record of which cards a reader actually received, and dropping the
+    # `market_notify_state` marker would make every already-notified market Item look unprocessed and
+    # re-send the whole retained backlog. `20260905_0365`'s market facts are the refusal immediately
+    # behind it, and `20260905_0364`'s dropped capability column, `20260904_0363`'s restored view and
+    # `20260904_0362`'s re-added CHECKs are all reversible and all behind that, as are the two refusals
     # that were in front before — `20260904_0361` and `20260903_0357`.
-    with pytest.raises(RuntimeError, match="news_market_facts_downgrade_unsupported"):
+    with pytest.raises(RuntimeError, match="news_market_notifications_downgrade_unsupported"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
 

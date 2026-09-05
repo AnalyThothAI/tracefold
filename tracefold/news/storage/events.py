@@ -204,6 +204,20 @@ def prepare_evidence_snapshot(
     }
 
 
+def _market_notify_state(market_kind: str | None, ingest_mode: str) -> str | None:
+    """A live market record is a to-do; a recovered one is history (#553 §4.1.5).
+
+    Recovery replays what the provider published while this process was not listening. Alerting on it
+    would interrupt a reader with an observation whose moment has passed, and would also make a
+    reconnection look like a market event. Ordinary news has no notification state here at all -- its
+    delivery is its Event's, and this column is not part of that decision.
+    """
+
+    if market_kind is None:
+        return None
+    return "pending" if ingest_mode == "live" else "historical"
+
+
 class EventStorage:
     conn: Any
 
@@ -237,9 +251,11 @@ class EventStorage:
         The market columns and the business payload are written once and never rewritten (#553). A
         provider replay of the same record is the same observation: merging a later parse status or a
         later payload into an admitted fact would let a parser change what the provider was recorded
-        as having said. `provider_metadata.strategies` still merges, because an Item genuinely can be
-        reported under a second Strategy later, and that is metadata about the record rather than the
-        record itself.
+        as having said. `market_notify_state` is written once for the same reason it matters most --
+        a replay of a record a card already covered must not put it back on the notification to-do
+        list and interrupt the reader a second time. `provider_metadata.strategies` still merges,
+        because an Item genuinely can be reported under a second Strategy later, and that is metadata
+        about the record rather than the record itself.
         """
 
         row = self.conn.execute(
@@ -249,10 +265,10 @@ class EventStorage:
               reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
               first_ingest_mode, trace_id, created_at_ms, updated_at_ms, source_artifact_id,
               market_kind, market_source_strategy_id, market_parse_status, market_parse_error,
-              provider_params
+              provider_params, market_notify_state
             ) VALUES (
               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s, %s::jsonb
+              %s, %s, %s, %s, %s::jsonb, %s
             )
             ON CONFLICT (item_id) DO UPDATE SET
               provider_metadata = jsonb_set(
@@ -299,6 +315,9 @@ class EventStorage:
               provider_params = CASE
                 WHEN news_items.provider_params = '{}'::jsonb THEN EXCLUDED.provider_params
                 ELSE news_items.provider_params END,
+              market_notify_state = CASE
+                WHEN news_items.market_kind IS NULL THEN EXCLUDED.market_notify_state
+                ELSE news_items.market_notify_state END,
               updated_at_ms = GREATEST(news_items.updated_at_ms, EXCLUDED.updated_at_ms)
             RETURNING (xmax = 0) AS inserted
             """,
@@ -325,6 +344,7 @@ class EventStorage:
                 market_parse_status,
                 market_parse_error,
                 provider_params_json,
+                _market_notify_state(market_kind, ingest_mode),
             ),
         ).fetchone()
         return bool(row["inserted"])

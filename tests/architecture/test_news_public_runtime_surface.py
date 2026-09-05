@@ -15,6 +15,11 @@ NEWS_ROOT = SRC / "news"
 PUBLIC_NEWS_INTERFACE = {
     "ASSERTION_STATUSES",
     "CHANGE_STATES",
+    # #553 PR-2: the two commit phases a send adapter reports. They are exported because the
+    # adapters that raise them live under `tracefold.integrations`, outside News, and a phase spelled
+    # as a bare string in two packages is the drift this export exists to prevent.
+    "COMMIT_PHASE_NOT_SENT",
+    "COMMIT_PHASE_UNKNOWN",
     "EVENT_FAMILIES",
     "EVENT_KINDS",
     "EditorialEnvelope",
@@ -26,9 +31,9 @@ PUBLIC_NEWS_INTERFACE = {
     "NewsTaxonomyV1",
     "OI_METRIC_VERSION",
     # #553: the market read surface's own vocabulary and bounds, which the HTTP route validates a
-    # window and a page against so it stops restating either. The timeline cap and the two
-    # not-connected strings are deliberately absent: only `news` and its own storage read them, and an
-    # export with no `tracefold.app` consumer is surface nobody asked for.
+    # window and a page against so it stops restating either. The timeline cap and the notification
+    # status/reason vocabulary are deliberately absent: only `news` and its own storage read them, and
+    # an export with no `tracefold.app` consumer is surface nobody asked for.
     "MARKET_KINDS",
     "MARKET_PAGE_MAX",
     "MARKET_WINDOW_DEFAULT_MS",
@@ -102,6 +107,22 @@ WRITE_REPOSITORY_METHODS = (
     "terminalize_interrupted_delivery_deletes",
     "terminalize_stale_delivery_edits",
     "terminalize_stale_delivery_deletes",
+    # #553 PR-2. The market notification loop's own writes: the group's alerting state, the card
+    # ledger, and the two markers on `news_items` that say which group and which card an observation
+    # belongs to. The public read routes may call none of them.
+    "market_save_track",
+    "market_mark_processed",
+    "market_open_delivery",
+    "market_adopt_unclaimed",
+    "market_discard_delivery",
+    "market_begin_send",
+    "market_settle_delivery",
+    "market_set_track_attempt",
+    "market_set_track_anchor",
+    "market_hold_unavailable",
+    "market_release_unavailable",
+    "market_sweep_interrupted_sends",
+    "market_prune_tracks",
 )
 
 

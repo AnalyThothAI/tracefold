@@ -8,6 +8,7 @@ from loguru import logger
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.runtime import (
+    MARKET_NOTIFICATIONS,
     NEWS_DELIVERY,
     NEWS_EDITORIAL,
     NEWS_INGESTION,
@@ -21,6 +22,7 @@ from tracefold.app.workers.runtime import (
 from tracefold.app.workers.wiring.news import _wire_news_pipeline
 from tracefold.app.workers.wiring.trading import _wire_signal_lane
 from tracefold.news.bus import BrokerBackpressure, BrokerUnavailable
+from tracefold.news.market_notifications import MarketNotificationLoop
 from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.platform.config.models import Settings, news_push_availability
 from tracefold.platform.observability import TelemetryRegistry
@@ -35,6 +37,7 @@ class _Components:
     news_pipeline: NewsPipeline | None
     news_bus: RabbitMQBus | None
     runtime_manifest_sha: str | None = None
+    market_notifications: MarketNotificationLoop | None = None
     signal_lane: SignalLane | None = None
     telemetry: TelemetryRegistry | None = None
     capabilities: CapabilityStates = field(default_factory=CapabilityStates)
@@ -72,8 +75,9 @@ async def _wire_components(
     news_pipeline: NewsPipeline | None = None
     news_bus: RabbitMQBus | None = None
     runtime_manifest_sha: str | None = None
+    market_notifications: MarketNotificationLoop | None = None
     if settings.news.enabled:
-        news_bus, news_pipeline = await _wire_news_pipeline(
+        news_bus, news_pipeline, market_notifications = await _wire_news_pipeline(
             settings=settings,
             db=db,
             finite=finite,
@@ -82,7 +86,14 @@ async def _wire_components(
         )
         runtime_manifest_sha = await _register_runtime_manifest(news_pipeline, capabilities=capabilities)
     else:
-        for capability in (NEWS_INGESTION, NEWS_EDITORIAL, NEWS_INSTRUMENTS, NEWS_QUOTES, NEWS_REACTIONS):
+        for capability in (
+            NEWS_INGESTION,
+            NEWS_EDITORIAL,
+            NEWS_INSTRUMENTS,
+            NEWS_QUOTES,
+            NEWS_REACTIONS,
+            MARKET_NOTIFICATIONS,
+        ):
             capabilities.disabled(capability, "news_disabled")
         # A push target declared against a disabled News is a configuration error, not a delivery.
         # It used to refuse the whole process; now it refuses only the capability it describes.
@@ -97,6 +108,7 @@ async def _wire_components(
         news_pipeline=news_pipeline,
         news_bus=news_bus,
         runtime_manifest_sha=runtime_manifest_sha,
+        market_notifications=market_notifications,
         signal_lane=signal_lane,
         telemetry=telemetry,
         capabilities=capabilities,

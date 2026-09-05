@@ -16,10 +16,7 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.liquidations import parse_liquidation
-from tracefold.news.market_contracts import (
-    NOTIFICATION_REASON_NOT_CONNECTED,
-    NOTIFICATION_STATUS_NOT_CONNECTED,
-)
+from tracefold.news.market_notifications import REASON_HISTORICAL, REASON_UNPROCESSED
 from tracefold.news.oi_signals import measurement_definition, oi_source_contract
 from tracefold.news.smart_money import parse_smart_money
 from tracefold.news.source_contracts import MARKET_PROVIDER
@@ -38,7 +35,16 @@ def conn(postgres_clone_dsn: str):
     connection.close()
 
 
-def _item(news: Any, item_id: str, *, kind: str, at_ms: int, parsed: bool = True, params: dict | None = None) -> None:
+def _item(
+    news: Any,
+    item_id: str,
+    *,
+    kind: str,
+    at_ms: int,
+    parsed: bool = True,
+    params: dict | None = None,
+    ingest_mode: str = "live",
+) -> None:
     news.upsert_item(
         item_id=item_id,
         source_id="opennews",
@@ -52,7 +58,7 @@ def _item(news: Any, item_id: str, *, kind: str, at_ms: int, parsed: bool = True
         observed_at_ms=at_ms,
         provider_metadata_json="{}",
         strategy_ids_json="[]",
-        ingest_mode="live",
+        ingest_mode=ingest_mode,
         trace_id="trace",
         now_ms=at_ms,
         market_kind=kind,
@@ -149,7 +155,12 @@ def test_two_venues_reporting_one_instrument_are_two_groups(conn) -> None:
 
 
 def test_every_group_reports_parse_and_notification_state_as_two_independent_pairs(conn) -> None:
-    """PR-1 connects no notification loop, and says so rather than implying a decision was made."""
+    """With no loop turn taken, the pair names the rule holding the observation, not a send outcome.
+
+    Both records were admitted live, so both are on the notification to-do list. That is what the
+    reader is told -- `unprocessed`, awaiting the loop -- rather than a status implying some decision
+    about them was already made.
+    """
 
     repos = repositories_for_connection(conn)
     news = repos.news
@@ -157,16 +168,30 @@ def test_every_group_reports_parse_and_notification_state_as_two_independent_pai
         _item(news, "oi-parsed", kind="oi", at_ms=NOW)
         _oi(news, "oi-parsed", venue="binance", symbol="BTC", at_ms=NOW)
         _item(news, "raw-unknown", kind="unknown_market", at_ms=NOW + 1, parsed=False)
+        _item(news, "oi-recovered", kind="oi", at_ms=NOW + 2, ingest_mode="recovery")
+        _oi(news, "oi-recovered", venue="okx", symbol="BTC", at_ms=NOW + 2)
 
     groups = _groups(news)
 
-    assert [(group["latest"]["parse_status"], group["latest"]["parse_error"]) for group in groups] == [
-        ("raw", "unknown_market_source"),
-        ("parsed", None),
-    ]
-    for group in groups:
-        assert group["notification_status"] == NOTIFICATION_STATUS_NOT_CONNECTED
-        assert group["notification_reason"] == NOTIFICATION_REASON_NOT_CONNECTED
+    parse_pairs = {
+        group["latest"]["item_id"]: (group["latest"]["parse_status"], group["latest"]["parse_error"])
+        for group in groups
+    }
+    notification_pairs = {
+        group["latest"]["item_id"]: (group["notification_status"], group["notification_reason"]) for group in groups
+    }
+    assert parse_pairs == {
+        "oi-recovered": ("parsed", None),
+        "raw-unknown": ("raw", "unknown_market_source"),
+        "oi-parsed": ("parsed", None),
+    }
+    assert notification_pairs["oi-parsed"] == ("unprocessed", REASON_UNPROCESSED)
+    assert notification_pairs["raw-unknown"] == ("unprocessed", REASON_UNPROCESSED)
+    # Recovery replays what the provider published while this process was not listening. Alerting on
+    # it would interrupt a reader with an observation whose moment has passed, and would make a
+    # reconnection look like a market event, so it is history at admission rather than a to-do. Note
+    # that its *parse* pair is identical to the live OI record's: neither pair follows the other.
+    assert notification_pairs["oi-recovered"] == ("historical", REASON_HISTORICAL)
 
 
 def test_an_unparsed_record_is_its_own_group_and_never_merges_with_another_unknown(conn) -> None:
@@ -217,6 +242,15 @@ def test_the_kind_filter_narrows_and_the_source_summary_always_names_all_four(co
         "raw": 0,
         "groups": 0,
         "last_received_at_ms": None,
+        # #553 PR-2 puts what a reader was told beside what arrived. No kind was notified here, so
+        # every receipt count is zero rather than absent.
+        "merged": 0,
+        "sent": 0,
+        "failed": 0,
+        "unknown": 0,
+        "last_sent_at_ms": None,
+        "last_failed_at_ms": None,
+        "last_unknown_at_ms": None,
     }
 
 
@@ -247,7 +281,13 @@ def test_one_item_reads_back_its_stored_payload_and_its_groups_whole_timeline(co
     assert detail["provider_params"] == params
     assert (detail["action"], detail["position_side"], detail["account_address"]) == ("close", "short", address)
     assert detail["pnl_usd"] == "-8204.10"
-    assert detail["notification_status"] == NOTIFICATION_STATUS_NOT_CONNECTED
+    assert (detail["notification_status"], detail["notification_reason"]) == (
+        "unprocessed",
+        REASON_UNPROCESSED,
+    )
+    # No card spoke for it, so there is neither a delivery nor anything it covered.
+    assert detail["notification_delivery"] is None
+    assert detail["notification_covered_item_ids"] == []
     timeline = news.market_group_timeline(group_key=str(detail["group_key"]))
     assert [row["item_id"] for row in timeline] == ["wallet-1"]
     assert news.market_item(item_id="0" * 64) is None

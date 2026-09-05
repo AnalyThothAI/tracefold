@@ -7,7 +7,8 @@ persistence or runtime owner.
 
 `notification_status` is deliberately not a member of `parse_status`. A raw card that was delivered
 and a parsed card that was not are both ordinary outcomes, and one combined column would have to
-misreport one of them.
+misreport one of them. The notification vocabulary itself lives with the rules that write it, in
+`market_notifications.py`; only the read surface's own bounds are here.
 """
 
 from typing import Final
@@ -27,18 +28,10 @@ MARKET_WINDOW_ROW_CAP: Final = 5_000
 # One group's expanded timeline on the detail page.
 MARKET_TIMELINE_MAX: Final = 200
 
-# PR-1 of #553 stores and reads market facts; the notification loop is PR-2's. Saying so in a field
-# the reader can see is the honest form of "not wired yet" -- the alternative is a page that looks
-# like it weighed the observation and decided not to send it.
-NOTIFICATION_STATUS_NOT_CONNECTED: Final = "not_connected"
-NOTIFICATION_REASON_NOT_CONNECTED: Final = "market_notifications_not_connected"
-
 __all__ = [
     "MARKET_PAGE_MAX",
     "MARKET_TIMELINE_MAX",
     "MARKET_WINDOW_DEFAULT_MS",
     "MARKET_WINDOW_MAX_MS",
     "MARKET_WINDOW_ROW_CAP",
-    "NOTIFICATION_REASON_NOT_CONNECTED",
-    "NOTIFICATION_STATUS_NOT_CONNECTED",
 ]

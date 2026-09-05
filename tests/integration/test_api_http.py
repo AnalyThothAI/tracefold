@@ -152,7 +152,6 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
     # The market surface answers over PostgreSQL alone: no Event, no verdict, no Trading read.
     assert market.status_code == 200
     market_data = market.json()["data"]
-    assert market_data["notifications_connected"] is False
     assert {source["market_kind"] for source in market_data["sources"]} == {
         "oi",
         "liquidation",

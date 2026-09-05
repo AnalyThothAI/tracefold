@@ -237,6 +237,82 @@ class _EnrichmentEditContext:
     tradability_pending: bool
 
 
+# The initial-send deadline, unchanged, named once now that two owners share the entry.
+_INITIAL_SEND_TIMEOUT_SECONDS = 8.0
+
+
+class InitialSendEntry:
+    """The one place an initial card leaves this process.
+
+    Ordinary News and market notifications both queue here (#553 §5.2). Sharing it is the point: the
+    operator configured one `min_interval_seconds`, and two independent pacers would have meant the
+    channel could be interrupted twice as often as the number they set. The lock is also what stops
+    two loops being inside the provider at the same time, which the previous shape -- a bare interval
+    on the Deliverer, serialised only by its own `prefetch=1` -- did not do for anyone else.
+
+    `asyncio.Lock` admits waiters in arrival order, so the queueing is fair by construction: a burst
+    of market cards cannot starve a News card that was already waiting, and neither can hold the entry
+    across anything but its own one send.
+    """
+
+    def __init__(
+        self,
+        *,
+        sender: NewsPushSender | None,
+        finite_operations: Any,
+        min_interval_seconds: float,
+        timeout_seconds: float = _INITIAL_SEND_TIMEOUT_SECONDS,
+    ) -> None:
+        self._sender = sender
+        self._finite = finite_operations
+        self.min_interval = float(min_interval_seconds)
+        self._timeout_seconds = float(timeout_seconds)
+        self._lock = asyncio.Lock()
+        self._last_send_at = 0.0
+
+    @property
+    def available(self) -> bool:
+        """Whether a sender was configured at all. Not a health check -- composition already decided."""
+
+        return self._sender is not None
+
+    @property
+    def sender(self) -> NewsPushSender | None:
+        return self._sender
+
+    async def send_prepared_card(
+        self,
+        card: Mapping[str, Any],
+        *,
+        presentation: ReaderDeliveryPresentation | None = None,
+        operation: str = "news_delivery_send",
+    ) -> Mapping[str, Any]:
+        """Send one already-rendered card. Nothing here prepares, enriches or settles it.
+
+        The caller owns idempotency and the receipt, exactly as the Deliverer always has: this is the
+        pacing and the provider call, and no part of either domain's decision.
+        """
+
+        sender = self._sender
+        if sender is None:
+            raise RuntimeError("news_delivery_sender_unavailable")
+        async with self._lock:
+            wait = self.min_interval - (time.monotonic() - self._last_send_at)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                receipt: Mapping[str, Any] = await self._finite.run(
+                    operation,
+                    sender.send_card,
+                    dict(card),
+                    presentation=presentation,
+                    timeout_seconds=self._timeout_seconds,
+                )
+                return receipt
+            finally:
+                self._last_send_at = time.monotonic()
+
+
 class DelivererConsumer:
     """SAC consumer: one initial send per identity; editable providers enrich that same receipt."""
 
@@ -254,17 +330,22 @@ class DelivererConsumer:
         price_fetcher_for: DeliveryPriceFetcherFor | None = None,
         progression_verifier: ProgressionVerifier | None = None,
         tradability_verifier: TradabilityVerifier | None = None,
+        send_entry: InitialSendEntry | None = None,
     ) -> None:
         self.bus = bus
         self.db = db
         self.sender = sender
         self.finite = finite_operations
         self.min_interval = float(min_interval_seconds)
+        # Composition passes the entry it also gave the market loop; a caller that passes none gets
+        # its own, which is the same behaviour this class had before it was shared.
+        self.send_entry = send_entry or InitialSendEntry(
+            sender=sender, finite_operations=finite_operations, min_interval_seconds=min_interval_seconds
+        )
         self._candle_fetcher_for = candle_fetcher_for
         self._price_fetcher_for = price_fetcher_for
         self._progression_verifier = progression_verifier
         self._tradability_verifier = tradability_verifier
-        self._last_send_at = 0.0
         self._last_edit_at = 0.0
         self._edit_lock = asyncio.Lock()
         self._edit_tasks: set[asyncio.Task[None]] = set()
@@ -398,9 +479,6 @@ class DelivererConsumer:
             ),
             progression_review_state=("pending" if progression_review_pending or progression_unreviewed else None),
         )
-        wait = self.min_interval - (time.monotonic() - self._last_send_at)
-        if wait > 0:
-            await asyncio.sleep(wait)
         progressive_sender = self.sender if isinstance(self.sender, EditableNewsPushSender) else None
         quotes = (
             [] if progressive_sender is not None else await self._market_data(shown, now_ms(), news_at_ms=news_at_ms)
@@ -444,18 +522,12 @@ class DelivererConsumer:
         error_code: str | None = None
         receipt: dict[str, Any] | None = None
         try:
-            result = await self.finite.run(
-                "news_delivery_send",
-                self.sender.send_card,
-                card_payload,
-                presentation=presentation,
-                timeout_seconds=8.0,
-            )
+            # The shared entry paces this send and serialises it against the market loop's. News
+            # keeps reading `code` and nothing else about the failure, exactly as before.
+            result = await self.send_entry.send_prepared_card(card_payload, presentation=presentation)
             receipt = dict(result)
         except Exception as exc:
             error_code = getattr(exc, "code", None) or f"news_delivery_failed:{type(exc).__name__}"
-        finally:
-            self._last_send_at = time.monotonic()
         settled_state = "sent" if error_code is None else "terminal"
         try:
             settlement_recorded = await self.db.tx(

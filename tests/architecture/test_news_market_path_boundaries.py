@@ -34,6 +34,7 @@ MARKET_PATH = (
     "tracefold/news/liquidations.py",
     "tracefold/news/smart_money.py",
     "tracefold/news/market_contracts.py",
+    "tracefold/news/market_notifications.py",
     "tracefold/news/storage/market.py",
     "tracefold/app/http/routes/market.py",
     "tracefold/app/http/schemas/market.py",

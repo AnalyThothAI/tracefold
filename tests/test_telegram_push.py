@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from typing import Any
 
 import httpx
 import pytest
@@ -1019,6 +1020,7 @@ def test_production_transport_injects_the_bot_token_only_in_the_wire_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     wire_paths: list[str] = []
+    connections: list[Any] = []
 
     class FakeResponse:
         status = 200
@@ -1037,9 +1039,17 @@ def test_production_transport_injects_the_bot_token_only_in_the_wire_path(
     class FakeHTTPSConnection:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             self.response = FakeResponse({})
+            self.connected = False
+            connections.append(self)
+
+        def connect(self) -> None:
+            # #553 PR-2 made connecting its own step: a failure here provably wrote no request bytes,
+            # which is what lets a caller retry it without risking a second notification.
+            self.connected = True
 
         def request(self, _verb: str, path: str, *, body: bytes, headers: dict[str, str]) -> None:
             del body, headers
+            assert self.connected, "the transport must connect before it writes request bytes"
             wire_paths.append(path)
             method = path.rsplit("/", maxsplit=1)[-1]
             payloads: dict[str, dict[str, object]] = {
@@ -1072,6 +1082,7 @@ def test_production_transport_injects_the_bot_token_only_in_the_wire_path(
         f"/bot{BOT_TOKEN}/getChatMember",
         f"/bot{BOT_TOKEN}/sendMessage",
     ]
+    assert len(connections) == len(wire_paths)
 
 
 def test_target_receipt_is_keyed_and_changes_when_the_bot_token_rotates() -> None:

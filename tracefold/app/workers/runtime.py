@@ -25,6 +25,10 @@ NEWS_DELIVERY = "news_delivery"
 NEWS_INSTRUMENTS = "news_instruments"
 NEWS_QUOTES = "news_quotes"
 NEWS_REACTIONS = "news_reactions"
+# The market notification loop's own key. Named for what it does rather than for the package that
+# owns it, because that is what an operator reading `/api/status` is looking for: market alerts are a
+# capability of the product, not of News's internal layout (#553 PR-2).
+MARKET_NOTIFICATIONS = "market_notifications"
 TRADING_SIGNAL_LANE = "trading_signal_lane"
 
 CapabilityStateName = Literal["running", "faulted", "unavailable", "disabled"]
@@ -336,6 +340,7 @@ def _required_text(value: object, field: str) -> str:
 
 
 __all__ = [
+    "MARKET_NOTIFICATIONS",
     "NEWS_DELIVERY",
     "NEWS_EDITORIAL",
     "NEWS_INGESTION",

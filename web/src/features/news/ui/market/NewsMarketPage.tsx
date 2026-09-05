@@ -33,8 +33,9 @@ import "./newsMarket.css";
  * an Event, so there is no `event_id` for an admission verdict to join on, and there is nothing here for
  * `/api/trading/gate` to answer.
  *
- * **Push is reported, never assumed.** `notifications_connected` is a server fact and is rendered as one;
- * every group carries its own `notification_status` and `notification_reason`, kept apart from
+ * **Push is reported, never assumed.** There is no page-level "is push on" banner: it would be a second,
+ * weaker answer to a question every row already answers.
+ * Every group carries its own `notification_status` and `notification_reason`, kept apart from
  * `parse_status` and `parse_error` because a record that parsed cleanly and was not pushed, and one that
  * never parsed, are two different states an operator acts on differently.
  */
@@ -105,7 +106,6 @@ export function NewsMarketPage({ token }: { token: string }) {
         >
           <div className="news-market-body">
             <div className="news-market-notes">
-              <PushNote connected={firstPage.notifications_connected} />
               <IngestNote query={statusQuery} />
             </div>
 
@@ -130,32 +130,12 @@ export function NewsMarketPage({ token }: { token: string }) {
 
             <NewsSourceLine
               note="推送状态、解析状态与来源计数都来自这一次读取，没有第二个端点参与"
-              path="GET /api/news/market → groups[] · sources[] · notifications_connected"
+              path="GET /api/news/market → groups[] · sources[]"
             />
           </div>
         </PageState.Stale>
       ) : null}
     </NewsPageShell>
-  );
-}
-
-/**
- * Whether anything downstream is listening, in the server's own word.
- *
- * Rendered from `notifications_connected` rather than stated: the console must not promise a channel the
- * API says is not wired, and it must not keep saying "not pushed yet" after one is.
- */
-function PushNote({ connected }: { connected: boolean }) {
-  return (
-    <p className="news-market-note" data-tone={connected ? "done" : "caution"}>
-      <small>推送通道</small>
-      <b>{connected ? "已接通" : "未接通"}</b>
-      <em>
-        {connected
-          ? "观测入库后会走推送；每组自己的推送状态在下表右侧。"
-          : "观测只入库，不推送。下表右侧的推送状态是服务端记下的原因，不是这一页的判断。"}
-      </em>
-    </p>
   );
 }
 

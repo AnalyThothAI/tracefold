@@ -1331,17 +1331,65 @@ export interface components {
             /** Next Cursor */
             next_cursor?: string | null;
             /**
-             * Notifications Connected
-             * @default false
-             */
-            notifications_connected: boolean;
-            /**
              * Scan Truncated
              * @default false
              */
             scan_truncated: boolean;
             /** Sources */
             sources: components["schemas"]["NewsMarketSourceData"][];
+        };
+        /**
+         * NewsMarketDeliveryData
+         * @description One card: what it covered, what was attempted, and what came back.
+         *
+         *     The receipt itself is not published -- only which provider answered. A receipt carries channel
+         *     identifiers, and the console's question is "did this reach a reader", not "which message id".
+         */
+        NewsMarketDeliveryData: {
+            /**
+             * Attempts
+             * @default 0
+             */
+            attempts: number;
+            /** Card */
+            card?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Covered Count
+             * @default 0
+             */
+            covered_count: number;
+            /** Covered From Ms */
+            covered_from_ms?: number | null;
+            /** Covered To Ms */
+            covered_to_ms?: number | null;
+            /** Delivery Key */
+            delivery_key: string;
+            /** Error */
+            error?: string | null;
+            /** First Attempt At Ms */
+            first_attempt_at_ms?: number | null;
+            /** Last Attempt At Ms */
+            last_attempt_at_ms?: number | null;
+            /** Next Attempt At Ms */
+            next_attempt_at_ms?: number | null;
+            /** Receipt Provider */
+            receipt_provider?: string | null;
+            /** Settled At Ms */
+            settled_at_ms?: number | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "pending" | "sending" | "sent" | "failed" | "unknown" | "unavailable";
+            /** Trigger Item Id */
+            trigger_item_id: string;
+            /**
+             * Trigger Reason
+             * @enum {string}
+             */
+            trigger_reason: "first" | "followup" | "action_change" | "raw";
         };
         /** NewsMarketFiltersData */
         NewsMarketFiltersData: {
@@ -1392,15 +1440,13 @@ export interface components {
              * @default
              */
             description: string;
+            /** Notification Covered Item Ids */
+            notification_covered_item_ids?: string[];
+            notification_delivery?: components["schemas"]["NewsMarketDeliveryData"] | null;
             /** Notification Reason */
             notification_reason: string;
             /** Notification Status */
             notification_status: string;
-            /**
-             * Notifications Connected
-             * @default false
-             */
-            notifications_connected: boolean;
             observation: components["schemas"]["NewsMarketObservationData"];
             /** Provider Params */
             provider_params: {
@@ -1425,6 +1471,8 @@ export interface components {
             action?: string | null;
             /** Available At Ms */
             available_at_ms?: number | null;
+            /** Delivery Key */
+            delivery_key?: string | null;
             /** Direction */
             direction?: string | null;
             /** Event At Ms */
@@ -1451,6 +1499,12 @@ export interface components {
             market_kind: "oi" | "liquidation" | "smart_money" | "unknown_market";
             /** Measurement Definition */
             measurement_definition?: string | null;
+            /** Notification Reason */
+            notification_reason: string;
+            /** Notification Status */
+            notification_status: string;
+            /** Notify Group Key */
+            notify_group_key?: string | null;
             /** Notional Usd */
             notional_usd?: string | null;
             /** Oi Change Bps */
@@ -1491,20 +1545,39 @@ export interface components {
             /** Whale Oi Ratio Bps */
             whale_oi_ratio_bps?: number | null;
         };
-        /** NewsMarketSourceData */
+        /**
+         * NewsMarketSourceData
+         * @description What one kind did in the window: what arrived, and what a reader was told about it.
+         */
         NewsMarketSourceData: {
+            /**
+             * Failed
+             * @default 0
+             */
+            failed: number;
             /**
              * Groups
              * @default 0
              */
             groups: number;
+            /** Last Failed At Ms */
+            last_failed_at_ms?: number | null;
             /** Last Received At Ms */
             last_received_at_ms?: number | null;
+            /** Last Sent At Ms */
+            last_sent_at_ms?: number | null;
+            /** Last Unknown At Ms */
+            last_unknown_at_ms?: number | null;
             /**
              * Market Kind
              * @enum {string}
              */
             market_kind: "oi" | "liquidation" | "smart_money" | "unknown_market";
+            /**
+             * Merged
+             * @default 0
+             */
+            merged: number;
             /**
              * Parsed
              * @default 0
@@ -1520,6 +1593,16 @@ export interface components {
              * @default 0
              */
             received: number;
+            /**
+             * Sent
+             * @default 0
+             */
+            sent: number;
+            /**
+             * Unknown
+             * @default 0
+             */
+            unknown: number;
         };
         /** NewsModelEditorialData */
         NewsModelEditorialData: {

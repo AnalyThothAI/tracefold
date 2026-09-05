@@ -2813,11 +2813,6 @@
             ],
             "title": "Next Cursor"
           },
-          "notifications_connected": {
-            "default": false,
-            "title": "Notifications Connected",
-            "type": "boolean"
-          },
           "scan_truncated": {
             "default": false,
             "title": "Scan Truncated",
@@ -2837,6 +2832,153 @@
           "filters"
         ],
         "title": "NewsMarketData",
+        "type": "object"
+      },
+      "NewsMarketDeliveryData": {
+        "additionalProperties": false,
+        "description": "One card: what it covered, what was attempted, and what came back.\n\nThe receipt itself is not published -- only which provider answered. A receipt carries channel\nidentifiers, and the console's question is \"did this reach a reader\", not \"which message id\".",
+        "properties": {
+          "attempts": {
+            "default": 0,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "card": {
+            "additionalProperties": true,
+            "title": "Card",
+            "type": "object"
+          },
+          "covered_count": {
+            "default": 0,
+            "title": "Covered Count",
+            "type": "integer"
+          },
+          "covered_from_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Covered From Ms"
+          },
+          "covered_to_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Covered To Ms"
+          },
+          "delivery_key": {
+            "title": "Delivery Key",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "first_attempt_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Attempt At Ms"
+          },
+          "last_attempt_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Attempt At Ms"
+          },
+          "next_attempt_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Attempt At Ms"
+          },
+          "receipt_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Receipt Provider"
+          },
+          "settled_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settled At Ms"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "sending",
+              "sent",
+              "failed",
+              "unknown",
+              "unavailable"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "trigger_item_id": {
+            "title": "Trigger Item Id",
+            "type": "string"
+          },
+          "trigger_reason": {
+            "enum": [
+              "first",
+              "followup",
+              "action_change",
+              "raw"
+            ],
+            "title": "Trigger Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "delivery_key",
+          "trigger_reason",
+          "trigger_item_id",
+          "state"
+        ],
+        "title": "NewsMarketDeliveryData",
         "type": "object"
       },
       "NewsMarketFiltersData": {
@@ -2948,6 +3090,23 @@
             "title": "Description",
             "type": "string"
           },
+          "notification_covered_item_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notification Covered Item Ids",
+            "type": "array"
+          },
+          "notification_delivery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsMarketDeliveryData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "notification_reason": {
             "title": "Notification Reason",
             "type": "string"
@@ -2955,11 +3114,6 @@
           "notification_status": {
             "title": "Notification Status",
             "type": "string"
-          },
-          "notifications_connected": {
-            "default": false,
-            "title": "Notifications Connected",
-            "type": "boolean"
           },
           "observation": {
             "$ref": "#/components/schemas/NewsMarketObservationData"
@@ -3028,6 +3182,17 @@
               }
             ],
             "title": "Available At Ms"
+          },
+          "delivery_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Key"
           },
           "direction": {
             "anyOf": [
@@ -3103,6 +3268,25 @@
               }
             ],
             "title": "Measurement Definition"
+          },
+          "notification_reason": {
+            "title": "Notification Reason",
+            "type": "string"
+          },
+          "notification_status": {
+            "title": "Notification Status",
+            "type": "string"
+          },
+          "notify_group_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notify Group Key"
           },
           "notional_usd": {
             "anyOf": [
@@ -3294,18 +3478,37 @@
           "group_key",
           "title",
           "event_at_ms",
-          "received_at_ms"
+          "received_at_ms",
+          "notification_status",
+          "notification_reason"
         ],
         "title": "NewsMarketObservationData",
         "type": "object"
       },
       "NewsMarketSourceData": {
         "additionalProperties": false,
+        "description": "What one kind did in the window: what arrived, and what a reader was told about it.",
         "properties": {
+          "failed": {
+            "default": 0,
+            "title": "Failed",
+            "type": "integer"
+          },
           "groups": {
             "default": 0,
             "title": "Groups",
             "type": "integer"
+          },
+          "last_failed_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Failed At Ms"
           },
           "last_received_at_ms": {
             "anyOf": [
@@ -3318,6 +3521,28 @@
             ],
             "title": "Last Received At Ms"
           },
+          "last_sent_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Sent At Ms"
+          },
+          "last_unknown_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Unknown At Ms"
+          },
           "market_kind": {
             "enum": [
               "oi",
@@ -3327,6 +3552,11 @@
             ],
             "title": "Market Kind",
             "type": "string"
+          },
+          "merged": {
+            "default": 0,
+            "title": "Merged",
+            "type": "integer"
           },
           "parsed": {
             "default": 0,
@@ -3341,6 +3571,16 @@
           "received": {
             "default": 0,
             "title": "Received",
+            "type": "integer"
+          },
+          "sent": {
+            "default": 0,
+            "title": "Sent",
+            "type": "integer"
+          },
+          "unknown": {
+            "default": 0,
+            "title": "Unknown",
             "type": "integer"
           }
         },

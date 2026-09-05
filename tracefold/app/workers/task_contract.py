@@ -15,7 +15,10 @@ key, so a fault always names exactly what stopped.
 
 A new optional loop joins by returning one more `WorkerTask` from `worker_business_tasks` with its
 own capability name; nothing else has to change. #553 PR-2's market notification loop is exactly
-that: one task, one capability, one `advance()`-shaped runner.
+that: one task, one capability, one `advance()`-shaped runner. It is declared here beside the Signal
+lane rather than through `NewsPipeline.runners()` because App owns its polling for the same reason it
+owns the lane's: the loop exposes one business action, `advance()`, and the tick, the stop event and
+the process lifecycle are the root's.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from tracefold.app.workers.runtime import (
+    MARKET_NOTIFICATIONS,
     NEWS_DELIVERY,
     NEWS_EDITORIAL,
     NEWS_INGESTION,
@@ -34,10 +38,15 @@ from tracefold.app.workers.runtime import (
     NEWS_REACTIONS,
     TRADING_SIGNAL_LANE,
 )
+from tracefold.app.workers.wiring.news import (
+    MARKET_NOTIFICATIONS_TASK_NAME,
+    run_market_notifications,
+)
 from tracefold.app.workers.wiring.trading import (
     SIGNAL_LANE_TASK_NAME,
     run_signal_lane,
 )
+from tracefold.news.market_notifications import MarketNotificationLoop
 from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.trading.signal_lane import SignalLane
 
@@ -82,6 +91,7 @@ def worker_business_tasks(
     *,
     news_pipeline: NewsPipeline | None,
     signal_lane: SignalLane | None,
+    market_notifications: MarketNotificationLoop | None = None,
     telemetry: Any | None = None,
 ) -> tuple[WorkerTask, ...]:
     """Return the ordered task declarations consumed by the Workers root.
@@ -107,6 +117,16 @@ def worker_business_tasks(
                     foundational=foundational,
                 )
             )
+    if market_notifications is not None:
+        market = market_notifications
+        tasks.append(
+            WorkerTask(
+                name=MARKET_NOTIFICATIONS_TASK_NAME,
+                capability=MARKET_NOTIFICATIONS,
+                run=lambda stop: run_market_notifications(market, stop_event=stop),
+                foundational=False,
+            )
+        )
     if signal_lane is not None:
         lane = signal_lane
         tasks.append(

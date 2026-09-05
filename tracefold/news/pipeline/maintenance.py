@@ -38,6 +38,8 @@ _OUTBOX_MIN_AGE_MS = 15_000
 _JANITOR_PERIOD_SECONDS = 60.0
 _DAY_MS = 24 * 3600_000
 _RAW_RETENTION_BATCH_SIZE = 500
+# One group is one row, and production holds hundreds, so a batch this size drains in one pass.
+_MARKET_TRACK_PRUNE_BATCH = 500
 _RAW_RETENTION_MAX_BATCHES = 4
 _RAW_RETENTION_MAX_WALL_SECONDS = 3.0
 _RAW_RETENTION_BATCH_TIMEOUT_SECONDS = 1.0
@@ -343,6 +345,16 @@ class JanitorLoop:
             oldest_observed_at_ms = None if oldest is None else int(oldest)
             if backlog_rows == 0:
                 break
+        # Alerting state for a group whose every observation has left the retention window answers a
+        # question about records nobody can read any more. One bounded batch per pass, beside the
+        # purge that made them unreadable, so it can never become its own unbounded scan (#553 §3.4).
+        with contextlib.suppress(TransientError, DeferError):
+            await self.cold_db.tx(
+                "news_market_track_retention",
+                lambda repos: repos.news.market_prune_tracks(
+                    cutoff_ms=stamp - self.retention_judged_ms, limit=_MARKET_TRACK_PRUNE_BATCH
+                ),
+            )
         wall_seconds = max(0.0, time.perf_counter() - started)
         oldest_age_seconds = (
             0.0 if oldest_observed_at_ms is None else max(0.0, (stamp - oldest_observed_at_ms) / 1000.0)

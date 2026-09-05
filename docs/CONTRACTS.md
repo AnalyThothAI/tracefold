@@ -619,10 +619,12 @@ every Event this code can open.
   is its own group (`raw|<market_kind>|<item_id>`), so unknown never merges with
   unknown.
 
-  `data` is `groups[]`, `next_cursor`, `sources[]`, `filters`
+  `data` is `groups[]`, `next_cursor`, `sources[]` and `filters`
   (`kind`, `from_ms`, `to_ms`, `limit` — the resolved absolute window, so a
   default-window request carries a wall-clock `to_ms` and revalidates every
-  call), and `notifications_connected`. Each group carries `group_key`,
+  call). There is no page-level "is push wired" flag (#553 PR-2): every group
+  answers that for itself, and one banner would be a second, weaker answer to a
+  question the rows already answer. Each group carries `group_key`,
   `market_kind`, `observation_count`, `first_event_at_ms`, `last_event_at_ms`,
   `notification_status`, `notification_reason`, and `latest`: one observation
   with `item_id`, `market_kind`, `source_strategy_id`, `parse_status`,
@@ -632,22 +634,44 @@ every Event this code can open.
   `direction`, `oi_change_bps`, `oi_value_usd`, `whale_long_profit_bps`,
   `whale_oi_ratio_bps`, `liquidated_position_side`, `forced_order_side`,
   `notional_usd`, `price`, `trader_label`, `account_address`, `action`,
-  `position_side` and `pnl_usd`. The three `numeric` figures — `notional_usd`
+  `position_side`, `pnl_usd`, `notification_status`, `notification_reason`,
+  `notify_group_key` and `delivery_key`. The last two are the notification
+  loop's own record of what it decided: the group it assigned the observation to
+  and the card that spoke for it. `notify_group_key` is deliberately not the
+  display `group_key` above — a smart-money display run breaks when the account
+  changes action and the notification group must not, because that change is
+  exactly what earns a card. The three `numeric` figures — `notional_usd`
   (the liquidation notional or the smart-money reported notional),
   `price` and `pnl_usd` — cross the wire as their exact stored text, not as JSON
   numbers, because a JSON number would round a provider notional the ledger
   holds precisely, and the console renders them rather than computing with
   them. `sources[]` is one row
   per market kind — all four always present — with `received`, `parsed`, `raw`,
-  `groups` and `last_received_at_ms` for the same window.
+  `groups` and `last_received_at_ms` for the same window, and beside them the
+  receipt half: `merged` (observations a card spoke for without being the record
+  that triggered it), `sent`, `failed`, `unknown`, `last_sent_at_ms`,
+  `last_failed_at_ms` and `last_unknown_at_ms`. `unknown` is never folded into
+  `failed` — the provider may well have delivered those. These are fact and
+  receipt queries over the two reads the page already makes; there is no gate
+  dashboard behind them.
 
   "Not pushed" is not a filter and never becomes one: whether a card was sent is
   reported per group and is not a precondition for reading the observation.
 - `GET /api/news/market/{item_id}` returns one observation in full: the
   `observation` above, the stored `provider_params` payload, `description`,
   `raw_first_line`, `notification_status`, `notification_reason`,
-  `notifications_connected`, and `timeline` — every retained observation of the
-  same group, newest first, up to the `MARKET_TIMELINE_MAX` of 200. It is read
+  `notification_delivery`, `notification_covered_item_ids`, and `timeline` —
+  every retained observation of the same group, newest first, up to the
+  `MARKET_TIMELINE_MAX` of 200. `notification_delivery` is the card that spoke
+  for this observation or `null`: `delivery_key`, `trigger_reason`
+  (`first|followup|action_change|raw`), `trigger_item_id`, `state`
+  (`pending|sending|sent|failed|unknown|unavailable`), `attempts`,
+  `covered_count`, `covered_from_ms`, `covered_to_ms`, the frozen `card`
+  snapshot, `error`, `receipt_provider`, `first_attempt_at_ms`,
+  `last_attempt_at_ms`, `next_attempt_at_ms` and `settled_at_ms`. The receipt
+  itself is never published — only which provider answered — because a receipt
+  carries channel identifiers and the console's question is whether a reader was
+  told. It is read
   by Item identity and is therefore not bound by the list's window: a link into
   a group that last reported nine days ago still opens. `item_id` is normalized
   (trimmed and lowercased) and must match `^[0-9a-f]{64}$` — the
@@ -662,14 +686,21 @@ every Event this code can open.
   field: a raw card that was delivered and a parsed card that was not are both
   ordinary results, and one combined column would have to misreport one of them.
   `parse_status` is `parsed` or `raw`, and `parse_error` is non-null exactly when
-  it is `raw` — the database CHECK states that pair as one fact. **PR-1 of #553
-  stores and reads market facts; it does not send them.** Every group and every
-  detail therefore reports the constants
-  `notification_status = "not_connected"` and
-  `notification_reason = "market_notifications_not_connected"`, with
-  `notifications_connected: false`. These are not a judgment that the
-  observation was weighed and withheld: the notification loop is PR-2's, and
-  until it lands no market observation is evaluated for delivery at all.
+  it is `raw` — the database CHECK states that pair as one fact.
+
+  `notification_status` is an open vocabulary the notification owner writes, and
+  it has two halves. With no send attempt it names the rule currently holding the
+  observation: `unprocessed` (`awaiting_market_loop`), `historical`
+  (`historical_not_alerted`, which is a recovery frame or the backlog that
+  existed before the loop was enabled), or `merging` with the track's own reason
+  — `merging_into_prepared_card`, `oi_change_below_followup_threshold`,
+  `oi_anchor_zero_and_unchanged`, `liquidation_followup_window_open`,
+  `smart_money_followup_window_open`. With an attempt it is the card's state:
+  `pending`, `sending`, `sent`, `failed`, `unknown` or `unavailable`. `unknown`
+  means this process could not read the provider's answer, so the card is never
+  re-sent and is never reported as delivered; `unavailable` means no sender is
+  configured, which consumes no attempt. The console renders both strings
+  verbatim rather than glossing them.
 - `GET /api/news/status` returns `state` (`ready`, `warming`, `degraded`,
   `unavailable`), the Workers state, `health` (four thresholded items
   `ingest`/`broker`/`model`/`delivery` with `level` `ok|warn|bad|off`,

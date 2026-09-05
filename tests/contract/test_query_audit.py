@@ -39,12 +39,19 @@ _NEWS_QUERY_NAMES = (
     "news_status_delivery_1h",
     "news_status_learning_retention",
     "news_quote_snapshot_read",
-    # #553: two statements per market list request and two per detail request. The timeline is its own
-    # bounded read rather than a wider list scan, so both are named.
+    # #553: three statements per market list request and four per detail request. The timeline, the
+    # card that spoke for an observation and the observations that card covered are each their own
+    # bounded read rather than a wider list scan, so every one of them is named.
     "news_market_groups",
     "news_market_sources",
+    "news_market_delivery_summary",
     "news_market_item",
+    "news_market_item_delivery",
+    "news_market_item_covered",
     "news_market_group_timeline",
+    # PR-2's notification take. It serves no route, but it runs every two seconds for the life of the
+    # process, which makes it the market read most able to grow without anyone noticing.
+    "news_market_notify_backlog",
     "news_reaction_due_scan",
     "news_reaction_attach",
     "news_review_task_queue",
@@ -120,9 +127,15 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     # #553: the market surface plans its own statements, and every one of them is named here. A route
     # whose reads were not manifested would let `db query-audit --analyze` report full coverage while
     # never planning the widest scan on the public surface.
-    assert catalog.query_routes["/api/news/market"] == ("news_market_groups", "news_market_sources")
+    assert catalog.query_routes["/api/news/market"] == (
+        "news_market_groups",
+        "news_market_sources",
+        "news_market_delivery_summary",
+    )
     assert catalog.query_routes["/api/news/market/{item_id}"] == (
         "news_market_item",
+        "news_market_item_delivery",
+        "news_market_item_covered",
         "news_market_group_timeline",
     )
     assert "/api/news/review" not in catalog.query_routes

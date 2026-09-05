@@ -19,6 +19,8 @@ from urllib.parse import quote, urlsplit
 import httpx
 
 from tracefold.news import (
+    COMMIT_PHASE_NOT_SENT,
+    COMMIT_PHASE_UNKNOWN,
     ReaderDeliveryPresentation,
     ReaderMarketMovement,
     ReaderTradeTarget,
@@ -67,12 +69,30 @@ class _TelegramFacts:
 
 
 class TelegramDeliveryError(RuntimeError):
-    """A sanitized expected Telegram delivery failure."""
+    """A sanitized expected Telegram delivery failure, and what it proves about the message.
 
-    def __init__(self, code: str, *, status_code: int | None = None) -> None:
+    Same additive shape as Feishu's, and for the same reason: `code` stays what the News Deliverer
+    records, and `commit_phase` is the only honest way to tell a retry from a duplicate (#553).
+    """
+
+    def __init__(
+        self,
+        code: str,
+        *,
+        status_code: int | None = None,
+        commit_phase: str = COMMIT_PHASE_UNKNOWN,
+        retryable: bool = False,
+    ) -> None:
         super().__init__(code)
         self.code = code
         self.status_code = status_code
+        self.commit_phase = commit_phase
+        self.retryable = retryable
+
+
+# Raised by httpx before any request byte is written. Every other transport failure happened at or
+# after the write and cannot prove the message did not arrive.
+_PRE_CONNECT_FAILURES = (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError, httpx.UnsupportedProtocol)
 
 
 class _TelegramHTTPSBotTransport(httpx.BaseTransport):
@@ -100,6 +120,12 @@ class _TelegramHTTPSBotTransport(httpx.BaseTransport):
             context=self._ssl_context,
         )
         try:
+            # Connecting is its own step so its failure is its own exception. Everything below has
+            # already written request bytes, and cannot claim the message did not arrive.
+            try:
+                connection.connect()
+            except (HTTPException, OSError) as exc:
+                raise httpx.ConnectError("telegram_transport_connect_failed", request=request) from exc
             connection.request(
                 "POST",
                 f"/bot{self._bot_token}/{method}",
@@ -182,7 +208,9 @@ class TelegramNewsPushSender:
         presentation: ReaderDeliveryPresentation | None = None,
     ) -> dict[str, Any]:
         if not self._target_validated:
-            raise TelegramDeliveryError("news_delivery_telegram_target_not_prepared")
+            raise TelegramDeliveryError(
+                "news_delivery_telegram_target_not_prepared", commit_phase=COMMIT_PHASE_NOT_SENT
+            )
         view = presentation or ReaderDeliveryPresentation()
         pushed_at_ms = int(self._wall_clock_ms())
         text = _telegram_message(
@@ -232,7 +260,9 @@ class TelegramNewsPushSender:
         """Replace one previously sent channel message while preserving its original push timestamp."""
 
         if not self._target_validated:
-            raise TelegramDeliveryError("news_delivery_telegram_target_not_prepared")
+            raise TelegramDeliveryError(
+                "news_delivery_telegram_target_not_prepared", commit_phase=COMMIT_PHASE_NOT_SENT
+            )
         try:
             parsed_receipt = TelegramDeliveryReceipt.model_validate(receipt)
         except ValueError:
@@ -284,7 +314,9 @@ class TelegramNewsPushSender:
         """Delete exactly one previously receipted message from the configured private channel."""
 
         if not self._target_validated:
-            raise TelegramDeliveryError("news_delivery_telegram_target_not_prepared")
+            raise TelegramDeliveryError(
+                "news_delivery_telegram_target_not_prepared", commit_phase=COMMIT_PHASE_NOT_SENT
+            )
         try:
             parsed_receipt = TelegramDeliveryReceipt.model_validate(receipt)
         except ValueError:
@@ -406,7 +438,11 @@ class TelegramNewsPushSender:
     ) -> Any:
         remaining = deadline_at - self._monotonic()
         if remaining < _TELEGRAM_MIN_REQUEST_BUDGET_SECONDS:
-            raise TelegramDeliveryError(f"{error_prefix}_budget_exhausted")
+            # The call was never made, so nothing was sent -- but the budget is gone for this attempt,
+            # and retrying it inside the same attempt would only exhaust it again.
+            raise TelegramDeliveryError(
+                f"{error_prefix}_budget_exhausted", commit_phase=COMMIT_PHASE_NOT_SENT, retryable=True
+            )
         phase_timeout = min(_TELEGRAM_MAX_PHASE_TIMEOUT_SECONDS, remaining / 4)
         try:
             response = self._client.post(
@@ -419,20 +455,38 @@ class TelegramNewsPushSender:
                     pool=phase_timeout,
                 ),
             )
+        except _PRE_CONNECT_FAILURES:
+            raise TelegramDeliveryError(
+                f"{error_prefix}_transport_failed", commit_phase=COMMIT_PHASE_NOT_SENT, retryable=True
+            ) from None
         except (httpx.TimeoutException, httpx.TransportError):
             raise TelegramDeliveryError(f"{error_prefix}_transport_failed") from None
 
         status_code = int(response.status_code)
-        if status_code == 429 or status_code >= 500:
+        if status_code == 429:
+            raise TelegramDeliveryError(
+                f"{error_prefix}_http_failed",
+                status_code=status_code,
+                commit_phase=COMMIT_PHASE_NOT_SENT,
+                retryable=True,
+            )
+        if status_code >= 500:
+            # Telegram's own tier answered. It can answer that way after accepting the message.
             raise TelegramDeliveryError(f"{error_prefix}_http_failed", status_code=status_code)
         if status_code < 200 or status_code >= 300:
-            raise TelegramDeliveryError(f"{error_prefix}_http_rejected", status_code=status_code)
+            raise TelegramDeliveryError(
+                f"{error_prefix}_http_rejected", status_code=status_code, commit_phase=COMMIT_PHASE_NOT_SENT
+            )
         try:
             response_payload = response.json()
         except ValueError:
             raise TelegramDeliveryError(f"{error_prefix}_response_invalid", status_code=status_code) from None
         if not isinstance(response_payload, Mapping) or response_payload.get("ok") is not True:
-            raise TelegramDeliveryError(f"{error_prefix}_business_rejected", status_code=status_code)
+            raise TelegramDeliveryError(
+                f"{error_prefix}_business_rejected",
+                status_code=status_code,
+                commit_phase=COMMIT_PHASE_NOT_SENT,
+            )
         return response_payload.get("result")
 
     def close(self) -> None:
