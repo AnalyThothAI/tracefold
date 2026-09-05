@@ -33,6 +33,7 @@ from tracefold.news.market_notifications import (
     delivery_key,
     group_family,
     group_identity,
+    market_detail_url,
     notification_status,
     render_market_card,
     retry_delay_ms,
@@ -513,7 +514,6 @@ def test_smart_money_change_card_shows_the_change_count_and_the_first_and_last_a
         track=group_identity(observations[0]),
         reason="action_change",
         observations=observations,
-        detail_url="/news/market/c",
         action_changes=2,
     )
     text = card["elements"][0]["content"]
@@ -539,7 +539,6 @@ def test_the_change_count_starts_from_what_the_last_delivered_card_ended_on() ->
         track=replace(group_identity(covered[0]), anchor_action="close", anchor_position_side="short"),
         reason="action_change",
         observations=covered,
-        detail_url="/news/market/b",
         action_changes=action_changes(covered, since=("close", "short")),
     )
     printed = card["elements"][0]["content"]
@@ -573,7 +572,6 @@ def test_smart_money_without_an_address_uses_the_source_label_group_and_says_it_
         track=labelled,
         reason="first",
         observations=[wallet(at_ms=T0, address=None)],
-        detail_url="/news/market/x",
     )
     assert "来源标签，非已核实地址" in card["elements"][0]["content"]
 
@@ -583,9 +581,7 @@ def test_smart_money_unknown_venue_is_its_own_group_and_is_labelled() -> None:
     known = group_identity(wallet(at_ms=T0, venue="hyperliquid"))
     assert unknown.group_key != known.group_key
     assert unknown.venue_known is False
-    card = render_market_card(
-        track=unknown, reason="first", observations=[wallet(at_ms=T0, venue=None)], detail_url="/x"
-    )
+    card = render_market_card(track=unknown, reason="first", observations=[wallet(at_ms=T0, venue=None)])
     assert "场所未知" in card["elements"][0]["content"]
 
 
@@ -637,6 +633,62 @@ def test_two_unreadable_records_are_two_groups_and_never_share_one_unknown_bucke
 def test_an_unparsed_oi_line_is_raw_rather_than_an_oi_comparison() -> None:
     unparsed = replace(oi(at_ms=T0, change_bps=600), parse_status="raw", oi_change_bps=None, direction=None)
     assert group_family(unparsed) == "raw"
+
+
+# --- §5.2 the card's link to the console ---------------------------------------------------------
+
+
+def test_the_card_button_carries_the_absolute_console_url_of_the_triggering_observation() -> None:
+    """A reader opens the card in Feishu or Telegram, never on the console's own origin."""
+
+    item_id = "a" * 64
+    observations = [wallet(at_ms=T0, item_id=item_id)]
+    card = render_market_card(
+        track=group_identity(observations[0]),
+        reason="first",
+        observations=observations,
+        detail_url=market_detail_url("https://console.example.com/", item_id),
+    )
+    action = next(element for element in card["elements"] if element["tag"] == "action")
+    assert action["actions"][0]["url"] == f"https://console.example.com/news/market/{item_id}"
+    note = next(element for element in card["elements"] if element["tag"] == "note")
+    assert item_id not in note["elements"][0]["content"]
+
+
+def test_without_a_console_url_there_is_no_button_and_the_note_carries_the_item_id() -> None:
+    """The production defect, and the honest answer to it.
+
+    The first real market card went out with `/news/market/<item_id>` on the button: no Feishu or
+    Telegram client can follow a relative path, and this repository has no operator setting holding
+    the console's public origin. A card with no button and the item id printed on it is reachable;
+    a dead button is not.
+    """
+
+    item_id = "b" * 64
+    observations = [wallet(at_ms=T0, item_id=item_id)]
+    card = render_market_card(
+        track=group_identity(observations[0]),
+        reason="first",
+        observations=observations,
+        detail_url=market_detail_url(None, item_id),
+    )
+    assert [element["tag"] for element in card["elements"]] == ["markdown", "note"]
+    assert card["elements"][-1]["elements"][0]["content"].endswith(item_id)
+
+
+@pytest.mark.parametrize(
+    "base",
+    [None, "", "   ", "/news/market", "console.example.com", "ftp://console.example.com", "https:///news"],
+)
+def test_only_an_absolute_http_console_base_is_a_link_a_client_can_open(base: str | None) -> None:
+    assert market_detail_url(base, "c" * 64) is None
+
+
+def test_a_console_base_keeps_its_own_path_and_drops_one_trailing_slash() -> None:
+    assert (
+        market_detail_url("https://ops.example.com/tracefold/", "d")
+        == "https://ops.example.com/tracefold/news/market/d"
+    )
 
 
 # --- grouping and identity ----------------------------------------------------------------------

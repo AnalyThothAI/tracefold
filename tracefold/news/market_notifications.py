@@ -33,6 +33,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Final, Literal, Protocol
+from urllib.parse import urlsplit
 
 # --- v1 engineering defaults (#553 §4). Not tuned parameters, and not claimed to be optimal. ---
 
@@ -154,6 +155,7 @@ __all__ = [
     "delivery_key",
     "group_family",
     "group_identity",
+    "market_detail_url",
     "notification_status",
     "render_market_card",
     "retry_delay_ms",
@@ -751,21 +753,48 @@ _CARD_COLOR: Final[dict[str, str]] = {
 }
 
 
+def market_detail_url(console_base_url: str | None, item_id: str) -> str | None:
+    """The console link for one observation, or None when no absolute console URL is known.
+
+    The card is opened in Feishu or Telegram, not in the console's own origin, so a relative path is
+    not a link there at all: the first market card sent in production carried `/news/market/<id>` and
+    no client could follow it. This repository has no operator setting that holds the console's public
+    origin -- `api.host`/`api.port` is a bind address, and the `base_url` fields belong to the LLM
+    providers -- so a deployment that has not been given one gets a card with no button rather than a
+    dead one, and the note line carries the item id the operator can look up (#553).
+    """
+
+    base = _absolute_http_url(console_base_url)
+    if base is None or not item_id:
+        return None
+    return f"{base}/news/market/{item_id}"
+
+
+def _absolute_http_url(value: str | None) -> str | None:
+    candidate = str(value or "").strip().rstrip("/")
+    parsed = urlsplit(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    return candidate
+
+
 def render_market_card(
     *,
     track: MarketTrack,
     reason: str,
     observations: Sequence[MarketObservation],
-    detail_url: str,
+    detail_url: str | None = None,
     action_changes: int = 0,
 ) -> dict[str, Any]:
     """One bounded summary card for one intent, in the reader card's own wire shape.
 
     The same structure ordinary News sends, so both configured adapters render it with no market
-    branch of their own: a header, one markdown block whose last line is the facts line, and one
-    action button to the detail page that holds the complete timeline. v1 sends exactly one card per
-    intent -- no page cursor, no per-page receipt, no paging retry -- and the observations it could
-    not fit are on the page it links to, not deleted.
+    branch of their own: a header, one markdown block whose last line is the facts line, and -- when
+    an absolute console URL is known -- one action button to the detail page that holds the complete
+    timeline. Without one there is no button: the note line prints the item id instead, which is what
+    an operator needs to reach the same page, and Telegram's own adapter already refuses a link it
+    cannot open. v1 sends exactly one card per intent -- no page cursor, no per-page receipt, no
+    paging retry -- and the observations it could not fit are on the page it links to, not deleted.
     """
 
     latest = observations[-1]
@@ -785,14 +814,10 @@ def render_market_card(
             if part
         )
     )
-    return {
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": title[:CARD_TITLE_MAX]},
-            "template": _CARD_COLOR.get(track.family, "grey"),
-        },
-        "elements": [
-            {"tag": "markdown", "content": "\n".join(line for line in lines if line)},
+    link = _absolute_http_url(detail_url)
+    elements: list[dict[str, Any]] = [{"tag": "markdown", "content": "\n".join(line for line in lines if line)}]
+    if link is not None:
+        elements.append(
             {
                 "tag": "action",
                 "actions": [
@@ -800,15 +825,22 @@ def render_market_card(
                         "tag": "button",
                         "text": {"tag": "plain_text", "content": "打开明细"},
                         "type": "default",
-                        "url": detail_url,
+                        "url": link,
                     }
                 ],
-            },
-            {
-                "tag": "note",
-                "elements": [{"tag": "plain_text", "content": f"Tracefold 市场 · {track.group_key[:24]}"}],
-            },
-        ],
+            }
+        )
+    note = f"Tracefold 市场 · {track.group_key[:24]}"
+    if link is None:
+        note = f"{note} · {latest.item_id}"
+    elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": note}]})
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": title[:CARD_TITLE_MAX]},
+            "template": _CARD_COLOR.get(track.family, "grey"),
+        },
+        "elements": elements,
     }
 
 
@@ -1028,12 +1060,14 @@ class MarketNotificationLoop:
         *,
         db: MarketNotificationDatabasePort,
         sender: PreparedCardSender,
-        detail_url_base: str = "/news/market",
+        console_base_url: str | None = None,
         clock: Callable[[], int] | None = None,
     ) -> None:
         self.db = db
         self.sender = sender
-        self.detail_url_base = detail_url_base.rstrip("/")
+        # The public origin of the operator console, when the deployment has one. Nothing configures
+        # it today; `market_detail_url` decides what that means for the card.
+        self.console_base_url = console_base_url
         self._clock = clock or (lambda: int(time.time() * 1000))
 
     async def start(self) -> int:
@@ -1173,7 +1207,7 @@ class MarketNotificationLoop:
                 track=track,
                 reason=reason,
                 observations=observations,
-                detail_url=f"{self.detail_url_base}/{observations[-1].item_id}",
+                detail_url=market_detail_url(self.console_base_url, observations[-1].item_id),
                 action_changes=action_changes(observations, since=(track.anchor_action, track.anchor_position_side)),
             )
         )
