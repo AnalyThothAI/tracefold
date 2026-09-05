@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -367,12 +368,33 @@ def _tick_at_or_after(now_ms: int, event_ms: int) -> int:
 
 
 @pytest.fixture(scope="module")
+def corpus() -> list[_Record]:
+    rng = random.Random(553)
+    return sorted(
+        _oi_corpus(rng) + _liquidation_corpus(rng) + _smart_money_corpus(rng),
+        key=lambda record: record.at_ms,
+    )
+
+
+def test_the_corpus_is_the_shape_the_report_claims(corpus: list[_Record]) -> None:
+    """Guard the measurement itself: a corpus that quietly shrank would report a quieter market."""
+
+    assert len(corpus) == OI_RECORDS + LIQUIDATION_RECORDS + WALLET_RECORDS == 624
+    kinds = Counter(record.kind for record in corpus)
+    assert kinds == {"oi": OI_RECORDS, "liquidation": LIQUIDATION_RECORDS, "smart_money": WALLET_RECORDS}
+    # And it really spans the window the report is about, rather than a fraction of it.
+    assert corpus[-1].at_ms - corpus[0].at_ms >= 71 * 3_600_000
+
+
+@pytest.fixture(scope="module")
 def replay(postgres_module_clone_dsn: str) -> Iterator[dict[str, _Kind]]:
     rng = random.Random(553)
     corpus = sorted(
         _oi_corpus(rng) + _liquidation_corpus(rng) + _smart_money_corpus(rng),
         key=lambda record: record.at_ms,
     )
+    # The sender's rolls must not depend on how the corpus consumed the generator above.
+    rng = random.Random(5530)
     connection = connect_postgres_test(read_only=False)
     try:
         clock = _Clock(corpus[0].at_ms)
@@ -454,11 +476,19 @@ def test_the_replay_reports_every_kind_at_raw_record_granularity(replay: dict[st
 
 
 def test_every_record_is_accounted_for_exactly_once(replay: dict[str, _Kind]) -> None:
-    """No record is silently uncounted: it is on a card, or it is still merging into the next one."""
+    """No record is silently uncounted: it is on a card, or it is still merging into the next one.
 
+    The per-kind totals are counted off *processed* Items, so an ungrouped backlog would be invisible
+    to them. The corpus total below is what makes that impossible: every record the replay admitted
+    is in exactly one kind's line.
+    """
+
+    assert sum(entry.records for entry in replay.values()) == 624
     for kind, entry in replay.items():
         covered = entry.cards + entry.merged
         assert covered + entry.still_merging == entry.records, kind
+    # The number the PR body quotes, pinned so the prose cannot drift from the run.
+    assert sum(entry.cards for entry in replay.values()) == 246
 
 
 def test_the_rules_reduce_records_to_fewer_cards(replay: dict[str, _Kind]) -> None:

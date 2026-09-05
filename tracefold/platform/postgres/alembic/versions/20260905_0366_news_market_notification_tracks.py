@@ -3,8 +3,8 @@
 Migration evidence:
 
 - category: three additive nullable columns and one CHECK on `news_items`, four partial indexes on it,
-  two new tables with four indexes between them, one foreign key each way, and one bounded backfill
-  over the retained market subset
+  two new tables with four indexes between them, one foreign key each way, and one single-statement
+  backfill over the retained market subset
 - why_database_must_change: the notification rules in #553 §4 are stateful across restarts -- "has this
   group been told about", "what did the last card actually cover", "is a send still owed" -- and none
   of that state exists anywhere today. It has to be in PostgreSQL rather than in the loop's memory for
@@ -33,7 +33,8 @@ Migration evidence:
 - statement_timeout: 120s set locally by the revision
 - lock_timeout: 5s set locally by the revision
 - estimated_rows: production holds 2 741 `news_items`, of which about 640 are market records in the
-  retained window; the backfill marks exactly those `historical`. Both new tables start empty
+  retained window; the backfill marks exactly those `historical` in one statement -- at that row count
+  batching would add a loop and protect nothing. Both new tables start empty
 - estimated_bytes: three nullable `text` columns on `news_items`, four partial indexes covering only
   the market subset, and two empty tables with four indexes between them. Single-digit megabytes at
   the measured row counts

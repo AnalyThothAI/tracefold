@@ -304,15 +304,21 @@ class InitialSendEntry:
         if sender is None:
             raise RuntimeError("news_delivery_sender_unavailable")
         async with self._lock:
-            wait = self.min_interval - (time.monotonic() - self._last_send_at)
-            if wait > 0:
-                await asyncio.sleep(wait)
-            if prepare:
-                # Idempotent -- a validated target returns immediately -- and the adapter invalidates
-                # it again the moment a send fails, so a rotated token is re-checked rather than
-                # cached for the life of the process.
-                await self._finite.run("news_delivery_prepare", sender.prepare, timeout_seconds=self._timeout_seconds)
+            # The stamp covers the whole held block, not just the send. A `prepare` that raises is
+            # still a provider call this process just made, and leaving the stamp stale would let the
+            # next caller compute `wait <= 0` -- so a turn draining its card budget against a broken
+            # target would hammer the preflight with no interval between attempts at all.
             try:
+                wait = self.min_interval - (time.monotonic() - self._last_send_at)
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                if prepare:
+                    # Idempotent -- a validated target returns immediately -- and the adapter
+                    # invalidates it again the moment a send fails, so a rotated token is re-checked
+                    # rather than cached for the life of the process.
+                    await self._finite.run(
+                        "news_delivery_prepare", sender.prepare, timeout_seconds=self._timeout_seconds
+                    )
                 receipt: Mapping[str, Any] = await self._finite.run(
                     operation,
                     sender.send_card,

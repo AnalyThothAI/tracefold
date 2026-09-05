@@ -16,6 +16,7 @@ import asyncio
 import json
 import statistics
 import time
+from collections.abc import Mapping
 from typing import Any
 
 import httpx
@@ -138,50 +139,59 @@ def test_mixed_stream_ordinary_news_latency_with_and_without_market_load(capsys)
     `news.push.min_interval_seconds` defaults to 0.6 s, and at that setting the interval -- not the
     provider -- is what a card waits for. Measuring at zero would have measured the stub instead.
 
+    The sample is four News cards per arm, so the statistics reported are a median and a **maximum**,
+    named as such: a p95 over four samples is the maximum wearing a percentile's name, and this table
+    is quoted in the PR body.
+
     Three arms. `unloaded` is ordinary News alone. `replayed_rate` adds market traffic at *more* than
-    the rate the offline replay measured -- that replay produced 246 cards in 72 h, about one every
-    seventeen minutes, so a market card inside a five-second window is already an overstatement --
-    and is the arm that describes production. `recovery_burst` is the honest worst case: after an
-    outage every group's merged content becomes due at once, so a News card queues behind the whole
-    drain, and its wait is the queue depth times the interval. That is a law rather than a constant,
-    which is why it is asserted as one: it is what says a 60-card drain delays a News card by about
-    36 s at this setting.
+    the rate the offline replay measured -- 246 cards in 72 h is about one every seventeen minutes, so
+    a market card inside a five-second window is already an overstatement -- and is the arm that
+    describes production. `recovery_burst` is the honest worst case: after an outage every group's
+    merged content becomes due at once, so a News card queues behind the whole drain and its wait is
+    the queue depth times the interval. That is a law rather than a constant, which is why it is
+    asserted as one: it is what says a 60-card drain delays a News card by about 36 s here.
     """
 
-    unloaded = asyncio.run(_measure(news_cards=4, market_cards=0))
-    replayed_rate = asyncio.run(_measure(news_cards=4, market_cards=1))
-    burst = asyncio.run(_measure(news_cards=1, market_cards=_BURST_CARDS, burst=True))
+    unloaded = asyncio.run(_measure(news_cards=_NEWS_CARDS, market_cards=0))
+    replayed_rate = asyncio.run(_measure(news_cards=_NEWS_CARDS, market_cards=1))
+    burst = asyncio.run(_measure(news_cards=_NEWS_CARDS, market_cards=_BURST_CARDS, burst=True))
     interval_ms = _PRODUCTION_INTERVAL * 1000
+    # The first News card admitted is the one that queued behind exactly the burst: the ones after it
+    # queue behind it too, which is arithmetic rather than a second measurement.
+    first_after_burst = min(burst)
     report = {
         "min_interval_seconds": _PRODUCTION_INTERVAL,
-        "unloaded": {"p50_ms": _p(unloaded, 50), "p95_ms": _p(unloaded, 95), "cards": len(unloaded)},
+        "samples_per_arm": _NEWS_CARDS,
+        "unloaded": {"median_ms": _median(unloaded), "max_ms": _max(unloaded), "cards": len(unloaded)},
         "replayed_rate": {
-            "p50_ms": _p(replayed_rate, 50),
-            "p95_ms": _p(replayed_rate, 95),
+            "median_ms": _median(replayed_rate),
+            "max_ms": _max(replayed_rate),
             "cards": len(replayed_rate),
         },
         "recovery_burst": {
             "cards_ahead": _BURST_CARDS,
-            "measured_wait_ms": _p(burst, 50),
-            "per_card_ms": round(_p(burst, 50) / _BURST_CARDS, 1),
-            "extrapolated_60_card_drain_ms": round(60 * _p(burst, 50) / _BURST_CARDS),
+            "first_card_wait_ms": round(first_after_burst, 3),
+            "per_card_ahead_ms": round(first_after_burst / _BURST_CARDS, 1),
+            "extrapolated_60_card_drain_ms": round(60 * first_after_burst / _BURST_CARDS),
+            "cards": len(burst),
         },
     }
     with capsys.disabled():
         print(f"\nmixed-stream ordinary News initial-send latency: {report}")
 
-    # Every News card is still sent under every load: a market card never displaces one.
-    assert len(unloaded) == len(replayed_rate) == 4
+    # No News card is lost under any load, including the drain: a market card never displaces one.
+    assert len(unloaded) == len(replayed_rate) == len(burst) == _NEWS_CARDS
     # At the replayed rate the added wait is bounded by the one send it can queue behind.
-    assert _p(replayed_rate, 95) <= _p(unloaded, 95) + 2 * interval_ms
+    assert _max(replayed_rate) <= _max(unloaded) + 2 * interval_ms
     # And the burst arm is the interval times the depth, which is the law the 36 s figure comes from.
-    queued = _p(burst, 50)
-    assert (_BURST_CARDS - 1) * interval_ms <= queued <= (_BURST_CARDS + 2) * interval_ms
+    assert (_BURST_CARDS - 1) * interval_ms <= first_after_burst <= (_BURST_CARDS + 2) * interval_ms
 
 
 # The operator's configured default (`news.push.min_interval_seconds`). Measuring anywhere else would
 # be measuring the stub's own latency rather than the pacing that actually decides a reader's wait.
 _PRODUCTION_INTERVAL = 0.6
+# Four is what a 0.6 s interval affords in a hermetic lane; the statistics are named for that.
+_NEWS_CARDS = 4
 # Enough depth to measure the law without spending a minute of wall clock proving arithmetic.
 _BURST_CARDS = 8
 _SEND_SECONDS = 0.002
@@ -203,7 +213,7 @@ async def _measure(*, news_cards: int, market_cards: int, burst: bool = False) -
         await asyncio.sleep(0.0 if burst else index * _PRODUCTION_INTERVAL)
         await entry.send_prepared_card({"owner": "market"})
 
-    # The market cards are queued first, so the News card that follows them waits behind the depth
+    # The market cards are queued first, so the News cards that follow them wait behind the depth
     # they created -- which is exactly the shape of a recovery drain.
     market = [asyncio.create_task(market_card(index)) for index in range(market_cards)]
     await asyncio.sleep(0)
@@ -212,11 +222,12 @@ async def _measure(*, news_cards: int, market_cards: int, burst: bool = False) -
     return latencies
 
 
-def _p(values: list[float], percentile: int) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    return round(ordered[min(len(ordered) - 1, (percentile * len(ordered)) // 100)], 3)
+def _median(values: list[float]) -> float:
+    return 0.0 if not values else round(sorted(values)[len(values) // 2], 3)
+
+
+def _max(values: list[float]) -> float:
+    return 0.0 if not values else round(max(values), 3)
 
 
 # --- the adapter boundary: what one failed send proved --------------------------------------------
@@ -253,14 +264,95 @@ def _telegram_preflight(request: httpx.Request) -> httpx.Response | None:
     return None
 
 
-def _telegram(on_send: Any) -> TelegramNewsPushSender:
+def _telegram(on_send: Any, *, prepared: bool = True) -> TelegramNewsPushSender:
+    """The real adapter. `prepared=False` leaves the target check to whoever sends."""
+
     def handle(request: httpx.Request) -> httpx.Response:
         preflight = _telegram_preflight(request)
         return preflight if preflight is not None else on_send(request)
 
     sender = TelegramNewsPushSender(bot_token=BOT_TOKEN, chat_id=CHAT_ID, transport=httpx.MockTransport(handle))
-    sender.prepare()
+    if prepared:
+        sender.prepare()
     return sender
+
+
+def test_the_entry_prepares_an_unprepared_target_before_it_sends() -> None:
+    """A market card has no earlier preflight of its own, so the entry has to be the one (#553 §5.2).
+
+    Telegram refuses `send_card` outright until its channel, its bot identity and its posting right
+    have been checked. Without this the first market card on a perfectly good channel would fail
+    `news_delivery_telegram_target_not_prepared` -- and a test that prepared the sender by hand would
+    never have noticed.
+    """
+
+    methods: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        methods.append(request.url.path.rsplit("/", maxsplit=1)[-1])
+        preflight = _telegram_preflight(request)
+        if preflight is not None:
+            return preflight
+        return httpx.Response(
+            200, json={"ok": True, "result": {"message_id": 7, "chat": {"id": CHAT_ID, "type": "channel"}}}
+        )
+
+    sender = TelegramNewsPushSender(bot_token=BOT_TOKEN, chat_id=CHAT_ID, transport=httpx.MockTransport(handle))
+
+    async def send() -> Mapping[str, Any]:
+        entry, finite = await _entry(sender)
+        try:
+            return await entry.send_prepared_card({"header": {"title": {"content": "市场"}}, "elements": []})
+        finally:
+            finite.close()
+
+    receipt = asyncio.run(send())
+    assert receipt["provider"] == "telegram"
+    # The preflight ran first, then the send: the card was never offered to an unvalidated target.
+    assert methods == ["getChat", "getMe", "getChatMember", "sendMessage"]
+
+
+class _RefusingPrepare:
+    """A sender whose target check fails, which is a provider call like any other."""
+
+    def __init__(self) -> None:
+        self.prepared_at: list[float] = []
+
+    def prepare(self) -> None:
+        self.prepared_at.append(time.monotonic())
+        raise RuntimeError("news_delivery_telegram_preflight_transport_failed")
+
+    def send_card(self, card: Any, *, presentation: Any = None) -> dict[str, Any]:
+        raise AssertionError("send must not be reached when the target check failed")
+
+    def close(self) -> None:
+        return None
+
+
+def test_a_failing_target_check_is_still_paced() -> None:
+    """The interval covers the whole held block, not only a successful send.
+
+    A turn drains up to `SENDS_PER_TURN_MAX` cards. Against a broken target that is twenty preflights,
+    and if the stamp were only written after a successful send every one of them would compute
+    `wait <= 0` and go straight out -- the loop would hammer the provider precisely when it is least
+    able to answer.
+    """
+
+    sender = _RefusingPrepare()
+    interval = 0.05
+
+    async def two_attempts() -> None:
+        entry, finite = await _entry(sender, min_interval_seconds=interval)
+        try:
+            for _ in range(2):
+                with pytest.raises(RuntimeError, match="preflight_transport_failed"):
+                    await entry.send_prepared_card({"owner": "market"})
+        finally:
+            finite.close()
+
+    asyncio.run(two_attempts())
+    assert len(sender.prepared_at) == 2
+    assert sender.prepared_at[1] - sender.prepared_at[0] >= interval
 
 
 def test_a_feishu_success_signs_the_request_and_returns_a_receipt() -> None:
@@ -484,9 +576,10 @@ async def _no_sender() -> None:
     finite.close()
 
 
-def test_latency_percentile_helper_is_ordinary_arithmetic() -> None:
-    """Guards the measurement, so a green mixed-stream run cannot be a broken percentile."""
+def test_the_reported_statistics_are_ordinary_arithmetic() -> None:
+    """Guards the measurement, so a green mixed-stream run cannot be a broken summary."""
 
     values = [float(value) for value in range(1, 101)]
-    assert _p(values, 50) == statistics.quantiles(values, n=100)[49] + 0.5
-    assert _p(values, 95) == 96.0
+    assert _median(values) == statistics.median_high(values)
+    assert _max(values) == 100.0
+    assert (_median([]), _max([])) == (0.0, 0.0)
