@@ -224,8 +224,14 @@ _TRAIN_SHARE = 0.70
 _REQUIRED_STRATA = ("safety", "positive_action", "negative_action", "novelty")
 
 
-def _episode_strata(episode: DevelopmentEpisode) -> frozenset[str]:
-    review = dict(episode.accepted_review or {})
+def _review_strata(review: Mapping[str, Any]) -> frozenset[str]:
+    """The safety/action/novelty strata one accepted review carries.
+
+    Keyed on the review rather than on a typed episode because the release evaluator holds the same
+    `news_reviews` row and no typed episode, and it must elect the same cluster representative this plan
+    elects (#548). One reader, so the vocabulary cannot drift between the two.
+    """
+
     dimensions = dict(review.get("dimensions") or {})
     should_push = str(review.get("should_push") or "uncertain")
     novelty = str((review.get("novelty") or {}).get("judgment") or "uncertain")
@@ -239,6 +245,10 @@ def _episode_strata(episode: DevelopmentEpisode) -> frozenset[str]:
     if novelty != "uncertain":
         found.add("novelty")
     return frozenset(found)
+
+
+def _episode_strata(episode: DevelopmentEpisode) -> frozenset[str]:
+    return _review_strata(dict(episode.accepted_review or {}))
 
 
 def _honest_split(
@@ -561,11 +571,51 @@ def _split_blockers(split_error: str) -> tuple[str, ...]:
     return ("optimizer_split_unavailable",) if split_error else ()
 
 
+def _representative_sort_key(*, case_id: str, strata: frozenset[str], now_ms: int) -> tuple[Any, ...]:
+    """The single order a connected fact cluster's representative is elected by.
+
+    Safety first, then the most recent statement of the fact, then the case id. One function and not one
+    per caller: the Objective Plan, the freeze it feeds and the release evaluator have to score the same
+    member of a cluster, and a second ordering would let them silently disagree (#548).
+    """
+
+    return (-int("safety" in strata), -int(now_ms), case_id)
+
+
 def _representative_order(case: ObjectiveCase, episode: DevelopmentEpisode) -> tuple[Any, ...]:
     """Stable preference for the one optimizer example a connected fact cluster may contribute."""
 
-    strata = _episode_strata(episode)
-    return (-int("safety" in strata), -episode.context.now_ms, case.case_id)
+    return _representative_sort_key(
+        case_id=case.case_id, strata=_episode_strata(episode), now_ms=episode.context.now_ms
+    )
+
+
+def elect_cluster_representative_case_ids(cases: Sequence[Mapping[str, Any]]) -> frozenset[str]:
+    """The one case id per connected fact cluster this plan would score, elected from raw corpus rows.
+
+    `build_gepa_objective_plan` elects over typed episodes it already projected. The release evaluator
+    holds dataset case refs and accepted `news_reviews` rows instead, and calls this so both reduce a
+    corpus to the *same* population under `_representative_sort_key`. Each row carries `case_id`,
+    `cluster_id`, `now_ms` (when the fact opened) and `review` (the accepted review row).
+
+    Per-case Gold legitimately differs between media members of one fact — `announced` versus `effective`,
+    a subject-code superset — so a taxonomy summary over every member fails closed on a corpus the freeze
+    accepted (#534, #548). Shadowed members stay audit facts in the corpus; they cast no second vote.
+    """
+
+    elected: dict[str, tuple[tuple[Any, ...], str]] = {}
+    for row in cases:
+        case_id = str(row.get("case_id") or "")
+        key = _representative_sort_key(
+            case_id=case_id,
+            strata=_review_strata(dict(row.get("review") or {})),
+            now_ms=int(row.get("now_ms") or 0),
+        )
+        cluster_id = str(row.get("cluster_id") or "")
+        current = elected.get(cluster_id)
+        if current is None or key < current[0]:
+            elected[cluster_id] = (key, case_id)
+    return frozenset(case_id for _key, case_id in elected.values())
 
 
 def _elect_cluster_representatives(
@@ -816,6 +866,7 @@ __all__ = [
     "build_gepa_objective_plan",
     "build_readiness_report",
     "development_split_profile_counts",
+    "elect_cluster_representative_case_ids",
     "optimizer_population_identity",
     "production_decision",
     "retrieval_receipt",
@@ -824,6 +875,7 @@ __all__ = [
 ]
 
 # The one private helper a caller outside this module reads by name: `baseline.py` publishes the retrieval
-# receipt beside its scores. `_honest_split` and `_episode_strata` deliberately stay private — the plan is
-# the only thing that should be splitting an optimizer corpus.
+# receipt beside its scores. `_honest_split`, `_episode_strata` and `_review_strata` deliberately stay
+# private — the plan is the only thing that should be splitting an optimizer corpus, and a caller that
+# needs the cluster representatives asks `elect_cluster_representative_case_ids` for them.
 retrieval_receipt = _retrieval_receipt
