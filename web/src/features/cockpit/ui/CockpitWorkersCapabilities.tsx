@@ -43,7 +43,11 @@ const CAPABILITY_LABELS: Record<string, string> = {
   trading_signal_lane: "交易信号 lane",
 };
 
-export function CockpitWorkersCapabilities({ capabilities }: { capabilities?: WorkersCapabilities }) {
+export function CockpitWorkersCapabilities({
+  capabilities,
+}: {
+  capabilities?: WorkersCapabilities;
+}) {
   const rows = Object.entries(capabilities ?? {}).sort(
     ([, left], [, right]) => STATE_ORDER.indexOf(left.state) - STATE_ORDER.indexOf(right.state),
   );
@@ -53,7 +57,12 @@ export function CockpitWorkersCapabilities({ capabilities }: { capabilities?: Wo
   return (
     <dl aria-label="Workers 能力状态" className="cockpit-capabilities">
       {rows.map(([name, entry]) => (
-        <div className="cockpit-capability" data-state={entry.state} data-tone={STATE_TONES[entry.state]} key={name}>
+        <div
+          className="cockpit-capability"
+          data-state={entry.state}
+          data-tone={STATE_TONES[entry.state]}
+          key={name}
+        >
           <dt>{CAPABILITY_LABELS[name] ?? name}</dt>
           <dd>
             <b>{STATE_LABELS[entry.state] ?? entry.state}</b>
