@@ -1,0 +1,1467 @@
+{
+  "source": "OpenNews Strategy 2026 (聪明钱监控) via provider_source hyperliquid",
+  "exported": "2026-09-05, distinct titles from the retained production window (#553)",
+  "note": "Provider trade reports with the provider's own account label. No secrets, no address: the label is what the provider publishes beside the report. `expected: null` is a title this parser must refuse, and the Item is stored raw with smart_money_template_unmatched.",
+  "titles": [
+    {
+      "title": "js-2 Close Long XYZ-HOOD $472.72K , Price $121.71 , PNL +$50.41K",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "long",
+        "raw_instrument": "XYZ-HOOD",
+        "symbol": "HOOD",
+        "reported_notional_usd": "472720",
+        "price": "121.71",
+        "pnl_usd": "50410"
+      }
+    },
+    {
+      "title": "js-2 Close Long XYZ-NBIS $12.52K , Price $209.0985 , PNL -$311.75",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "long",
+        "raw_instrument": "XYZ-NBIS",
+        "symbol": "NBIS",
+        "reported_notional_usd": "12520",
+        "price": "209.0985",
+        "pnl_usd": "-311.75"
+      }
+    },
+    {
+      "title": "js-2 Close Long XYZ-NBIS $3.83K , Price $209.08 , PNL -$95.82",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "long",
+        "raw_instrument": "XYZ-NBIS",
+        "symbol": "NBIS",
+        "reported_notional_usd": "3830",
+        "price": "209.08",
+        "pnl_usd": "-95.82"
+      }
+    },
+    {
+      "title": "js-2 Close Long XYZ-NBIS $6.27 , Price $208.95 , PNL -$0.16",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "long",
+        "raw_instrument": "XYZ-NBIS",
+        "symbol": "NBIS",
+        "reported_notional_usd": "6.27",
+        "price": "208.95",
+        "pnl_usd": "-0.16"
+      }
+    },
+    {
+      "title": "js-2 Close Short BTC $2.21M , Price $78,986.89 , PNL -$1.84K",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "BTC",
+        "symbol": "BTC",
+        "reported_notional_usd": "2210000",
+        "price": "78986.89",
+        "pnl_usd": "-1840"
+      }
+    },
+    {
+      "title": "js-2 Close Short SOL $1.02 , Price $101.83 , PNL -$0.01",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "1.02",
+        "price": "101.83",
+        "pnl_usd": "-0.01"
+      }
+    },
+    {
+      "title": "js-2 Close Short SOL $379.02K , Price $103.84 , PNL +$417.93",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "379020",
+        "price": "103.84",
+        "pnl_usd": "417.93"
+      }
+    },
+    {
+      "title": "js-2 Close Short SOL $461.2K , Price $101.84 , PNL -$4.95K",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "461200",
+        "price": "101.84",
+        "pnl_usd": "-4950"
+      }
+    },
+    {
+      "title": "js-2 Close Short SOL $468.19K , Price $104.0037 , PNL +$2.29K",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "468190",
+        "price": "104.0037",
+        "pnl_usd": "2290"
+      }
+    },
+    {
+      "title": "js-2 Close Short SOL $509.3K , Price $104.13 , PNL +$1.87K",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "509300",
+        "price": "104.13",
+        "pnl_usd": "1870"
+      }
+    },
+    {
+      "title": "js-2 Close Short SOL $50K , Price $100.72 , PNL +$13.35",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "50000",
+        "price": "100.72",
+        "pnl_usd": "13.35"
+      }
+    },
+    {
+      "title": "js-2 Close Short SOL $605.1K , Price $100.8864 , PNL +$14.71K",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "605100",
+        "price": "100.8864",
+        "pnl_usd": "14710"
+      }
+    },
+    {
+      "title": "js-2 Close Short SUI $101.58K , Price $0.77399 , PNL -$4.47K",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "SUI",
+        "symbol": "SUI",
+        "reported_notional_usd": "101580",
+        "price": "0.77399",
+        "pnl_usd": "-4470"
+      }
+    },
+    {
+      "title": "js-2 Close Short SUI $108.23K , Price $0.775398 , PNL -$4.95K",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "SUI",
+        "symbol": "SUI",
+        "reported_notional_usd": "108230",
+        "price": "0.775398",
+        "pnl_usd": "-4950"
+      }
+    },
+    {
+      "title": "js-2 Close Short SUI $1.08K , Price $0.77182 , PNL -$44.61",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "SUI",
+        "symbol": "SUI",
+        "reported_notional_usd": "1080",
+        "price": "0.77182",
+        "pnl_usd": "-44.61"
+      }
+    },
+    {
+      "title": "js-2 Close Short SUI $11.24 , Price $0.77494 , PNL -$0.51",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "SUI",
+        "symbol": "SUI",
+        "reported_notional_usd": "11.24",
+        "price": "0.77494",
+        "pnl_usd": "-0.51"
+      }
+    },
+    {
+      "title": "js-2 Close Short SUI $1.3K , Price $0.77399 , PNL -$57.41",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "SUI",
+        "symbol": "SUI",
+        "reported_notional_usd": "1300",
+        "price": "0.77399",
+        "pnl_usd": "-57.41"
+      }
+    },
+    {
+      "title": "js-2 Close Short SUI $14.82K , Price $0.771819 , PNL -$612.91",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "SUI",
+        "symbol": "SUI",
+        "reported_notional_usd": "14820",
+        "price": "0.771819",
+        "pnl_usd": "-612.91"
+      }
+    },
+    {
+      "title": "js-2 Close Short SUI $29.52K , Price $0.77032 , PNL -$1.17K",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "SUI",
+        "symbol": "SUI",
+        "reported_notional_usd": "29520",
+        "price": "0.77032",
+        "pnl_usd": "-1170"
+      }
+    },
+    {
+      "title": "js-2 Close Short SUI $47.91K , Price $0.770344 , PNL -$1.89K",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "SUI",
+        "symbol": "SUI",
+        "reported_notional_usd": "47910",
+        "price": "0.770344",
+        "pnl_usd": "-1890"
+      }
+    },
+    {
+      "title": "js-2 Close Short SUI $49.07K , Price $0.75565 , PNL +$957.74",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "SUI",
+        "symbol": "SUI",
+        "reported_notional_usd": "49070",
+        "price": "0.75565",
+        "pnl_usd": "957.74"
+      }
+    },
+    {
+      "title": "js-2 Close Short SUI $500.79 , Price $0.76927 , PNL -$19.12",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "SUI",
+        "symbol": "SUI",
+        "reported_notional_usd": "500.79",
+        "price": "0.76927",
+        "pnl_usd": "-19.12"
+      }
+    },
+    {
+      "title": "js-2 Close Short SUI $57.25K , Price $0.769317 , PNL -$2.19K",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "SUI",
+        "symbol": "SUI",
+        "reported_notional_usd": "57250",
+        "price": "0.769317",
+        "pnl_usd": "-2190"
+      }
+    },
+    {
+      "title": "js-2 Close Short TRUMP $1.9K , Price $2.3208 , PNL -$53.7",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "TRUMP",
+        "symbol": "TRUMP",
+        "reported_notional_usd": "1900",
+        "price": "2.3208",
+        "pnl_usd": "-53.7"
+      }
+    },
+    {
+      "title": "js-2 Close Short TRUMP $25.98 , Price $2.3409 , PNL -$0.95",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "TRUMP",
+        "symbol": "TRUMP",
+        "reported_notional_usd": "25.98",
+        "price": "2.3409",
+        "pnl_usd": "-0.95"
+      }
+    },
+    {
+      "title": "js-2 Close Short TRUMP $26.25K , Price $2.3423 , PNL -$975.73",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "TRUMP",
+        "symbol": "TRUMP",
+        "reported_notional_usd": "26250",
+        "price": "2.3423",
+        "pnl_usd": "-975.73"
+      }
+    },
+    {
+      "title": "js-2 Close Short TRUMP $277.11K , Price $2.3208 , PNL -$7.83K",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "TRUMP",
+        "symbol": "TRUMP",
+        "reported_notional_usd": "277110",
+        "price": "2.3208",
+        "pnl_usd": "-7830"
+      }
+    },
+    {
+      "title": "js-2 Close Short TRUMP $3.2K , Price $2.3207 , PNL -$90.27",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "TRUMP",
+        "symbol": "TRUMP",
+        "reported_notional_usd": "3200",
+        "price": "2.3207",
+        "pnl_usd": "-90.27"
+      }
+    },
+    {
+      "title": "js-2 Close Short XRP $1.4 , Price $1.3959 , PNL -$0.03",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XRP",
+        "symbol": "XRP",
+        "reported_notional_usd": "1.4",
+        "price": "1.3959",
+        "pnl_usd": "-0.03"
+      }
+    },
+    {
+      "title": "js-2 Close Short XRP $316.97K , Price $1.3969 , PNL -$7.44K",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XRP",
+        "symbol": "XRP",
+        "reported_notional_usd": "316970",
+        "price": "1.3969",
+        "pnl_usd": "-7440"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $0.82 , Price $81.896 , PNL +$0.01",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "0.82",
+        "price": "81.896",
+        "pnl_usd": "0.01"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.55K , Price $82.1166 , PNL +$122.49",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11550",
+        "price": "82.1166",
+        "pnl_usd": "122.49"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.55K , Price $82.133 , PNL +$120.19",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11550",
+        "price": "82.133",
+        "pnl_usd": "120.19"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.56K , Price $82.2421 , PNL +$104.85",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11560",
+        "price": "82.2421",
+        "pnl_usd": "104.85"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.58K , Price $82.3187 , PNL +$94.07",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11580",
+        "price": "82.3187",
+        "pnl_usd": "94.07"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.59K , Price $82.4309 , PNL +$78.3",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11590",
+        "price": "82.4309",
+        "pnl_usd": "78.3"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.61K , Price $82.5307 , PNL +$64.26",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11610",
+        "price": "82.5307",
+        "pnl_usd": "64.26"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.61K , Price $82.532 , PNL +$64.07",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11610",
+        "price": "82.532",
+        "pnl_usd": "64.07"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.61K , Price $82.5462 , PNL +$62.08",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11610",
+        "price": "82.5462",
+        "pnl_usd": "62.08"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.61K , Price $82.5521 , PNL +$61.26",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11610",
+        "price": "82.5521",
+        "pnl_usd": "61.26"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.61K , Price $82.5612 , PNL +$59.98",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11610",
+        "price": "82.5612",
+        "pnl_usd": "59.98"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.61K , Price $82.5723 , PNL +$58.41",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11610",
+        "price": "82.5723",
+        "pnl_usd": "58.41"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.61K , Price $82.579 , PNL +$57.47",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11610",
+        "price": "82.579",
+        "pnl_usd": "57.47"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.61K , Price $82.5979 , PNL +$54.81",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11610",
+        "price": "82.5979",
+        "pnl_usd": "54.81"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.61K , Price $82.5984 , PNL +$54.74",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11610",
+        "price": "82.5984",
+        "pnl_usd": "54.74"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.62K , Price $82.6225 , PNL +$51.35",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11620",
+        "price": "82.6225",
+        "pnl_usd": "51.35"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.62K , Price $82.6276 , PNL +$50.63",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11620",
+        "price": "82.6276",
+        "pnl_usd": "50.63"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.62K , Price $82.6335 , PNL +$49.81",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11620",
+        "price": "82.6335",
+        "pnl_usd": "49.81"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.62K , Price $82.6367 , PNL +$49.37",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11620",
+        "price": "82.6367",
+        "pnl_usd": "49.37"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.62K , Price $82.6403 , PNL +$48.85",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11620",
+        "price": "82.6403",
+        "pnl_usd": "48.85"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.62K , Price $82.6492 , PNL +$47.6",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11620",
+        "price": "82.6492",
+        "pnl_usd": "47.6"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.62K , Price $82.649 , PNL +$47.63",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11620",
+        "price": "82.649",
+        "pnl_usd": "47.63"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.62K , Price $82.6546 , PNL +$46.84",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11620",
+        "price": "82.6546",
+        "pnl_usd": "46.84"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.6K , Price $82.4689 , PNL +$72.96",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11600",
+        "price": "82.4689",
+        "pnl_usd": "72.96"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.6K , Price $82.4848 , PNL +$70.71",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11600",
+        "price": "82.4848",
+        "pnl_usd": "70.71"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.6K , Price $82.5021 , PNL +$68.29",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11600",
+        "price": "82.5021",
+        "pnl_usd": "68.29"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $11.6K , Price $82.518 , PNL +$66.06",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "11600",
+        "price": "82.518",
+        "pnl_usd": "66.06"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $1.27K , Price $82.217 , PNL +$11.9",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "1270",
+        "price": "82.217",
+        "pnl_usd": "11.9"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $13.87K , Price $83.0126 , PNL -$4.15",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "13870",
+        "price": "83.0126",
+        "pnl_usd": "-4.15"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $1.64K , Price $83.0029 , PNL -$0.3",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "1640",
+        "price": "83.0029",
+        "pnl_usd": "-0.3"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $17.43K , Price $82.6261 , PNL +$76.28",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "17430",
+        "price": "82.6261",
+        "pnl_usd": "76.28"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $2.55K , Price $83.0183 , PNL -$0.94",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "2550",
+        "price": "83.0183",
+        "pnl_usd": "-0.94"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $3.26K , Price $82.6681 , PNL +$12.6",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "3260",
+        "price": "82.6681",
+        "pnl_usd": "12.6"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $3.26K , Price $82.6747 , PNL +$12.34",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "3260",
+        "price": "82.6747",
+        "pnl_usd": "12.34"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $3.26K , Price $82.7742 , PNL +$8.41",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "3260",
+        "price": "82.7742",
+        "pnl_usd": "8.41"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $3.27K , Price $82.8432 , PNL +$5.7",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "3270",
+        "price": "82.8432",
+        "pnl_usd": "5.7"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $3.27K , Price $82.8843 , PNL +$4.07",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "3270",
+        "price": "82.8843",
+        "pnl_usd": "4.07"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $3.27K , Price $82.9602 , PNL +$1.09",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "3270",
+        "price": "82.9602",
+        "pnl_usd": "1.09"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $41.61K , Price $82.984 , PNL +$1.86",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "41610",
+        "price": "82.984",
+        "pnl_usd": "1.86"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $42.32K , Price $82.2169 , PNL +$396.72",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "42320",
+        "price": "82.2169",
+        "pnl_usd": "396.72"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $5.3K , Price $82.619 , PNL +$23.65",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "5300",
+        "price": "82.619",
+        "pnl_usd": "23.65"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $5.77K , Price $82.1223 , PNL +$60.86",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "5770",
+        "price": "82.1223",
+        "pnl_usd": "60.86"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $5.79K , Price $82.3843 , PNL +$42.43",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "5790",
+        "price": "82.3843",
+        "pnl_usd": "42.43"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $5.81K , Price $82.5831 , PNL +$28.45",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "5810",
+        "price": "82.5831",
+        "pnl_usd": "28.45"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $5.81K , Price $82.6345 , PNL +$24.83",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "5810",
+        "price": "82.6345",
+        "pnl_usd": "24.83"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $5.8K , Price $82.4978 , PNL +$34.45",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "5800",
+        "price": "82.4978",
+        "pnl_usd": "34.45"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $5.8K , Price $82.5591 , PNL +$30.14",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "5800",
+        "price": "82.5591",
+        "pnl_usd": "30.14"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $6.17K , Price $83.0085 , PNL -$1.55",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "6170",
+        "price": "83.0085",
+        "pnl_usd": "-1.55"
+      }
+    },
+    {
+      "title": "js-2 Close Short XYZ-UNITREE $6.82K , Price $82.325 , PNL +$54.92",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "close",
+        "position_side": "short",
+        "raw_instrument": "XYZ-UNITREE",
+        "symbol": "UNITREE",
+        "reported_notional_usd": "6820",
+        "price": "82.325",
+        "pnl_usd": "54.92"
+      }
+    },
+    {
+      "title": "js-2 Open Long BTC $798.18K , Price $79,817.87",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "long",
+        "raw_instrument": "BTC",
+        "symbol": "BTC",
+        "reported_notional_usd": "798180",
+        "price": "79817.87",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Long XYZ-HOOD $108.15K , Price $123.3485",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "long",
+        "raw_instrument": "XYZ-HOOD",
+        "symbol": "HOOD",
+        "reported_notional_usd": "108150",
+        "price": "123.3485",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Long XYZ-HOOD $299.71K , Price $122.9901",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "long",
+        "raw_instrument": "XYZ-HOOD",
+        "symbol": "HOOD",
+        "reported_notional_usd": "299710",
+        "price": "122.9901",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Long XYZ-HOOD $300K , Price $123.18",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "long",
+        "raw_instrument": "XYZ-HOOD",
+        "symbol": "HOOD",
+        "reported_notional_usd": "300000",
+        "price": "123.18",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Long XYZ-HOOD $338.5K , Price $123.5981",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "long",
+        "raw_instrument": "XYZ-HOOD",
+        "symbol": "HOOD",
+        "reported_notional_usd": "338500",
+        "price": "123.5981",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Long XYZ-HOOD $400K , Price $123.79",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "long",
+        "raw_instrument": "XYZ-HOOD",
+        "symbol": "HOOD",
+        "reported_notional_usd": "400000",
+        "price": "123.79",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Long XYZ-HOOD $4.02K , Price $124.36",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "long",
+        "raw_instrument": "XYZ-HOOD",
+        "symbol": "HOOD",
+        "reported_notional_usd": "4020",
+        "price": "124.36",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Long XYZ-HOOD $45.98K , Price $124.36",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "long",
+        "raw_instrument": "XYZ-HOOD",
+        "symbol": "HOOD",
+        "reported_notional_usd": "45980",
+        "price": "124.36",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Long XYZ-NBIS $1.64K , Price $214.54",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "long",
+        "raw_instrument": "XYZ-NBIS",
+        "symbol": "NBIS",
+        "reported_notional_usd": "1640",
+        "price": "214.54",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Long XYZ-NBIS $1.65K , Price $214.8375",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "long",
+        "raw_instrument": "XYZ-NBIS",
+        "symbol": "NBIS",
+        "reported_notional_usd": "1650",
+        "price": "214.8375",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Long XYZ-NBIS $3.28K , Price $214.299",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "long",
+        "raw_instrument": "XYZ-NBIS",
+        "symbol": "NBIS",
+        "reported_notional_usd": "3280",
+        "price": "214.299",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Long XYZ-NBIS $3.29K , Price $214.5695",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "long",
+        "raw_instrument": "XYZ-NBIS",
+        "symbol": "NBIS",
+        "reported_notional_usd": "3290",
+        "price": "214.5695",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Long XYZ-NBIS $6.91K , Price $214",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "long",
+        "raw_instrument": "XYZ-NBIS",
+        "symbol": "NBIS",
+        "reported_notional_usd": "6910",
+        "price": "214",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short SOL $101.34K , Price $100.7274",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "101340",
+        "price": "100.7274",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short SOL $158.75K , Price $104.14",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "158750",
+        "price": "104.14",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short SOL $1.75K , Price $103.5",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "1750",
+        "price": "103.5",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short SOL $19.66K , Price $100.87",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "19660",
+        "price": "100.87",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short SOL $24.83K , Price $103.5",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "24830",
+        "price": "103.5",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short SOL $25.13K , Price $103.5071",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "25130",
+        "price": "103.5071",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short SOL $350.58 , Price $100.74",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "350.58",
+        "price": "100.74",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short SOL $384.91K , Price $100.7458",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "384910",
+        "price": "100.7458",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short SOL $450.18K , Price $104.041",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "450180",
+        "price": "104.041",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short SOL $744.01K , Price $101.47",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "744010",
+        "price": "101.47",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short SOL $89.11K , Price $103.5",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "89110",
+        "price": "103.5",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short SOL $9.14K , Price $103.5",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "9140",
+        "price": "103.5",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short SOL $981.65K , Price $104.5121",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "SOL",
+        "symbol": "SOL",
+        "reported_notional_usd": "981650",
+        "price": "104.5121",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short SUI $1.04K , Price $0.767442",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "SUI",
+        "symbol": "SUI",
+        "reported_notional_usd": "1040",
+        "price": "0.767442",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short SUI $125.33K , Price $0.76621",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "SUI",
+        "symbol": "SUI",
+        "reported_notional_usd": "125330",
+        "price": "0.76621",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short SUI $20.4K , Price $0.7662",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "SUI",
+        "symbol": "SUI",
+        "reported_notional_usd": "20400",
+        "price": "0.7662",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short SUI $50.02K , Price $0.770409",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "SUI",
+        "symbol": "SUI",
+        "reported_notional_usd": "50020",
+        "price": "0.770409",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short TRUMP $294K , Price $2.2552",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "TRUMP",
+        "symbol": "TRUMP",
+        "reported_notional_usd": "294000",
+        "price": "2.2552",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short TRUMP $5.54K , Price $2.259",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "TRUMP",
+        "symbol": "TRUMP",
+        "reported_notional_usd": "5540",
+        "price": "2.259",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Open Short XRP $275.08K , Price $1.3953",
+      "expected": {
+        "trader_label": "js-2",
+        "action": "open",
+        "position_side": "short",
+        "raw_instrument": "XRP",
+        "symbol": "XRP",
+        "reported_notional_usd": "275080",
+        "price": "1.3953",
+        "pnl_usd": null
+      }
+    },
+    {
+      "title": "js-2 Withdraw USDC $160K",
+      "expected": null
+    }
+  ]
+}
