@@ -1,0 +1,1245 @@
+{
+  "issue": "#562 PR-A",
+  "generated_from": "7b9628ca0",
+  "note": "Card branches production traffic did not exercise, and that #562 PR-C will edit next: the smart-money account line and its action timeline, the last-four bound on the action line, a spanned HH:MM-HH:MM clock range, the escalation qualifier, both degraded News shapes, the unknown placeholders, and both header bounds. Each entry's `card` was rendered ONCE by the renderers on main at 7b9628ca0 -- the commit this branch is built on, before the reader card existed -- from a `git archive` of that tree, and is never regenerated from this repository. It is what the old code wrote, so asserting it is a statement about the refactor rather than about itself; regenerating these values from the current tree would make the assertion vacuous. A deliberate change to a card belongs in a new fixture carrying its own reason.",
+  "entries": [
+    {
+      "source": "news",
+      "id": "news-escalate-two-assets",
+      "why": "the ⚡ qualifier, a 3-report origin, and one native plus one proxy quote on the same line",
+      "inputs": {
+        "event": {
+          "event_id": "aa11bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd66",
+          "leader_title": "原始标题",
+          "leader_url": "https://example.com/a",
+          "reporting_origin": "Reuters",
+          "member_count": 3,
+          "leader_published_at_ms": 1788570300000
+        },
+        "verdict": {
+          "direction": "bullish",
+          "magnitude": 3,
+          "novelty": "progression",
+          "headline_zh": "重点推送的标题",
+          "why_zh": "为什么现在重要，对谁重要。"
+        },
+        "decision": "escalate",
+        "grounded_assets": [],
+        "assets": [
+          "BTC",
+          "NVDA"
+        ],
+        "degraded": false,
+        "quotes": [
+          {
+            "requested_symbol": "BTC",
+            "symbol": "BTC",
+            "state": "fresh",
+            "price": "74757.60",
+            "change_pct": 7.914,
+            "change_basis": "rolling_24h",
+            "instrument_class": "crypto"
+          },
+          {
+            "requested_symbol": "NVDA",
+            "symbol": "NVDA",
+            "state": "fresh",
+            "price": "231.03",
+            "change_pct": 0.39,
+            "change_basis": "rolling_24h",
+            "instrument_class": "equity"
+          }
+        ]
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "⚡ 重点推送的标题"
+          },
+          "template": "green"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "为什么现在重要，对谁重要。\n利多 · 新进展 · 影响重大 · BTC NVDA · Reuters（3 条报道） · 09:05\n行情 BTC $74,757.60 24h +7.91% · NVDA $231.03 24h +0.39%（永续）"
+          },
+          {
+            "tag": "action",
+            "actions": [
+              {
+                "tag": "button",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "打开来源"
+                },
+                "type": "default",
+                "url": "https://example.com/a"
+              }
+            ]
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold · aa11bb22"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "source": "news",
+      "id": "news-degraded-with-description",
+      "why": "the degraded card: wire header and wire body, no judgment on the facts line, price kept",
+      "inputs": {
+        "event": {
+          "event_id": "b0b1b2b3b4b5b6b7b8b9c0c1c2c3c4c5d0d1d2d3d4d5d6d7e0e1e2e3e4e5e6e7",
+          "leader_title": "Wire  *headline*  with   markdown",
+          "leader_description": "Provider description https://drop.me kept as wire text",
+          "leader_url": "https://example.com/b",
+          "reporting_origin": "jin10",
+          "member_count": 1,
+          "opened_at_ms": 1788622860000
+        },
+        "verdict": {},
+        "decision": "push",
+        "grounded_assets": [],
+        "assets": [
+          "CL"
+        ],
+        "degraded": true,
+        "quotes": [
+          {
+            "requested_symbol": "CL",
+            "symbol": "CL",
+            "state": "fresh",
+            "price": "91.96",
+            "change_pct": 0.86,
+            "change_basis": "rolling_24h",
+            "instrument_class": "commodity"
+          }
+        ]
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "Wire headline with markdown"
+          },
+          "template": "grey"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "Provider description kept as wire text\nCL · jin10 · 23:41\n行情 CL $91.96 24h +0.86%（永续）"
+          },
+          {
+            "tag": "action",
+            "actions": [
+              {
+                "tag": "button",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "打开来源"
+                },
+                "type": "default",
+                "url": "https://example.com/b"
+              }
+            ]
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold · b0b1b2b3"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "source": "news",
+      "id": "news-degraded-without-description",
+      "why": "a degraded card with no provider description drops the lead line entirely",
+      "inputs": {
+        "event": {
+          "event_id": "c0c1c2c3c4c5c6c7c8c9d0d1d2d3d4d5e0e1e2e3e4e5e6e7f0f1f2f3f4f5f6f7",
+          "leader_title": "Wire only",
+          "leader_url": "",
+          "reporting_origin": "",
+          "member_count": 1,
+          "leader_published_at_ms": 1788537600000
+        },
+        "verdict": {},
+        "decision": "push",
+        "grounded_assets": [],
+        "assets": [],
+        "degraded": true,
+        "quotes": []
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "Wire only"
+          },
+          "template": "grey"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "- · 00:00"
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold · c0c1c2c3"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "source": "news",
+      "id": "news-plain-no-quote-no-link",
+      "why": "magnitude 0, a single report, no button and no quote line",
+      "inputs": {
+        "event": {
+          "event_id": "d0d1d2d3d4d5d6d7d8d9e0e1e2e3e4e5f0f1f2f3f4f5f6f7a0a1a2a3a4a5a6a7",
+          "leader_title": "t",
+          "leader_url": "",
+          "reporting_origin": "opennews",
+          "member_count": 1,
+          "leader_published_at_ms": 1788589920000
+        },
+        "verdict": {
+          "direction": "bearish",
+          "magnitude": 0,
+          "novelty": "new_fact",
+          "headline_zh": "标题",
+          "why_zh": ""
+        },
+        "decision": "push",
+        "grounded_assets": [],
+        "assets": [],
+        "degraded": false,
+        "quotes": []
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "标题"
+          },
+          "template": "red"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "利空 · 影响很小 · opennews · 14:32"
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold · d0d1d2d3"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "source": "news",
+      "id": "news-quotes-bounded-and-filtered",
+      "why": "five quotes offered: bounded at four, a stale one dropped, an unnameable basis loses only its percentage",
+      "inputs": {
+        "event": {
+          "event_id": "e0e1e2e3e4e5e6e7e8e9f0f1f2f3f4f5a0a1a2a3a4a5a6a7b0b1b2b3b4b5b6b7",
+          "leader_title": "t",
+          "leader_url": "http://plain.example/c",
+          "reporting_origin": "x.com",
+          "member_count": 2,
+          "leader_published_at_ms": 1788563220000
+        },
+        "verdict": {
+          "direction": "neutral",
+          "magnitude": 1,
+          "novelty": "restatement",
+          "headline_zh": "标题",
+          "why_zh": "理由"
+        },
+        "decision": "push",
+        "grounded_assets": [],
+        "assets": [
+          "AAPL",
+          "AMZN",
+          "META",
+          "MSFT"
+        ],
+        "degraded": false,
+        "quotes": [
+          {
+            "requested_symbol": "AAPL",
+            "symbol": "AAPL",
+            "state": "fresh",
+            "price": "312.56",
+            "change_pct": -1.25,
+            "change_basis": "rolling_24h",
+            "instrument_class": "equity"
+          },
+          {
+            "requested_symbol": "AMZN",
+            "symbol": "AMZN",
+            "state": "fresh",
+            "price": "260.77",
+            "change_pct": 1.1,
+            "change_basis": "who_knows",
+            "instrument_class": "equity"
+          },
+          {
+            "requested_symbol": "META",
+            "symbol": "META",
+            "state": "stale",
+            "price": "547.11",
+            "change_pct": 0.4,
+            "change_basis": "rolling_24h",
+            "instrument_class": "equity"
+          },
+          {
+            "requested_symbol": "MSFT",
+            "symbol": "MSFT",
+            "state": "fresh",
+            "price": "0",
+            "change_pct": 12.0,
+            "change_basis": "rolling_24h",
+            "instrument_class": "equity"
+          },
+          {
+            "requested_symbol": "EXTRA",
+            "symbol": "EXTRA",
+            "state": "fresh",
+            "price": "1",
+            "change_pct": 1.0,
+            "change_basis": "rolling_24h",
+            "instrument_class": "crypto"
+          }
+        ]
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "标题"
+          },
+          "template": "grey"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "理由\n中性 · 影响有限 · AAPL AMZN META MSFT · x.com（2 条报道） · 07:07\n行情 AAPL $312.56 24h -1.25%（永续） · AMZN $260.77（永续）"
+          },
+          {
+            "tag": "action",
+            "actions": [
+              {
+                "tag": "button",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "打开来源"
+                },
+                "type": "default",
+                "url": "http://plain.example/c"
+              }
+            ]
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold · e0e1e2e3"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "source": "news",
+      "id": "news-unclear-no-event-time",
+      "why": "an unclear direction and no event stamp: no clock part on the facts line",
+      "inputs": {
+        "event": {
+          "event_id": "f0f1f2f3f4f5f6f7f8f9a0a1a2a3a4a5b0b1b2b3b4b5b6b7c0c1c2c3c4c5c6c7",
+          "leader_title": "t",
+          "leader_url": "",
+          "reporting_origin": "opennews",
+          "member_count": 1
+        },
+        "verdict": {
+          "direction": "unclear",
+          "magnitude": 2,
+          "novelty": "new_fact",
+          "headline_zh": "标题",
+          "why_zh": "理由"
+        },
+        "decision": "push",
+        "grounded_assets": [],
+        "assets": [
+          "HYPE"
+        ],
+        "degraded": false,
+        "quotes": [
+          {
+            "requested_symbol": "HYPE",
+            "symbol": "HYPE",
+            "state": "fresh",
+            "price": "0.0043290",
+            "change_pct": -10.516,
+            "change_basis": "rolling_24h",
+            "instrument_class": "crypto"
+          }
+        ]
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "标题"
+          },
+          "template": "grey"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "理由\n方向待定 · 影响明显 · HYPE · opennews\n行情 HYPE $0.004329 24h -10.52%"
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold · f0f1f2f3"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "source": "news",
+      "id": "news-header-bounded-at-one-hundred",
+      "why": "no model headline: the provider title falls back into the header and is bounded there",
+      "inputs": {
+        "event": {
+          "event_id": "0011223344556677889900aabbccddeeff00112233445566778899aabbccddee",
+          "leader_title": "标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标",
+          "leader_url": "",
+          "reporting_origin": "opennews",
+          "member_count": 1,
+          "leader_published_at_ms": 1788580800000
+        },
+        "verdict": {
+          "direction": "bullish",
+          "magnitude": 2,
+          "novelty": "new_fact",
+          "headline_zh": "",
+          "why_zh": "理由"
+        },
+        "decision": "escalate",
+        "grounded_assets": [],
+        "assets": [],
+        "degraded": false,
+        "quotes": []
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "⚡ 标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标"
+          },
+          "template": "green"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "理由\n利多 · 影响明显 · opennews · 12:00"
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold · 00112233"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "source": "market",
+      "id": "market-smart-money-action-change-six-reports",
+      "why": "the action line bounded to the last four, the anchor-opened change line, and a spanned clock range",
+      "inputs": {
+        "track": {
+          "group_key": "smart_money|opennews|hyperliquid|0xabc",
+          "market_kind": "smart_money",
+          "family": "smart_money",
+          "provider": "opennews",
+          "source_venue": "hyperliquid",
+          "trader_label": "js-2",
+          "account_verified": false,
+          "anchor_action": "close",
+          "anchor_position_side": "short"
+        },
+        "reason": "action_change",
+        "observations": [
+          {
+            "item_id": "i1",
+            "market_kind": "smart_money",
+            "parse_status": "ok",
+            "title": "",
+            "event_at_ms": 1788573600000,
+            "received_at_ms": 1788573600000,
+            "provider": "opennews",
+            "action": "close",
+            "position_side": "short",
+            "notional_usd": "120000.500"
+          },
+          {
+            "item_id": "i2",
+            "market_kind": "smart_money",
+            "parse_status": "ok",
+            "title": "",
+            "event_at_ms": 1788573600000,
+            "received_at_ms": 1788573600000,
+            "provider": "opennews",
+            "action": "close",
+            "position_side": "short",
+            "notional_usd": "98000"
+          },
+          {
+            "item_id": "i3",
+            "market_kind": "smart_money",
+            "parse_status": "ok",
+            "title": "",
+            "event_at_ms": 1788574500000,
+            "received_at_ms": 1788574500000,
+            "provider": "opennews",
+            "action": "open",
+            "position_side": "long",
+            "notional_usd": "160180.00"
+          },
+          {
+            "item_id": "i4",
+            "market_kind": "smart_money",
+            "parse_status": "ok",
+            "title": "",
+            "event_at_ms": 1788574800000,
+            "received_at_ms": 1788574800000,
+            "provider": "opennews",
+            "action": "open",
+            "position_side": "long",
+            "notional_usd": null
+          },
+          {
+            "item_id": "i5",
+            "market_kind": "smart_money",
+            "parse_status": "ok",
+            "title": "",
+            "event_at_ms": 1788575400000,
+            "received_at_ms": 1788575400000,
+            "provider": "opennews",
+            "action": "close",
+            "position_side": "long",
+            "notional_usd": "7500.250"
+          },
+          {
+            "item_id": "i6",
+            "market_kind": "smart_money",
+            "parse_status": "ok",
+            "title": "",
+            "event_at_ms": 1788576120000,
+            "received_at_ms": 1788576120000,
+            "provider": "opennews",
+            "action": "open",
+            "position_side": "short",
+            "notional_usd": "1000000"
+          }
+        ],
+        "detail_url": null,
+        "action_changes": 3
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "聪明钱 · 动作变化"
+          },
+          "template": "turquoise"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "js-2（来源标签，非已核实地址） · hyperliquid · 10:00–10:42\n动作变化 3 次 · 首 平空 → 末 开空\n开多 $160180 · 开多 · 平多 $7500.25 · 开空 $1000000\nClose 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。\nopennews smart_money（6 条报道） · 10:42"
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold 市场 · smart_money|opennews|hyp · i6"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "source": "market",
+      "id": "market-smart-money-unlabelled-account",
+      "why": "no label and no account key, an unknown venue, and no action change to describe",
+      "inputs": {
+        "track": {
+          "group_key": "smart_money|opennews||",
+          "market_kind": "smart_money",
+          "family": "smart_money",
+          "provider": "opennews",
+          "account_verified": false
+        },
+        "reason": "first",
+        "observations": [
+          {
+            "item_id": "j1",
+            "market_kind": "smart_money",
+            "parse_status": "ok",
+            "title": "",
+            "event_at_ms": 1788548640000,
+            "received_at_ms": 1788548640000,
+            "provider": "opennews",
+            "action": "open",
+            "position_side": "long",
+            "notional_usd": "500"
+          }
+        ],
+        "detail_url": null,
+        "action_changes": 0
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "聪明钱"
+          },
+          "template": "turquoise"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "未标注账户（来源标签，非已核实地址） · 场所未知 · 03:04\n开多 $500\nClose 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。\nopennews smart_money（1 条报道） · 03:04"
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold 市场 · smart_money|opennews|| · j1"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "source": "market",
+      "id": "market-smart-money-verified-address",
+      "why": "a verified address carries no source-label caveat, and the timeline opens on the first covered report",
+      "inputs": {
+        "track": {
+          "group_key": "smart_money|opennews|binance|0xdef",
+          "market_kind": "smart_money",
+          "family": "smart_money",
+          "provider": "opennews",
+          "source_venue": "binance",
+          "account_key": "0xdeadbeef",
+          "account_verified": true
+        },
+        "reason": "followup",
+        "observations": [
+          {
+            "item_id": "k1",
+            "market_kind": "smart_money",
+            "parse_status": "ok",
+            "title": "",
+            "event_at_ms": 1788602400000,
+            "received_at_ms": 1788602400000,
+            "provider": "opennews",
+            "action": "open",
+            "position_side": "short",
+            "notional_usd": "2500000.0"
+          },
+          {
+            "item_id": "k2",
+            "market_kind": "smart_money",
+            "parse_status": "ok",
+            "title": "",
+            "event_at_ms": 1788604200000,
+            "received_at_ms": 1788604200000,
+            "provider": "opennews",
+            "action": "close",
+            "position_side": "short",
+            "notional_usd": "1250000"
+          }
+        ],
+        "detail_url": "https://console.example.com/",
+        "action_changes": 1
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "聪明钱 · 跟进"
+          },
+          "template": "turquoise"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "0xdeadbeef · binance · 18:00–18:30\n动作变化 1 次 · 首 开空 → 末 平空\n开空 $2500000 · 平空 $1250000\nClose 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。\nopennews smart_money（2 条报道） · 18:30"
+          },
+          {
+            "tag": "action",
+            "actions": [
+              {
+                "tag": "button",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "打开明细"
+                },
+                "type": "default",
+                "url": "https://console.example.com"
+              }
+            ]
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold 市场 · smart_money|opennews|bin"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "source": "market",
+      "id": "market-oi-followup-unknown-venue-and-measurement",
+      "why": "a falling OI below one thousand dollars, with neither venue nor measurement named",
+      "inputs": {
+        "track": {
+          "group_key": "oi|opennews||PEPE",
+          "market_kind": "oi",
+          "family": "oi",
+          "provider": "opennews",
+          "symbol": "PEPE"
+        },
+        "reason": "followup",
+        "observations": [
+          {
+            "item_id": "l1",
+            "market_kind": "oi",
+            "parse_status": "ok",
+            "title": "",
+            "event_at_ms": 1788617400000,
+            "received_at_ms": 1788617400000,
+            "provider": "opennews",
+            "direction": "fall",
+            "oi_change_bps": -1250,
+            "oi_value_usd": 940
+          },
+          {
+            "item_id": "l2",
+            "market_kind": "oi",
+            "parse_status": "ok",
+            "title": "",
+            "event_at_ms": 1788620700000,
+            "received_at_ms": 1788620700000,
+            "provider": "opennews",
+            "direction": "fall",
+            "oi_change_bps": -2500,
+            "oi_value_usd": 880
+          }
+        ],
+        "detail_url": null,
+        "action_changes": 0
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "持仓异动 · 跟进 · PEPE"
+          },
+          "template": "blue"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "下降 -25% · 22:10–23:05\nOI $880 · 场所未知 · 口径未知\nPEPE · opennews oi（2 条报道） · 23:05"
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold 市场 · oi|opennews||PEPE · l2"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "source": "market",
+      "id": "market-oi-action-change-billions",
+      "why": "an OI figure at billion scale and a direction word the map does not know",
+      "inputs": {
+        "track": {
+          "group_key": "oi|opennews|binance|BTC",
+          "market_kind": "oi",
+          "family": "oi",
+          "provider": "opennews",
+          "source_venue": "binance",
+          "symbol": "BTC",
+          "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+        },
+        "reason": "action_change",
+        "observations": [
+          {
+            "item_id": "m1",
+            "market_kind": "oi",
+            "parse_status": "ok",
+            "title": "",
+            "event_at_ms": 1788541200000,
+            "received_at_ms": 1788541200000,
+            "provider": "opennews",
+            "direction": "sideways",
+            "oi_change_bps": 0,
+            "oi_value_usd": 12400000000
+          }
+        ],
+        "detail_url": "https://console.example.com/news",
+        "action_changes": 0
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "持仓异动 · 动作变化 · BTC"
+          },
+          "template": "blue"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "sideways 0% · 01:00\nOI $12.40B · binance · oi_signal_v1|opennews_oi_source_v1|300000\nBTC · opennews oi（1 条报道） · 01:00"
+          },
+          {
+            "tag": "action",
+            "actions": [
+              {
+                "tag": "button",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "打开明细"
+                },
+                "type": "default",
+                "url": "https://console.example.com/news"
+              }
+            ]
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold 市场 · oi|opennews|binance|BTC"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "source": "market",
+      "id": "market-oi-missing-change",
+      "why": "no reported change: the figure is unknown, and unknown is not zero",
+      "inputs": {
+        "track": {
+          "group_key": "oi|opennews|hyperliquid|SOL",
+          "market_kind": "oi",
+          "family": "oi",
+          "provider": null,
+          "source_venue": "hyperliquid",
+          "symbol": "SOL",
+          "measurement_definition": "oi_signal_v1"
+        },
+        "reason": "first",
+        "observations": [
+          {
+            "item_id": "n1",
+            "market_kind": "oi",
+            "parse_status": "ok",
+            "title": "",
+            "event_at_ms": 1788559140000,
+            "received_at_ms": 1788559140000,
+            "provider": null,
+            "direction": "rise",
+            "oi_value_usd": null
+          }
+        ],
+        "detail_url": null,
+        "action_changes": 0
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "持仓异动 · SOL"
+          },
+          "template": "blue"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "上升 — · 05:59\nOI $— · hyperliquid · oi_signal_v1\nSOL · oi（1 条报道） · 05:59"
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold 市场 · oi|opennews|hyperliquid| · n1"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "source": "market",
+      "id": "market-oi-subject-bounded-at-one-hundred",
+      "why": "a subject long enough to bound the header",
+      "inputs": {
+        "track": {
+          "group_key": "oi|opennews|binance|LONG",
+          "market_kind": "oi",
+          "family": "oi",
+          "provider": "opennews",
+          "source_venue": "binance",
+          "symbol": "标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标",
+          "measurement_definition": "oi_signal_v1"
+        },
+        "reason": "followup",
+        "observations": [
+          {
+            "item_id": "o1",
+            "market_kind": "oi",
+            "parse_status": "ok",
+            "title": "",
+            "event_at_ms": 1788566880000,
+            "received_at_ms": 1788566880000,
+            "provider": "opennews",
+            "direction": "rise",
+            "oi_change_bps": 366,
+            "oi_value_usd": 6590000
+          }
+        ],
+        "detail_url": null,
+        "action_changes": 0
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "持仓异动 · 跟进 · 标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标"
+          },
+          "template": "blue"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "上升 3.66% · 08:08\nOI $6.59M · binance · oi_signal_v1\n标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标标 · opennews oi（1 条报道） · 08:08"
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold 市场 · oi|opennews|binance|LONG · o1"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "source": "market",
+      "id": "market-liquidation-three-reports",
+      "why": "three reports, the largest reported figure chosen among them, a spanned range and a real console button",
+      "inputs": {
+        "track": {
+          "group_key": "liquidation|opennews|binance|ETH",
+          "market_kind": "liquidation",
+          "family": "liquidation",
+          "provider": "opennews",
+          "source_venue": "binance",
+          "symbol": "ETH",
+          "liquidated_position_side": "short"
+        },
+        "reason": "first",
+        "observations": [
+          {
+            "item_id": "p1",
+            "market_kind": "liquidation",
+            "parse_status": "ok",
+            "title": "",
+            "event_at_ms": 1788597600000,
+            "received_at_ms": 1788597600000,
+            "provider": "opennews",
+            "notional_usd": "1200.500"
+          },
+          {
+            "item_id": "p2",
+            "market_kind": "liquidation",
+            "parse_status": "ok",
+            "title": "",
+            "event_at_ms": 1788597840000,
+            "received_at_ms": 1788597840000,
+            "provider": "opennews",
+            "notional_usd": "980000"
+          },
+          {
+            "item_id": "p3",
+            "market_kind": "liquidation",
+            "parse_status": "ok",
+            "title": "",
+            "event_at_ms": 1788598260000,
+            "received_at_ms": 1788598260000,
+            "provider": "opennews",
+            "notional_usd": "1000000.00"
+          }
+        ],
+        "detail_url": "https://console.example.com",
+        "action_changes": 0
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "强平 · ETH"
+          },
+          "template": "red"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "binance · 空单被强平 3 笔 · 16:40–16:51\n最大单笔来源报告金额 $980000\n各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。\nETH · opennews liquidation（3 条报道） · 16:51"
+          },
+          {
+            "tag": "action",
+            "actions": [
+              {
+                "tag": "button",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "打开明细"
+                },
+                "type": "default",
+                "url": "https://console.example.com"
+              }
+            ]
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold 市场 · liquidation|opennews|bin"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "source": "market",
+      "id": "market-liquidation-without-a-reported-figure",
+      "why": "no reported notional at all: the amount line is absent rather than zero",
+      "inputs": {
+        "track": {
+          "group_key": "liquidation|opennews|hyperliquid|XYZ",
+          "market_kind": "liquidation",
+          "family": "liquidation",
+          "provider": "opennews",
+          "source_venue": "hyperliquid",
+          "symbol": "XYZ",
+          "liquidated_position_side": "long"
+        },
+        "reason": "followup",
+        "observations": [
+          {
+            "item_id": "r1",
+            "market_kind": "liquidation",
+            "parse_status": "ok",
+            "title": "",
+            "event_at_ms": 1788544920000,
+            "received_at_ms": 1788544920000,
+            "provider": "opennews"
+          }
+        ],
+        "detail_url": null,
+        "action_changes": 0
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "强平 · 跟进 · XYZ"
+          },
+          "template": "red"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "hyperliquid · 多单被强平 1 笔 · 02:02\n各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。\nXYZ · opennews liquidation（1 条报道） · 02:02"
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold 市场 · liquidation|opennews|hyp · r1"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "source": "market",
+      "id": "market-raw-long-provider-text",
+      "why": "an unstructured report longer than the card holds, subject falling back to the raw instrument",
+      "inputs": {
+        "track": {
+          "group_key": "raw|smart_money|deadbeef",
+          "market_kind": "smart_money",
+          "family": "raw",
+          "provider": null,
+          "raw_instrument": "BTC-PERP"
+        },
+        "reason": "raw",
+        "observations": [
+          {
+            "item_id": "s1",
+            "market_kind": "smart_money",
+            "parse_status": "ok",
+            "title": "js-2 Open Long BTC $798.18K , Price $79,817.87  补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 ",
+            "event_at_ms": 1788539220000,
+            "received_at_ms": 1788539220000,
+            "provider": null
+          }
+        ],
+        "detail_url": null,
+        "action_changes": 0
+      },
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "市场原文 · 原文 · BTC-PERP"
+          },
+          "template": "grey"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "js-2 Open Long BTC $798.18K , Price $79,817.87 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充…\n场所未知 · smart_money · 未结构化，保留供应商原文\nBTC-PERP · smart_money（1 条报道） · 00:27"
+          },
+          {
+            "tag": "note",
+            "elements": [
+              {
+                "tag": "plain_text",
+                "content": "Tracefold 市场 · raw|smart_money|deadbeef · s1"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -14,7 +14,7 @@ from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_judgment import scored_judgment
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.delivery import _quote_line
+from tracefold.news.delivery import reader_quotes
 from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.market_review.pricing import (
     HORIZON_MS,
@@ -24,6 +24,7 @@ from tracefold.news.market_review.pricing import (
 )
 from tracefold.news.models import TriageVerdict
 from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
+from tracefold.news.reader_card import quote_line
 from tracefold.news.triage_rules import DecisionResult, DegradedJudgment
 
 pytestmark = pytest.mark.integration
@@ -537,14 +538,14 @@ def test_quote_api_status_and_delivery_render_share_one_snapshot_freshness(conn)
     assert current["state"] == current_status["state"] == "fresh"
     assert current["effective_age_ms"] == current_status["effective_age_ms"] == 0
     assert current["change_pct"] is None
-    assert _quote_line([current]).startswith("行情 BTC $68,000")
-    assert "24h" not in _quote_line([current])
+    assert quote_line(reader_quotes([current])).startswith("行情 BTC $68,000")
+    assert "24h" not in quote_line(reader_quotes([current]))
 
     stale = repos.price.quotes_for_symbols(["BTC"], now_ms=NOW + 45_001)[0]
     stale_status = repos.price.price_status(now_ms=NOW + 45_001)["sources"][0]
     assert stale["state"] == stale_status["state"] == "stale"
     assert stale["effective_age_ms"] == stale_status["effective_age_ms"] == 45_001
-    assert _quote_line([stale]) == ""
+    assert quote_line(reader_quotes([stale])) == ""
 
 
 def test_duplicate_request_symbols_cannot_multiply_repository_work(conn) -> None:

@@ -35,6 +35,11 @@ MARKET_PATH = (
     "tracefold/news/smart_money.py",
     "tracefold/news/market_contracts.py",
     "tracefold/news/market_notifications.py",
+    # The card model and its formatter are shared with the News first card and are now on this path
+    # too: a market card is filled into the same value object, so the same forbid list applies.
+    "tracefold/news/reader_card.py",
+    "tracefold/news/card_format.py",
+    "tracefold/news/feishu_card.py",
     "tracefold/news/storage/market.py",
     "tracefold/app/http/routes/market.py",
     "tracefold/app/http/schemas/market.py",
@@ -176,3 +181,59 @@ def test_the_market_path_manifest_covers_every_module_the_lane_owns() -> None:
     # `market_review/` is the Quote and instrument plane, a different lane with its own owner.
     unreviewed = {name for name in owned if "market_review" not in name} - set(MARKET_PATH)
     assert unreviewed == set()
+
+
+# The card model, its formatter and the channel serializer are value modules: a reader card is built
+# from facts already in hand, so nothing here may open a connection, read a clock or a file. `time` is
+# imported for `strftime`/`gmtime`, which convert a stamp the caller supplied; reading the wall clock
+# would make the same card render differently twice.
+CARD_VALUE_MODULES: Final[tuple[str, ...]] = (
+    "tracefold/news/card_format.py",
+    "tracefold/news/reader_card.py",
+    "tracefold/news/feishu_card.py",
+)
+_IO_MODULES: Final[frozenset[str]] = frozenset(
+    {"asyncio", "httpx", "os", "pathlib", "psycopg", "requests", "socket", "sqlite3", "subprocess", "urllib"}
+)
+_CLOCK_CALLS: Final[tuple[str, ...]] = ("time.time", "time.monotonic", "time.perf_counter", "datetime.now")
+
+
+def _without_comments(relative: str) -> str:
+    """The module's source with its comments removed and its string literals kept."""
+
+    text = (ROOT / relative).read_text(encoding="utf-8")
+    return "\n".join(
+        tok.string for tok in tokenize.generate_tokens(io.StringIO(text).readline) if tok.type != token.COMMENT
+    )
+
+
+def test_the_card_value_modules_do_no_io_and_read_no_clock() -> None:
+    for relative in CARD_VALUE_MODULES:
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        roots = {
+            (node.module or "").split(".")[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.level == 0
+        } | {
+            alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names
+        }
+        assert roots & _IO_MODULES == set(), f"{relative}: {sorted(roots & _IO_MODULES)}"
+        scanned = _scannable(relative)
+        for call in _CLOCK_CALLS:
+            assert call not in scanned, f"{relative}: {call}"
+
+
+def test_the_card_model_names_no_channel_wire_shape() -> None:
+    """Feishu's vocabulary lives in one serializer; the value object it reads may not know any of it."""
+
+    # Literals are the whole point here -- a wire key is a string -- so this scan keeps them and drops
+    # only the comments.
+    scanned = "\n".join(
+        _without_comments(name) for name in ("tracefold/news/reader_card.py", "tracefold/news/card_format.py")
+    )
+    for wire in ("wide_screen_mode", "plain_text", "turquoise", "parse_mode", "msg_type"):
+        assert wire not in scanned, wire
+    # Not vacuous: the serializer that owns them is a real module and does name every one it uses.
+    serializer = _without_comments("tracefold/news/feishu_card.py")
+    assert "wide_screen_mode" in serializer and "turquoise" in serializer and "plain_text" in serializer

@@ -10,6 +10,12 @@ import type { NewsEventReaction, NewsQuote, NewsReaction } from "../api/newsQuer
  * Up is red and down is green, the mainland market convention the direction chip already uses (#74). The two
  * axes are told apart by weight rather than hue: the model's judgment is a solid chip, the market's actual
  * move is plain figures.
+ *
+ * `formatPrice` and `formatChangePct` write the same characters as `tracefold/news/card_format.py`, which
+ * renders the number a reader sees on a pushed card. A reader who sees 74,553.10 on a card and 74,553.1 here
+ * has been given a reason to doubt both, so the agreement is a shared table rather than a comment:
+ * `tests/fixtures/news/card_money_format.json`, asserted by `tests/unit/features/news/newsPriceAlignment.test.ts`
+ * and by `tests/news/test_news_reader_card.py` (#562).
  */
 export type PriceTone = "up" | "down" | "flat";
 
