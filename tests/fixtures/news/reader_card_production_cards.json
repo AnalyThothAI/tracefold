@@ -1,0 +1,4878 @@
+[
+  {
+    "source": "news",
+    "id": "b4dec618d2ac3442ba6455dae61f0412147fe3cc497a264ff23fc1db67ccf260",
+    "reproduces_sent_card": true,
+    "inputs": {
+      "event": {
+        "event_id": "b4dec618d2ac3442ba6455dae61f0412147fe3cc497a264ff23fc1db67ccf260",
+        "leader_title": "英伟达支持的 AI 初创公司 Nscale 披露 1030 亿美元合同收入",
+        "leader_url": "https://www.thestreet.com/investing/nvidia-backed-ai-startup-nscale-reveals-103-billion-contracted-revenue",
+        "reporting_origin": "www.thestreet.com",
+        "member_count": 2,
+        "leader_published_at_ms": 1788553020000
+      },
+      "verdict": {
+        "direction": "bullish",
+        "magnitude": 2,
+        "novelty": "progression",
+        "headline_zh": "英伟达支持的 AI 初创公司 Nscale 披露 1030 亿美元合同收入",
+        "why_zh": "Nscale 公布百亿级合同收入，验证了英伟达算力生态的商业化落地能力，为英伟达后续数据中心芯片订单提供下游需求支撑."
+      },
+      "decision": "push",
+      "grounded_assets": [],
+      "assets": [
+        "NVDA"
+      ],
+      "degraded": false,
+      "quotes": [
+        {
+          "requested_symbol": "NVDA",
+          "symbol": "NVDA",
+          "state": "fresh",
+          "price": "231.03",
+          "change_pct": 0.39,
+          "change_basis": "rolling_24h",
+          "instrument_class": "equity"
+        }
+      ]
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "英伟达支持的 AI 初创公司 Nscale 披露 1030 亿美元合同收入"
+        },
+        "template": "green"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "Nscale 公布百亿级合同收入，验证了英伟达算力生态的商业化落地能力，为英伟达后续数据中心芯片订单提供下游需求支撑.\n利多 · 新进展 · 影响明显 · NVDA · www.thestreet.com（2 条报道） · 04:17\n行情 NVDA $231.03 24h +0.39%（永续）"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开来源"
+              },
+              "type": "default",
+              "url": "https://www.thestreet.com/investing/nvidia-backed-ai-startup-nscale-reveals-103-billion-contracted-revenue"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · b4dec618"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "英伟达支持的 AI 初创公司 Nscale 披露 1030 亿美元合同收入"
+        },
+        "template": "green"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "Nscale 公布百亿级合同收入，验证了英伟达算力生态的商业化落地能力，为英伟达后续数据中心芯片订单提供下游需求支撑.\n利多 · 新进展 · 影响明显 · NVDA · www.thestreet.com（2 条报道） · 04:17\n行情 NVDA $231.03 24h +0.39%（永续）"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "https://www.thestreet.com/investing/nvidia-backed-ai-startup-nscale-reveals-103-billion-contracted-revenue",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开来源"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · b4dec618"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "news",
+    "id": "b869c36da8df9202e9e711aa40eb8667c9c63d2e066f6ec329b75a9f881812cc",
+    "reproduces_sent_card": true,
+    "inputs": {
+      "event": {
+        "event_id": "b869c36da8df9202e9e711aa40eb8667c9c63d2e066f6ec329b75a9f881812cc",
+        "leader_title": "伊拉克石油部长：伊拉克已将石油出口能力提高至每日300万桶以上",
+        "leader_url": "",
+        "reporting_origin": "jin10",
+        "member_count": 1,
+        "leader_published_at_ms": 1788552900000
+      },
+      "verdict": {
+        "direction": "bearish",
+        "magnitude": 2,
+        "novelty": "new_fact",
+        "headline_zh": "伊拉克石油部长：伊拉克已将石油出口能力提高至每日300万桶以上",
+        "why_zh": "伊拉克出口能力突破 300 万桶/日，中东供应预期增加直接压制原油价格。"
+      },
+      "decision": "push",
+      "grounded_assets": [],
+      "assets": [
+        "CL"
+      ],
+      "degraded": false,
+      "quotes": [
+        {
+          "requested_symbol": "CL",
+          "symbol": "CL",
+          "state": "fresh",
+          "price": "91.96",
+          "change_pct": 0.86,
+          "change_basis": "rolling_24h",
+          "instrument_class": "equity"
+        }
+      ]
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "伊拉克石油部长：伊拉克已将石油出口能力提高至每日300万桶以上"
+        },
+        "template": "red"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "伊拉克出口能力突破 300 万桶/日，中东供应预期增加直接压制原油价格。\n利空 · 影响明显 · CL · jin10 · 04:15\n行情 CL $91.96 24h +0.86%（永续）"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · b869c36d"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "伊拉克石油部长：伊拉克已将石油出口能力提高至每日300万桶以上"
+        },
+        "template": "red"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "伊拉克出口能力突破 300 万桶/日，中东供应预期增加直接压制原油价格。\n利空 · 影响明显 · CL · jin10 · 04:15\n行情 CL $91.96 24h +0.86%（永续）"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · b869c36d"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "news",
+    "id": "bfd76cf3382bef3e0d6c3261d490cb32444254160d9615c214c98cfca955d041",
+    "reproduces_sent_card": true,
+    "inputs": {
+      "event": {
+        "event_id": "bfd76cf3382bef3e0d6c3261d490cb32444254160d9615c214c98cfca955d041",
+        "leader_title": "德国初创公司 Isar 无人火箭从挪威基地发射升空",
+        "leader_url": "",
+        "reporting_origin": "opennews",
+        "member_count": 1,
+        "leader_published_at_ms": 1788552720000
+      },
+      "verdict": {
+        "direction": "bullish",
+        "magnitude": 2,
+        "novelty": "new_fact",
+        "headline_zh": "德国初创公司 Isar 无人火箭从挪威基地发射升空",
+        "why_zh": "SpaceX 的供应链竞争对手成功完成首飞，验证了欧洲本土低成本入轨能力，为相关航天概念股提供基本面支撑."
+      },
+      "decision": "push",
+      "grounded_assets": [],
+      "assets": [
+        "SPACE"
+      ],
+      "degraded": false,
+      "quotes": [
+        {
+          "requested_symbol": "SPACE",
+          "symbol": "SPACE",
+          "state": "fresh",
+          "price": "0.005193",
+          "change_pct": 3.3,
+          "change_basis": "rolling_24h",
+          "instrument_class": "crypto"
+        }
+      ]
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "德国初创公司 Isar 无人火箭从挪威基地发射升空"
+        },
+        "template": "green"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "SpaceX 的供应链竞争对手成功完成首飞，验证了欧洲本土低成本入轨能力，为相关航天概念股提供基本面支撑.\n利多 · 影响明显 · SPACE · opennews · 04:12\n行情 SPACE $0.005193 24h +3.30%"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · bfd76cf3"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "德国初创公司 Isar 无人火箭从挪威基地发射升空"
+        },
+        "template": "green"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "SpaceX 的供应链竞争对手成功完成首飞，验证了欧洲本土低成本入轨能力，为相关航天概念股提供基本面支撑.\n利多 · 影响明显 · SPACE · opennews · 04:12\n行情 SPACE $0.005193 24h +3.30%"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · bfd76cf3"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "news",
+    "id": "dffa06be276d4a60a1de3b112499df9bf8fc942a311534b0bec111e91679985c",
+    "reproduces_sent_card": true,
+    "inputs": {
+      "event": {
+        "event_id": "dffa06be276d4a60a1de3b112499df9bf8fc942a311534b0bec111e91679985c",
+        "leader_title": "UBS、Jane Street 等机构合计持有 7500 万美元 Hyperliquid ETF",
+        "leader_url": "",
+        "reporting_origin": "opennews",
+        "member_count": 2,
+        "leader_published_at_ms": 1788552060000
+      },
+      "verdict": {
+        "direction": "bullish",
+        "magnitude": 2,
+        "novelty": "progression",
+        "headline_zh": "UBS、Jane Street 等机构合计持有 7500 万美元 Hyperliquid ETF",
+        "why_zh": "传统银行与顶级做市商直接配置代币化资产，为 HYPE 提供机构级流动性背书并降低散户交易滑点。"
+      },
+      "decision": "push",
+      "grounded_assets": [],
+      "assets": [
+        "HYPE"
+      ],
+      "degraded": false,
+      "quotes": [
+        {
+          "requested_symbol": "HYPE",
+          "symbol": "HYPE",
+          "state": "fresh",
+          "price": "85.353",
+          "change_pct": 0.45,
+          "change_basis": "rolling_24h",
+          "instrument_class": "crypto"
+        }
+      ]
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "UBS、Jane Street 等机构合计持有 7500 万美元 Hyperliquid ETF"
+        },
+        "template": "green"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "传统银行与顶级做市商直接配置代币化资产，为 HYPE 提供机构级流动性背书并降低散户交易滑点。\n利多 · 新进展 · 影响明显 · HYPE · opennews（2 条报道） · 04:01\n行情 HYPE $85.353 24h +0.45%"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · dffa06be"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "UBS、Jane Street 等机构合计持有 7500 万美元 Hyperliquid ETF"
+        },
+        "template": "green"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "传统银行与顶级做市商直接配置代币化资产，为 HYPE 提供机构级流动性背书并降低散户交易滑点。\n利多 · 新进展 · 影响明显 · HYPE · opennews（2 条报道） · 04:01\n行情 HYPE $85.353 24h +0.45%"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · dffa06be"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "news",
+    "id": "02d1e9842b0ec89fb31646e740dec35bba06107cdec3fad9a32e7fefc81dfc75",
+    "reproduces_sent_card": true,
+    "inputs": {
+      "event": {
+        "event_id": "02d1e9842b0ec89fb31646e740dec35bba06107cdec3fad9a32e7fefc81dfc75",
+        "leader_title": "IRGC海军警告波斯湾及霍尔木兹海峡附近船只防范可疑活动",
+        "leader_url": "",
+        "reporting_origin": "opennews",
+        "member_count": 1,
+        "leader_published_at_ms": 1788551940000
+      },
+      "verdict": {
+        "direction": "bullish",
+        "magnitude": 3,
+        "novelty": "progression",
+        "headline_zh": "IRGC海军警告波斯湾及霍尔木兹海峡附近船只防范可疑活动",
+        "why_zh": "伊朗革命卫队对关键航道发出航行警告，地缘风险溢价上升推动原油供应预期收紧。"
+      },
+      "decision": "push",
+      "grounded_assets": [],
+      "assets": [
+        "CL"
+      ],
+      "degraded": false,
+      "quotes": [
+        {
+          "requested_symbol": "CL",
+          "symbol": "CL",
+          "state": "fresh",
+          "price": "91.91",
+          "change_pct": 0.73,
+          "change_basis": "rolling_24h",
+          "instrument_class": "equity"
+        }
+      ]
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "IRGC海军警告波斯湾及霍尔木兹海峡附近船只防范可疑活动"
+        },
+        "template": "green"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "伊朗革命卫队对关键航道发出航行警告，地缘风险溢价上升推动原油供应预期收紧。\n利多 · 新进展 · 影响重大 · CL · opennews · 03:59\n行情 CL $91.91 24h +0.73%（永续）"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · 02d1e984"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "IRGC海军警告波斯湾及霍尔木兹海峡附近船只防范可疑活动"
+        },
+        "template": "green"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "伊朗革命卫队对关键航道发出航行警告，地缘风险溢价上升推动原油供应预期收紧。\n利多 · 新进展 · 影响重大 · CL · opennews · 03:59\n行情 CL $91.91 24h +0.73%（永续）"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · 02d1e984"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "news",
+    "id": "b084eadef4c8de13a4f195f876a7673fbb9b6df6752b5670ccffcc2a6133ab4d",
+    "reproduces_sent_card": true,
+    "inputs": {
+      "event": {
+        "event_id": "b084eadef4c8de13a4f195f876a7673fbb9b6df6752b5670ccffcc2a6133ab4d",
+        "leader_title": "伊朗革命卫队海军称霍尔木兹海峡每日有2至5艘船只被打击",
+        "leader_url": "https://t.me/farsna/460373",
+        "reporting_origin": "خبرگزاری فارس",
+        "member_count": 1,
+        "leader_published_at_ms": 1788551220000
+      },
+      "verdict": {
+        "direction": "bearish",
+        "magnitude": 3,
+        "novelty": "progression",
+        "headline_zh": "伊朗革命卫队海军称霍尔木兹海峡每日有2至5艘船只被打击",
+        "why_zh": "霍尔木兹海峡航运受阻推高能源运输风险溢价，直接冲击原油供给预期并压制全球风险资产估值."
+      },
+      "decision": "push",
+      "grounded_assets": [],
+      "assets": [
+        "LINK"
+      ],
+      "degraded": false,
+      "quotes": [
+        {
+          "requested_symbol": "LINK",
+          "symbol": "LINK",
+          "state": "fresh",
+          "price": "12.014",
+          "change_pct": 2.71,
+          "change_basis": "rolling_24h",
+          "instrument_class": "crypto"
+        }
+      ]
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "伊朗革命卫队海军称霍尔木兹海峡每日有2至5艘船只被打击"
+        },
+        "template": "red"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "霍尔木兹海峡航运受阻推高能源运输风险溢价，直接冲击原油供给预期并压制全球风险资产估值.\n利空 · 新进展 · 影响重大 · LINK · خبرگزاری فارس · 03:47\n行情 LINK $12.014 24h +2.71%"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开来源"
+              },
+              "type": "default",
+              "url": "https://t.me/farsna/460373"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · b084eade"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "伊朗革命卫队海军称霍尔木兹海峡每日有2至5艘船只被打击"
+        },
+        "template": "red"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "霍尔木兹海峡航运受阻推高能源运输风险溢价，直接冲击原油供给预期并压制全球风险资产估值.\n利空 · 新进展 · 影响重大 · LINK · خبرگزاری فارس · 03:47\n行情 LINK $12.014 24h +2.71%"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "https://t.me/farsna/460373",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开来源"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · b084eade"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "news",
+    "id": "4cb6f694de3ebcd6cc84aaed38cd98ac770dee0835d72d52f8cbe82d1442f1a3",
+    "reproduces_sent_card": true,
+    "inputs": {
+      "event": {
+        "event_id": "4cb6f694de3ebcd6cc84aaed38cd98ac770dee0835d72d52f8cbe82d1442f1a3",
+        "leader_title": "美国特使威特科夫、库什纳赴莫斯科与普京举行高级别和谈，乌克兰实施72小时停火",
+        "leader_url": "https://twitter.com/zerohedge/status/2096322754278514860",
+        "reporting_origin": "zerohedge",
+        "member_count": 1,
+        "leader_published_at_ms": 1788550860000
+      },
+      "verdict": {
+        "direction": "bullish",
+        "magnitude": 3,
+        "novelty": "progression",
+        "headline_zh": "美国特使威特科夫、库什纳赴莫斯科与普京举行高级别和谈，乌克兰实施72小时停火",
+        "why_zh": "美俄直接对话配合短期空中停火，为结束冲突提供窗口，可能降低能源供应中断风险并缓解地缘政治溢价。"
+      },
+      "decision": "push",
+      "grounded_assets": [],
+      "assets": [],
+      "degraded": false,
+      "quotes": []
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "美国特使威特科夫、库什纳赴莫斯科与普京举行高级别和谈，乌克兰实施72小时停火"
+        },
+        "template": "green"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "美俄直接对话配合短期空中停火，为结束冲突提供窗口，可能降低能源供应中断风险并缓解地缘政治溢价。\n利多 · 新进展 · 影响重大 · zerohedge · 03:41"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开来源"
+              },
+              "type": "default",
+              "url": "https://twitter.com/zerohedge/status/2096322754278514860"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · 4cb6f694"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "美国特使威特科夫、库什纳赴莫斯科与普京举行高级别和谈，乌克兰实施72小时停火"
+        },
+        "template": "green"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "美俄直接对话配合短期空中停火，为结束冲突提供窗口，可能降低能源供应中断风险并缓解地缘政治溢价。\n利多 · 新进展 · 影响重大 · zerohedge · 03:41"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "https://twitter.com/zerohedge/status/2096322754278514860",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开来源"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · 4cb6f694"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "news",
+    "id": "ed010bc15e87537e3cdae9fa5866a1207ca9040e40fb0047cfad2c906b12ba8b",
+    "reproduces_sent_card": true,
+    "inputs": {
+      "event": {
+        "event_id": "ed010bc15e87537e3cdae9fa5866a1207ca9040e40fb0047cfad2c906b12ba8b",
+        "leader_title": "伊朗革命卫队海军称打击霍尔木兹海峡违规航线三艘船只",
+        "leader_url": "",
+        "reporting_origin": "opennews",
+        "member_count": 1,
+        "leader_published_at_ms": 1788550620000
+      },
+      "verdict": {
+        "direction": "bullish",
+        "magnitude": 3,
+        "novelty": "progression",
+        "headline_zh": "伊朗革命卫队海军称打击霍尔木兹海峡违规航线三艘船只",
+        "why_zh": "霍尔木兹海峡是全球约两成原油的必经通道，袭击事件直接抬升油运风险溢价，推高布伦特原油价格预期并压缩全球风险资产估值。"
+      },
+      "decision": "push",
+      "grounded_assets": [],
+      "assets": [
+        "CL"
+      ],
+      "degraded": false,
+      "quotes": [
+        {
+          "requested_symbol": "CL",
+          "symbol": "CL",
+          "state": "fresh",
+          "price": "91.81",
+          "change_pct": 0.6,
+          "change_basis": "rolling_24h",
+          "instrument_class": "equity"
+        }
+      ]
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "伊朗革命卫队海军称打击霍尔木兹海峡违规航线三艘船只"
+        },
+        "template": "green"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "霍尔木兹海峡是全球约两成原油的必经通道，袭击事件直接抬升油运风险溢价，推高布伦特原油价格预期并压缩全球风险资产估值。\n利多 · 新进展 · 影响重大 · CL · opennews · 03:37\n行情 CL $91.81 24h +0.60%（永续）"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · ed010bc1"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "伊朗革命卫队海军称打击霍尔木兹海峡违规航线三艘船只"
+        },
+        "template": "green"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "霍尔木兹海峡是全球约两成原油的必经通道，袭击事件直接抬升油运风险溢价，推高布伦特原油价格预期并压缩全球风险资产估值。\n利多 · 新进展 · 影响重大 · CL · opennews · 03:37\n行情 CL $91.81 24h +0.60%（永续）"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · ed010bc1"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "news",
+    "id": "d0be4f00779d56c8f63164ce97be83e6a5d83fad45525ee3cbeeb1cf84709af0",
+    "reproduces_sent_card": true,
+    "inputs": {
+      "event": {
+        "event_id": "d0be4f00779d56c8f63164ce97be83e6a5d83fad45525ee3cbeeb1cf84709af0",
+        "leader_title": "伊朗称回应美军袭击三艘油轮行为",
+        "leader_url": "https://t.me/farsna/460366",
+        "reporting_origin": "خبرگزاری فارس",
+        "member_count": 1,
+        "leader_published_at_ms": 1788550500000
+      },
+      "verdict": {
+        "direction": "bearish",
+        "magnitude": 3,
+        "novelty": "progression",
+        "headline_zh": "伊朗称回应美军袭击三艘油轮行为",
+        "why_zh": "地缘冲突升级风险推高能源供应中断预期，原油及风险资产面临避险抛压"
+      },
+      "decision": "push",
+      "grounded_assets": [],
+      "assets": [],
+      "degraded": false,
+      "quotes": []
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "伊朗称回应美军袭击三艘油轮行为"
+        },
+        "template": "red"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "地缘冲突升级风险推高能源供应中断预期，原油及风险资产面临避险抛压\n利空 · 新进展 · 影响重大 · خبرگزاری فارس · 03:35"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开来源"
+              },
+              "type": "default",
+              "url": "https://t.me/farsna/460366"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · d0be4f00"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "伊朗称回应美军袭击三艘油轮行为"
+        },
+        "template": "red"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "地缘冲突升级风险推高能源供应中断预期，原油及风险资产面临避险抛压\n利空 · 新进展 · 影响重大 · خبرگزاری فارس · 03:35"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "https://t.me/farsna/460366",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开来源"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · d0be4f00"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "news",
+    "id": "1e86a8b9451e5a13d2f27f068a43178aea44232504ff5005df5be89c9d36b079",
+    "reproduces_sent_card": true,
+    "inputs": {
+      "event": {
+        "event_id": "1e86a8b9451e5a13d2f27f068a43178aea44232504ff5005df5be89c9d36b079",
+        "leader_title": "伊朗革命卫队海军警告：任何可疑举动都将遭到打击",
+        "leader_url": "https://t.me/farsna/460364",
+        "reporting_origin": "خبرگزاری فارس",
+        "member_count": 1,
+        "leader_published_at_ms": 1788550320000
+      },
+      "verdict": {
+        "direction": "bearish",
+        "magnitude": 3,
+        "novelty": "progression",
+        "headline_zh": "伊朗革命卫队海军警告：任何可疑举动都将遭到打击",
+        "why_zh": "美军袭击三艘伊朗油船引发军事对峙升级，霍尔木兹海峡原油运输风险溢价抬升，推高能源成本并压制全球风险资产估值."
+      },
+      "decision": "push",
+      "grounded_assets": [],
+      "assets": [],
+      "degraded": false,
+      "quotes": []
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "伊朗革命卫队海军警告：任何可疑举动都将遭到打击"
+        },
+        "template": "red"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "美军袭击三艘伊朗油船引发军事对峙升级，霍尔木兹海峡原油运输风险溢价抬升，推高能源成本并压制全球风险资产估值.\n利空 · 新进展 · 影响重大 · خبرگزاری فارس · 03:32"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开来源"
+              },
+              "type": "default",
+              "url": "https://t.me/farsna/460364"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · 1e86a8b9"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "伊朗革命卫队海军警告：任何可疑举动都将遭到打击"
+        },
+        "template": "red"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "美军袭击三艘伊朗油船引发军事对峙升级，霍尔木兹海峡原油运输风险溢价抬升，推高能源成本并压制全球风险资产估值.\n利空 · 新进展 · 影响重大 · خبرگزاری فارس · 03:32"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "https://t.me/farsna/460364",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开来源"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · 1e86a8b9"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "news",
+    "id": "af15f0c315e4d4944f777477293f42c2e08467e8b3d6032efcdb8f81de14a76f",
+    "reproduces_sent_card": true,
+    "inputs": {
+      "event": {
+        "event_id": "af15f0c315e4d4944f777477293f42c2e08467e8b3d6032efcdb8f81de14a76f",
+        "leader_title": "StonkFun 正式在 Raydium LaunchLab 上线",
+        "leader_url": "https://x.com/Raydium/status/2096316117799309714",
+        "reporting_origin": "x.com",
+        "member_count": 1,
+        "leader_published_at_ms": 1788549240000
+      },
+      "verdict": {
+        "direction": "bullish",
+        "magnitude": 2,
+        "novelty": "new_fact",
+        "headline_zh": "StonkFun 正式在 Raydium LaunchLab 上线",
+        "why_zh": "Raydium 作为 Solana 核心流动性枢纽，新代币接入其 LaunchLab 可获得更深流动性与更优成交，直接提升该平台的交易活跃度与生态吸引力."
+      },
+      "decision": "push",
+      "grounded_assets": [],
+      "assets": [
+        "RAYDIUM"
+      ],
+      "degraded": false,
+      "quotes": [
+        {
+          "requested_symbol": "RAYDIUM",
+          "symbol": "RAYDIUM",
+          "state": "fresh",
+          "price": "0.8652",
+          "change_pct": 5.72,
+          "change_basis": "rolling_24h",
+          "instrument_class": "crypto"
+        }
+      ]
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "StonkFun 正式在 Raydium LaunchLab 上线"
+        },
+        "template": "green"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "Raydium 作为 Solana 核心流动性枢纽，新代币接入其 LaunchLab 可获得更深流动性与更优成交，直接提升该平台的交易活跃度与生态吸引力.\n利多 · 影响明显 · RAYDIUM · x.com · 03:14\n行情 RAYDIUM $0.8652 24h +5.72%"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开来源"
+              },
+              "type": "default",
+              "url": "https://x.com/Raydium/status/2096316117799309714"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · af15f0c3"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "StonkFun 正式在 Raydium LaunchLab 上线"
+        },
+        "template": "green"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "Raydium 作为 Solana 核心流动性枢纽，新代币接入其 LaunchLab 可获得更深流动性与更优成交，直接提升该平台的交易活跃度与生态吸引力.\n利多 · 影响明显 · RAYDIUM · x.com · 03:14\n行情 RAYDIUM $0.8652 24h +5.72%"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "https://x.com/Raydium/status/2096316117799309714",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开来源"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · af15f0c3"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "news",
+    "id": "7991dfcc9461491e0d4e9dd3cec2163a02e4e6712a43d0df8bf36eb26e2fd375",
+    "reproduces_sent_card": true,
+    "inputs": {
+      "event": {
+        "event_id": "7991dfcc9461491e0d4e9dd3cec2163a02e4e6712a43d0df8bf36eb26e2fd375",
+        "leader_title": "Revolut获OCC有条件批准，迈出成为美国银行关键一步",
+        "leader_url": "",
+        "reporting_origin": "opennews",
+        "member_count": 1,
+        "leader_published_at_ms": 1788546180000
+      },
+      "verdict": {
+        "direction": "bullish",
+        "magnitude": 2,
+        "novelty": "new_fact",
+        "headline_zh": "Revolut获OCC有条件批准，迈出成为美国银行关键一步",
+        "why_zh": "获得联邦存款保险与监管框架后，Revolut可直接为美国用户开设合规银行账户，降低其接入加密资产服务的监管门槛."
+      },
+      "decision": "push",
+      "grounded_assets": [],
+      "assets": [],
+      "degraded": false,
+      "quotes": []
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "Revolut获OCC有条件批准，迈出成为美国银行关键一步"
+        },
+        "template": "green"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "获得联邦存款保险与监管框架后，Revolut可直接为美国用户开设合规银行账户，降低其接入加密资产服务的监管门槛.\n利多 · 影响明显 · opennews · 02:23"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · 7991dfcc"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "Revolut获OCC有条件批准，迈出成为美国银行关键一步"
+        },
+        "template": "green"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "获得联邦存款保险与监管框架后，Revolut可直接为美国用户开设合规银行账户，降低其接入加密资产服务的监管门槛.\n利多 · 影响明显 · opennews · 02:23"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold · 7991dfcc"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "37aeb8123a0c284b3395463a914e0388",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": true,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|STRK",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "STRK",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "a50c5f0a582d6dfcd00deb41e0ce6246df60a5b2da7c1bc02d4d6431563eb8e1",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788553140000,
+          "received_at_ms": 1788553140000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 366,
+          "oi_value_usd": 6590000
+        }
+      ],
+      "detail_url": null,
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · STRK"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.66% · 04:19\nOI $6.59M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nSTRK · opennews oi（1 条报道） · 04:19"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|STRK · a50c5f0a582d6dfcd00deb41e0ce6246df60a5b2da7c1bc02d4d6431563eb8e1"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · STRK"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.66% · 04:19\nOI $6.59M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nSTRK · opennews oi（1 条报道） · 04:19"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|STRK · a50c5f0a582d6dfcd00deb41e0ce6246df60a5b2da7c1bc02d4d6431563eb8e1"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "9ff348f77c2188d17ceee26e1e4c6eb9",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": true,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|hyperliquid|",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "STRK",
+        "source_venue": "hyperliquid",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "3a7debf4a05ce7450937612979f59368653932a19843320d0538b28725ba2f04",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788551580000,
+          "received_at_ms": 1788551580000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 782,
+          "oi_value_usd": 4850000
+        }
+      ],
+      "detail_url": null,
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · STRK"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 7.82% · 03:53\nOI $4.85M · hyperliquid · oi_signal_v1|opennews_oi_source_v1|300000\nSTRK · opennews oi（1 条报道） · 03:53"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|hyperliquid| · 3a7debf4a05ce7450937612979f59368653932a19843320d0538b28725ba2f04"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · STRK"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 7.82% · 03:53\nOI $4.85M · hyperliquid · oi_signal_v1|opennews_oi_source_v1|300000\nSTRK · opennews oi（1 条报道） · 03:53"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|hyperliquid| · 3a7debf4a05ce7450937612979f59368653932a19843320d0538b28725ba2f04"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "6b0cad30eb0d8bc3af31b69a9ce8fd8b",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": true,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|hyperliquid|",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "SPX",
+        "source_venue": "hyperliquid",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "2b15354e020d218aab61e4327b4dddd4af3a23feebcb2ba15b0a8f324c61a635",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788550140000,
+          "received_at_ms": 1788550140000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 476,
+          "oi_value_usd": 8250000
+        }
+      ],
+      "detail_url": null,
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · SPX"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 4.76% · 03:29\nOI $8.25M · hyperliquid · oi_signal_v1|opennews_oi_source_v1|300000\nSPX · opennews oi（1 条报道） · 03:29"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|hyperliquid| · 2b15354e020d218aab61e4327b4dddd4af3a23feebcb2ba15b0a8f324c61a635"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · SPX"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 4.76% · 03:29\nOI $8.25M · hyperliquid · oi_signal_v1|opennews_oi_source_v1|300000\nSPX · opennews oi（1 条报道） · 03:29"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|hyperliquid| · 2b15354e020d218aab61e4327b4dddd4af3a23feebcb2ba15b0a8f324c61a635"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "26f40a0bf365ddeb483e7b5c34dd7aef",
+    "kind": "liquidation",
+    "reason": "first",
+    "reproduces_sent_card": true,
+    "inputs": {
+      "track": {
+        "group_key": "liquidation|opennews|hyp",
+        "market_kind": "liquidation",
+        "family": "liquidation",
+        "provider": "opennews",
+        "symbol": "XYZ",
+        "source_venue": "hyperliquid",
+        "liquidated_position_side": "long"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "7f72933d986963dbd1b539ca962a198fae1be1c05d57fb68183399b8bf85ddef",
+          "market_kind": "liquidation",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788549480000,
+          "received_at_ms": 1788549480000,
+          "provider": "opennews",
+          "notional_usd": "1000000"
+        }
+      ],
+      "detail_url": null,
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "强平 · XYZ"
+        },
+        "template": "red"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "hyperliquid · 多单被强平 1 笔 · 03:18\n最大单笔来源报告金额 $1000000\n各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。\nXYZ · opennews liquidation（1 条报道） · 03:18"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · liquidation|opennews|hyp · 7f72933d986963dbd1b539ca962a198fae1be1c05d57fb68183399b8bf85ddef"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "强平 · XYZ"
+        },
+        "template": "red"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "hyperliquid · 多单被强平 1 笔 · 03:18\n最大单笔来源报告金额 $1000000\n各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。\nXYZ · opennews liquidation（1 条报道） · 03:18"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · liquidation|opennews|hyp · 7f72933d986963dbd1b539ca962a198fae1be1c05d57fb68183399b8bf85ddef"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "52f92727f42e1b4c588fd4cf355ae541",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|FLOC",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "FLOCK",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "49b69e0dea76138dfe02fc55b29422b3552f28c4700621d08d1d399e66c49989",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788547140000,
+          "received_at_ms": 1788547140000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 688,
+          "oi_value_usd": 6560000
+        }
+      ],
+      "detail_url": "/news/market/49b69e0dea76138dfe02fc55b29422b3552f28c4700621d08d1d399e66c49989",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · FLOCK"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 6.88% · 02:39\nOI $6.56M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nFLOCK · opennews oi（1 条报道） · 02:39"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|FLOC · 49b69e0dea76138dfe02fc55b29422b3552f28c4700621d08d1d399e66c49989"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 FLOCK"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 6.88% · 02:39\nOI $6.56M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nFLOCK · opennews oi（1 条报道） · 02:39"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/49b69e0dea76138dfe02fc55b29422b3552f28c4700621d08d1d399e66c49989",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|FLOC"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "44204162374e0aa30aa95fe7087aacf8",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|DOGE",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "DOGE",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "38258d972cbb69fe0b90f51bd336003b056fb2b780b9a0056a04877d7f49c402",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788544560000,
+          "received_at_ms": 1788544560000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 585,
+          "oi_value_usd": 278620000
+        }
+      ],
+      "detail_url": "/news/market/38258d972cbb69fe0b90f51bd336003b056fb2b780b9a0056a04877d7f49c402",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · DOGE"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 5.85% · 01:56\nOI $278.62M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nDOGE · opennews oi（1 条报道） · 01:56"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|DOGE · 38258d972cbb69fe0b90f51bd336003b056fb2b780b9a0056a04877d7f49c402"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 DOGE"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 5.85% · 01:56\nOI $278.62M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nDOGE · opennews oi（1 条报道） · 01:56"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/38258d972cbb69fe0b90f51bd336003b056fb2b780b9a0056a04877d7f49c402",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|DOGE"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "fc6a053fe84d7aba6f0334efef1eb1fa",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|COTI",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "COTI",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "39f2ec991b16bf15c86e86bd97e3c111e42242d83c077d44458b231c4d718abc",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788543360000,
+          "received_at_ms": 1788543360000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 312,
+          "oi_value_usd": 6540000
+        }
+      ],
+      "detail_url": "/news/market/39f2ec991b16bf15c86e86bd97e3c111e42242d83c077d44458b231c4d718abc",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · COTI"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.12% · 01:36\nOI $6.54M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nCOTI · opennews oi（1 条报道） · 01:36"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|COTI · 39f2ec991b16bf15c86e86bd97e3c111e42242d83c077d44458b231c4d718abc"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 COTI"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.12% · 01:36\nOI $6.54M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nCOTI · opennews oi（1 条报道） · 01:36"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/39f2ec991b16bf15c86e86bd97e3c111e42242d83c077d44458b231c4d718abc",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|COTI"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "e283dd8977d05fde8fb59ea8b68d1c5d",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|hyperliquid|",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "DOGE",
+        "source_venue": "hyperliquid",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "bb2cafbae470740b698f9a93629c1218f45657b29563a51ab6df3c98a25e2b3c",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788542220000,
+          "received_at_ms": 1788542220000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 366,
+          "oi_value_usd": 74270000
+        }
+      ],
+      "detail_url": "/news/market/bb2cafbae470740b698f9a93629c1218f45657b29563a51ab6df3c98a25e2b3c",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · DOGE"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.66% · 01:17\nOI $74.27M · hyperliquid · oi_signal_v1|opennews_oi_source_v1|300000\nDOGE · opennews oi（1 条报道） · 01:17"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|hyperliquid| · bb2cafbae470740b698f9a93629c1218f45657b29563a51ab6df3c98a25e2b3c"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 DOGE"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.66% · 01:17\nOI $74.27M · hyperliquid · oi_signal_v1|opennews_oi_source_v1|300000\nDOGE · opennews oi（1 条报道） · 01:17"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/bb2cafbae470740b698f9a93629c1218f45657b29563a51ab6df3c98a25e2b3c",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|hyperliquid|"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "c5ea9ba318504435f5059dd8c184fefd",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|MOOD",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "MOODENG",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "5341790afcc97d0616f9186cf492fbbc4cbcf36aeb71c068170685be73b38354",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788541560000,
+          "received_at_ms": 1788541560000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 603,
+          "oi_value_usd": 3020000
+        }
+      ],
+      "detail_url": "/news/market/5341790afcc97d0616f9186cf492fbbc4cbcf36aeb71c068170685be73b38354",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · MOODENG"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 6.03% · 01:06\nOI $3.02M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nMOODENG · opennews oi（1 条报道） · 01:06"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|MOOD · 5341790afcc97d0616f9186cf492fbbc4cbcf36aeb71c068170685be73b38354"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 MOODENG"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 6.03% · 01:06\nOI $3.02M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nMOODENG · opennews oi（1 条报道） · 01:06"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/5341790afcc97d0616f9186cf492fbbc4cbcf36aeb71c068170685be73b38354",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|MOOD"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "21ba1086b3635b00637114f76d8d79ce",
+    "kind": "liquidation",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "liquidation|opennews|bin",
+        "market_kind": "liquidation",
+        "family": "liquidation",
+        "provider": "opennews",
+        "symbol": "ETH",
+        "source_venue": "binance",
+        "liquidated_position_side": "short"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "8b834d8aa825b8b125126f22f16d4a64c6daf4c57e20b9ecc0d26be1c6201d54",
+          "market_kind": "liquidation",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788541200000,
+          "received_at_ms": 1788541200000,
+          "provider": "opennews",
+          "notional_usd": "743120"
+        }
+      ],
+      "detail_url": "/news/market/8b834d8aa825b8b125126f22f16d4a64c6daf4c57e20b9ecc0d26be1c6201d54",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "强平 · ETH"
+        },
+        "template": "red"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "binance · 空单被强平 1 笔 · 01:00\n最大单笔来源报告金额 $743120\n各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。\nETH · opennews liquidation（1 条报道） · 01:00"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · liquidation|opennews|bin · 8b834d8aa825b8b125126f22f16d4a64c6daf4c57e20b9ecc0d26be1c6201d54"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "强平 ETH"
+        },
+        "template": "red"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "binance · 空单被强平 1 笔 · 01:00\n最大单笔来源报告金额 $743120\n各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。\nETH · opennews liquidation（1 条报道） · 01:00"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/8b834d8aa825b8b125126f22f16d4a64c6daf4c57e20b9ecc0d26be1c6201d54",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · liquidation|opennews|bin"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "e250d1ac029b0f7aae1d8420626fc16c",
+    "kind": "smart_money",
+    "reason": "raw",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "raw|smart_money|4ba544a9",
+        "market_kind": "smart_money",
+        "family": "raw",
+        "provider": null,
+        "symbol": null,
+        "source_venue": null
+      },
+      "reason": "raw",
+      "observations": [
+        {
+          "item_id": "4ba544a927f2118c38c19339c2a4b59f581bc6f93cce91fe0592d7e2844ffe27",
+          "market_kind": "smart_money",
+          "parse_status": "ok",
+          "title": "js-2 Open Long BTC $160.18K , Price $80,089",
+          "event_at_ms": 1788541020000,
+          "received_at_ms": 1788541020000,
+          "provider": null
+        }
+      ],
+      "detail_url": "/news/market/4ba544a927f2118c38c19339c2a4b59f581bc6f93cce91fe0592d7e2844ffe27",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "市场原文 · 原文"
+        },
+        "template": "grey"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "js-2 Open Long BTC $160.18K , Price $80,089\n场所未知 · smart_money · 未结构化，保留供应商原文\nsmart_money（1 条报道） · 00:57"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · raw|smart_money|4ba544a9 · 4ba544a927f2118c38c19339c2a4b59f581bc6f93cce91fe0592d7e2844ffe27"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "市场原文· 原文 —"
+        },
+        "template": "grey"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "js-2 Open Long BTC $160.18K , Price $80,089\n场所未知 · smart_money · 未结构化，保留供应商原文\nsmart_money（1 条报道） · 00:57"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/4ba544a927f2118c38c19339c2a4b59f581bc6f93cce91fe0592d7e2844ffe27",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · raw|smart_money|4ba544a9"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "bed7d4d0816e7cfb09286da1526464bd",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|SUSH",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "SUSHI",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "13cd7ca33eb55e027ec89886a76af436481bf4b28ba7db1db0737d316205ac93",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788540480000,
+          "received_at_ms": 1788540480000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 577,
+          "oi_value_usd": 3750000
+        }
+      ],
+      "detail_url": "/news/market/13cd7ca33eb55e027ec89886a76af436481bf4b28ba7db1db0737d316205ac93",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · SUSHI"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 5.77% · 00:48\nOI $3.75M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nSUSHI · opennews oi（1 条报道） · 00:48"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|SUSH · 13cd7ca33eb55e027ec89886a76af436481bf4b28ba7db1db0737d316205ac93"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 SUSHI"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 5.77% · 00:48\nOI $3.75M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nSUSHI · opennews oi（1 条报道） · 00:48"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/13cd7ca33eb55e027ec89886a76af436481bf4b28ba7db1db0737d316205ac93",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|SUSH"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "753082cb521a531af9fee757a86c998b",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|牛来|o",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "牛来",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "c02cea79d8b6bc47142cedcc18d8121c8d48f3f36d60e631a8dd3388d7cd49fc",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788540240000,
+          "received_at_ms": 1788540240000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 360,
+          "oi_value_usd": 30200000
+        }
+      ],
+      "detail_url": "/news/market/c02cea79d8b6bc47142cedcc18d8121c8d48f3f36d60e631a8dd3388d7cd49fc",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · 牛来"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.6% · 00:44\nOI $30.20M · binance · oi_signal_v1|opennews_oi_source_v1|300000\n牛来 · opennews oi（1 条报道） · 00:44"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|牛来|o · c02cea79d8b6bc47142cedcc18d8121c8d48f3f36d60e631a8dd3388d7cd49fc"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 牛来"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.6% · 00:44\nOI $30.20M · binance · oi_signal_v1|opennews_oi_source_v1|300000\n牛来 · opennews oi（1 条报道） · 00:44"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/c02cea79d8b6bc47142cedcc18d8121c8d48f3f36d60e631a8dd3388d7cd49fc",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|牛来|o"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "d0b19f7275975675993f930cb582cd15",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|hyperliquid|",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "ARB",
+        "source_venue": "hyperliquid",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "30d58db477f2f0dfb7ddaeaf3afc2ae8add15fa6372914ab6c14e9a0f7093611",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788539580000,
+          "received_at_ms": 1788539580000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 422,
+          "oi_value_usd": 20530000
+        }
+      ],
+      "detail_url": "/news/market/30d58db477f2f0dfb7ddaeaf3afc2ae8add15fa6372914ab6c14e9a0f7093611",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · ARB"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 4.22% · 00:33\nOI $20.53M · hyperliquid · oi_signal_v1|opennews_oi_source_v1|300000\nARB · opennews oi（1 条报道） · 00:33"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|hyperliquid| · 30d58db477f2f0dfb7ddaeaf3afc2ae8add15fa6372914ab6c14e9a0f7093611"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 ARB"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 4.22% · 00:33\nOI $20.53M · hyperliquid · oi_signal_v1|opennews_oi_source_v1|300000\nARB · opennews oi（1 条报道） · 00:33"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/30d58db477f2f0dfb7ddaeaf3afc2ae8add15fa6372914ab6c14e9a0f7093611",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|hyperliquid|"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "d566233fdb75b15f85a1001072bfead7",
+    "kind": "smart_money",
+    "reason": "raw",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "raw|smart_money|af34e097",
+        "market_kind": "smart_money",
+        "family": "raw",
+        "provider": null,
+        "symbol": null,
+        "source_venue": null
+      },
+      "reason": "raw",
+      "observations": [
+        {
+          "item_id": "af34e09713264779e315b9b343a10b09bcd60660dd9feb2702753ffe6d6db354",
+          "market_kind": "smart_money",
+          "parse_status": "ok",
+          "title": "js-2 Open Long BTC $798.18K , Price $79,817.87",
+          "event_at_ms": 1788539220000,
+          "received_at_ms": 1788539220000,
+          "provider": null
+        }
+      ],
+      "detail_url": "/news/market/af34e09713264779e315b9b343a10b09bcd60660dd9feb2702753ffe6d6db354",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "市场原文 · 原文"
+        },
+        "template": "grey"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "js-2 Open Long BTC $798.18K , Price $79,817.87\n场所未知 · smart_money · 未结构化，保留供应商原文\nsmart_money（1 条报道） · 00:27"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · raw|smart_money|af34e097 · af34e09713264779e315b9b343a10b09bcd60660dd9feb2702753ffe6d6db354"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "市场原文· 原文 —"
+        },
+        "template": "grey"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "js-2 Open Long BTC $798.18K , Price $79,817.87\n场所未知 · smart_money · 未结构化，保留供应商原文\nsmart_money（1 条报道） · 00:27"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/af34e09713264779e315b9b343a10b09bcd60660dd9feb2702753ffe6d6db354",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · raw|smart_money|af34e097"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "494b99dbde54c6238cc85f103f024d28",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|hyperliquid|",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "UNI",
+        "source_venue": "hyperliquid",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "b42606cf77bd4256001d77c8406af4c3de50048fcf5789071a08df99a7fe0218",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788539100000,
+          "received_at_ms": 1788539100000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 321,
+          "oi_value_usd": 47080000
+        }
+      ],
+      "detail_url": "/news/market/b42606cf77bd4256001d77c8406af4c3de50048fcf5789071a08df99a7fe0218",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · UNI"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.21% · 00:25\nOI $47.08M · hyperliquid · oi_signal_v1|opennews_oi_source_v1|300000\nUNI · opennews oi（1 条报道） · 00:25"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|hyperliquid| · b42606cf77bd4256001d77c8406af4c3de50048fcf5789071a08df99a7fe0218"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 UNI"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.21% · 00:25\nOI $47.08M · hyperliquid · oi_signal_v1|opennews_oi_source_v1|300000\nUNI · opennews oi（1 条报道） · 00:25"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/b42606cf77bd4256001d77c8406af4c3de50048fcf5789071a08df99a7fe0218",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|hyperliquid|"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "bf2326655e58ca247f7a94341948a830",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|MARS",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "MARSCOIN",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "1fbb26b63d5ec039ea540a82c29b73f63ecc8cdf32ad298ded4c07480afd2e19",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788538380000,
+          "received_at_ms": 1788538380000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 311,
+          "oi_value_usd": 45500000
+        }
+      ],
+      "detail_url": "/news/market/1fbb26b63d5ec039ea540a82c29b73f63ecc8cdf32ad298ded4c07480afd2e19",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · MARSCOIN"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.11% · 00:13\nOI $45.50M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nMARSCOIN · opennews oi（1 条报道） · 00:13"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|MARS · 1fbb26b63d5ec039ea540a82c29b73f63ecc8cdf32ad298ded4c07480afd2e19"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 MARSCOIN"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.11% · 00:13\nOI $45.50M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nMARSCOIN · opennews oi（1 条报道） · 00:13"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/1fbb26b63d5ec039ea540a82c29b73f63ecc8cdf32ad298ded4c07480afd2e19",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|MARS"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "c38859c37297351b312173c8d817933e",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|MUBA",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "MUBARAK",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "df48957f093a233faf0f5e9550199159bbba3d7060b8ebb29a2d501cfb7756db",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788538260000,
+          "received_at_ms": 1788538260000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 483,
+          "oi_value_usd": 12480000
+        }
+      ],
+      "detail_url": "/news/market/df48957f093a233faf0f5e9550199159bbba3d7060b8ebb29a2d501cfb7756db",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · MUBARAK"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 4.83% · 00:11\nOI $12.48M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nMUBARAK · opennews oi（1 条报道） · 00:11"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|MUBA · df48957f093a233faf0f5e9550199159bbba3d7060b8ebb29a2d501cfb7756db"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 MUBARAK"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 4.83% · 00:11\nOI $12.48M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nMUBARAK · opennews oi（1 条报道） · 00:11"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/df48957f093a233faf0f5e9550199159bbba3d7060b8ebb29a2d501cfb7756db",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|MUBA"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "ce744c9ea11628161ba546efe2e138de",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|USEL",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "USELESS",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "8aaa6dee1b1d49d5b42278c7c73e3349ec0815166b2e1ea605f1283659f661e7",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788537840000,
+          "received_at_ms": 1788537840000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 350,
+          "oi_value_usd": 34770000
+        }
+      ],
+      "detail_url": "/news/market/8aaa6dee1b1d49d5b42278c7c73e3349ec0815166b2e1ea605f1283659f661e7",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · USELESS"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.5% · 00:04\nOI $34.77M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nUSELESS · opennews oi（1 条报道） · 00:04"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|USEL · 8aaa6dee1b1d49d5b42278c7c73e3349ec0815166b2e1ea605f1283659f661e7"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 USELESS"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.5% · 00:04\nOI $34.77M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nUSELESS · opennews oi（1 条报道） · 00:04"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/8aaa6dee1b1d49d5b42278c7c73e3349ec0815166b2e1ea605f1283659f661e7",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|USEL"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "b84f216e3de013714bf956a5f62376b0",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|TRAD",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "TRADOOR",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "5025a8ca6430a68bc4b4db118bcdb954508618bf00db6f67063a40cf04a39700",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788621720000,
+          "received_at_ms": 1788621720000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 347,
+          "oi_value_usd": 5180000
+        }
+      ],
+      "detail_url": "/news/market/5025a8ca6430a68bc4b4db118bcdb954508618bf00db6f67063a40cf04a39700",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · TRADOOR"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.47% · 23:22\nOI $5.18M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nTRADOOR · opennews oi（1 条报道） · 23:22"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|TRAD · 5025a8ca6430a68bc4b4db118bcdb954508618bf00db6f67063a40cf04a39700"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 TRADOOR"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.47% · 23:22\nOI $5.18M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nTRADOOR · opennews oi（1 条报道） · 23:22"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/5025a8ca6430a68bc4b4db118bcdb954508618bf00db6f67063a40cf04a39700",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|TRAD"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "d6ad497c2eadfedb9ea754bf006b6cc6",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|hyperliquid|",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "DASH",
+        "source_venue": "hyperliquid",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "449b1baf3f8cfb658b8991ce7fe26bccf7e5b35ea0d4a4829ad012d82fed1309",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788620940000,
+          "received_at_ms": 1788620940000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 328,
+          "oi_value_usd": 4060000
+        }
+      ],
+      "detail_url": "/news/market/449b1baf3f8cfb658b8991ce7fe26bccf7e5b35ea0d4a4829ad012d82fed1309",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · DASH"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.28% · 23:09\nOI $4.06M · hyperliquid · oi_signal_v1|opennews_oi_source_v1|300000\nDASH · opennews oi（1 条报道） · 23:09"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|hyperliquid| · 449b1baf3f8cfb658b8991ce7fe26bccf7e5b35ea0d4a4829ad012d82fed1309"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 DASH"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.28% · 23:09\nOI $4.06M · hyperliquid · oi_signal_v1|opennews_oi_source_v1|300000\nDASH · opennews oi（1 条报道） · 23:09"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/449b1baf3f8cfb658b8991ce7fe26bccf7e5b35ea0d4a4829ad012d82fed1309",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|hyperliquid|"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "8128560e7c1bd5ee20cb0b98eea8b02e",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|龙虾|o",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "龙虾",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "956d8939a38b90307c42f971b7bb977f5db1ebef9730f2cf1552a0704641e7aa",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788619500000,
+          "received_at_ms": 1788619500000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 325,
+          "oi_value_usd": 44660000
+        }
+      ],
+      "detail_url": "/news/market/956d8939a38b90307c42f971b7bb977f5db1ebef9730f2cf1552a0704641e7aa",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · 龙虾"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.25% · 22:45\nOI $44.66M · binance · oi_signal_v1|opennews_oi_source_v1|300000\n龙虾 · opennews oi（1 条报道） · 22:45"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|龙虾|o · 956d8939a38b90307c42f971b7bb977f5db1ebef9730f2cf1552a0704641e7aa"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 龙虾"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.25% · 22:45\nOI $44.66M · binance · oi_signal_v1|opennews_oi_source_v1|300000\n龙虾 · opennews oi（1 条报道） · 22:45"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/956d8939a38b90307c42f971b7bb977f5db1ebef9730f2cf1552a0704641e7aa",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|龙虾|o"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "c83fd4026854a3227708868758593396",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|BULL",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "BULLA",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "88fe556b0ea108022094d2173a81416c2279a5e6f9e25c51abf7e1350bbc0631",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788618780000,
+          "received_at_ms": 1788618780000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 467,
+          "oi_value_usd": 17080000
+        }
+      ],
+      "detail_url": "/news/market/88fe556b0ea108022094d2173a81416c2279a5e6f9e25c51abf7e1350bbc0631",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · BULLA"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 4.67% · 22:33\nOI $17.08M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nBULLA · opennews oi（1 条报道） · 22:33"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|BULL · 88fe556b0ea108022094d2173a81416c2279a5e6f9e25c51abf7e1350bbc0631"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 BULLA"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 4.67% · 22:33\nOI $17.08M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nBULLA · opennews oi（1 条报道） · 22:33"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/88fe556b0ea108022094d2173a81416c2279a5e6f9e25c51abf7e1350bbc0631",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|BULL"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "d49014c383c86aed905f856c60ac7968",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|hyperliquid|",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "SUI",
+        "source_venue": "hyperliquid",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "2df90aaa085baa4e51fe25c256c375d641f36c0448c51548f70ecdf58c636326",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788618180000,
+          "received_at_ms": 1788618180000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 325,
+          "oi_value_usd": 35260000
+        }
+      ],
+      "detail_url": "/news/market/2df90aaa085baa4e51fe25c256c375d641f36c0448c51548f70ecdf58c636326",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · SUI"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.25% · 22:23\nOI $35.26M · hyperliquid · oi_signal_v1|opennews_oi_source_v1|300000\nSUI · opennews oi（1 条报道） · 22:23"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|hyperliquid| · 2df90aaa085baa4e51fe25c256c375d641f36c0448c51548f70ecdf58c636326"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 SUI"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.25% · 22:23\nOI $35.26M · hyperliquid · oi_signal_v1|opennews_oi_source_v1|300000\nSUI · opennews oi（1 条报道） · 22:23"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/2df90aaa085baa4e51fe25c256c375d641f36c0448c51548f70ecdf58c636326",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|hyperliquid|"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "c972afa4615e7859189e69ce556b9c67",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|ASTE",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "ASTER",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "6902f27032b2c83911642ba324a3b86a45c6fc088c07ddf6c81b6ac42b45ee6d",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788613800000,
+          "received_at_ms": 1788613800000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 341,
+          "oi_value_usd": 113910000
+        }
+      ],
+      "detail_url": "/news/market/6902f27032b2c83911642ba324a3b86a45c6fc088c07ddf6c81b6ac42b45ee6d",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · ASTER"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.41% · 21:10\nOI $113.91M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nASTER · opennews oi（1 条报道） · 21:10"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|ASTE · 6902f27032b2c83911642ba324a3b86a45c6fc088c07ddf6c81b6ac42b45ee6d"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 ASTER"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.41% · 21:10\nOI $113.91M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nASTER · opennews oi（1 条报道） · 21:10"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/6902f27032b2c83911642ba324a3b86a45c6fc088c07ddf6c81b6ac42b45ee6d",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|ASTE"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "2027f9604c6b911f166c9a75c10006b1",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|FF|o",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "FF",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "66fb02cb171165bc56bbcec75dfbfc6fe79c41222b6de158dae26cbc0835a3fa",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788613560000,
+          "received_at_ms": 1788613560000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 515,
+          "oi_value_usd": 49280000
+        }
+      ],
+      "detail_url": "/news/market/66fb02cb171165bc56bbcec75dfbfc6fe79c41222b6de158dae26cbc0835a3fa",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · FF"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 5.15% · 21:06\nOI $49.28M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nFF · opennews oi（1 条报道） · 21:06"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|FF|o · 66fb02cb171165bc56bbcec75dfbfc6fe79c41222b6de158dae26cbc0835a3fa"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 FF"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 5.15% · 21:06\nOI $49.28M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nFF · opennews oi（1 条报道） · 21:06"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/66fb02cb171165bc56bbcec75dfbfc6fe79c41222b6de158dae26cbc0835a3fa",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|FF|o"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "a2c30d20a92d0f6c21b833d9797cc3e9",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|SOPH",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "SOPH",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "ed59cdaacdbac5cb63d8a9f328dcba94298eb1bc63243a2e999db70a4a28ed4f",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788613080000,
+          "received_at_ms": 1788613080000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 303,
+          "oi_value_usd": 4510000
+        }
+      ],
+      "detail_url": "/news/market/ed59cdaacdbac5cb63d8a9f328dcba94298eb1bc63243a2e999db70a4a28ed4f",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · SOPH"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.03% · 20:58\nOI $4.51M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nSOPH · opennews oi（1 条报道） · 20:58"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|SOPH · ed59cdaacdbac5cb63d8a9f328dcba94298eb1bc63243a2e999db70a4a28ed4f"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 SOPH"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.03% · 20:58\nOI $4.51M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nSOPH · opennews oi（1 条报道） · 20:58"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/ed59cdaacdbac5cb63d8a9f328dcba94298eb1bc63243a2e999db70a4a28ed4f",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|SOPH"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "670bc537252c80d1b0603c7bb808600a",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|FORM",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "FORM",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "fcec11986a02ca40751b344e91f1d6629503760e33709b503025db1fbb8be7b4",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788612840000,
+          "received_at_ms": 1788612840000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 303,
+          "oi_value_usd": 12440000
+        }
+      ],
+      "detail_url": "/news/market/fcec11986a02ca40751b344e91f1d6629503760e33709b503025db1fbb8be7b4",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · FORM"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.03% · 20:54\nOI $12.44M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nFORM · opennews oi（1 条报道） · 20:54"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|FORM · fcec11986a02ca40751b344e91f1d6629503760e33709b503025db1fbb8be7b4"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 FORM"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.03% · 20:54\nOI $12.44M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nFORM · opennews oi（1 条报道） · 20:54"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/fcec11986a02ca40751b344e91f1d6629503760e33709b503025db1fbb8be7b4",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|FORM"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "e2e0183cf357b2e1c6fcab3fa4da9e84",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|SFP|",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "SFP",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "25415fe3644484833c2059f9b100250fb5ec5da62125ac1f4a82b72085f6be56",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788612600000,
+          "received_at_ms": 1788612600000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 578,
+          "oi_value_usd": 3560000
+        }
+      ],
+      "detail_url": "/news/market/25415fe3644484833c2059f9b100250fb5ec5da62125ac1f4a82b72085f6be56",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · SFP"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 5.78% · 20:50\nOI $3.56M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nSFP · opennews oi（1 条报道） · 20:50"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|SFP| · 25415fe3644484833c2059f9b100250fb5ec5da62125ac1f4a82b72085f6be56"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 SFP"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 5.78% · 20:50\nOI $3.56M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nSFP · opennews oi（1 条报道） · 20:50"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/25415fe3644484833c2059f9b100250fb5ec5da62125ac1f4a82b72085f6be56",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|SFP|"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "0ed735c08a26a88717c1a0f89fe1b780",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|AKE|",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "AKE",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "4190604a36c4f8562669952d421f71a33579d52247f6cc9f897b35e679e70485",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788611100000,
+          "received_at_ms": 1788611100000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 324,
+          "oi_value_usd": 35920000
+        }
+      ],
+      "detail_url": "/news/market/4190604a36c4f8562669952d421f71a33579d52247f6cc9f897b35e679e70485",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · AKE"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.24% · 20:25\nOI $35.92M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nAKE · opennews oi（1 条报道） · 20:25"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|AKE| · 4190604a36c4f8562669952d421f71a33579d52247f6cc9f897b35e679e70485"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 AKE"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.24% · 20:25\nOI $35.92M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nAKE · opennews oi（1 条报道） · 20:25"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/4190604a36c4f8562669952d421f71a33579d52247f6cc9f897b35e679e70485",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|AKE|"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "b42fe26b728215007f8776c806f6a84f",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|牛来|o",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "牛来",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "2585503e9890c1dece8bc100b7f7b73d05da6417d82791c1041b5ba5f1137118",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788609960000,
+          "received_at_ms": 1788609960000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 426,
+          "oi_value_usd": 30500000
+        }
+      ],
+      "detail_url": "/news/market/2585503e9890c1dece8bc100b7f7b73d05da6417d82791c1041b5ba5f1137118",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · 牛来"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 4.26% · 20:06\nOI $30.50M · binance · oi_signal_v1|opennews_oi_source_v1|300000\n牛来 · opennews oi（1 条报道） · 20:06"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|牛来|o · 2585503e9890c1dece8bc100b7f7b73d05da6417d82791c1041b5ba5f1137118"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 牛来"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 4.26% · 20:06\nOI $30.50M · binance · oi_signal_v1|opennews_oi_source_v1|300000\n牛来 · opennews oi（1 条报道） · 20:06"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/2585503e9890c1dece8bc100b7f7b73d05da6417d82791c1041b5ba5f1137118",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|牛来|o"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "3038c171f8add9e287043a2076d0ed0b",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|hyperliquid|",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "JUP",
+        "source_venue": "hyperliquid",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "e59491441140d48c74df719136dfb27a097b7955eee646e38a227bb6927e6bcf",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788608760000,
+          "received_at_ms": 1788608760000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 376,
+          "oi_value_usd": 10700000
+        }
+      ],
+      "detail_url": "/news/market/e59491441140d48c74df719136dfb27a097b7955eee646e38a227bb6927e6bcf",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · JUP"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.76% · 19:46\nOI $10.70M · hyperliquid · oi_signal_v1|opennews_oi_source_v1|300000\nJUP · opennews oi（1 条报道） · 19:46"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|hyperliquid| · e59491441140d48c74df719136dfb27a097b7955eee646e38a227bb6927e6bcf"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 JUP"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.76% · 19:46\nOI $10.70M · hyperliquid · oi_signal_v1|opennews_oi_source_v1|300000\nJUP · opennews oi（1 条报道） · 19:46"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/e59491441140d48c74df719136dfb27a097b7955eee646e38a227bb6927e6bcf",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|hyperliquid|"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "2a1b9f424ab8fc078f27c726e18581f3",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|JUP|",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "JUP",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "811b0696b6ef924e77adf6dc83923c44d65d16130695c3848cac29e25a95128e",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788608700000,
+          "received_at_ms": 1788608700000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 410,
+          "oi_value_usd": 12840000
+        }
+      ],
+      "detail_url": "/news/market/811b0696b6ef924e77adf6dc83923c44d65d16130695c3848cac29e25a95128e",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · JUP"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 4.1% · 19:45\nOI $12.84M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nJUP · opennews oi（1 条报道） · 19:45"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|JUP| · 811b0696b6ef924e77adf6dc83923c44d65d16130695c3848cac29e25a95128e"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 JUP"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 4.1% · 19:45\nOI $12.84M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nJUP · opennews oi（1 条报道） · 19:45"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/811b0696b6ef924e77adf6dc83923c44d65d16130695c3848cac29e25a95128e",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|JUP|"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "870d2ce8367bc2fa7008596d6dc830d1",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|hyperliquid|",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "ASTER",
+        "source_venue": "hyperliquid",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "61561a2ed056a73df76b68438614ecf3574e9fde39e1c39e4883ced78b15b769",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788606660000,
+          "received_at_ms": 1788606660000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 355,
+          "oi_value_usd": 30700000
+        }
+      ],
+      "detail_url": "/news/market/61561a2ed056a73df76b68438614ecf3574e9fde39e1c39e4883ced78b15b769",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · ASTER"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.55% · 19:11\nOI $30.70M · hyperliquid · oi_signal_v1|opennews_oi_source_v1|300000\nASTER · opennews oi（1 条报道） · 19:11"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|hyperliquid| · 61561a2ed056a73df76b68438614ecf3574e9fde39e1c39e4883ced78b15b769"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 ASTER"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.55% · 19:11\nOI $30.70M · hyperliquid · oi_signal_v1|opennews_oi_source_v1|300000\nASTER · opennews oi（1 条报道） · 19:11"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/61561a2ed056a73df76b68438614ecf3574e9fde39e1c39e4883ced78b15b769",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|hyperliquid|"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "2f78a2397d34bffe15638e3c134209fb",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|COLL",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "COLLECT",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "a18d04d28d19c09f8fe5c25cb062d33fff0f27b8a5c1f0331a8cfe6c9c29ea10",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788605520000,
+          "received_at_ms": 1788605520000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 410,
+          "oi_value_usd": 12720000
+        }
+      ],
+      "detail_url": "/news/market/a18d04d28d19c09f8fe5c25cb062d33fff0f27b8a5c1f0331a8cfe6c9c29ea10",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · COLLECT"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 4.1% · 18:52\nOI $12.72M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nCOLLECT · opennews oi（1 条报道） · 18:52"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|COLL · a18d04d28d19c09f8fe5c25cb062d33fff0f27b8a5c1f0331a8cfe6c9c29ea10"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 COLLECT"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 4.1% · 18:52\nOI $12.72M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nCOLLECT · opennews oi（1 条报道） · 18:52"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/a18d04d28d19c09f8fe5c25cb062d33fff0f27b8a5c1f0331a8cfe6c9c29ea10",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|COLL"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "source": "market",
+    "id": "40f52b3d586f72578c386985267ef7e0",
+    "kind": "oi",
+    "reason": "first",
+    "reproduces_sent_card": false,
+    "inputs": {
+      "track": {
+        "group_key": "oi|opennews|binance|EDGE",
+        "market_kind": "oi",
+        "family": "oi",
+        "provider": "opennews",
+        "symbol": "EDGE",
+        "source_venue": "binance",
+        "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
+      },
+      "reason": "first",
+      "observations": [
+        {
+          "item_id": "eca7653f17bac0d516d60ea10f0c01ad4a681ab8d49df54c72b64de275a85125",
+          "market_kind": "oi",
+          "parse_status": "ok",
+          "title": "",
+          "event_at_ms": 1788604800000,
+          "received_at_ms": 1788604800000,
+          "provider": "opennews",
+          "direction": "rise",
+          "oi_change_bps": 389,
+          "oi_value_usd": 13120000
+        }
+      ],
+      "detail_url": "/news/market/eca7653f17bac0d516d60ea10f0c01ad4a681ab8d49df54c72b64de275a85125",
+      "action_changes": 0
+    },
+    "card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 · EDGE"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.89% · 18:40\nOI $13.12M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nEDGE · opennews oi（1 条报道） · 18:40"
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|EDGE · eca7653f17bac0d516d60ea10f0c01ad4a681ab8d49df54c72b64de275a85125"
+            }
+          ]
+        }
+      ]
+    },
+    "sent_card": {
+      "config": {
+        "wide_screen_mode": true
+      },
+      "header": {
+        "title": {
+          "tag": "plain_text",
+          "content": "持仓异动 EDGE"
+        },
+        "template": "blue"
+      },
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "上升 3.89% · 18:40\nOI $13.12M · binance · oi_signal_v1|opennews_oi_source_v1|300000\nEDGE · opennews oi（1 条报道） · 18:40"
+        },
+        {
+          "tag": "action",
+          "actions": [
+            {
+              "tag": "button",
+              "url": "/news/market/eca7653f17bac0d516d60ea10f0c01ad4a681ab8d49df54c72b64de275a85125",
+              "text": {
+                "tag": "plain_text",
+                "content": "打开明细"
+              },
+              "type": "default"
+            }
+          ]
+        },
+        {
+          "tag": "note",
+          "elements": [
+            {
+              "tag": "plain_text",
+              "content": "Tracefold 市场 · oi|opennews|binance|EDGE"
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

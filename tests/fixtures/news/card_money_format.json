@@ -1,0 +1,106 @@
+{
+  "issue": "#562 PR-A",
+  "note": "One table, two suites. `tracefold/news/card_format.py` and `web/src/features/news/model/newsPrice.ts` write the same number the same way, and this file is the shared statement of what that means. `price` is `formatPrice` / `card_format.price`; `change` is `formatChangePct` / `card_format.change(value, 'rolling_24h')` without the window label the card prefixes. Values are chosen away from a rounding tie on purpose: the console rounds an IEEE double and the card rounds an exact Decimal, so a half-way value is a genuine difference between the two surfaces and not a rule either of them can state.",
+  "change_basis": "rolling_24h",
+  "change_label": "24h",
+  "prices": [
+    {
+      "value": "74757.60",
+      "price": "74,757.60"
+    },
+    {
+      "value": "231.03",
+      "price": "231.03"
+    },
+    {
+      "value": "201.70000",
+      "price": "201.7"
+    },
+    {
+      "value": "0.0043290",
+      "price": "0.004329"
+    },
+    {
+      "value": "85.353",
+      "price": "85.353"
+    },
+    {
+      "value": "1000",
+      "price": "1,000.00"
+    },
+    {
+      "value": "999.9999",
+      "price": "999.9999"
+    },
+    {
+      "value": "1234567.891",
+      "price": "1,234,567.89"
+    },
+    {
+      "value": "0.000001234",
+      "price": "0.000001"
+    },
+    {
+      "value": "12.5",
+      "price": "12.5"
+    },
+    {
+      "value": "0.1",
+      "price": "0.1"
+    },
+    {
+      "value": "3.14159265",
+      "price": "3.1416"
+    },
+    {
+      "value": "0.8652",
+      "price": "0.8652"
+    },
+    {
+      "value": "68000",
+      "price": "68,000.00"
+    }
+  ],
+  "changes": [
+    {
+      "value": 7.914,
+      "change": "+7.91%"
+    },
+    {
+      "value": -10.516,
+      "change": "-10.52%"
+    },
+    {
+      "value": 3.916,
+      "change": "+3.92%"
+    },
+    {
+      "value": -0.8,
+      "change": "-0.80%"
+    },
+    {
+      "value": 0.39,
+      "change": "+0.39%"
+    },
+    {
+      "value": 2.296,
+      "change": "+2.30%"
+    },
+    {
+      "value": 0,
+      "change": "0.00%"
+    },
+    {
+      "value": 12.5,
+      "change": "+12.50%"
+    },
+    {
+      "value": 0.6,
+      "change": "+0.60%"
+    },
+    {
+      "value": -1.25,
+      "change": "-1.25%"
+    }
+  ]
+}

@@ -35,7 +35,19 @@ from dataclasses import dataclass, replace
 from typing import Any, Final, Literal, Protocol
 from urllib.parse import urlsplit
 
+from . import card_format as fmt
 from .delivery_contracts import COMMIT_PHASE_NOT_SENT
+from .feishu_card import feishu_card
+from .reader_card import (
+    ReaderCard,
+    ReaderCardAction,
+    ReaderCardFacts,
+    ReaderCardHeader,
+    ReaderCardLink,
+    ReaderCardMarket,
+    ReaderCardNote,
+    ReaderCardTimes,
+)
 
 # --- v1 engineering defaults (#553 §4). Not tuned parameters, and not claimed to be optimal. ---
 
@@ -65,7 +77,6 @@ SEND_ATTEMPTS_MAX: Final = 3
 
 # How much of one card stays bounded. The full timeline is always on the detail page.
 CARD_METRIC_LINES_MAX: Final = 4
-CARD_TITLE_MAX: Final = 100
 
 MarketFamily = Literal["oi", "liquidation", "smart_money", "raw"]
 TriggerReason = Literal["first", "followup", "action_change", "raw"]
@@ -108,6 +119,7 @@ __all__ = [
     "BACKLOG_BATCH_MAX",
     "CARD_METRIC_LINES_MAX",
     "DELIVERY_STATES",
+    "DETAIL_BUTTON_LABEL",
     "LIQUIDATION_WINDOW_MS",
     "MARKET_TRACK_FIELDS",
     "NOTIFY_STATES",
@@ -148,6 +160,7 @@ __all__ = [
     "group_family",
     "group_identity",
     "market_detail_url",
+    "market_reader_card",
     "notification_status",
     "render_market_card",
     "retry_delay_ms",
@@ -721,27 +734,17 @@ def notification_status(
 
 
 # --- the card (§5.2): one bounded summary, and a link to everything it summarises ---
+#
+# Facts only. The words a family is written in, the order of its lines and the characters a figure
+# takes live in `reader_card` / `card_format`, which the News first card fills the same way (#562
+# PR-A), so a reader cannot be shown the same number two ways on two cards.
 
-_FAMILY_TITLE: Final[dict[str, str]] = {
-    "oi": "持仓异动",
-    "liquidation": "强平",
-    "smart_money": "聪明钱",
-    "raw": "市场原文",
-}
+DETAIL_BUTTON_LABEL: Final = "打开明细"
 _REASON_TITLE: Final[dict[str, str]] = {
     "first": "",
     "followup": "跟进",
     "action_change": "动作变化",
     "raw": "原文",
-}
-_DIRECTION_ZH: Final[dict[str, str]] = {"rise": "上升", "fall": "下降"}
-_ACTION_ZH: Final[dict[str, str]] = {"open": "开", "close": "平"}
-_SIDE_ZH: Final[dict[str, str]] = {"long": "多", "short": "空"}
-_CARD_COLOR: Final[dict[str, str]] = {
-    "oi": "blue",
-    "liquidation": "red",
-    "smart_money": "turquoise",
-    "raw": "grey",
 }
 
 
@@ -769,6 +772,79 @@ def _absolute_http_url(value: str | None) -> str | None:
     return candidate
 
 
+def market_reader_card(
+    *,
+    track: MarketTrack,
+    reason: str,
+    observations: Sequence[MarketObservation],
+    detail_url: str | None = None,
+    action_changes: int = 0,
+) -> ReaderCard:
+    """One intent's bounded summary, in facts.
+
+    v1 sends exactly one card per intent -- no page cursor, no per-page receipt, no paging retry --
+    and the observations it could not fit are on the page it links to, not deleted. Without an
+    absolute console URL there is no button: the note line prints the item id instead, which is what
+    an operator needs to reach the same page, and Telegram's own adapter already refuses a link it
+    cannot open.
+    """
+
+    first, latest = observations[0], observations[-1]
+    subject = track.symbol or track.raw_instrument or latest.symbol or latest.raw_instrument or ""
+    link = _absolute_http_url(detail_url)
+    return ReaderCard(
+        header=ReaderCardHeader(
+            family=track.family,  # type: ignore[arg-type]
+            subject=subject,
+            qualifier=_REASON_TITLE.get(reason, ""),
+        ),
+        lead=latest.title,
+        facts=ReaderCardFacts(
+            tickers=(subject,) if subject else (),
+            source=(latest.provider or "", track.market_kind),
+            report_count=len(observations),
+        ),
+        market=_reader_market(track=track, observations=observations, action_changes=action_changes),
+        link=ReaderCardLink(url=link, label=DETAIL_BUTTON_LABEL) if link is not None else None,
+        note=ReaderCardNote(id=track.group_key, detail_id=latest.item_id),
+        times=ReaderCardTimes(event_at_ms=latest.event_at_ms, span_from_ms=first.event_at_ms),
+    )
+
+
+def _reader_market(
+    *,
+    track: MarketTrack,
+    observations: Sequence[MarketObservation],
+    action_changes: int,
+) -> ReaderCardMarket:
+    first, latest = observations[0], observations[-1]
+    return ReaderCardMarket(
+        kind=track.market_kind,
+        venue=track.source_venue,
+        measurement=track.measurement_definition,
+        direction=latest.direction,
+        oi_change_bps=latest.oi_change_bps,
+        oi_value_usd=latest.oi_value_usd,
+        side=track.liquidated_position_side,
+        notional=max((fmt.decimal_text(item.notional_usd) for item in observations), default=""),
+        account=track.trader_label or track.account_key or "",
+        account_verified=track.account_verified,
+        actions=tuple(
+            ReaderCardAction(action=item.action, side=item.position_side, notional=item.notional_usd)
+            for item in observations[-CARD_METRIC_LINES_MAX:]
+        ),
+        action_changes=action_changes,
+        # Where the described timeline starts is what the last delivered card ended on when there is
+        # one, not the first observation this card covers.
+        opened_action=(
+            ReaderCardAction(action=track.anchor_action, side=track.anchor_position_side)
+            if track.anchor_action is not None
+            else ReaderCardAction(action=first.action, side=first.position_side)
+        ),
+        latest_action=ReaderCardAction(action=latest.action, side=latest.position_side),
+    )
+
+
 def render_market_card(
     *,
     track: MarketTrack,
@@ -777,177 +853,21 @@ def render_market_card(
     detail_url: str | None = None,
     action_changes: int = 0,
 ) -> dict[str, Any]:
-    """One bounded summary card for one intent, in the reader card's own wire shape.
+    """The intent's `ReaderCard` in the wire shape the delivery ledger freezes and Feishu accepts.
 
-    The same structure ordinary News sends, so both configured adapters render it with no market
-    branch of their own: a header, one markdown block whose last line is the facts line, and -- when
-    an absolute console URL is known -- one action button to the detail page that holds the complete
-    timeline. Without one there is no button: the note line prints the item id instead, which is what
-    an operator needs to reach the same page, and Telegram's own adapter already refuses a link it
-    cannot open. v1 sends exactly one card per intent -- no page cursor, no per-page receipt, no
-    paging retry -- and the observations it could not fit are on the page it links to, not deleted.
+    The same structure ordinary News sends, from the same value object and the same serializer, so
+    both configured adapters render it with no market branch of their own.
     """
 
-    latest = observations[-1]
-    subject = track.symbol or track.raw_instrument or latest.symbol or latest.raw_instrument or ""
-    title = _card_title(family=track.family, reason=reason, subject=subject)
-    lines = _card_lines(track=track, reason=reason, observations=observations, action_changes=action_changes)
-    origin = " ".join(part for part in (latest.provider or "", track.market_kind) if part) or "-"
-    lines.append(
-        " · ".join(
-            part for part in (subject, f"{origin}（{len(observations)} 条报道）", _clock(latest.event_at_ms)) if part
+    return feishu_card(
+        market_reader_card(
+            track=track,
+            reason=reason,
+            observations=observations,
+            detail_url=detail_url,
+            action_changes=action_changes,
         )
     )
-    link = _absolute_http_url(detail_url)
-    elements: list[dict[str, Any]] = [{"tag": "markdown", "content": "\n".join(line for line in lines if line)}]
-    if link is not None:
-        elements.append(
-            {
-                "tag": "action",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "打开明细"},
-                        "type": "default",
-                        "url": link,
-                    }
-                ],
-            }
-        )
-    note = f"Tracefold 市场 · {track.group_key[:24]}"
-    if link is None:
-        note = f"{note} · {latest.item_id}"
-    elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": note}]})
-    return {
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": title[:CARD_TITLE_MAX]},
-            "template": _CARD_COLOR.get(track.family, "grey"),
-        },
-        "elements": elements,
-    }
-
-
-def _card_title(*, family: str, reason: str, subject: str) -> str:
-    """The header: the family, the qualifier that applies, and the instrument when one is known.
-
-    Every part is optional except the family, and the separator belongs to the join rather than to any
-    one part. The first raw smart-money cards in production were headed `市场原文· 原文 —`: an
-    unstructured report names no instrument, and the missing space, the qualifier's own separator and
-    the `—` placeholder were three pieces of punctuation standing in for a word that was never going to
-    be there (#553). An absent field is absent; it is not an em dash.
-    """
-
-    return " · ".join(
-        part for part in (_FAMILY_TITLE.get(family, "市场"), _REASON_TITLE.get(reason, ""), subject) if part
-    )
-
-
-def _card_lines(
-    *,
-    track: MarketTrack,
-    reason: str,
-    observations: Sequence[MarketObservation],
-    action_changes: int,
-) -> list[str]:
-    first, latest = observations[0], observations[-1]
-    span = _span(first.event_at_ms, latest.event_at_ms)
-    venue = track.source_venue or "场所未知"
-    if track.family == "oi":
-        change = _percent(latest.oi_change_bps)
-        head = f"{_DIRECTION_ZH.get(latest.direction or '', latest.direction or '')} {change}"
-        detail = f"OI ${_usd(latest.oi_value_usd)} · {venue} · {track.measurement_definition or '口径未知'}"
-        return [f"{head} · {span}", detail] if span else [head, detail]
-    if track.family == "liquidation":
-        largest = max((_decimal_text(item.notional_usd) for item in observations), default="")
-        side = track.liquidated_position_side or ""
-        return [
-            f"{venue} · {_SIDE_ZH.get(side, side)}单被强平 {len(observations)} 笔 · {span}",
-            f"最大单笔来源报告金额 ${largest}" if largest else "",
-            "各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。",
-        ]
-    if track.family == "smart_money":
-        account = track.trader_label or track.account_key or "未标注账户"
-        verified = "" if track.account_verified else "（来源标签，非已核实地址）"
-        actions = _action_line(observations)
-        # "首" is where the described timeline starts, which is what the last delivered card ended
-        # on when there is one. Reading it off the first covered observation would print `开空 → 开空`
-        # for a card whose whole subject is that the account stopped closing shorts.
-        opened = (
-            _action_label(track.anchor_action, track.anchor_position_side)
-            if track.anchor_action is not None
-            else _action(first)
-        )
-        change_line = f"动作变化 {action_changes} 次 · 首 {opened} → 末 {_action(latest)}" if action_changes else ""
-        return [
-            f"{account}{verified} · {venue} · {span}",
-            change_line,
-            actions,
-            "Close 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。",
-        ]
-    return [
-        _clip(latest.title, 220),
-        " · ".join(part for part in (venue, track.market_kind, "未结构化，保留供应商原文") if part),
-    ]
-
-
-def _action_line(observations: Sequence[MarketObservation]) -> str:
-    parts: list[str] = []
-    for observation in observations[-CARD_METRIC_LINES_MAX:]:
-        amount = _decimal_text(observation.notional_usd)
-        parts.append(f"{_action(observation)} ${amount}" if amount else _action(observation))
-    return " · ".join(parts)
-
-
-def _action(observation: MarketObservation) -> str:
-    return _action_label(observation.action, observation.position_side)
-
-
-def _action_label(action: str | None, side: str | None) -> str:
-    return f"{_ACTION_ZH.get(action or '', action or '')}{_SIDE_ZH.get(side or '', side or '')}"
-
-
-def _span(first_ms: int, last_ms: int) -> str:
-    if first_ms == last_ms:
-        return _clock(first_ms)
-    return f"{_clock(first_ms)}–{_clock(last_ms)}"
-
-
-def _clock(at_ms: int) -> str:
-    return time.strftime("%H:%M", time.gmtime(int(at_ms) / 1000 + 8 * 3600))
-
-
-def _percent(bps: int | None) -> str:
-    if bps is None:
-        return "—"
-    text = f"{int(bps) / 100:.2f}"
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    return f"{text}%"
-
-
-def _usd(value: int | None) -> str:
-    if value is None:
-        return "—"
-    amount = int(value)
-    for unit, scale in (("B", 1_000_000_000), ("M", 1_000_000), ("K", 1_000)):
-        if abs(amount) >= scale:
-            return f"{amount / scale:.2f}{unit}"
-    return str(amount)
-
-
-def _decimal_text(value: str | None) -> str:
-    if not value:
-        return ""
-    text = str(value)
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    return text
-
-
-def _clip(value: str, limit: int) -> str:
-    text = " ".join(str(value or "").split())
-    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 # --- the loop (§4.1.2, §5.3) ---------------------------------------------------------------------

@@ -14,11 +14,11 @@ import pytest
 
 from tests.support.news_judgment import news_taxonomy, scored_judgment, trade_relevance
 from tracefold.news.bus import BusDecodeError, BusMessage, decode_body
+from tracefold.news.card_format import CHANGE_BASIS_LABEL
 from tracefold.news.delivery import (
-    _CHANGE_BASIS_LABEL,
-    _quote_line,
     card_assets,
     reader_market_movements,
+    reader_quotes,
     reader_trade_targets,
     render_first_card,
     sanitize_ai_text,
@@ -46,6 +46,7 @@ from tracefold.news.models import ReaderMarketMovement, ReaderReceipt, ReaderTra
 from tracefold.news.opennews import source_artifact_identity
 from tracefold.news.outcome import OVERRIDE_RULE_ZH, storyline_key_zh, throttled_by_zh
 from tracefold.news.pipeline.admission import _event_identity
+from tracefold.news.reader_card import quote_line
 from tracefold.news.similarity import similarity
 from tracefold.news.triage_rules import (
     DEFAULT_POLICY,
@@ -1886,6 +1887,12 @@ def test_card_is_the_reader_contract() -> None:
     assert card_assets({"assets": [{"symbol": "BTC", "role": "primary"}]}, ["BTC", "CL", "XYZ-CL"]) == ["BTC"]
 
 
+def _quote_line(quotes: Sequence[Mapping[str, Any]]) -> str:
+    """The quote line as the renderer builds it: read-model rows to card facts to one line."""
+
+    return quote_line(reader_quotes(quotes))
+
+
 def _quote(symbol: str, price: str, change: float | None, **overrides: Any) -> dict[str, Any]:
     quote = {
         "symbol": symbol,
@@ -2159,7 +2166,7 @@ def test_reader_trade_targets_bind_ticker_to_exact_binance_contracts_without_cha
 def test_card_change_basis_labels_cover_the_price_domain() -> None:
     """A basis `pricing` knows and the card cannot name would drop that venue's percentage in silence."""
 
-    assert set(_CHANGE_BASIS_LABEL) == set(CHANGE_BASIS_ZH)
+    assert set(CHANGE_BASIS_LABEL) == set(CHANGE_BASIS_ZH)
 
 
 def test_card_marks_a_progression() -> None:
