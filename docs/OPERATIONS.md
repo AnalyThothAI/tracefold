@@ -843,26 +843,37 @@ For missing or stale live data:
 The separate loopback Workers probe answers two questions, not one. `ok` is
 basic readiness: this process still owns PostgreSQL, its schema and its
 singleton session. `capabilities` is a separate object keyed by capability name
--- `news_ingestion`, `news_editorial`, `news_delivery`, `news_market_review`,
-`trading_signal_lane` -- each with a `state` of `running`, `faulted`,
-`unavailable` or `disabled` and the reason that put it there. The same object is
-persisted on `workers_runtime.capabilities` and republished on `/api/status`
-under `runtime.workers_runtime.capabilities`, so the console sees a stopped lane
-without opening the loopback probe (#553 PR-3).
+-- `news_ingestion`, `news_editorial`, `news_delivery`, `news_instruments`,
+`news_quotes`, `news_reactions`, `trading_signal_lane` -- each with a `state` of
+`running`, `faulted`, `unavailable` or `disabled` and the reason that put it
+there. The same object is persisted on `workers_runtime.capabilities` and
+republished on `/api/status` under `runtime.workers_runtime.capabilities`, and
+the console prints it as the **Workers 能力** card on 流水线状态 (`/news/status`),
+so an operator sees a stopped lane without opening the loopback probe
+(#553 PR-3). A stale runtime row publishes no report: a process that stopped
+answering is not evidence that its lanes are still running.
 
-An unexpected program error in one business task stops that task, records its
-capability `faulted` with the failure that stopped it, and leaves every other
-task running. Nothing restarts it: recovery is an operator restart after the
-fix, which is why a `faulted` capability is a page-worthy fact even while
-readiness stays 200. A push sender that cannot be constructed from the current
-configuration reports `news_delivery` `unavailable` with the configuration
-reason, the Deliverer settles those Events `delivery_unavailable` rather than
-presenting them as sent, and `/api/news/status` reports
+An unexpected program error in one *optional* business task stops that task,
+records its capability `faulted` with the failure that stopped it, and leaves
+every other task running. Nothing restarts it: recovery is an operator restart
+after the fix, which is why a `faulted` capability is a page-worthy fact even
+while readiness stays 200. A push sender that cannot be constructed from the
+current configuration reports `news_delivery` `unavailable` with the
+configuration reason, the Deliverer settles those Events `delivery_unavailable`
+rather than presenting them as sent, and `/api/news/status` reports
 `delivery.delivery_available` false; correct the configuration and restart.
+
+News reception, admission and retention -- `news-receiver`, `news-recovery`,
+`news-deduper`, `news-janitor` -- are **not** optional. They are the information
+entry every other capability reads, so a program error there still fails the
+root and the container restart that has always healed it still happens, rather
+than becoming a permanent ingestion outage behind a 200 readiness.
 
 Shared foundation failures are unchanged and still fail the root: PostgreSQL
 unavailable, a schema that is not the code's head, a lost singleton session, an
-unfinished native control future, and a graceful deadline overrun.
+unfinished native control future, and a graceful deadline overrun. A PostgreSQL
+failure raised while a capability is being composed is also not confined: it
+says the database failed, not that one Program is wrong.
 
 A classified live broker incident or Recovery transient
 is recoverable work, not a crashed task: Workers readiness stays up while

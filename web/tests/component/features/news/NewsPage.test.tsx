@@ -1,6 +1,7 @@
 import { NewsPage } from "@features/news";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { appStatusFixture } from "@tests/fixtures/appRouteFixtures";
 import {
   NEWS_NOW_MS,
   newsDeliveryFixture,
@@ -34,6 +35,9 @@ describe("NewsPage", () => {
       http.get(/.*\/api\/news\/quotes$/, () =>
         HttpResponse.json({ ok: true, data: { measured_at_ms: NEWS_NOW_MS, quotes: [] } }),
       ),
+      // 流水线状态 prints the Workers capability report from the same `/api/status` read the shell
+      // already polls (#553 PR-3).
+      http.get(/.*\/api\/status$/, () => HttpResponse.json({ ok: true, data: appStatusFixture() })),
     );
   });
 

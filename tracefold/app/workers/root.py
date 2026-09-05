@@ -230,7 +230,11 @@ async def run_workers(settings: Settings) -> None:
             )
             business_tasks = [
                 group.create_task(
-                    _run_capability_task(
+                    # A foundational task is the information entry itself: its failure is the process's
+                    # failure, and the restart that has always healed it still happens.
+                    _guard_child(task.run(work_stop_event), on_fatal=enter_fatal)
+                    if task.foundational
+                    else _run_capability_task(
                         task,
                         stop_event=work_stop_event,
                         capabilities=components.capabilities,
@@ -416,21 +420,28 @@ async def _run_capability_task(
     capabilities: CapabilityStates,
     on_fault: Callable[[], Awaitable[None]],
 ) -> None:
-    """Run one business task and keep its unexpected program errors inside its own capability.
+    """Run one optional business task and keep its program errors inside its own capability.
 
     The task stops, its capability is reported `faulted` with the failure that stopped it, and every
     other task keeps running; nothing restarts it, so recovery is an operator restart after the fix
     (#553 PR-3). `ResourceOperationOverrun` is deliberately not confined: it means a shared native
     budget was blown and a thread this process cannot reclaim is still holding it, which is a
     foundation failure and stays root fatal.
+
+    A database error that reaches here *is* confined, and that is the spec's rule rather than an
+    oversight: the shared DB layer has already applied whatever retry it owns, and what is left is
+    this capability's turn failing. Composition is the opposite case -- a database error while the
+    process is still starting shares the process's startup fate -- and `wiring/` re-raises there.
     """
 
+    if task.foundational:
+        raise RuntimeError("workers_foundational_task_must_not_be_confined")
     try:
         await task.run(stop_event)
     except ResourceOperationOverrun:
         raise
     except Exception as exc:
-        reason = _capability_fault_reason(task.name, exc)
+        reason = _capability_fault_reason(task.capability, exc)
         logger.opt(exception=exc).error(
             "Workers capability task faulted task={} capability={} reason={}",
             task.name,
@@ -731,7 +742,6 @@ def _runtime_capabilities(db: WorkerDatabase, runtime_id: str, capabilities: Any
         WorkersRuntimeRepository(repos.conn).set_capabilities(
             runtime_id=runtime_id,
             capabilities=capabilities,
-            now_ms=_now_ms(),
         )
 
 

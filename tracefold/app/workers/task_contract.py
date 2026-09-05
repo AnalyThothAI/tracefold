@@ -1,14 +1,21 @@
 """Stable, ordered task declarations for the sole Workers process root.
 
-Every declaration here is a *capability* task: it belongs to one named business capability, and an
-unexpected program error inside it stops that task and marks that capability `faulted` instead of
-killing the process (#553 PR-3). The shared foundation -- PostgreSQL, the schema, the singleton
-process ownership, the probe and the control heartbeat -- is not declared here and keeps its root
-fatal, because a process that has lost those cannot honestly serve anything.
+Each declaration names the capability it answers for and whether it is *foundational*.
+
+A foundational task is part of the information entry itself. News reception, admission and the
+retention that keeps them writable are not capabilities an operator can be asked to live without:
+they are what every other capability reads. An unexpected program error there stays root fatal,
+exactly like PostgreSQL, the schema and the singleton process ownership, so the container restart
+that has always healed a receiver crash still happens rather than being replaced by a permanent
+ingestion outage behind a green readiness (#553 PR-3).
+
+Every other task is a capability task: an unexpected program error stops that task and marks its
+capability `faulted`, and the healthy tasks beside it carry on. One optional task owns one capability
+key, so a fault always names exactly what stopped.
 
 A new optional loop joins by returning one more `WorkerTask` from `worker_business_tasks` with its
-own capability name; nothing else has to change, and it inherits the confinement above. #553 PR-2's
-market notification loop is exactly that: one task, one capability, one `advance()`-shaped runner.
+own capability name; nothing else has to change. #553 PR-2's market notification loop is exactly
+that: one task, one capability, one `advance()`-shaped runner.
 """
 
 from __future__ import annotations
@@ -22,7 +29,9 @@ from tracefold.app.workers.runtime import (
     NEWS_DELIVERY,
     NEWS_EDITORIAL,
     NEWS_INGESTION,
-    NEWS_MARKET_REVIEW,
+    NEWS_INSTRUMENTS,
+    NEWS_QUOTES,
+    NEWS_REACTIONS,
     TRADING_SIGNAL_LANE,
 )
 from tracefold.app.workers.wiring.trading import (
@@ -35,29 +44,38 @@ from tracefold.trading.signal_lane import SignalLane
 WORKERS_PROBE_TASK_NAME = "workers-probe"
 WORKERS_CONTROL_TASK_NAME = "workers-control"
 
-# News names its own loops; App decides which capability each one answers for, because the capability
-# vocabulary is what `/api/status` publishes and News must not own a Trading-visible surface. An
-# unknown task name is a composition bug and fails closed rather than reporting under a guessed name.
-_NEWS_TASK_CAPABILITIES = {
-    "news-receiver": NEWS_INGESTION,
-    "news-recovery": NEWS_INGESTION,
-    "news-deduper": NEWS_INGESTION,
-    "news-janitor": NEWS_INGESTION,
-    "news-triage": NEWS_EDITORIAL,
-    "news-deliverer": NEWS_DELIVERY,
-    "news-instruments": NEWS_MARKET_REVIEW,
-    "news-quotes": NEWS_MARKET_REVIEW,
-    "news-reactions": NEWS_MARKET_REVIEW,
+# News names its own loops; App decides which capability each one answers for and whether it is
+# foundational, because the capability vocabulary is what `/api/status` publishes and News must not
+# own a Trading-visible surface. An unknown task name is a composition bug and fails closed rather
+# than reporting under a guessed name.
+_NEWS_TASK_DECLARATIONS: dict[str, tuple[str, bool]] = {
+    # The information entry. Reception, admission and the retention that keeps them writable stay
+    # root fatal: they are the thing every other capability reads.
+    "news-receiver": (NEWS_INGESTION, True),
+    "news-recovery": (NEWS_INGESTION, True),
+    "news-deduper": (NEWS_INGESTION, True),
+    "news-janitor": (NEWS_INGESTION, True),
+    # Optional capabilities, one task each, so a fault names exactly what stopped.
+    "news-triage": (NEWS_EDITORIAL, False),
+    "news-deliverer": (NEWS_DELIVERY, False),
+    "news-instruments": (NEWS_INSTRUMENTS, False),
+    "news-quotes": (NEWS_QUOTES, False),
+    "news-reactions": (NEWS_REACTIONS, False),
 }
 
 
 @dataclass(frozen=True, slots=True)
 class WorkerTask:
-    """One business task: its stable runtime name, the capability it answers for, and its runner."""
+    """One business task: its runtime name, the capability it answers for, its runner, and its fate.
+
+    `foundational` decides what an unexpected program error inside it means: a root fatal, or one
+    faulted capability beside healthy ones.
+    """
 
     name: str
     capability: str
     run: Callable[[asyncio.Event], Awaitable[None]]
+    foundational: bool
 
 
 def worker_business_tasks(
@@ -80,11 +98,13 @@ def worker_business_tasks(
     tasks: list[WorkerTask] = []
     if news_pipeline is not None:
         for task_name, runner in news_pipeline.runners():
+            capability, foundational = _NEWS_TASK_DECLARATIONS[task_name]
             tasks.append(
                 WorkerTask(
                     name=task_name,
-                    capability=_NEWS_TASK_CAPABILITIES[task_name],
+                    capability=capability,
                     run=runner,
+                    foundational=foundational,
                 )
             )
     if signal_lane is not None:
@@ -94,6 +114,7 @@ def worker_business_tasks(
                 name=SIGNAL_LANE_TASK_NAME,
                 capability=TRADING_SIGNAL_LANE,
                 run=lambda stop: run_signal_lane(lane, stop_event=stop, telemetry=telemetry),
+                foundational=False,
             )
         )
     return tuple(tasks)

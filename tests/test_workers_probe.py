@@ -96,6 +96,49 @@ def test_workers_probe_fails_closed_when_persisted_heartbeat_is_stale() -> None:
     assert state.payload()["unavailable_reason"] == "runtime_heartbeat_stale"
 
 
+def test_a_stale_runtime_publishes_no_capability_report() -> None:
+    """#553 PR-3. A process that stopped answering is not evidence that its lanes are still running.
+
+    Nothing rewrites `workers_runtime` when Workers is SIGKILLed, so the last report would otherwise
+    read `running` forever beside a heartbeat that stopped minutes ago.
+    """
+
+    row = {
+        "runtime_id": RUNTIME_ID,
+        "runtime_version": "2",
+        "lifecycle_state": "running",
+        "started_at_ms": 1_000,
+        "heartbeat_at_ms": 1_000,
+        "fatal_code": None,
+        "capabilities": {"trading_signal_lane": {"state": "running", "reason": None}},
+    }
+
+    fresh = workers_runtime_status(row, now_ms=2_000)
+    stale = workers_runtime_status(row, now_ms=1_000 + 15_001)
+
+    assert fresh["state"] == "running"
+    assert fresh["capabilities"] == {"trading_signal_lane": {"state": "running", "reason": None}}
+    assert stale["state"] == "stale"
+    assert stale["capabilities"] == {}
+
+
+def test_a_terminal_runtime_keeps_the_report_of_what_died_with_it() -> None:
+    row = {
+        "runtime_id": RUNTIME_ID,
+        "runtime_version": "2",
+        "lifecycle_state": "failed",
+        "started_at_ms": 1_000,
+        "heartbeat_at_ms": 1_000,
+        "fatal_code": "child_failed",
+        "capabilities": {"news_delivery": {"state": "unavailable", "reason": "bad_token_file"}},
+    }
+
+    status = workers_runtime_status(row, now_ms=9_000_000)
+
+    assert status["state"] == "failed"
+    assert status["capabilities"] == {"news_delivery": {"state": "unavailable", "reason": "bad_token_file"}}
+
+
 @pytest.mark.parametrize(
     ("row", "query_failed", "state", "reason"),
     [

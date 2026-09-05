@@ -589,16 +589,21 @@ News consumers have no frontier lease; the broker's single-active-consumer and
 per-message ack are their fences.
 
 Every business task the Workers root runs is declared in
-`app/workers/task_contract.py` against one named capability, and an unexpected
-program error inside it stops that task and records that capability `faulted`
-rather than killing the process (#553 PR-3). A Trading lane exception, a push
-sender that cannot be constructed, and a News Program that cannot be assembled
-or registered are each confined to `trading_signal_lane`, `news_delivery` and
+`app/workers/task_contract.py` against one named capability and a
+`foundational` flag (#553 PR-3). News reception, admission and retention are
+foundational: they are the information entry every other capability reads, so a
+program error there stays root fatal and the container restart that has always
+healed it still happens. Every other task is optional, owns exactly one
+capability key, and an unexpected program error inside it stops that task and
+records that capability `faulted`. A Trading lane exception, a push sender that
+cannot be constructed, and a News Program that cannot be assembled or registered
+are each confined to `trading_signal_lane`, `news_delivery` and
 `news_editorial`; reception, admission, retention and the read APIs beside them
-keep running, and nothing auto-restarts the stopped task. The loopback readiness
+keep running, and nothing auto-restarts the stopped task. A PostgreSQL failure
+is never confined, in a task or in composition. The loopback readiness
 probe reports basic readiness and that capability report as two separate fields,
 so a faulted capability is never read back as a reason to switch a healthy fact
-API off. Recoverable Receiver broker incidents, Recovery
+API off; the console prints the report on 流水线状态. Recoverable Receiver broker incidents, Recovery
 provider/broker/database faults, and consumer-handler `BrokerUnavailable` /
 `BrokerBackpressure` failures do not stop a task at all. Receiver and Recovery
 keep durable incident rows and `/api/news/status` recovery state until the

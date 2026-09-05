@@ -1607,7 +1607,15 @@ def test_deliverer_skips_dropped_first_cards() -> None:
         )
 
 
-def test_deliverer_passes_macro_scope_and_a_grounded_progression_reference_to_telegram() -> None:
+def test_deliverer_passes_macro_scope_and_withholds_an_unreviewed_progression_reference() -> None:
+    """#553 PR-3. The scope is a verdict fact and ships; the progression reference is a reviewed claim.
+
+    With no verifier composed -- none configured, or the editorial Program faulted and left one
+    unwired -- the card says the association is `pending` and prints no reference. The reviewed
+    headline reaches the reader through the confirmed edit, which
+    `test_telegram_sends_a_progression_before_llm_association_review_then_edits_with_reason` proves.
+    """
+
     news = _delivery_news(
         event_card=_card(grounded_assets=[]),
         latest_verdict=lambda **_kwargs: {
@@ -1649,20 +1657,28 @@ def test_deliverer_passes_macro_scope_and_a_grounded_progression_reference_to_te
             market_data_state="pending",
             market_scope="macro",
             novelty="progression",
-            progression_from_headline="美国此前公布初步就业基准修订",
+            progression_review_state="pending",
         )
     ]
     assert sender.edited_presentations == []
 
 
 @pytest.mark.parametrize(
-    ("similarity", "expected_previous"),
-    [(0.4999, None), (0.5, "a16z 推出 Machine Age Fund")],
+    ("similarity", "expected_review_state"),
+    [(0.4999, None), (0.5, "pending")],
 )
 def test_deliverer_links_a_progression_only_at_fifty_percent_title_similarity(
     similarity: float,
-    expected_previous: str | None,
+    expected_review_state: str | None,
 ) -> None:
+    """The 50 % band decides whether there is anything to review; the review decides what is shown.
+
+    #553 PR-3: with no verifier composed -- none configured, or the editorial Program faulted and left
+    one unwired -- a candidate above the band stays `pending` and the card prints no progression. The
+    unreviewed headline is not a fallback: a fault in one capability must not silently drop the gate
+    that another capability owns.
+    """
+
     news = _delivery_news(
         event_card=_card(grounded_assets=[]),
         latest_verdict=lambda **_kwargs: {
@@ -1695,7 +1711,8 @@ def test_deliverer_links_a_progression_only_at_fifty_percent_title_similarity(
     )
 
     assert sender.presentations[0].novelty == "progression"
-    assert sender.presentations[0].progression_from_headline == expected_previous
+    assert sender.presentations[0].progression_from_headline is None
+    assert sender.presentations[0].progression_review_state == expected_review_state
 
 
 def test_telegram_sends_a_progression_before_llm_association_review_then_edits_with_reason() -> None:

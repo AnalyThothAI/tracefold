@@ -6,9 +6,12 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 from uuid import UUID
 
+import psycopg
 from psycopg.types.json import Jsonb
+from psycopg_pool import PoolTimeout
 
 from tracefold.platform.postgres.audit import ReadQuerySpec
+from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 WORKERS_RUNTIME_STALE_AFTER_MS = 15_000
 WORKERS_RUNTIME_VERSION = "2"
@@ -19,10 +22,23 @@ WORKERS_RUNTIME_VERSION = "2"
 NEWS_INGESTION = "news_ingestion"
 NEWS_EDITORIAL = "news_editorial"
 NEWS_DELIVERY = "news_delivery"
-NEWS_MARKET_REVIEW = "news_market_review"
+NEWS_INSTRUMENTS = "news_instruments"
+NEWS_QUOTES = "news_quotes"
+NEWS_REACTIONS = "news_reactions"
 TRADING_SIGNAL_LANE = "trading_signal_lane"
 
 CapabilityStateName = Literal["running", "faulted", "unavailable", "disabled"]
+
+# What a capability may never confine. Each of these says the shared PostgreSQL layer or a shared
+# native permit failed -- not that one business capability's program is wrong -- so recording it as a
+# capability fault would hide a process-wide fault behind a green readiness. They stay root fatal,
+# which is also the shared DB layer's existing behavior for an error it did not retry.
+SHARED_RESOURCE_FAILURES: tuple[type[BaseException], ...] = (
+    psycopg.Error,
+    PoolTimeout,
+    ResourceAdmissionTimeout,
+    ResourceOperationOverrun,
+)
 
 LifecycleState = Literal[
     "starting",
@@ -76,30 +92,20 @@ class CapabilityStates:
     def __init__(self) -> None:
         self._states: dict[str, CapabilityState] = {}
 
-    def declare(self, capability: str, state: CapabilityStateName, *, reason: str | None = None) -> bool:
-        """Record a capability's state. Returns whether it changed, so the caller can persist once."""
-
-        current = self._states.get(capability)
-        if current is not None and current.state == state and current.reason == reason:
-            return False
+    def declare(self, capability: str, state: CapabilityStateName, *, reason: str | None = None) -> None:
         self._states[capability] = CapabilityState(state=state, reason=reason)
-        return True
 
-    def running(self, capability: str) -> bool:
-        return self.declare(capability, "running")
+    def running(self, capability: str) -> None:
+        self.declare(capability, "running")
 
-    def faulted(self, capability: str, reason: str) -> bool:
-        return self.declare(capability, "faulted", reason=reason)
+    def faulted(self, capability: str, reason: str) -> None:
+        self.declare(capability, "faulted", reason=reason)
 
-    def unavailable(self, capability: str, reason: str) -> bool:
-        return self.declare(capability, "unavailable", reason=reason)
+    def unavailable(self, capability: str, reason: str) -> None:
+        self.declare(capability, "unavailable", reason=reason)
 
-    def disabled(self, capability: str, reason: str) -> bool:
-        return self.declare(capability, "disabled", reason=reason)
-
-    def state_of(self, capability: str) -> str | None:
-        current = self._states.get(capability)
-        return None if current is None else current.state
+    def disabled(self, capability: str, reason: str) -> None:
+        self.declare(capability, "disabled", reason=reason)
 
     def payload(self) -> dict[str, dict[str, Any]]:
         return {
@@ -187,18 +193,22 @@ class WorkersRuntimeRepository:
         if cursor.rowcount != 1:
             raise RuntimeError("workers_runtime_identity_lost")
 
-    def set_capabilities(self, *, runtime_id: str, capabilities: Mapping[str, Any], now_ms: int) -> None:
-        """Publish what each business capability of this runtime is doing, for the status readers."""
+    def set_capabilities(self, *, runtime_id: str, capabilities: Mapping[str, Any]) -> None:
+        """Publish what each business capability of this runtime is doing, for the status readers.
+
+        This writes no heartbeat. A capability report is not liveness evidence -- a process can
+        publish one while its control loop is already dead -- so staleness stays the control
+        heartbeat's alone.
+        """
 
         cursor = self.conn.execute(
             """
             UPDATE workers_runtime
-               SET capabilities = %s::jsonb,
-                   heartbeat_at_ms = GREATEST(heartbeat_at_ms, %s)
+               SET capabilities = %s::jsonb
              WHERE singleton_key
                AND runtime_id = %s
             """,
-            (Jsonb(dict(capabilities)), int(now_ms), UUID(str(runtime_id))),
+            (Jsonb(dict(capabilities)), UUID(str(runtime_id))),
         )
         if cursor.rowcount != 1:
             raise RuntimeError("workers_runtime_identity_lost")
@@ -252,19 +262,18 @@ def workers_runtime_status(
         lifecycle in {"starting", "running", "stopping"}
         and int(now_ms) - heartbeat_at_ms > WORKERS_RUNTIME_STALE_AFTER_MS
     )
-    reason: str | None
-    if stale:
-        state = "stale"
-        reason = "runtime_heartbeat_stale"
-    else:
-        state = lifecycle
-        reason = {
+    state = "stale" if stale else lifecycle
+    reason = (
+        "runtime_heartbeat_stale"
+        if stale
+        else {
             "starting": "runtime_starting",
             "running": None,
             "stopping": "runtime_stopping",
             "stopped": "runtime_stopped",
             "failed": "runtime_failed",
         }[lifecycle]
+    )
     return {
         "runtime_id": str(row["runtime_id"]),
         "runtime_version": str(row["runtime_version"]),
@@ -274,7 +283,10 @@ def workers_runtime_status(
         "heartbeat_stale_after_ms": WORKERS_RUNTIME_STALE_AFTER_MS,
         "fatal_code": cast(str | None, row.get("fatal_code")),
         "unavailable_reason": reason,
-        "capabilities": _capabilities(row.get("capabilities")),
+        # A stale row describes a process that stopped answering, so its last report is not evidence
+        # of anything now: a SIGKILLed Workers would otherwise leave a lane reading `running` in
+        # PostgreSQL forever. Terminal rows keep their report -- it says what died with the process.
+        "capabilities": {} if stale else _capabilities(row.get("capabilities")),
     }
 
 
@@ -327,7 +339,10 @@ __all__ = [
     "NEWS_DELIVERY",
     "NEWS_EDITORIAL",
     "NEWS_INGESTION",
-    "NEWS_MARKET_REVIEW",
+    "NEWS_INSTRUMENTS",
+    "NEWS_QUOTES",
+    "NEWS_REACTIONS",
+    "SHARED_RESOURCE_FAILURES",
     "TRADING_SIGNAL_LANE",
     "WORKERS_RUNTIME_STALE_AFTER_MS",
     "WORKERS_RUNTIME_VERSION",

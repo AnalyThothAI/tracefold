@@ -20,7 +20,10 @@ from tracefold.app.workers.runtime import (
     NEWS_DELIVERY,
     NEWS_EDITORIAL,
     NEWS_INGESTION,
-    NEWS_MARKET_REVIEW,
+    NEWS_INSTRUMENTS,
+    NEWS_QUOTES,
+    NEWS_REACTIONS,
+    SHARED_RESOURCE_FAILURES,
     CapabilityStates,
 )
 from tracefold.app.workers.wiring.database import (
@@ -164,13 +167,19 @@ async def _wire_news_pipeline(
         recovery=recovery,
         telemetry=telemetry,
     )
-    # Reception and admission are the capability this whole PR exists to keep running, and the Deduper
-    # and Janitor that carry them are never optional. The bounded market-review loops are.
+    # Reception and admission are the entry this whole PR exists to keep running; their tasks are
+    # foundational and never fault this capability. The bounded market-review loops are optional, and
+    # each owns its own key so a faulted one names itself instead of the other two.
     capabilities.running(NEWS_INGESTION)
-    if pipeline.instruments is None and pipeline.quotes is None and pipeline.reactions is None:
-        capabilities.disabled(NEWS_MARKET_REVIEW, "news_market_review_not_configured")
-    else:
-        capabilities.running(NEWS_MARKET_REVIEW)
+    for capability, loop in (
+        (NEWS_INSTRUMENTS, pipeline.instruments),
+        (NEWS_QUOTES, pipeline.quotes),
+        (NEWS_REACTIONS, pipeline.reactions),
+    ):
+        if loop is None:
+            capabilities.disabled(capability, f"{capability}_not_configured")
+        else:
+            capabilities.running(capability)
     return bus, pipeline
 
 
@@ -186,14 +195,19 @@ async def _program_arms_or_fault(
     blast radius. A mismatch, a missing artifact or a failed canary reconciliation now leaves the
     Triage consumer unwired instead of killing reception, market facts and market notifications with
     it (#553 PR-3). Model-unconfigured and model-request behavior is untouched: those already produce
-    a composed pipeline with no judge.
+    a composed pipeline with no judge. A PostgreSQL failure is not confined -- see the `except` below.
     """
 
     try:
         arms = await _compose_program_arms(settings, db=db)
+    except SHARED_RESOURCE_FAILURES:
+        # The canary reconciliation this performs is a control write. A pool timeout or a dropped
+        # connection there says PostgreSQL failed, not that the Program is wrong, and recording it as
+        # an editorial fault would hide a shared fault behind a green readiness.
+        raise
     except Exception as exc:
         logger.opt(exception=exc).error("News Program assembly failed; editorial capability faulted")
-        capabilities.faulted(NEWS_EDITORIAL, f"news_program_assembly_failed:{type(exc).__name__}")
+        capabilities.faulted(NEWS_EDITORIAL, f"{NEWS_EDITORIAL}_assembly_failed:{type(exc).__name__}")
         return None
     capabilities.running(NEWS_EDITORIAL)
     return arms

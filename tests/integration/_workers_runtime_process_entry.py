@@ -46,6 +46,7 @@ def _arguments() -> argparse.Namespace:
             "manifest_barrier",
             "manifest_registration_fault",
             "optional_task_fault",
+            "ingestion_task_fault",
             "trading_lane_fault",
             "schema_mismatch",
             "finite_overrun",
@@ -193,7 +194,7 @@ def _backlog_consumer(db: Any, *, resume_gate: Path) -> Any:
 def _declare_news_capabilities(
     capabilities: Any,
     *,
-    market_review: bool = False,
+    quotes: bool = False,
     delivery: str = "disabled",
 ) -> None:
     """Stand in for what the real News composition declares about the tasks it just wired."""
@@ -202,7 +203,7 @@ def _declare_news_capabilities(
         NEWS_DELIVERY,
         NEWS_EDITORIAL,
         NEWS_INGESTION,
-        NEWS_MARKET_REVIEW,
+        NEWS_QUOTES,
     )
 
     capabilities.running(NEWS_INGESTION)
@@ -216,10 +217,10 @@ def _declare_news_capabilities(
             else "news_item_push_not_requested"
         ),
     )
-    if market_review:
-        capabilities.running(NEWS_MARKET_REVIEW)
+    if quotes:
+        capabilities.running(NEWS_QUOTES)
     else:
-        capabilities.disabled(NEWS_MARKET_REVIEW, "news_market_review_not_configured")
+        capabilities.disabled(NEWS_QUOTES, "news_quotes_not_configured")
 
 
 def _idle_turn() -> Any:
@@ -484,15 +485,34 @@ async def _main() -> None:
 
         async def wire_optional_task_fault(**kwargs: Any) -> tuple[None, _TurnPipeline]:
             db = kwargs["db"]
-            _declare_news_capabilities(kwargs["capabilities"], market_review=True)
+            _declare_news_capabilities(kwargs["capabilities"], quotes=True)
             return None, _TurnPipeline(
                 (
                     ("news-deduper", _fact_writer(db), 1.0),
-                    ("news-instruments", _backlog_consumer(db, resume_gate=resume_gate), 1.0),
+                    # `news-quotes` is an optional capability task with a capability all to itself,
+                    # which is the shape #553 PR-2's market notification loop registers as.
+                    ("news-quotes", _backlog_consumer(db, resume_gate=resume_gate), 1.0),
                 )
             )
 
         workers_wiring._wire_news_pipeline = wire_optional_task_fault
+    elif arguments.mode == "ingestion_task_fault":
+        # Reception and admission are the information entry, not a capability to switch off. A program
+        # error there must still end the process, so the container restart that has always healed it
+        # keeps happening instead of a permanent outage behind a 200 /readyz.
+        async def wire_ingestion_fault(**kwargs: Any) -> tuple[None, _TurnPipeline]:
+            _declare_news_capabilities(kwargs["capabilities"])
+
+            async def fail() -> bool:
+                # After readiness, so this is a receiver crashing in service rather than a startup
+                # refusal: the case where confinement would have replaced a restart with an outage.
+                await asyncio.sleep(0.5)
+                print("INGESTION_ABOUT_TO_FAIL", flush=True)
+                raise RuntimeError("test_ingestion_task_fault")
+
+            return None, _TurnPipeline((("news-receiver", fail, 1.0),))
+
+        workers_wiring._wire_news_pipeline = wire_ingestion_fault
     elif arguments.mode == "trading_lane_fault":
         from tracefold.trading.signal_lane import SignalLane
 
@@ -539,6 +559,7 @@ async def _main() -> None:
         "manifest_barrier",
         "manifest_registration_fault",
         "optional_task_fault",
+        "ingestion_task_fault",
         "trading_lane_fault",
     }
     settings = Settings(

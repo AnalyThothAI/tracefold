@@ -332,7 +332,7 @@ def test_real_trading_lane_fault_keeps_news_fact_writes_and_reads_running(tmp_pa
         assert payload["capabilities"]["news_ingestion"] == {"state": "running", "reason": None}
         assert payload["capabilities"]["trading_signal_lane"] == {
             "state": "faulted",
-            "reason": "trading-signal-lane:RuntimeError",
+            "reason": "trading_signal_lane:RuntimeError",
         }
         # A running Deliverer task beside a sender that could not be built is still `unavailable`:
         # declaring a task is not a claim that its capability works.
@@ -377,7 +377,7 @@ def test_real_news_program_registration_fault_stays_inside_the_editorial_capabil
         assert payload["runtime_manifest_sha"] is None
         assert payload["capabilities"]["news_editorial"] == {
             "state": "faulted",
-            "reason": "news_program_manifest_registration_failed:RuntimeError",
+            "reason": "news_editorial_manifest_registration_failed:RuntimeError",
         }
         assert payload["capabilities"]["news_ingestion"] == {"state": "running", "reason": None}
 
@@ -388,6 +388,31 @@ def test_real_news_program_registration_fault_stays_inside_the_editorial_capabil
 
         process.send_signal(signal.SIGTERM)
         assert process.wait(timeout=5.0) == 0
+    finally:
+        _ensure_process_stopped(process)
+
+
+@pytest.mark.slow
+def test_real_news_ingestion_task_fault_still_fails_the_workers_root() -> None:
+    """#553 PR-3. Reception and admission are the information entry, not an optional capability.
+
+    A receiver crash has always been healed by the process exiting and compose restarting it. Turning
+    that into a confined `faulted` capability would replace a self-healing restart with a permanent
+    ingestion outage behind a 200 `/readyz`, which is the opposite of what this PR is for.
+    """
+
+    port = _free_port()
+    process = _start_workers_process("ingestion_task_fault", port)
+    try:
+        _wait_ready(process, port)
+        _wait_for_output(process, "INGESTION_ABOUT_TO_FAIL", timeout_seconds=20.0)
+        assert process.wait(timeout=10.0) != 0
+        _assert_probe_closed(port)
+        row = _runtime_row()
+        assert row["lifecycle_state"] == "failed"
+        assert row["fatal_code"] == "child_failed"
+        # And it is not reported as a capability fault: nothing pretends one lane went down.
+        assert _runtime_capabilities().get("news_ingestion", {}).get("state") != "faulted"
     finally:
         _ensure_process_stopped(process)
 
@@ -542,15 +567,15 @@ def test_real_optional_task_fault_stops_only_that_task_and_a_restart_drains_its_
     try:
         _wait_ready(process, port)
         _wait_for_output(process, "OPTIONAL_TASK_ABOUT_TO_FAIL")
-        _wait_capability(port, "news_market_review", "faulted")
+        _wait_capability(port, "news_quotes", "faulted")
 
         after_fault = _test_fact_count()
         _wait_until(lambda: _test_fact_count() > after_fault, "healthy tasks stopped with the faulted one")
         payload = _readiness_payload(port)
         assert payload["ok"] is True
-        assert payload["capabilities"]["news_market_review"] == {
+        assert payload["capabilities"]["news_quotes"] == {
             "state": "faulted",
-            "reason": "news-instruments:RuntimeError",
+            "reason": "news_quotes:RuntimeError",
         }
         assert payload["capabilities"]["news_ingestion"] == {"state": "running", "reason": None}
         # Nothing restarted it, so its PostgreSQL backlog is still unprocessed.

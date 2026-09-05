@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from psycopg_pool import PoolTimeout
 
 from tracefold.app.workers.runtime import (
     NEWS_DELIVERY,
@@ -185,6 +186,31 @@ def test_a_sender_that_cannot_be_constructed_leaves_the_fact_chain_composed_and_
     assert capabilities.payload()[NEWS_DELIVERY]["state"] == "unavailable"
 
 
+def test_a_postgresql_failure_during_program_assembly_is_not_an_editorial_fault(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#553 PR-3. A shared PostgreSQL fault must not be reported as one capability's program error.
+
+    `_compose_program_arms` runs the canary startup reconciliation, which is a control write. A pool
+    timeout there says the database failed; confining it would leave a green readiness beside it.
+    """
+
+    token_file = tmp_path / "telegram_bot_token"
+    token_file.write_text(BOT_TOKEN, encoding="utf-8")
+    token_file.chmod(0o600)
+
+    async def refuse(*_args: Any, **_kwargs: Any) -> Any:
+        raise PoolTimeout("couldn't get a connection after 1.0 sec")
+
+    monkeypatch.setattr(news_wiring, "_compose_program_arms", refuse)
+    capabilities = CapabilityStates()
+
+    with pytest.raises(PoolTimeout):
+        _composed_pipeline(_settings(tmp_path), capabilities)
+    assert NEWS_EDITORIAL not in capabilities.payload()
+
+
 def test_a_program_that_cannot_be_assembled_faults_editorial_and_leaves_the_rest_composed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -207,7 +233,7 @@ def test_a_program_that_cannot_be_assembled_faults_editorial_and_leaves_the_rest
     assert pipeline.runtime_manifest_sha is None
     assert capabilities.payload()[NEWS_EDITORIAL] == {
         "state": "faulted",
-        "reason": "news_program_assembly_failed:RuntimeError",
+        "reason": "news_editorial_assembly_failed:RuntimeError",
     }
     assert capabilities.payload()[NEWS_INGESTION] == {"state": "running", "reason": None}
     task_names = {name for name, _ in pipeline.runners()}

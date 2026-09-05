@@ -11,7 +11,10 @@ from tracefold.app.workers.runtime import (
     NEWS_DELIVERY,
     NEWS_EDITORIAL,
     NEWS_INGESTION,
-    NEWS_MARKET_REVIEW,
+    NEWS_INSTRUMENTS,
+    NEWS_QUOTES,
+    NEWS_REACTIONS,
+    SHARED_RESOURCE_FAILURES,
     TRADING_SIGNAL_LANE,
     CapabilityStates,
 )
@@ -37,12 +40,16 @@ class _Components:
     capabilities: CapabilityStates = field(default_factory=CapabilityStates)
 
 
-def _capability_fault_reason(task_name: str, exc: BaseException) -> str:
-    """Name what stopped one capability task, in the vocabulary a status reader publishes."""
+def _capability_fault_reason(capability: str, exc: BaseException) -> str:
+    """Name what stopped one capability, in the vocabulary a status reader publishes.
+
+    Keyed on the capability rather than the task name so every reason an operator reads -- runtime
+    fault, wiring failure, registration failure -- starts with the same word.
+    """
 
     if any(isinstance(item, (BrokerBackpressure, BrokerUnavailable)) for item in _leaf_exceptions(exc)):
-        return f"{task_name}:news_broker_unavailable"
-    return f"{task_name}:{type(exc).__name__}"
+        return f"{capability}:news_broker_unavailable"
+    return f"{capability}:{type(exc).__name__}"
 
 
 def _leaf_exceptions(exc: BaseException) -> list[BaseException]:
@@ -75,9 +82,8 @@ async def _wire_components(
         )
         runtime_manifest_sha = await _register_runtime_manifest(news_pipeline, capabilities=capabilities)
     else:
-        capabilities.disabled(NEWS_INGESTION, "news_disabled")
-        capabilities.disabled(NEWS_EDITORIAL, "news_disabled")
-        capabilities.disabled(NEWS_MARKET_REVIEW, "news_disabled")
+        for capability in (NEWS_INGESTION, NEWS_EDITORIAL, NEWS_INSTRUMENTS, NEWS_QUOTES, NEWS_REACTIONS):
+            capabilities.disabled(capability, "news_disabled")
         # A push target declared against a disabled News is a configuration error, not a delivery.
         # It used to refuse the whole process; now it refuses only the capability it describes.
         push = news_push_availability(settings, inspect_secret_file=False)
@@ -111,10 +117,17 @@ async def _register_runtime_manifest(
 
     try:
         await news_pipeline.register_runtime_manifest()
+    except SHARED_RESOURCE_FAILURES:
+        # PostgreSQL or a shared native permit, not this Program. Recording it as an editorial fault
+        # would report a process-wide failure as one capability's, behind a green readiness.
+        raise
     except Exception as exc:
         logger.opt(exception=exc).error("News Program manifest registration failed; editorial capability faulted")
         news_pipeline.disable_editorial()
-        capabilities.faulted(NEWS_EDITORIAL, f"news_program_manifest_registration_failed:{type(exc).__name__}")
+        capabilities.faulted(
+            NEWS_EDITORIAL,
+            f"{NEWS_EDITORIAL}_manifest_registration_failed:{type(exc).__name__}",
+        )
         return None
     return news_pipeline.runtime_manifest_sha
 
@@ -131,12 +144,15 @@ def _wire_trading_lane(
         return None
     try:
         lane = _wire_signal_lane(settings=settings, db=db, telemetry=telemetry)
+    except SHARED_RESOURCE_FAILURES:
+        raise
     except Exception as exc:
         logger.opt(exception=exc).error("Trading Signal lane wiring failed; Trading capability faulted")
-        capabilities.faulted(TRADING_SIGNAL_LANE, f"trading_signal_lane_wiring_failed:{type(exc).__name__}")
+        capabilities.faulted(
+            TRADING_SIGNAL_LANE,
+            f"{TRADING_SIGNAL_LANE}_wiring_failed:{type(exc).__name__}",
+        )
         return None
-    if lane is None:
-        capabilities.disabled(TRADING_SIGNAL_LANE, "trading_disabled")
-    else:
-        capabilities.running(TRADING_SIGNAL_LANE)
+    # `_wire_signal_lane` returns None only for a disabled Decision Plane, and that was answered above.
+    capabilities.running(TRADING_SIGNAL_LANE)
     return lane

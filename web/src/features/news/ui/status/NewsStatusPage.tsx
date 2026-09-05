@@ -1,3 +1,4 @@
+import { CockpitWorkersCapabilities, useCockpitStatusQuery } from "@features/cockpit";
 import { newsPath } from "@shared/routing/paths";
 import { Bar } from "@shared/ui/Bar";
 import { Card } from "@shared/ui/Card";
@@ -43,6 +44,9 @@ const REASON_STAGE_ORDER = ["push", "throttle", "drop", "ungrounded", "gate", "d
 
 export function NewsStatusPage({ token }: { token: string }) {
   const query = useNewsStatusWithToken(token);
+  // The same `/api/status` read the shell already polls, served from one React Query key: this page
+  // adds no request, and the Workers capability report arrives with it (#553 PR-3).
+  const runtimeQuery = useCockpitStatusQuery({ token });
   const status = query.data;
   return (
     <NewsPageShell archetype="scan" className="news-status-shell" label="新闻流水线状态">
@@ -101,6 +105,15 @@ export function NewsStatusPage({ token }: { token: string }) {
             <div className="news-status-grid">
               <Card aria-label="关注列表" title="关注列表">
                 <WatchPanel status={status} />
+              </Card>
+              <Card
+                aria-label="Workers 能力"
+                hint="进程存活与各能力状态是两件事；某项故障不会关闭其余接口"
+                title="Workers 能力"
+              >
+                <CockpitWorkersCapabilities
+                  capabilities={runtimeQuery.data?.data.runtime.workers_runtime.capabilities}
+                />
               </Card>
             </div>
 
