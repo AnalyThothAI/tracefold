@@ -40,6 +40,10 @@ _DAY_MS = 24 * 3600_000
 _RAW_RETENTION_BATCH_SIZE = 500
 # One group is one row, and production holds hundreds, so a batch this size drains in one pass.
 _MARKET_TRACK_PRUNE_BATCH = 500
+# One bounded batch per pass. The Janitor runs every 60 s and the measured tape is a few thousand fills
+# a day, so a single batch this size drains a day's expiry many times over without ever becoming an
+# unbounded delete (#572 PR-1).
+_CHAIN_TAPE_PRUNE_BATCH = 500
 _RAW_RETENTION_MAX_BATCHES = 4
 _RAW_RETENTION_MAX_WALL_SECONDS = 3.0
 _RAW_RETENTION_BATCH_TIMEOUT_SECONDS = 1.0
@@ -213,6 +217,7 @@ class JanitorLoop:
         period_seconds: float = _JANITOR_PERIOD_SECONDS,
         retention_raw_days: int = 30,
         retention_judged_days: int = 365,
+        retention_chain_tape_days: int = 90,
         telemetry: NewsDurableEventTelemetryPort | None = None,
     ) -> None:
         # Two ports, because the retention sweep is a measured heavy transaction and the outbox catch-up is
@@ -226,6 +231,9 @@ class JanitorLoop:
         # corpus every later comparison replays against.
         self.retention_raw_ms = int(retention_raw_days) * _DAY_MS
         self.retention_judged_ms = int(retention_judged_days) * _DAY_MS
+        # The wallet tape keeps its own tier: its rows are chain movements, not Items, and they have no
+        # verdict or Event to inherit a lifetime from (#572 §5.5).
+        self.retention_chain_tape_ms = int(retention_chain_tape_days) * _DAY_MS
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
@@ -262,6 +270,10 @@ class JanitorLoop:
             await self._purge_raw_retention(stamp)
         except Exception as exc:
             log.warning("news raw retention failed code=raw_retention_failed:%s", type(exc).__name__)
+        try:
+            await self._purge_chain_tape_retention(stamp)
+        except Exception as exc:
+            log.warning("news chain tape retention failed code=chain_tape_retention_failed:%s", type(exc).__name__)
         try:
             retention = await self.cold_db.tx(
                 "news_learning_retention",
@@ -315,6 +327,23 @@ class JanitorLoop:
                     repos.news.update_broker_snapshot(snapshot=snap, now_ms=s)
 
                 await self.db.tx("news_broker_snapshot", _snapshot, timeout_seconds=3.0)
+
+    async def _purge_chain_tape_retention(self, stamp: int) -> None:
+        """One bounded batch of expired wallet fills, on the same heavy slot the other sweeps use.
+
+        Not a task of its own: a delete bounded by a batch size and run beside the sweeps that already
+        hold the one heavy permit cannot compete with them for it (#572 PR-1).
+        """
+
+        cutoff_ms = stamp - self.retention_chain_tape_ms
+        with contextlib.suppress(TransientError, DeferError):
+            deleted = await self.cold_db.tx(
+                "news_chain_tape_retention",
+                lambda repos: repos.news.chain_tape_purge_fills(cutoff_ms=cutoff_ms, limit=_CHAIN_TAPE_PRUNE_BATCH),
+                timeout_seconds=3.0,
+            )
+            if deleted:
+                log.info("news chain tape retention deleted=%d cutoff_ms=%d", int(deleted), cutoff_ms)
 
     async def _purge_raw_retention(self, stamp: int) -> None:
         started = time.perf_counter()

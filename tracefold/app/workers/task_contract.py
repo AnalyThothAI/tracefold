@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from tracefold.app.workers.runtime import (
+    CHAIN_TAPE,
     MARKET_NOTIFICATIONS,
     NEWS_DELIVERY,
     NEWS_EDITORIAL,
@@ -38,6 +39,10 @@ from tracefold.app.workers.runtime import (
     NEWS_REACTIONS,
     TRADING_SIGNAL_LANE,
 )
+from tracefold.app.workers.wiring.chain_tape import (
+    CHAIN_TAPE_TASK_NAME,
+    run_chain_tape,
+)
 from tracefold.app.workers.wiring.news import (
     MARKET_NOTIFICATIONS_TASK_NAME,
     run_market_notifications,
@@ -46,6 +51,7 @@ from tracefold.app.workers.wiring.trading import (
     SIGNAL_LANE_TASK_NAME,
     run_signal_lane,
 )
+from tracefold.news.chain_tape import ChainTapeLoop
 from tracefold.news.market_notifications import MarketNotificationLoop
 from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.trading.signal_lane import SignalLane
@@ -92,6 +98,7 @@ def worker_business_tasks(
     news_pipeline: NewsPipeline | None,
     signal_lane: SignalLane | None,
     market_notifications: MarketNotificationLoop | None = None,
+    chain_tape: ChainTapeLoop | None = None,
     telemetry: Any | None = None,
 ) -> tuple[WorkerTask, ...]:
     """Return the ordered task declarations consumed by the Workers root.
@@ -124,6 +131,16 @@ def worker_business_tasks(
                 name=MARKET_NOTIFICATIONS_TASK_NAME,
                 capability=MARKET_NOTIFICATIONS,
                 run=lambda stop: run_market_notifications(market, stop_event=stop),
+                foundational=False,
+            )
+        )
+    if chain_tape is not None:
+        tape = chain_tape
+        tasks.append(
+            WorkerTask(
+                name=CHAIN_TAPE_TASK_NAME,
+                capability=CHAIN_TAPE,
+                run=lambda stop: run_chain_tape(tape, stop_event=stop),
                 foundational=False,
             )
         )

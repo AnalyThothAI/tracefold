@@ -104,6 +104,29 @@ def test_production_composition_requires_explicit_external_data_classification_a
     assert observed == SEMANTIC_CLASSES
 
 
+def test_the_chain_tape_stage_declares_its_semantics_and_emits_the_common_telemetry() -> None:
+    """#572 §5.1. The tape is named here rather than discovered, and the reason is worth writing down.
+
+    `_production_stage_types` reads the typed `NewsPipeline` composition, and the tape is not in it: like
+    the market notification loop, it is declared through `worker_business_tasks` because App owns its
+    tick. That is a composition fact, not an exemption from the gate -- so the same two obligations the
+    harness enforces on every other collector are asserted directly on this class.
+
+    One loop, three declared classes, because the extension gate classified its three flows separately:
+    the wallet logs are a `durable_event` stream, the roster is `latest_state`, and the classification
+    and its cash leg are `derived_work`.
+    """
+
+    from tracefold.news.chain_tape import ChainTapeLoop
+
+    declared = tuple(str(value) for value in ChainTapeLoop.work_semantics)
+
+    assert set(declared) == {"durable_event", "derived_work", "latest_state"}
+    assert set(declared) <= SEMANTIC_CLASSES
+    assert getattr(ChainTapeLoop, "external_data_exempt_reason", None) is None
+    assert _emits_external_data_telemetry(ChainTapeLoop)
+
+
 def test_database_callbacks_cannot_be_async_provider_or_model_calls() -> None:
     """Business DB ports take sync callbacks, so awaited external I/O stays outside their checkout."""
 

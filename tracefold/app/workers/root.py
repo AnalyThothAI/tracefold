@@ -246,6 +246,7 @@ async def run_workers(settings: Settings) -> None:
                     news_pipeline=components.news_pipeline,
                     signal_lane=components.signal_lane,
                     market_notifications=components.market_notifications,
+                    chain_tape=components.chain_tape,
                     telemetry=components.telemetry,
                 )
             ]

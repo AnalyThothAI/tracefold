@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import Literal, Protocol
 
 NewsWorkSemantics = Literal["capital_truth", "derived_work", "durable_event", "latest_state"]
-NewsExternalDataName = Literal["event_reaction", "instrument_snapshot", "opennews_recovery", "quote_snapshot"]
+NewsExternalDataName = Literal[
+    "chain_tape",
+    "event_reaction",
+    "instrument_snapshot",
+    "opennews_recovery",
+    "quote_snapshot",
+]
 NewsExternalDataSource = Literal[
     "binance",
     "binance_perp",
@@ -14,6 +20,10 @@ NewsExternalDataSource = Literal[
     "okx",
     "opennews",
     "other",
+    # The wallet tape's two authorities: the chain's public JSON-RPC, and the site that publishes the
+    # tracked-trader list. Two labels because they fail independently and only one of them is the chain.
+    "robinhood_rpc",
+    "robinhoodtrenches",
     "us_reference",
 ]
 NewsExternalDataOutcome = Literal["error", "partial", "success"]

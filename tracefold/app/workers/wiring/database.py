@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from tracefold.app.repository_session import RepositorySession
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.news.bus import DeferError, TransientError
+from tracefold.news.chain_tape.loop import ChainTapeRepositories
 from tracefold.news.market_review.loops import PriceRepositories
 from tracefold.news.market_review.storage import InstrumentsRepository, PriceRepository
 from tracefold.news.pipeline.runtime import NewsRepositories
@@ -212,6 +213,41 @@ class WorkerReactionDatabase:
             raise TransientError(f"reaction_db_overrun:{name}") from exc
 
 
+class WorkerChainTapeDatabase:
+    """`ChainTapeDatabasePort` (#572 PR-1): the wallet tape on ordinary business admission.
+
+    Ordinary rather than heavy, and never the four-slot News lane. A tape turn is one small read and one
+    short write of at most twenty receipts' worth of rows, so it does not need the heavy slot the Janitor
+    and Event Reactions share -- and it must not be able to take a slot the Deduper, Triage and the
+    Deliverer were budgeted, because ingestion is the thing every capability reads.
+    """
+
+    def __init__(self, database: WorkerDatabase) -> None:
+        self._database = database
+
+    async def read[T](self, name: str, fn: Callable[[ChainTapeRepositories], T], *, timeout_seconds: float = 3.0) -> T:
+        return await self._run(
+            name,
+            _in_session(self._database, name, fn, timeout_seconds, _news_repositories),
+            timeout_seconds,
+        )
+
+    async def tx[T](self, name: str, fn: Callable[[ChainTapeRepositories], T], *, timeout_seconds: float = 3.0) -> T:
+        return await self._run(
+            name,
+            _in_session(self._database, name, fn, timeout_seconds, _news_repositories),
+            timeout_seconds,
+        )
+
+    async def _run[T](self, name: str, run: Callable[[], T], timeout_seconds: float) -> T:
+        try:
+            return await self._database.run_business(name, run, operation_timeout_seconds=timeout_seconds)
+        except ResourceAdmissionTimeout as exc:
+            raise DeferError(f"chain_tape_db_admission_timeout:{name}") from exc
+        except ResourceOperationOverrun as exc:
+            raise TransientError(f"chain_tape_db_overrun:{name}") from exc
+
+
 class WorkerTradingDatabase:
     """`TradingDatabasePort` (#104): the same one-slot heavy admission Event Reaction uses.
 
@@ -240,6 +276,7 @@ class WorkerTradingDatabase:
 
 
 __all__ = [
+    "WorkerChainTapeDatabase",
     "WorkerNewsColdDatabase",
     "WorkerNewsDatabase",
     "WorkerQuoteDatabase",

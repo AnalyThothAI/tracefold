@@ -231,6 +231,7 @@ def test_wheel_ships_the_packaged_resources_the_runtime_reads(built_distribution
         f"{alembic}versions/20260905_0366_news_market_notification_tracks.py",
         f"{alembic}versions/20260905_0367_news_market_alert_round_start.py",
         f"{alembic}versions/20260906_0368_news_instrument_snapshot_state.py",
+        f"{alembic}versions/20260906_0369_news_market_wallet_tape.py",
     ]
     assert f"{DISTRIBUTION_NAME}/news/program/resources/registry.json" in members
     # #509: the storyline registry is package data the Gate and Triage read on every Event, so a wheel

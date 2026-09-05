@@ -344,6 +344,26 @@ and is never later than its identity's. They are deliberately not backfilled —
 rewriting all 16 493 to make the two exactly equal today would cost the whole-table
 rewrite this revision exists to stop.
 
+`20260906_0369` gives the Robinhood Chain wallet tape its three tables (#572
+PR-1): `news_market_wallet_fills`, `news_market_wallet_roster` and the one-row
+`news_market_wallet_tape_state`. It touches nothing that already exists — no
+`ALTER TABLE`, no foreign key, no lock outside the three new relations — so no
+writer has to be stopped for it, and the `news-chain-tape` task it serves is off
+until an operator sets `news.chain_tape.enabled`.
+
+Two decisions in it are worth reading before the next revision touches these
+tables. Amounts are `numeric(78,0)` because a single 18-decimal balance overflows
+`bigint` at four tokens of supply and the rules these feed compare two such
+quantities exactly; `usd` is a separate nullable `numeric(38,10)` because it is a
+derived dollar figure, and NULL there means `unpriced` rather than zero. And the
+state row carries two positions, not one: `high_water_*` is what has been
+classified and deliberately lags the chain head by the log overlap so the tip is
+re-read, while `noise_through_*` is what has been counted and never lags — a fill
+re-read across turns collapses on its primary key, but a count has no key to
+collapse on. `downgrade` is refused: the public RPC keeps state for about ten
+minutes and the provider's own tape is missing about two thirds of its closes, so
+nothing can rebuild a dropped fill.
+
 Writers and readers must both be stopped: the previous writer names `last_seen_ms`
 and this one names `observed_at_ms` and the new table, so neither runs against the
 other's schema, and the previous-revision reader is the more visible half — Serve's

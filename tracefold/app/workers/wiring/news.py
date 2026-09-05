@@ -613,6 +613,7 @@ def _compose_news_pipeline(
             bus=bus,
             retention_raw_days=settings.news.retention.raw_days,
             retention_judged_days=settings.news.retention.judged_days,
+            retention_chain_tape_days=settings.news.chain_tape.retention_days,
             telemetry=telemetry,
         ),
         instruments=_instrument_snapshot_loop(settings, db=news_db, telemetry=telemetry),

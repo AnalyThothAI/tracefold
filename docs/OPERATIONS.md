@@ -1544,6 +1544,81 @@ tolerance are code-owned; `news.venues.binance` / `news.venues.hyperliquid` /
 `news.venues.enabled` are the only switches, shared with the instrument
 snapshot.
 
+### Robinhood Chain wallet tape (#572 PR-1)
+
+Off by default and store-only: when `news.chain_tape.enabled` is true,
+`news-chain-tape` writes `news_market_wallet_fills` and
+`news_market_wallet_roster` and sends nothing. Both providers are public and
+unauthenticated, so nothing here is a secret and `uv run tracefold config`
+prints all of it under `news.chain_tape`:
+
+| Key | Default | What it decides |
+| --- | --- | --- |
+| `news.chain_tape.enabled` | `false` | whether the task runs at all. Off means the `chain_tape` capability reports `disabled` and no provider is called |
+| `news.chain_tape.rpc_url` | `https://rpc.mainnet.chain.robinhood.com` | the read-only JSON-RPC endpoint. Rate-limited and documented as non-production |
+| `news.chain_tape.poll_interval_s` | `2.0` | the turn cadence. Blocks are ~0.1 s apart and the log window overlaps 30 of them |
+| `news.chain_tape.roster_provider_url` | `https://robinhoodtrenches.com` | the site that publishes the tracked-trader list and its statistics |
+| `news.chain_tape.roster.min_closed_trades` | `10` | the closed-trade floor a wallet must clear to be considered for the quality list |
+| `news.chain_tape.roster.min_profit_factor` | `1.2` | the profit factor it must also clear. Win rate is deliberately not a criterion (#572 §3.2) |
+| `news.chain_tape.roster.top_quality` | `20` | how many of those to keep, ranked by realized profit and loss |
+| `news.chain_tape.roster.top_whale_by_open_cost` | `20` | how many wallets to follow purely for position size, with no performance filter |
+| `news.chain_tape.retention_days` | `90` | how long a fill is kept. The Janitor deletes at most 500 expired fills per turn on its existing heavy slot |
+
+The roster union is the topic array on every `eth_getLogs` call, so raising the
+two `top_*` numbers raises the request the public endpoint has to answer; the
+settings model caps each at 200.
+
+The week-one calibration counts #572 §6 asks for are three read-only queries:
+
+```sql
+-- fills per day by kind, over the last week, on block time
+SELECT to_char(to_timestamp(event_at_ms / 1000) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+       kind,
+       count(*) AS fills,
+       count(DISTINCT wallet) AS wallets,
+       count(DISTINCT token) AS tokens
+  FROM news_market_wallet_fills
+ WHERE event_at_ms >= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - 7 * 86400000
+ GROUP BY 1, 2
+ ORDER BY 1 DESC, 2;
+
+-- how much of the current roster actually traded in the last week, and how much it moved
+SELECT r.wallet, r.handle, r.rank_quality, r.rank_whale,
+       count(f.tx_hash) AS fills,
+       count(*) FILTER (WHERE f.kind = 'sell') AS sells,
+       round(sum(f.usd) FILTER (WHERE f.kind = 'sell'), 2) AS sold_usd
+  FROM news_market_wallet_roster r
+  LEFT JOIN news_market_wallet_fills f
+    ON f.wallet = r.wallet
+   AND f.event_at_ms >= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - 7 * 86400000
+ WHERE r.roster_version = (SELECT max(roster_version) FROM news_market_wallet_roster)
+ GROUP BY 1, 2, 3, 4
+ ORDER BY fills DESC;
+
+-- the unpriced share: trades whose cash leg was not the pinned stablecoin
+SELECT count(*) AS trades,
+       count(*) FILTER (WHERE usd IS NULL) AS unpriced,
+       round(100.0 * count(*) FILTER (WHERE usd IS NULL) / nullif(count(*), 0), 1) AS unpriced_pct
+  FROM news_market_wallet_fills
+ WHERE kind <> 'transfer_out'
+   AND event_at_ms >= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - 7 * 86400000;
+```
+
+The tape's own position and last turn are one row:
+
+```sql
+SELECT high_water_block, high_water_tx_index, roster_version,
+       last_outcome, last_error, last_success_at_ms
+  FROM news_market_wallet_tape_state;
+```
+
+`last_outcome = 'partial'` with a `last_error` naming `robinhood_rpc:*` or
+`robinhoodtrenches:*` is the expected shape of a provider hiccup: the position
+did not move, nothing was lost, and the next turn re-reads the same range. A
+`last_success_at_ms` that stops advancing while the process is alive is the
+signal worth alerting on, and `tracefold_external_data_last_success_age_seconds{name="chain_tape"}`
+reports the same thing to Prometheus.
+
 ## Migrations
 
 Alembic has one root, baseline `20260831_0340`, and current head

@@ -50,6 +50,7 @@ def _arguments() -> argparse.Namespace:
             "manifest_registration_fault",
             "optional_task_fault",
             "market_notifications_fault",
+            "chain_tape_fault",
             "ingestion_task_fault",
             "trading_lane_fault",
             "schema_mismatch",
@@ -548,6 +549,37 @@ async def _main() -> None:
             )
 
         workers_wiring._wire_news_pipeline = wire_market_fault
+    elif arguments.mode == "chain_tape_fault":
+        # The real chain tape task: the real `run_chain_tape` wrapper, the real registration in
+        # `worker_business_tasks`, and the real `chain_tape` capability. Only `advance()` is replaced,
+        # because a program error inside it is the thing under test (#572 PR-1).
+        from tracefold.app.workers.runtime import CHAIN_TAPE
+        from tracefold.news.chain_tape import ChainTapeLoop
+
+        class _FailingChainTape(ChainTapeLoop):
+            def __init__(self) -> None:
+                self.turns = 0
+                self.closed = False
+
+            async def aclose(self) -> None:
+                self.closed = True
+
+            async def advance(self) -> dict[str, Any]:
+                self.turns += 1
+                if self.turns < 2:
+                    # One healthy turn first, so the failure below is a loop failing in service rather
+                    # than one that never started.
+                    return {}
+                print("CHAIN_TAPE_ABOUT_TO_FAIL", flush=True)
+                raise RuntimeError("test_chain_tape_fault")
+
+        async def wire_chain_tape_fault(**kwargs: Any) -> tuple[None, _TurnPipeline, None]:
+            _declare_news_capabilities(kwargs["capabilities"], market=True)
+            kwargs["capabilities"].running(CHAIN_TAPE)
+            return None, _TurnPipeline((("news-deduper", _fact_writer(kwargs["db"]), 1.0),)), None
+
+        workers_wiring._wire_news_pipeline = wire_chain_tape_fault
+        workers_wiring._wire_chain_tape = lambda **_kwargs: _FailingChainTape()
     elif arguments.mode == "ingestion_task_fault":
         # Reception and admission are the information entry, not a capability to switch off. A program
         # error there must still end the process, so the container restart that has always healed it
@@ -621,6 +653,7 @@ async def _main() -> None:
         "manifest_registration_fault",
         "optional_task_fault",
         "market_notifications_fault",
+        "chain_tape_fault",
         "ingestion_task_fault",
         "trading_lane_fault",
         "push_misconfigured",

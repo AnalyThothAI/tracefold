@@ -143,6 +143,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # literal here would silently stop matching the day `oi_signals` bumps it.
         "tracefold.news.oi_signals",
     ),
+    # #572 PR-1. The JSON-RPC adapter answers in the tape's own address and topic encoding rather than
+    # keeping a second copy of it, the same way the venue catalogue adapters answer in the instrument
+    # vocabulary. `evm` is pure string work with no network, no ABI library and no business rule.
+    "integrations.robinhood_chain": ("tracefold.news.chain_tape.evm",),
     "app.workers": (
         # The code-owned Program contract: the version every verdict row is stamped with, the route
         # budget the composition seam builds its LM clients against, and the computed identity of that
@@ -166,6 +170,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # `advance()`. App composes it, declares its capability key and owns its tick, exactly as it
         # does the Trading Signal lane's; the rules and the durable state stay inside News.
         "tracefold.news.market_notifications",
+        # #572 PR-1. The wallet tape joins the same way and for the same reason: one News-owned object
+        # with one business action, `advance()`. App composes it, builds the two provider adapters that
+        # News may not name, declares its capability key and owns its tick.
+        "tracefold.news.chain_tape",
         "tracefold.news.market_review.loops",
         # The database composition adapter constructs narrow callback views from the concrete
         # repositories; no business package imports the App adapter in return.
@@ -214,6 +222,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
 # not a filename inventory: converting `opentrade.py` into an `opentrade/` package keeps the seam.
 INTEGRATION_BUSINESS_ADAPTER_FAMILIES = {
     "nautilus": {"trading"},
+    "robinhood_chain": {"news"},
     "opentrade": {"trading"},
     "trading_catalog": {"trading"},
 }
@@ -347,6 +356,8 @@ def _private_import_allowed(importer: str, imported: str) -> bool:
         family = "integrations.nautilus"
     elif parts == ["tracefold", "integrations", "rabbitmq"]:
         family = "integrations.rabbitmq"
+    elif parts == ["tracefold", "integrations", "robinhood_chain"]:
+        family = "integrations.robinhood_chain"
     allowed_imports = PRIVATE_BUSINESS_IMPORT_RULES.get(family or "", ())
     return any(imported == allowed or imported.startswith(f"{allowed}.") for allowed in allowed_imports)
 

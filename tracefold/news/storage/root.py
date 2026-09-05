@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .chain_tape import ChainTapeStorage
 from .decisions import DecisionStorage
 from .events import EventStorage
 from .feed import FeedStorage
@@ -18,6 +19,7 @@ class NewsRepository(
     EventStorage,
     DecisionStorage,
     MarketStorage,
+    ChainTapeStorage,
     TradeProjectionStorage,
     LearningStorage,
     FeedStorage,

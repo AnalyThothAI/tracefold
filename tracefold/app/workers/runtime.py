@@ -29,6 +29,10 @@ NEWS_REACTIONS = "news_reactions"
 # owns it, because that is what an operator reading `/api/status` is looking for: market alerts are a
 # capability of the product, not of News's internal layout (#553 PR-2).
 MARKET_NOTIFICATIONS = "market_notifications"
+# The Robinhood Chain wallet tape's own key (#572 PR-1). Named for the stream an operator loses when it
+# faults -- the followed wallets' on-chain fills -- rather than for the provider behind it, because a
+# second chain or a second roster site would not be a second capability.
+CHAIN_TAPE = "chain_tape"
 TRADING_SIGNAL_LANE = "trading_signal_lane"
 
 CapabilityStateName = Literal["running", "faulted", "unavailable", "disabled"]

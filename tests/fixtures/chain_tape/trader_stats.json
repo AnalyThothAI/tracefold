@@ -1,0 +1,112 @@
+{
+ "0xleo": {
+  "handle": "0xleo",
+  "stats": {
+   "avg_hold_seconds": 21155.0,
+   "closed_trades": 1,
+   "profit_factor": 0.0,
+   "realized_pnl": -9863.783952000005,
+   "win_rate": 0.0,
+   "window": "7d"
+  }
+ },
+ "397397": {
+  "handle": "397397",
+  "stats": {
+   "avg_hold_seconds": 20619.75,
+   "closed_trades": 16,
+   "profit_factor": 0.16674260049512044,
+   "realized_pnl": -77133.80348900001,
+   "win_rate": 0.4375,
+   "window": "7d"
+  }
+ },
+ "Aurelius0121": {
+  "handle": "Aurelius0121",
+  "stats": {
+   "avg_hold_seconds": 47783.529411764706,
+   "closed_trades": 17,
+   "profit_factor": 0.041290757078894826,
+   "realized_pnl": -140396.5229712346,
+   "win_rate": 0.29411764705882354,
+   "window": "7d"
+  }
+ },
+ "FartmanSacks": {
+  "handle": "FartmanSacks",
+  "stats": {
+   "avg_hold_seconds": 82979.90909090909,
+   "closed_trades": 33,
+   "profit_factor": 0.6275199050920087,
+   "realized_pnl": -63607.04344649583,
+   "win_rate": 0.36363636363636365,
+   "window": "7d"
+  }
+ },
+ "MEADGod": {
+  "handle": "MEADGod",
+  "stats": {
+   "avg_hold_seconds": 332852.5,
+   "closed_trades": 4,
+   "profit_factor": 7.251788550857761,
+   "realized_pnl": 201.10207440728968,
+   "win_rate": 0.75,
+   "window": "7d"
+  }
+ },
+ "bluntz_capital": {
+  "handle": "bluntz_capital",
+  "stats": {
+   "avg_hold_seconds": 158944.04545454544,
+   "closed_trades": 22,
+   "profit_factor": 0.817688934665987,
+   "realized_pnl": -22964.012384018704,
+   "win_rate": 0.5454545454545454,
+   "window": "7d"
+  }
+ },
+ "frankdegods": {
+  "handle": "frankdegods",
+  "stats": {
+   "avg_hold_seconds": 36028.686274509804,
+   "closed_trades": 51,
+   "profit_factor": 1.5652738478929682,
+   "realized_pnl": 51333.60326011825,
+   "win_rate": 0.45098039215686275,
+   "window": "7d"
+  }
+ },
+ "nosanityxbt": {
+  "handle": "nosanityxbt",
+  "stats": {
+   "avg_hold_seconds": 10891.32142857143,
+   "closed_trades": 28,
+   "profit_factor": 10.784760640971179,
+   "realized_pnl": 42683.161743,
+   "win_rate": 0.5714285714285714,
+   "window": "7d"
+  }
+ },
+ "rasmr": {
+  "handle": "rasmr",
+  "stats": {
+   "avg_hold_seconds": 19800.79487179487,
+   "closed_trades": 39,
+   "profit_factor": 1.4021624618312092,
+   "realized_pnl": 24766.250459,
+   "win_rate": 0.5128205128205128,
+   "window": "7d"
+  }
+ },
+ "smol_intern": {
+  "handle": "smol_intern",
+  "stats": {
+   "avg_hold_seconds": 36226.607142857145,
+   "closed_trades": 56,
+   "profit_factor": 6.633092086576349,
+   "realized_pnl": 207641.99436448864,
+   "win_rate": 0.5357142857142857,
+   "window": "7d"
+  }
+ }
+}

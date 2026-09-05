@@ -341,6 +341,7 @@ class CliTests(unittest.TestCase):
                 "policy",
                 "retention",
                 "push",
+                "chain_tape",
             },
         )
         self.assertEqual(set(news["broker"]), {"url_configured", "name_prefix"})
@@ -357,6 +358,24 @@ class CliTests(unittest.TestCase):
         )
         self.assertIs(news["policy"]["restatement_drop"], True)
         self.assertEqual(news["retention"], {"raw_days": 30, "judged_days": 365})
+        # #572 PR-1: two public unauthenticated endpoints and four list rules, printed in full because
+        # none of it is a secret and an operator reading a week of tape counts needs the exact list.
+        self.assertEqual(
+            news["chain_tape"],
+            {
+                "enabled": False,
+                "rpc_url": "https://rpc.mainnet.chain.robinhood.com",
+                "poll_interval_s": 2.0,
+                "roster_provider_url": "https://robinhoodtrenches.com",
+                "roster": {
+                    "min_closed_trades": 10,
+                    "min_profit_factor": 1.2,
+                    "top_quality": 20,
+                    "top_whale_by_open_cost": 20,
+                },
+                "retention_days": 90,
+            },
+        )
         self.assertFalse(news["broker"]["url_configured"])
         self.assertTrue(news["models"]["triage_configured"])
         self.assertEqual(news["models"]["triage_model"], "deepseek-chat")
