@@ -13,26 +13,28 @@ from psycopg.rows import dict_row
 def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden_runtime: Any) -> None:
     """RabbitMQ, production Workers wiring and PostgreSQL must all participate in this result.
 
-    The frame is a liquidation, not an open-interest telemetry frame. #458 stopped the OI lane from
-    pushing, so it can no longer carry a test whose subject is "a frame reaches the reader"; the
-    liquidation lane is the other deterministic judge that still delivers, and it needs no model.
+    The frame is an exchange listing announcement. #458 stopped the OI lane from pushing and #553
+    took the liquidation lane out of the editorial plane entirely -- a liquidation is a stored market
+    observation now and opens no Event, so neither can carry a test whose subject is "a frame reaches
+    the reader". `listing_deterministic` is what remains: it is admitted, it is judged without a
+    model, and its degraded verdict pushes, which is the whole path this test exists to cross.
     """
 
-    title = "BTC Large Short Liquidation 4.55M at $118000"
+    title = "Binance will list ACMEUSDT perpetual futures on 2026-09-08"
     golden_runtime.publish_opennews(
         {
             "id": 2_850_001,
             "newsType": "strategy",
-            "engineType": "market",
+            "engineType": "listing",
             "text": title,
             "source": "binance",
             "coins": [],
             "ts": int(time.time() * 1_000),
             "strategy": {
-                "id": 2000,
-                "name": "实时清算",
-                "engineType": "market",
-                "sourceType": "market",
+                "id": 1353,
+                "name": "Listing and Delisting Announcements",
+                "engineType": "listing",
+                "sourceType": "news",
             },
         }
     )
@@ -40,7 +42,7 @@ def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden
     event = _wait_for_event(golden_runtime, title=title)
     data = _wait_for_complete_detail(golden_runtime, event_id=event["event_id"])
 
-    assert data["event"]["admission"] == "liquidation_deterministic"
+    assert data["event"]["admission"] == "listing_deterministic"
     assert data["event"]["published_at_ms"] is not None
     assert data["members"] and data["members"][0]["reporting_origin"] == "binance"
     assert data["verdicts"][-1]["program_version"] == "news_liquidation_fact_v2"
@@ -68,7 +70,7 @@ def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden
 def test_triage_publish_failure_uses_broker_retry_without_restarting_workers(golden_runtime: Any) -> None:
     """The production Triage/outbox path ends in evidence, while the same Workers root stays live."""
 
-    title = "BTC Large Short Liquidation 4.21M at $117000"
+    title = "Binance will delist ACMEUSDT perpetual futures on 2026-09-09"
     initial_readiness = golden_runtime.workers_readiness()
 
     golden_runtime.set_verdict_route(enabled=False)
@@ -78,16 +80,16 @@ def test_triage_publish_failure_uses_broker_retry_without_restarting_workers(gol
             {
                 "id": 2_850_440,
                 "newsType": "strategy",
-                "engineType": "market",
+                "engineType": "listing",
                 "text": title,
                 "source": "binance",
                 "coins": [],
                 "ts": int(time.time() * 1_000),
                 "strategy": {
-                    "id": 2000,
-                    "name": "实时清算",
-                    "engineType": "market",
-                    "sourceType": "market",
+                    "id": 1353,
+                    "name": "Listing and Delisting Announcements",
+                    "engineType": "listing",
+                    "sourceType": "news",
                 },
             }
         )
