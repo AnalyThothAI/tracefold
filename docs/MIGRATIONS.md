@@ -258,6 +258,16 @@ snapshot lateral is now keyed to `v.evidence_version`, and
 `(event_id, evidence_version)` is that table's primary key, so it still yields at
 most one row and the view still yields at most one row per Event.
 
+The result is a strict superset of the old one: when the newest snapshot is the
+judged one, both forms select the same row byte for byte, and only the Events the
+old form dropped are added. It writes and reads no row, changes no column, index,
+constraint or other object, and restates the view's `security_barrier`. It
+archives nothing, refuses nothing, needs no operator config step and touches no
+table the execution Runtime writes, so `make up` alone applies it. Its
+`downgrade` restores the previous definition exactly: a rule changed, not a fact,
+so the reversal only makes the freeze blind again to reviews whose Event has
+since gained a member.
+
 `20260905_0364` adds `workers_runtime.capabilities`, a `jsonb` object keyed by
 capability name (#553 PR-3). Until that revision, `workers_runtime` could say
 only whether the Workers process was alive, which was enough while every
@@ -270,15 +280,51 @@ previous revision never names it and gets `'{}'`, which reads as "this runtime
 published no report" rather than as a fault. `downgrade` drops it and loses only
 the current process's report, which the next start republishes.
 
-The result is a strict superset of the old one: when the newest snapshot is the
-judged one, both forms select the same row byte for byte, and only the Events the
-old form dropped are added. It writes and reads no row, changes no column, index,
-constraint or other object, and restates the view's `security_barrier`. It
-archives nothing, refuses nothing, needs no operator config step and touches no
-table the execution Runtime writes, so `make up` alone applies it. Its
-`downgrade` restores the previous definition exactly: a rule changed, not a fact,
-so the reversal only makes the freeze blind again to reviews whose Event has
-since gained a member.
+`20260905_0365` makes a market observation a stored fact and stops the OI ledger
+depending on an Event (#553 PR-1). Four provider Strategies publish market
+observations and the schema could hold two of them. `news_oi_signals` was
+reachable only through `news_events`, so a recovery frame — which never reaches
+Triage — produced no row at all, and a frame the title deduper merged into
+another Event produced no row either; `news_market_liquidations` refused any
+venue outside `binance`/`hyperliquid`, discarding 13 of the 143 real liquidation
+reports in the retained window, and had no foreign key, so a purged Item left its
+liquidation behind as an unreachable orphan; Strategy 2026 had nowhere to be
+stored at all; and the frames' own business payload — `relatedAddress`,
+`strategy.metrics` — was dropped by the metadata whitelist before persistence.
+
+`news_items` gains `market_kind`, `market_source_strategy_id`,
+`market_parse_status`, `market_parse_error` and `provider_params`, with two
+CHECKs stating that the four market columns are one fact and that a `parsed` row
+carries no reason while a `raw` one always does. `news_oi_signals` loses its
+`news_events` foreign key and its write-only `learning_epoch`, gains
+`raw_instrument`, `provider`, `received_at_ms`, `measurement_definition` and
+`historical`, and gains the unique `(source_item_id, metric_version)` that makes
+one provider record one observation. `news_market_liquidations` loses the venue
+allowlist, renames `venue` to `source_venue` and makes it nullable, gains
+`provider`, `raw_instrument`, `source_strategy_id` and `available_at_ms`, and
+gains the item foreign key with `ON DELETE CASCADE` it never had.
+`news_market_smart_money` is new.
+
+Two bounded backfills follow. Every retained Item a market Strategy reported is
+classified by Strategy id and marked `raw / market_backfill_not_reparsed`, which
+is the honest state of a frame no parser has been run against and not the same
+claim as "the parser ran and the template did not match". Then every OI
+observation an Event had swallowed is reconstructed from `news_event_members`,
+which carries the exact `fact_id` each observation was admitted under — so the
+identity is the same sha256 the live path computes and a leader whose row already
+exists collides on the observation key and is left untouched. Reconstructed rows
+are flagged `historical`: their `observed_at_ms` and `received_at_ms` are the
+original provider and host stamps and their `available_at_ms` is the rebuild
+moment, because that is genuinely the first instant any consumer could read them.
+The live trading trigger set excludes them and every reader shows them.
+
+Writers must be stopped: the ledger gains a unique key the old writer does not
+know and the liquidation table renames a column the old writer names, so `make
+up`'s stop is the boundary this revision needs. `news_verdicts_current_judgment_check`
+is deliberately untouched — the market judgment branches it validates describe
+verdicts already written, and no new verdict of those origins is produced after
+this revision. `downgrade` is refused: the new columns and table hold evidence
+that exists nowhere else, so a mistake here is rolled forward.
 
 ## Database development standard
 

@@ -1,0 +1,383 @@
+"""The market read surface through the real app on real PostgreSQL (#553 PR-1).
+
+Two questions the storage-level tests cannot answer. First, what the public Event API does with the
+market Events that existed before the cut: the migration keeps every one of them, the public
+`EventKind` no longer names their kinds, and a bookmarked or pushed link to one is an ordinary thing
+for a reader to still have. Second, whether the collapse, the cursor and the detail survive the
+envelope -- a group shape that validates in Python and not in Pydantic is a 500 nobody sees until a
+reader opens the page.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+
+from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
+from tracefold.app.http.app import create_app
+from tracefold.app.repository_session import repositories_for_connection
+from tracefold.news.opennews import parse_opennews_message
+from tracefold.news.pipeline.admission import admit_frame
+from tracefold.platform.config.models import NewsSettings, Settings
+
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
+
+TOKEN = "market-api-token"
+NOW = 1_900_000_000_000
+AUTH = {"Authorization": f"Bearer {TOKEN}"}
+
+
+@pytest.fixture()
+def app(tmp_path):
+    settings = Settings(ws_token=TOKEN, news=NewsSettings(), storage=postgres_settings_storage())
+    settings.set_config_dir(tmp_path / "app-home")
+    return create_app(settings=settings)
+
+
+@pytest.fixture()
+def conn():
+    connection = connect_postgres_test(read_only=False)
+    yield connection
+    connection.close()
+
+
+def _frame(
+    *,
+    record_id: int,
+    text: str,
+    strategy_id: int,
+    strategy_name: str,
+    source_type: str,
+    source: str = "binance",
+    at_ms: int = NOW,
+    extra: dict[str, Any] | None = None,
+) -> Any:
+    params: dict[str, Any] = {
+        "id": record_id,
+        "text": text,
+        "source": source,
+        "engineType": "market" if source_type in {"market", "wallet"} else "news",
+        "ts": at_ms / 1000,
+        "strategy": {"id": strategy_id, "name": strategy_name, "sourceType": source_type},
+    }
+    params.update(extra or {})
+    frame = parse_opennews_message({"method": "strategy.triggered", "params": params})
+    assert frame is not None
+    return frame
+
+
+def _admit(conn: Any, frame: Any, *, at_ms: int) -> str:
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        result = admit_frame(
+            repos,
+            event=frame,
+            ingest_mode="live",
+            observed_at_ms=at_ms,
+            trace_id=f"market-api-{frame.provider_record_id}",
+            watchlist_symbols=frozenset(),
+            now_ms=at_ms,
+        )
+    conn.commit()
+    return result.item_id
+
+
+def _seed_legacy_market_event(conn: Any, *, event_id: str, item_id: str, event_kind: str) -> None:
+    """One Event of a kind the cut retired, exactly as the migration leaves it in place.
+
+    Nothing in the code can create one any more, which is the point: the rows are immutable history
+    and the reader's bookmark still resolves to this identity.
+    """
+
+    conn.execute(
+        """
+        INSERT INTO news_items (
+          item_id, source_id, source_item_key, title, raw_first_line, description, reporting_origin,
+          published_at_ms, observed_at_ms, provider_metadata, provenance, first_ingest_mode, trace_id,
+          created_at_ms, updated_at_ms
+        ) VALUES (
+          %(item)s, 'opennews', %(item)s, 'TRUMP OI Rise 4.55%%', '', '', 'opennews', %(at)s, %(at)s,
+          '{"strategies": [{"id": "1019", "name": "OI Event Monitor"}]}'::jsonb, '[]'::jsonb,
+          'live', 'trace', %(at)s, %(at)s
+        )
+        """,
+        {"item": item_id, "at": NOW},
+    )
+    conn.execute(
+        """
+        INSERT INTO news_events (
+          event_id, leader_item_id, dedupe_family, comparison_fingerprint, comparison_title,
+          leader_title, opened_at_ms, last_member_at_ms, expires_at_ms, admission, ingest_mode,
+          trace_id, created_at_ms, updated_at_ms, focus_fact_id, focus_fact_text, focus_fact_context,
+          focus_fact_method, focus_span_start, focus_span_end, event_kind, source_contract_reason
+        ) VALUES (
+          %(event)s, %(item)s, 'market_telemetry', %(event)s, 'legacy market card', 'legacy market card',
+          %(at)s, %(at)s, %(at)s, 'telemetry_deterministic', 'live', 'trace', %(at)s, %(at)s,
+          %(fact)s, 'legacy market card', '', 'whole_item', 0, 18, %(kind)s, %(reason)s
+        )
+        """,
+        {
+            "event": event_id,
+            "item": item_id,
+            "at": NOW,
+            "fact": f"fact-{event_id}",
+            "kind": event_kind,
+            # The retired consistency CHECK still holds these rows: an `unsupported_market` Event
+            # always carried a reason and the other two never did.
+            "reason": "unsupported_market_contract" if event_kind == "unsupported_market" else None,
+        },
+    )
+    conn.execute(
+        """
+        INSERT INTO news_event_members (event_id, item_id, joined_at_ms, match_kind, fact_id, fact_text)
+        VALUES (%s, %s, %s, 'leader', %s, 'legacy market card')
+        """,
+        (event_id, item_id, NOW, f"fact-{event_id}"),
+    )
+    conn.commit()
+
+
+@pytest.mark.parametrize("event_kind", ["oi", "liquidation", "unsupported_market"])
+def test_a_retired_market_event_is_missing_from_the_event_api_rather_than_a_server_error(
+    app, conn, event_kind: str
+) -> None:
+    """#553. The public `EventKind` no longer names these, so serving one cannot validate.
+
+    A reader who kept a link to a pre-cut OI card must get "this is not an Event" -- the observation
+    it was built from is readable at `/api/news/market`. Returning the row would fail the response
+    envelope inside `_etagged` and surface as a 500, which reads as an outage rather than a move.
+    """
+
+    event_id = f"legacy-{event_kind}-event"
+    _seed_legacy_market_event(conn, event_id=event_id, item_id=f"legacy-{event_kind}-item", event_kind=event_kind)
+
+    with TestClient(app) as client:
+        detail = client.get(f"/api/news/events/{event_id}", headers=AUTH)
+        feed = client.get("/api/news/feed?limit=100", headers=AUTH)
+
+    assert detail.status_code == 404
+    assert detail.json() == {"ok": False, "error": "news_event_not_found"}
+    assert feed.status_code == 200
+    assert event_id not in {row["event_id"] for row in feed.json()["data"]["events"]}
+
+
+def test_the_ordinary_news_feed_and_its_counts_never_see_a_retired_market_event(app, conn) -> None:
+    """The `/news` denominator is editorial Events, and a retired market Event is not one."""
+
+    _seed_legacy_market_event(conn, event_id="legacy-count-event", item_id="legacy-count-item", event_kind="oi")
+    _admit(
+        conn,
+        _frame(
+            record_id=7_710_001,
+            text="A regulator approves a spot ETF for the second time this year",
+            strategy_id=1018,
+            strategy_name="News Score > 70",
+            source_type="news",
+            source="wire",
+            extra={"score": 92},
+        ),
+        at_ms=NOW,
+    )
+
+    with TestClient(app) as client:
+        feed = client.get("/api/news/feed?limit=100", headers=AUTH)
+
+    body = feed.json()["data"]
+    counts = body["counts"]
+    assert feed.status_code == 200
+    assert "legacy-count-event" not in {row["event_id"] for row in body["events"]}
+    assert counts["total"] == len(body["events"]) == 1
+    assert counts["total"] == counts["pushed"] + counts["held"] + counts["pending"]
+
+
+def test_the_market_list_collapses_orders_and_pages_through_the_real_envelope(app, conn) -> None:
+    """One request, one page: the collapse, the ordering and the cursor as a reader receives them."""
+
+    oi_items = [
+        _admit(
+            conn,
+            _frame(
+                record_id=7_720_000 + index,
+                text="TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%",
+                strategy_id=1019,
+                strategy_name="OI Event Monitor",
+                source_type="market",
+                at_ms=NOW + index,
+            ),
+            at_ms=NOW + index,
+        )
+        for index in range(2)
+    ]
+    liquidation_item = _admit(
+        conn,
+        _frame(
+            record_id=7_720_100,
+            text="SOL Large Short Liquidation 202.71K at $137.01",
+            strategy_id=2083,
+            strategy_name="Large-scale liquidation",
+            source_type="market",
+            source="okx",
+            at_ms=NOW + 2,
+        ),
+        at_ms=NOW + 2,
+    )
+    wallet_item = _admit(
+        conn,
+        _frame(
+            record_id=7_720_200,
+            text="js-2 Close Short SOL $482,113.55 , Price $137.01 , PNL -$8,204.10",
+            strategy_id=2026,
+            strategy_name="聪明钱监控",
+            source_type="wallet",
+            source="",
+            at_ms=NOW + 3,
+            extra={"relatedAddress": "0x" + "5" * 40},
+        ),
+        at_ms=NOW + 3,
+    )
+
+    with TestClient(app) as client:
+        window = f"from_ms={NOW - 1}&to_ms={NOW + 10}"
+        first = client.get(f"/api/news/market?{window}&limit=2", headers=AUTH)
+        page = first.json()["data"]
+        second = client.get(f"/api/news/market?{window}&limit=2&cursor={page['next_cursor']}", headers=AUTH)
+        narrowed = client.get(f"/api/news/market?{window}&kind=liquidation", headers=AUTH)
+
+    assert first.status_code == 200
+    assert page["notifications_connected"] is False
+    assert page["filters"] == {"kind": None, "from_ms": NOW - 1, "to_ms": NOW + 10, "limit": 2}
+    # Newest first: the wallet print, then the liquidation. The two OI frames are one run and collapse
+    # onto the second page as a single group carrying both.
+    assert [group["latest"]["item_id"] for group in page["groups"]] == [wallet_item, liquidation_item]
+    assert [group["market_kind"] for group in page["groups"]] == ["smart_money", "liquidation"]
+    assert page["next_cursor"]
+
+    rest = second.json()["data"]
+    assert second.status_code == 200
+    assert [group["latest"]["item_id"] for group in rest["groups"]] == [oi_items[1]]
+    assert rest["groups"][0]["observation_count"] == 2
+    assert rest["groups"][0]["first_event_at_ms"] == NOW
+    assert rest["groups"][0]["last_event_at_ms"] == NOW + 1
+
+    assert [group["market_kind"] for group in narrowed.json()["data"]["groups"]] == ["liquidation"]
+    assert narrowed.json()["data"]["filters"]["kind"] == "liquidation"
+
+    sources = {row["market_kind"]: row for row in page["sources"]}
+    assert sources["oi"]["received"] == 2 and sources["oi"]["groups"] == 1
+    assert sources["smart_money"]["parsed"] == 1
+    assert sources["unknown_market"]["received"] == 0
+
+
+def test_the_market_detail_returns_the_stored_payload_the_typed_fact_and_the_timeline(app, conn) -> None:
+    address = "0x" + "6" * 40
+    item_id = _admit(
+        conn,
+        _frame(
+            record_id=7_730_001,
+            text="js-2 Open Long SOL $482,113.55 , Price $137.01",
+            strategy_id=2026,
+            strategy_name="聪明钱监控",
+            source_type="wallet",
+            source="",
+            extra={
+                "relatedAddress": address,
+                "strategy": {
+                    "id": 2026,
+                    "name": "聪明钱监控",
+                    "sourceType": "wallet",
+                    "metrics": {"position_value": {"value": 482113.55, "unit": "USD"}},
+                },
+            },
+        ),
+        at_ms=NOW,
+    )
+
+    with TestClient(app) as client:
+        detail = client.get(f"/api/news/market/{item_id}", headers=AUTH)
+        missing = client.get(f"/api/news/market/{'0' * 64}", headers=AUTH)
+        malformed = client.get("/api/news/market/not-an-item", headers=AUTH)
+
+    body = detail.json()["data"]
+    assert detail.status_code == 200
+    assert body["observation"]["item_id"] == item_id
+    assert (body["observation"]["action"], body["observation"]["position_side"]) == ("open", "long")
+    assert body["observation"]["account_address"] == address
+    assert body["observation"]["parse_status"] == "parsed"
+    assert body["provider_params"]["relatedAddress"] == address
+    assert body["provider_params"]["strategy"]["metrics"]["position_value"]["value"] == 482113.55
+    assert [row["item_id"] for row in body["timeline"]] == [item_id]
+    assert body["notification_status"] == "not_connected"
+    assert body["notifications_connected"] is False
+
+    assert missing.status_code == 404
+    assert missing.json() == {"ok": False, "error": "news_market_item_not_found"}
+    assert malformed.status_code == 400
+    assert malformed.json()["error"] == "news_market_item_invalid"
+
+
+def test_the_market_surface_answers_when_the_pipeline_status_read_cannot(app, conn) -> None:
+    """The list is the page. A status failure is a note in one strip, never a blank surface.
+
+    Proven at the seam a browser cannot reach: `/api/news/status` is a separate request, so the market
+    read stays answerable whatever it returns.
+    """
+
+    item_id = _admit(
+        conn,
+        _frame(
+            record_id=7_740_001,
+            text="Withdraw USDC",
+            strategy_id=2026,
+            strategy_name="聪明钱监控",
+            source_type="wallet",
+            source="",
+        ),
+        at_ms=NOW,
+    )
+    conn.execute("DROP TABLE IF EXISTS news_ingest_state_backup")
+    conn.execute("ALTER TABLE news_ingest_state RENAME TO news_ingest_state_backup")
+    conn.commit()
+    try:
+        with TestClient(app) as client:
+            market = client.get(f"/api/news/market?from_ms={NOW - 1}&to_ms={NOW + 1}", headers=AUTH)
+    finally:
+        conn.execute("ALTER TABLE news_ingest_state_backup RENAME TO news_ingest_state")
+        conn.commit()
+
+    body = market.json()["data"]
+    assert market.status_code == 200
+    assert [group["latest"]["item_id"] for group in body["groups"]] == [item_id]
+    # A raw card is retained and served with its reason; it is not a lesser row.
+    assert body["groups"][0]["latest"]["parse_status"] == "raw"
+    assert body["groups"][0]["latest"]["parse_error"] == "smart_money_template_unmatched"
+
+
+def test_the_market_payload_matches_the_published_openapi_component(app, conn) -> None:
+    """The envelope a reader receives is the one the generated client was built against."""
+
+    _admit(
+        conn,
+        _frame(
+            record_id=7_750_001,
+            text="TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%",
+            strategy_id=1019,
+            strategy_name="OI Event Monitor",
+            source_type="market",
+        ),
+        at_ms=NOW,
+    )
+
+    with TestClient(app) as client:
+        response = client.get(f"/api/news/market?from_ms={NOW - 1}&to_ms={NOW + 1}", headers=AUTH)
+        schema = client.get("/openapi.json").json()
+
+    group = response.json()["data"]["groups"][0]
+    component = schema["components"]["schemas"]["NewsMarketGroupData"]
+    assert component["additionalProperties"] is False
+    assert set(group) == set(component["properties"])
+    assert json.loads(json.dumps(group)) == group
+    assert int(time.time() * 1000) > 0

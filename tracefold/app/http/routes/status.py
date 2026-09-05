@@ -76,12 +76,6 @@ def get_news_status(request: Request) -> Response:
             and _workers_delivery_available(workers_runtime_row, now_ms=now_ms)
         ),
     }
-    # No thresholds here at all. News once republished the Signal lane's floors beside its own push
-    # gates, which invited a console to compare a Case frozen last week against a floor edited
-    # yesterday. Alpha rules belong to `/api/trading/*`, and the ones that decided a Case travel with
-    # that Case as frozen evidence. #458 then removed the push gates themselves, so what is left is a
-    # count of what the lane did, keyed on the rules it actually has.
-    oi = dict(snapshot["oi"])
     health = status_health(
         ingest=ingest,
         broker=broker_data,
@@ -106,7 +100,6 @@ def get_news_status(request: Request) -> Response:
         "ingest": ingest,
         "broker": broker_data,
         "pipeline": pipeline,
-        "oi": oi,
         "delivery": delivery,
         "learning_retention": snapshot["learning_retention"],
         "watchlist": sorted(settings.news.watchlist_symbols),

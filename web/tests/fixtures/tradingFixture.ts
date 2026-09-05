@@ -5,8 +5,6 @@ import type {
   TradingExecutionReadiness,
   TradingExecutionRow,
   TradingExecutions,
-  TradingGate,
-  TradingGateDecision,
   TradingStatus,
 } from "@features/trading/api/tradingQueries";
 
@@ -275,48 +273,6 @@ export function tradingCommandRowFixture(
     command_id: "9".repeat(64),
     requested_at_ns: TRADING_NOW_MS * 1_000_000,
     stage: "recorded",
-    ...overrides,
-  };
-}
-
-export function gateEvidence(
-  overrides: Partial<NonNullable<TradingGateDecision["gate_evidence"]>> = {},
-): NonNullable<TradingGateDecision["gate_evidence"]> {
-  return { venue: "binance", ...overrides };
-}
-
-export function tradingGateDecisionFixture(
-  overrides: Partial<TradingGateDecision> = {},
-): TradingGateDecision {
-  return {
-    case_id: null,
-    event_id: "evt-oi-storj",
-    gate_attempt_count: 1,
-    gate_evidence: gateEvidence({
-      floor: 5_000_000,
-      gate_config_digest: "c".repeat(64),
-      gate_version: "trading_admission_v9",
-      market_key: "crypto:perp:STORJ:USDT",
-      oi_value_usd: 3_190_000,
-    }),
-    gate_first_evaluated_at_ms: TRADING_NOW_MS - 119_000,
-    gate_last_evaluated_at_ms: TRADING_NOW_MS - 60_000,
-    gate_reason: "oi_value_below_floor",
-    gate_retryable: false,
-    gate_stage: "eligibility",
-    gate_status: "REJECTED",
-    source_key: "oi:evt-oi-storj:oi_signal_v1",
-    ...overrides,
-  };
-}
-
-export function tradingGateFixture(overrides: Partial<TradingGate> = {}): TradingGate {
-  return {
-    complete: true,
-    decisions: [tradingGateDecisionFixture()],
-    reason_counts_24h: { "eligibility:oi_value_below_floor": 22 },
-    // The four answers `trading_admission` can file; there is no research bucket in the ledger.
-    status_counts_24h: { CASE_CREATED: 1, DEFERRED: 3, REJECTED: 87 },
     ...overrides,
   };
 }

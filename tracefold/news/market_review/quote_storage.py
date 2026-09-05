@@ -101,9 +101,9 @@ class QuoteStorage:
         """Code-verified assets on recent live Events, most recently observed first.
 
         One symbol per row however many Events carried it: a hundred BTC Events are one Quote target, and the
-        provider work that follows is `O(source groups)`, never `O(Events x assets)` (#88 §13). Deterministic
-        OI rows join the same bounded working set even though those Events intentionally have no Gate-grounded
-        asset tag.
+        provider work that follows is `O(source groups)`, never `O(Events x assets)` (#88 §13). OI rows join
+        the same bounded working set through the ledger and the Item that produced them -- they have no Event
+        to reach for and never had a Gate-grounded asset tag (#553).
         """
 
         rows = self.conn.execute(
@@ -116,8 +116,8 @@ class QuoteStorage:
               UNION ALL
               SELECT o.symbol, o.observed_at_ms
                 FROM news_oi_signals o
-                JOIN news_events e ON e.event_id = o.event_id AND e.ingest_mode = 'live'
-               WHERE o.observed_at_ms >= %s AND e.admission = 'telemetry_deterministic'
+                JOIN news_items i ON i.item_id = o.source_item_id AND i.first_ingest_mode = 'live'
+               WHERE o.observed_at_ms >= %s AND NOT o.historical
                  AND o.metric_version = %s
             )
             SELECT symbol, max(observed_at_ms) AS last_ms

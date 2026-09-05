@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 from psycopg.errors import CheckViolation, RaiseException
@@ -14,8 +15,6 @@ from tests.support.news_judgment import scored_judgment
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
-from tracefold.news.oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
-from tracefold.news.oi_signals import oi_parse_failure, oi_source_contract
 from tracefold.news.opennews import parse_opennews_message, source_artifact_identity
 from tracefold.news.pipeline.admission import admit_frame, admit_item
 from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
@@ -62,6 +61,7 @@ NEWS_TABLES = {
     "news_event_reactions",
     "news_oi_signals",
     "news_market_liquidations",
+    "news_market_smart_money",
     # #112 immutable evidence actually read by the SemanticJudge.
     "news_event_evidence_snapshots",
 }
@@ -957,416 +957,402 @@ def _insert_test_verdict(
     )
 
 
-def test_strategy_1019_format_drift_reaches_triage_instead_of_near_duplicate_merging(conn) -> None:
-    repos = repositories_for_connection(conn)
-    event_ids: list[str] = []
-    base = "BTC OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
-    for offset, suffix in enumerate(("format drift", "provider format drift"), start=1):
-        params = _hit(
-            hit_id=1_791_000 + offset,
-            text=f"{base} {suffix}",
-            engine="market",
-            score=90,
-            coins=[],
-            source="binance",
-            ts=f"2026-08-24T11:{offset:02d}:00+08:00",
-        )
-        params["strategy"] = {
-            "id": 1019,
-            "name": "OI Event Monitor",
-            "sourceType": "market",
-        }
-        event = parse_opennews_message({"method": "strategy.triggered", "params": params})
-        assert event is not None
-        stamp = int(event.entry.published_at_ms or 0)
-        with repos.transaction():
-            admitted = admit_item(
-                repos,
-                event=event,
-                ingest_mode="live",
-                observed_at_ms=stamp,
-                trace_id=f"oi-format-drift-{offset}",
-                watchlist_symbols=frozenset(),
-                now_ms=stamp,
-            )
-        assert admitted.event_kind == "oi"
-        assert admitted.admission == "telemetry_deterministic" and admitted.match_kind == "leader"
-        event_ids.append(admitted.event_id)
-
-    assert len(set(event_ids)) == 2
+_VENUES = ("binance", "hyperliquid", "okx", "bybit")
 
 
-@pytest.mark.parametrize(
-    ("hit_id", "symbol", "order"),
-    [
-        (2_881_001, "NFIRST", ("news", "oi", "drift")),
-        (2_881_002, "OFIRST", ("oi", "news", "drift")),
-    ],
-)
-def test_same_provider_fact_keeps_one_event_per_kind_in_either_strategy_order(
-    conn, hit_id: int, symbol: str, order: tuple[str, ...]
-) -> None:
-    repos = repositories_for_connection(conn)
-    title = f"{symbol} OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
-    contracts = {
-        "news": (1018, "News Score > 70", "news", "news"),
-        "oi": (1019, "OI Event Monitor", "market", "market"),
-        "drift": (1019, "wrong OI monitor", "market", "market"),
-    }
-    frames = {}
-    for label, (strategy_id, strategy_name, source_type, engine) in contracts.items():
-        params = _hit(
-            hit_id=hit_id,
-            text=title,
-            engine=engine,
-            score=90,
-            coins=[],
-            source="binance",
-            ts=f"2026-08-{24 if symbol == 'NFIRST' else 25}T11:30:00+08:00",
-            strategy_id=strategy_id,
-            strategy_name=strategy_name,
-            source_type=source_type,
-        )
-        frames[label] = parse_opennews_message({"method": "strategy.triggered", "params": params})
-        assert frames[label] is not None
-
-    first_results = []
-    with repos.transaction():
-        for label in order:
-            event = frames[label]
-            assert event is not None
-            first_results.append(
-                admit_item(
-                    repos,
-                    event=event,
-                    ingest_mode="live",
-                    observed_at_ms=int(event.entry.published_at_ms or 0),
-                    trace_id=f"same-record-{label}",
-                    watchlist_symbols=frozenset(),
-                    now_ms=int(event.entry.published_at_ms or 0),
-                )
-            )
-    assert all(result.event_created for result in first_results)
-    item_id = first_results[0].item_id
-
-    with repos.transaction():
-        redelivered = [
-            admit_item(
-                repos,
-                event=frames[label],
-                ingest_mode="live",
-                observed_at_ms=int(frames[label].entry.published_at_ms or 0),
-                trace_id=f"same-record-{label}-redelivery",
-                watchlist_symbols=frozenset(),
-                now_ms=int(frames[label].entry.published_at_ms or 0),
-            )
-            for label in order
-        ]
-    assert all(not result.item_inserted and not result.event_created for result in redelivered)
-
-    rows = conn.execute(
-        """
-        SELECT e.event_id, e.event_kind, e.admission, e.source_contract_reason
-          FROM news_event_members m
-          JOIN news_events e ON e.event_id = m.event_id
-         WHERE m.item_id = %s
-         ORDER BY e.event_kind
-        """,
-        (item_id,),
-    ).fetchall()
-    assert {(row["event_kind"], row["admission"]) for row in rows} == {
-        ("news", "candidate"),
-        ("oi", "telemetry_deterministic"),
-        ("unsupported_market", "unsupported_market_contract"),
-    }
-    assert (
-        next(row for row in rows if row["event_kind"] == "unsupported_market")["source_contract_reason"]
-        == "source_contract_drift"
-    )
-    ids = {row["event_kind"]: row["event_id"] for row in rows}
-    assert ids["news"] != item_id
-    assert len(set(ids.values())) == 3
-    oi_card = repos.news.event_card(ids["oi"])
-    assert oi_card is not None
-    source = oi_source_contract(oi_card["provider_metadata"])
-    assert source is not None and (source.strategy_id, source.measurement_window_ms) == ("1019", 300_000)
-
-    # `news_items`, not the original provider frames, is material truth. Its
-    # first-seen Strategy union must therefore recreate the same Event kinds.
-    merged_metadata = conn.execute(
-        "SELECT provider_metadata FROM news_items WHERE item_id = %s", (item_id,)
-    ).fetchone()["provider_metadata"]
-    conn.execute("DELETE FROM news_events WHERE leader_item_id = %s", (item_id,))
-    rebuilt_event = replace(frames[order[0]], provider_metadata=dict(merged_metadata))
-    with repos.transaction():
-        rebuilt = admit_frame(
-            repos,
-            event=rebuilt_event,
-            ingest_mode="live",
-            observed_at_ms=int(rebuilt_event.entry.published_at_ms or 0),
-            trace_id="same-record-material-rebuild",
-            watchlist_symbols=frozenset(),
-            now_ms=int(rebuilt_event.entry.published_at_ms or 0),
-        )
-    assert not rebuilt.item_inserted
-    assert {result.event_kind for result in rebuilt.results} == {"news", "oi", "unsupported_market"}
-    assert {result.event_kind: result.event_id for result in rebuilt.results} == ids
-
-
-def test_strategy_2000_liquidations_are_typed_and_idempotent_for_live_and_recovery(conn) -> None:
-    repos = repositories_for_connection(conn)
-
-    def admit(hit_id: int, *, ingest_mode: str, side: str, venue: str) -> None:
-        params = _hit(
-            hit_id=hit_id,
-            text=f"SPCX Large {side} Liquidation 202.71K at $137.01",
-            engine="market",
-            score=90,
-            coins=[],
-            source=venue,
-            ts="2026-08-24T12:00:00+08:00",
-        )
-        params["strategy"] = {"id": 2000, "name": "实时清算", "sourceType": "market"}
-        event = parse_opennews_message({"method": "strategy.triggered", "params": params})
-        assert event is not None
-        stamp = int(event.entry.published_at_ms or 0) + 1_000
-        with repos.transaction():
-            result = admit_item(
-                repos,
-                event=event,
-                ingest_mode=ingest_mode,
-                observed_at_ms=stamp,
-                trace_id=f"liquidation-{hit_id}",
-                watchlist_symbols=frozenset(),
-                now_ms=stamp,
-            )
-        assert result.event_kind == "liquidation"
-        assert result.admission == ("recovery" if ingest_mode == "recovery" else "liquidation_deterministic")
-
-    admit(2_000_001, ingest_mode="live", side="Short", venue="binance")
-    admit(2_000_001, ingest_mode="live", side="Short", venue="binance")
-    admit(2_000_002, ingest_mode="recovery", side="Long", venue="hyperliquid")
-
-    rows = conn.execute(
-        "SELECT source_key, ingest_mode, venue, liquidated_position_side, forced_order_side, notional_usd, quantity, "
-        "provider_record_identity, symbol_contract_identity, position_side_semantics, "
-        "quantity_semantics, notional_semantics, price_semantics, completeness_assumption, "
-        "throttle_assumption, source_contract_version, source_contract_complete "
-        "FROM news_market_liquidations WHERE symbol = 'SPCX' ORDER BY venue"
-    ).fetchall()
-    assert [
-        (row["venue"], row["liquidated_position_side"], row["forced_order_side"], row["notional_usd"], row["quantity"])
-        for row in rows
-    ] == [
-        ("binance", "short", "buy", 202_710, None),
-        ("hyperliquid", "long", "sell", 202_710, None),
-    ]
-    assert all(row["provider_record_identity"] for row in rows)
-    assert all(str(row["symbol_contract_identity"]).startswith("unresolved:") for row in rows)
-    assert all(row["position_side_semantics"] for row in rows)
-    assert all(row["quantity_semantics"] == "not_provided" for row in rows)
-    assert all(row["notional_semantics"] == "provider_reported_usd_notional" for row in rows)
-    assert all(row["price_semantics"] == "provider_reported_unspecified_price" for row in rows)
-    assert all(row["completeness_assumption"] and row["throttle_assumption"] for row in rows)
-    assert all(row["source_contract_version"] == "opennews_liquidation_source_v1" for row in rows)
-    assert all(row["source_contract_complete"] is False for row in rows)
-    assert {row["venue"]: row["ingest_mode"] for row in rows} == {
-        "binance": "live",
-        "hyperliquid": "recovery",
-    }
-
-    # Raw Item retention may remove the provider envelope, but the normalized
-    # immutable replay fact is a separate durable research source.
-    retained = conn.execute(
-        "SELECT source_key, item_id FROM news_market_liquidations WHERE venue = 'binance'"
-    ).fetchone()
-    assert retained is not None
-    conn.execute("DELETE FROM news_items WHERE item_id = %s", (retained["item_id"],))
-    conn.commit()
-    assert (
-        conn.execute(
-            "SELECT source_key FROM news_market_liquidations WHERE source_key = %s", (retained["source_key"],)
-        ).fetchone()
-        is not None
-    )
-    # The typed fact stays a durable News research source and is published to nobody (#331): the
-    # liquidation projection existed only for a Trading consumer that no longer exists, and a
-    # projection with no reader is an invitation for the capital lane to grow a second trigger.
-    assert not hasattr(repos.news, "trade_candidate_liquidation_rows")
-    assert not hasattr(repos.news, "trade_candidate_news_rows")
-
-
-@pytest.mark.parametrize(
-    ("hit_id", "strategy_id", "strategy_name", "text", "event_kind"),
-    [
-        (2_880_101, 1019, "OI Event Monitor", "BTC OI provider template changed", "oi"),
-        (2_880_200, 2000, "实时清算", "BTC liquidation provider fields changed", "liquidation"),
-    ],
-)
-def test_recovery_runs_the_same_strict_market_parser_and_persists_drift_without_live_facts(
-    conn,
-    hit_id: int,
-    strategy_id: int,
-    strategy_name: str,
-    text: str,
-    event_kind: str,
-) -> None:
-    repos = repositories_for_connection(conn)
-    params = _hit(
-        hit_id=hit_id,
-        text=text,
-        engine="market",
-        score=90,
-        coins=[],
-        source="binance",
-        ts="2026-08-24T12:20:00+08:00",
-        strategy_id=strategy_id,
-        strategy_name=strategy_name,
-        source_type="market",
-    )
-    event = parse_opennews_message({"method": "strategy.triggered", "params": params})
-    assert event is not None
-    stamp = int(event.entry.published_at_ms or 0)
-
-    with repos.transaction():
-        result = admit_item(
-            repos,
-            event=event,
-            ingest_mode="recovery",
-            observed_at_ms=stamp,
-            trace_id=f"recovery-drift-{event_kind}",
-            watchlist_symbols=frozenset(),
-            now_ms=stamp,
-        )
+def _editorial_rows(conn: Any, item_ids: tuple[str, ...]) -> dict[str, int]:
+    """How much of the editorial plane these Items reached. Scoped, because the clone is shared."""
 
     row = conn.execute(
-        "SELECT event_kind, admission, source_contract_reason FROM news_events WHERE event_id = %s",
-        (result.event_id,),
-    ).fetchone()
-    assert row == {
-        "event_kind": event_kind,
-        "admission": "recovery",
-        "source_contract_reason": "source_contract_drift",
-    }
-    downstream = conn.execute(
         """
-        SELECT
-          (SELECT count(*) FROM news_verdicts WHERE event_id = %s) AS verdicts,
-          (SELECT count(*) FROM news_deliveries WHERE event_id = %s) AS deliveries,
-          (SELECT count(*) FROM news_oi_signals WHERE event_id = %s) AS oi_signals,
-          (SELECT count(*) FROM news_market_liquidations WHERE item_id = %s) AS liquidations
+        SELECT (SELECT count(*) FROM news_events e WHERE e.leader_item_id = ANY(%(items)s)) AS events,
+               (SELECT count(*) FROM news_event_members m WHERE m.item_id = ANY(%(items)s)) AS members,
+               (SELECT count(*) FROM news_event_evidence_snapshots s
+                 JOIN news_events e ON e.event_id = s.event_id
+                WHERE e.leader_item_id = ANY(%(items)s)) AS snapshots,
+               (SELECT count(*) FROM news_verdicts v
+                 JOIN news_events e ON e.event_id = v.event_id
+                WHERE e.leader_item_id = ANY(%(items)s)) AS verdicts
         """,
-        (result.event_id, result.event_id, result.event_id, result.item_id),
+        {"items": list(item_ids)},
     ).fetchone()
-    assert downstream == {"verdicts": 0, "deliveries": 0, "oi_signals": 0, "liquidations": 0}
+    return {key: int(value) for key, value in dict(row).items()}
 
 
-@pytest.mark.parametrize(
-    ("hit_id", "strategy_id", "strategy_name", "source_type", "text"),
-    [
-        (2_026_001, 2026, "聪明钱监控", "wallet", "Wallet activity contract awaiting a typed schema"),
-        (
-            2_083_001,
-            2083,
-            "Large-scale liquidation",
-            "market",
-            "Aster liquidation contract awaiting venue semantics",
-        ),
-    ],
-)
-def test_unsupported_market_contracts_persist_once_without_downstream_facts(
-    conn,
+def _market_frame(
+    *,
     hit_id: int,
+    text: str,
     strategy_id: int,
     strategy_name: str,
     source_type: str,
-    text: str,
-) -> None:
-    repos = repositories_for_connection(conn)
+    source: str = "binance",
+    ts: str = "2026-08-24T11:30:00+08:00",
+    extra: dict[str, Any] | None = None,
+) -> Any:
     params = _hit(
         hit_id=hit_id,
         text=text,
         engine="market",
         score=None,
         coins=[],
-        source="opennews",
-        ts="2026-08-24T12:30:00+08:00",
+        source=source,
+        ts=ts,
         strategy_id=strategy_id,
         strategy_name=strategy_name,
         source_type=source_type,
     )
-    event = parse_opennews_message({"method": "strategy.triggered", "params": params})
-    assert event is not None
-    stamp = int(event.entry.published_at_ms or 0)
+    params.pop("score", None)
+    params.update(extra or {})
+    frame = parse_opennews_message({"method": "strategy.triggered", "params": params})
+    assert frame is not None
+    return frame
 
+
+def _admit_market_frame(repos: Any, frame: Any, *, ingest_mode: str = "live", observed_at_ms: int | None = None) -> Any:
+    stamp = observed_at_ms if observed_at_ms is not None else int(frame.entry.published_at_ms or 0)
     with repos.transaction():
-        first = admit_item(
+        return admit_frame(
             repos,
-            event=event,
-            ingest_mode="live",
+            event=frame,
+            ingest_mode=ingest_mode,
             observed_at_ms=stamp,
-            trace_id=f"unsupported-{strategy_id}",
-            watchlist_symbols=frozenset(),
-            now_ms=stamp,
-        )
-        redelivered = admit_item(
-            repos,
-            event=event,
-            ingest_mode="live",
-            observed_at_ms=stamp,
-            trace_id=f"unsupported-{strategy_id}-redelivery",
+            trace_id=f"market-{frame.provider_record_id}",
             watchlist_symbols=frozenset(),
             now_ms=stamp,
         )
 
-    assert (first.event_kind, first.admission, first.event_created) == (
-        "unsupported_market",
-        "unsupported_market_contract",
-        True,
+
+def test_two_records_with_the_same_values_and_time_are_two_observations(conn) -> None:
+    """#553 acceptance. Title dedupe is bypassed, so two provider records are two measurements.
+
+    Two OI frames for one symbol differ only in their four numbers, which is their entire content:
+    the near-duplicate rule scored them 0.60 against each other and merged the second into the first.
+    Merging a measurement is losing data, not deduplicating it.
+    """
+
+    repos = repositories_for_connection(conn)
+    title = "MERGE OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
+    first = _admit_market_frame(
+        repos,
+        _market_frame(
+            hit_id=9_510_001,
+            text=title,
+            strategy_id=1019,
+            strategy_name="OI Event Monitor",
+            source_type="market",
+            ts="2026-08-24T11:31:00+08:00",
+        ),
     )
-    assert redelivered.event_id == first.event_id
-    assert redelivered.item_inserted is False and redelivered.event_created is False
+    second = _admit_market_frame(
+        repos,
+        _market_frame(
+            hit_id=9_510_002,
+            text=title,
+            strategy_id=1019,
+            strategy_name="OI Event Monitor",
+            source_type="market",
+            ts="2026-08-24T11:31:00+08:00",
+        ),
+    )
+
+    assert first.item_id != second.item_id
+    assert first.market is not None and second.market is not None
+    items = (first.item_id, second.item_id)
+    rows = conn.execute(
+        "SELECT source_item_id FROM news_oi_signals WHERE source_item_id = ANY(%s)", (list(items),)
+    ).fetchall()
+    assert sorted(row["source_item_id"] for row in rows) == sorted(items)
+    assert _editorial_rows(conn, items) == {"events": 0, "members": 0, "snapshots": 0, "verdicts": 0}
+    conn.commit()
+
+
+def test_one_record_replayed_adds_no_observation_and_never_rewrites_the_first_payload(conn) -> None:
+    """#553 §3.1. The admitted business payload is written once; a replay is the same observation."""
+
+    repos = repositories_for_connection(conn)
+    title = "REPLAY OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
+    frame = _market_frame(
+        hit_id=9_510_010,
+        text=title,
+        strategy_id=1019,
+        strategy_name="OI Event Monitor",
+        source_type="market",
+        extra={"relatedAddress": "0xfirst"},
+    )
+    _admit_market_frame(repos, frame)
+    replayed = _market_frame(
+        hit_id=9_510_010,
+        text=title,
+        strategy_id=1019,
+        strategy_name="renamed by the provider",
+        source_type="market",
+        extra={"relatedAddress": "0xsecond"},
+    )
+    _admit_market_frame(repos, replayed)
+
+    stored = conn.execute(
+        "SELECT item_id, provider_params, market_kind, market_parse_status FROM news_items WHERE source_item_key = %s",
+        ("9510010",),
+    ).fetchall()
+    assert len(stored) == 1
+    assert stored[0]["provider_params"]["relatedAddress"] == "0xfirst"
+    assert (stored[0]["market_kind"], stored[0]["market_parse_status"]) == ("oi", "parsed")
+    assert (
+        conn.execute(
+            "SELECT count(*) AS n FROM news_oi_signals WHERE source_item_id = %s", (stored[0]["item_id"],)
+        ).fetchone()["n"]
+        == 1
+    )
+    conn.commit()
+
+
+@pytest.mark.parametrize("ingest_mode", ["live", "recovery"])
+@pytest.mark.parametrize("venue", ["binance", "hyperliquid", "okx", "bybit"])
+@pytest.mark.parametrize("strategy_id", [2000, 2083])
+def test_every_measured_venue_and_both_liquidation_strategies_store_a_typed_fact(
+    conn, strategy_id: int, venue: str, ingest_mode: str
+) -> None:
+    """#553 acceptance. 2083 is the real traffic and 2000 keeps its contract coverage.
+
+    Four venues were measured in the retained window and two of them were refused by an allowlist.
+    Recovery is admitted through exactly the same path as live, which is what the OI ledger's missing
+    recovery rows proved was not previously true.
+    """
+
+    repos = repositories_for_connection(conn)
+    hit_id = 9_600_000 + strategy_id * 10 + _VENUES.index(venue) * 2 + int(ingest_mode == "recovery")
+    result = _admit_market_frame(
+        repos,
+        _market_frame(
+            hit_id=hit_id,
+            text="SPCX Large Short Liquidation 202.71K at $137.01",
+            strategy_id=strategy_id,
+            strategy_name="renamed",
+            source_type="market",
+            source=venue,
+        ),
+        ingest_mode=ingest_mode,
+    )
+
+    assert result.market is not None
+    assert (result.market.market_kind, result.market.parse_status) == ("liquidation", "parsed")
+    row = conn.execute(
+        "SELECT source_venue, source_strategy_id, ingest_mode, symbol, raw_instrument"
+        " FROM news_market_liquidations WHERE item_id = %s",
+        (result.item_id,),
+    ).fetchone()
+    assert (row["source_venue"], row["source_strategy_id"], row["ingest_mode"]) == (
+        venue,
+        str(strategy_id),
+        ingest_mode,
+    )
+    assert (row["symbol"], row["raw_instrument"]) == ("SPCX", "SPCX")
+    conn.commit()
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("js-2 Open Long SOL $482,113.55 , Price $137.01", ("open", "long", None)),
+        ("js-2 Close Short SOL $482,113.55 , Price $137.01 , PNL -$8,204.10", ("close", "short", "-8204.10")),
+        ("js-2 Close Long SOL $482,113.55 , Price $137.01 , PNL +$1,204.10", ("close", "long", "1204.10")),
+    ],
+)
+def test_smart_money_open_close_and_pnl_reports_are_typed_with_their_address(conn, text: str, expected: Any) -> None:
+    repos = repositories_for_connection(conn)
+    action, side, pnl = expected
+    address = "0x" + "9" * 40
+    result = _admit_market_frame(
+        repos,
+        _market_frame(
+            hit_id=9_530_000 + abs(hash(text)) % 1000,
+            text=text,
+            strategy_id=2026,
+            strategy_name="聪明钱监控",
+            source_type="wallet",
+            source="",
+            extra={
+                "relatedAddress": address,
+                "strategy": {
+                    "id": 2026,
+                    "name": "聪明钱监控",
+                    "sourceType": "wallet",
+                    "metrics": {"position_value": {"value": 482113.55, "unit": "USD"}},
+                },
+            },
+        ),
+    )
+
+    assert result.market is not None and result.market.parse_status == "parsed"
+    row = conn.execute(
+        "SELECT action, position_side, account_address, source_venue, pnl_usd, raw_instrument, symbol,"
+        " reported_notional_usd, price FROM news_market_smart_money WHERE item_id = %s",
+        (result.item_id,),
+    ).fetchone()
+    assert (row["action"], row["position_side"]) == (action, side)
+    assert row["account_address"] == address
+    # No venue is reported on this Strategy, and an unknown venue is recorded as unknown rather than
+    # borrowed from a sibling report.
+    assert row["source_venue"] is None
+    assert (str(row["pnl_usd"]) if row["pnl_usd"] is not None else None) == pnl
+    assert (row["raw_instrument"], row["symbol"]) == ("SOL", "SOL")
+    assert str(row["reported_notional_usd"]) == "482113.55"
+    # The provider's own extension fields survive persistence at full precision.
+    params = conn.execute("SELECT provider_params FROM news_items WHERE item_id = %s", (result.item_id,)).fetchone()[
+        "provider_params"
+    ]
+    assert params["relatedAddress"] == address
+    assert params["strategy"]["metrics"]["position_value"]["value"] == 482113.55
+    conn.commit()
+
+
+def test_a_withdraw_report_is_stored_as_a_raw_card_and_stays_visible(conn) -> None:
+    """The measured 2026 sample that is not a position report at all. It is still account activity."""
+
+    repos = repositories_for_connection(conn)
+    result = _admit_market_frame(
+        repos,
+        _market_frame(
+            hit_id=9_540_001,
+            text="Withdraw USDC",
+            strategy_id=2026,
+            strategy_name="聪明钱监控",
+            source_type="wallet",
+            source="",
+            ts="2026-08-24T11:44:00+08:00",
+        ),
+    )
+
+    assert result.market is not None
+    assert (result.market.parse_status, result.market.parse_error) == ("raw", "smart_money_template_unmatched")
+    assert (
+        conn.execute(
+            "SELECT count(*) AS n FROM news_market_smart_money WHERE item_id = %s", (result.item_id,)
+        ).fetchone()["n"]
+        == 0
+    )
+    observed = conn.execute("SELECT observed_at_ms FROM news_items WHERE item_id = %s", (result.item_id,)).fetchone()[
+        "observed_at_ms"
+    ]
+    groups, _ = repositories_for_connection(conn).news.market_groups(
+        kinds=("smart_money",),
+        from_ms=observed,
+        to_ms=observed + 1,
+        cursor_received_at_ms=1 << 62,
+        cursor_item_id="",
+        limit=10,
+    )
+    assert [(group["market_kind"], group["latest"]["parse_status"]) for group in groups] == [("smart_money", "raw")]
+    conn.commit()
+
+
+def test_a_frame_with_no_venue_no_window_and_no_address_is_still_readable(conn) -> None:
+    """#553 acceptance. Absent evidence never makes an observation invisible."""
+
+    repos = repositories_for_connection(conn)
+    result = _admit_market_frame(
+        repos,
+        _market_frame(
+            hit_id=9_550_001,
+            text="XYZ-PENGU OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%",
+            strategy_id=9_999,
+            strategy_name="An unbound market monitor",
+            source_type="market",
+            source="",
+        ),
+    )
+
+    assert result.market is not None
+    assert (result.market.market_kind, result.market.parse_error) == ("unknown_market", "unknown_market_source")
+    news = repositories_for_connection(conn).news
+    detail = news.market_item(item_id=result.item_id)
+    assert detail is not None
+    assert detail["source_venue"] is None and detail["measurement_definition"] is None
+    assert detail["parse_status"] == "raw"
+    conn.commit()
+
+
+def test_the_native_instrument_prefix_survives_beside_the_normalized_symbol(conn) -> None:
+    repos = repositories_for_connection(conn)
+    result = _admit_market_frame(
+        repos,
+        _market_frame(
+            hit_id=9_560_001,
+            text="XYZ-UNITREE OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%",
+            strategy_id=1019,
+            strategy_name="OI Event Monitor",
+            source_type="market",
+        ),
+    )
 
     row = conn.execute(
-        """
-        SELECT e.event_kind, e.admission, e.source_contract_reason, i.provider_metadata
-          FROM news_events e
-          JOIN news_items i ON i.item_id = e.leader_item_id
-         WHERE e.event_id = %s
-        """,
-        (first.event_id,),
+        "SELECT symbol, raw_instrument, measurement_definition, provider FROM news_oi_signals"
+        " WHERE source_item_id = %s",
+        (result.item_id,),
     ).fetchone()
-    assert row is not None
-    strategy = row["provider_metadata"]["strategies"][0]
-    assert (row["event_kind"], row["admission"]) == (
-        "unsupported_market",
-        "unsupported_market_contract",
+    assert (row["symbol"], row["raw_instrument"]) == ("UNITREE", "XYZ-UNITREE")
+    assert row["measurement_definition"] == "oi_signal_v1|opennews_oi_source_v1|300000"
+    assert row["provider"] == "opennews"
+    conn.commit()
+
+
+def test_a_market_item_that_accumulated_a_news_strategy_keeps_its_parser_and_its_typed_fact(conn) -> None:
+    """#553 SHOULD-FIX 4. The primary Strategy decides, live and in the backfill alike.
+
+    An Item unions every Strategy tuple it is ever reported under, so a 1019 record that a news
+    Strategy also matched carries both. The migration's backfill classifies by `strategies[0]` alone;
+    a live path that demoted the same record to `unknown_market` would make one record mean two
+    different things depending on which of the two wrote it, and the typed fact would exist or not by
+    accident of timing.
+    """
+
+    repos = repositories_for_connection(conn)
+    frame = _market_frame(
+        hit_id=9_580_001,
+        text="MIXED OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%",
+        strategy_id=1019,
+        strategy_name="OI Event Monitor",
+        source_type="market",
     )
-    assert row["source_contract_reason"] == "unsupported_market_contract"
-    assert (
-        strategy["id"],
-        strategy["name"],
-        strategy["source_type"],
-        strategy["engine_type"],
-    ) == (str(strategy_id), strategy_name, source_type, "market")
-    downstream = conn.execute(
-        """
-        SELECT
-          (SELECT count(*) FROM news_event_members WHERE event_id = %s) AS members,
-          (SELECT count(*) FROM news_verdicts WHERE event_id = %s) AS verdicts,
-          (SELECT count(*) FROM news_deliveries WHERE event_id = %s) AS deliveries,
-          (SELECT count(*) FROM news_oi_signals WHERE event_id = %s) AS oi_signals,
-          (SELECT count(*) FROM news_market_liquidations WHERE item_id = %s) AS liquidations
-        """,
-        (first.event_id, first.event_id, first.event_id, first.event_id, first.item_id),
-    ).fetchone()
-    assert downstream == {
-        "members": 1,
-        "verdicts": 0,
-        "deliveries": 0,
-        "oi_signals": 0,
-        "liquidations": 0,
-    }
+    merged = dict(frame.provider_metadata)
+    merged["strategies"] = [
+        *merged["strategies"],
+        {"id": "1018", "name": "News Score > 70", "source_type": "news", "engine_type": "news"},
+    ]
+    result = _admit_market_frame(repos, replace(frame, provider_metadata=merged))
+
+    assert result.market is not None
+    assert (result.market.market_kind, result.market.parse_status) == ("oi", "parsed")
+    row = conn.execute("SELECT symbol FROM news_oi_signals WHERE source_item_id = %s", (result.item_id,)).fetchone()
+    assert row is not None and row["symbol"] == "MIXED"
+    # Both tuples survive on the Item: the second is metadata about the record, never a reason to
+    # re-read it, and never a reason to open an Event for it.
+    stored = conn.execute("SELECT provider_metadata FROM news_items WHERE item_id = %s", (result.item_id,)).fetchone()[
+        "provider_metadata"
+    ]
+    assert {strategy["id"] for strategy in stored["strategies"]} == {"1018", "1019"}
+    assert _editorial_rows(conn, (result.item_id,)) == {"events": 0, "members": 0, "snapshots": 0, "verdicts": 0}
+    conn.commit()
+
+
+def test_a_market_frame_bypasses_the_editorial_plane_entirely(conn) -> None:
+    """#553 acceptance. No Event, no verdict, no evidence snapshot, no storyline, no delivery."""
+
+    repos = repositories_for_connection(conn)
+    result = _admit_market_frame(
+        repos,
+        _market_frame(
+            hit_id=9_570_001,
+            text="BYPASS OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%",
+            strategy_id=1019,
+            strategy_name="OI Event Monitor",
+            source_type="market",
+        ),
+    )
+
+    assert _editorial_rows(conn, (result.item_id,)) == {"events": 0, "members": 0, "snapshots": 0, "verdicts": 0}
+    conn.commit()
 
 
 def test_explicit_multi_fact_item_creates_one_focused_event_per_fact(conn) -> None:
@@ -1849,116 +1835,25 @@ def test_explain_event_prints_the_chain_with_a_one_line_outcome(conn) -> None:
     assert explain_event(repos, "does-not-exist") is None
 
 
-def test_the_oi_filter_only_reaches_the_lane_that_can_write_the_key(conn) -> None:
-    """`?oi=` names the deterministic lane's gate, so it must not answer for any other admission.
-
-    `triage.py` enters its OI branch under `admission = 'telemetry_deterministic'` and nothing else writes
-    `trace['oi_signal']`, so pairing the two costs no rows. It is what keeps the filter off the whole
-    retention's TOAST: without the admission the planner reads `trace` — 26 MB over 24 h of verdicts — for
-    every candidate row before it can tell whether the rule matches, and a rare rule finds nothing to stop
-    early on. Measured live on 2026-08-25, unbounded `?oi=parse_failed` was a 500 at 1.24 s against the serve
-    role's 1 s statement timeout, and 0.44 s once the admission came with it.
-    """
-
-    repos = repositories_for_connection(conn)
-    telemetry_id, other_id = _admit_test_events(
-        conn,
-        hit_base=1_795_000,
-        titles=("Zeta OI Rise 4.55 percent", "Eta publishes an unrelated update"),
-        hour=11,
-    )
-    judgment, lane_trace = oi_parse_failure("Zeta OI invalid frame", provider_source="opennews")
-    with repos.transaction():
-        conn.execute(
-            "UPDATE news_events SET admission = 'telemetry_deterministic' WHERE event_id = %s",
-            (telemetry_id,),
-        )
-        # The same trace key on both rows: the filter must separate them by lane, not by what the trace holds.
-        for offset, event_id in enumerate((telemetry_id, other_id)):
-            evidence = repos.news.latest_evidence_snapshot(event_id)
-            assert evidence is not None
-            runtime_manifest_sha = "c" * 64
-            trace = {
-                "oi_signal": lane_trace,
-                "judgment": judgment.judgment_atom,
-                "judgment_contract_version": judgment.judgment_contract_version,
-                "judgment_origin": "oi",
-                "judgment_sha256": judgment.judgment_sha256,
-                "verdict_sha256": canonical_sha(judgment.verdict.model_dump(mode="json")),
-                "runtime_manifest_sha": runtime_manifest_sha,
-                "program_version": OI_PROGRAM_VERSION,
-                "program_sha256": "d" * 64,
-                "evidence_version": int(evidence["evidence_version"]),
-                "evidence_sha256": str(evidence["evidence_sha256"]),
-                "focus_fact_id": str(evidence["focus_fact_id"]),
-                "told": [],
-                "told_count": 0,
-            }
-            repos.news.insert_verdict(
-                event_id=event_id,
-                stage="triage",
-                policy_version=TRIAGE_POLICY_VERSION,
-                judgment_contract_version=judgment.judgment_contract_version,
-                judgment_origin="oi",
-                rule_baseline_decision=judgment.decision.rule_baseline,
-                final_decision=judgment.decision.final,
-                override_rule=judgment.decision.override_rule,
-                throttled_by=judgment.decision.throttled_by,
-                verdict=judgment.verdict.model_dump(mode="json"),
-                model_editorial=None,
-                judgment_sha256=judgment.judgment_sha256,
-                runtime_manifest_sha=runtime_manifest_sha,
-                model=None,
-                program_version=OI_PROGRAM_VERSION,
-                program_sha256="d" * 64,
-                degraded=False,
-                error_code="oi_parse_failed",
-                trace=trace,
-                evidence_version=int(evidence["evidence_version"]),
-                evidence_sha256=str(evidence["evidence_sha256"]),
-                focus_fact_id=str(evidence["focus_fact_id"]),
-                now_ms=1_790_000_000_000 + offset,
-            )
-
-    served = repos.news.list_feed(
-        event_family=None,
-        change_state=None,
-        assertion_status=None,
-        source_authority=None,
-        subject_code=None,
-        admission=None,
-        final_decision=None,
-        event_kind=None,
-        search=None,
-        limit=10_000,
-        cursor=None,
-        oi="parse_failed",
-    )
-    served_ids = {event["event_id"] for event in served["events"]}
-    assert telemetry_id in served_ids
-    assert other_id not in served_ids
-    conn.commit()
-
-
 def test_feed_direction_and_event_kind_filters_compose_over_the_authoritative_query(conn) -> None:
     repos = repositories_for_connection(conn)
     sentinel = "direction-channel-filter-sentinel"
-    bullish_id, bearish_oi_id = _admit_test_events(
+    bullish_id, bearish_listing_id = _admit_test_events(
         conn,
         hit_base=1_795_200,
         titles=(
             f"{sentinel} semiconductor orders accelerate after a capacity expansion",
-            f"{sentinel} leveraged open interest unwinds across crypto perpetuals",
+            f"{sentinel} an exchange delists a perpetual contract",
         ),
         hour=11,
     )
-    assert bullish_id != bearish_oi_id
+    assert bullish_id != bearish_listing_id
     with repos.transaction():
         conn.execute(
-            "UPDATE news_events SET event_kind = 'oi' WHERE event_id = %s",
-            (bearish_oi_id,),
+            "UPDATE news_events SET event_kind = 'listing' WHERE event_id = %s",
+            (bearish_listing_id,),
         )
-        for offset, (event_id, direction) in enumerate(((bullish_id, "bullish"), (bearish_oi_id, "bearish"))):
+        for offset, (event_id, direction) in enumerate(((bullish_id, "bullish"), (bearish_listing_id, "bearish"))):
             _insert_test_verdict(
                 repos,
                 event_id=event_id,
@@ -1987,11 +1882,11 @@ def test_feed_direction_and_event_kind_filters_compose_over_the_authoritative_qu
         return {event["event_id"] for event in page["events"]}
 
     assert ids(directions=("bullish",)) == {bullish_id}
-    assert ids(directions=("bearish",)) == {bearish_oi_id}
+    assert ids(directions=("bearish",)) == {bearish_listing_id}
     assert ids(event_kind=("news",)) == {bullish_id}
-    assert ids(event_kind=("oi",)) == {bearish_oi_id}
-    assert ids(event_kind=("news", "oi")) == {bullish_id, bearish_oi_id}
-    assert ids(directions=("bullish",), event_kind=("oi",)) == set()
+    assert ids(event_kind=("listing",)) == {bearish_listing_id}
+    assert ids(event_kind=("news", "listing")) == {bullish_id, bearish_listing_id}
+    assert ids(directions=("bullish",), event_kind=("listing",)) == set()
     conn.commit()
 
 

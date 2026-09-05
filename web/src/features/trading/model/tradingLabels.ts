@@ -182,43 +182,6 @@ export const EXIT_REASON_ZH: Record<string, string> = {
 };
 
 /**
- * Why a Source frame never became a Case, keyed `stage:reason` exactly as the ledger writes it.
- *
- * The raw key stays on screen beside the Chinese for the same reason `policy_reason` does: it is the
- * string an operator greps, and the two vocabularies must not drift into synonyms. A key with no entry
- * here renders as itself — a missing translation is a gap in this table, not a reason to hide a refusal.
- *
- * Exactly the pairs a writer can still emit. #537 PR-3 deleted the four eligibility rules that never
- * fired or never mattered — the issuer-busy defer, the same-underlying merge, the per-turn freeze
- * budget and the lane's own route-catalogue check — and #348 retired four before them. A 90-day-old
- * row that still carries one renders under its own key, which is what the fallback above is for.
- */
-export const GATE_REASON_ZH: Record<string, string> = {
-  "eligibility:already_consumed": "同一来源已成案",
-  "eligibility:oi_value_below_floor": "持仓额低于流动性地板",
-  "eligibility:trigger_stale": "帧已过触发时效",
-  "freeze:already_consumed": "同一来源已成案",
-  "freeze:case_created": "已开案",
-  "market_context:market_data_invalid": "截面无可用收盘价",
-  "market_context:market_data_unavailable": "行情暂不可读",
-  "source:source_contract_invalid": "来源契约不成立",
-  "source:source_not_live": "非 live 摄入",
-  "venue:venue_unresolved": "场所标记无法识别",
-};
-
-/** The four answers an admission decision can hold. `DEFERRED` is the only open one. */
-export const GATE_STATUS_ZH: Record<string, string> = {
-  CASE_CREATED: "已开案",
-  DEFERRED: "待重试",
-  EXPIRED: "已过期",
-  REJECTED: "已拒绝",
-};
-
-export function gateReasonLabel(key: string): string {
-  return GATE_REASON_ZH[key] ?? key;
-}
-
-/**
  * The one thing every ledger on the desk says when it has no rows (#537 PR-5).
  *
  * Three blocks each carried their own `ledgerEmpty(pending, failed)` with the same three sentences in

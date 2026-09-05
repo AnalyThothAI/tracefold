@@ -1,4 +1,4 @@
-"""Told ledger, OI signals, verdicts, and delivery settlement persistence."""
+"""Told ledger, market fact writes, verdicts, and delivery settlement persistence."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from dataclasses import replace
 from typing import Any
 
 # S608 exemptions below interpolate only closed, module-owned history predicates; all values stay bound.
+from ..liquidations import LiquidationFact
 from ..models import TelegramDeliveryReceipt
 from ..reader_history import (
     RECENT_HISTORY_MAX,
@@ -19,6 +20,8 @@ from ..reader_history import (
     ReaderHistorySnapshot,
     assemble_reader_history,
 )
+from ..smart_money import SmartMoneyFact
+from ..source_contracts import MARKET_PROVIDER
 from .sql_values import _dumps
 
 _STORYLINE_LOCK_NAMESPACE = 0x4E455753  # 'NEWS', distinct from App session-lock namespaces.
@@ -37,7 +40,6 @@ UNPUBLISHED_VERDICT_CANDIDATES_SQL = """
        AND v.judgment_contract_version = 'news_judgment_v2'
        AND v.final_decision IN ('push', 'escalate')
        AND v.published_at_ms IS NULL
-       AND e.event_kind <> 'unsupported_market'
        AND v.created_at_ms <= %s AND v.created_at_ms >= %s
      ORDER BY v.created_at_ms, v.event_id, v.policy_version LIMIT %s
 """
@@ -56,7 +58,6 @@ _VERDICT_HANDOFF_STATE_SQL = """
          AND v.judgment_contract_version = 'news_judgment_v2'
          AND v.final_decision IN ('push', 'escalate')
          AND v.published_at_ms IS NULL
-         AND e.event_kind <> 'unsupported_market'
          AND v.created_at_ms >= %s
        ORDER BY v.created_at_ms, v.event_id, v.policy_version
        LIMIT %s
@@ -74,7 +75,6 @@ _VERDICT_HANDOFF_STATE_SQL = """
          AND v.judgment_contract_version = 'news_judgment_v2'
          AND v.final_decision IN ('push', 'escalate')
          AND v.published_at_ms IS NULL
-         AND e.event_kind <> 'unsupported_market'
          AND v.created_at_ms < %s
        ORDER BY v.created_at_ms DESC, v.event_id DESC, v.policy_version DESC
        LIMIT %s
@@ -310,48 +310,44 @@ class DecisionStorage:
         self.conn.execute("SET LOCAL lock_timeout = '2500ms'")
         self.conn.execute("SELECT pg_advisory_xact_lock(%s, hashtext(%s))", (_STORYLINE_LOCK_NAMESPACE, storyline_key))
 
-    def oi_signal(self, *, event_id: str, metric_version: str) -> dict[str, Any] | None:
-        """The code-verified OI row that may ground its deterministic reader card."""
-
-        row = self.conn.execute(
-            "SELECT signal.event_id, signal.metric_version, signal.symbol, signal.direction, "
-            "signal.oi_change_bps, signal.oi_value_usd, signal.whale_long_profit_bps, "
-            "signal.whale_oi_ratio_bps, signal.observed_at_ms, "
-            "signal.source_strategy_id, signal.source_contract_version, signal.measurement_window_ms, "
-            "signal.source_item_id, signal.source_venue, signal.available_at_ms, signal.learning_epoch "
-            "FROM news_oi_signals signal "
-            "JOIN news_events event ON event.event_id = signal.event_id "
-            "WHERE signal.event_id = %s AND signal.metric_version = %s",
-            (event_id, metric_version),
-        ).fetchone()
-        return dict(row) if row is not None else None
-
     def insert_oi_signal(
         self,
         *,
         event_id: str,
         metric_version: str,
         symbol: str,
+        raw_instrument: str,
         direction: str,
         oi_change_bps: int,
         oi_value_usd: int,
         whale_long_profit_bps: int,
         whale_oi_ratio_bps: int,
         observed_at_ms: int,
+        received_at_ms: int,
         now_ms: int,
-        source_strategy_id: str | None = None,
-        source_contract_version: str | None = None,
-        measurement_window_ms: int | None = None,
+        provider: str,
+        source_strategy_id: str | None,
+        source_contract_version: str | None,
+        measurement_window_ms: int | None,
+        measurement_definition: str,
         source_item_id: str,
         source_venue: str | None,
     ) -> None:
-        """Append one parsed frame to the frame ledger. Idempotent; the decision lives in the verdict.
+        """Append one parsed frame to the OI ledger. Idempotent on the Item that produced it.
 
-        The three source-contract columns travel together or not at all (#265): a window with no
+        The uniqueness key is `(source_item_id, metric_version)` (#553): one provider record parsed
+        under one metric version is one observation, whatever else has happened to it. `event_id`
+        remains the published identity a Trading Case files its answer under -- an opaque source
+        string, derived from the Item, and no longer a claim that a News Event exists.
+
+        The three source-contract columns still travel together or not at all (#265): a window with no
         identity behind it is a number nobody can audit, and `NULL` is the honest record of a frame
-        whose measurement interval this judge could not prove. A default of five minutes here would
-        make every unprovable frame claim to be a 5-minute measurement, which is the whole failure the
-        columns exist to prevent.
+        whose measurement interval could not be proven. A default of five minutes here would make
+        every unprovable frame claim to be a 5-minute measurement.
+
+        Every row this writer appends is `historical = false`, which is the column's default: a fact
+        arriving through admission is one this process received. The reconstructed rows are the
+        migration's, written by its own statement, and no live path may mark a fact as rebuilt.
         """
 
         proven = (
@@ -360,135 +356,145 @@ class DecisionStorage:
         self.conn.execute(
             """
             INSERT INTO news_oi_signals (
-              event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd,
-              whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, created_at_ms,
-              source_strategy_id, source_contract_version, measurement_window_ms,
-              source_item_id, source_venue, available_at_ms, learning_epoch
+              event_id, metric_version, symbol, raw_instrument, direction, oi_change_bps, oi_value_usd,
+              whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, received_at_ms, created_at_ms,
+              provider, source_strategy_id, source_contract_version, measurement_window_ms,
+              measurement_definition, source_item_id, source_venue, available_at_ms
             ) VALUES (
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              %s, %s, %s,
-              COALESCE((SELECT epoch.epoch_id
-                 FROM news_learning_epochs epoch
-                WHERE epoch.bundle_sha = (
-                  SELECT stable_sha FROM news_review_active_agent_v1
-                   ORDER BY created_at_ms DESC LIMIT 1
-                )
-                ORDER BY epoch.starts_at_ms DESC LIMIT 1), 'unproven')
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s, %s, %s, %s, %s
             )
-            ON CONFLICT (event_id, metric_version) DO NOTHING
+            ON CONFLICT (source_item_id, metric_version) DO NOTHING
             """,
             (
                 event_id,
                 metric_version,
                 symbol,
+                raw_instrument,
                 direction,
                 int(oi_change_bps),
                 int(oi_value_usd),
                 int(whale_long_profit_bps),
                 int(whale_oi_ratio_bps),
                 int(observed_at_ms),
+                int(received_at_ms),
                 int(now_ms),
+                provider,
                 source_strategy_id if proven else None,
                 source_contract_version if proven else None,
                 int(measurement_window_ms) if proven and measurement_window_ms is not None else None,
+                measurement_definition,
                 source_item_id,
                 source_venue,
                 int(now_ms),
             ),
         )
 
-    def insert_market_liquidation(
-        self,
-        *,
-        source_key: str,
-        item_id: str,
-        fact_id: str,
-        ingest_mode: str,
-        symbol: str,
-        venue: str,
-        liquidated_position_side: str,
-        forced_order_side: str,
-        notional_usd: Any,
-        quantity: Any | None,
-        price: Any,
-        event_at_ms: int,
-        received_at_ms: int,
-        parser_version: str,
-        provider_record_identity: str,
-        symbol_contract_identity: str,
-        position_side_semantics: str,
-        quantity_semantics: str,
-        notional_semantics: str,
-        price_semantics: str,
-        completeness_assumption: str,
-        throttle_assumption: str,
-        source_contract_version: str,
-        source_contract_complete: bool,
-        now_ms: int,
-    ) -> None:
-        """Append one normalized Strategy 2000 fact. Provider replays are idempotent by source key."""
+    def insert_market_liquidation(self, *, fact: LiquidationFact, ingest_mode: str, now_ms: int) -> None:
+        """Append one normalized liquidation report. Provider replays are idempotent by source key."""
 
         self.conn.execute(
             """
             INSERT INTO news_market_liquidations (
-              source_key, item_id, fact_id, ingest_mode, symbol, venue, liquidated_position_side,
+              source_key, item_id, fact_id, ingest_mode, provider, symbol, raw_instrument, source_venue,
+              source_strategy_id, liquidated_position_side,
               forced_order_side, notional_usd, quantity, price, event_at_ms,
               received_at_ms, parser_version, provider_record_identity,
               symbol_contract_identity, position_side_semantics, quantity_semantics,
               notional_semantics, price_semantics, completeness_assumption,
-              throttle_assumption, source_contract_version, source_contract_complete, created_at_ms
+              throttle_assumption, source_contract_version, source_contract_complete,
+              available_at_ms, created_at_ms
             ) VALUES (
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
             ON CONFLICT (source_key) DO NOTHING
             """,
             (
-                source_key,
-                item_id,
-                fact_id,
+                fact.source_key,
+                fact.item_id,
+                fact.fact_id,
                 ingest_mode,
-                symbol,
-                venue,
-                liquidated_position_side,
-                forced_order_side,
-                notional_usd,
-                quantity,
-                price,
-                int(event_at_ms),
-                int(received_at_ms),
-                parser_version,
-                provider_record_identity,
-                symbol_contract_identity,
-                position_side_semantics,
-                quantity_semantics,
-                notional_semantics,
-                price_semantics,
-                completeness_assumption,
-                throttle_assumption,
-                source_contract_version,
-                bool(source_contract_complete),
+                MARKET_PROVIDER,
+                fact.symbol,
+                fact.raw_instrument,
+                fact.source_venue,
+                fact.source_strategy_id,
+                fact.liquidated_position_side,
+                fact.forced_order_side,
+                fact.notional_usd,
+                fact.quantity,
+                fact.price,
+                int(fact.event_at_ms),
+                int(fact.received_at_ms),
+                fact.parser_version,
+                fact.provider_record_identity,
+                fact.symbol_contract_identity,
+                fact.position_side_semantics,
+                fact.quantity_semantics,
+                fact.notional_semantics,
+                fact.price_semantics,
+                fact.completeness_assumption,
+                fact.throttle_assumption,
+                fact.source_contract_version,
+                bool(fact.source_contract_complete),
+                int(now_ms),
                 int(now_ms),
             ),
         )
 
-    def market_liquidation(self, *, item_id: str, fact_id: str, parser_version: str) -> dict[str, Any] | None:
-        """The typed fact behind one deterministic liquidation verdict."""
+    def insert_market_smart_money(self, *, fact: SmartMoneyFact, ingest_mode: str, now_ms: int) -> None:
+        """Append one reported account action. Provider replays are idempotent by source key.
 
-        row = self.conn.execute(
+        `reported_notional_usd` is the provider's own figure for one report. Nothing sums it: two
+        reports about the same account are two reports, and no position total can be derived from a
+        stream that never claims to be complete.
+        """
+
+        self.conn.execute(
             """
-            SELECT source_key, item_id, fact_id, ingest_mode, symbol, venue, liquidated_position_side,
-                   forced_order_side, notional_usd, quantity, price, event_at_ms,
-                   received_at_ms, parser_version, provider_record_identity,
-                   symbol_contract_identity, position_side_semantics, quantity_semantics,
-                   notional_semantics, price_semantics, completeness_assumption,
-                   throttle_assumption, source_contract_version, source_contract_complete
-              FROM news_market_liquidations
-             WHERE item_id = %s AND fact_id = %s AND parser_version = %s
+            INSERT INTO news_market_smart_money (
+              source_key, item_id, fact_id, ingest_mode, provider, source_strategy_id,
+              trader_label, account_address, source_venue, raw_instrument, symbol,
+              action, position_side, reported_notional_usd, price, pnl_usd,
+              event_at_ms, received_at_ms, available_at_ms, created_at_ms,
+              parser_version, provider_record_identity, source_contract_version,
+              notional_semantics, price_semantics, completeness_assumption
+            ) VALUES (
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            ON CONFLICT (source_key) DO NOTHING
             """,
-            (item_id, fact_id, parser_version),
-        ).fetchone()
-        return dict(row) if row is not None else None
+            (
+                fact.source_key,
+                fact.item_id,
+                fact.fact_id,
+                ingest_mode,
+                MARKET_PROVIDER,
+                fact.source_strategy_id,
+                fact.trader_label,
+                fact.account_address,
+                fact.source_venue,
+                fact.raw_instrument,
+                fact.symbol,
+                fact.action,
+                fact.position_side,
+                fact.reported_notional_usd,
+                fact.price,
+                fact.pnl_usd,
+                int(fact.event_at_ms),
+                int(fact.received_at_ms),
+                int(now_ms),
+                int(now_ms),
+                fact.parser_version,
+                fact.provider_record_identity,
+                fact.source_contract_version,
+                fact.notional_semantics,
+                fact.price_semantics,
+                fact.completeness_assumption,
+            ),
+        )
 
     def insert_verdict(
         self,

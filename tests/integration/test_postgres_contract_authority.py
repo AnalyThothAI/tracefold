@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import asdict
-from typing import Any
+from typing import Any, Final
 
 import pytest
 from psycopg.types.json import Jsonb
@@ -11,15 +10,7 @@ from pydantic import TypeAdapter, ValidationError
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_judgment import news_taxonomy
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.liquidations import LiquidationFact, parse_liquidation
-from tracefold.news.liquidations import trace as liquidation_trace
 from tracefold.news.models import TriageVerdict
-from tracefold.news.oi_signals import (
-    OiSignal,
-    evaluate_oi,
-    oi_judgment_trace,
-    parse_oi_signal,
-)
 from tracefold.news.program.contracts import EditorialEnvelope, TradeRelevanceV1
 from tracefold.news.review.desk import BlindPairwiseSubmission, EventRubricSubmission, _pairwise_virtual
 
@@ -44,26 +35,61 @@ def _python_dataclass_form_accepts(adapter: TypeAdapter[Any], payload: dict[str,
     return bool(materialized == payload)
 
 
-def _current_telemetry_payloads() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
-    oi = parse_oi_signal("SOL OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%")
-    liquidation = parse_liquidation(
-        "BTC Large Short Liquidation 1.25M at $65000",
-        item_id="item-current",
-        fact_id="fact-current",
-        provider_source="binance",
-        event_at_ms=1_000,
-        received_at_ms=1_100,
-    )
-    assert oi is not None and liquidation is not None
-    oi_metadata = oi_judgment_trace(
-        evaluate_oi(oi),
-    )
-    return (
-        asdict(oi),
-        oi_metadata,
-        TypeAdapter(LiquidationFact).dump_python(liquidation, mode="json"),
-        liquidation_trace(liquidation),
-    )
+# The exact market judgment shapes `news_verdicts_current_judgment_check` validated while market
+# frames still wore a verdict, frozen as literals. #553 deleted the writers, and the four validators
+# below now guard historical rows only -- so they are pinned against what was actually stored rather
+# than against the live dataclasses, which have since gained a native instrument token, a reporting
+# Strategy and a nullable venue. Comparing a historical validator with a current dataclass would
+# either force the validator to reject rows it must keep accepting, or force the dataclass to carry
+# fields the market plane no longer uses.
+_HISTORICAL_OI_SIGNAL: Final[dict[str, Any]] = {
+    "symbol": "SOL",
+    "direction": "rise",
+    "oi_change_bps": 455,
+    "oi_value_usd": 32_170_000,
+    "whale_long_profit_bps": 8021,
+    "whale_oi_ratio_bps": 10_071,
+}
+_HISTORICAL_OI_METADATA: Final[dict[str, Any]] = {
+    "parsed": True,
+    "source_strategy_id": "1019",
+    "source_contract_version": "opennews_oi_source_v1",
+    "measurement_window_ms": 300_000,
+    "source_contract_rule": "proven",
+    "parser_version": "oi_signal_parser_v1",
+    "source_classifier_version": "opennews_source_classifier_v1",
+}
+_HISTORICAL_LIQUIDATION_FACT: Final[dict[str, Any]] = {
+    "source_key": "a" * 64,
+    "item_id": "item-current",
+    "fact_id": "fact-current",
+    "symbol": "BTC",
+    "venue": "binance",
+    "liquidated_position_side": "short",
+    "forced_order_side": "buy",
+    "notional_usd": "1250000",
+    "quantity": None,
+    "price": "65000",
+    "event_at_ms": 1_000,
+    "received_at_ms": 1_100,
+    "provider_record_identity": "item-current",
+    "symbol_contract_identity": "unresolved:binance:BTC",
+    "position_side_semantics": "template_position_side;short=>forced_buy;long=>forced_sell",
+    "quantity_semantics": "not_provided",
+    "notional_semantics": "provider_reported_usd_notional",
+    "price_semantics": "provider_reported_unspecified_price",
+    "completeness_assumption": "selected_events_without_heartbeat_sequence_or_coverage_sla",
+    "throttle_assumption": "provider_throttle_unknown",
+    "source_contract_version": "opennews_liquidation_source_v1",
+    "source_contract_complete": False,
+    "parser_version": "liquidation_parser_v1",
+}
+_HISTORICAL_LIQUIDATION_METADATA: Final[dict[str, Any]] = {
+    "parsed": True,
+    "source_latency_ms": 100,
+    "parser_version": "liquidation_parser_v1",
+    "source_classifier_version": "opennews_source_classifier_v1",
+}
 
 
 def _current_review_payload(*, production_sized: bool = False) -> dict[str, Any]:
@@ -229,24 +255,31 @@ def test_news_canonical_json_hash_matches_python_for_nested_unicode_payload() ->
 
 
 def test_retained_telemetry_and_review_validators_match_python_owned_shapes() -> None:
-    oi, oi_metadata, liquidation, liquidation_metadata = _current_telemetry_payloads()
+    """The review validator still mirrors its Python shape; the market ones still hold history.
+
+    A market judgment is no longer written (#553), so the two market validators are asked one
+    question here: do they still accept exactly the shape that is stored, and still refuse a drifted
+    one. That is what keeps a later migration from quietly widening or dropping a rule that guards
+    rows nothing can rewrite.
+    """
+
+    oi, oi_metadata = _HISTORICAL_OI_SIGNAL, _HISTORICAL_OI_METADATA
+    liquidation, liquidation_metadata = _HISTORICAL_LIQUIDATION_FACT, _HISTORICAL_LIQUIDATION_METADATA
     review = _current_review_payload()
-    oi_corpus = [oi, oi | {"retired": True}, oi | {"symbol": ["SOL"]}]
-    oi_corpus.extend({key: value for key, value in oi.items() if key != removed} for removed in oi)
+    oi_corpus = [(oi, True), (oi | {"retired": True}, False), (oi | {"symbol": ["SOL"]}, False)]
+    oi_corpus.extend(({key: value for key, value in oi.items() if key != removed}, False) for removed in oi)
     liquidation_corpus = [
-        liquidation,
-        liquidation | {"retired": True},
-        liquidation | {"venue": "retired_venue"},
+        (liquidation, True),
+        (liquidation | {"retired": True}, False),
+        (liquidation | {"venue": 7}, False),
     ]
     liquidation_corpus.extend(
-        {key: value for key, value in liquidation.items() if key != removed} for removed in liquidation
+        ({key: value for key, value in liquidation.items() if key != removed}, False) for removed in liquidation
     )
     taxonomy_drift = copy.deepcopy(review)
     taxonomy_drift["taxonomy"]["retired"] = True
     review_corpus = [review, review | {"retired": True}, taxonomy_drift]
     review_corpus.extend({key: value for key, value in review.items() if key != removed} for removed in review)
-    oi_adapter = TypeAdapter(OiSignal)
-    liquidation_adapter = TypeAdapter(LiquidationFact)
     selection = {
         "stratum": "random_control",
         "stratum_zh": "随机对照",
@@ -258,18 +291,18 @@ def test_retained_telemetry_and_review_validators_match_python_owned_shapes() ->
 
     conn = connect_postgres_test(read_only=False)
     try:
-        for payload in oi_corpus:
+        for payload, expected_valid in oi_corpus:
             row = conn.execute(
                 "SELECT news_current_oi_signal_valid(%s) AS valid",
                 (Jsonb(payload),),
             ).fetchone()
-            assert bool(row["valid"]) is _python_dataclass_form_accepts(oi_adapter, payload)
-        for payload in liquidation_corpus:
+            assert bool(row["valid"]) is expected_valid, payload
+        for payload, expected_valid in liquidation_corpus:
             row = conn.execute(
                 "SELECT news_current_liquidation_fact_valid(%s) AS valid",
                 (Jsonb(payload),),
             ).fetchone()
-            assert bool(row["valid"]) is _python_dataclass_form_accepts(liquidation_adapter, payload)
+            assert bool(row["valid"]) is expected_valid, payload
         for payload, function_name in (
             (oi_metadata, "news_current_oi_metadata_valid"),
             (liquidation_metadata, "news_current_liquidation_metadata_valid"),
@@ -358,7 +391,8 @@ def test_retained_telemetry_and_review_validators_match_python_owned_shapes() ->
 
 
 def test_retained_json_validators_meet_native_insert_and_update_budget() -> None:
-    oi, oi_metadata, liquidation, liquidation_metadata = _current_telemetry_payloads()
+    oi, oi_metadata = _HISTORICAL_OI_SIGNAL, _HISTORICAL_OI_METADATA
+    liquidation, liquidation_metadata = _HISTORICAL_LIQUIDATION_FACT, _HISTORICAL_LIQUIDATION_METADATA
     review = _current_review_payload(production_sized=True)
     selection = {
         "stratum": "random_control",

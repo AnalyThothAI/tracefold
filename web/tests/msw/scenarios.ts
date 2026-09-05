@@ -2,13 +2,13 @@ import { appStatusFixture } from "@tests/fixtures/appRouteFixtures";
 import {
   newsEventDetailFixture,
   newsFeedFixture,
-  newsSymbolOiFrameFixture,
+  newsMarketFixture,
+  newsMarketItemFixture,
+  newsMarketObservationFixture,
   newsStatusFixture,
   newsSymbolFixture,
 } from "@tests/fixtures/newsFixture";
 import {
-  TRADING_NOW_MS,
-  tradingGateFixture,
   tradingCasesForUnderlying,
   tradingExecutionsFixture,
   tradingStatusFixture,
@@ -32,21 +32,33 @@ export function mockAppRoutes(apiMock: ApiMock) {
       const value = options?.params?.[key];
       return value == null ? null : String(value);
     };
-    const symbol = param("symbol");
     if (path === "/api/status") return ok(appStatusFixture());
-    if (path === "/api/news/feed") {
-      const feed = newsFeedFixture();
+    if (path === "/api/news/feed") return ok(newsFeedFixture());
+    if (path === "/api/news/status") return ok(newsStatusFixture());
+    /*
+     * #553 PR-1: market observations are their own endpoint, not a slice of the feed. The list answers a
+     * kind subset the same way the server does — the filter is a real request, so a mock that ignored it
+     * would let a browser-side split pass.
+     */
+    if (path === "/api/news/market") {
+      const kinds = (param("kind") ?? "").split(",").filter(Boolean);
+      const market = newsMarketFixture();
       return ok(
-        symbol
+        kinds.length
           ? {
-              ...feed,
-              // On the case's clock: this frame is the one it was opened from.
-              events: [newsSymbolOiFrameFixture(symbol, TRADING_NOW_MS - 400_000), ...feed.events],
+              ...market,
+              filters: { ...market.filters, kind: param("kind") },
+              groups: market.groups.filter((group) => kinds.includes(group.market_kind)),
             }
-          : feed,
+          : market,
       );
     }
-    if (path === "/api/news/status") return ok(newsStatusFixture());
+    if (path.startsWith("/api/news/market/")) {
+      const itemId = decodeURIComponent(path.split("/").pop() ?? "");
+      return ok(
+        newsMarketItemFixture({ observation: newsMarketObservationFixture({ item_id: itemId }) }),
+      );
+    }
     if (path === "/api/news/quotes") return ok({ measured_at_ms: 0, quotes: [] });
     if (path.startsWith("/api/news/events/")) return ok(newsEventDetailFixture());
     // #537 PR-5: only `/trading` reads this now. The shell polled it on every News route for a
@@ -58,10 +70,6 @@ export function mockAppRoutes(apiMock: ApiMock) {
       return ok(tradingCasesForUnderlying(param("underlying")));
     }
     if (path === "/api/trading/executions") return ok(tradingExecutionsFixture());
-    // #269: the durable admission ledger, read by the OI audit's admission column.
-    if (path === "/api/trading/gate") return ok(tradingGateFixture());
-    if (path.startsWith("/api/trading/gate/"))
-      return ok({ decision: null, event_id: "evt", joinable: false });
     if (path.startsWith("/api/news/symbols/"))
       return ok(
         newsSymbolFixture({ base_symbol: decodeURIComponent(path.split("/").pop() ?? "WIF") }),

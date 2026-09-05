@@ -10,6 +10,6 @@ export function Component() {
   if (eventId) return <NewsPage eventId={eventId} token={token} view="event" />;
   if (base) return <NewsPage base={base} token={token} view="symbol" />;
   if (location.pathname === "/news/status") return <NewsPage token={token} view="status" />;
-  if (location.pathname === "/news/oi") return <NewsPage token={token} view="oi" />;
+  if (location.pathname === "/news/market") return <NewsPage token={token} view="market" />;
   return <NewsPage token={token} view="feed" />;
 }

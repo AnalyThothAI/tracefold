@@ -25,8 +25,15 @@ PUBLIC_NEWS_INTERFACE = {
     "NEWS_RETRIEVAL_SHA256",
     "NewsTaxonomyV1",
     "OI_METRIC_VERSION",
-    # #458: the `?oi=` vocabulary the HTTP route validates against, so the route stops restating it.
-    "OI_OUTCOMES",
+    # #553: the market read surface's own vocabulary and bounds, which the HTTP route validates a
+    # window and a page against so it stops restating either. The timeline cap and the two
+    # not-connected strings are deliberately absent: only `news` and its own storage read them, and an
+    # export with no `tracefold.app` consumer is surface nobody asked for.
+    "MARKET_KINDS",
+    "MARKET_PAGE_MAX",
+    "MARKET_WINDOW_DEFAULT_MS",
+    "MARKET_WINDOW_MAX_MS",
+    "MarketKind",
     "NewsFeedEntry",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
@@ -51,7 +58,6 @@ PUBLIC_NEWS_INTERFACE = {
     "SemanticJudge",
     "SemanticJudgeError",
     "SemanticJudgment",
-    "SourceContractReason",
     "SourceAuthority",
     "TradeRelevanceV1",
     "TriageContext",

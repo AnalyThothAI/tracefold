@@ -15,6 +15,7 @@ from ..delivery import card_assets, reader_market_movements, reader_trade_target
 from ..market_review.pricing import Candle, PriceInstrument, PricePoint, return_bps, select_candle
 from ..models import Novelty, ReaderDeliveryPresentation, ReaderMarketScope, TelegramDeliveryReceipt
 from ..progression_review import PROGRESSION_REVIEW_TIMEOUT_SECONDS, ProgressionReview, ProgressionVerifier
+from ..source_contracts import EVENT_KINDS
 from ..telemetry import NewsWorkSemantics
 from ..tradability import (
     TRADABILITY_REVIEW_TIMEOUT_SECONDS,
@@ -347,8 +348,9 @@ class DelivererConsumer:
         card, triage_row, _admission, event_kind, timing = bundle
         # A delivery message can outlive the source-contract migration that held its Event. Immutable
         # evidence and historical verdicts remain audit facts; current PostgreSQL routing still wins before
-        # a delivery ledger row, quote read, or external send is attempted.
-        if event_kind == "unsupported_market":
+        # a delivery ledger row, quote read, or external send is attempted. A retired market kind is one of
+        # those held Events (#553): it is readable evidence and it is never delivered.
+        if event_kind not in EVENT_KINDS:
             return
         tv = dict(triage_row.get("verdict") or {})
         if triage_row["final_decision"] not in {"push", "escalate"}:
@@ -1200,7 +1202,7 @@ class DelivererConsumer:
             return None
         admission = str(routing.get("admission") or "")
         event_kind = str(routing.get("event_kind") or "")
-        if event_kind == "unsupported_market":
+        if event_kind not in EVENT_KINDS:
             return card, None, admission, event_kind, timing
         triage = repos.news.latest_verdict(event_id=event_id, stage="triage")
         if triage is None:

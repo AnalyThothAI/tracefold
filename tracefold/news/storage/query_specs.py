@@ -4,19 +4,27 @@ from __future__ import annotations
 
 from tracefold.platform.postgres.audit import ReadQuerySpec
 
+from ..market_contracts import MARKET_WINDOW_ROW_CAP
 from ..market_review.pricing import REACTION_METRIC_VERSION
 from ..review.desk import review_read_statements
+from ..source_contracts import MARKET_KINDS
 from .decisions import UNPUBLISHED_VERDICT_CANDIDATES_SQL
 from .events import UNPUBLISHED_EVENT_CANDIDATES_SQL
 from .feed_sql import (
     ASSET_SEARCH_PREDICATE,
-    CURRENT_EVENT_CARD_SQL,
+    EDITORIAL_EVENT_CARD_SQL,
     EVENT_VERDICTS_SQL,
     STATUS_INGEST_SQL,
     STATUS_LEARNING_RETENTION_SQL,
     TEXT_SEARCH_PREDICATE,
     feed_counts_sql,
     feed_page_sql,
+)
+from .market import (
+    MARKET_GROUPS_SQL,
+    MARKET_ITEM_SQL,
+    MARKET_SOURCES_SQL,
+    MARKET_TIMELINE_SQL,
 )
 from .operations import (
     RAW_RETENTION_CANDIDATE_SQL,
@@ -56,7 +64,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="news_raw_retention_candidates",
             sql=RAW_RETENTION_CANDIDATE_SQL,
-            params=(raw_cutoff, judged_cutoff, judged_cutoff, judged_cutoff, 500),
+            params=(raw_cutoff, judged_cutoff, judged_cutoff, judged_cutoff, judged_cutoff, judged_cutoff, 500),
             max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
@@ -128,7 +136,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         ReadQuerySpec(
             name="news_event_detail",
-            sql=CURRENT_EVENT_CARD_SQL,
+            sql=EDITORIAL_EVENT_CARD_SQL,
             params=("event",),
             max_read_return_amplification=8.0,
         ),
@@ -222,14 +230,31 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         # #88 price plane. The due scan and the review aggregates are the two reads that could grow without
         # anyone noticing, so both are in the EXPLAIN registry with their real predicates.
-        # #179: the eligible-rank count runs on every parsed telemetry frame.
+        # #553. The market list is the one public read whose scan is deliberately wider than its page:
+        # collapsing consecutive observations is a property of the whole window, so the window is read
+        # and the collapsed groups are paged out of it. Both bounds are in the statement itself.
         ReadQuerySpec(
-            name="news_signal_history",
-            sql="SELECT count(*)::int AS n FROM news_oi_signals signal "
-            "JOIN news_events event ON event.event_id = signal.event_id "
-            "WHERE signal.metric_version = 'oi_signal_v1' AND signal.symbol = 'BTC' "
-            "AND signal.observed_at_ms > 0 AND signal.observed_at_ms < 1 AND signal.event_id <> '' "
-            "AND signal.whale_oi_ratio_bps > 8000 AND abs(signal.oi_change_bps) >= 0",
+            name="news_market_groups",
+            sql=MARKET_GROUPS_SQL,
+            params=(list(MARKET_KINDS), week_ago, now_ms, now_ms, "", MARKET_WINDOW_ROW_CAP, 51),
+            max_read_return_amplification=100.0,
+        ),
+        ReadQuerySpec(
+            name="news_market_sources",
+            sql=MARKET_SOURCES_SQL,
+            params=(week_ago, now_ms),
+            max_read_return_amplification=100.0,
+        ),
+        ReadQuerySpec(
+            name="news_market_item",
+            sql=MARKET_ITEM_SQL,
+            params=("0" * 64,),
+            max_read_return_amplification=4.0,
+        ),
+        ReadQuerySpec(
+            name="news_market_group_timeline",
+            sql=MARKET_TIMELINE_SQL,
+            params=("oi|opennews||BTC|oi_signal_v1|opennews_oi_source_v1|300000",),
             max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(

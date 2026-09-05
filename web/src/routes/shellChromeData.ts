@@ -21,7 +21,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 const PAGE_TITLES: Array<[RegExp, string]> = [
   [/^\/news\/events\//, "事件详情"],
   [/^\/news\/status$/, "流水线状态"],
-  [/^\/news\/oi$/, "OI 来源与准入审计"],
+  [/^\/news\/market$/, "市场事实"],
   [/^\/news$/, "事件流"],
   [/^\/trading$/, "Alpha 与执行"],
 ];
@@ -80,9 +80,11 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
          * a single glyph. `CASES 24H` still leads the Trading page's own figure row.
          */
         events: newsStatusQuery.data?.funnel_24h?.received,
-        // #207: the deterministic OI lane's own 24 h intake, the same figure the monitor's telemetry band
-        // leads with. Received, not pushed — the destination is the whole lane, not its output.
-        oiFrames: newsStatusQuery.data?.pipeline?.telemetry_received_24h,
+        /*
+         * No market count since #553 PR-1. `/api/news/status` reports the editorial funnel only — market
+         * intake is a fact `/api/news/market` reports per kind — and a second poll of that endpoint from
+         * the frame would buy one number the destination itself prints in full.
+         */
       },
       outletContext: routeContext,
       topbar: {
@@ -130,17 +132,13 @@ export function topbarNewsSearchParams(searchText: string): URLSearchParams {
 export function topbarFigures(pathname: string, newsStatus?: NewsStatus): CockpitTopbarFigure[] {
   if (pathname === "/trading") return [];
 
-  if (pathname === "/news/oi") {
-    // Parsed, not pushed (#458). The lane has no push decision of its own any more, and a chrome figure
-    // that stayed on `telemetry_push_24h` would have read a permanent 0 as "the feed went quiet".
-    return [
-      {
-        label: "PARSED 24H",
-        tone: "accent",
-        value: newsStatus?.pipeline.telemetry_parsed_24h,
-      },
-    ];
-  }
+  /*
+   * 市场事实 carries no chrome figure (#553 PR-1). It read `pipeline.telemetry_parsed_24h`, which is not a
+   * status field any more: market intake is reported per kind by `/api/news/market`, from the facts, and
+   * the page leads with exactly that strip. A frame figure here could only be a second poll of the page's
+   * own endpoint, or an invented number.
+   */
+  if (pathname === "/news/market") return [];
 
   if (pathname === "/news/status") {
     return [

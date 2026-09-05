@@ -10,8 +10,12 @@ export function newsStatusPath(): string {
   return "/news/status";
 }
 
-export function newsOiPath(): string {
-  return "/news/oi";
+/**
+ * 市场事实 (#553 PR-1). Market observations are facts read from `/api/news/market`, not Events, so this is
+ * the only surface that reads them and there is no `/news/oi` behind it.
+ */
+export function newsMarketPath(): string {
+  return "/news/market";
 }
 
 /**
@@ -28,12 +32,4 @@ export function newsSymbolPath(base: string): string {
  */
 export function tradingPath(): string {
   return "/trading";
-}
-
-/**
- * One Case's frozen evidence on the Trading workbench. It was `/news/alpha?case=` until #460 removed
- * that page; the Case card there opens the linked Case and scrolls no differently from a bare visit.
- */
-export function tradingCasePath(caseId: string): string {
-  return `/trading?case=${encodeURIComponent(caseId)}`;
 }

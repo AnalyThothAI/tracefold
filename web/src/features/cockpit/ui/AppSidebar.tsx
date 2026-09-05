@@ -4,7 +4,7 @@ import { Link, useLocation } from "react-router-dom";
 import { APP_NAVIGATION_GROUPS, type AppNavigationItem } from "./appNavigation";
 import "./AppSidebar.css";
 
-export type AppNavigationCounts = { events?: number; oiFrames?: number };
+export type AppNavigationCounts = { events?: number };
 
 /**
  * The console's navigation, in the frame at desktop width and inside the tablet drawer below it. One
@@ -95,7 +95,7 @@ function AppSidebarItem({
   return (
     /*
      * A plain Link with `aria-current` driven by the same predicate as the visual state. `NavLink` would
-     * decide for itself by prefix, and `/news` is a prefix of `/news/oi` — two links would announce
+     * decide for itself by prefix, and `/news` is a prefix of `/news/market` — two links would announce
      * themselves as the current page.
      */
     <Link
@@ -110,8 +110,8 @@ function AppSidebarItem({
       <span className="cockpit-app-sidebar-label">{item.label}</span>
       {/*
        * The count is decoration on the link, not part of what it is: folding it into the accessible name
-       * would make the destination announce itself differently every three seconds. The same figures are
-       * announced properly by the feed's labelled 24 h funnel and by the OI monitor's own telemetry band.
+       * would make the destination announce itself differently every three seconds. The same figure is
+       * announced properly by the feed's own labelled 24 h funnel.
        */}
       {count == null ? null : (
         <span aria-hidden className="cockpit-app-sidebar-count" title={item.countTitle}>

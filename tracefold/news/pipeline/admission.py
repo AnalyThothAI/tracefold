@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Literal, cast
 
-from .. import liquidations, oi_signals
+from .. import liquidations, oi_signals, smart_money
 from ..artifact_identity import canonical_json
 from ..bus import (
     Q_RAW,
@@ -31,12 +31,16 @@ from ..events.tokens import comparison_tokens, jaccard
 from ..models import ADMITTED_ADMISSIONS, EVENT_IDENTITY_VERSION
 from ..opennews import OPENNEWS_SOURCE_ID, OpenNewsEvent, parse_opennews_message
 from ..source_contracts import (
+    MARKET_PROVIDER,
+    UNKNOWN_MARKET_SOURCE,
     EventKind,
+    MarketKind,
     SourceContract,
-    SourceContractReason,
     classify_source_contract,
     classify_source_contracts,
+    market_route,
     source_contract_admission,
+    source_identity,
 )
 from ..storage.events import prepare_evidence_snapshot
 from ..telemetry import NewsWorkSemantics
@@ -52,19 +56,8 @@ ARTIFACT_WINDOW_MS = 7 * 24 * 60 * 60_000
 _TICKER_RE = re.compile(r"\$([A-Z]{2,6})\b")
 _NUMBER_RE = re.compile(r"(\d[\d,]*\.?\d*)\s*(%|bn|billion|m|million|k|bps|tn|trillion)?", re.IGNORECASE)
 
-# Admissions a stronger member may not overwrite. `telemetry_deterministic` is decided by the
-# provider's strategy id, and upgrading it to `candidate` would route a fixed-format frame back into
-# the model call the admission exists to avoid (#137).
-_REGATE_ADMISSIONS = frozenset(
-    {
-        "candidate",
-        "listing_deterministic",
-        "telemetry_deterministic",
-        "liquidation_deterministic",
-        "unsupported_market_contract",
-        "recovery",
-    }
-)
+# Admissions a stronger member may not overwrite.
+_REGATE_ADMISSIONS = frozenset({"candidate", "listing_deterministic", "recovery"})
 _STRONG_MEMBER_SCORE = 80.0
 
 _INSTRUMENT_CACHE_TTL_MS = 10 * 60_000
@@ -89,18 +82,22 @@ class AdmitResult:
 
 @dataclass(frozen=True, slots=True)
 class AdmitBatchResult:
-    """All deterministic FactUnits admitted from one provider Item."""
+    """All deterministic FactUnits admitted from one provider Item.
+
+    A market frame admits no Event at all, so `results` is empty and `market` carries the whole
+    answer. The two are mutually exclusive by construction, not by convention.
+    """
 
     item_id: str
     item_inserted: bool
     results: tuple[AdmitResult, ...]
+    market: MarketAdmitResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class _PreparedAdmission:
     provider_metadata_json: str
     source_contract: SourceContract
-    source_contract_reason: SourceContractReason | None
     engine_type: str
     strategy_ids_json: str
     raw_text: str
@@ -124,13 +121,64 @@ class _PreparedAdmission:
     storyline_key: str
     context_line: str
     event_id: str
-    liquidation: liquidations.LiquidationFact | None
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedMarket:
+    """One market observation, parsed once, ready for a single admission transaction.
+
+    Everything the market branch needs and nothing the editorial branch does: no Gate verdict, no
+    comparison fingerprint, no band keys, no storyline. A market frame is a measurement, and the
+    question "is this the same story as that one" has no meaning for it.
+    """
+
+    item_id: str
+    provider_record_id: str
+    market_kind: MarketKind
+    source_strategy_id: str
+    parse_status: Literal["parsed", "raw"]
+    parse_error: str | None
+    provider_metadata_json: str
+    provider_params_json: str
+    strategy_ids_json: str
+    raw_text: str
+    parent: ExtractedTitle
+    title: str
+    description: str
+    canonical_url: str | None
+    reporting_origin: str
+    source_artifact_id: str
+    # Three clocks, each recorded, never compared (#553 §3.1). `event_at_ms` is the provider's stamp
+    # for what happened, `received_at_ms` is when this host read the frame, and the first-available
+    # instant is the admission transaction's own `now_ms`.
+    event_at_ms: int
+    received_at_ms: int
+    fact: FactUnit
+    oi: oi_signals.OiSignal | None = None
+    oi_source: oi_signals.OiSourceContract | None = None
+    oi_event_id: str = ""
+    source_venue: str | None = None
+    liquidation: liquidations.LiquidationFact | None = None
+    smart_money_fact: smart_money.SmartMoneyFact | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MarketAdmitResult:
+    """What one market Item's admission transaction durably did."""
+
+    item_id: str
+    item_inserted: bool
+    market_kind: MarketKind
+    parse_status: str
+    parse_error: str | None
+    fact_written: bool
 
 
 @dataclass(frozen=True, slots=True)
 class _PreparedFrame:
     item_id: str
     admissions: tuple[_PreparedAdmission, ...]
+    market: _PreparedMarket | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,11 +195,17 @@ def _event_identity(
     *,
     item_id: str,
     fact: FactUnit,
-    event_kind: EventKind,
+    kind: str,
 ) -> str:
-    return hashlib.sha256(
-        f"{EVENT_IDENTITY_VERSION}\x1f{item_id}\x1f{fact.fact_id}\x1f{event_kind}".encode()
-    ).hexdigest()
+    """The durable identity of one admitted unit.
+
+    Market facts keep using it under their own kind even though they open no Event (#553 §3.3): the
+    OI ledger's published `event_id` is an opaque source identifier, and it must keep the value every
+    existing row and every frozen Trading Case already carries. Same inputs, same formula, same
+    string -- what changed is that nothing looks it up in `news_events` any more.
+    """
+
+    return hashlib.sha256(f"{EVENT_IDENTITY_VERSION}\x1f{item_id}\x1f{fact.fact_id}\x1f{kind}".encode()).hexdigest()
 
 
 def _prepare_frame(
@@ -173,15 +227,9 @@ def _prepare_frame(
         raw_text=raw_text,
         fallback_title=parent.title or (event.entry.title or "")[:500],
     )
-    if source_contracts is None:
-        contracts: list[SourceContract] = []
-        seen_kinds: set[EventKind] = set()
-        for contract in classify_source_contracts(event.provider_metadata):
-            if contract.event_kind not in seen_kinds:
-                seen_kinds.add(contract.event_kind)
-                contracts.append(contract)
-    else:
-        contracts = list(source_contracts)
+    frame_contracts = (
+        classify_source_contracts(event.provider_metadata) if source_contracts is None else tuple(source_contracts)
+    )
     metadata = dict(event.provider_metadata)
     strategy_ids = tuple(
         str(strategy.get("id"))
@@ -192,10 +240,35 @@ def _prepare_frame(
     strategy_ids_json = canonical_json(sorted(set(strategy_ids)))
     provider_score_value = metadata.get("score")
     provider_score = float(provider_score_value) if isinstance(provider_score_value, (int, float)) else None
+    route = market_route(frame_contracts)
+    if route is not None:
+        market_kind, conflict_reason = route
+        return _PreparedFrame(
+            item_id=item_id,
+            admissions=(),
+            market=_prepare_market(
+                event=event,
+                metadata=metadata,
+                market_kind=market_kind,
+                conflict_reason=conflict_reason,
+                item_id=item_id,
+                fact=units[0],
+                parent=parent,
+                raw_text=raw_text,
+                observed_at_ms=int(observed_at_ms),
+                provider_metadata_json=provider_metadata_json,
+                strategy_ids_json=strategy_ids_json,
+            ),
+        )
+    contracts: list[SourceContract] = []
+    seen_kinds: set[EventKind | None] = set()
+    for contract in frame_contracts:
+        if contract.event_kind not in seen_kinds:
+            seen_kinds.add(contract.event_kind)
+            contracts.append(contract)
     prepared: list[_PreparedAdmission] = []
     for fact in units:
         for source_contract in contracts:
-            source_contract_reason: SourceContractReason | None = source_contract.reason
             contract_engine = source_contract.identity.engine_type
             engine_type = contract_engine if contract_engine in {"news", "meme", "listing", "market"} else "unknown"
             extracted = extract_title(fact.text)
@@ -229,21 +302,6 @@ def _prepare_frame(
             tokens = comparison_tokens(comparison)
             shareable = len(tokens) >= 3
             keys = band_keys(minhash_signature(tokens)) if shareable else ()
-            liquidation = None
-            if source_contract.source_contract_family == "liquidation_v1":
-                liquidation = liquidations.parse_liquidation(
-                    title,
-                    item_id=item_id,
-                    fact_id=fact.fact_id,
-                    provider_source=str(metadata.get("source") or ""),
-                    event_at_ms=published_at_ms,
-                    received_at_ms=int(observed_at_ms),
-                    provider_record_identity=event.provider_record_id,
-                )
-                if liquidation is None:
-                    source_contract_reason = "source_contract_drift"
-            if source_contract.source_contract_family == "oi_v1" and oi_signals.parse_oi_signal(title) is None:
-                source_contract_reason = "source_contract_drift"
             storyline = preliminary_storyline_key(
                 title=title,
                 strong_assets=gate.strong_assets,
@@ -254,7 +312,6 @@ def _prepare_frame(
                 _PreparedAdmission(
                     provider_metadata_json=provider_metadata_json,
                     source_contract=source_contract,
-                    source_contract_reason=source_contract_reason,
                     engine_type=engine_type,
                     strategy_ids_json=strategy_ids_json,
                     raw_text=raw_text,
@@ -279,11 +336,200 @@ def _prepare_frame(
                     context_line=(
                         f"[{gate.asset_class}/{family_name}/{engine_type}] " + " ".join(gate.grounded_assets)
                     ).strip(),
-                    event_id=_event_identity(item_id=item_id, fact=fact, event_kind=source_contract.event_kind),
-                    liquidation=liquidation,
+                    event_id=_event_identity(
+                        item_id=item_id,
+                        fact=fact,
+                        kind=source_contract.event_kind or "news",
+                    ),
                 )
             )
     return _PreparedFrame(item_id=item_id, admissions=tuple(prepared))
+
+
+def _prepare_market(
+    *,
+    event: OpenNewsEvent,
+    metadata: Mapping[str, Any],
+    market_kind: MarketKind,
+    conflict_reason: str | None,
+    item_id: str,
+    fact: FactUnit,
+    parent: ExtractedTitle,
+    raw_text: str,
+    observed_at_ms: int,
+    provider_metadata_json: str,
+    strategy_ids_json: str,
+) -> _PreparedMarket:
+    """Parse one market frame once, outside any transaction.
+
+    One FactUnit, deliberately. A market frame is one measurement on one line; splitting it the way
+    an editorial Item is split would key the same observation to two rows and let the same numbers be
+    counted twice. The unit is still the shared extractor's, so the liquidation source key and the OI
+    source identity every existing row carries are byte-identical to what they were.
+
+    A template this module cannot prove is not an error the reader should be denied: `parse_status`
+    becomes `raw`, the reason is recorded, and the Item is stored exactly as it arrived. `Withdraw
+    USDC` is a real account report, and refusing it would delete a fact to protect a parser.
+    """
+
+    title = extract_title(fact.text).title or fact.text[:500]
+    event_at_ms = int(event.entry.published_at_ms or observed_at_ms)
+    strategy_id = str(source_identity(metadata).strategy_id)
+    provider_source = str(metadata.get("source") or "")
+    prepared = _PreparedMarket(
+        item_id=item_id,
+        provider_record_id=event.provider_record_id,
+        market_kind=market_kind,
+        source_strategy_id=strategy_id,
+        parse_status="raw",
+        parse_error=conflict_reason or UNKNOWN_MARKET_SOURCE,
+        provider_metadata_json=provider_metadata_json,
+        provider_params_json=canonical_json(event.provider_params),
+        strategy_ids_json=strategy_ids_json,
+        raw_text=raw_text,
+        parent=parent,
+        title=title,
+        description=description_after_title(raw_text) or event.entry.description or "",
+        canonical_url=event.entry.link,
+        reporting_origin=event.entry.reporting_origin or "opennews",
+        source_artifact_id=event.source_artifact_id,
+        event_at_ms=event_at_ms,
+        received_at_ms=observed_at_ms,
+        fact=fact,
+        source_venue=provider_source.strip().lower()[:32] or None,
+    )
+    if conflict_reason is not None or market_kind == "unknown_market":
+        return prepared
+    if market_kind == "oi":
+        signal = oi_signals.parse_oi_signal(title)
+        if signal is None:
+            return replace(prepared, parse_error=oi_signals.RAW_REASON_TEMPLATE_UNMATCHED)
+        return replace(
+            prepared,
+            parse_status="parsed",
+            parse_error=None,
+            oi=signal,
+            oi_source=oi_signals.oi_source_contract(metadata),
+            oi_event_id=_event_identity(item_id=item_id, fact=fact, kind="oi"),
+        )
+    if market_kind == "liquidation":
+        liquidation = liquidations.parse_liquidation(
+            title,
+            item_id=item_id,
+            fact_id=fact.fact_id,
+            source_strategy_id=strategy_id,
+            provider_source=provider_source,
+            event_at_ms=event_at_ms,
+            received_at_ms=observed_at_ms,
+            provider_record_identity=event.provider_record_id,
+        )
+        if liquidation is None:
+            return replace(prepared, parse_error=liquidations.RAW_REASON_TEMPLATE_UNMATCHED)
+        return replace(prepared, parse_status="parsed", parse_error=None, liquidation=liquidation)
+    account = smart_money.parse_smart_money(
+        title,
+        item_id=item_id,
+        fact_id=fact.fact_id,
+        source_strategy_id=strategy_id,
+        provider_source=provider_source,
+        related_address=_related_address(event.provider_params),
+        event_at_ms=event_at_ms,
+        received_at_ms=observed_at_ms,
+        provider_record_identity=event.provider_record_id,
+    )
+    if account is None:
+        return replace(prepared, parse_error=smart_money.RAW_REASON_TEMPLATE_UNMATCHED)
+    return replace(prepared, parse_status="parsed", parse_error=None, smart_money_fact=account)
+
+
+def _related_address(provider_params: Mapping[str, Any]) -> str | None:
+    """The account address the provider attached to a frame, when it attached one."""
+
+    value = provider_params.get("relatedAddress")
+    return str(value).strip() or None if isinstance(value, str) else None
+
+
+def admit_market_item(
+    repos: Any, prepared: _PreparedMarket, *, ingest_mode: str, trace_id: str, now_ms: int
+) -> MarketAdmitResult:
+    """Persist one market observation and its typed fact in one transaction.
+
+    What this deliberately does not do: title dedupe, minhash, storyline, the Gate, an evidence
+    snapshot, a pseudo verdict, or a News Event. Every one of them answers an editorial question, and
+    two OI frames for the same symbol differing only in their four numbers *are* two measurements --
+    collapsing them is losing data, not deduplicating it.
+
+    Notification rules are not run here either. A rule that raised would roll back a fact that had
+    already been observed, which is the coupling this transaction exists to break.
+    """
+
+    news = repos.news
+    inserted = news.upsert_item(
+        item_id=prepared.item_id,
+        source_id=OPENNEWS_SOURCE_ID,
+        source_item_key=prepared.provider_record_id,
+        title=prepared.parent.title or prepared.title or "(untitled)",
+        raw_first_line=prepared.parent.first_line[:500],
+        description=prepared.description,
+        canonical_url=prepared.canonical_url,
+        reporting_origin=prepared.reporting_origin,
+        published_at_ms=prepared.event_at_ms,
+        observed_at_ms=prepared.received_at_ms,
+        provider_metadata_json=prepared.provider_metadata_json,
+        strategy_ids_json=prepared.strategy_ids_json,
+        ingest_mode=ingest_mode,
+        trace_id=trace_id,
+        now_ms=now_ms,
+        source_artifact_id=prepared.source_artifact_id,
+        market_kind=prepared.market_kind,
+        market_source_strategy_id=prepared.source_strategy_id,
+        market_parse_status=prepared.parse_status,
+        market_parse_error=prepared.parse_error,
+        provider_params_json=prepared.provider_params_json,
+    )
+    fact_written = _write_market_fact(news, prepared, ingest_mode=ingest_mode, now_ms=now_ms)
+    return MarketAdmitResult(
+        item_id=prepared.item_id,
+        item_inserted=inserted,
+        market_kind=prepared.market_kind,
+        parse_status=prepared.parse_status,
+        parse_error=prepared.parse_error,
+        fact_written=fact_written,
+    )
+
+
+def _write_market_fact(news: Any, prepared: _PreparedMarket, *, ingest_mode: str, now_ms: int) -> bool:
+    if prepared.oi is not None:
+        source = prepared.oi_source
+        news.insert_oi_signal(
+            event_id=prepared.oi_event_id,
+            metric_version=oi_signals.METRIC_VERSION,
+            symbol=prepared.oi.symbol,
+            raw_instrument=prepared.oi.raw_instrument,
+            direction=prepared.oi.direction,
+            oi_change_bps=prepared.oi.oi_change_bps,
+            oi_value_usd=prepared.oi.oi_value_usd,
+            whale_long_profit_bps=prepared.oi.whale_long_profit_bps,
+            whale_oi_ratio_bps=prepared.oi.whale_oi_ratio_bps,
+            observed_at_ms=prepared.event_at_ms,
+            received_at_ms=prepared.received_at_ms,
+            now_ms=now_ms,
+            provider=MARKET_PROVIDER,
+            source_strategy_id=None if source is None else source.strategy_id,
+            source_contract_version=None if source is None else source.contract_version,
+            measurement_window_ms=None if source is None else source.measurement_window_ms,
+            measurement_definition=oi_signals.measurement_definition(source),
+            source_item_id=prepared.item_id,
+            source_venue=prepared.source_venue,
+        )
+        return True
+    if prepared.liquidation is not None:
+        news.insert_market_liquidation(fact=prepared.liquidation, ingest_mode=ingest_mode, now_ms=now_ms)
+        return True
+    if prepared.smart_money_fact is not None:
+        news.insert_market_smart_money(fact=prepared.smart_money_fact, ingest_mode=ingest_mode, now_ms=now_ms)
+        return True
+    return False
 
 
 def admit_frame(
@@ -300,7 +546,7 @@ def admit_frame(
     append_evidence: bool = True,
     _prepared_frame: _PreparedFrame | None = None,
 ) -> AdmitBatchResult:
-    """Admit every high-confidence FactUnit in one provider Item."""
+    """Admit one provider Item: every high-confidence FactUnit, or one market observation."""
 
     prepared_frame = _prepared_frame or _prepare_frame(
         event=event,
@@ -310,6 +556,20 @@ def admit_frame(
         text_override=text_override,
         instrument_classes=instrument_classes,
     )
+    if prepared_frame.market is not None:
+        market = admit_market_item(
+            repos,
+            prepared_frame.market,
+            ingest_mode=ingest_mode,
+            trace_id=trace_id,
+            now_ms=now_ms,
+        )
+        return AdmitBatchResult(
+            item_id=prepared_frame.item_id,
+            item_inserted=market.item_inserted,
+            results=(),
+            market=market,
+        )
     results = tuple(
         admit_item(
             repos,
@@ -352,16 +612,15 @@ def _compatible(a: tuple[set[str], set[str]], b: tuple[set[str], set[str]]) -> b
 def _load_near_candidates(repos: Any, prepared: _PreparedAdmission, *, now_ms: int) -> tuple[dict[str, Any], ...]:
     """Load bounded candidate rows without holding a write transaction."""
 
-    if not prepared.shareable or prepared.source_contract.event_kind in {"oi", "liquidation"}:
+    if not prepared.shareable:
         return ()
     return tuple(
         dict(row)
         for row in repos.news.find_band_candidates(
             dedupe_family=prepared.dedupe_family,
-            event_kind=prepared.source_contract.event_kind,
+            event_kind=prepared.source_contract.event_kind or "news",
             band_keys=prepared.band_keys,
             now_ms=now_ms,
-            source_contract_reason=prepared.source_contract_reason,
         )
     )
 
@@ -415,9 +674,8 @@ def admit_item(
     an A/A+ grounded tag, or a different reporting origin); the Event is then upgraded in place and published once.
     """
 
-    prepared = (
-        _prepared
-        or _prepare_frame(
+    if _prepared is None:
+        frame = _prepare_frame(
             event=event,
             ingest_mode=ingest_mode,
             observed_at_ms=observed_at_ms,
@@ -430,11 +688,17 @@ def admit_item(
                 if _source_contract is not None
                 else (classify_source_contract(event.provider_metadata),)
             ),
-        ).admissions[0]
-    )
+        )
+        if frame.market is not None:
+            # A market frame opens no Event, so there is nothing for this function to admit. Callers
+            # route on `AdmitBatchResult.market` through `admit_frame`; reaching here means a caller
+            # asked the editorial path for an answer only the market path has.
+            raise ValueError("news_market_frame_has_no_event")
+        prepared = frame.admissions[0]
+    else:
+        prepared = _prepared
     news = repos.news
     source_contract = prepared.source_contract
-    source_contract_reason = prepared.source_contract_reason
     engine_type = prepared.engine_type
     raw_text = prepared.raw_text
     parent_extracted = prepared.parent
@@ -471,40 +735,10 @@ def admit_item(
         now_ms=now_ms,
         source_artifact_id=event.source_artifact_id,
     )
-    if source_contract.source_contract_family == "liquidation_v1":
-        liquidation = prepared.liquidation
-        if liquidation is not None:
-            news.insert_market_liquidation(
-                source_key=liquidation.source_key,
-                item_id=liquidation.item_id,
-                fact_id=liquidation.fact_id,
-                ingest_mode=ingest_mode,
-                symbol=liquidation.symbol,
-                venue=liquidation.venue,
-                liquidated_position_side=liquidation.liquidated_position_side,
-                forced_order_side=liquidation.forced_order_side,
-                notional_usd=liquidation.notional_usd,
-                quantity=liquidation.quantity,
-                price=liquidation.price,
-                event_at_ms=liquidation.event_at_ms,
-                received_at_ms=liquidation.received_at_ms,
-                parser_version=liquidation.parser_version,
-                provider_record_identity=liquidation.provider_record_identity,
-                symbol_contract_identity=liquidation.symbol_contract_identity,
-                position_side_semantics=liquidation.position_side_semantics,
-                quantity_semantics=liquidation.quantity_semantics,
-                notional_semantics=liquidation.notional_semantics,
-                price_semantics=liquidation.price_semantics,
-                completeness_assumption=liquidation.completeness_assumption,
-                throttle_assumption=liquidation.throttle_assumption,
-                source_contract_version=liquidation.source_contract_version,
-                source_contract_complete=liquidation.source_contract_complete,
-                now_ms=now_ms,
-            )
     existing_membership = news.fact_membership(
         item_id=item_id,
         fact_id=fact.fact_id,
-        event_kind=source_contract.event_kind,
+        event_kind=source_contract.event_kind or "news",
     )
     if existing_membership is not None:
         ev = news.event_admission(str(existing_membership["event_id"]))
@@ -514,7 +748,7 @@ def admit_item(
             event_id=str(existing_membership["event_id"]),
             event_created=False,
             admission=str(ev["admission"]) if ev else "candidate",
-            event_kind=str(ev["event_kind"]) if ev else source_contract.event_kind,  # type: ignore[arg-type]
+            event_kind=str(ev["event_kind"]) if ev else (source_contract.event_kind or "news"),  # type: ignore[arg-type]
             match_kind=str(existing_membership["match_kind"]),
             gate=None,
             dedupe_family=family_name,
@@ -526,10 +760,9 @@ def admit_item(
     exact = (
         news.find_exact_event(
             dedupe_family=family_name,
-            event_kind=source_contract.event_kind,
+            event_kind=source_contract.event_kind or "news",
             fingerprint=fingerprint,
             now_ms=now_ms,
-            source_contract_reason=source_contract_reason,
         )
         if shareable
         else None
@@ -543,11 +776,10 @@ def admit_item(
         exact = news.find_artifact_event(
             source_artifact_id=event.source_artifact_id,
             dedupe_family=family_name,
-            event_kind=source_contract.event_kind,
+            event_kind=source_contract.event_kind or "news",
             fingerprint=fingerprint,
             item_id=item_id,
             opened_after_ms=published_at_ms - ARTIFACT_WINDOW_MS,
-            source_contract_reason=source_contract_reason,
         )
     if exact is not None:
         news.add_member(
@@ -568,7 +800,7 @@ def admit_item(
             inserted=inserted,
             match_kind="exact",
             gate=gate,
-            event_kind=source_contract.event_kind,
+            event_kind=source_contract.event_kind or "news",
             dedupe_family=family_name,
             fingerprint=fingerprint,
             title=title,
@@ -622,7 +854,7 @@ def admit_item(
                 inserted=inserted,
                 match_kind="near",
                 gate=gate,
-                event_kind=source_contract.event_kind,
+                event_kind=source_contract.event_kind or "news",
                 dedupe_family=family_name,
                 fingerprint=fingerprint,
                 title=title,
@@ -643,7 +875,7 @@ def admit_item(
         event_id=event_id,
         leader_item_id=item_id,
         dedupe_family=family_name,
-        event_kind=source_contract.event_kind,
+        event_kind=source_contract.event_kind or "news",
         comparison_fingerprint=fingerprint,
         comparison_title=comparison,
         leader_title=title or "(untitled)",
@@ -671,7 +903,6 @@ def admit_item(
         trace_id=trace_id,
         band_keys=keys if shareable else (),
         now_ms=now_ms,
-        source_contract_reason=source_contract_reason,
     )
     if append_evidence:
         news.append_evidence_snapshot(event_id=event_id, now_ms=now_ms)
@@ -681,7 +912,7 @@ def admit_item(
         event_id=event_id,
         event_created=True,
         admission=gate.admission,
-        event_kind=source_contract.event_kind,
+        event_kind=source_contract.event_kind or "news",
         match_kind="leader",
         gate=gate,
         dedupe_family=family_name,
@@ -856,6 +1087,19 @@ class DeduperConsumer:
     async def run(self, *, stop_event: asyncio.Event) -> None:
         await self.bus.consume(Q_RAW, self.handle, prefetch=1, stop_event=stop_event)
 
+    async def _admit_market(
+        self,
+        market: _PreparedMarket,
+        *,
+        ingest_mode: str,
+        trace_id: str,
+        stamp: int,
+    ) -> MarketAdmitResult:
+        def _admit(repos: Any) -> MarketAdmitResult:
+            return admit_market_item(repos, market, ingest_mode=ingest_mode, trace_id=trace_id, now_ms=stamp)
+
+        return await self.db.tx("news_market_admit", _admit, timeout_seconds=5.0)
+
     async def handle(self, message: BusMessage) -> None:
         params = message.payload.get("params")
         if not isinstance(params, Mapping):
@@ -879,6 +1123,13 @@ class DeduperConsumer:
             text_override=None,
             instrument_classes=instrument_classes,
         )
+        if prepared_frame.market is not None:
+            # The whole market lane: one transaction, Item and typed fact together, live and
+            # recovery identical. Nothing is published, because there is no Event and no Triage.
+            await self._admit_market(
+                prepared_frame.market, ingest_mode=ingest_mode, trace_id=message.trace_id, stamp=stamp
+            )
+            return
         admitted: list[AdmitResult] = []
         for prepared in prepared_frame.admissions:
 
@@ -980,8 +1231,10 @@ __all__ = [
     "AdmitBatchResult",
     "AdmitResult",
     "DeduperConsumer",
+    "MarketAdmitResult",
     "admit_frame",
     "admit_item",
+    "admit_market_item",
     "item_identity",
     "publish_event",
 ]

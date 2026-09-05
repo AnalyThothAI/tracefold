@@ -264,8 +264,9 @@ describe("TradingPage", () => {
   it("reads no admission ledger and no Signal list", async () => {
     /*
      * #537 PR-5. The desk downloaded up to 400 `decisions[]` from `/api/trading/gate` every 15 s and
-     * rendered none of the rows; `/api/trading/signals` is deleted outright. `/news/oi` still joins
-     * each frame to its own admission answer, which is the one surface that renders one.
+     * rendered none of the rows; `/api/trading/signals` is deleted outright. `/news/oi` joined each
+     * frame to its own admission answer until #553 PR-1 replaced it with 市场事实, which reads no
+     * Trading endpoint at all — a market observation carries no `event_id` to join on.
      */
     const unexpected: string[] = [];
     server.use(

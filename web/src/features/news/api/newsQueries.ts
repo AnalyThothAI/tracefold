@@ -6,13 +6,12 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 type NewsSchemas = components["schemas"];
 
 export type NewsEventKind = NewsSchemas["NewsEventData"]["event_kind"];
-export const NEWS_EVENT_KINDS = [
-  "news",
-  "listing",
-  "oi",
-  "liquidation",
-  "unsupported_market",
-] as const satisfies readonly NewsEventKind[];
+/**
+ * The Event vocabulary, and it is two words since #553 PR-1: an Event is editorial. OI frames, liquidations,
+ * smart-money prints and unknown market sources are market observations, stored as facts and read through
+ * `/api/news/market` — never admitted to the Event feed and never a kind here.
+ */
+export const NEWS_EVENT_KINDS = ["news", "listing"] as const satisfies readonly NewsEventKind[];
 
 export type NewsFeedEvent = NewsSchemas["NewsFeedEventData"];
 export type NewsEvent = NewsSchemas["NewsEventData"];
@@ -45,9 +44,14 @@ export type NewsReaction = NewsSchemas["NewsReactionSummaryData"];
 export type NewsReactionState = NewsReaction["state"];
 export type NewsEventReaction = NewsSchemas["NewsEventReactionData"];
 export type NewsPriceStatus = NewsSchemas["NewsPriceStatusData"];
-export type NewsFeedOi = NewsSchemas["NewsFeedOiData"];
-export type NewsOiStatus = NewsSchemas["NewsOiStatusData"];
 export type NewsSymbol = NewsSchemas["NewsSymbolData"];
+export type NewsMarket = NewsSchemas["NewsMarketData"];
+export type NewsMarketGroup = NewsSchemas["NewsMarketGroupData"];
+export type NewsMarketObservation = NewsSchemas["NewsMarketObservationData"];
+export type NewsMarketSource = NewsSchemas["NewsMarketSourceData"];
+export type NewsMarketItem = NewsSchemas["NewsMarketItemData"];
+export type NewsMarketKind = NewsMarketObservation["market_kind"];
+export type NewsMarketParseStatus = NewsMarketObservation["parse_status"];
 export type NewsSymbolContract = NewsSchemas["NewsSymbolContractData"];
 
 export type NewsFeedOutcome = NewsOutcomeGroup;
@@ -96,22 +100,26 @@ export type NewsFeedFilters = {
 };
 
 /**
- * The 持仓异动 monitor's tabs (#207). `全部` is the absence of the filter, so it is not a server value.
+ * The four market observation kinds `/api/news/market` serves (#553 PR-1), in the order the page shows them.
  *
- * The other three are the server's own grouping of the judge's rule names — `pushed` is the one qualifying
- * rule, `withheld` the three threshold rules, `parse_failed` the provider-contract failure. `final_decision`
- * cannot express the split: a frame held by a threshold and one whose template stopped parsing are both
- * `drop`, and both carry `override_rule = telemetry_deterministic`.
+ * They are the server's own `market_kind`, not a browser grouping: `unknown_market` is what an OpenNews
+ * source we have no parser for stores as, and it is a kind rather than an error state — the raw line is
+ * retained either way.
  */
-export type NewsOiOutcome = "pushed" | "withheld" | "parse_failed";
-export const NEWS_OI_TABS = ["all", "parse_failed"] as const;
-export type NewsOiTab = (typeof NEWS_OI_TABS)[number];
-/** The monitor is a 24 h read: the counts it shows beside each tab are the server's 24 h aggregates. */
-export const NEWS_OI_HOURS = 24;
-export const NEWS_OI_PAGE_SIZE = 50;
-/** The frame table follows the feed's own rhythm — a telemetry frame lands every few minutes. */
-export const NEWS_OI_REFETCH_MS = 5_000;
-export const NEWS_OI_ADMISSION = "telemetry_deterministic";
+export const NEWS_MARKET_KINDS = [
+  "oi",
+  "liquidation",
+  "smart_money",
+  "unknown_market",
+] as const satisfies readonly NewsMarketKind[];
+/** `/api/news/market` accepts at most 100 groups per page. */
+export const NEWS_MARKET_PAGE_SIZE = 50;
+/**
+ * Slower than the Event feed's 3 s. A provider emits a market record when its own trigger fires — minutes
+ * apart for OI, seconds apart in a liquidation cascade — and the page collapses consecutive observations of
+ * one group anyway, so a faster poll re-renders the same collapsed rows.
+ */
+export const NEWS_MARKET_REFETCH_MS = 10_000;
 
 const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: string | null) =>
   (
@@ -177,59 +185,88 @@ export const useNewsFeedHistoryWithToken = (
     staleTime: Number.POSITIVE_INFINITY,
   });
 
-const fetchNewsOiFeed = async (token: string, tab: NewsOiTab, cursor: string | null) =>
+const marketKindParam = (kinds: readonly NewsMarketKind[]): string | null =>
+  kinds.length && kinds.length < NEWS_MARKET_KINDS.length
+    ? NEWS_MARKET_KINDS.filter((kind) => kinds.includes(kind)).join(",")
+    : null;
+
+const fetchNewsMarket = async (
+  token: string,
+  kinds: readonly NewsMarketKind[],
+  cursor: string | null,
+) =>
   (
-    await getApi<NewsFeed>("/api/news/feed", {
-      etagKey: `news-oi-feed:${tab}:${cursor ?? "first"}`,
+    await getApi<NewsMarket>("/api/news/market", {
+      etagKey: `news-market:${marketKindParam(kinds) ?? "all"}:${cursor ?? "first"}`,
       params: {
-        admission: NEWS_OI_ADMISSION,
         cursor,
-        hours: NEWS_OI_HOURS,
-        limit: NEWS_OI_PAGE_SIZE,
-        // `all` is sent, not omitted: it narrows nothing, but it is how the request identifies itself as
-        // the monitor, which is what lets the server skip the outcome-group aggregate this page never reads.
-        oi: tab,
+        // Absent rather than the full list when nothing is narrowed: the server's default window is every
+        // kind, and a request that spells all four out would report `filters.kind` back as a narrowing the
+        // reader never made.
+        kind: marketKindParam(kinds),
+        limit: NEWS_MARKET_PAGE_SIZE,
       },
       token,
     })
   ).data;
 
 /**
- * One page of #137's deterministic telemetry frames, filtered server-side by the gate that judged them.
+ * One page of market observation groups (#553 PR-1), plus the per-kind intake summary beside them.
  *
- * Every tab is a real request rather than a filter over a loaded page: the counts beside the tabs are the
- * server's 24 h aggregates, so a client-side split would leave them describing the window while the rows
- * below described one page of it.
+ * The window is the server's default — the last 72 h — because this page reads what arrived, and neither
+ * `from_ms` nor `to_ms` is browser state yet. `sources` travels with the page rather than from
+ * `/api/news/status`: it is counted off the stored facts, so the strip and the rows under it cannot
+ * disagree about what the window holds.
  */
-export const useNewsOiFeedWithToken = (token: string, tab: NewsOiTab) =>
+export const useNewsMarketWithToken = (token: string, kinds: readonly NewsMarketKind[]) =>
   useQuery({
     enabled: Boolean(token),
-    queryKey: queryKeys.newsOiFeed(tab),
-    queryFn: () => fetchNewsOiFeed(token, tab, null),
-    refetchInterval: NEWS_OI_REFETCH_MS,
+    queryKey: queryKeys.newsMarket(marketKindParam(kinds) ?? ""),
+    queryFn: () => fetchNewsMarket(token, kinds, null),
+    refetchInterval: NEWS_MARKET_REFETCH_MS,
     staleTime: 2_000,
   });
 
 /**
- * The pages behind the first one, on an explicit action (`加载更多帧`) — never automatic scroll.
+ * The pages behind the first one, on an explicit action — never automatic scroll.
  *
- * A 24 h window holds roughly 190 frames and a tab can name more than one page of them, so without this the
- * table would show 50 rows under a tab labelled 136 and offer no way to the rest. Loaded pages are frozen:
- * only the first page follows the 5 s poll, exactly as the Event feed's history does.
+ * Loaded pages are frozen: only the first page follows the poll, exactly as the Event feed's history does.
+ * Feeding the polled first page's `next_cursor` straight in would move the key every time an observation
+ * lands, discarding every page the reader had loaded.
  */
-export const useNewsOiFeedHistoryWithToken = (
+export const useNewsMarketHistoryWithToken = (
   token: string,
-  tab: NewsOiTab,
+  kinds: readonly NewsMarketKind[],
   firstCursor: string | null,
   enabled: boolean,
 ) =>
   useInfiniteQuery({
     enabled: Boolean(token && firstCursor && enabled),
-    queryKey: queryKeys.newsOiFeedHistory(tab, firstCursor ?? ""),
-    queryFn: ({ pageParam }) => fetchNewsOiFeed(token, tab, pageParam),
+    queryKey: queryKeys.newsMarketHistory(marketKindParam(kinds) ?? "", firstCursor ?? ""),
+    queryFn: ({ pageParam }) => fetchNewsMarket(token, kinds, pageParam),
     initialPageParam: firstCursor ?? "",
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
     staleTime: Number.POSITIVE_INFINITY,
+  });
+
+/**
+ * One observation in full, with its group's retained timeline (#553 PR-1).
+ *
+ * Fetched only when a reader expands a group, and never polled: the stored provider payload of one Item
+ * cannot change, and the group's newer observations arrive on the list's own key.
+ */
+export const useNewsMarketItemWithToken = (token: string, itemId: string | null) =>
+  useQuery({
+    enabled: Boolean(token && itemId),
+    queryKey: queryKeys.newsMarketItem(itemId ?? ""),
+    queryFn: async () =>
+      (
+        await getApi<NewsMarketItem>(`/api/news/market/${encodeURIComponent(itemId ?? "")}`, {
+          etagKey: `news-market-item:${itemId ?? ""}`,
+          token,
+        })
+      ).data,
+    staleTime: 60_000,
   });
 
 export const useNewsEventWithToken = (token: string, eventId?: string | null) =>

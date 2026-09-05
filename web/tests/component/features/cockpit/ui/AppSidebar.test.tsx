@@ -6,45 +6,49 @@ import { afterEach, describe, expect, it } from "vitest";
 afterEach(() => cleanup());
 
 describe("AppSidebar", () => {
-  it("renders the Tracefold console mark and the two navigation groups", () => {
+  it("renders the Tracefold console mark and one group of working surfaces", () => {
     renderSidebar();
 
     expect(screen.getByText("Tracefold")).toBeInTheDocument();
     expect(screen.getByText("News V3 Console")).toBeInTheDocument();
     const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
     const headings = within(navigation).getAllByRole("heading", { level: 2 });
-    // #256: doing something with what the pipeline produced, and checking the pipeline itself, are two
-    // questions asked at different times. The artifact separates them and so does this list.
-    expect(headings.map((heading) => heading.textContent?.trim())).toEqual([
-      "Workbench",
-      "System · 数据健康",
-    ]);
+    /*
+     * #256 split the list into a workbench and a data-health group; #553 PR-1 emptied the second one.
+     * 市场事实 is a reading surface, not a frame-parse audit: it answers what the venues reported, and
+     * whether the pipeline itself is telling the truth is the topbar lamp's question on every page.
+     */
+    expect(headings.map((heading) => heading.textContent?.trim())).toEqual(["Workbench"]);
+    expect(screen.queryByText("System · 数据健康")).not.toBeInTheDocument();
   });
 
   it("renders the three supported primary destinations", () => {
-    renderSidebar({ counts: { events: 1463, oiFrames: 188 } });
+    renderSidebar({ counts: { events: 1463 } });
 
     const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
     const links = within(navigation).getAllByRole("link");
     // #207: every slot is a working surface. 流水线状态 kept its route and lost its slot — a healthy
     // pipeline made it a click that answers "everything is fine". #256 removed 学习复盘 outright: the
-    // ReviewDesk is a CLI lane now, and the telemetry audit moved under 数据健康. #460 removed
-    // Alpha 判定, whose Cases and frozen evidence are both on 交易.
+    // ReviewDesk is a CLI lane now. #460 removed Alpha 判定, whose Cases and frozen evidence are both
+    // on 交易. #553 PR-1 renamed the telemetry audit to 市场事实 and moved it up beside the feed.
     expect(links.map((link) => link.getAttribute("href"))).toEqual([
       "/news",
+      "/news/market",
       "/trading",
-      "/news/oi",
     ]);
     expect(links[0].textContent).toContain("事件流");
     expect(links[0].textContent).toContain("1.4k");
+    /*
+     * 市场事实 carries no count. `/api/news/status` reports the editorial funnel and nothing about market
+     * intake since #553 PR-1, and the destination prints the per-kind figures itself the moment it opens.
+     */
+    expect(links[1].textContent?.trim()).toBe("市场事实");
     /*
      * 交易 carries neither a count nor a badge. At 204px a count clipped the label to one glyph
      * (#460), and the `tradingEnvironment` badge that replaced it cost every News route a 15 s poll of
      * `/api/trading/status` for a clock and the word `paper` the desk itself states (#537 PR-5).
      */
-    expect(links[1].textContent?.trim()).toBe("交易");
-    expect(links[2].textContent).toContain("OI 来源与准入审计");
-    expect(links[2].textContent).toContain("188");
+    expect(links[2].textContent?.trim()).toBe("交易");
   });
 
   it("no longer offers the retired ReviewDesk destination", () => {
@@ -68,14 +72,11 @@ describe("AppSidebar", () => {
 
   it("keeps the count out of the accessible name", () => {
     // It changes on a poll. Folding it into the link's name would rename the destination every few seconds;
-    // the funnel and the OI telemetry band announce the same figures properly.
-    renderSidebar({ counts: { events: 1463, oiFrames: 188 } });
+    // the feed's own labelled 24 h funnel announces the same figure properly.
+    renderSidebar({ counts: { events: 1463 } });
 
     expect(screen.getByRole("link", { name: "事件流" })).toHaveAttribute("href", "/news");
-    expect(screen.getByRole("link", { name: "OI 来源与准入审计" })).toHaveAttribute(
-      "href",
-      "/news/oi",
-    );
+    expect(screen.getByRole("link", { name: "市场事实" })).toHaveAttribute("href", "/news/market");
   });
 
   it("carries no health chrome of its own", () => {
@@ -96,15 +97,12 @@ describe("AppSidebar", () => {
     expect(screen.getAllByRole("link", { current: "page" })).toHaveLength(1);
   });
 
-  it("marks only the telemetry audit current on the OI route", () => {
-    // `/news` is a prefix of `/news/oi`, so a link that decides for itself by prefix would leave two
+  it("marks only 市场事实 current on the market route", () => {
+    // `/news` is a prefix of `/news/market`, so a link that decides for itself by prefix would leave two
     // destinations announcing themselves as the current page.
-    renderSidebar({ route: "/news/oi" });
+    renderSidebar({ route: "/news/market" });
 
-    expect(screen.getByRole("link", { name: "OI 来源与准入审计" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
+    expect(screen.getByRole("link", { name: "市场事实" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("link", { name: "事件流" })).not.toHaveAttribute("aria-current");
     expect(screen.getAllByRole("link", { current: "page" })).toHaveLength(1);
   });
@@ -125,7 +123,7 @@ function renderSidebar({
   counts,
   route = "/",
 }: {
-  counts?: { events?: number; oiFrames?: number };
+  counts?: { events?: number };
   route?: string;
 } = {}) {
   return render(

@@ -28,7 +28,13 @@ def _hit(
     }
 
 
-def test_replay_uses_source_contract_admission_and_never_merges_across_event_kind() -> None:
+def test_replay_counts_only_editorial_events_and_never_merges_across_event_kind() -> None:
+    """#553. A market frame produces no Event, so it is not in the Event denominator.
+
+    Counting it would make a replay report look like the dedupe lane grew, when what actually changed
+    is that market observations left it. They are reported separately under their own name.
+    """
+
     shared_title = "BTC market monitor contract update"
     report = replay_hits(
         [
@@ -60,16 +66,19 @@ def test_replay_uses_source_contract_admission_and_never_merges_across_event_kin
         watchlist_symbols=frozenset(),
     )
 
-    assert report["counts"]["events"] == 3
-    assert {(event["event_kind"], event["admission"]) for event in report["events"]} == {
-        ("news", "candidate"),
-        ("unsupported_market", "unsupported_market_contract"),
-        ("oi", "telemetry_deterministic"),
-    }
+    assert report["counts"]["events"] == 1
+    assert report["counts"]["market_observations"] == 2
+    assert {(event["event_kind"], event["admission"]) for event in report["events"]} == {("news", "candidate")}
 
 
 @pytest.mark.parametrize("reverse", [False, True])
 def test_replay_dedupes_one_provider_record_within_each_kind_only(reverse: bool) -> None:
+    """One record reported under a news Strategy and a market Strategy is one Item and one Event.
+
+    The market tuple leaves the Event lane entirely; the news tuple still opens exactly one Event, and
+    a second copy of the same record still collapses.
+    """
+
     title = "BTC OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
     news = _hit(
         8,
@@ -92,15 +101,18 @@ def test_replay_dedupes_one_provider_record_within_each_kind_only(reverse: bool)
     report = replay_hits([*ordered, news], watchlist_symbols=frozenset())
 
     assert report["counts"]["items"] == 1
-    assert report["counts"]["events"] == 2
+    assert report["counts"]["events"] == 1
+    assert report["counts"]["market_observations"] == 1
     assert report["counts"]["duplicate_provider_id"] == 1
-    assert {event["event_kind"] for event in report["events"]} == {"news", "oi"}
+    assert {event["event_kind"] for event in report["events"]} == {"news"}
 
 
 @pytest.mark.parametrize("reverse", [False, True])
-def test_replay_reason_never_splits_the_same_provider_fact_and_kind(reverse: bool) -> None:
+def test_a_renamed_market_strategy_is_still_a_market_observation_in_either_order(reverse: bool) -> None:
+    """Both tuples are market families now, so neither opens an Event whatever order they arrive in."""
+
     title = "BTC market source contract observation"
-    drift = _hit(
+    renamed_oi = _hit(
         12,
         text=title,
         strategy_id=1019,
@@ -108,7 +120,7 @@ def test_replay_reason_never_splits_the_same_provider_fact_and_kind(reverse: boo
         source_type="market",
         engine_type="market",
     )
-    unsupported = _hit(
+    liquidation = _hit(
         12,
         text=title,
         strategy_id=2083,
@@ -118,39 +130,29 @@ def test_replay_reason_never_splits_the_same_provider_fact_and_kind(reverse: boo
     )
 
     report = replay_hits(
-        [unsupported, drift] if reverse else [drift, unsupported],
+        [liquidation, renamed_oi] if reverse else [renamed_oi, liquidation],
         watchlist_symbols=frozenset(),
     )
 
-    assert report["counts"]["events"] == 1
-    assert report["counts"]["duplicate_provider_id"] == 1
-    assert report["events"][0]["event_kind"] == "unsupported_market"
+    assert report["counts"].get("events", 0) == 0
+    assert report["counts"]["market_observations"] == 2
+    assert report["events"] == []
 
 
-def test_replay_strict_parser_reason_fences_different_provider_items() -> None:
-    title = "BTC Large Short Liquidation 202.71K at $137.01"
-    valid = _hit(
-        13,
-        text=title,
-        strategy_id=2000,
-        strategy_name="实时清算",
-        source_type="market",
-        engine_type="market",
+def test_an_unknown_market_strategy_is_an_observation_rather_than_an_unsupported_event() -> None:
+    report = replay_hits(
+        [
+            _hit(
+                15,
+                text="Some wallet did something",
+                strategy_id=9999,
+                strategy_name="Unbound market monitor",
+                source_type="wallet",
+                engine_type="market",
+            )
+        ],
+        watchlist_symbols=frozenset(),
     )
-    drift = _hit(
-        14,
-        text=title,
-        strategy_id=2000,
-        strategy_name="实时清算",
-        source_type="market",
-        engine_type="market",
-    )
-    drift["source"] = "aster"
 
-    report = replay_hits([valid, drift], watchlist_symbols=frozenset())
-
-    assert report["counts"]["events"] == 2
-    assert {(event["event_kind"], event["source_contract_reason"]) for event in report["events"]} == {
-        ("liquidation", None),
-        ("liquidation", "source_contract_drift"),
-    }
+    assert report["counts"].get("events", 0) == 0
+    assert report["counts"]["market_observations"] == 1

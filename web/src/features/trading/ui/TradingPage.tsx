@@ -29,8 +29,8 @@ import "./trading.css";
  * admission configuration beside a status distribution, which cost a 400-row `decisions[]` download
  * every 15 s and told an operator nothing they could act on, and a list of every Case in the window
  * whose only interactive purpose was opening one of them. `/api/trading/cases` still answers the
- * drawer behind `?case=<id>` — the link `TradingCaseBadge` and the OI frame table already published —
- * and the one durable 24 h card beside it.
+ * drawer behind `?case=<id>` — the link this page's own Case rows publish — and the one durable 24 h
+ * card beside it.
  *
  * The page runs no timer of its own and recomputes no freshness. `execution.facts_expire_at_ms` is the
  * instant the server published as the end of its own projection's budget, and one comparison against it

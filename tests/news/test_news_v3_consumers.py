@@ -519,67 +519,6 @@ def test_deduper_admission_timeout_defers_uncounted_and_publishes_nothing(monkey
     assert bus.published == [] and news.calls == []
 
 
-@pytest.mark.parametrize(
-    ("strategy_id", "strategy_name", "source_type"),
-    [
-        (2026, "聪明钱监控", "wallet"),
-        (2083, "Large-scale liquidation", "market"),
-    ],
-)
-def test_unsupported_market_contracts_are_auditable_without_triage_or_delivery(
-    strategy_id: int,
-    strategy_name: str,
-    source_type: str,
-) -> None:
-    news = RecordingNews(
-        upsert_item=True,
-        fact_membership=None,
-        find_exact_event=None,
-        find_artifact_event=None,
-        find_band_candidates=[],
-    )
-    bus = FakeBus()
-    deduper = DeduperConsumer(bus=bus, db=FakeWorkerDatabase(news), watchlist_symbols=frozenset())
-    raw = _message(
-        "raw",
-        {
-            "params": {
-                "id": strategy_id * 1_000,
-                "engineType": "market",
-                "text": "BTC market frame whose field semantics are not contracted",
-                "source": "opennews",
-                "ts": NOW_MS,
-                "strategy": {
-                    "id": strategy_id,
-                    "name": strategy_name,
-                    "sourceType": source_type,
-                },
-            },
-            "strategy_id": str(strategy_id),
-            "ingest_mode": "live",
-            "observed_at_ms": NOW_MS,
-        },
-        routing_key=RK_RAW_LIVE.format(strategy_id=str(strategy_id)),
-    )
-
-    asyncio.run(deduper.handle(raw))
-
-    inserted = news.kwargs_of("insert_event")
-    assert inserted["event_kind"] == "unsupported_market"
-    assert inserted["admission"] == "unsupported_market_contract"
-    assert inserted["source_contract_reason"] == "unsupported_market_contract"
-    assert json.loads(news.kwargs_of("upsert_item")["provider_metadata_json"])["strategies"] == [
-        {
-            "id": str(strategy_id),
-            "name": strategy_name,
-            "source_type": source_type,
-            "engine_type": "market",
-        }
-    ]
-    assert bus.published == [], "unsupported means no Triage message, hence no model or Delivery path"
-    assert "mark_event_published" not in news.names()
-
-
 # ---------------------------------------------------------------- Triage
 class _RecordingJudge:
     """Counts model calls so a test can assert one never happened."""
@@ -671,10 +610,11 @@ def test_triage_without_model_pushes_an_objective_watchlist_fact_and_persists_ed
     ]
     assert all(m.priority == 5 and m.trace_id == "trace-1" for m in bus.published)
     assert news.names()[-1] == "mark_verdict_published"
-    # #267 is scoped to the deterministic lanes. Here the Event's assets are the Gate's grounding
-    # evidence, provenance-checked against the Item; promoting a non-deterministic verdict's own
-    # primaries would let an unchecked reading seed a price measurement and a canonical asset.
-    assert "record_event_assets" not in news.names()
+    # An Event's assets are the Gate's grounding evidence, provenance-checked against the Item.
+    # Promoting a verdict's own primaries would let an unchecked reading seed a price measurement and
+    # a canonical asset, so Triage writes none -- the second writer #267 added for the deterministic
+    # market judge went with that judge (#553).
+    assert not any(name.endswith("event_assets") for name in news.names())
 
 
 @pytest.mark.parametrize(
@@ -4954,275 +4894,213 @@ def test_recovery_periodically_finds_pending_work_without_a_request() -> None:
     assert news.kwargs_of("complete_recovery")["status"] == "recovered"
 
 
-# ---------------------------------------------------------------------------- OI telemetry lane (#137)
+# ---------------------------------------------------------------------------- market lane (#553)
 _OI_TITLE = "TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
+_LIQUIDATION_TITLE = "SOL Large Short Liquidation 202.71K at $137.01"
+_WALLET_TITLE = "js-2 Close Short SOL $482,113.55 , Price $137.01 , PNL -$8,204.10"
 
 
-def _oi_card(**overrides: Any) -> dict[str, Any]:
-    card = _card(
-        event_id="ev-oi",
-        leader_item_id="item-oi",
-        event_kind="oi",
-        leader_title=_OI_TITLE,
-        admission="telemetry_deterministic",
-        engine_type="market",
-        dedupe_family="market_telemetry",
-        grounded_assets=[],
-        watchlist_hits=[],
-        queue_priority="normal",
-        provider_score_max=None,
-        storyline_key="macro:market_telemetry",
-        provider_metadata={"source": "binance", "coins": [{"symbol": "TRUMP", "market_type": "cex"}]},
-        opened_at_ms=NOW_MS,
-    )
-    card.update(overrides)
-    return card
-
-
-def test_telemetry_is_judged_without_a_model_and_settles_on_the_ordinary_path() -> None:
-    """The whole design in one test: no judge call, no arm assignment, and the verdict lands in
-    `news_verdicts` through `_decide_and_persist` like any other Event -- and, since #458, nothing
-    is published, because this lane no longer decides that a human should be interrupted."""
-
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=_oi_card(),
-        insert_verdict=True,
-        latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
-    )
-    bus = FakeBus()
-    judge = _RecordingJudge()
-
-    asyncio.run(_triage(news, bus, judge=judge).handle(_message("event", {"event_id": "ev-oi"})))
-
-    assert judge.calls == 0, "a telemetry frame must never reach the model"
-    assert "assign_agent_arm" not in news.names(), "no model call means no arm to assign"
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "drop"
-    assert inserted["override_rule"] == "stored"
-    assert inserted["program_version"] == "news_oi_signal_v3" and inserted["degraded"] is False
-    assert inserted["judgment_origin"] == "oi"
-    assert inserted["verdict"]["assets"] == [{"symbol": "TRUMP", "market_type": "perp", "role": "primary"}]
-    assert inserted["verdict"]["headline_zh"] == (
-        "▲ TRUMP 持仓异动4.55%｜持仓3217万｜鲸鱼占比100.7%｜鲸鱼多头盈利80.2%"
-    )
-    assert inserted["verdict"]["why_zh"] == ""
-    assert inserted["trace"]["verdict_sha256"] == canonical_sha(inserted["verdict"])
-    # No threshold travels with the verdict any more, because none was applied.
-    assert "policy" not in inserted["trace"]
-    history_calls = [kwargs for name, kwargs in news.calls if name == "reader_history"]
-    assert history_calls and all(call["include_targeted"] is False for call in history_calls)
-    # The frame ledger is written, and nothing is published: the reader is told by the Signal lane.
-    ledger = news.kwargs_of("insert_oi_signal")
-    assert ledger["symbol"] == "TRUMP"
-    assert "rank_in_window" not in ledger
-    assert bus.published == []
-
-
-def test_a_judged_telemetry_frame_records_the_asset_its_gate_could_not_ground() -> None:
-    """#267. The parser resolves the symbol the admission Gate could not read out of the wire text.
-
-    Without this the Event has no `news_event_assets` row at all, and everything keyed on that table
-    is blind to the entire lane: the Reaction planner never plants a row, so 价格/1H/4H are empty on
-    every frame; `?symbol=` finds nothing, so the token page a frame links to lists neither it nor any
-    other; and the instrument funnel counts the frame as naming nothing.
-    """
-
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=_oi_card(),
-        insert_verdict=True,
-        latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
-    )
-
-    asyncio.run(_triage(news, FakeBus()).handle(_message("event", {"event_id": "ev-oi"})))
-
-    recorded = news.kwargs_of("record_event_assets")
-    assert recorded["event_id"] == "ev-oi"
-    # The judge's own primary, with the contract it named — not the Gate's empty `grounded_assets`.
-    assert recorded["assets"] == (("TRUMP", "perp"),)
-
-
-def test_a_telemetry_frame_that_matched_no_template_records_no_asset() -> None:
-    """A parse failure names no symbol, and inventing one would seed a price measurement on nothing."""
-
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=_oi_card(leader_title="Zeta posted something that is not the OI template"),
-        insert_verdict=True,
-        latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
-    )
-
-    asyncio.run(_triage(news, FakeBus()).handle(_message("event", {"event_id": "ev-oi"})))
-
-    assert news.kwargs_of("insert_verdict")["error_code"] == "oi_parse_failed"
-    assert "record_event_assets" not in news.names()
-    assert "insert_oi_signal" not in news.names()
-
-
-def test_a_repeated_symbols_frame_is_stored_like_every_other_one() -> None:
-    """#458: no storyline lock, no count of this symbol's earlier frames, no rank to exceed.
-
-    The rule that made the third frame in four hours different from the first is gone, so the lane
-    does exactly one thing per frame. What used to be asserted here — a `beyond_window_rank` hold —
-    would now be a rule nothing writes.
-    """
-
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=_oi_card(),
-        insert_verdict=True,
-        latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
-    )
-    bus = FakeBus()
-
-    asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": "ev-oi"})))
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "drop" and inserted["override_rule"] == "stored"
-    # No per-symbol history is read, so nothing about this frame depends on the ones before it. (The
-    # storyline lock the general settlement path takes is a different one and still applies.)
-    assert "count_recent_eligible_oi_signals" not in news.names()
-    assert "rank_in_window" not in news.kwargs_of("insert_oi_signal")
-    assert bus.published == []
-
-
-def test_a_redelivered_telemetry_verdict_republishes_through_the_existing_guard() -> None:
-    """The idempotency this lane relies on is the one Triage already had: the verdict row is the
-    durable decision, and an unpublished push is re-published on redelivery."""
-
-    news = RecordingNews(
-        get_verdict={"final_decision": "push", "published_at_ms": None},
-        event_card=_oi_card(),
-    )
-    bus = FakeBus()
-
-    asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": "ev-oi"})))
-
-    assert "insert_verdict" not in news.names()
-    assert bus.routing_keys() == [RK_VERDICT_PUSH]
-
-
-# ---------------------------------------------------------------- liquidation telemetry lane (#213)
-def _liquidation_card(**overrides: Any) -> dict[str, Any]:
-    card = _card(
-        event_id="ev-liquidation",
-        event_kind="liquidation",
-        leader_item_id="item-liquidation",
-        leader_title="SPCX Large Short Liquidation 202.71K at $137.01",
-        admission="liquidation_deterministic",
-        engine_type="market",
-        dedupe_family="market_telemetry",
-        grounded_assets=[],
-        watchlist_hits=[],
-        queue_priority="normal",
-        provider_score_max=None,
-        storyline_key="macro:market_telemetry",
-        provider_metadata={"source": "binance", "coins": []},
-        opened_at_ms=NOW_MS,
-    )
-    card.update(overrides)
-    return card
-
-
-def test_liquidation_is_judged_from_the_typed_fact_with_zero_model_calls() -> None:
-    news = RecordingNews(
-        # An ordinary model row cannot short-circuit the dedicated liquidation
-        # policy selected from the durable admission.
-        get_verdict=lambda **kwargs: (
-            {"final_decision": "push", "published_at_ms": None}
-            if kwargs["policy_version"] == TRIAGE_POLICY_VERSION
-            else None
-        ),
-        event_card=_liquidation_card(),
-        insert_verdict=True,
-        market_liquidation={
-            "source_key": "a" * 64,
-            "item_id": "item-liquidation",
-            "fact_id": "fact-1",
-            "symbol": "SPCX",
-            "venue": "binance",
-            "liquidated_position_side": "short",
-            "forced_order_side": "buy",
-            "notional_usd": Decimal("202710"),
-            "quantity": None,
-            "price": Decimal("137.01"),
-            "event_at_ms": NOW_MS - 1_000,
-            "received_at_ms": NOW_MS,
-            "parser_version": "liquidation_parser_v1",
-            "provider_record_identity": "provider-1",
-            "symbol_contract_identity": "unresolved:binance:SPCX",
-            "position_side_semantics": "short=>forced_buy;long=>forced_sell",
-            "quantity_semantics": "not_provided",
-            "notional_semantics": "provider_reported_usd_notional",
-            "price_semantics": "provider_reported_unspecified_price",
-            "completeness_assumption": "selected_events_without_heartbeat",
-            "throttle_assumption": "provider_throttle_unknown",
-            "source_contract_version": "opennews_liquidation_source_v1",
-            "source_contract_complete": False,
-        },
-        latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
-    )
-    bus = FakeBus()
-    judge = _RecordingJudge()
-
-    asyncio.run(_triage(news, bus, judge=judge).handle(_message("event", {"event_id": "ev-liquidation"})))
-
-    assert judge.calls == 0
-    assert "assign_agent_arm" not in news.names()
-    assert news.kwargs_of("get_verdict")["policy_version"] == "news_liquidation_policy_v2"
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["program_version"] == "news_liquidation_fact_v2"
-    assert inserted["policy_version"] == "news_liquidation_policy_v2"
-    assert inserted["degraded"] is False
-    assert inserted["judgment_origin"] == "liquidation"
-    assert inserted["verdict"]["direction"] == "neutral"
-    assert inserted["verdict"]["why_zh"].startswith("已发生的被迫成交")
-    assert set(inserted["trace"]["liquidation"]) == {
-        "parsed",
-        "source_latency_ms",
-        "parser_version",
-        "source_classifier_version",
+def _market_raw(
+    *,
+    strategy_id: int,
+    strategy_name: str,
+    source_type: str,
+    text: str,
+    record_id: int = 900_001,
+    ingest_mode: str = "live",
+    provider_source: str = "binance",
+    extra_params: dict[str, Any] | None = None,
+) -> BusMessage:
+    params: dict[str, Any] = {
+        "id": record_id,
+        "engineType": "market",
+        "text": text,
+        "source": provider_source,
+        "ts": NOW_MS,
+        "strategy": {"id": strategy_id, "name": strategy_name, "sourceType": source_type},
     }
-    assert inserted["trace"]["judgment"]["fact"]["forced_order_side"] == "buy"
-    assert inserted["trace"]["gate_policy_version"] == "news_liquidation_admission_v1"
-    assert inserted["trace"]["judgment"]["fact"]["source_contract_complete"] is False
-    assert bus.routing_keys() == [RK_VERDICT_PUSH]
-
-
-def test_liquidation_missing_typed_fact_fails_closed_without_a_model_call() -> None:
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=_liquidation_card(),
-        insert_verdict=True,
-        market_liquidation=None,
-        latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
+    params.update(extra_params or {})
+    return _message(
+        "raw",
+        {
+            "params": params,
+            "strategy_id": str(strategy_id),
+            "ingest_mode": ingest_mode,
+            "observed_at_ms": NOW_MS,
+        },
+        routing_key=RK_RAW_LIVE.format(strategy_id=str(strategy_id)),
     )
-    judge = _RecordingJudge()
-
-    asyncio.run(_triage(news, FakeBus(), judge=judge).handle(_message("event", {"event_id": "ev-liquidation"})))
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert judge.calls == 0
-    assert inserted["final_decision"] == "drop"
-    assert inserted["override_rule"] == "liquidation_parse_failed"
-    assert inserted["error_code"] == "liquidation_parse_failed"
-    assert inserted["trace"]["liquidation"]["failure_stage"] == "source_contract_drift"
 
 
-def test_liquidation_redelivery_uses_its_independent_policy_identity() -> None:
+def _market_deduper(news: RecordingNews, bus: FakeBus) -> DeduperConsumer:
+    return DeduperConsumer(bus=bus, db=FakeWorkerDatabase(news), watchlist_symbols=frozenset({"SOL", "TRUMP"}))
+
+
+def _admit_market(raw: BusMessage) -> tuple[RecordingNews, FakeBus]:
+    news = RecordingNews(upsert_item=True)
+    bus = FakeBus()
+    asyncio.run(_market_deduper(news, bus).handle(raw))
+    return news, bus
+
+
+def test_an_oi_frame_is_stored_with_its_typed_fact_and_opens_no_event() -> None:
+    """The whole market design in one test: Item and ledger row in one transaction, nothing else.
+
+    No Gate, no title dedupe, no storyline, no evidence snapshot, no verdict and no Event -- and so
+    nothing published, because there is no Triage message for a measurement to carry.
+    """
+
+    news, bus = _admit_market(
+        _market_raw(strategy_id=1019, strategy_name="OI Event Monitor", source_type="market", text=_OI_TITLE)
+    )
+
+    item = news.kwargs_of("upsert_item")
+    assert (item["market_kind"], item["market_parse_status"], item["market_parse_error"]) == ("oi", "parsed", None)
+    assert item["market_source_strategy_id"] == "1019"
+    signal = news.kwargs_of("insert_oi_signal")
+    assert (signal["symbol"], signal["direction"], signal["oi_change_bps"]) == ("TRUMP", "rise", 455)
+    assert signal["source_venue"] == "binance"
+    assert signal["measurement_definition"] == "oi_signal_v1|opennews_oi_source_v1|300000"
+    # No live writer can mark a fact as reconstructed: the column defaults to false and only the
+    # migration ever sets it.
+    assert "historical" not in signal
+    for editorial in ("insert_event", "add_member", "append_evidence_snapshot", "find_band_candidates"):
+        assert editorial not in news.names(), editorial
+    assert bus.published == []
+
+
+def test_a_recovery_market_frame_is_stored_exactly_like_a_live_one() -> None:
+    """#553. Recovery frames never reached Triage, so the ledger simply had no row for them."""
+
+    news, bus = _admit_market(
+        _market_raw(
+            strategy_id=1019,
+            strategy_name="OI Event Monitor",
+            source_type="market",
+            text=_OI_TITLE,
+            ingest_mode="recovery",
+        )
+    )
+
+    assert news.kwargs_of("upsert_item")["ingest_mode"] == "recovery"
+    assert news.kwargs_of("insert_oi_signal")["symbol"] == "TRUMP"
+    assert bus.published == []
+
+
+@pytest.mark.parametrize("strategy_id", [2000, 2083])
+def test_both_liquidation_strategies_write_the_typed_fact_with_their_own_source_id(strategy_id: int) -> None:
+    """2083 is where every measured liquidation actually came from, and it was `unsupported` (#553)."""
+
+    news, _ = _admit_market(
+        _market_raw(
+            strategy_id=strategy_id,
+            strategy_name="renamed by the provider",
+            source_type="market",
+            text=_LIQUIDATION_TITLE,
+            provider_source="okx",
+        )
+    )
+
+    assert news.kwargs_of("upsert_item")["market_kind"] == "liquidation"
+    fact = news.kwargs_of("insert_market_liquidation")["fact"]
+    assert (fact.symbol, fact.source_venue, fact.source_strategy_id) == ("SOL", "okx", str(strategy_id))
+    assert fact.liquidated_position_side == "short"
+
+
+def test_a_wallet_report_is_parsed_into_an_account_action_with_its_address_and_metrics_kept() -> None:
+    news, _ = _admit_market(
+        _market_raw(
+            strategy_id=2026,
+            strategy_name="聪明钱监控",
+            source_type="wallet",
+            text=_WALLET_TITLE,
+            provider_source="",
+            extra_params={
+                "relatedAddress": "0x" + "1" * 40,
+                "strategy": {
+                    "id": 2026,
+                    "name": "聪明钱监控",
+                    "sourceType": "wallet",
+                    "metrics": {"position_value": {"value": 482113.55, "unit": "USD"}},
+                },
+            },
+        )
+    )
+
+    item = news.kwargs_of("upsert_item")
+    assert (item["market_kind"], item["market_parse_status"]) == ("smart_money", "parsed")
+    payload = json.loads(item["provider_params_json"])
+    assert payload["relatedAddress"] == "0x" + "1" * 40
+    assert payload["strategy"]["metrics"]["position_value"]["value"] == 482113.55
+    fact = news.kwargs_of("insert_market_smart_money")["fact"]
+    assert (fact.trader_label, fact.action, fact.position_side, fact.symbol) == ("js-2", "close", "short", "SOL")
+    assert fact.account_address == "0x" + "1" * 40
+    assert str(fact.pnl_usd) == "-8204.10"
+    assert fact.source_venue is None
+
+
+@pytest.mark.parametrize(
+    ("strategy_id", "source_type", "text", "kind", "reason"),
+    [
+        (1019, "market", "TRUMP open interest is up a lot today", "oi", "oi_template_unmatched"),
+        (2083, "market", "SOL liquidated somewhere", "liquidation", "liquidation_template_unmatched"),
+        (2026, "wallet", "Withdraw USDC", "smart_money", "smart_money_template_unmatched"),
+        (9999, "wallet", "Some new market monitor said something", "unknown_market", "unknown_market_source"),
+    ],
+)
+def test_a_template_this_code_cannot_prove_is_stored_as_a_raw_card_with_its_reason(
+    strategy_id: int,
+    source_type: str,
+    text: str,
+    kind: str,
+    reason: str,
+) -> None:
+    """`Withdraw USDC` is real account activity. Refusing it would delete a fact to protect a parser."""
+
+    news, bus = _admit_market(
+        _market_raw(strategy_id=strategy_id, strategy_name="whatever", source_type=source_type, text=text)
+    )
+
+    item = news.kwargs_of("upsert_item")
+    assert (item["market_kind"], item["market_parse_status"], item["market_parse_error"]) == (kind, "raw", reason)
+    for writer in ("insert_oi_signal", "insert_market_liquidation", "insert_market_smart_money"):
+        assert writer not in news.names(), writer
+    assert "insert_event" not in news.names()
+    assert bus.published == []
+
+
+def test_an_ordinary_news_frame_still_opens_an_event_and_never_reaches_the_market_writers() -> None:
     news = RecordingNews(
-        get_verdict=lambda **kwargs: (
-            {"final_decision": "push", "published_at_ms": None}
-            if kwargs["policy_version"] == "news_liquidation_policy_v2"
-            else None
-        ),
-        event_card=_liquidation_card(),
+        upsert_item=True,
+        fact_membership=None,
+        find_exact_event=None,
+        find_artifact_event=None,
+        find_band_candidates=[],
     )
     bus = FakeBus()
+    raw = _message(
+        "raw",
+        {
+            "params": {
+                "id": 900_100,
+                "engineType": "news",
+                "score": 90,
+                "text": "SEC approves a spot ETF for SOL",
+                "source": "opennews",
+                "ts": NOW_MS,
+                "strategy": {"id": 1018, "name": "News Score > 70", "sourceType": "news"},
+            },
+            "strategy_id": "1018",
+            "ingest_mode": "live",
+            "observed_at_ms": NOW_MS,
+        },
+        routing_key=RK_RAW_LIVE.format(strategy_id="1018"),
+    )
 
-    asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": "ev-liquidation"})))
+    asyncio.run(_market_deduper(news, bus).handle(raw))
 
-    assert "insert_verdict" not in news.names()
-    assert news.kwargs_of("mark_verdict_published")["policy_version"] == "news_liquidation_policy_v2"
-    assert bus.routing_keys() == [RK_VERDICT_PUSH]
+    # The editorial branch never names a market column, so the Item's market identity stays absent.
+    assert news.kwargs_of("upsert_item").get("market_kind") is None
+    assert news.kwargs_of("insert_event")["event_kind"] == "news"
+    for writer in ("insert_oi_signal", "insert_market_liquidation", "insert_market_smart_money"):
+        assert writer not in news.names(), writer

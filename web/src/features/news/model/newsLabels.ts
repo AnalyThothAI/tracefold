@@ -26,12 +26,13 @@ import { formatNewsLocalTimestamp } from "./newsTime";
 export type Tone = "done" | "info" | "caution" | "alert" | "neutral";
 export type Direction = "bullish" | "bearish" | "flat";
 
+/*
+ * Two kinds since #553 PR-1. An Event is editorial; OI frames, liquidations, smart-money prints and
+ * unknown market sources are market observations on 市场事实, with their own vocabulary.
+ */
 const EVENT_KIND_LABELS: Record<NewsEventKind, string> = {
   news: "新闻",
   listing: "上币/下币",
-  oi: "OI 帧",
-  liquidation: "强平",
-  unsupported_market: "未支持市场",
 };
 
 export function eventKindLabel(kind: NewsEventKind): string {

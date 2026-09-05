@@ -53,7 +53,7 @@ describe("news route", () => {
 
   it.each([
     ["/news/status", "流水线状态", "/api/news/status"],
-    ["/news/oi", "OI 来源与准入审计", "/api/news/status"],
+    ["/news/market", "市场事实", "/api/news/market"],
     [
       "/news/events/evt-global-policy",
       "央行政策转向，风险资产承压",
@@ -89,7 +89,7 @@ describe("news route", () => {
         };
       };
     });
-    renderAppRoute("/news/oi");
+    renderAppRoute("/news/market");
 
     // The mapping the shell owns: server level -> lamp level, worst item's `summary_zh` -> lamp text.
     const lamp = await screen.findByRole("button", { name: "流水线健康：24 小时降级率 20%" });
@@ -157,7 +157,7 @@ describe("news route", () => {
         return base(path, options);
       };
     });
-    renderAppRoute("/news/oi");
+    renderAppRoute("/news/market");
 
     const lamp = await screen.findByRole("button", { name: "流水线健康：读取流水线状态失败" });
     expect(lamp).toHaveAttribute("data-level", "bad");
@@ -196,8 +196,8 @@ describe("news route", () => {
     renderAppRoute("/news");
     await screen.findByRole("heading", { name: "新闻事件流" });
 
-    fireEvent.click(screen.getByRole("link", { name: "OI 来源与准入审计" }));
-    expect(await screen.findByRole("heading", { name: "OI 来源与准入审计" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "市场事实" }));
+    expect(await screen.findByRole("heading", { name: "市场事实" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("link", { name: "事件流" }));
     expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();

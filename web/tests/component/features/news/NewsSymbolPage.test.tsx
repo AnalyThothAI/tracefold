@@ -4,7 +4,6 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import {
   newsFeedEventFixture,
   newsFeedFixture,
-  newsOiFrameFixture,
   newsReactionFixture,
   newsStatusFixture,
   newsSymbolFixture,
@@ -36,7 +35,12 @@ describe("NewsSymbolPage", () => {
       http.get(/.*\/api\/news\/feed$/, () =>
         HttpResponse.json({
           ok: true,
-          data: newsFeedFixture({ events: [newsOiFrameFixture(), newsFeedEventFixture()] }),
+          data: newsFeedFixture({
+            events: [
+              newsFeedEventFixture({ event_id: "evt-listing", event_kind: "listing" }),
+              newsFeedEventFixture(),
+            ],
+          }),
         }),
       ),
       /*
@@ -146,6 +150,11 @@ describe("NewsSymbolPage", () => {
   });
 
   it("filters every persisted Event kind on one clock", async () => {
+    /*
+     * Two kinds since #553 PR-1: an Event is editorial. The OI 帧 / 强平 / 未支持市场 lanes went with the
+     * Events behind them — those records are market observations on 市场事实, and this page must not offer
+     * a tab that can only ever count zero.
+     */
     server.use(
       http.get(/.*\/api\/news\/feed$/, () =>
         HttpResponse.json({
@@ -153,20 +162,10 @@ describe("NewsSymbolPage", () => {
           data: newsFeedFixture({
             events: [
               newsFeedEventFixture({ event_id: "evt-news", event_kind: "news" }),
-              newsFeedEventFixture({ event_id: "evt-listing", event_kind: "listing" }),
               newsFeedEventFixture({
-                admission: "candidate",
-                event_id: "evt-oi",
-                event_kind: "oi",
-              }),
-              newsFeedEventFixture({
-                admission: "telemetry_deterministic",
-                event_id: "evt-liquidation",
-                event_kind: "liquidation",
-              }),
-              newsFeedEventFixture({
-                event_id: "evt-unsupported",
-                event_kind: "unsupported_market",
+                admission: "listing_deterministic",
+                event_id: "evt-listing",
+                event_kind: "listing",
               }),
             ],
           }),
@@ -180,18 +179,21 @@ describe("NewsSymbolPage", () => {
       "aria-selected",
       "true",
     );
-    await waitFor(() => expect(document.querySelectorAll(".news-symbol-row")).toHaveLength(5));
-    for (const label of ["新闻", "上币/下币", "OI 帧", "强平", "未支持市场"]) {
+    await waitFor(() => expect(document.querySelectorAll(".news-symbol-row")).toHaveLength(2));
+    for (const label of ["新闻", "上币/下币"]) {
       expect(within(table).getByRole("tab", { name: label })).toBeInTheDocument();
     }
+    for (const label of ["OI 帧", "强平", "未支持市场"]) {
+      expect(within(table).queryByRole("tab", { name: label })).toBeNull();
+    }
 
-    fireEvent.click(within(table).getByRole("tab", { name: "强平" }));
+    fireEvent.click(within(table).getByRole("tab", { name: "上币/下币" }));
 
     await waitFor(() => expect(document.querySelectorAll(".news-symbol-row")).toHaveLength(1));
-    expect(screen.getByTestId("location")).toHaveTextContent("lane=liquidation");
+    expect(screen.getByTestId("location")).toHaveTextContent("lane=listing");
     const kind = document.querySelector(".news-symbol-row .news-kind");
-    expect(kind).toHaveAttribute("data-kind", "liquidation");
-    expect(kind).toHaveTextContent("强平");
+    expect(kind).toHaveAttribute("data-kind", "listing");
+    expect(kind).toHaveTextContent("上币/下币");
   });
 
   it("shows a pending horizon as 未到期 rather than a zero return", async () => {

@@ -80,10 +80,12 @@ def test_current_event_identity_never_reuses_the_pre_cut_item_primary_key() -> N
         method="whole_item",
     )
 
-    news_id = _event_identity(item_id=item_id, fact=fact, event_kind="news")
+    news_id = _event_identity(item_id=item_id, fact=fact, kind="news")
     assert news_id != item_id
-    assert news_id == _event_identity(item_id=item_id, fact=fact, event_kind="news")
-    assert news_id != _event_identity(item_id=item_id, fact=fact, event_kind="oi")
+    assert news_id == _event_identity(item_id=item_id, fact=fact, kind="news")
+    # The OI ledger keeps deriving its published source identity from the same formula under its own
+    # kind (#553 §3.3), so an Item that produced both never collides with itself.
+    assert news_id != _event_identity(item_id=item_id, fact=fact, kind="oi")
 
 
 # ---------------------------------------------------------------- titles

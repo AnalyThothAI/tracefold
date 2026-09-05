@@ -393,11 +393,12 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 | Family | Routes | Source of data |
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
-| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, four-layer status, bounded quotes, and one symbol's identity |
+| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, market observations read straight from `news_items` and their typed facts, one observation with its group timeline, four-layer status, bounded quotes, and one symbol's identity |
 | Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/executions`, `/api/trading/gate`, `/api/trading/gate/{event_id}`, `POST /api/trading/execution/commands` | one owner per question the console asks: current execution/account readiness, frozen Case decisions, the folded per-entry execution table with its Command ledger, and the Source-admission ledger. Five GETs and one bounded POST append. #537 PR-5 deleted `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections — three more public shapes over the ledgers `/api/trading/executions` already reads folded, none of them called by any browser surface, and all three still readable through `tracefold trading signals \| observations \| commands` |
 
-The public API is exactly these routes plus `/healthz`, `/readyz`, and
-`/metrics`. The retired GMGN-lane routes (`/ws`, `/api/recent`,
+The public API is exactly these routes — including the two #553 PR-1 market
+reads `/api/news/market` and `/api/news/market/{item_id}` — plus `/healthz`,
+`/readyz`, and `/metrics`. The retired GMGN-lane routes (`/ws`, `/api/recent`,
 `/api/events/by-ids`, `/api/search`, `/api/search/inspect`, `/api/token-case`,
 `/api/target-posts`, `/api/target-social-timeline`, `/api/live-market`,
 `/api/token-images/*`, `/api/token-radar`, `/api/stocks-radar`) are not
@@ -406,8 +407,9 @@ feature flag.
 
 ### News
 
-News is an operator-bound, Strategy-qualified Event surface. The public surface
-is exactly five GET route templates and no write route at all. The four
+News is an operator-bound, Strategy-qualified surface with two planes: the
+editorial Event plane and the market-observation plane (#553). The public
+surface is exactly seven GET route templates and no write route at all. The four
 ReviewDesk routes — two reads and the only two News HTTP writes — were removed
 with the console page they served (#256); `news review
 queue|evidence|submit|external-miss` is now the whole ReviewDesk surface, and
@@ -419,31 +421,51 @@ broker scheduling, storage/audit/measurement and explicit operator review
 projections; there is no public alias.
 
 Every normalized OpenNews frame is classified once by
-`opennews_source_classifier_v1` from the exact
-`strategy_id + strategy_name + source_type + engine_type` tuple. The closed
-result is `news_v1|listing_v1|oi_v1|liquidation_v1|unsupported_market`, persisted
-as `event_kind=news|listing|oi|liquidation|unsupported_market`. Ordinary enabled
-News and listing still use Gate and the Program; only the exact 1019 OI and 2000
-liquidation contracts select their strict parsers. The pinned tuples are
-`1019 / OI Event Monitor / market / market` and
-`2000 / 实时清算 / market / market`; `2026 / 聪明钱监控 / wallet / market` and
-`2083 / Large-scale liquidation / market / market` are explicitly unsupported.
-Known tuple drift and unbound scoreless market/wallet frames persist Item/Event
-provenance with nullable Event field
-`source_contract_reason=source_contract_drift|unsupported_market_contract`.
-Migration `0336` deletes rows carrying the retired
-`source_contract_unverified` value; it is not a current contract member.
-Unsupported rows call no model and create no delivery.
-A malformed OI/liquidation frame stores `source_contract_drift`;
-a valid current-writer contract stores `null`. Recovery uses the same classifier
-and, when provider history includes the complete tuple, the same strict parser;
-it persists the result but does not write the live OI rank fact and never
-delivers. An incomplete history tuple fails closed as drift. No Strategy id or
-title alone selects a deterministic route.
+`opennews_source_classifier_v2` (`tracefold.news.source_contracts`). The closed
+family set is `news_v1|listing_v1|oi_v1|liquidation_v1|smart_money_v1|unknown_market`
+and it resolves into **two disjoint vocabularies** (#553):
 
-- `GET /api/news/feed?event_family=...&change_state=...&assertion_status=...&source_authority=...&subject_code=...&final_decision=...&event_kind=...&admission=...&symbol=...&q=...&limit=...&cursor=...&outcome=...&hours=...&oi=...&direction=...`
-  returns current Events newest first with the leader title, durable `event_kind`, nullable
-  `source_contract_reason`, admission,
+- `EVENT_KINDS` is `news|listing`. These are the only frames that open a News
+  Event, and `news_events.event_kind` holds exactly one of the two.
+- `MARKET_KINDS` is `oi|liquidation|smart_money|unknown_market`. These are
+  persisted as `news_items` rows carrying `market_kind`,
+  `market_source_strategy_id`, `market_parse_status` (`parsed|raw`),
+  `market_parse_error` and the frame's own `provider_params`, together with one
+  typed fact row in `news_oi_signals`, `news_market_liquidations` or
+  `news_market_smart_money`, in a single transaction. They open no Event, take
+  no admission, pass no Gate, storyline, evidence snapshot, verdict, model call
+  or delivery, and they are read back by `/api/news/market` from those facts.
+
+A frame is one or the other, never both. The market families key on the
+provider's **Strategy id alone** — `1019` OI, `2000` and `2083` liquidation,
+`2026` smart money — because the four-tuple binding they used to carry made a
+provider display name load-bearing: when `Large-scale liquidation` was renamed,
+every frame under that id fell out of its own contract. The name, source type
+and engine type are recorded on the fact and gate nothing. Listing stays a
+generic route: the exact tuple `1353 / Listing and Delisting Announcements /
+news / listing`, or any frame whose `engine_type` is `listing`. An unbound
+scoreless `market`/`wallet` frame — a market Strategy this repository has no
+template for — is `unknown_market`: stored and readable, never sent to the model
+wearing a news costume. Everything else is `news_v1`.
+
+A frame whose own Strategy tuples name two different market families is stored
+as `unknown_market` with `market_parse_error = market_category_conflict`; one
+with no template for its family stores `unknown_market_source`, and a family
+whose template did not match stores that parser's named reason
+(`oi_template_unmatched`, `liquidation_template_unmatched`,
+`smart_money_template_unmatched`). The frame's *primary* Strategy decides the
+branch, so an Item that accumulates a market Strategy across replays does not
+drag an already-classified news frame into the market plane. Recovery runs the
+identical path: same classifier, same parsers, same single transaction, no Event
+either way. No Strategy id or title alone selects an editorial route.
+
+`SourceContractReason` and the public `source_contract_reason` field are gone
+with the market Event kinds. `news_events.source_contract_reason` survives as a
+column named by `news_event_evidence_current_contract_check`, and is `NULL` on
+every Event this code can open.
+
+- `GET /api/news/feed?event_family=...&change_state=...&assertion_status=...&source_authority=...&subject_code=...&final_decision=...&event_kind=...&admission=...&symbol=...&q=...&limit=...&cursor=...&outcome=...&hours=...&direction=...`
+  returns current Events newest first with the leader title, durable `event_kind`, admission,
   asset class, grounded assets, watchlist hits, storyline key, context line,
   **one `outcome`** (`kind` from the stable enum `held_recovery`, `held_gate`,
   `expired_triage_handoff`, `expired_delivery_handoff`, `queued_publish`,
@@ -464,6 +486,10 @@ title alone selects a deterministic route.
   `expired_delivery_handoff` are `held`, never `pending`. Page rows, outcome
   filtering, and first-page counts share one request `as_of_ms`, so a row
   cannot be expired in the response but pending in its counts.
+
+  The feed is the editorial plane only: the query filters
+  `e.event_kind IN ('news','listing')`, so a market observation is never a feed
+  row under any filter, and `/api/news/market` is where it is read (#553).
 
   `event_family`, `change_state`, `assertion_status`, `source_authority`,
   `subject_code`, `final_decision`, `event_kind`, and `direction` accept
@@ -489,32 +515,20 @@ title alone selects a deterministic route.
   carries nullable `search` metadata with `mode`, `normalized_query`, and
   `resolved_symbols`; it is `null` when neither input was supplied.
 
-  A `telemetry_deterministic` row additionally carries a nullable `oi` block
-  (#207): `parsed`, `rule`, `symbol`, and — depending on which of the two shapes
-  it is — the four measurements (`oi_change_bps`, `oi_value_usd`,
-  `whale_long_profit_bps`, `whale_oi_ratio_bps`), or the provider-contract
-  failure (`parser_version`, `failure_stage`, `title_sha256`). No threshold and
-  no rank travel with it since #458: the lane applied neither, so a number here
-  would be a gate the console asserts and no code runs. Every field is
-  `oi_judgment_trace()` / `oi_parse_failure()` output read back from the verdict
-  trace, so no client ever re-runs `oi_signal_parser_v1` over `leader_title`.
-  `strategy_id`, `provider` and `provider_source` are deliberately not exposed.
-  The block is `null` on every other admission. `oi={all|parse_failed}` filters
-  on the judged rule: `parse_failed` is the unparseable frame, and `all` narrows
-  nothing while still identifying the caller as the monitor. `decision` cannot
-  express that split — a stored frame and a parse failure are both
-  `drop` and both carry `override_rule = telemetry_deterministic`. The filter
-  also constrains `admission = telemetry_deterministic`, which is the only lane
-  that can write the key it reads: without it the predicate has to detoast
-  `news_verdicts.trace` for every candidate row, and a rare rule with no early
-  exit walked the whole retention into the serve role's 1 s statement timeout.
+  `admission` is the closed set `candidate`, `listing_deterministic`,
+  `suppressed_pr_template`, `suppressed_low_signal`, `recovery`. The three market
+  admissions `telemetry_deterministic`, `liquidation_deterministic` and
+  `unsupported_market_contract` were deleted with the Event kinds they named
+  (#553); their Chinese labels remain in `tracefold.news.outcome` so historical
+  rows still render.
 
   Supplying both `q` and `symbol` returns 400
-  `news_feed_search_conflict` before repository work. Unknown query parameters, invalid admission,
-  decision, `oi`, `direction` or `channel` values, malformed cursors, and the retired `priority`/`sort`
-  parameters return 400; out-of-pattern `outcome`/`hours` return 422. Recovery
+  `news_feed_search_conflict` before repository work. Unknown query parameters, invalid `admission`,
+  `final_decision` or `direction` values, malformed cursors, and the retired
+  `priority`/`sort`/`oi` parameters return 400; out-of-pattern `outcome`/`hours`
+  return 422. Recovery
   Events are visible with `admission=recovery`. `filters` echoes every parameter incl. `outcome`,
-  `hours` (never the wall-clock bound, so unchanged pages keep their ETag), `oi`, `direction`, and `channel`.
+  `hours` (never the wall-clock bound, so unchanged pages keep their ETag) and `direction`.
   `counts` (`total`, `pushed`, `held`, `pending`) reports how the request's
   filters and window split across the three outcome groups — the same
   predicates the `outcome` filter uses, so the three sum to `total` — and is
@@ -539,8 +553,8 @@ title alone selects a deterministic route.
   venue — which is how a reader tells `SPOT` on a Spot Gold headline from a
   real listing. Each response reads all Event assets in one bounded batch and
   resolves all symbols in one instrument batch, never one query per Event.
-- `GET /api/news/events/{event_id}` returns one Event, its durable `event_kind`, nullable
-  `source_contract_reason`, its `outcome`, a
+- `GET /api/news/events/{event_id}` returns one **editorial** Event, its durable
+  `event_kind`, its `outcome`, a
   `timeline` (ordered steps `received` → `gate` → `triage` → `decide` →
   `delivery`, each with `title_zh`, `at_ms`, `summary_zh`, and the raw
   `facts` it was built from), its member Items (title, URL, origin,
@@ -562,7 +576,100 @@ title alone selects a deterministic route.
   headline, history scope, and retrieval reason (`recent`,
   `exact_fingerprint`, `canonical_asset_overlap`, or `title_similarity`).
   `tracefold news why`
-  prints the same `outcome` sentence and timeline. Unknown ids return 404.
+  prints the same `outcome` sentence and timeline. Unknown ids return 404, and
+  so does an Event of a kind this contract no longer names: the migration keeps
+  every pre-cut `oi`, `liquidation` and `unsupported_market` Event as immutable
+  history, the read filters `e.event_kind IN ('news','listing')` exactly as the
+  feed does, and the observation such an Event was built from is served by
+  `/api/news/market` (#553).
+- `GET /api/news/market?kind=...&from_ms=...&to_ms=...&limit=...&cursor=...`
+  returns market observations in one absolute window, newest first, with
+  *consecutive* observations of the same group collapsed onto their newest
+  member. It reads `news_items` left-joined to `news_oi_signals`,
+  `news_market_liquidations` and `news_market_smart_money` and asks nothing of
+  the editorial pipeline, Trading or a model, so it answers whenever PostgreSQL
+  does.
+
+  `kind` is a comma-separated, duplicate-free subset of the closed set
+  `oi|liquidation|smart_money|unknown_market`; absent or empty means all four.
+  Any other value is 400 `news_market_kind_invalid` (`field: kind`). `from_ms`
+  and `to_ms` are absolute epoch milliseconds (`>= 0`): an absent `to_ms` is the
+  request's wall clock and an absent `from_ms` is `to_ms` minus the 72 h
+  `MARKET_WINDOW_DEFAULT_MS`. The window is absolute rather than a rolling
+  offset because "what arrived on Tuesday" is a question an offset cannot ask.
+  `from_ms >= to_ms` is 400 `news_market_window_invalid` (`field: from_ms`); a
+  span wider than the 168 h `MARKET_WINDOW_MAX_MS` is 400
+  `news_market_window_too_wide` (`field: to_ms`). That span bounds what one
+  request may scan, not how far back the data goes: any window inside the
+  retention is readable. `limit` is 1..100 (`MARKET_PAGE_MAX`), default 50;
+  outside that range FastAPI returns 422. `cursor` is the opaque base64url
+  `received_at_ms|item_id` position of the previous page's last group — a
+  position, not a filter — and an undecodable one is 400
+  `news_market_cursor_invalid` (`field: cursor`). Any other query parameter is
+  400 `unsupported_query_param` naming that parameter.
+
+  Collapsing is a property of the whole window rather than of a page, so the
+  window is read first under the `MARKET_WINDOW_ROW_CAP` of 5,000 rows and the
+  groups are paged out of it; otherwise one group would appear twice with two
+  different counts either side of a page boundary. The group key is per kind and
+  is computed in SQL: OI is provider, venue, native instrument and measurement
+  definition; liquidation replaces the definition with the liquidated side;
+  smart money is provider, Strategy id, trader label, account address, venue,
+  native instrument, action and position side. An observation with no typed fact
+  is its own group (`raw|<market_kind>|<item_id>`), so unknown never merges with
+  unknown.
+
+  `data` is `groups[]`, `next_cursor`, `sources[]`, `filters`
+  (`kind`, `from_ms`, `to_ms`, `limit` — the resolved absolute window, so a
+  default-window request carries a wall-clock `to_ms` and revalidates every
+  call), and `notifications_connected`. Each group carries `group_key`,
+  `market_kind`, `observation_count`, `first_event_at_ms`, `last_event_at_ms`,
+  `notification_status`, `notification_reason`, and `latest`: one observation
+  with `item_id`, `market_kind`, `source_strategy_id`, `parse_status`,
+  `parse_error`, `ingest_mode`, `historical`, `group_key`, `title`,
+  `event_at_ms`, `received_at_ms`, `available_at_ms`, `provider`,
+  `source_venue`, `raw_instrument`, `symbol`, `measurement_definition`,
+  `direction`, `oi_change_bps`, `oi_value_usd`, `whale_long_profit_bps`,
+  `whale_oi_ratio_bps`, `liquidated_position_side`, `forced_order_side`,
+  `notional_usd`, `price`, `trader_label`, `account_address`, `action`,
+  `position_side` and `pnl_usd`. The three `numeric` figures — `notional_usd`
+  (the liquidation notional or the smart-money reported notional),
+  `price` and `pnl_usd` — cross the wire as their exact stored text, not as JSON
+  numbers, because a JSON number would round a provider notional the ledger
+  holds precisely, and the console renders them rather than computing with
+  them. `sources[]` is one row
+  per market kind — all four always present — with `received`, `parsed`, `raw`,
+  `groups` and `last_received_at_ms` for the same window.
+
+  "Not pushed" is not a filter and never becomes one: whether a card was sent is
+  reported per group and is not a precondition for reading the observation.
+- `GET /api/news/market/{item_id}` returns one observation in full: the
+  `observation` above, the stored `provider_params` payload, `description`,
+  `raw_first_line`, `notification_status`, `notification_reason`,
+  `notifications_connected`, and `timeline` — every retained observation of the
+  same group, newest first, up to the `MARKET_TIMELINE_MAX` of 200. It is read
+  by Item identity and is therefore not bound by the list's window: a link into
+  a group that last reported nine days ago still opens. `item_id` is normalized
+  (trimmed and lowercased) and must match `^[0-9a-f]{64}$` — the
+  `sha256(source_id, provider record id)` Item identity — before it reaches an
+  indexed lookup; anything else is 400 `news_market_item_invalid`
+  (`field: item_id`). `token` is the only query parameter it accepts; any other
+  is 400 `unsupported_query_param`. An identity no retained market Item has is
+  404 `{"ok": false, "error": "news_market_item_not_found"}`.
+
+  `parse_status`/`parse_error` and `notification_status`/`notification_reason`
+  are two independent pairs on both market routes, never folded into one outcome
+  field: a raw card that was delivered and a parsed card that was not are both
+  ordinary results, and one combined column would have to misreport one of them.
+  `parse_status` is `parsed` or `raw`, and `parse_error` is non-null exactly when
+  it is `raw` — the database CHECK states that pair as one fact. **PR-1 of #553
+  stores and reads market facts; it does not send them.** Every group and every
+  detail therefore reports the constants
+  `notification_status = "not_connected"` and
+  `notification_reason = "market_notifications_not_connected"`, with
+  `notifications_connected: false`. These are not a judgment that the
+  observation was weighed and withheld: the notification loop is PR-2's, and
+  until it lands no market observation is evaluated for delivery at all.
 - `GET /api/news/status` returns `state` (`ready`, `warming`, `degraded`,
   `unavailable`), the Workers state, `health` (four thresholded items
   `ingest`/`broker`/`model`/`delivery` with `level` `ok|warn|bad|off`,
@@ -582,14 +689,15 @@ title alone selects a deterministic route.
   (configured, connected, per-queue message/consumer counts when observed,
   snapshot error code, and the latest confirmed-publish failure code/timestamp
   observed by the running Workers process), `pipeline` (events and candidates per hour/day, Triage counts,
-  `source_classifier_version`, and `source_contracts_24h` keyed by the five
-  closed families. Each family counts the same Event cohort opened in the last
-  24 h: `received`; `parsed` (durably verified OI/liquidation parses, all
-  supported News/listing Events, and zero for unsupported);
-  `parse_failed` (`source_contract_reason=source_contract_drift`); `unsupported`; and
-  `verdict` (any Triage verdict for the Event). It also returns degraded counts
+  `source_classifier_version`, and `source_contracts_24h` keyed by the two
+  Event families `news_v1` and `listing_v1`. Each family counts the same Event
+  cohort opened in the last 24 h with exactly three stages: `received`, `parsed`
+  and `verdict` (any Triage verdict for the Event). The market families are not
+  here at all (#553) — they open no Event, so an Event funnel cannot count them,
+  and `parse_failed`/`unsupported` went with them; per-kind market intake is
+  `sources[]` on `/api/news/market`. It also returns degraded counts
   incl. `triage_degraded_by_code_24h`, decided pushes,
-  throttled, OI telemetry received/parsed/parse-failed/pushed counts, Triage
+  throttled, Triage
   p50/p95, queue lag p95, the Triage model name, the cohort fields
   `funnel_received_24h`/`funnel_admitted_24h`/`funnel_triaged_24h`/
   `funnel_delivered_24h`, and the
@@ -597,16 +705,7 @@ title alone selects a deterministic route.
   `throttled_by_key`, `pushed_by_rule`, `duplicates_withheld_24h`
   (`all` is the current content-only path), plus `tagged_24h`,
   `grounded_24h` and
-  the top-ten `ungrounded_by_symbol_24h`), `oi` (#207/#458: the deterministic
-  open-interest lane — one field, `by_rule_24h`, 24 h OI-scoped counts keyed on
-  the typed judgment's own rule names, of which there are two: `stored` and
-  `oi_parse_failed`. There is no `policy` and no `window_occupancy` (#458): the
-  lane has no operator-owned threshold and no rank window left. There is no
-  `trade_floors` either
-  (#331): News republished the capital lane's thresholds here, which invited a
-  console to compare a Case frozen last week against a floor edited yesterday.
-  Admission's own configuration is published by `/api/trading/gate`, and the
-  thresholds that decided a Case travel with that Case),
+  the top-ten `ungrounded_by_symbol_24h`),
   and `delivery` (sent/terminal
   counts, last error, end-to-end p50/p95, availability; availability requires
   both a complete declared provider and a running Workers runtime), plus
@@ -634,15 +733,25 @@ title alone selects a deterministic route.
   wider than the one above it is a visible bug, and a silently clamped one is
   an invisible one.
 
+There is no `oi` block on `/api/news/status` and no `pipeline.telemetry_*_24h`
+counter (#553). The deterministic open-interest lane they described judged an
+Event, and market frames no longer open one; what the OI Strategy did in a
+window is answered by `/api/news/market?kind=oi`, and there is still no
+`trade_floors` (#331) — Admission's own configuration is published by
+`/api/trading/gate`, and the thresholds that decided a Case travel with that
+Case.
+
 The Chinese vocabulary behind `outcome`, `*_zh`, and `label_zh` lives in
 `tracefold.news.outcome` (admissions, `decide()` rules, throttle keys, error
 codes, delivery errors, event types, directions, magnitudes, storyline
 themes); a new rule or error code lands there in the same change, so no
 surface renders a bare key.
 
-`/api/news/feed` and `/api/news/events/{event_id}` emit strong ETags and
-honor `If-None-Match`; `/api/news/status` uses a weak ETag that ignores
-`measured_at_ms`. All News routes require the operator token.
+`/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market` and
+`/api/news/market/{item_id}` emit strong ETags and honor `If-None-Match`;
+`/api/news/status` uses a weak ETag that ignores `measured_at_ms`. All News
+routes require the operator token — a bearer header or a `token` query
+parameter on a read — and answer `401` without one or with a wrong one.
 
 Item identity is `sha256(source_id, params.id)`; `params.strategy.id` is
 provenance, not fact identity. Event identity v6 is
@@ -733,25 +842,30 @@ the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `triage` is the only current stage. Current versions are
 `news_title_norm_v2`, `news_gate_v6`, `news_storyline_registry_v1`,
 `news_event_evidence_v3`, `news_judgment_v2`,
-`news_semantic_program_v9` (or `news_oi_signal_v3` /
-`news_liquidation_fact_v2` for deterministic structured lanes),
+`news_semantic_program_v9`,
 `news_triage_policy_v13`, `news_delivery_card_v11`, artifact schema
 `news_program_strategy_artifact_v1`, and source classifier
-`opennews_source_classifier_v1`. The epoch is the running bundle's
+`opennews_source_classifier_v2`. `news_oi_signal_v3` and
+`news_liquidation_fact_v2` are retired program versions: the deterministic
+structured lanes wrote them, and market frames no longer produce a verdict at
+all (#553), so they survive only on historical `news_verdicts` rows and in the
+judgment CHECK that validates those rows. The epoch is the running bundle's
 (`bundle_<sha8>`) and is not a declared version. The exact Program identity is
 its content SHA plus `envelope_sha256`, not the display version alone; see
 `docs/ARCHITECTURE.md` for the identity model.
 
-The normalized tuple `2000 / 实时清算 / market / market` is a separate
-deterministic contract composed after Gate v6; strategy id `2000` alone has no
-routing authority and does not silently widen that policy or editorial policy
-v11. Its release identities are `news_liquidation_admission_v1`,
-`news_liquidation_fact_v2`, `news_liquidation_policy_v2`,
-`liquidation_parser_v1`, `opennews_liquidation_source_v1`, and
-`opennews_source_classifier_v1`. The source
-contract records provider-record and unresolved contract identity, position
-side, quantity/notional/price semantics, completeness and throttle assumptions.
-Its current `complete=false` is a material fact.
+Liquidations are a market family, not a composed admission (#553). Strategy
+`2000` and Strategy `2083` both route to `liquidation_v1` on their id alone, and
+the frame is stored as a market Item plus one `news_market_liquidations` row —
+no Gate composition, no admission, no policy, no verdict. Its current identities
+are `liquidation_parser_v1`, `opennews_liquidation_source_v2` and
+`opennews_source_classifier_v2`; the `_v1` source contract was bumped because
+the venue allowlist that refused every venue but `binance` and `hyperliquid` is
+deleted and the row now records `source_strategy_id`, `raw_instrument` and the
+provider's own venue string as sent. The fact still records provider-record and
+unresolved contract identity, position side, quantity/notional/price semantics,
+completeness and throttle assumptions. Its current `complete=false` is a
+material fact.
 
 `ProgramStrategyArtifactV1` is the only executable semantic configuration, and
 it is one canonical JSON document — `schema_version`, the
@@ -807,10 +921,11 @@ There is no `news.oi` section. Its four keys — `window_ms`,
 `max_rank_in_window`, `whale_oi_ratio_above_bps` and `oi_change_at_least_bps` —
 were the deterministic open-interest lane's notification thresholds (#137) and
 were removed with the rule in #458; `extra="forbid"` means a config file that
-still carries the section fails at startup. Status exposes
-`telemetry_received_24h`, `telemetry_parsed_24h` and
-`telemetry_parse_failed_24h`; parser-contract failures
-also appear under `dropped_by_rule.oi_parse_failed` and never call a model.
+still carries the section fails at startup. `/api/news/status` publishes no OI
+figure at all since #553: the `telemetry_received_24h`,
+`telemetry_parsed_24h`, `telemetry_parse_failed_24h` and `telemetry_events_24h`
+counters counted Events, and an OI frame opens none. `/api/news/market`
+reports what the OI Strategy actually did.
 `news.policy` has exactly six v13 keys: `restatement_drop` (true),
 `similarity_max` (0.25), `listing_exempt_from_duplicate` (true),
 `stale_source_max_age_s` (43200 = 12 h; #154: an x/twitter artifact already older
@@ -845,9 +960,11 @@ are rejected as unknown configuration instead of being silently carried
 forward. `news.retention` keys are `raw_days` (30) and
 `judged_days` (365, >= `raw_days`): an Item behind an Event that carries a
 verdict or accepted review is evidence and outlives the raw tier.
-The exact Strategy 2000 source contract never enters that order: after generic Gate v6 it is composed as
-`liquidation_deterministic`, then its own v1 policy emits the parser's
-direction-neutral push/drop. Parse failure is a deterministic drop.
+No market Strategy enters that order at all: an OI, liquidation, smart-money or
+`unknown_market` frame is admitted straight to `news_items` with its typed fact
+and never reaches an action policy (#553). A market Item is retained on the
+`judged_days` tier whatever its parse status, because it can never carry a
+verdict or review for the evidence predicate to find.
 
 Delivery identity is `(event_id, kind)`; `first` is the only kind written —
 one Event gets one card — and the retired lane's `followup` rows survive as
@@ -1002,7 +1119,7 @@ A database on that retired chain must be restored with its exact pre-#449
 image/source, advanced to the old terminal head, and cut over before current
 source is used. A fresh database applies baseline `20260831_0340`, the
 `20260901_0341` Signal hard cut, and every revision after it up to current head
-`20260903_0359`; `0342` adds the Trading notification delivery ledger,
+`20260905_0364`; `0342` adds the Trading notification delivery ledger,
 `0343` adds the current execution Runtime projection and recovery indexes, and
 destructive `0344` restates the `news_verdicts` judgment CHECK for the News
 open-interest push cut, dropping `news_oi_signals.rank_in_window` and every
@@ -1034,7 +1151,12 @@ reach, refusing to run while a stored row still holds a retired one; destructive
 deletes the JSON-shape CHECKs, their four functions, the unread digests and the
 five readiness booleans; destructive `0359` drops the `0342` notification
 delivery ledger and the partial observation index that fed it, neither of which
-a production writer ever reached. The exact
+a production writer ever reached. `0360`, `0361` and `0362` are the #537 PR-3 /
+PR-4 Runtime cuts and the #544 cross-clock CHECK deletion; `0363` rekeys the
+review task source view to the evidence version its verdict judged (#548); and
+`0364` moves market observations onto `news_items` with their three typed
+ledgers, drops the OI ledger's `event_id` foreign key and `learning_epoch`, and
+drops the liquidation venue allowlist (#553). The exact
 News base-table set plus four security-barrier review views is asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
 perform no provider, broker, model, or outbound call and have no compatibility
@@ -1188,7 +1310,9 @@ Runtime facts, and status carries readiness plus bounded totals.
   may establish acceptance, order, fill, completion, expiry, rejection, or a
   fresh private flat proof.
 - `GET /api/trading/gate` — the Source/Admission aggregate over a bounded
-  24-hour window, read by `/news/oi` alone: per Source the status, stage, named
+  24-hour window. `/news/oi` was its one browser reader and #553 PR-1 deleted
+  that console page with the OI Event it joined each row to; the route itself is
+  unchanged and still answers per Source the status, stage, named
   reason, retryability, frozen evidence (which carries the `gate_version` and
   `gate_config_digest` that decided the row), timestamps, attempt count, and the
   linked `case_id` when one exists, beside `status_counts_24h`,
@@ -1623,8 +1747,10 @@ observation manifest can be replayed instead.
 `release canary arm|status|hold|resume|trip|close` owns the durable one-arm
 rollout. A candidate may advance only when the prior
 stage has a sealed PASS; a tool or optimizer may propose but cannot accept,
-deploy or promote. Canary selector `news_canary_selector_v2` includes queue-high Events, excludes
-recovery/listing/OI-telemetry/liquidation lanes, and validates selector, eligibility profile,
+deploy or promote. Canary selector `news_canary_selector_v2` includes queue-high Events, is live-only,
+excludes the three admissions `recovery`, `listing_deterministic` and
+`telemetry_deterministic` (the last of which no current frame can take, since
+#553 opens no Event for a market Strategy), and validates selector, eligibility profile,
 rolling profile and runtime-manifest identity at startup, resume and assignment;
 drift trips the activation. `news replay <hits.json>` runs
 Deduper+Gate over saved provider hits without broker or model and lists every
@@ -1683,8 +1809,15 @@ from the frozen `manifest`, which is the copy the lane itself compares before it
 decides. They are nullable for the same reason every other manifest-derived
 field is: the manifest is the only writer of them, and a Case whose manifest
 names no policy must render as that rather than 500 the route (#532).
-The typed liquidation ledger is not cascade-owned by `news_items`; raw Item
-retention cannot delete the normalized replay fact.
+All three typed market ledgers are cascade-owned by `news_items`. Migration
+`20260905_0364` gave `news_market_liquidations.item_id` its first foreign key —
+unique, `ON DELETE CASCADE` — and created `news_market_smart_money` with the
+same one; `news_oi_signals.source_item_id` already had it, and the same revision
+dropped that table's `event_id` foreign key so the OI ledger no longer depends
+on an Event existing. A typed fact can no longer outlive the record it was
+parsed from: the liquidation orphans that used to survive an Item purge were
+unreachable evidence, and `0364` deletes them. The market Item that owns the
+fact is kept for `judged_days` regardless of verdict, push or parse status.
 [ADR 0002](adr/0002-trading-execution-owner-hard-cuts.md) records the retired
 reader, control and replay surfaces and the older manifest generations.
 

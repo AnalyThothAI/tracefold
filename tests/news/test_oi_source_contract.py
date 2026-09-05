@@ -18,10 +18,10 @@ from typing import Any
 
 import pytest
 
+from tracefold.news.oi_contracts import OI_METRIC_VERSION
 from tracefold.news.oi_signals import (
     SOURCE_CONTRACT_VERSION,
-    evaluate_oi,
-    oi_judgment_trace,
+    measurement_definition,
     oi_source_contract,
     parse_oi_signal,
 )
@@ -79,7 +79,6 @@ def test_the_same_frame_still_parses_to_the_four_numbers_it_always_did() -> None
     [
         ({}, "no strategies member at all"),
         ({"strategies": []}, "an empty list"),
-        ({"strategies": [{"id": "1019"}]}, "an id with no name, source or engine to key on"),
         (
             {
                 "strategies": [
@@ -89,20 +88,8 @@ def test_the_same_frame_still_parses_to_the_four_numbers_it_always_did() -> None
             "a different strategy wearing the same name",
         ),
         (
-            {
-                "strategies": [
-                    {"id": "1019", "name": "OI 15m Monitor", "source_type": "market", "engine_type": "market"}
-                ]
-            },
-            "the id repointed at a different monitor",
-        ),
-        (
-            {
-                "strategies": [
-                    {"id": "1019", "name": "OI Event Monitor", "source_type": "social", "engine_type": "market"}
-                ]
-            },
-            "a drifted source type",
+            {"strategies": [{"id": "2083", "name": "Large-scale liquidation", "source_type": "market"}]},
+            "a market strategy that measures something else entirely",
         ),
         ({"strategies": "1019"}, "a scalar where a list belongs"),
     ],
@@ -113,26 +100,33 @@ def test_an_identity_that_does_not_match_exactly_is_unproven_rather_than_five_mi
     assert oi_source_contract(metadata) is None, why
 
 
-def test_an_unproven_window_is_a_named_reason_in_the_trace_not_a_missing_key() -> None:
-    """A reader card is unaffected; what changes is that no consumer may read it as an interval claim."""
+def test_a_renamed_but_identical_strategy_still_proves_its_own_window() -> None:
+    """#553. The provider renames its Strategies; that is not evidence about the measurement.
 
-    signal = parse_oi_signal(FIXTURE["title"])
-    assert signal is not None
-    judgment = evaluate_oi(signal)
+    Only the id can repoint at a different monitor, and only the id is read. What stays refused is a
+    *different* id -- including another market Strategy, which measures something else entirely.
+    """
 
-    unproven = oi_judgment_trace(judgment, source=None)
-    assert unproven["source_contract_rule"] == "source_window_unproven"
-    assert unproven["measurement_window_ms"] is None
-    assert unproven["source_strategy_id"] is None
-    # Still a complete judgment: the four numbers live once in the typed atom,
-    # not duplicated into the source-contract trace.
-    assert unproven["parsed"] is True
-    assert judgment.signal is not None
-    assert judgment.judgment_atom["signal"]["oi_change_bps"] == FIXTURE["expected"]["oi_change_bps"]
+    renamed = oi_source_contract(
+        {"strategies": [{"id": "1019", "name": "OI 15m Monitor", "source_type": "social", "engine_type": "market"}]}
+    )
+    assert renamed is not None
+    assert (renamed.strategy_id, renamed.measurement_window_ms) == ("1019", 300_000)
 
-    proven = oi_judgment_trace(judgment, source=oi_source_contract(FIXTURE["provider_metadata"]))
-    assert proven["source_contract_rule"] == "proven"
-    assert proven["measurement_window_ms"] == 300_000
+
+def test_an_unproven_window_is_a_named_part_of_the_group_definition_not_a_blank() -> None:
+    """A reader card is unaffected; what changes is that no consumer may read it as an interval claim.
+
+    The definition string is what a notification group merges on, so `unproven` has to be spelled in
+    it: a blank would let frames whose interval nobody established merge with frames whose interval is
+    known, under the known one's name.
+    """
+
+    assert measurement_definition(None) == f"{OI_METRIC_VERSION}|unproven|unproven"
+    proven = oi_source_contract(FIXTURE["provider_metadata"])
+    assert proven is not None
+    assert measurement_definition(proven) == f"{OI_METRIC_VERSION}|{SOURCE_CONTRACT_VERSION}|300000"
+    assert measurement_definition(proven) != measurement_definition(None)
 
 
 def test_the_whale_profit_field_is_documented_as_the_providers_percentage_and_nothing_more() -> None:

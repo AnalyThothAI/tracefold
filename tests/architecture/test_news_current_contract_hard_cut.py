@@ -203,8 +203,6 @@ _EXACT_ALLOWLIST: dict[str, frozenset[str]] = {
     ),
     "tests/integration/test_news_candidate_evaluator.py": frozenset({"news_semantic_program_v1"}),
     "tests/integration/test_postgres_schema_runtime.py": frozenset({"family", "model_decision", "novelty_defaulted"}),
-    "tests/news/test_news_liquidations.py": frozenset({"actionable", "event_type"}),
-    "tests/news/test_news_oi_signals.py": frozenset({"actionable", "event_type"}),
 }
 
 _TEST_SHAPE_ALLOWLIST: dict[str, frozenset[str]] = {}

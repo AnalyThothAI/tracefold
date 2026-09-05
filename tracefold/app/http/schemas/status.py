@@ -90,17 +90,14 @@ class NewsBrokerStatusData(ExactApiSchema):
 class NewsSourceContractStageCountsData(ExactApiSchema):
     received: int = 0
     parsed: int = 0
-    parse_failed: int = 0
-    unsupported: int = 0
     verdict: int = 0
 
 
 class NewsSourceContracts24hData(ExactApiSchema):
+    """The editorial Event funnel. Market intake is reported by `/api/news/market` from the facts."""
+
     news_v1: NewsSourceContractStageCountsData = Field(default_factory=NewsSourceContractStageCountsData)
     listing_v1: NewsSourceContractStageCountsData = Field(default_factory=NewsSourceContractStageCountsData)
-    oi_v1: NewsSourceContractStageCountsData = Field(default_factory=NewsSourceContractStageCountsData)
-    liquidation_v1: NewsSourceContractStageCountsData = Field(default_factory=NewsSourceContractStageCountsData)
-    unsupported_market: NewsSourceContractStageCountsData = Field(default_factory=NewsSourceContractStageCountsData)
 
 
 class NewsDuplicatesWithheld24hData(ExactApiSchema):
@@ -118,12 +115,6 @@ class NewsPipelineStatusData(ExactApiSchema):
     model_triage_24h: int = 0
     triage_degraded_24h: int = 0
     decided_push_24h: int = 0
-    telemetry_received_24h: int = 0
-    telemetry_parsed_24h: int = 0
-    telemetry_parse_failed_24h: int = 0
-    # #207: Events on the deterministic admission, which is the 持仓异动 table's own universe. `received`
-    # counts provider items before the Gate and so names frames no row can reach.
-    telemetry_events_24h: int = 0
     throttled_24h: int = 0
     triage_p50_ms: float | None = None
     triage_p95_ms: float | None = None
@@ -153,17 +144,6 @@ class NewsPipelineStatusData(ExactApiSchema):
     funnel_triaged_24h: int = 0
     funnel_delivered_24h: int = 0
     triage_degraded_by_code_24h: dict[str, int] = Field(default_factory=dict)
-
-
-class NewsOiStatusData(ExactApiSchema):
-    """#137's deterministic telemetry lane, as the 持仓异动 monitor reads it.
-
-    `by_rule_24h` is scoped to OI and keyed on the typed judgment's own rule names; the general pipeline
-    reason map remains a cross-lane aggregate. Since #458 there are two of them — `stored` and
-    `oi_parse_failed` — because the lane judges the provider's format and nothing else.
-    """
-
-    by_rule_24h: dict[str, int] = Field(default_factory=dict)
 
 
 class NewsDeliveryStatusData(ExactApiSchema):
@@ -256,7 +236,6 @@ class NewsStatusData(ExactApiSchema):
     ingest: NewsIngestStatusData
     broker: NewsBrokerStatusData
     pipeline: NewsPipelineStatusData
-    oi: NewsOiStatusData = Field(default_factory=NewsOiStatusData)
     delivery: NewsDeliveryStatusData
     learning_retention: NewsLearningRetentionStatusData
     watchlist: list[str] = Field(default_factory=list)
@@ -277,7 +256,6 @@ __all__ = [
     "NewsIngestStatusData",
     "NewsInstrumentUniverse",
     "NewsLearningRetentionStatusData",
-    "NewsOiStatusData",
     "NewsPipelineStatusData",
     "NewsPriceStatusData",
     "NewsQuoteVenueData",

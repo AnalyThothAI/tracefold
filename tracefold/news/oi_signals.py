@@ -1,43 +1,35 @@
-"""Deterministic open-interest telemetry: parse and present. No model, no prose, no push.
+"""Deterministic open-interest telemetry: parse one frame into numbers. Nothing else.
 
 OpenNews strategy 1019 (`OI Event Monitor`) pushes a fixed-format frame roughly 190 times a day::
 
     TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%
 
 Those four numbers are the whole message. They need no language understanding and they carry no
-storyline, so the Gate admits them as ``telemetry_deterministic`` and this lane produces both the
-reader presentation and its only ``DecisionResult`` without entering the model policy.
+storyline, so the frame is persisted at admission as a typed fact beside its Item and never enters
+the editorial pipeline at all (#553).
 
-That ``DecisionResult`` is now always ``drop`` (#458). This lane used to run a second notification
-rule of its own -- a whale-concentration threshold and an opening-rank ceiling -- beside Trading's
-Alpha policy. Over 48 h the two picked disjoint sets: the reader was told about seven frames the
-capital lane had refused, and none of the five it admitted. #459 then measured the provider's number
-itself and found it is substantially price, not position: entered at a price a taker can actually
-get, those frames returned -276 bps at 4 h against a +82 bps baseline. So the lane keeps parsing and
-storing every frame -- the frame table, the Trading candidate feed and the audit trail are unchanged
--- and stops deciding that a human should be interrupted. The reader-facing card comes back as the
-Signal card once #433-E powers on the Runtime.
+What used to live here as well was a *judge*: a pseudo `TriageVerdict`, a reader headline, a
+`DecisionResult` that was unconditionally `drop`, and a program identity for all of it. #458 had
+already reduced the decision to one outcome, and #459 measured the provider's number itself and
+found it is substantially price rather than position. A judgment with one possible answer, feeding a
+card nobody is sent, is not a judgment; it was an editorial costume on a measurement. The
+measurement stayed, and everything else has gone.
 
 The symbol is the title's own leading token, normalized the way every other consumer of provider coin
-tags normalizes one. Real tickers in this feed include single characters (``S``, ``4``), so the
+tags normalizes one -- and kept unnormalized beside it, because the display short name is not the
+instrument's identity. Real tickers in this feed include single characters (``S``, ``4``), so the
 template's capture is deliberately permissive about length and strict about position.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 from typing import Any, Final
 
-from .artifact_identity import canonical_sha
-from .models import Decision, TriageAsset, TriageVerdict
-from .oi_contracts import OI_METRIC_VERSION, OI_PARSE_FAILED_RULE, OI_STORED_RULE
-from .program.contracts import JUDGMENT_CONTRACT_VERSION
-from .source_contracts import OI_SOURCE_IDENTITY, SOURCE_CONTRACT_CLASSIFIER_VERSION, classify_source_contract
-from .triage_rules import DecisionResult
+from .oi_contracts import OI_METRIC_VERSION
+from .source_contracts import SOURCE_CONTRACT_CLASSIFIER_VERSION, classify_source_contract
 
 METRIC_VERSION: Final = OI_METRIC_VERSION
 PARSER_VERSION: Final = "oi_signal_parser_v1"
@@ -54,13 +46,9 @@ SOURCE_CONTRACT_VERSION: Final = "opennews_oi_source_v1"
 # become: a default when the identity is unknown, a value inferred from arrival-time deltas, or a
 # constant inside a strategy with no provenance stored beside the frame.
 
-# The judge's identity on the verdict row, where a model-judged Event carries its ProgramArtifact sha.
-# Content-addressed the same way: change the rule and the identity changes with it. v3 is the rule that
-# takes no action: no thresholds, no rank, one outcome.
-PROGRAM_VERSION: Final = "news_oi_signal_v3"
-# v4 drops the trailing `4h内第N次` clause with the window it counted in. The four measurements are
-# unchanged, so a v3 card and a v4 card of the same frame still report the same numbers.
-READER_CONTRACT_VERSION: Final = "oi_card_v4"
+# Why one Item with this template has no typed row. Not a rejection of the Item: the frame is stored
+# and read either way, and this names which of the two it is.
+RAW_REASON_TEMPLATE_UNMATCHED: Final = "oi_template_unmatched"
 
 # Anchored on purpose: this must recognise the telemetry template and nothing that merely mentions
 # open interest, such as "HIP-3 has lost $820M in open interest over the past 5 days".
@@ -128,6 +116,10 @@ class OiSignal:
     """One parsed telemetry frame. Percentages are integer basis points, like `news_event_reactions`."""
 
     symbol: str
+    # The provider's own token before normalization, `XYZ-` prefix and all. Two spellings of one
+    # instrument still key one measurement group through `symbol`; this is what the reader is shown
+    # and what a consumer needs when the short name is ambiguous.
+    raw_instrument: str
     direction: str
     oi_change_bps: int
     oi_value_usd: int
@@ -135,30 +127,18 @@ class OiSignal:
     whale_oi_ratio_bps: int
 
 
-@dataclass(frozen=True, slots=True)
-class OiJudgment:
-    """One OI presentation, structured fact and action authority."""
+def measurement_definition(source: OiSourceContract | None) -> str:
+    """The stable name of *what was measured*, for a reader grouping consecutive observations.
 
-    verdict: TriageVerdict
-    signal: OiSignal | None
-    rule: str
-    decision: DecisionResult
-    judgment_contract_version: str = field(default=JUDGMENT_CONTRACT_VERSION, init=False)
+    Two frames belong in one group only when the same provider measured the same instrument on the
+    same venue under the same definition. An unproven window is part of the definition, not a hole in
+    it: frames whose interval nobody has established may not be merged with frames whose interval is
+    known, so `unproven` is spelled out rather than left blank.
+    """
 
-    @property
-    def judgment_atom(self) -> dict[str, Any]:
-        return {
-            "judgment_contract_version": self.judgment_contract_version,
-            "origin": "oi",
-            "verdict": self.verdict.model_dump(mode="json"),
-            "signal": None if self.signal is None else asdict(self.signal),
-            "rule": self.rule,
-            "decision": asdict(self.decision),
-        }
-
-    @property
-    def judgment_sha256(self) -> str:
-        return canonical_sha(self.judgment_atom)
+    if source is None:
+        return f"{OI_METRIC_VERSION}|unproven|unproven"
+    return f"{OI_METRIC_VERSION}|{source.contract_version}|{source.measurement_window_ms}"
 
 
 def _bps(value: str) -> int:
@@ -212,6 +192,7 @@ def parse_oi_signal(title: str) -> OiSignal | None:
         return None
     return OiSignal(
         symbol=symbol,
+        raw_instrument=match.group("symbol").strip()[:32],
         direction="fall" if match.group("direction").lower() in _FALLING else "rise",
         oi_change_bps=change_bps,
         oi_value_usd=value_usd,
@@ -220,215 +201,15 @@ def parse_oi_signal(title: str) -> OiSignal | None:
     )
 
 
-def oi_parse_failure(title: str, *, provider_source: str) -> tuple[OiJudgment, dict[str, Any]]:
-    """Issue a typed fail-closed judgment and observable trace for an invalid 1019 frame."""
-
-    title_sha256 = hashlib.sha256(title.encode("utf-8")).hexdigest()
-    verdict = TriageVerdict(
-        novelty="new_fact",
-        assets=[],
-        direction="neutral",
-        scope="single_name",
-        magnitude=0,
-        confidence=1.0,
-        audience="crypto",
-        headline_zh=title[:60] or "持仓异动帧无法解析",
-        why_zh="",
-    )
-    rule = OI_PARSE_FAILED_RULE
-    decision = DecisionResult(
-        final="drop",
-        override_rule=rule,
-        throttled_by=None,
-        rule_baseline="drop",
-    )
-    judgment = OiJudgment(verdict=verdict, signal=None, rule=rule, decision=decision)
-    return judgment, {
-        "parsed": False,
-        "strategy_id": OI_SOURCE_IDENTITY.strategy_id,
-        "provider": "opennews",
-        "provider_source": provider_source,
-        "title_sha256": title_sha256,
-        "parser_version": PARSER_VERSION,
-        "source_classifier_version": SOURCE_CONTRACT_CLASSIFIER_VERSION,
-        "failure_stage": "source_contract_drift",
-    }
-
-
-def program_sha256() -> str:
-    """Content identity of this judge.
-
-    It takes no argument any more. Every operator-owned number this lane had was a notification
-    threshold, and #458 removed the notification; what remains is fixed in code, so the identity is a
-    constant that changes only with a deploy.
-    """
-
-    return hashlib.sha256(
-        json.dumps(
-            {
-                "program": PROGRAM_VERSION,
-                "reader_contract": READER_CONTRACT_VERSION,
-                "judgment_contract": JUDGMENT_CONTRACT_VERSION,
-                "metric": METRIC_VERSION,
-                "parser": PARSER_VERSION,
-                "source_contract": SOURCE_CONTRACT_VERSION,
-                "source_classifier": SOURCE_CONTRACT_CLASSIFIER_VERSION,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest()
-
-
-def _headline(signal: OiSignal) -> str:
-    """One complete deterministic reader title, with a bounded compact form for long tickers.
-
-    The four measurements and nothing else. The trailing `4h内第N次` clause left with the rank it
-    counted (#458): it named a position in a push queue that no longer exists, and a card that keeps
-    counting for a notification nobody sends is a claim about a rule the reader cannot check.
-    """
-
-    arrow = "▲" if signal.direction == "rise" else "▼"
-    change = f"{_fixed_bps(abs(signal.oi_change_bps), places=2)}%"
-    value = _usd_zh(signal.oi_value_usd).replace(" ", "")
-    ratio = f"{_fixed_bps(signal.whale_oi_ratio_bps, places=1)}%"
-    profit = f"{_fixed_bps(signal.whale_long_profit_bps, places=1)}%"
-    rich = f"{arrow} {signal.symbol} 持仓异动{change}｜持仓{value}｜鲸鱼占比{ratio}｜鲸鱼多头盈利{profit}"
-    if len(rich) <= 60:
-        return rich
-    # TriageVerdict caps the reader headline at 60 characters. Preserve every measurement while shortening
-    # labels only; the common short-symbol path above keeps the fully-spelled reader contract.
-    compact = f"{arrow} {signal.symbol} OI{change}｜持仓{value}｜鲸鱼{ratio}｜盈利{profit}"
-    if len(compact) <= 60:
-        return compact
-    # Provider fields are BIGINT-backed. A one-significant-digit scientific form therefore bounds every
-    # numeric token while retaining the symbol and all four measurements.
-    bounded = (
-        f"{arrow}{signal.symbol}Δ{_scientific(abs(signal.oi_change_bps), scale=2)}%/"
-        f"O{_scientific(signal.oi_value_usd)}/W{_scientific(signal.whale_oi_ratio_bps, scale=2)}%/"
-        f"P{_scientific(signal.whale_long_profit_bps, scale=2)}%"
-    )
-    if len(bounded) > 60:  # Defensive against a direct caller bypassing the BIGINT/config contracts.
-        raise ValueError("oi_headline_inputs_out_of_contract")
-    return bounded
-
-
-def _fixed_bps(value: int, *, places: int) -> str:
-    divisor = 10 ** (2 - places)
-    absolute = abs(int(value))
-    units = (absolute + divisor // 2) // divisor
-    base = 10**places
-    whole, fraction = divmod(units, base)
-    sign = "-" if value < 0 else ""
-    return f"{sign}{whole}.{fraction:0{places}d}" if places else f"{sign}{whole}"
-
-
-def _scientific(value: int, *, scale: int = 0) -> str:
-    """One-significant-digit notation with a decimal scale; bounded for every PostgreSQL integer."""
-
-    absolute = abs(int(value))
-    if absolute == 0:
-        return "0"
-    if scale == 0 and absolute < 10_000:
-        return str(int(value))
-    digits = str(absolute)
-    exponent = len(digits) - 1 - int(scale)
-    leading = int(digits[0]) + (int(digits[1]) >= 5 if len(digits) > 1 else 0)
-    if leading == 10:
-        leading = 1
-        exponent += 1
-    sign = "-" if value < 0 else ""
-    return f"{sign}{leading}e{exponent}"
-
-
-def _usd_zh(value: int) -> str:
-    """Compact USD for a reader, not for a ledger: 32_170_000 -> `3217 万`."""
-
-    amount = int(value)
-    if amount >= 100_000_000:
-        hundredths = (amount * 100 + 50_000_000) // 100_000_000
-        return f"{hundredths // 100}.{hundredths % 100:02d} 亿"
-    if amount >= 10_000:
-        return f"{amount / 10_000:.0f} 万"
-    return str(amount)
-
-
-def evaluate_oi(signal: OiSignal) -> OiJudgment:
-    """Present one frame. Store it, tell nobody.
-
-    Every frame gets the same answer, so there is no threshold to read and no rank to spend. The
-    presentation is still complete and still directional -- the frame table renders this verdict, and
-    Trading's candidate projection reads the same row -- but its magnitude is 0 and its decision is
-    ``drop``, which is what "worth storing, not worth interrupting a human for" looks like in this
-    lane's vocabulary.
-
-    `stored` is deliberately not a withheld reason. `whale_ratio_below_threshold` and its siblings said
-    "this frame was weighed and lost"; nothing is weighed here, and reusing a rejection name would put a
-    judgment into the audit trail that no code performed.
-    """
-
-    verdict = TriageVerdict(
-        novelty="new_fact",
-        restates=-1,
-        assets=[TriageAsset(symbol=signal.symbol, role="primary", market_type="perp")],
-        direction="bullish" if signal.direction == "rise" else "bearish",
-        scope="single_name",
-        magnitude=0,
-        # Not a probability: this judgment is arithmetic, and saying otherwise would put a fake number
-        # into the same field a model fills with a real one.
-        confidence=1.0,
-        audience="crypto",
-        headline_zh=_headline(signal),
-        # All four deterministic measurements are already in the title. Repeating them as the body creates a
-        # two-line card that reads like two separate claims; unlike model-judged News there is no causal why.
-        why_zh="",
-    )
-    final: Decision = "drop"
-    decision = DecisionResult(
-        final=final,
-        override_rule=OI_STORED_RULE,
-        throttled_by=None,
-        rule_baseline=final,
-    )
-    return OiJudgment(verdict=verdict, signal=signal, rule=OI_STORED_RULE, decision=decision)
-
-
-def oi_judgment_trace(judgment: OiJudgment, *, source: OiSourceContract | None = None) -> dict[str, Any]:
-    """Audit projection for one successfully parsed deterministic judgment.
-
-    `source_window_unproven` is the stable reason for a frame whose measurement contract this judge
-    could not establish. It is not a parse failure — the four numbers are perfectly good — and it does
-    not change the reader's verdict; it says that no consumer may treat the frame as a claim about a
-    particular interval.
-    """
-
-    signal = judgment.signal
-    if signal is None:
-        raise ValueError("oi_signal_missing_from_parsed_judgment")
-    return {
-        "parsed": True,
-        "source_strategy_id": None if source is None else source.strategy_id,
-        "source_contract_version": None if source is None else source.contract_version,
-        "measurement_window_ms": None if source is None else source.measurement_window_ms,
-        "source_contract_rule": "proven" if source is not None else "source_window_unproven",
-        "parser_version": PARSER_VERSION,
-        "source_classifier_version": SOURCE_CONTRACT_CLASSIFIER_VERSION,
-    }
-
-
 __all__ = [
     "METRIC_VERSION",
     "PARSER_VERSION",
-    "PROGRAM_VERSION",
-    "READER_CONTRACT_VERSION",
+    "RAW_REASON_TEMPLATE_UNMATCHED",
+    "SOURCE_CONTRACT_CLASSIFIER_VERSION",
     "SOURCE_CONTRACT_VERSION",
-    "OiJudgment",
     "OiSignal",
     "OiSourceContract",
-    "evaluate_oi",
-    "oi_judgment_trace",
-    "oi_parse_failure",
+    "measurement_definition",
     "oi_source_contract",
     "parse_oi_signal",
-    "program_sha256",
 ]

@@ -5,12 +5,10 @@ from __future__ import annotations
 import base64
 import time
 from collections.abc import Mapping, Sequence
-from typing import Any, Final
+from typing import Any
 
 # S608 exemptions below interpolate the closed admission enum literal set; all request values stay bound.
 from ..models import ReaderReceipt
-from ..oi_contracts import OI_FILTERS, OI_OUTCOMES
-from ..oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
 from ..outcome import (
     audience_zh,
     decision_zh,
@@ -23,9 +21,8 @@ from ..outcome import (
 from ..search import NewsSearchPlan
 from ..source_contracts import (
     EVENT_KINDS,
-    OI_SOURCE_IDENTITY,
+    EVENT_SOURCE_CONTRACT_FAMILIES,
     SOURCE_CONTRACT_CLASSIFIER_VERSION,
-    SOURCE_CONTRACT_FAMILIES,
     EventKind,
 )
 from ..taxonomy import taxonomy_public
@@ -33,6 +30,7 @@ from ..timeline import event_timeline
 from .feed_sql import (
     ADMITTED_SQL,
     ASSET_SEARCH_PREDICATE,
+    EDITORIAL_EVENT_SQL,
     EVENT_VERDICTS_SQL,
     OUTCOME_GROUP_SQL,
     STATUS_INGEST_SQL,
@@ -41,19 +39,6 @@ from .feed_sql import (
     feed_counts_sql,
     feed_page_sql,
 )
-
-# The lane the key can only come from. `triage.py` enters its OI branch under
-# `admission == 'telemetry_deterministic'` and only that lane writes an OI judgment, so pairing the rule
-# with the admission narrows nothing semantically — measured live on 2026-08-25, all 298 verdicts carrying
-# the key across the whole retention belonged to that admission.
-#
-# It is not decoration. Without it the planner has to read `trace` — a TOASTed JSONB column, 26 MB over 24 h
-# of verdicts — for every candidate row before it can tell whether the rule matches. A rare rule finds no
-# rows to stop early on, so `?oi=parse_failed` with no window walked the entire retention and hit the serve
-# role's 1 s `statement_timeout`: measured 500 in 1.24 s unbounded, against 0.44 s with the admission and
-# 9 ms on the 24 h window the console actually sends. Pairing them puts the admission index in front of the
-# detoast.
-_OI_RULE_PREDICATE: Final = "e.admission = 'telemetry_deterministic' AND t.oi_rule = ANY(%s)"
 
 
 class FeedStorage:
@@ -75,7 +60,6 @@ class FeedStorage:
         cursor: str | None,
         outcome: str | None = None,
         hours: int | None = None,
-        oi: str | None = None,
         directions: tuple[str, ...] | None = None,
         now_ms: int | None = None,
     ) -> dict[str, Any]:
@@ -85,7 +69,7 @@ class FeedStorage:
         # filters. The outcome group itself and the cursor are appended after `_feed_counts` has taken a copy,
         # so the tab counts describe the whole filtered set rather than the page being served.
         params: list[Any] = []
-        where = ["e.ingest_mode IN ('live', 'recovery')"]
+        where = ["e.ingest_mode IN ('live', 'recovery')", EDITORIAL_EVENT_SQL]
         window_hours = int(hours) if hours else None
         if window_hours:
             # The response echoes `hours`, never the wall-clock bound, so an unchanged page keeps its ETag.
@@ -124,21 +108,9 @@ class FeedStorage:
         if event_kind and len(event_kind) < len(EVENT_KINDS):
             where.append("e.event_kind = ANY(%s)")
             params.append(list(event_kind))
-        if oi in OI_FILTERS:
-            # The canonical judgment atom owns the rule; `override_rule` is the same value, while
-            # `final_decision` cannot distinguish a stored frame from a provider parse failure because both
-            # are `drop`. The predicate carries the lane's admission with the rule, which is what keeps it off
-            # the whole retention's TOAST — see `_OI_RULE_PREDICATE`.
-            where.append(_OI_RULE_PREDICATE)
-            params.append(list(OI_FILTERS[oi]))
         # Counting is worth one extra aggregate only on the first page; later pages reuse what it returned.
         # Snapshot the clauses so the outcome group and cursor appended below cannot reach the count query.
-        #
-        # Any `oi` request skips it too — including `all`, which narrows nothing but still identifies the
-        # caller as the OI monitor. `counts` describes the three *outcome* groups, which are the feed's task
-        # tabs; the monitor takes its own counts from `status.oi`, so on a 5 s poll this would be the file's
-        # own "19 ms over the entire table" aggregate run for a field nobody reads.
-        wants_counts = cursor_opened is None and oi not in OI_OUTCOMES
+        wants_counts = cursor_opened is None
         counts = (
             self._feed_counts(where=list(where), params=list(params), now_ms=handoff_now_ms) if wants_counts else None
         )
@@ -174,7 +146,6 @@ class FeedStorage:
                 "limit": int(limit),
                 "outcome": outcome if outcome in OUTCOME_GROUP_SQL else None,
                 "hours": window_hours,
-                "oi": oi if oi in OI_OUTCOMES else None,
                 "direction": ",".join(directions) if directions else None,
             },
             "search": search.public_metadata() if search is not None else None,
@@ -200,7 +171,10 @@ class FeedStorage:
         return {key: int((row or {}).get(key) or 0) for key in ("total", "pushed", "held", "pending")}
 
     def event_detail(self, event_id: str) -> dict[str, Any] | None:
-        card = self._current_event_card(event_id)  # type: ignore[attr-defined]
+        # A retired market Event is immutable history, not a 404 waiting to be a 500: the public
+        # `EventKind` cannot spell its kind, so the read refuses it here rather than handing the row to
+        # a response envelope that will reject it (#553). Its observation is at `/api/news/market`.
+        card = self._editorial_event_card(event_id)  # type: ignore[attr-defined]
         if card is None:
             return None
         members = self.conn.execute(
@@ -373,98 +347,21 @@ class FeedStorage:
             "uncertain": bool(accepted and accepted["should_push"] == "uncertain"),
         }
 
-    def _oi_telemetry_24h(self, *, day_ago: int) -> dict[str, int]:
-        """News's own 24 h intake, on `news_items.observed_at_ms`.
-
-        The console shows three numbers called "24 h" and they are keyed on three different clocks
-        (#460 asked whether to unify them; they stay). This one counts *items News received*, so it is
-        keyed on News's own table and stops at the bounded-context boundary — a Trading column here
-        would make the News pipeline's intake depend on what a sibling capability did with it. The
-        other two are `TRADING_STATUS_CASE_COUNTS_SQL`, keyed on when a Case formed, and
-        `CandidateGateStorage.gate_decision_counts`, keyed on when the *frame* was observed so a
-        restarted runner re-reading a backlog cannot move yesterday's facts into today.
-        """
-
-        row = self.conn.execute(
-            """
-            SELECT
-              (SELECT count(*) FROM news_items item
-                WHERE item.observed_at_ms >= %s
-                  AND EXISTS (
-                    SELECT 1
-                      FROM news_event_members member
-                      JOIN news_events current_event
-                        ON current_event.event_id = member.event_id
-                     WHERE member.item_id = item.item_id
-                  )
-                  AND EXISTS (
-                    SELECT 1
-                      FROM jsonb_array_elements(COALESCE(item.provider_metadata -> 'strategies', '[]'::jsonb)) s
-                     WHERE s ->> 'id' = %s
-                       AND s ->> 'name' = %s
-                       AND s ->> 'source_type' = %s
-                       AND s ->> 'engine_type' = %s
-                  )
-              ) AS telemetry_received_24h,
-              (SELECT count(*)
-                 FROM news_oi_signals signal
-                 JOIN news_events current_event ON current_event.event_id = signal.event_id
-                WHERE signal.created_at_ms >= %s) AS telemetry_parsed_24h,
-              (SELECT count(*) FROM news_verdicts
-                WHERE stage = 'triage' AND error_code = 'oi_parse_failed'
-                  AND judgment_contract_version = 'news_judgment_v2'
-                  AND created_at_ms >= %s) AS telemetry_parse_failed_24h,
-              -- #207: Events, not provider items. `telemetry_received_24h` counts exact OI source frames
-              -- attached to a current-contract Event; the by-rule buckets count judged verdicts, so
-              -- together they miss a current frame still waiting for one. The Event subquery is the table's
-              -- own universe — exactly the rows `admission=telemetry_deterministic&hours=24` serves — and it
-              -- is what the 全部 tab counts.
-              (SELECT count(*) FROM news_events current_event
-                WHERE current_event.opened_at_ms >= %s
-                  AND current_event.admission = 'telemetry_deterministic'
-                  AND EXISTS (
-                    SELECT 1 FROM news_event_evidence_snapshots evidence
-                     WHERE evidence.event_id = current_event.event_id
-                       AND evidence.evidence_version = (
-                         SELECT max(latest.evidence_version) FROM news_event_evidence_snapshots latest
-                          WHERE latest.event_id = current_event.event_id
-                       )
-                       AND evidence.provenance = 'observed'
-                       AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-                  )) AS telemetry_events_24h
-            """,
-            (
-                day_ago,
-                OI_SOURCE_IDENTITY.strategy_id,
-                OI_SOURCE_IDENTITY.strategy_name,
-                OI_SOURCE_IDENTITY.source_type,
-                OI_SOURCE_IDENTITY.engine_type,
-                day_ago,
-                day_ago,
-                day_ago,
-            ),
-        ).fetchone()
-        return {key: int(value or 0) for key, value in dict(row or {}).items()}
-
     def _source_contracts_24h(self, *, day_ago: int) -> dict[str, dict[str, int]]:
-        """One bounded Event cohort, projected into the five closed source-contract funnels."""
+        """One bounded Event cohort, projected into the two editorial source-contract funnels.
+
+        Market sources left this counter with the Events they no longer create (#553). Their intake is
+        a market question and `market_sources` answers it from the facts themselves, so a reader who
+        wants to know what 1019 sent in the last day is not asking the editorial funnel to guess.
+        """
 
         rows = self.conn.execute(
             """
             SELECT e.event_kind, count(*) AS received,
-                   count(*) FILTER (WHERE COALESCE(v.has_verdict, false)) AS verdict,
-                   count(*) FILTER (
-                     WHERE e.source_contract_reason IS NULL
-                       AND NOT COALESCE(v.parse_failed, false)
-                   ) AS parsed,
-                   count(*) FILTER (
-                     WHERE e.source_contract_reason = 'source_contract_drift'
-                        OR COALESCE(v.parse_failed, false)
-                   ) AS parse_failed
+                   count(*) FILTER (WHERE COALESCE(v.has_verdict, false)) AS verdict
               FROM news_events e
               LEFT JOIN LATERAL (
-                SELECT bool_or(true) AS has_verdict,
-                       bool_or(error_code IN ('oi_parse_failed', 'liquidation_parse_failed')) AS parse_failed
+                SELECT bool_or(true) AS has_verdict
                  FROM news_verdicts
                  WHERE event_id = e.event_id AND stage = 'triage'
                    AND judgment_contract_version = 'news_judgment_v2'
@@ -486,47 +383,15 @@ class FeedStorage:
         ).fetchall()
         by_kind = {str(row["event_kind"]): row for row in rows}
         result: dict[str, dict[str, int]] = {}
-        for event_kind, family in zip(EVENT_KINDS, SOURCE_CONTRACT_FAMILIES, strict=True):
+        for event_kind, family in zip(EVENT_KINDS, EVENT_SOURCE_CONTRACT_FAMILIES, strict=True):
             row = by_kind.get(event_kind, {})
             received = int(row.get("received") or 0)
-            parse_failed = int(row.get("parse_failed") or 0) if event_kind in {"oi", "liquidation"} else 0
-            parsed = int(row.get("parsed") or 0) if event_kind in {"oi", "liquidation"} else received
             result[family] = {
                 "received": received,
-                "parsed": 0 if event_kind == "unsupported_market" else parsed,
-                "parse_failed": parse_failed,
-                "unsupported": received if event_kind == "unsupported_market" else 0,
+                "parsed": received,
                 "verdict": int(row.get("verdict") or 0),
             }
         return result
-
-    def _oi_by_rule_24h(self, *, day_ago: int) -> dict[str, int]:
-        """The deterministic judge's own gate, counted over 24 h.
-
-        `pipeline.dropped_by_rule` mixes every lane. This monitor groups the OI judge's canonical atom rule
-        directly so push, threshold holds, and parse failures remain separate.
-
-        Its own query, filtered to OI verdicts first, rather than another grouping key on the funnel's
-        shared verdict scan. That scan reads `trace` for every Triage verdict in the window — 1948 rows and
-        26 MB of JSONB on 2026-08-25 — and folding a second path extraction into it cost **+79 ms**
-        (84 -> 164 ms), on an endpoint that already sits at ~730 ms against a 1 s statement timeout and is
-        polled every 15 s by every open tab. `program_version` narrows the same answer to 94 rows and 147 kB:
-        **1.2 ms**, identical counts. One cheap query beats one widened expensive one.
-        """
-
-        rows = self.conn.execute(
-            """
-            SELECT COALESCE(trace #>> '{judgment,rule}', '') AS oi_rule, count(*) AS n
-              FROM news_verdicts
-             WHERE stage = 'triage' AND created_at_ms >= %s
-               AND judgment_contract_version = 'news_judgment_v2'
-               AND program_version = %s
-             GROUP BY 1
-            """,
-            (day_ago, OI_PROGRAM_VERSION),
-        ).fetchall()
-        counts = {str(row["oi_rule"]): int(row["n"]) for row in rows if row["oi_rule"]}
-        return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
 
     def status_snapshot(self, *, now_ms: int) -> dict[str, Any]:
         ingest = self.conn.execute(STATUS_INGEST_SQL).fetchone()
@@ -644,12 +509,10 @@ class FeedStorage:
                     k: (float(v) if isinstance(v, float) else (int(v) if v is not None else None))
                     for k, v in dict(pipeline or {}).items()
                 },
-                **self._oi_telemetry_24h(day_ago=day_ago),
                 "source_classifier_version": SOURCE_CONTRACT_CLASSIFIER_VERSION,
                 "source_contracts_24h": self._source_contracts_24h(day_ago=day_ago),
                 **funnel,
             },
-            "oi": {"by_rule_24h": self._oi_by_rule_24h(day_ago=day_ago)},
             "broker": dict(ingest["broker_snapshot"] or {}) if ingest else {},
             "delivery": {
                 "sent_24h": int(delivery["sent_24h"] or 0) if delivery else 0,
@@ -885,7 +748,6 @@ def _event_public(card: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "event_id": card["event_id"],
         "event_kind": card["event_kind"],
-        "source_contract_reason": card.get("source_contract_reason"),
         "leader_title": card["leader_title"],
         "leader_url": card.get("leader_url"),
         "leader_description": card.get("leader_description", ""),
@@ -1012,44 +874,6 @@ def _optional_bool(value: Any) -> bool | None:
     return bool(value) if isinstance(value, bool) else None
 
 
-def _oi_summary(judgment_value: Any, metadata_value: Any) -> dict[str, Any] | None:
-    """The deterministic OI judgment behind one `telemetry_deterministic` row, or None for every other row.
-
-    The fact and the rule come only from the canonical judgment atom. Source/parser metadata remains beside
-    it, but never repeats those business fields. The browser is not allowed to re-run `oi_signal_parser_v1`
-    over `leader_title`. There are no thresholds left to echo: #458 removed the lane's notification rule, and
-    with it the four `news.oi` numbers a frame used to carry so it could keep saying what it ran under.
-
-    `symbol` is the judge's parsed subject, not something the browser may infer from the wire title. The Gate
-    grounds no provider tag for strategy 1019, so `grounded_assets` stays empty; after judgment the primary is
-    durably attached through `news_event_assets` and projected separately as public `assets`. The feed's slim
-    triage summary still omits its full `assets`, so this trace remains the authority for the OI subject and
-    measurements. `direction` is not folded here — the slim triage summary
-    does carry that one.
-
-    `strategy_id`, `provider` and `provider_source` stay behind: the console does not display provider
-    Strategy IDs.
-    """
-
-    if not isinstance(judgment_value, Mapping) or judgment_value.get("origin") != "oi":
-        return None
-    metadata = metadata_value if isinstance(metadata_value, Mapping) else {}
-    signal = judgment_value.get("signal")
-    signal = signal if isinstance(signal, Mapping) else {}
-    return {
-        "parsed": bool(signal),
-        "rule": str(judgment_value.get("rule") or ""),
-        "symbol": str(signal.get("symbol") or "") or None,
-        "oi_change_bps": _optional_int(signal.get("oi_change_bps")),
-        "oi_value_usd": _optional_int(signal.get("oi_value_usd")),
-        "whale_long_profit_bps": _optional_int(signal.get("whale_long_profit_bps")),
-        "whale_oi_ratio_bps": _optional_int(signal.get("whale_oi_ratio_bps")),
-        "parser_version": str(metadata.get("parser_version") or "") or None,
-        "failure_stage": str(metadata.get("failure_stage") or "") or None,
-        "title_sha256": str(metadata.get("title_sha256") or "") or None,
-    }
-
-
 def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
     triage = _triage_summary(
         final_decision=row.get("final_decision"),
@@ -1092,7 +916,6 @@ def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
         "outcome": outcome.as_dict(),
         "triage": triage,
         "delivery": delivery,
-        "oi": _oi_summary(row.get("oi_judgment"), row.get("oi_metadata")),
     }
 
 

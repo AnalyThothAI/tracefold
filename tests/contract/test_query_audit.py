@@ -39,6 +39,12 @@ _NEWS_QUERY_NAMES = (
     "news_status_delivery_1h",
     "news_status_learning_retention",
     "news_quote_snapshot_read",
+    # #553: two statements per market list request and two per detail request. The timeline is its own
+    # bounded read rather than a wider list scan, so both are named.
+    "news_market_groups",
+    "news_market_sources",
+    "news_market_item",
+    "news_market_group_timeline",
     "news_reaction_due_scan",
     "news_reaction_attach",
     "news_review_task_queue",
@@ -111,6 +117,14 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_reaction_attach",
     )
     assert catalog.query_routes["/api/news/quotes"] == ("news_quote_snapshot_read",)
+    # #553: the market surface plans its own statements, and every one of them is named here. A route
+    # whose reads were not manifested would let `db query-audit --analyze` report full coverage while
+    # never planning the widest scan on the public surface.
+    assert catalog.query_routes["/api/news/market"] == ("news_market_groups", "news_market_sources")
+    assert catalog.query_routes["/api/news/market/{item_id}"] == (
+        "news_market_item",
+        "news_market_group_timeline",
+    )
     assert "/api/news/review" not in catalog.query_routes
     # #475 PR-E adds one exact append-only operator control route; every other public route stays read-only.
     assert catalog.write_routes == {"/api/trading/execution/commands"}
@@ -249,13 +263,25 @@ def test_query_audit_covers_every_public_openapi_route():
 
 
 def test_audited_public_and_high_risk_queries_name_their_columns():
-    select_star = re.compile(r"\bSELECT\s+(?:[A-Za-z_][A-Za-z0-9_]*\.)?\*", re.IGNORECASE)
+    """No public read expands a star over a base relation, where the projection is whatever the schema holds.
+
+    A star over a *derived* table is a different statement and not this risk: `SELECT * FROM (SELECT a,
+    b ...) AS x` names every column it returns, in the same statement. #553's market reads use one to
+    union three fact tables into a single observation shape without repeating thirty columns in four
+    places. What must stay impossible is `SELECT *` over a table, where a migration adds a column and
+    a public payload grows one nobody read.
+    """
+
     catalog = query_audit_catalog(now_ms=0)
     public_names = {name for names in catalog.query_routes.values() for name in names}
 
     assert [
-        query.name for query in catalog.queries if query.name in public_names and select_star.search(query.sql)
+        query.name for query in catalog.queries if query.name in public_names and _base_relation_star_sources(query.sql)
     ] == []
+    # Not vacuous: the same resolver names the base relation behind either spelling of the real risk.
+    assert _base_relation_star_sources("SELECT * FROM news_items WHERE item_id = %s") == ["news_items"]
+    assert _base_relation_star_sources("SELECT i.* FROM news_items i JOIN news_oi_signals o ON true") == ["news_items"]
+    assert _base_relation_star_sources("SELECT o.oi_change_bps, i.* FROM news_items i") == ["news_items"]
 
 
 def test_analyzed_query_audit_rejects_large_seq_scan_temp_spill_and_amplification():
@@ -410,6 +436,91 @@ def test_each_query_owns_its_amplification_budget():
 def test_catalog_rejects_a_query_without_its_own_amplification_budget():
     with pytest.raises(ValueError, match="amplification budget missing: unbudgeted"):
         _single_query_catalog(ReadQuerySpec(name="unbudgeted", sql="SELECT 1"))
+
+
+# A qualified star is matched wherever it sits, not only first in the select list: `SELECT a, t.*`
+# expands `t` just as completely as `SELECT t.*` does. A bare star is anchored to `SELECT` so that
+# `count(*)` is not mistaken for a projection.
+_STAR_PROJECTION = re.compile(
+    r"\bSELECT\s+(?P<bare>\*)|\b(?P<qualifier>[A-Za-z_][A-Za-z0-9_]*)\.\*",
+    re.IGNORECASE,
+)
+_CTE_DEFINITION = re.compile(
+    r"(?:\bWITH\b|,)\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s+AS\s+(?:MATERIALIZED\s+)?\(",
+    re.IGNORECASE,
+)
+_RELATION_REFERENCE = re.compile(
+    r"\b(?:FROM|JOIN)\s+(?P<relation>[A-Za-z_][A-Za-z0-9_]*)(?:\s+(?:AS\s+)?(?P<alias>[A-Za-z_][A-Za-z0-9_]*))?",
+    re.IGNORECASE,
+)
+_RELATION_TAIL = re.compile(r"\bFROM\s*(?P<source>\(|[A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+_SUBQUERY_ALIAS = re.compile(r"\s*(?:AS\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+# Words that can follow a relation name where an alias would sit, and are not one.
+_NOT_AN_ALIAS = frozenset(
+    {
+        "as",
+        "cross",
+        "full",
+        "group",
+        "having",
+        "inner",
+        "join",
+        "left",
+        "limit",
+        "offset",
+        "on",
+        "order",
+        "right",
+        "union",
+        "using",
+        "where",
+        "window",
+    }
+)
+
+
+def _base_relation_star_sources(sql: str) -> list[str]:
+    """Every relation a star expands that the statement does not itself define, in order.
+
+    The resolution model is the one a reader applies: a qualified star names the relation bound to that
+    alias by its own SELECT's FROM clause, which follows it; an unqualified star expands whatever that
+    FROM clause names. A name the statement defines -- a CTE, or a parenthesised subquery with an alias
+    -- has its columns spelled out in the same statement, so a star over it is fully named.
+    """
+
+    defined = _statement_defined_names(sql)
+    sources: list[str] = []
+    for star in _STAR_PROJECTION.finditer(sql):
+        source = _star_source(sql, star, star.group("qualifier"))
+        if source is not None and source.lower() not in defined:
+            sources.append(source)
+    return sources
+
+
+def _statement_defined_names(sql: str) -> set[str]:
+    names = {match.group("name").lower() for match in _CTE_DEFINITION.finditer(sql)}
+    for opened in re.finditer(r"\b(?:FROM|JOIN)\s*\(", sql, re.IGNORECASE):
+        depth, index = 1, opened.end()
+        while depth and index < len(sql):
+            depth += (sql[index] == "(") - (sql[index] == ")")
+            index += 1
+        alias = _SUBQUERY_ALIAS.match(sql, index)
+        # `FROM (...) WHERE` is a subquery with no alias, and `where` is not one of its names.
+        if alias is not None and alias.group("name").lower() not in _NOT_AN_ALIAS:
+            names.add(alias.group("name").lower())
+    return names
+
+
+def _star_source(sql: str, star: re.Match[str], qualifier: str | None) -> str | None:
+    if qualifier is None:
+        tail = _RELATION_TAIL.search(sql, star.end())
+        # A parenthesised subquery is written out where the star reads it; nothing is hidden.
+        return None if tail is None or tail.group("source") == "(" else tail.group("source")
+    for reference in _RELATION_REFERENCE.finditer(sql, star.end()):
+        alias = reference.group("alias")
+        if alias and alias.lower() not in _NOT_AN_ALIAS and alias.lower() == qualifier.lower():
+            return reference.group("relation")
+    return qualifier
 
 
 class RecordingStatementConn:

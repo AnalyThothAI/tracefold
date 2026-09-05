@@ -139,6 +139,98 @@
         "title": "ApiEnvelope[NewsFeedData]",
         "type": "object"
       },
+      "ApiEnvelope_NewsMarketData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsMarketData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[NewsMarketData]",
+        "type": "object"
+      },
+      "ApiEnvelope_NewsMarketItemData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsMarketItemData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[NewsMarketItemData]",
+        "type": "object"
+      },
       "ApiEnvelope_NewsQuotesData_": {
         "additionalProperties": false,
         "properties": {
@@ -1242,10 +1334,7 @@
           "event_kind": {
             "enum": [
               "news",
-              "listing",
-              "oi",
-              "liquidation",
-              "unsupported_market"
+              "listing"
             ],
             "title": "Event Kind",
             "type": "string"
@@ -1362,21 +1451,6 @@
             "title": "Reporting Origin",
             "type": "string"
           },
-          "source_contract_reason": {
-            "anyOf": [
-              {
-                "enum": [
-                  "source_contract_drift",
-                  "unsupported_market_contract"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Contract Reason"
-          },
           "storyline_key": {
             "default": "",
             "title": "Storyline Key",
@@ -1393,7 +1467,6 @@
         "required": [
           "event_id",
           "event_kind",
-          "source_contract_reason",
           "leader_title",
           "opened_at_ms",
           "last_member_at_ms",
@@ -1974,10 +2047,7 @@
           "event_kind": {
             "enum": [
               "news",
-              "listing",
-              "oi",
-              "liquidation",
-              "unsupported_market"
+              "listing"
             ],
             "title": "Event Kind",
             "type": "string"
@@ -2056,16 +2126,6 @@
             "title": "Member Count",
             "type": "integer"
           },
-          "oi": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NewsFeedOiData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "opened_at_ms": {
             "title": "Opened At Ms",
             "type": "integer"
@@ -2117,21 +2177,6 @@
             "title": "Reporting Origin",
             "type": "string"
           },
-          "source_contract_reason": {
-            "anyOf": [
-              {
-                "enum": [
-                  "source_contract_drift",
-                  "unsupported_market_contract"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Contract Reason"
-          },
           "storyline_key": {
             "default": "",
             "title": "Storyline Key",
@@ -2158,7 +2203,6 @@
         "required": [
           "event_id",
           "event_kind",
-          "source_contract_reason",
           "leader_title",
           "opened_at_ms",
           "last_member_at_ms",
@@ -2267,23 +2311,6 @@
             "title": "Limit",
             "type": "integer"
           },
-          "oi": {
-            "anyOf": [
-              {
-                "enum": [
-                  "all",
-                  "pushed",
-                  "withheld",
-                  "parse_failed"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Oi"
-          },
           "outcome": {
             "anyOf": [
               {
@@ -2349,114 +2376,6 @@
           "limit"
         ],
         "title": "NewsFeedFiltersData",
-        "type": "object"
-      },
-      "NewsFeedOiData": {
-        "additionalProperties": false,
-        "description": "#207: the deterministic open-interest judgment behind one `telemetry_deterministic` row.\n\n`None` on every other admission. The server assembles these fields from the typed judgment atom and its\ncurrent source metadata, so the browser never re-runs `oi_signal_parser_v1` over `leader_title`.\n\nThe two shapes are told apart by `parsed`: a judged frame carries the four measurements, an unparseable\none carries the provider-contract failure instead. Neither carries a threshold any more (#458): the lane\nstopped deciding whether a reader is told, so there is no number left for a frame to say it ran under.",
-        "properties": {
-          "failure_stage": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Failure Stage"
-          },
-          "oi_change_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Oi Change Bps"
-          },
-          "oi_value_usd": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Oi Value Usd"
-          },
-          "parsed": {
-            "title": "Parsed",
-            "type": "boolean"
-          },
-          "parser_version": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Parser Version"
-          },
-          "rule": {
-            "title": "Rule",
-            "type": "string"
-          },
-          "symbol": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Symbol"
-          },
-          "title_sha256": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Title Sha256"
-          },
-          "whale_long_profit_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Whale Long Profit Bps"
-          },
-          "whale_oi_ratio_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Whale Oi Ratio Bps"
-          }
-        },
-        "required": [
-          "parsed",
-          "rule"
-        ],
-        "title": "NewsFeedOiData",
         "type": "object"
       },
       "NewsFeedSearchData": {
@@ -2870,6 +2789,567 @@
         "title": "NewsLearningRetentionStatusData",
         "type": "object"
       },
+      "NewsMarketData": {
+        "additionalProperties": false,
+        "properties": {
+          "filters": {
+            "$ref": "#/components/schemas/NewsMarketFiltersData"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/NewsMarketGroupData"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "notifications_connected": {
+            "default": false,
+            "title": "Notifications Connected",
+            "type": "boolean"
+          },
+          "scan_truncated": {
+            "default": false,
+            "title": "Scan Truncated",
+            "type": "boolean"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/NewsMarketSourceData"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "groups",
+          "sources",
+          "filters"
+        ],
+        "title": "NewsMarketData",
+        "type": "object"
+      },
+      "NewsMarketFiltersData": {
+        "additionalProperties": false,
+        "properties": {
+          "from_ms": {
+            "title": "From Ms",
+            "type": "integer"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "to_ms": {
+            "title": "To Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "from_ms",
+          "to_ms",
+          "limit"
+        ],
+        "title": "NewsMarketFiltersData",
+        "type": "object"
+      },
+      "NewsMarketGroupData": {
+        "additionalProperties": false,
+        "description": "One run of consecutive observations of the same group, collapsed to its newest member.",
+        "properties": {
+          "first_event_at_ms": {
+            "title": "First Event At Ms",
+            "type": "integer"
+          },
+          "group_key": {
+            "title": "Group Key",
+            "type": "string"
+          },
+          "last_event_at_ms": {
+            "title": "Last Event At Ms",
+            "type": "integer"
+          },
+          "latest": {
+            "$ref": "#/components/schemas/NewsMarketObservationData"
+          },
+          "market_kind": {
+            "enum": [
+              "oi",
+              "liquidation",
+              "smart_money",
+              "unknown_market"
+            ],
+            "title": "Market Kind",
+            "type": "string"
+          },
+          "notification_reason": {
+            "title": "Notification Reason",
+            "type": "string"
+          },
+          "notification_status": {
+            "title": "Notification Status",
+            "type": "string"
+          },
+          "observation_count": {
+            "title": "Observation Count",
+            "type": "integer"
+          },
+          "oldest_item_id": {
+            "title": "Oldest Item Id",
+            "type": "string"
+          },
+          "oldest_received_at_ms": {
+            "title": "Oldest Received At Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "group_key",
+          "market_kind",
+          "observation_count",
+          "first_event_at_ms",
+          "last_event_at_ms",
+          "latest",
+          "oldest_received_at_ms",
+          "oldest_item_id",
+          "notification_status",
+          "notification_reason"
+        ],
+        "title": "NewsMarketGroupData",
+        "type": "object"
+      },
+      "NewsMarketItemData": {
+        "additionalProperties": false,
+        "description": "One observation in full: the stored provider payload and its group's timeline.",
+        "properties": {
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "notification_reason": {
+            "title": "Notification Reason",
+            "type": "string"
+          },
+          "notification_status": {
+            "title": "Notification Status",
+            "type": "string"
+          },
+          "notifications_connected": {
+            "default": false,
+            "title": "Notifications Connected",
+            "type": "boolean"
+          },
+          "observation": {
+            "$ref": "#/components/schemas/NewsMarketObservationData"
+          },
+          "provider_params": {
+            "additionalProperties": true,
+            "title": "Provider Params",
+            "type": "object"
+          },
+          "raw_first_line": {
+            "default": "",
+            "title": "Raw First Line",
+            "type": "string"
+          },
+          "timeline": {
+            "items": {
+              "$ref": "#/components/schemas/NewsMarketObservationData"
+            },
+            "title": "Timeline",
+            "type": "array"
+          }
+        },
+        "required": [
+          "observation",
+          "provider_params",
+          "notification_status",
+          "notification_reason",
+          "timeline"
+        ],
+        "title": "NewsMarketItemData",
+        "type": "object"
+      },
+      "NewsMarketObservationData": {
+        "additionalProperties": false,
+        "description": "One provider record and whatever the parser could prove about it.",
+        "properties": {
+          "account_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Address"
+          },
+          "action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action"
+          },
+          "available_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available At Ms"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "event_at_ms": {
+            "title": "Event At Ms",
+            "type": "integer"
+          },
+          "forced_order_side": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forced Order Side"
+          },
+          "group_key": {
+            "title": "Group Key",
+            "type": "string"
+          },
+          "historical": {
+            "default": false,
+            "title": "Historical",
+            "type": "boolean"
+          },
+          "ingest_mode": {
+            "title": "Ingest Mode",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "liquidated_position_side": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Liquidated Position Side"
+          },
+          "market_kind": {
+            "enum": [
+              "oi",
+              "liquidation",
+              "smart_money",
+              "unknown_market"
+            ],
+            "title": "Market Kind",
+            "type": "string"
+          },
+          "measurement_definition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measurement Definition"
+          },
+          "notional_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notional Usd"
+          },
+          "oi_change_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oi Change Bps"
+          },
+          "oi_value_usd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oi Value Usd"
+          },
+          "parse_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parse Error"
+          },
+          "parse_status": {
+            "enum": [
+              "parsed",
+              "raw"
+            ],
+            "title": "Parse Status",
+            "type": "string"
+          },
+          "pnl_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pnl Usd"
+          },
+          "position_side": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position Side"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "raw_instrument": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Instrument"
+          },
+          "received_at_ms": {
+            "title": "Received At Ms",
+            "type": "integer"
+          },
+          "source_strategy_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Strategy Id"
+          },
+          "source_venue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Venue"
+          },
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Symbol"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "trader_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trader Label"
+          },
+          "whale_long_profit_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Whale Long Profit Bps"
+          },
+          "whale_oi_ratio_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Whale Oi Ratio Bps"
+          }
+        },
+        "required": [
+          "item_id",
+          "market_kind",
+          "parse_status",
+          "ingest_mode",
+          "group_key",
+          "title",
+          "event_at_ms",
+          "received_at_ms"
+        ],
+        "title": "NewsMarketObservationData",
+        "type": "object"
+      },
+      "NewsMarketSourceData": {
+        "additionalProperties": false,
+        "properties": {
+          "groups": {
+            "default": 0,
+            "title": "Groups",
+            "type": "integer"
+          },
+          "last_received_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Received At Ms"
+          },
+          "market_kind": {
+            "enum": [
+              "oi",
+              "liquidation",
+              "smart_money",
+              "unknown_market"
+            ],
+            "title": "Market Kind",
+            "type": "string"
+          },
+          "parsed": {
+            "default": 0,
+            "title": "Parsed",
+            "type": "integer"
+          },
+          "raw": {
+            "default": 0,
+            "title": "Raw",
+            "type": "integer"
+          },
+          "received": {
+            "default": 0,
+            "title": "Received",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "market_kind"
+        ],
+        "title": "NewsMarketSourceData",
+        "type": "object"
+      },
       "NewsModelEditorialData": {
         "additionalProperties": false,
         "properties": {
@@ -2885,21 +3365,6 @@
           "relevance"
         ],
         "title": "NewsModelEditorialData",
-        "type": "object"
-      },
-      "NewsOiStatusData": {
-        "additionalProperties": false,
-        "description": "#137's deterministic telemetry lane, as the \u6301\u4ed3\u5f02\u52a8 monitor reads it.\n\n`by_rule_24h` is scoped to OI and keyed on the typed judgment's own rule names; the general pipeline\nreason map remains a cross-lane aggregate. Since #458 there are two of them \u2014 `stored` and\n`oi_parse_failed` \u2014 because the lane judges the provider's format and nothing else.",
-        "properties": {
-          "by_rule_24h": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "By Rule 24H",
-            "type": "object"
-          }
-        },
-        "title": "NewsOiStatusData",
         "type": "object"
       },
       "NewsOutcomeData": {
@@ -3113,26 +3578,6 @@
           "tagged_24h": {
             "default": 0,
             "title": "Tagged 24H",
-            "type": "integer"
-          },
-          "telemetry_events_24h": {
-            "default": 0,
-            "title": "Telemetry Events 24H",
-            "type": "integer"
-          },
-          "telemetry_parse_failed_24h": {
-            "default": 0,
-            "title": "Telemetry Parse Failed 24H",
-            "type": "integer"
-          },
-          "telemetry_parsed_24h": {
-            "default": 0,
-            "title": "Telemetry Parsed 24H",
-            "type": "integer"
-          },
-          "telemetry_received_24h": {
-            "default": 0,
-            "title": "Telemetry Received 24H",
             "type": "integer"
           },
           "throttled_24h": {
@@ -3964,11 +4409,6 @@
       "NewsSourceContractStageCountsData": {
         "additionalProperties": false,
         "properties": {
-          "parse_failed": {
-            "default": 0,
-            "title": "Parse Failed",
-            "type": "integer"
-          },
           "parsed": {
             "default": 0,
             "title": "Parsed",
@@ -3977,11 +4417,6 @@
           "received": {
             "default": 0,
             "title": "Received",
-            "type": "integer"
-          },
-          "unsupported": {
-            "default": 0,
-            "title": "Unsupported",
             "type": "integer"
           },
           "verdict": {
@@ -3995,20 +4430,12 @@
       },
       "NewsSourceContracts24hData": {
         "additionalProperties": false,
+        "description": "The editorial Event funnel. Market intake is reported by `/api/news/market` from the facts.",
         "properties": {
-          "liquidation_v1": {
-            "$ref": "#/components/schemas/NewsSourceContractStageCountsData"
-          },
           "listing_v1": {
             "$ref": "#/components/schemas/NewsSourceContractStageCountsData"
           },
           "news_v1": {
-            "$ref": "#/components/schemas/NewsSourceContractStageCountsData"
-          },
-          "oi_v1": {
-            "$ref": "#/components/schemas/NewsSourceContractStageCountsData"
-          },
-          "unsupported_market": {
             "$ref": "#/components/schemas/NewsSourceContractStageCountsData"
           }
         },
@@ -4042,9 +4469,6 @@
           "measured_at_ms": {
             "title": "Measured At Ms",
             "type": "integer"
-          },
-          "oi": {
-            "$ref": "#/components/schemas/NewsOiStatusData"
           },
           "pipeline": {
             "$ref": "#/components/schemas/NewsPipelineStatusData"
@@ -6722,17 +7146,6 @@
           },
           {
             "in": "query",
-            "name": "oi",
-            "required": false,
-            "schema": {
-              "default": "",
-              "maxLength": 40,
-              "title": "Oi",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
             "name": "direction",
             "required": false,
             "schema": {
@@ -6766,6 +7179,149 @@
           }
         },
         "summary": "Get News Feed",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/news/market": {
+      "get": {
+        "description": "Market observations in one window, consecutive observations of a group collapsed.\n\nThe window is absolute rather than a \"last N hours\" offset, because a reader reviewing what\narrived on Tuesday is asking a question a rolling offset cannot express. It defaults to the last\n72 h, spans at most 168 h in one request, and may sit anywhere inside the retention.\n\n`scan_truncated` is the honest name for the one thing a bounded page can still get wrong: a\nsingle run longer than one page's scan is split, so its `observation_count` is a floor. The\nper-kind `sources` block is not bounded that way and its counts are exact.\n\n\"Not pushed\" is not a filter and never becomes one. Whether a card was sent is reported per group\nand is not a precondition for reading the observation.",
+        "operationId": "get_news_market_api_news_market_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 64,
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from_ms",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "From Ms",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to_ms",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "To Ms",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 200,
+              "title": "Cursor",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsMarketData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get News Market",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/news/market/{item_id}": {
+      "get": {
+        "description": "One observation in full, with its group's retained timeline.\n\nRead by Item identity, so it is not bound by the list's window: a link into a group that last\nreported nine days ago still opens.",
+        "operationId": "get_news_market_item_api_news_market__item_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsMarketItemData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsMarketItemData_"
+                }
+              }
+            },
+            "description": "No market Item with this identity is retained."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get News Market Item",
         "tags": [
           "api"
         ]

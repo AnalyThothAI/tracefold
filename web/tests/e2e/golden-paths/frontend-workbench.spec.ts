@@ -21,16 +21,19 @@ test.setTimeout(60_000);
  * the task-tab counts and the sidebar count all arrive with the status query, and the rows with the feed
  * query. Waiting on the frame alone shot the page mid-fill and made the baselines flaky.
  */
-const oiArchetype = {
-  // #207: the deterministic OI lane. Its table is the widest thing in the console and scrolls inside
-  // itself; the baseline is what keeps that from becoming a page-level horizontal scroll.
-  name: "oi",
-  path: "/news/oi",
-  ready: (page: Page) => page.locator(".news-oi-row").first(),
-  settled: (page: Page) => page.locator(".news-oi-policy").first(),
-  // #537 PR-5 deleted the `24h 成案 · Signal` figure beside it: it read `/api/trading/status` from
-  // every News route to print two counts the Trading desk owns.
-  topbarFigure: "139",
+const marketArchetype = {
+  /*
+   * #553 PR-1: the market observations, one row per collapsed group. The baseline covers all four kinds
+   * and both parse states in one frame — including the `unknown_market` source that is retained raw,
+   * which is the row most likely to be quietly dropped by a later change.
+   *
+   * No `topbarFigure`: the page's chrome figure read `pipeline.telemetry_parsed_24h`, which is not a
+   * status field any more, and the per-kind intake is on the page itself.
+   */
+  name: "market",
+  path: "/news/market",
+  ready: (page: Page) => page.locator(".news-market-row").first(),
+  settled: (page: Page) => page.locator(".news-market-sources").first(),
 } as const;
 
 const tradingArchetype = {
@@ -44,8 +47,8 @@ const tradingArchetype = {
  * The state `/news/alpha` used to own (#460): one Case open, with the frozen check table and the frozen
  * config beneath it. Kept as its own archetype rather than folded into `trading` because the two are
  * different pictures — the three-block desk, and that desk with the Case drawer open above it — and a
- * single baseline could only hold one of them. `?case=<id>` is the link `TradingCaseBadge` and the OI
- * frame table publish, so this is also the deep-link arrival (#537 PR-5).
+ * single baseline could only hold one of them. `?case=<id>` is the link the desk's own Case rows
+ * publish, so this is also the deep-link arrival (#537 PR-5).
  */
 const tradingCaseArchetype = {
   name: "trading-case",
@@ -95,15 +98,15 @@ test("freezes representative news and case archetypes", async ({ page }) => {
   await freezeArchetypes(page, archetypes);
 });
 
-test("freezes the OI monitor at every project viewport", async ({ page }) => {
-  await freezeArchetypes(page, [oiArchetype]);
+test("freezes 市场事实 at every project viewport", async ({ page }) => {
+  await freezeArchetypes(page, [marketArchetype]);
 });
 
 /*
  * The pages that read the Alpha/Signal ledger are frozen on the ledger's own clock, because the trading
  * fixtures are on it and the news fixtures are a hundred days earlier. Under the news clock the token
- * page's newest case — and the frame it was opened from — sat a month in the page's own *future*, which
- * `relativeTime` clamps to 「刚刚」: a baseline of a state the pipeline cannot produce.
+ * page's newest case sat a month in the page's own *future*, which `relativeTime` clamps to 「刚刚」: a
+ * baseline of a state the pipeline cannot produce.
  */
 test("freezes the Alpha and execution pages at every project viewport", async ({ page }) => {
   await page.clock.setFixedTime(new Date("2026-08-25T12:00:00Z"));
@@ -255,7 +258,7 @@ test("keeps execution truth distinct across unsafe, protected, flat, and expired
 async function freezeArchetypes(
   page: Page,
   routes: readonly (
-    | typeof oiArchetype
+    | typeof marketArchetype
     | typeof tradingArchetype
     | typeof tradingCaseArchetype
     | typeof symbolArchetype
@@ -266,10 +269,11 @@ async function freezeArchetypes(
     await page.goto(route.path);
     await expect(route.ready(page)).toBeVisible();
     await expect(route.settled(page)).toBeVisible();
-    if ("topbarFigure" in route && (page.viewportSize()?.width ?? 0) > 767) {
-      await expect(page.locator(".topbar-figures").getByText(route.topbarFigure)).toBeVisible();
-    }
-    if (route.name === "oi") await expectOiOverflowContract(page);
+    /*
+     * No archetype declares a chrome figure to wait on any more. 市场事实 was the last one and its figure
+     * read `pipeline.telemetry_parsed_24h`, which #553 PR-1 deleted; `settled` is what the shot waits on.
+     */
+    if (route.name === "market") await expectMarketOverflowContract(page);
     if (route.name === "trading") await expectTradingOverflowContract(page);
     if (route.name === "trading-case") await expectTradingCaseOverflowContract(page);
     await waitForSettledFeedCount(page);
@@ -352,25 +356,21 @@ async function waitForSettledFeedCount(page: Page) {
     .toBe(true);
 }
 
-/** The 1244px frame grid scrolls inside its panel; neither document nor route column may widen. */
-async function expectOiOverflowContract(page: Page) {
-  const widths = await page.evaluate(() => {
-    const route = document.querySelector<HTMLElement>(".center-column");
-    const table = document.querySelector<HTMLElement>(".news-oi-table");
-    return {
-      documentClient: document.documentElement.clientWidth,
-      documentScroll: document.documentElement.scrollWidth,
-      routeClient: route?.clientWidth ?? 0,
-      routeScroll: route?.scrollWidth ?? 0,
-      tableClient: table?.clientWidth ?? 0,
-      tableScroll: table?.scrollWidth ?? 0,
-    };
-  });
-  expect(widths.documentScroll).toBe(widths.documentClient);
-  expect(widths.routeScroll).toBe(widths.routeClient);
-  if ((page.viewportSize()?.width ?? 0) <= 1366) {
-    expect(widths.tableScroll).toBeGreaterThan(widths.tableClient);
-  }
+/**
+ * 市场事实 wraps rather than scrolling sideways.
+ *
+ * The thirteen-track frame table it replaced needed a 1244px minimum and scrolled inside its own panel
+ * (#553 PR-1). The market rows have no fixed track floor at all, so nothing here — document, route column,
+ * source strip or row — may produce a horizontal scroller at any project viewport.
+ */
+async function expectMarketOverflowContract(page: Page) {
+  await expectNoDocumentHorizontalOverflow(page);
+  await expectNoNestedHorizontalOverflow(page, [
+    ".center-column",
+    ".news-market-sources",
+    ".news-market-panel",
+    ".news-market-row",
+  ]);
 }
 
 async function waitForStableWorkbench(page: Page) {

@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 from alembic import command
@@ -21,6 +23,8 @@ from tracefold.integrations.nautilus.oi_runtime.audit_sink import (
     ObservationFactory,
     day_start_baseline_from_observation,
 )
+from tracefold.news.oi_signals import parse_oi_signal
+from tracefold.news.source_contracts import MARKET_CATEGORY_CONFLICT, classify_source_contracts, market_route
 from tracefold.platform.postgres.migrations import alembic_config
 from tracefold.trading.storage.execution_stream import (
     materialize_execution_observation,
@@ -36,7 +40,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260905_0364"
+HEAD = "20260905_0365"
 
 
 def _config():
@@ -118,6 +122,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260905_0364",
         "20260904_0363",
         "20260904_0362",
         "20260904_0361",
@@ -143,31 +148,32 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260901_0341",
         BASELINE,
     ]
-    assert revisions[0].down_revision == "20260904_0363"
-    assert revisions[1].down_revision == "20260904_0362"
-    assert revisions[2].down_revision == "20260904_0361"
-    assert revisions[3].down_revision == "20260904_0360"
-    assert revisions[4].down_revision == "20260903_0359"
-    assert revisions[5].down_revision == "20260903_0358"
-    assert revisions[6].down_revision == "20260903_0357"
-    assert revisions[7].down_revision == "20260903_0356"
-    assert revisions[8].down_revision == "20260903_0355"
-    assert revisions[9].down_revision == "20260903_0354"
-    assert revisions[10].down_revision == "20260903_0353"
-    assert revisions[11].down_revision == "20260903_0352"
-    assert revisions[12].down_revision == "20260902_0351"
-    assert revisions[13].down_revision == "20260902_0350"
-    assert revisions[14].down_revision == "20260902_0349"
-    assert revisions[15].down_revision == "20260902_0348"
-    assert revisions[16].down_revision == "20260901_0347"
-    assert revisions[17].down_revision == "20260901_0346"
-    assert revisions[18].down_revision == "20260901_0345"
-    assert revisions[19].down_revision == "20260901_0344"
-    assert revisions[20].down_revision == "20260901_0343"
-    assert revisions[21].down_revision == "20260901_0342"
-    assert revisions[22].down_revision == "20260901_0341"
-    assert revisions[23].down_revision == BASELINE
-    assert revisions[24].down_revision is None
+    assert revisions[0].down_revision == "20260905_0364"
+    assert revisions[1].down_revision == "20260904_0363"
+    assert revisions[2].down_revision == "20260904_0362"
+    assert revisions[3].down_revision == "20260904_0361"
+    assert revisions[4].down_revision == "20260904_0360"
+    assert revisions[5].down_revision == "20260903_0359"
+    assert revisions[6].down_revision == "20260903_0358"
+    assert revisions[7].down_revision == "20260903_0357"
+    assert revisions[8].down_revision == "20260903_0356"
+    assert revisions[9].down_revision == "20260903_0355"
+    assert revisions[10].down_revision == "20260903_0354"
+    assert revisions[11].down_revision == "20260903_0353"
+    assert revisions[12].down_revision == "20260903_0352"
+    assert revisions[13].down_revision == "20260902_0351"
+    assert revisions[14].down_revision == "20260902_0350"
+    assert revisions[15].down_revision == "20260902_0349"
+    assert revisions[16].down_revision == "20260902_0348"
+    assert revisions[17].down_revision == "20260901_0347"
+    assert revisions[18].down_revision == "20260901_0346"
+    assert revisions[19].down_revision == "20260901_0345"
+    assert revisions[20].down_revision == "20260901_0344"
+    assert revisions[21].down_revision == "20260901_0343"
+    assert revisions[22].down_revision == "20260901_0342"
+    assert revisions[23].down_revision == "20260901_0341"
+    assert revisions[24].down_revision == BASELINE
+    assert revisions[25].down_revision is None
     assert sorted(path.name for path in VERSIONS.glob("*.py")) == [
         "20260831_0340_baseline.py",
         "20260901_0341_trading_signal_hard_cut.py",
@@ -194,6 +200,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260904_0362_news_oi_clock_check_cut.py",
         "20260904_0363_news_review_task_source_judged_evidence.py",
         "20260905_0364_workers_runtime_capabilities.py",
+        "20260905_0365_news_market_facts_at_admission.py",
     ]
 
 
@@ -225,13 +232,13 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    # `20260905_0364` drops the capability report column, `20260904_0363` restores a view definition
-    # and `20260904_0362` re-adds two CHECKs, so all three reverse and the walk continues past them;
-    # `20260904_0361` deletes the Runtime projection's identity columns and is the first refusal the
-    # walk to base meets; `20260903_0357`, which deletes the unread execution digests, is still behind
-    # it. One transaction covers the whole walk, so 0364's dropped column, 0363's restored view and
-    # 0362's re-added CHECKs roll back with the refusal.
-    with pytest.raises(RuntimeError, match="20260904_0361 deletes the Runtime projection"):
+    # `20260905_0365` is now the first refusal the walk to base meets, and it is the head, so the walk
+    # stops before reversing anything: it adds the market columns, the smart-money ledger and the
+    # reconstructed OI observations, and every one of those holds evidence that exists nowhere else.
+    # `20260905_0364`'s dropped capability column, `20260904_0363`'s restored view and
+    # `20260904_0362`'s re-added CHECKs are all reversible and all behind it, as are the two refusals
+    # that were in front before — `20260904_0361` and `20260903_0357`.
+    with pytest.raises(RuntimeError, match="news_market_facts_downgrade_unsupported"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
 
@@ -1259,7 +1266,7 @@ def test_cross_clock_check_cut_removes_exactly_two_rules_and_leaves_the_rest() -
         before = _table_checks(conn, "news_oi_signals") | _table_checks(conn, "news_market_liquidations")
         assert {"news_oi_signals_available_clock_check", "news_market_liquidations_time_order"} <= before
 
-        command.upgrade(config, "head")
+        command.upgrade(config, "20260904_0362")
         after = _table_checks(conn, "news_oi_signals") | _table_checks(conn, "news_market_liquidations")
 
         assert before - after == {
@@ -1374,3 +1381,428 @@ def _table_checks(conn, table: str) -> set[str]:
             (f"public.{table}",),
         ).fetchall()
     }
+
+
+_OI_TITLE = "TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
+
+
+def _seed_pre_cut_oi_event(
+    conn,
+    *,
+    event_id: str,
+    leader_item: str,
+    member_item: str,
+    at_ms: int,
+    title: str = _OI_TITLE,
+    venue: str = "binance",
+) -> None:
+    """One pre-#553 OI Event with two Items: the leader, and a frame the deduper merged into it."""
+
+    for item_id in (leader_item, member_item):
+        conn.execute(
+            """
+            INSERT INTO news_items (
+              item_id, source_id, source_item_key, title, raw_first_line, description,
+              reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
+              first_ingest_mode, trace_id, created_at_ms, updated_at_ms
+            ) VALUES (
+              %(item)s, 'opennews', %(item)s, %(title)s, %(title)s, '', 'opennews',
+              %(at)s, %(at)s,
+              jsonb_build_object(
+                'source', %(venue)s::text,
+                'strategies', jsonb_build_array(jsonb_build_object('id', '1019', 'name', 'OI Event Monitor'))
+              ),
+              '[]'::jsonb, 'recovery', 'trace', %(at)s, %(at)s
+            )
+            """,
+            {"item": item_id, "title": title, "at": at_ms, "venue": venue},
+        )
+    conn.execute(
+        """
+        INSERT INTO news_events (
+          event_id, leader_item_id, dedupe_family, comparison_fingerprint, comparison_title,
+          leader_title, opened_at_ms, last_member_at_ms, expires_at_ms, admission, ingest_mode,
+          trace_id, created_at_ms, updated_at_ms, focus_fact_id, focus_fact_text,
+          focus_fact_context, focus_fact_method, focus_span_start, focus_span_end, event_kind
+        ) VALUES (
+          %(event)s, %(leader)s, 'market_telemetry', 'fingerprint', %(title)s, %(title)s,
+          %(at)s, %(at)s, %(at)s, 'telemetry_deterministic', 'recovery', 'trace', %(at)s, %(at)s,
+          %(leader_fact)s, %(title)s, '', 'whole_item', 0, 10, 'oi'
+        )
+        """,
+        {
+            "event": event_id,
+            "leader": leader_item,
+            "title": title,
+            "at": at_ms,
+            "leader_fact": f"fact-{leader_item}",
+        },
+    )
+    for item_id, match_kind in ((leader_item, "leader"), (member_item, "near")):
+        conn.execute(
+            """
+            INSERT INTO news_event_members (event_id, item_id, joined_at_ms, match_kind, fact_id, fact_text)
+            VALUES (%(event)s, %(item)s, %(at)s, %(kind)s, %(fact)s, %(title)s)
+            """,
+            {
+                "event": event_id,
+                "item": item_id,
+                "at": at_ms,
+                "kind": match_kind,
+                "fact": f"fact-{item_id}",
+                "title": title,
+            },
+        )
+
+
+def test_the_market_cut_rebuilds_every_observation_an_event_had_swallowed() -> None:
+    """#553 §3.3. Recovery frames and merged members were real measurements with no ledger row.
+
+    A recovery frame skipped Triage entirely and a frame the title deduper joined to an existing
+    Event was recorded as a member with no row of its own. Both are reconstructed here from the Items
+    that survive, flagged `historical`, with the provider's own stamps intact and the rebuild moment
+    as the first instant any consumer could read them.
+    """
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260904_0363")
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        at_ms = 1_787_542_200_000
+        _seed_pre_cut_oi_event(
+            conn,
+            event_id="pre-cut-oi-event",
+            leader_item="pre-cut-oi-leader",
+            member_item="pre-cut-oi-member",
+            at_ms=at_ms,
+        )
+        # One ledger row that already exists. A frozen Trading Case files its answer under this exact
+        # `event_id`, so the rebuild must leave every column of it alone -- including the numbers,
+        # which differ from what the template above would reconstruct.
+        conn.execute(
+            """
+            INSERT INTO news_oi_signals (
+              event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd,
+              whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, created_at_ms,
+              source_item_id, source_venue, available_at_ms, learning_epoch
+            ) VALUES (
+              'pre-cut-oi-event', 'oi_signal_v1', 'FROZEN', 'fall', -111, 222, 333, 444,
+              %(at)s, %(at)s, 'pre-cut-oi-leader', 'hyperliquid', %(at)s, 'epoch-2026-08'
+            )
+            """,
+            {"at": at_ms},
+        )
+        conn.commit()
+
+        command.upgrade(config, HEAD)
+
+        rows = conn.execute(
+            """
+            SELECT source_item_id, symbol, raw_instrument, direction, oi_change_bps, oi_value_usd,
+                   whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, received_at_ms,
+                   available_at_ms, historical, source_venue, source_strategy_id, measurement_definition
+              FROM news_oi_signals
+             ORDER BY source_item_id
+            """
+        ).fetchall()
+        assert [row["source_item_id"] for row in rows] == ["pre-cut-oi-leader", "pre-cut-oi-member"]
+        frozen = next(row for row in rows if row["source_item_id"] == "pre-cut-oi-leader")
+        assert (frozen["symbol"], frozen["direction"], frozen["oi_change_bps"]) == ("FROZEN", "fall", -111)
+        assert frozen["historical"] is False, "an existing observation is not a reconstruction"
+        assert frozen["source_venue"] == "hyperliquid"
+        rebuilt = [row for row in rows if row["source_item_id"] == "pre-cut-oi-member"]
+        assert len(rebuilt) == 1
+        for row in rebuilt:
+            assert row["historical"] is True
+            assert (row["symbol"], row["raw_instrument"], row["direction"]) == ("TRUMP", "TRUMP", "rise")
+            assert (row["oi_change_bps"], row["oi_value_usd"]) == (455, 32_170_000)
+            assert (row["whale_long_profit_bps"], row["whale_oi_ratio_bps"]) == (8_021, 10_071)
+            # The provider and host stamps are the originals; only availability is the rebuild's.
+            assert row["observed_at_ms"] == at_ms
+            assert row["received_at_ms"] == at_ms
+            assert row["available_at_ms"] > at_ms
+            assert row["source_venue"] == "binance"
+            assert row["source_strategy_id"] == "1019"
+            assert row["measurement_definition"] == "oi_signal_v1|opennews_oi_source_v1|300000"
+
+        # The merged member is its own observation under its own published source identity, derived
+        # from the Item and the fact it was admitted under rather than borrowed from the leader.
+        assert len({row["source_item_id"] for row in rows}) == 2
+        member_event_id = conn.execute(
+            "SELECT event_id FROM news_oi_signals WHERE source_item_id = 'pre-cut-oi-member'"
+        ).fetchone()["event_id"]
+        assert member_event_id != "pre-cut-oi-event"
+        assert re.fullmatch(r"[0-9a-f]{64}", member_event_id)
+        items = conn.execute(
+            "SELECT item_id, market_kind, market_parse_status, market_source_strategy_id, provider_params"
+            " FROM news_items ORDER BY item_id"
+        ).fetchall()
+        assert [(row["market_kind"], row["market_parse_status"]) for row in items] == [
+            ("oi", "parsed"),
+            ("oi", "parsed"),
+        ]
+        assert {row["market_source_strategy_id"] for row in items} == {"1019"}
+        # A backfilled Item has no stored business payload: the frame it came from is long gone, and
+        # an empty object is the honest record of that rather than an invented one.
+        assert [dict(row["provider_params"]) for row in items] == [{}, {}]
+        # The Event is immutable historical evidence and is neither rewritten nor deleted.
+        assert conn.execute("SELECT count(*) AS n FROM news_events").fetchone()["n"] == 1
+    finally:
+        conn.close()
+
+
+def test_a_market_item_whose_template_is_not_reconstructed_says_so_rather_than_claiming_a_parse() -> None:
+    """A 2083 or 2026 Item predates any parser for it. `raw` with a reason is the honest state."""
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260904_0363")
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        at_ms = 1_787_542_200_000
+        conn.execute(
+            """
+            INSERT INTO news_items (
+              item_id, source_id, source_item_key, title, raw_first_line, description,
+              reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
+              first_ingest_mode, trace_id, created_at_ms, updated_at_ms
+            ) VALUES (
+              'pre-cut-wallet', 'opennews', 'pre-cut-wallet',
+              'js-2 Close Short SOL $482,113.55 , Price $137.01', '', '', 'opennews',
+              %(at)s, %(at)s,
+              '{"strategies": [{"id": "2026", "name": "聪明钱监控"}]}'::jsonb,
+              '[]'::jsonb, 'live', 'trace', %(at)s, %(at)s
+            )
+            """,
+            {"at": at_ms},
+        )
+        conn.commit()
+
+        command.upgrade(config, HEAD)
+
+        row = conn.execute(
+            "SELECT market_kind, market_parse_status, market_parse_error, market_source_strategy_id"
+            " FROM news_items WHERE item_id = 'pre-cut-wallet'"
+        ).fetchone()
+        assert row["market_kind"] == "smart_money"
+        assert (row["market_parse_status"], row["market_parse_error"]) == ("raw", "market_backfill_not_reparsed")
+        assert row["market_source_strategy_id"] == "2026"
+    finally:
+        conn.close()
+
+
+def test_the_backfill_classifies_a_mixed_strategy_item_by_its_primary_strategy() -> None:
+    """#553 SHOULD-FIX 4. The migration and the live classifier answer the same record the same way.
+
+    An Item unions every Strategy tuple it was reported under. Both sides read the *primary* one, so a
+    1019 record a news Strategy also matched is an OI observation whichever of the two classified it.
+    """
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260904_0363")
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        at_ms = 1_787_542_200_000
+        conn.execute(
+            """
+            INSERT INTO news_items (
+              item_id, source_id, source_item_key, title, raw_first_line, description,
+              reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
+              first_ingest_mode, trace_id, created_at_ms, updated_at_ms
+            ) VALUES (
+              'mixed-primary-oi', 'opennews', 'mixed-primary-oi', %(title)s, '', '', 'opennews',
+              %(at)s, %(at)s,
+              '{"source": "binance", "strategies": [
+                 {"id": "1019", "name": "OI Event Monitor"},
+                 {"id": "1018", "name": "News Score > 70"}]}'::jsonb,
+              '[]'::jsonb, 'live', 'trace', %(at)s, %(at)s
+            )
+            """,
+            {"at": at_ms, "title": _OI_TITLE},
+        )
+        conn.commit()
+
+        command.upgrade(config, HEAD)
+
+        row = conn.execute(
+            "SELECT market_kind, market_source_strategy_id, market_parse_status FROM news_items"
+            " WHERE item_id = 'mixed-primary-oi'"
+        ).fetchone()
+        assert row["market_kind"] == "oi"
+        assert row["market_source_strategy_id"] == "1019"
+        # No Event ever carried it, so there is nothing to reconstruct from and the Item stays raw --
+        # what the classifier decides and what a parser could read are two separate answers.
+        assert row["market_parse_status"] == "raw"
+    finally:
+        conn.close()
+
+
+# Frames chosen for the three places the rebuild's SQL and the parser could disagree: half-up basis
+# points including a negative, the six-digit truncation of the OI value under each unit, and a symbol
+# carrying the provider prefix.
+_REBUILD_ARITHMETIC_FRAMES = (
+    "TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%",
+    "BTC OI Fall 0.5%, OI Value 3.8600005M, Whale Long Profit -3.5%, Whale/OI Ratio 1438.2%",
+    "XYZ-UNITREE OI Drop 1438.25%, OI Value 999.9999999B, Whale Long Profit 0.005%, Whale/OI Ratio 0%",
+    "S OI Rise 3.04%, OI Value 3.86K, Whale Long Profit 92.31%, Whale/OI Ratio 31.42%",
+    "4 OI Rise 0.004%, OI Value 7, Whale Long Profit 0.5%, Whale/OI Ratio 0.5%",
+)
+
+
+def test_the_rebuild_reproduces_the_parsers_own_arithmetic() -> None:
+    """#553. The migration re-implements the 1019 template deliberately; this is what holds it honest.
+
+    A rebuild is a statement about what the provider sent, so it must not import a parser a later
+    revision can change underneath it. The cost of that freedom is that the two can drift, and every
+    place they could was wrong at least once: half-up basis points, the six-digit truncation of the OI
+    value *before* the unit is applied (`3.8600005M` is 3_860_000, not 3_860_001), and the 32-character
+    cap on the venue. So the same frames go through both and every field is compared.
+    """
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260904_0363")
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        at_ms = 1_787_542_200_000
+        long_venue = "a-venue-name-far-longer-than-the-thirty-two-character-cap"
+        for index, title in enumerate(_REBUILD_ARITHMETIC_FRAMES):
+            _seed_pre_cut_oi_event(
+                conn,
+                event_id=f"arith-event-{index}",
+                leader_item=f"arith-leader-{index}",
+                member_item=f"arith-member-{index}",
+                at_ms=at_ms,
+                title=title,
+                venue=long_venue,
+            )
+        conn.commit()
+
+        command.upgrade(config, HEAD)
+
+        rebuilt = {
+            str(row["source_item_id"]): row
+            for row in conn.execute(
+                "SELECT source_item_id, symbol, raw_instrument, direction, oi_change_bps, oi_value_usd,"
+                " whale_long_profit_bps, whale_oi_ratio_bps, source_venue FROM news_oi_signals"
+            ).fetchall()
+        }
+        assert len(rebuilt) == 2 * len(_REBUILD_ARITHMETIC_FRAMES)
+        for index, title in enumerate(_REBUILD_ARITHMETIC_FRAMES):
+            expected = parse_oi_signal(title)
+            assert expected is not None, title
+            for role in ("leader", "member"):
+                row = rebuilt[f"arith-{role}-{index}"]
+                assert row["symbol"] == expected.symbol, title
+                assert row["raw_instrument"] == expected.raw_instrument, title
+                assert row["direction"] == expected.direction, title
+                assert row["oi_change_bps"] == expected.oi_change_bps, title
+                assert row["oi_value_usd"] == expected.oi_value_usd, title
+                assert row["whale_long_profit_bps"] == expected.whale_long_profit_bps, title
+                assert row["whale_oi_ratio_bps"] == expected.whale_oi_ratio_bps, title
+                # And the same 32-character cap `parse_liquidation` applies to a venue string.
+                assert row["source_venue"] == long_venue[:32], title
+    finally:
+        conn.close()
+
+
+# One corpus, both classifiers. Each entry is the `strategies` array an Item carries and nothing else,
+# because the primary Strategy plus the set of market families present is all either side reads.
+_CLASSIFIER_FIXTURES: tuple[tuple[str, list[str]], ...] = (
+    ("oi-only", ["1019"]),
+    ("oi-with-news", ["1019", "1018"]),
+    ("news-primary-with-oi", ["1018", "1019"]),
+    ("oi-and-liquidation", ["1019", "2083"]),
+    ("both-liquidation-strategies", ["2000", "2083"]),
+    ("smart-money-only", ["2026"]),
+    ("news-only", ["1018"]),
+    ("unbound-market", ["9999"]),
+)
+
+
+def test_the_backfill_and_the_live_classifier_agree_on_every_fixture() -> None:
+    """#553. The migration mirrors `market_route`; nothing enforces that but this comparison.
+
+    A migration may not import a parser a later revision can change underneath it, so the rule is
+    written twice. The cost of that is drift, and the drift that matters is silent: one record
+    classified `oi` by the live path and `unknown_market` by the backfill would exist or not exist as
+    a typed fact depending only on which ran. So the same fixtures go through both and the answers
+    are compared.
+    """
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260904_0363")
+
+    names = {
+        "1018": "News Score > 70",
+        "1019": "OI Event Monitor",
+        "2000": "实时清算",
+        "2026": "聪明钱监控",
+        "2083": "Large-scale liquidation",
+        "9999": "An unbound market monitor",
+    }
+    source_types = {"1018": "news", "2026": "wallet"}
+
+    def _metadata(strategy_ids: list[str]) -> dict[str, Any]:
+        return {
+            "strategies": [
+                {
+                    "id": strategy_id,
+                    "name": names[strategy_id],
+                    "source_type": source_types.get(strategy_id, "market"),
+                    "engine_type": "news" if strategy_id == "1018" else "market",
+                }
+                for strategy_id in strategy_ids
+            ]
+        }
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        at_ms = 1_787_542_200_000
+        for item_id, strategy_ids in _CLASSIFIER_FIXTURES:
+            conn.execute(
+                """
+                INSERT INTO news_items (
+                  item_id, source_id, source_item_key, title, raw_first_line, description,
+                  reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
+                  first_ingest_mode, trace_id, created_at_ms, updated_at_ms
+                ) VALUES (
+                  %(item)s, 'opennews', %(item)s, 'a frame with no template', '', '', 'opennews',
+                  %(at)s, %(at)s, %(metadata)s::jsonb, '[]'::jsonb, 'live', 'trace', %(at)s, %(at)s
+                )
+                """,
+                {"item": item_id, "at": at_ms, "metadata": json.dumps(_metadata(strategy_ids))},
+            )
+        conn.commit()
+
+        command.upgrade(config, HEAD)
+
+        stored = {
+            str(row["item_id"]): (row["market_kind"], row["market_parse_error"])
+            for row in conn.execute(
+                "SELECT item_id, market_kind, market_parse_error FROM news_items WHERE item_id = ANY(%s)",
+                ([item_id for item_id, _ in _CLASSIFIER_FIXTURES],),
+            ).fetchall()
+        }
+
+        for item_id, strategy_ids in _CLASSIFIER_FIXTURES:
+            live = market_route(classify_source_contracts(_metadata(strategy_ids)))
+            migrated_kind, migrated_reason = stored[item_id]
+            if live is None:
+                assert migrated_kind is None, item_id
+                continue
+            expected_kind, expected_conflict = live
+            assert migrated_kind == expected_kind, item_id
+            # The reasons differ by design where they must: the live path records what its parser
+            # read, and the backfill records that no parser was run. A conflict is the one reason both
+            # can state, because it is decided before any parser is consulted.
+            assert (migrated_reason == MARKET_CATEGORY_CONFLICT) is (expected_conflict is not None), item_id
+    finally:
+        conn.close()

@@ -11,9 +11,9 @@ describe("routeReferrerFromState", () => {
         to: "/news?outcome=held&hours=168",
       },
     );
-    expect(routeReferrerFromState({ label: "OI 来源与准入审计", to: "/news/oi" })).toEqual({
-      label: "OI 来源与准入审计",
-      to: "/news/oi",
+    expect(routeReferrerFromState({ label: "市场事实", to: "/news/market" })).toEqual({
+      label: "市场事实",
+      to: "/news/market",
     });
   });
 
@@ -37,6 +37,8 @@ describe("routeReferrerFromState", () => {
       "/news/review",
       "javascript:alert(1)",
       "/news/symbols/BTC",
+      // The route `/news/market` replaced (#553 PR-1). A restored browser session can still carry it.
+      "/news/oi",
     ]) {
       expect(routeReferrerFromState({ label: "看起来像事件流", to })).toEqual(FEED);
     }

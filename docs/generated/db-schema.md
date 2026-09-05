@@ -239,6 +239,11 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `source_artifact_id` | `TEXT` | False | `''::text` |
+| `market_kind` | `TEXT` | True | `None` |
+| `market_source_strategy_id` | `TEXT` | True | `None` |
+| `market_parse_status` | `TEXT` | True | `None` |
+| `market_parse_error` | `TEXT` | True | `None` |
+| `provider_params` | `JSONB` | False | `'{}'::jsonb` |
 
 ## `news_learning_artifacts`
 
@@ -342,7 +347,7 @@
 | `fact_id` | `TEXT` | False | `None` |
 | `ingest_mode` | `TEXT` | False | `None` |
 | `symbol` | `TEXT` | False | `None` |
-| `venue` | `TEXT` | False | `None` |
+| `source_venue` | `TEXT` | True | `None` |
 | `liquidated_position_side` | `TEXT` | False | `None` |
 | `forced_order_side` | `TEXT` | False | `None` |
 | `notional_usd` | `NUMERIC` | False | `None` |
@@ -362,6 +367,41 @@
 | `source_contract_version` | `TEXT` | False | `None` |
 | `source_contract_complete` | `BOOLEAN` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
+| `provider` | `TEXT` | False | `'opennews'::text` |
+| `raw_instrument` | `TEXT` | False | `''::text` |
+| `source_strategy_id` | `TEXT` | False | `'2000'::text` |
+| `available_at_ms` | `BIGINT` | False | `None` |
+
+## `news_market_smart_money`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `source_key` | `TEXT` | False | `None` |
+| `item_id` | `TEXT` | False | `None` |
+| `fact_id` | `TEXT` | False | `None` |
+| `ingest_mode` | `TEXT` | False | `None` |
+| `provider` | `TEXT` | False | `None` |
+| `source_strategy_id` | `TEXT` | False | `None` |
+| `trader_label` | `TEXT` | False | `None` |
+| `account_address` | `TEXT` | True | `None` |
+| `source_venue` | `TEXT` | True | `None` |
+| `raw_instrument` | `TEXT` | False | `None` |
+| `symbol` | `TEXT` | False | `None` |
+| `action` | `TEXT` | False | `None` |
+| `position_side` | `TEXT` | False | `None` |
+| `reported_notional_usd` | `NUMERIC` | False | `None` |
+| `price` | `NUMERIC` | False | `None` |
+| `pnl_usd` | `NUMERIC` | True | `None` |
+| `event_at_ms` | `BIGINT` | False | `None` |
+| `received_at_ms` | `BIGINT` | False | `None` |
+| `available_at_ms` | `BIGINT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `parser_version` | `TEXT` | False | `None` |
+| `provider_record_identity` | `TEXT` | False | `None` |
+| `source_contract_version` | `TEXT` | False | `None` |
+| `notional_semantics` | `TEXT` | False | `None` |
+| `price_semantics` | `TEXT` | False | `None` |
+| `completeness_assumption` | `TEXT` | False | `None` |
 
 ## `news_model_recordings`
 
@@ -414,7 +454,11 @@
 | `source_item_id` | `TEXT` | False | `None` |
 | `source_venue` | `TEXT` | True | `None` |
 | `available_at_ms` | `BIGINT` | False | `None` |
-| `learning_epoch` | `TEXT` | False | `None` |
+| `raw_instrument` | `TEXT` | False | `''::text` |
+| `provider` | `TEXT` | False | `'opennews'::text` |
+| `received_at_ms` | `BIGINT` | False | `None` |
+| `measurement_definition` | `TEXT` | False | `''::text` |
+| `historical` | `BOOLEAN` | False | `false` |
 
 ## `news_opennews_incidents`
 
