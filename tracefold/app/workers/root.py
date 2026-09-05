@@ -8,8 +8,7 @@ import signal
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import nullcontext
-from dataclasses import dataclass
-from functools import partial
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
@@ -22,16 +21,21 @@ from psycopg_pool import PoolTimeout
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.probe import _create_workers_probe_app
-from tracefold.app.workers.runtime import WORKERS_RUNTIME_VERSION, WorkersRuntimeRepository
+from tracefold.app.workers.runtime import (
+    WORKERS_RUNTIME_VERSION,
+    CapabilityStates,
+    WorkersRuntimeRepository,
+)
 from tracefold.app.workers.task_contract import (
     WORKERS_CONTROL_TASK_NAME,
     WORKERS_PROBE_TASK_NAME,
-    worker_business_runners,
+    WorkerTask,
+    worker_business_tasks,
 )
 from tracefold.app.workers.wiring.components import (
+    _capability_fault_reason,
     _Components,
     _leaf_exceptions,
-    _task_unavailable_reason,
     _wire_components,
 )
 from tracefold.platform.config.models import Settings
@@ -71,6 +75,7 @@ class _ProbeState:
     heartbeat_at_ms: int | None = None
     ready: bool = False
     unavailable_reason: str = "runtime_starting"
+    capabilities: CapabilityStates = field(default_factory=CapabilityStates)
 
     def payload(self) -> dict[str, Any]:
         heartbeat_stale_after_ms = int(_CONTROL_HEARTBEAT_STALE_SECONDS * 1_000)
@@ -95,6 +100,9 @@ class _ProbeState:
             "heartbeat_at_ms": self.heartbeat_at_ms,
             "heartbeat_stale_after_ms": heartbeat_stale_after_ms,
             "unavailable_reason": None if ready else unavailable_reason,
+            # Basic readiness and capability health are two questions. `ok` above says this process
+            # still owns PostgreSQL and its singleton; this says which business capabilities work.
+            "capabilities": self.capabilities.payload(),
         }
 
 
@@ -136,13 +144,13 @@ async def run_workers(settings: Settings) -> None:
         work_stop_event.set()
         shutdown_requested.set()
 
-    def enter_fatal(_exc: BaseException, *, task_name: str | None = None) -> None:
+    def enter_fatal(_exc: BaseException) -> None:
         nonlocal fatal_deadline, fatal_watchdog
         if fatal_watchdog is not None:
             return
         probe_state.ready = False
         probe_state.lifecycle_state = "failed"
-        probe_state.unavailable_reason = _task_unavailable_reason(task_name, _exc)
+        probe_state.unavailable_reason = "runtime_failed"
         work_stop_event.set()
         control_stop_event.set()
         probe_stop_event.set()
@@ -188,7 +196,28 @@ async def run_workers(settings: Settings) -> None:
 
         components = await _wire_components(settings=settings, db=db, finite=finite, telemetry=telemetry)
         probe_state.runtime_manifest_sha = components.runtime_manifest_sha
+        probe_state.capabilities = components.capabilities
         server = _probe_server(probe_state=probe_state, telemetry=telemetry)
+
+        async def publish_capabilities() -> None:
+            """Publish the capability report so a status reader sees a faulted lane, not silence.
+
+            Best effort on purpose: failing to write this must never turn a confined capability fault
+            into a process fatal. The probe payload carries the same report either way, and the
+            failure is logged rather than swallowed.
+            """
+
+            try:
+                await db.run_control(
+                    "workers_runtime_capabilities",
+                    _runtime_capabilities,
+                    db,
+                    runtime_id,
+                    probe_state.capabilities.payload(),
+                    operation_timeout_seconds=_CONTROL_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                logger.bind(error=type(exc).__name__).error("Workers capability report not persisted")
 
         async with asyncio.TaskGroup() as group:
             business_tasks: list[asyncio.Task[Any]] = []
@@ -200,18 +229,21 @@ async def run_workers(settings: Settings) -> None:
                 ),
                 name=WORKERS_PROBE_TASK_NAME,
             )
-            for task_name, runner in worker_business_runners(
+            for task in worker_business_tasks(
                 news_pipeline=components.news_pipeline,
                 signal_lane=components.signal_lane,
                 telemetry=components.telemetry,
             ):
+                components.capabilities.running(task.capability)
                 business_tasks.append(
                     group.create_task(
-                        _guard_child(
-                            runner(work_stop_event),
-                            on_fatal=partial(enter_fatal, task_name=task_name),
+                        _run_capability_task(
+                            task,
+                            stop_event=work_stop_event,
+                            capabilities=components.capabilities,
+                            on_fault=publish_capabilities,
                         ),
-                        name=task_name,
+                        name=task.name,
                     )
                 )
             await _guard_child(
@@ -229,6 +261,7 @@ async def run_workers(settings: Settings) -> None:
             )
             if initial_heartbeat_at_ms is not None and not shutdown_requested.is_set():
                 probe_state.heartbeat_at_ms = initial_heartbeat_at_ms
+                await publish_capabilities()
                 await _guard_child(
                     db.run_control(
                         "workers_runtime_running",
@@ -376,6 +409,38 @@ async def _guard_child(
     except BaseException as exc:
         on_fatal(exc)
         raise
+
+
+async def _run_capability_task(
+    task: WorkerTask,
+    *,
+    stop_event: asyncio.Event,
+    capabilities: CapabilityStates,
+    on_fault: Callable[[], Awaitable[None]],
+) -> None:
+    """Run one business task and keep its unexpected program errors inside its own capability.
+
+    The task stops, its capability is reported `faulted` with the failure that stopped it, and every
+    other task keeps running; nothing restarts it, so recovery is an operator restart after the fix
+    (#553 PR-3). `ResourceOperationOverrun` is deliberately not confined: it means a shared native
+    budget was blown and a thread this process cannot reclaim is still holding it, which is a
+    foundation failure and stays root fatal.
+    """
+
+    try:
+        await task.run(stop_event)
+    except ResourceOperationOverrun:
+        raise
+    except Exception as exc:
+        reason = _capability_fault_reason(task.name, exc)
+        logger.opt(exception=exc).error(
+            "Workers capability task faulted task={} capability={} reason={}",
+            task.name,
+            task.capability,
+            reason,
+        )
+        capabilities.faulted(task.capability, reason)
+        await on_fault()
 
 
 async def _run_control(
@@ -659,6 +724,15 @@ def _runtime_transition(
             runtime_id=runtime_id,
             lifecycle_state=lifecycle_state,
             fatal_code=fatal_code,
+            now_ms=_now_ms(),
+        )
+
+
+def _runtime_capabilities(db: WorkerDatabase, runtime_id: str, capabilities: Any) -> None:
+    with db.worker_session("workers_runtime_capabilities", 1.0) as repos:
+        WorkersRuntimeRepository(repos.conn).set_capabilities(
+            runtime_id=runtime_id,
+            capabilities=capabilities,
             now_ms=_now_ms(),
         )
 

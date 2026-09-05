@@ -125,8 +125,11 @@ async def run_signal_lane(
     """Poll `advance()` until the process stops. The lane owns no clock of its own.
 
     An exception out of `advance()` is an infrastructure fault by construction — every business
-    refusal is a durable row — so it terminates this business task and makes the Workers root fail
-    closed. Retrying here would leave process readiness green beside a FAULTED Decision Plane.
+    refusal is a durable row — so it ends this run of the lane. It is raised, never swallowed: the
+    Workers root records `trading_signal_lane` as `faulted` with this failure and stops the task,
+    and News reception, fact writes and reads carry on beside it (#553 PR-3). Retrying here would
+    leave a green Decision Plane beside a lane that cannot advance; escalating to a process fatal,
+    as this used to, took healthy ingestion down with one lane and then restarted the pair forever.
     """
 
     while not stop_event.is_set():

@@ -2643,8 +2643,29 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /**
+         * WorkersCapabilityData
+         * @description One Workers business capability, reported apart from whether the process itself is alive.
+         *
+         *     `disabled` is an operator's configuration, `unavailable` is a capability that could not be
+         *     constructed from it, and `faulted` is one whose program stopped. None of them make the process
+         *     unready, and none of them switch off the healthy fact APIs beside them (#553 PR-3).
+         */
+        WorkersCapabilityData: {
+            /** Reason */
+            reason: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "running" | "faulted" | "unavailable" | "disabled";
+        };
         /** WorkersRuntimeData */
         WorkersRuntimeData: {
+            /** Capabilities */
+            capabilities: {
+                [key: string]: components["schemas"]["WorkersCapabilityData"];
+            };
             /** Fatal Code */
             fatal_code: ("startup_failed" | "child_failed" | "control_failed" | "singleton_lost" | "runtime_invariant_failed" | "resource_operation_overrun" | "graceful_deadline_exceeded" | "cleanup_failed") | null;
             /** Heartbeat At Ms */

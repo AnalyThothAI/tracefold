@@ -1,13 +1,28 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Literal, cast
 from uuid import UUID
+
+from psycopg.types.json import Jsonb
 
 from tracefold.platform.postgres.audit import ReadQuerySpec
 
 WORKERS_RUNTIME_STALE_AFTER_MS = 15_000
 WORKERS_RUNTIME_VERSION = "2"
+
+# One capability: what an operator loses when it faults, and the unit a status reader reports on.
+# They live beside the runtime row because they are published through it, and because a status route
+# must be able to name one without importing the Trading or News composition that runs it.
+NEWS_INGESTION = "news_ingestion"
+NEWS_EDITORIAL = "news_editorial"
+NEWS_DELIVERY = "news_delivery"
+NEWS_MARKET_REVIEW = "news_market_review"
+TRADING_SIGNAL_LANE = "trading_signal_lane"
+
+CapabilityStateName = Literal["running", "faulted", "unavailable", "disabled"]
 
 LifecycleState = Literal[
     "starting",
@@ -42,6 +57,56 @@ _FATAL_CODES = frozenset(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class CapabilityState:
+    state: CapabilityStateName
+    reason: str | None = None
+
+
+class CapabilityStates:
+    """What each Workers capability is doing, kept apart from basic process readiness.
+
+    `ready` answers "does this process still own PostgreSQL and its singleton"; this answers "which
+    business capabilities are actually working". Folding the two together is what let one faulted
+    lane switch off healthy fact APIs, so they stay two questions with two answers (#553 §6).
+    """
+
+    __slots__ = ("_states",)
+
+    def __init__(self) -> None:
+        self._states: dict[str, CapabilityState] = {}
+
+    def declare(self, capability: str, state: CapabilityStateName, *, reason: str | None = None) -> bool:
+        """Record a capability's state. Returns whether it changed, so the caller can persist once."""
+
+        current = self._states.get(capability)
+        if current is not None and current.state == state and current.reason == reason:
+            return False
+        self._states[capability] = CapabilityState(state=state, reason=reason)
+        return True
+
+    def running(self, capability: str) -> bool:
+        return self.declare(capability, "running")
+
+    def faulted(self, capability: str, reason: str) -> bool:
+        return self.declare(capability, "faulted", reason=reason)
+
+    def unavailable(self, capability: str, reason: str) -> bool:
+        return self.declare(capability, "unavailable", reason=reason)
+
+    def disabled(self, capability: str, reason: str) -> bool:
+        return self.declare(capability, "disabled", reason=reason)
+
+    def state_of(self, capability: str) -> str | None:
+        current = self._states.get(capability)
+        return None if current is None else current.state
+
+    def payload(self) -> dict[str, dict[str, Any]]:
+        return {
+            name: {"state": current.state, "reason": current.reason} for name, current in sorted(self._states.items())
+        }
+
+
 class WorkersRuntimeRepository:
     def __init__(self, conn: Any) -> None:
         self.conn = conn
@@ -64,9 +129,10 @@ class WorkersRuntimeRepository:
             """
             INSERT INTO workers_runtime(
               singleton_key, runtime_id, runtime_version, lifecycle_state,
-              started_at_ms, heartbeat_at_ms, fatal_code, runtime_revision, image_digest
+              started_at_ms, heartbeat_at_ms, fatal_code, runtime_revision, image_digest,
+              capabilities
             )
-            VALUES (true, %s, %s, 'starting', %s, %s, NULL, %s, %s)
+            VALUES (true, %s, %s, 'starting', %s, %s, NULL, %s, %s, '{}'::jsonb)
             ON CONFLICT(singleton_key) DO UPDATE SET
               runtime_id = excluded.runtime_id,
               runtime_version = excluded.runtime_version,
@@ -75,7 +141,10 @@ class WorkersRuntimeRepository:
               heartbeat_at_ms = excluded.heartbeat_at_ms,
               fatal_code = NULL,
               runtime_revision = excluded.runtime_revision,
-              image_digest = excluded.image_digest
+              image_digest = excluded.image_digest,
+              -- A new runtime inherits no capability report: the previous process's faults describe
+              -- a process that is gone, and carrying them forward would report a fault nobody owns.
+              capabilities = '{}'::jsonb
             """,
             (
                 runtime_uuid,
@@ -118,6 +187,22 @@ class WorkersRuntimeRepository:
         if cursor.rowcount != 1:
             raise RuntimeError("workers_runtime_identity_lost")
 
+    def set_capabilities(self, *, runtime_id: str, capabilities: Mapping[str, Any], now_ms: int) -> None:
+        """Publish what each business capability of this runtime is doing, for the status readers."""
+
+        cursor = self.conn.execute(
+            """
+            UPDATE workers_runtime
+               SET capabilities = %s::jsonb,
+                   heartbeat_at_ms = GREATEST(heartbeat_at_ms, %s)
+             WHERE singleton_key
+               AND runtime_id = %s
+            """,
+            (Jsonb(dict(capabilities)), int(now_ms), UUID(str(runtime_id))),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError("workers_runtime_identity_lost")
+
     def heartbeat(self, *, runtime_id: str, now_ms: int) -> None:
         cursor = self.conn.execute(
             """
@@ -143,7 +228,7 @@ def workers_runtime_read_query() -> ReadQuerySpec:
         sql="""
             SELECT runtime_id::text AS runtime_id, runtime_version,
                    lifecycle_state, started_at_ms, heartbeat_at_ms, fatal_code,
-                   runtime_revision, image_digest
+                   runtime_revision, image_digest, capabilities
               FROM workers_runtime
              WHERE singleton_key
         """,
@@ -189,6 +274,7 @@ def workers_runtime_status(
         "heartbeat_stale_after_ms": WORKERS_RUNTIME_STALE_AFTER_MS,
         "fatal_code": cast(str | None, row.get("fatal_code")),
         "unavailable_reason": reason,
+        "capabilities": _capabilities(row.get("capabilities")),
     }
 
 
@@ -208,7 +294,26 @@ def _unavailable_runtime(reason: str) -> dict[str, Any]:
         "heartbeat_stale_after_ms": WORKERS_RUNTIME_STALE_AFTER_MS,
         "fatal_code": None,
         "unavailable_reason": reason,
+        "capabilities": {},
     }
+
+
+def _capabilities(value: object) -> dict[str, dict[str, Any]]:
+    """Read back one runtime's capability report. An unreadable report is reported as absent."""
+
+    raw = json.loads(value) if isinstance(value, (str, bytes)) else value
+    if not isinstance(raw, Mapping):
+        return {}
+    report: dict[str, dict[str, Any]] = {}
+    for name, entry in raw.items():
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("state"), str):
+            continue
+        reason = entry.get("reason")
+        report[str(name)] = {
+            "state": str(entry["state"]),
+            "reason": str(reason) if isinstance(reason, str) else None,
+        }
+    return report
 
 
 def _required_text(value: object, field: str) -> str:
@@ -219,8 +324,15 @@ def _required_text(value: object, field: str) -> str:
 
 
 __all__ = [
+    "NEWS_DELIVERY",
+    "NEWS_EDITORIAL",
+    "NEWS_INGESTION",
+    "NEWS_MARKET_REVIEW",
+    "TRADING_SIGNAL_LANE",
     "WORKERS_RUNTIME_STALE_AFTER_MS",
     "WORKERS_RUNTIME_VERSION",
+    "CapabilityState",
+    "CapabilityStates",
     "FatalCode",
     "LifecycleState",
     "WorkersRuntimeRepository",

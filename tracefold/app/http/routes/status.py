@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
-from tracefold.app.workers.runtime import workers_runtime_status
+from tracefold.app.workers.runtime import NEWS_DELIVERY, workers_runtime_status
 from tracefold.news.health import status_health
 from tracefold.news.market_review.instruments import grounding_rollup
 from tracefold.platform.config.models import news_model_availability, news_push_availability
@@ -28,7 +28,8 @@ def get_news_status(request: Request) -> Response:
     settings = runtime.settings
     with runtime.repositories() as repos:
         snapshot = repos.news.status_snapshot(now_ms=now_ms)
-        workers_state, _ = _news_workers_observation(repos.workers_runtime_row(), now_ms=now_ms)
+        workers_runtime_row = repos.workers_runtime_row()
+        workers_state, _ = _news_workers_observation(workers_runtime_row, now_ms=now_ms)
         instruments = repos.instruments.universe_summary()
         # #87: each repository answers only over its own tables and the fold happens here — News knows which
         # tags an Event carried, the instrument universe knows which of them name something listed.
@@ -66,7 +67,14 @@ def get_news_status(request: Request) -> Response:
     }
     delivery = {
         **snapshot["delivery"],
-        "delivery_available": push.delivery_available and workers_state == "running",
+        # Serve validates the declared target; Workers is the only process that reads the secure file
+        # and constructs the sender, so a target that looks complete in config but could not be built
+        # is reported unavailable here rather than presented as delivery-ready (#553 PR-3).
+        "delivery_available": (
+            push.delivery_available
+            and workers_state == "running"
+            and _workers_delivery_available(workers_runtime_row, now_ms=now_ms)
+        ),
     }
     # No thresholds here at all. News once republished the Signal lane's floors beside its own push
     # gates, which invited a console to compare a Case frozen last week against a floor edited
@@ -135,6 +143,15 @@ def _derive_state(
     if overall_level in {"warn", "bad"}:
         return "degraded"
     return "ready"
+
+
+def _workers_delivery_available(row: dict[str, Any] | None, *, now_ms: int) -> bool:
+    """Whether the running Workers process actually holds a usable push sender."""
+
+    if row is None:
+        return False
+    capability = workers_runtime_status(row, now_ms=now_ms)["capabilities"].get(NEWS_DELIVERY)
+    return capability is not None and capability["state"] == "running"
 
 
 def _news_workers_observation(row: dict[str, Any] | None, *, now_ms: int) -> tuple[str | None, str | None]:

@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from tracefold.app import learning_runtime
 from tracefold.app.llm import configured_lm_endpoint
+from tracefold.app.workers.runtime import CapabilityStates
 from tracefold.app.workers.wiring import news as workers
 from tracefold.news.artifact_identity import canonical_sha, runtime_manifest_sha
 from tracefold.news.learning.evaluate import ArmManifest, CandidateManifest, ProposalReceipt
@@ -945,6 +946,7 @@ def _wire_startup_test(
             settings=_startup_settings(),
             db=database,
             finite=SimpleNamespace(),
+            capabilities=CapabilityStates(),
         )
     )
 

@@ -30,6 +30,7 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
         heartbeat_stale_after_ms: 15_000,
         fatal_code: null,
         unavailable_reason: null,
+        capabilities: {},
       },
     },
     ...overrides,

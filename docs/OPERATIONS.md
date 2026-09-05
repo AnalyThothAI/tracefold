@@ -840,9 +840,31 @@ For missing or stale live data:
 | readiness 503 | DB liveness and startup schema/composition |
 | status degraded, readiness 200 | expected runtime/product separation |
 
-The separate loopback Workers probe reports fatal News task reasons as
-`news_consumer_fatal`, `news_receiver_fatal`, `news_broker_unavailable`, or
-`news_recovery_fatal`. A classified live broker incident or Recovery transient
+The separate loopback Workers probe answers two questions, not one. `ok` is
+basic readiness: this process still owns PostgreSQL, its schema and its
+singleton session. `capabilities` is a separate object keyed by capability name
+-- `news_ingestion`, `news_editorial`, `news_delivery`, `news_market_review`,
+`trading_signal_lane` -- each with a `state` of `running`, `faulted`,
+`unavailable` or `disabled` and the reason that put it there. The same object is
+persisted on `workers_runtime.capabilities` and republished on `/api/status`
+under `runtime.workers_runtime.capabilities`, so the console sees a stopped lane
+without opening the loopback probe (#553 PR-3).
+
+An unexpected program error in one business task stops that task, records its
+capability `faulted` with the failure that stopped it, and leaves every other
+task running. Nothing restarts it: recovery is an operator restart after the
+fix, which is why a `faulted` capability is a page-worthy fact even while
+readiness stays 200. A push sender that cannot be constructed from the current
+configuration reports `news_delivery` `unavailable` with the configuration
+reason, the Deliverer settles those Events `delivery_unavailable` rather than
+presenting them as sent, and `/api/news/status` reports
+`delivery.delivery_available` false; correct the configuration and restart.
+
+Shared foundation failures are unchanged and still fail the root: PostgreSQL
+unavailable, a schema that is not the code's head, a lost singleton session, an
+unfinished native control future, and a graceful deadline overrun.
+
+A classified live broker incident or Recovery transient
 is recoverable work, not a crashed task: Workers readiness stays up while
 `/api/news/status` names the open incident or closed-pending recovery state as
 `reason=recovery_pending|recovery_transient`, retains the typed error code, and
