@@ -4,6 +4,8 @@ import time
 from typing import Protocol
 
 from tracefold.platform.postgres.audit import (
+    BOUNDED_WINDOW_SCAN_BUDGET,
+    INDEXED_ROW_SCAN_BUDGET,
     PostgresQueryAudit,
     QueryAuditCatalog,
     ReadQuerySpec,
@@ -72,10 +74,12 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_reaction_attach",
     ),
     # #570 A2. The eleven statements `FeedStorage.status_snapshot` executes, each named as the constant
-    # the production read executes, plus the Workers row the route folds in beside them. Two of these
-    # names used to stand for the whole page and neither was a statement the route runs: a route name is
-    # not SQL coverage. The instrument, asset-usage and price reads the route composes after the snapshot
-    # are still unregistered; #570 A2 names them and they are not in this change.
+    # the production read executes: nine of its own, plus the open-incident and recovery-backlog reads it
+    # calls `OperationsStorage` for, which own those two statements. `workers_runtime` is the route's,
+    # folded in beside the snapshot. Two of these names used to stand for the whole page and neither was
+    # a statement the route runs: a route name is not SQL coverage. The instrument, asset-usage and price
+    # reads the route composes after the snapshot are still unregistered; #570 A2 names them and they are
+    # not in this change.
     "/api/news/status": (
         "workers_runtime",
         "news_status_ingest",
@@ -193,12 +197,14 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             sql=LATEST_CASE_CREATED_AT_SQL,
             params=(),
             max_read_return_amplification=20.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
             name="trading_gate_decision_for_source_key",
             sql=GATE_DECISION_FOR_SOURCE_KEY_SQL,
             params=("oi:not-a-real-event:oi_signal_v1",),
             max_read_return_amplification=4.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
             # #269. One admission answer per source in the window, newest frame first. One row per
@@ -209,6 +215,7 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             sql=GATE_DECISIONS_SINCE_SQL,
             params=("oi", since_ms, 401),
             max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
             # Both 24 h distributions from one grouped pass over the same window (#537 PR-5).
@@ -216,6 +223,7 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             sql=GATE_DECISION_COUNTS_SQL,
             params=("oi", since_ms),
             max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         *_console_specs(
             name="trading_console_cases",
@@ -232,12 +240,14 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             sql=TRADING_CASE_COUNTS_SQL,
             params=(since_ms,),
             max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
             name="trading_case_reason_counts",
             sql=TRADING_CASE_REASON_COUNTS_SQL,
             params=(since_ms,),
             max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
             # #528 PR-1. One plan, not two: the desk table takes no filter. The fold reads every
@@ -247,6 +257,7 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             sql=executions_sql,
             params=executions_params,
             max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         *_console_specs(
             name="trading_console_commands",
@@ -254,7 +265,13 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             filtered=console_operator_intents_statement(since_ns=since_ns, action="flatten", limit=101),
         ),
         *(
-            ReadQuerySpec(name=name, sql=sql, params=params, max_read_return_amplification=20.0)
+            ReadQuerySpec(
+                name=name,
+                sql=sql,
+                params=params,
+                max_read_return_amplification=20.0,
+                max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+            )
             for name, (sql, params) in (
                 ("trading_signal_ledger", signal_ledger_statement(since_ns=since_ns, limit=101)),
                 ("trading_observation_ledger", observation_ledger_statement(since_ns=since_ns, limit=101)),
@@ -272,7 +289,13 @@ def _console_specs(
     """One console read's two plans: the first page, and the narrowed page after it."""
 
     return tuple(
-        ReadQuerySpec(name=spec_name, sql=sql, params=params, max_read_return_amplification=20.0)
+        ReadQuerySpec(
+            name=spec_name,
+            sql=sql,
+            params=params,
+            max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        )
         for spec_name, (sql, params) in ((name, unfiltered), (f"{name}_filtered", filtered))
     )
 

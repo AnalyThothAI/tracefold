@@ -2033,8 +2033,9 @@ assigned to a bounded read-query family (`/readyz`, `/api/status`,
 are declared no-SQL) and checks that every query can be planned. `uv run
 tracefold db query-audit --analyze` executes those read-only queries with JSON
 `EXPLAIN (ANALYZE, BUFFERS)` and fails on a large-table sequential
-scan, any temporary read/write blocks, or read/return amplification above the
-budget declared by that production query. An empty development database proves only SQL and route coverage;
+scan, more scanned rows than that query declared it may touch, any temporary
+read/write blocks, or read/return amplification above the budget declared by
+that production query. An empty development database proves only SQL and route coverage;
 production-scale plans need a production-sized database. Each runtime owner
 supplies the same bound statement builder used by its serving read; the App
 layer only composes those specs with route coverage, so an audit-only SQL
@@ -2056,23 +2057,45 @@ exact counts and is reserved for offline migration/restore evidence.
 Rows scanned and rows returned are separate measurements in the report, and a
 scan is judged on the first (#570 A1). A node's `Actual Rows` is what it handed
 upward after its own filter; `scanned_rows` adds what it discarded -- `Rows
-Removed by Filter`, an index recheck, a join filter at the scan -- with the loop
-count multiplying each per-loop average. `large_seq_scans` names a sequential
-scan by the table rows it actually read, never by `Plan Rows`: that is the
-planner's estimate of node *output*, so a filter discarding 50,000 rows to return
-none has a `Plan Rows` in the hundreds and used to be recorded as zero rows read.
-`discarded_rows`, `scan_output_rows`, root `shared_hit_blocks`/`shared_read_blocks`
-(root only, because buffer counters are cumulative over children) and execution
-time are reported beside it rather than folded into one number.
+Removed by Filter` and an index recheck -- with the loop count multiplying each
+per-loop average. (`Rows Removed by Join Filter` is not counted: PostgreSQL
+reports it on join nodes, which count candidate pairs rather than table rows, and
+the rows those pairs were built from are already counted at the scans below.)
+`large_seq_scans` names a sequential scan by the table rows *one pass* of it
+actually read, never by `Plan Rows`: that is the planner's estimate of node
+*output*, so a filter discarding 50,000 rows to return none has a `Plan Rows` in
+the hundreds and used to be recorded as zero rows read. Per pass, because the
+threshold is a claim about the table: a nested loop that scans a 20-row table a
+thousand times has read no large table, and its 20,000-row total is reported as
+`scanned_rows` beside `scanned_rows_per_loop` and `loops` rather than folded into
+the judgement. `discarded_rows`, `scan_output_rows`, root
+`shared_hit_blocks`/`shared_read_blocks` (root only, because buffer counters are
+cumulative over children) and execution time are reported beside them.
 
 Read/return amplification divides those scanned rows by the rows the statement's
 own result is built from, and each query spec owns its budget. The denominator
-comes from the plan, not from a per-query flag: an aggregate with no `Group Key`
-returns one row whatever it reads, so its own input is the honest denominator --
-asking a bounded `count(*)` to return as many rows as it counted is a threshold
-no correct aggregate can meet. A grouped aggregate keeps the rows it returns,
-because that result grows with what it read, and an unbounded aggregate is caught
-by the sequential-scan rule beside it rather than by an allow-list.
+comes from the plan, not from a per-query flag, and it folds only when the whole
+statement folded. A statement that returned more than one row multiplied
+something per row, so its returned rows stay the denominator however many
+aggregates its plan contains: a page carrying `(SELECT count(*) FROM
+observations)` beside fifty collapsed groups would otherwise divide the window by
+itself and report a bounded read. A statement that returned at most one row read
+everything it read to produce that row, so an ungrouped aggregate's input is the
+honest denominator there -- asking a bounded `count(*)` to return as many rows as
+it counted is a threshold no correct aggregate can meet. A grouped aggregate
+keeps the rows it returns, because that result grows with what it read.
+
+Amplification cannot bound a folding read by itself: what a `count(*)` scanned
+divided by what it folded is 1 whatever it scanned. The sequential-scan rule does
+not cover for it either -- it catches an unbounded read only when that read is a
+sequential scan of at least 10,000 rows in one pass, and a `count(*)` over a
+million rows reached by an index path trips neither rule. So every spec declares
+`max_scanned_rows`, the rows that read may touch whatever shape its plan takes,
+and exceeding it is `scanned_rows_budget_exceeded`. Composition refuses a spec
+that omits it, so the fold can never become an exemption. These ceilings are
+declared bounds rather than measurements: an owner tightens one as real numbers
+arrive, and a read that outgrows its claim is reported by `db query-audit
+--analyze` for an operator to look at rather than failing anything that serves.
 
 Use ad hoc `EXPLAIN (ANALYZE, BUFFERS)` only on a representative bounded
 query. Since `ANALYZE` executes mutating SQL, wrap `INSERT`, `UPDATE`, `DELETE`,

@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Final, Literal
 from uuid import UUID
 
-from tracefold.platform.postgres.audit import ReadQuerySpec
+from tracefold.platform.postgres.audit import BOUNDED_WINDOW_SCAN_BUDGET, ReadQuerySpec
 from tracefold.platform.postgres.client import require_transaction
 
 from ..contracts import EXECUTION_STRATEGY_ID
@@ -138,12 +138,14 @@ def execution_stream_query_specs(
             sql=UNRESOLVED_TRADE_SIGNALS_SQL,
             params=params,
             max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
             name="trading_unresolved_operator_intents",
             sql=UNRESOLVED_OPERATOR_INTENTS_SQL,
             params=params,
             max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
     )
 

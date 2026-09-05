@@ -81,7 +81,11 @@ _NEWS_QUERY_NAMES = (
 
 def test_query_audit_requires_an_explicit_catalog_and_explains_only_its_queries():
     catalog = QueryAuditCatalog(
-        queries=(ReadQuerySpec(name="owned_read", sql="SELECT 1", max_read_return_amplification=20.0),),
+        queries=(
+            ReadQuerySpec(
+                name="owned_read", sql="SELECT 1", max_read_return_amplification=20.0, max_scanned_rows=1_000
+            ),
+        ),
         query_routes={"/owned": ("owned_read",)},
         no_sql_routes=frozenset(),
     )
@@ -105,7 +109,8 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     def news_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         observed_now_ms.append(now_ms)
         return tuple(
-            ReadQuerySpec(name=name, sql="SELECT 1", max_read_return_amplification=20.0) for name in _NEWS_QUERY_NAMES
+            ReadQuerySpec(name=name, sql="SELECT 1", max_read_return_amplification=20.0, max_scanned_rows=1_000)
+            for name in _NEWS_QUERY_NAMES
         )
 
     catalog = query_audit_catalog(now_ms=123_456, news_query_specs=news_specs)
@@ -266,7 +271,9 @@ def test_status_audit_explains_the_statements_the_status_route_executes():
 
     Running `status_snapshot` against a recording connection is what makes that unrepeatable: the SQL and
     the bound parameters both have to match, so a copy that drifts in either fails here, and a statement
-    added to the route without a spec fails on the count.
+    added to `status_snapshot` without a spec fails on the count. The claim stops at `status_snapshot`:
+    `get_news_status` also runs `universe_summary`, `asset_usage_24h`, `price_status` and `asset_refs`,
+    and this test says nothing about those.
     """
 
     now_ms = 123_456
@@ -399,7 +406,9 @@ def test_analyzed_query_audit_rejects_large_seq_scan_temp_spill_and_amplificatio
     payload = PostgresQueryAudit(
         conn,
         catalog=_single_query_catalog(
-            ReadQuerySpec(name="bounded_read", sql="SELECT 1", max_read_return_amplification=20.0)
+            ReadQuerySpec(
+                name="bounded_read", sql="SELECT 1", max_read_return_amplification=20.0, max_scanned_rows=1_000_000
+            )
         ),
     ).run(analyze=True)
     metrics = payload["queries"][0]["metrics"]
@@ -417,6 +426,7 @@ def test_analyzed_query_audit_rejects_large_seq_scan_temp_spill_and_amplificatio
     assert metrics["large_seq_scans"] == [
         {
             "relation": "events",
+            "scanned_rows_per_loop": 50_000,
             "scanned_rows": 50_000,
             "returned_rows": 500,
             "discarded_rows": 49_500,
@@ -426,7 +436,12 @@ def test_analyzed_query_audit_rejects_large_seq_scan_temp_spill_and_amplificatio
 
 
 def test_analyzed_query_audit_multiplies_per_loop_rows_and_filters_by_the_loop_count():
-    """A repeated inner scan reads its rows once per loop, and discards them once per loop too."""
+    """A repeated inner scan reads its rows once per loop, and discards them once per loop too.
+
+    The total is work and is reported as work. It is not evidence of a large table: a nested loop that
+    scans a 20-row table a thousand times never read a large table, and calling that
+    `unexpected_large_table_seq_scan` would fail an ordinary plan. The size claim is measured on one pass.
+    """
 
     conn = RecordingJsonPlanConn(
         {
@@ -452,17 +467,18 @@ def test_analyzed_query_audit_multiplies_per_loop_rows_and_filters_by_the_loop_c
     payload = PostgresQueryAudit(
         conn,
         catalog=_single_query_catalog(
-            ReadQuerySpec(name="looped_read", sql="SELECT 1", max_read_return_amplification=20.0)
+            ReadQuerySpec(
+                name="looped_read", sql="SELECT 1", max_read_return_amplification=20.0, max_scanned_rows=1_000_000
+            )
         ),
     ).run(analyze=True)
     metrics = payload["queries"][0]["metrics"]
 
     assert metrics["scan_output_rows"] == 2_000
     assert metrics["scanned_rows"] == 20_000
-    assert payload["queries"][0]["violations"] == [
-        "unexpected_large_table_seq_scan",
-        "read_return_amplification_exceeded",
-    ]
+    assert metrics["discarded_rows"] == 18_000
+    assert metrics["large_seq_scans"] == []
+    assert payload["queries"][0]["violations"] == ["read_return_amplification_exceeded"]
 
 
 def test_analyzed_query_audit_counts_bitmap_heap_rows_and_its_rechecks_not_index_candidates():
@@ -511,7 +527,9 @@ def test_analyzed_query_audit_counts_bitmap_heap_rows_and_its_rechecks_not_index
     payload = PostgresQueryAudit(
         conn,
         catalog=_single_query_catalog(
-            ReadQuerySpec(name="bitmap_read", sql="SELECT 1", max_read_return_amplification=20.0)
+            ReadQuerySpec(
+                name="bitmap_read", sql="SELECT 1", max_read_return_amplification=20.0, max_scanned_rows=1_000
+            )
         ),
     ).run(analyze=True)
     metrics = payload["queries"][0]["metrics"]
@@ -537,7 +555,9 @@ def test_analyzed_query_audit_lets_the_plan_name_the_amplification_denominator()
     conn = RecordingJsonPlanConn(_scalar_aggregate_plan(input_rows=500, returned_rows=1))
     grouped = RecordingJsonPlanConn(_grouped_aggregate_plan(input_rows=500, returned_rows=4))
     catalog = _single_query_catalog(
-        ReadQuerySpec(name="bounded_aggregate", sql="SELECT 1", max_read_return_amplification=20.0)
+        ReadQuerySpec(
+            name="bounded_aggregate", sql="SELECT 1", max_read_return_amplification=20.0, max_scanned_rows=1_000
+        )
     )
 
     folded = PostgresQueryAudit(conn, catalog=catalog).run(analyze=True)["queries"][0]
@@ -553,24 +573,122 @@ def test_analyzed_query_audit_lets_the_plan_name_the_amplification_denominator()
     assert by_group["metrics"]["read_return_amplification"] == 125.0
 
 
+def test_analyzed_query_audit_keeps_the_returned_rows_denominator_for_a_paged_read():
+    """#570 A1: a page that returns many rows did not fold, whatever its subquery counted.
+
+    `news_market_groups` carries `(SELECT count(*) FROM observations) AS scanned` beside a page of
+    collapsed groups, and every review-desk queue read has the same shape. Taking that subquery's input
+    as the denominator divides the window by itself and reports a bounded read: this plan scans 500,000
+    rows to return 200 and would come back as amplification 1.0004 with no violation. The rows a
+    statement returned stay its denominator unless the statement itself folded to one row.
+    """
+
+    conn = RecordingJsonPlanConn(_page_with_scalar_subplan(page_rows=200, subplan_rows=500_000))
+
+    payload = PostgresQueryAudit(
+        conn,
+        catalog=_single_query_catalog(
+            ReadQuerySpec(
+                name="paged_read",
+                sql="SELECT 1",
+                max_read_return_amplification=100.0,
+                max_scanned_rows=1_000_000,
+            )
+        ),
+    ).run(analyze=True)
+    metrics = payload["queries"][0]["metrics"]
+
+    assert metrics["returned_rows"] == 200
+    assert metrics["scanned_rows"] == 500_200
+    assert metrics["amplification_basis"] == "returned_rows"
+    assert metrics["amplification_basis_rows"] == 200
+    assert metrics["read_return_amplification"] == 2501.0
+    assert payload["queries"][0]["violations"] == ["read_return_amplification_exceeded"]
+
+
+def test_analyzed_query_audit_bounds_a_folded_read_by_its_own_scanned_rows_budget():
+    """#570 A1: the fold is not an exemption, and the sequential-scan rule does not cover for it.
+
+    A `count(*)` over the whole history returns one row and reads everything, so its amplification is 1
+    by construction and nothing about the denominator can catch it. When that read arrives by an index
+    path there is no sequential scan either, and before this budget the audit reported no violation at
+    all. The rows the spec declared it may touch are what closes it.
+    """
+
+    conn = RecordingJsonPlanConn(_index_aggregate_plan(scanned_rows=1_000_000))
+    metered = ReadQuerySpec(
+        name="unbounded_aggregate",
+        sql="SELECT 1",
+        max_read_return_amplification=20.0,
+        max_scanned_rows=100_000,
+    )
+
+    payload = PostgresQueryAudit(conn, catalog=_single_query_catalog(metered)).run(analyze=True)
+    audited = payload["queries"][0]
+
+    assert audited["metrics"]["scanned_rows"] == 1_000_000
+    assert audited["metrics"]["amplification_basis"] == "aggregate_input"
+    assert audited["metrics"]["read_return_amplification"] == 1.0
+    # Neither of the other two rules sees it: no sequential scan, and amplification is 1 by construction.
+    assert audited["metrics"]["large_seq_scans"] == []
+    assert audited["violations"] == ["scanned_rows_budget_exceeded"]
+
+
+def test_analyzed_query_audit_keeps_a_bounded_one_row_aggregate_inside_its_budget():
+    """The same shape within its declared bound stays green, so the budget is a bound and not a ban."""
+
+    conn = RecordingJsonPlanConn(_index_aggregate_plan(scanned_rows=500))
+
+    payload = PostgresQueryAudit(
+        conn,
+        catalog=_single_query_catalog(
+            ReadQuerySpec(
+                name="bounded_one_row_aggregate",
+                sql="SELECT 1",
+                max_read_return_amplification=20.0,
+                max_scanned_rows=100_000,
+            )
+        ),
+    ).run(analyze=True)
+    metrics = payload["queries"][0]["metrics"]
+
+    assert metrics["returned_rows"] == 1
+    assert metrics["amplification_basis"] == "aggregate_input"
+    assert metrics["amplification_basis_rows"] == 500
+    assert payload["queries"][0]["violations"] == []
+
+
 def test_each_query_owns_its_amplification_budget():
     conn = RecordingJsonPlanConn(_filtered_scan_plan(scanned_rows=10, returned_rows=1))
     query = ReadQuerySpec(
         name="tight_read",
         sql="SELECT 1",
         max_read_return_amplification=5.0,
+        max_scanned_rows=1_000,
     )
 
     payload = PostgresQueryAudit(conn, catalog=_single_query_catalog(query)).run(analyze=True)
 
     audited = payload["queries"][0]
-    assert audited["budget"] == {"max_read_return_amplification": 5.0}
+    assert audited["budget"] == {"max_read_return_amplification": 5.0, "max_scanned_rows": 1_000}
     assert audited["violations"] == ["read_return_amplification_exceeded"]
 
 
 def test_catalog_rejects_a_query_without_its_own_amplification_budget():
     with pytest.raises(ValueError, match="amplification budget missing: unbudgeted"):
-        _single_query_catalog(ReadQuerySpec(name="unbudgeted", sql="SELECT 1"))
+        _single_query_catalog(ReadQuerySpec(name="unbudgeted", sql="SELECT 1", max_scanned_rows=1_000))
+
+
+def test_catalog_rejects_a_query_without_its_own_scanned_rows_budget():
+    """#570 A1: a read that declares no ceiling on the rows it may touch cannot be audited.
+
+    Amplification alone cannot bound a folding read -- what a `count(*)` scanned divided by what it
+    folded is 1 whatever it scanned -- so the fold would be an exemption for any spec allowed to omit
+    this. Composition refuses instead.
+    """
+
+    with pytest.raises(ValueError, match="scanned-rows budget missing: unmetered"):
+        _single_query_catalog(ReadQuerySpec(name="unmetered", sql="SELECT 1", max_read_return_amplification=20.0))
 
 
 # A qualified star is matched wherever it sits, not only first in the select list: `SELECT a, t.*`
@@ -717,6 +835,69 @@ def _aggregate_plan(*, input_rows: int, returned_rows: int) -> dict:
                     "Relation Name": "events",
                     "Plan Rows": input_rows,
                     "Actual Rows": input_rows,
+                    "Actual Loops": 1,
+                }
+            ],
+        },
+        "Planning Time": 0.5,
+        "Execution Time": 2.0,
+    }
+
+
+def _page_with_scalar_subplan(*, page_rows: int, subplan_rows: int) -> dict:
+    """A paged read whose target list carries one scalar aggregate over a much wider relation."""
+
+    return {
+        "Plan": {
+            "Node Type": "Limit",
+            "Actual Rows": page_rows,
+            "Actual Loops": 1,
+            "Plans": [
+                {
+                    "Node Type": "Index Only Scan",
+                    "Relation Name": "page",
+                    "Index Name": "idx_page_id",
+                    "Actual Rows": page_rows,
+                    "Actual Loops": 1,
+                },
+                {
+                    "Node Type": "Aggregate",
+                    "Parent Relationship": "InitPlan",
+                    "Subplan Name": "InitPlan 1",
+                    "Actual Rows": 1,
+                    "Actual Loops": 1,
+                    "Plans": [
+                        # An index path, so the denominator is the only rule under test here.
+                        {
+                            "Node Type": "Index Only Scan",
+                            "Relation Name": "observations",
+                            "Index Name": "idx_observations_id",
+                            "Actual Rows": subplan_rows,
+                            "Actual Loops": 1,
+                        }
+                    ],
+                },
+            ],
+        },
+        "Planning Time": 0.5,
+        "Execution Time": 2.0,
+    }
+
+
+def _index_aggregate_plan(*, scanned_rows: int) -> dict:
+    """One scalar aggregate reached by an index path: one row out, `scanned_rows` in, no Seq Scan."""
+
+    return {
+        "Plan": {
+            "Node Type": "Aggregate",
+            "Actual Rows": 1,
+            "Actual Loops": 1,
+            "Plans": [
+                {
+                    "Node Type": "Index Only Scan",
+                    "Relation Name": "events",
+                    "Index Name": "idx_events_id",
+                    "Actual Rows": scanned_rows,
                     "Actual Loops": 1,
                 }
             ],

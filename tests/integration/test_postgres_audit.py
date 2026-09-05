@@ -202,6 +202,9 @@ _COUNTEREXAMPLE_ROWS = 50_000
 _COUNTEREXAMPLE_BUDGET = 100.0
 
 
+_COUNTEREXAMPLE_SCAN_BUDGET = 100_000
+
+
 def _counterexample_catalog(*queries: ReadQuerySpec) -> QueryAuditCatalog:
     return QueryAuditCatalog(
         queries=queries,
@@ -240,24 +243,28 @@ def test_query_audit_classifies_the_570_counterexample_plans_from_real_postgresq
                     sql="SELECT id FROM audit_scan WHERE id::text = %s",
                     params=("missing",),
                     max_read_return_amplification=_COUNTEREXAMPLE_BUDGET,
+                    max_scanned_rows=_COUNTEREXAMPLE_SCAN_BUDGET,
                 ),
                 ReadQuerySpec(
                     name="bounded_aggregate",
                     sql="SELECT count(*) AS n FROM audit_scan WHERE id <= %s",
                     params=(500,),
                     max_read_return_amplification=_COUNTEREXAMPLE_BUDGET,
+                    max_scanned_rows=_COUNTEREXAMPLE_SCAN_BUDGET,
                 ),
                 ReadQuerySpec(
                     name="bounded_index_page",
                     sql="SELECT id FROM audit_scan WHERE id <= %s ORDER BY id LIMIT 50",
                     params=(500,),
                     max_read_return_amplification=_COUNTEREXAMPLE_BUDGET,
+                    max_scanned_rows=_COUNTEREXAMPLE_SCAN_BUDGET,
                 ),
                 ReadQuerySpec(
                     name="single_row_lookup",
                     sql="SELECT id, payload FROM audit_scan WHERE id = %s",
                     params=(42,),
                     max_read_return_amplification=_COUNTEREXAMPLE_BUDGET,
+                    max_scanned_rows=_COUNTEREXAMPLE_SCAN_BUDGET,
                 ),
             ),
         ).run(analyze=True)
@@ -296,3 +303,71 @@ def test_query_audit_classifies_the_570_counterexample_plans_from_real_postgresq
         assert audited[name]["metrics"]["large_seq_scans"] == [], name
     assert payload["ok"] is False
     assert payload["thresholds"]["large_seq_scan_rows"] == LARGE_SEQ_SCAN_ROWS
+
+
+def test_query_audit_guards_a_paged_read_and_an_unbounded_aggregate_on_real_plans(
+    tmp_path,
+    postgres_clone_dsn: str,
+):
+    """Two shapes the fold must not excuse, both planned by PostgreSQL rather than written by hand.
+
+    A page read carrying `(SELECT count(*) FROM ...)` -- the shape of `news_market_groups` and every
+    review-desk queue read -- returns many rows and folded nothing, so its own returned rows stay the
+    denominator. And an aggregate that reads a whole table by an index path has amplification 1 by
+    construction and no sequential scan to flag, so only the spec's declared scanned-rows ceiling can
+    bound it.
+    """
+
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        conn.execute("SET max_parallel_workers_per_gather = 0")
+        conn.execute("CREATE TABLE audit_wide (id bigint PRIMARY KEY)")
+        conn.execute("INSERT INTO audit_wide (id) SELECT generate_series(1, %s)", (500_000,))
+        conn.execute("CREATE TABLE audit_page (id bigint PRIMARY KEY)")
+        conn.execute("INSERT INTO audit_page (id) SELECT generate_series(1, 200)")
+        _vacuum_analyze(conn, "audit_wide")
+        _vacuum_analyze(conn, "audit_page")
+        payload = PostgresQueryAudit(
+            conn,
+            catalog=_counterexample_catalog(
+                ReadQuerySpec(
+                    name="paged_read_with_scalar_subplan",
+                    sql="SELECT id, (SELECT count(*) FROM audit_wide) AS scanned FROM audit_page ORDER BY id LIMIT 200",
+                    params=(),
+                    max_read_return_amplification=_COUNTEREXAMPLE_BUDGET,
+                    max_scanned_rows=1_000_000,
+                ),
+                ReadQuerySpec(
+                    name="unbounded_aggregate_by_index",
+                    sql="SELECT count(*) AS n FROM audit_wide WHERE id > %s",
+                    params=(250_000,),
+                    max_read_return_amplification=20.0,
+                    max_scanned_rows=_COUNTEREXAMPLE_SCAN_BUDGET,
+                ),
+            ),
+        ).run(analyze=True)
+    finally:
+        conn.execute("DROP TABLE IF EXISTS audit_page")
+        conn.execute("DROP TABLE IF EXISTS audit_wide")
+        conn.commit()
+        conn.close()
+
+    audited = {item["name"]: item for item in payload["queries"]}
+    paged = audited["paged_read_with_scalar_subplan"]
+    unbounded = audited["unbounded_aggregate_by_index"]
+
+    # The page returned 200 rows, so those are the denominator; folding the subplan would report 1.0004.
+    assert paged["metrics"]["returned_rows"] == 200
+    assert paged["metrics"]["amplification_basis"] == "returned_rows"
+    assert paged["metrics"]["amplification_basis_rows"] == 200
+    assert paged["metrics"]["read_return_amplification"] > _COUNTEREXAMPLE_BUDGET
+    assert "read_return_amplification_exceeded" in paged["violations"]
+
+    # One row out, a quarter of a million rows in, by an index. Amplification and the sequential-scan
+    # rule are both silent here on purpose; the declared ceiling is not.
+    assert unbounded["metrics"]["returned_rows"] == 1
+    assert unbounded["metrics"]["amplification_basis"] == "aggregate_input"
+    assert unbounded["metrics"]["read_return_amplification"] == 1.0
+    assert unbounded["metrics"]["large_seq_scans"] == []
+    assert unbounded["metrics"]["scanned_rows"] > _COUNTEREXAMPLE_SCAN_BUDGET
+    assert unbounded["violations"] == ["scanned_rows_budget_exceeded"]
