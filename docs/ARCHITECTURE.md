@@ -2803,6 +2803,15 @@ fact on `sha256(item_id, fact_id, parser_version)`; an OI row keeps the
 that every existing row and every frozen Trading Case already carries, and its
 observation key is `(source_item_id, metric_version)`.
 
+Both one-line templates abbreviate a dollar figure the same way, so `K`/`M`/`B`
+is one multiplier defined in `liquidations.py` and read from there by
+`smart_money.py`. The smart-money parser refused the suffix until #553, on a
+comment that called it unmeasured: the provider writes `$798.18K` and `$2.21M`
+routinely, only 8 of the 113 distinct titles in the retained window parsed, and
+every other report went out as its own raw card outside the account grouping.
+An abbreviated *price* is still refused — the provider spells prices in full,
+so one is a drifted template rather than a figure to pick a multiplier for.
+
 What #553 deleted from `oi_signals.py` is the *judge*: the pseudo
 `TriageVerdict`, the reader headline, the rule names, the `DecisionResult` and
 the Program identity. `_JudgmentOrigin` is now `model|degraded` only, and

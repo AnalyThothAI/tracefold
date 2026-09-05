@@ -798,20 +798,13 @@ def render_market_card(
     """
 
     latest = observations[-1]
-    subject = track.symbol or track.raw_instrument or latest.symbol or latest.raw_instrument or "—"
-    qualifier = _REASON_TITLE.get(reason, "")
-    title = f"{_FAMILY_TITLE.get(track.family, '市场')}{('· ' + qualifier) if qualifier else ''} {subject}"
+    subject = track.symbol or track.raw_instrument or latest.symbol or latest.raw_instrument or ""
+    title = _card_title(family=track.family, reason=reason, subject=subject)
     lines = _card_lines(track=track, reason=reason, observations=observations, action_changes=action_changes)
     origin = " ".join(part for part in (latest.provider or "", track.market_kind) if part) or "-"
     lines.append(
         " · ".join(
-            part
-            for part in (
-                subject if subject != "—" else "",
-                f"{origin}（{len(observations)} 条报道）",
-                _clock(latest.event_at_ms),
-            )
-            if part
+            part for part in (subject, f"{origin}（{len(observations)} 条报道）", _clock(latest.event_at_ms)) if part
         )
     )
     link = _absolute_http_url(detail_url)
@@ -842,6 +835,21 @@ def render_market_card(
         },
         "elements": elements,
     }
+
+
+def _card_title(*, family: str, reason: str, subject: str) -> str:
+    """The header: the family, the qualifier that applies, and the instrument when one is known.
+
+    Every part is optional except the family, and the separator belongs to the join rather than to any
+    one part. The first raw smart-money cards in production were headed `市场原文· 原文 —`: an
+    unstructured report names no instrument, and the missing space, the qualifier's own separator and
+    the `—` placeholder were three pieces of punctuation standing in for a word that was never going to
+    be there (#553). An absent field is absent; it is not an em dash.
+    """
+
+    return " · ".join(
+        part for part in (_FAMILY_TITLE.get(family, "市场"), _REASON_TITLE.get(reason, ""), subject) if part
+    )
 
 
 def _card_lines(
@@ -888,7 +896,7 @@ def _card_lines(
         ]
     return [
         _clip(latest.title, 220),
-        f"{venue} · {track.market_kind} · 未结构化，保留供应商原文",
+        " · ".join(part for part in (venue, track.market_kind, "未结构化，保留供应商原文") if part),
     ]
 
 

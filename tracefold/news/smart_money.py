@@ -2,14 +2,17 @@
 
 OpenNews strategy 2026 (`聪明钱监控`) reports what one labelled account did, one report per line::
 
-    js-2 Open Long SOL $482,113.55 , Price $137.01
-    js-2 Close Short SOL $482,113.55 , Price $137.01 , PNL -$8,204.10
+    js-2 Open Long BTC $798.18K , Price $79,817.87
+    js-2 Close Short BTC $2.21M , Price $78,986.89 , PNL -$1.84K
+    js-2 Close Long XYZ-NBIS $6.27 , Price $208.95 , PNL -$0.16
 
 The label, the action, the side, the native instrument and the two dollar figures are the whole
-message; `PNL` appears on close reports only. The provider also emits account activity that is not a
-position report at all — ``Withdraw USDC`` is the measured example — and it emits new templates
-without warning. Those are not failures of the account: they are reports this module cannot turn into
-numbers, so it returns ``None`` and the Item is stored as a raw card with a reason. Nothing here
+message; `PNL` appears on close reports only. The provider abbreviates a notional or a PNL with the
+same `K`/`M`/`B` it uses on the liquidation template, and writes a price in full. The provider also
+emits account activity that is not a position report at all — ``Withdraw USDC`` is the measured
+example — and it emits new templates without warning. Those are not failures of the account: they are
+reports this module cannot turn into numbers, so it returns ``None`` and the Item is stored as a raw
+card with a reason. Nothing here
 guesses a missing number, and no field is defaulted: a report with no venue keeps ``None`` for venue
 rather than borrowing one from a sibling report.
 
@@ -26,23 +29,34 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Final, Literal
 
+from tracefold.news.liquidations import MAGNITUDE_SUFFIXES, scaled_amount
+
 PARSER_VERSION: Final = "smart_money_parser_v1"
 SOURCE_CONTRACT_VERSION: Final = "opennews_smart_money_source_v1"
 
+# One dollar figure as the provider writes it: `798.18`, `79,817.87`, `214`. Thousands separators are
+# optional on every figure because the provider uses them on exactly the ones wide enough to need them.
+_FIGURE: Final = r"\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?"
 # Anchored on the whole line. The label may contain spaces (`js-2`, `whale 7`), so it is captured
 # non-greedily up to the first `Open`/`Close` token, which is what makes the action word the anchor
 # rather than a position count.
+#
+# The notional and the PNL may carry the provider's `K`/`M`/`B`, read through the one multiplier
+# defined in `liquidations.py`. The comment that used to stand here said such a suffix "has never been
+# measured here" and refused it on that ground. It had been measured: of the 113 distinct titles in the
+# retained production window only 8 parsed, and the other 104 position reports -- `$798.18K`,
+# `$2.21M`, `PNL +$50.41K` -- were stored raw with `smart_money_template_unmatched` and sent one card
+# per record, outside the §4.4 account grouping. A rule written to protect the reader from a guessed
+# multiplier was hiding almost every report it applied to (#553). A price is still read plain: the
+# provider spells prices in full (`$79,817.87`), so an abbreviated price is a template this module has
+# not been shown, and it answers one of those with a raw card rather than a number.
 _REPORT = re.compile(
-    r"^\s*(?P<label>\S(?:.*?\S)?)\s+(?P<action>Open|Close)\s+(?P<side>Long|Short)\s+"
-    r"(?P<instrument>\S{1,32})\s+\$(?P<notional>\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)\s*,\s*"
-    r"Price\s+\$(?P<price>\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)"
-    r"(?:\s*,\s*PNL\s*(?P<pnl_sign>[+-])?\s*\$(?P<pnl>\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?))?\s*$",
+    rf"^\s*(?P<label>\S(?:.*?\S)?)\s+(?P<action>Open|Close)\s+(?P<side>Long|Short)\s+"
+    rf"(?P<instrument>\S{{1,32}})\s+\$(?P<notional>{_FIGURE})(?P<notional_unit>[{MAGNITUDE_SUFFIXES}]?)\s*,\s*"
+    rf"Price\s+\$(?P<price>{_FIGURE})"
+    rf"(?:\s*,\s*PNL\s*(?P<pnl_sign>[+-])?\s*\$(?P<pnl>{_FIGURE})(?P<pnl_unit>[{MAGNITUDE_SUFFIXES}]?))?\s*$",
     re.IGNORECASE,
 )
-# The provider writes plain dollar figures on this Strategy. A `K`/`M`/`B` suffix has never been
-# measured here, so it is refused rather than assumed to mean what it means on the liquidation
-# template: a raw card that says "this template is not proven" costs a reader one click, and a wrong
-# multiplier costs them a wrong number they cannot see is wrong.
 _MAX_NUMERIC: Final = Decimal("1e24")
 _MAX_LABEL_LEN: Final = 128
 _MAX_ADDRESS_LEN: Final = 128
@@ -104,8 +118,9 @@ def parse_smart_money(
     """Parse one Strategy 2026 position report, or return ``None`` for anything that is not one.
 
     ``None`` covers `Withdraw USDC`, a template that has drifted, and a figure this module cannot read
-    without assuming a unit. The caller stores the Item either way; the only difference is whether a
-    typed row exists beside it.
+    without assuming a unit -- an abbreviated price, or a suffix outside the provider's own `K`/`M`/`B`
+    vocabulary. The caller stores the Item either way; the only difference is whether a typed row
+    exists beside it.
 
     The two clocks are recorded, never compared (#544): `event_at_ms` is the provider's stamp and
     `received_at_ms` is when this host read the frame. A non-positive `event_at_ms` is a missing stamp
@@ -123,10 +138,12 @@ def parse_smart_money(
     if not symbol:
         return None
     try:
-        notional = _amount(match.group("notional"))
-        price = _amount(match.group("price"))
-        pnl = None if match.group("pnl") is None else _amount(match.group("pnl"))
-    except InvalidOperation:
+        notional = scaled_amount(match.group("notional"), match.group("notional_unit"))
+        # The empty suffix is not an oversight: it is this template's statement that a price is a
+        # price in full, and it keeps the one multiplier in one place all the same.
+        price = scaled_amount(match.group("price"), "")
+        pnl = None if match.group("pnl") is None else scaled_amount(match.group("pnl"), match.group("pnl_unit"))
+    except (InvalidOperation, KeyError):
         return None
     if notional <= 0 or price <= 0 or notional > _MAX_NUMERIC or price > _MAX_NUMERIC:
         return None
@@ -156,10 +173,6 @@ def parse_smart_money(
         provider_record_identity=str(provider_record_identity or item_id),
         source_strategy_id=str(source_strategy_id),
     )
-
-
-def _amount(value: str) -> Decimal:
-    return Decimal(value.replace(",", ""))
 
 
 __all__ = [

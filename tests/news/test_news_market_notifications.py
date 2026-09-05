@@ -635,6 +635,46 @@ def test_an_unparsed_oi_line_is_raw_rather_than_an_oi_comparison() -> None:
     assert group_family(unparsed) == "raw"
 
 
+# --- §5.2 the card's header ----------------------------------------------------------------------
+
+
+def test_a_raw_card_with_no_instrument_has_no_dangling_separator_and_no_em_dash() -> None:
+    """The production header, verbatim: `市场原文· 原文 —`.
+
+    An unstructured report names no instrument -- that is what makes it unstructured -- and the header
+    answered a missing word with three pieces of punctuation: a separator with no space in front of it,
+    a qualifier hung off it, and `—` standing where a symbol would have been. Nothing is absent about a
+    raw card except the parse, and the header says so by leaving the part out (#553).
+    """
+
+    observation = raw_record(at_ms=T0, title="js-2 Withdraw USDC $160K")
+    card = render_market_card(track=group_identity(observation), reason="raw", observations=[observation])
+    title = card["header"]["title"]["content"]
+    assert title == "市场原文 · 原文"
+    assert "—" not in title
+    assert "· 原文" not in title.replace(" · 原文", "")
+    # And the facts line does not open with the separator the missing subject used to leave behind.
+    facts = card["elements"][0]["content"].splitlines()[-1]
+    assert not facts.startswith("·") and " ·  · " not in facts
+
+
+def test_a_card_header_names_the_family_then_the_qualifier_then_the_instrument() -> None:
+    observations = [wallet(at_ms=T0, instrument="ETH")]
+    track = group_identity(observations[0])
+    first = render_market_card(track=track, reason="first", observations=observations)
+    followup = render_market_card(track=track, reason="followup", observations=observations)
+    assert first["header"]["title"]["content"] == "聪明钱 · ETH"
+    assert followup["header"]["title"]["content"] == "聪明钱 · 跟进 · ETH"
+
+
+def test_a_raw_body_line_drops_a_market_kind_the_frame_never_carried() -> None:
+    observation = replace(raw_record(at_ms=T0, title="something new"), market_kind="", source_venue=None)
+    card = render_market_card(track=group_identity(observation), reason="raw", observations=[observation])
+    body = card["elements"][0]["content"]
+    assert "场所未知 · 未结构化，保留供应商原文" in body
+    assert " ·  · " not in body
+
+
 # --- §5.2 the card's link to the console ---------------------------------------------------------
 
 
