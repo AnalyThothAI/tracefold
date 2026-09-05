@@ -2079,11 +2079,14 @@ statement folded. A statement that returned more than one row multiplied
 something per row, so its returned rows stay the denominator however many
 aggregates its plan contains: a page carrying `(SELECT count(*) FROM
 observations)` beside fifty collapsed groups would otherwise divide the window by
-itself and report a bounded read. A statement that returned at most one row read
-everything it read to produce that row, so an ungrouped aggregate's input is the
-honest denominator there -- asking a bounded `count(*)` to return as many rows as
-it counted is a threshold no correct aggregate can meet. A grouped aggregate
-keeps the rows it returns, because that result grows with what it read.
+itself and report a bounded read. Zero rows is the same case, not a smaller one --
+an ungrouped aggregate emits exactly one row, so a result of none did not come
+from one, and a group filter that matches nothing still reads the whole window.
+A statement that returned exactly one row read everything it read to produce that
+row, so an ungrouped aggregate's input is the honest denominator there -- asking a
+bounded `count(*)` to return as many rows as it counted is a threshold no correct
+aggregate can meet. A grouped aggregate keeps the rows it returns, because that
+result grows with what it read.
 
 Amplification cannot bound a folding read by itself: what a `count(*)` scanned
 divided by what it folded is 1 whatever it scanned. The sequential-scan rule does
@@ -2096,6 +2099,20 @@ that omits it, so the fold can never become an exemption. These ceilings are
 declared bounds rather than measurements: an owner tightens one as real numbers
 arrive, and a read that outgrows its claim is reported by `db query-audit
 --analyze` for an operator to look at rather than failing anything that serves.
+
+The three ceilings in use, and what each is measured against. The only production
+figures available are #570's, so they are the only thing these are argued from:
+
+| ceiling | reads | argument |
+| --- | --- | --- |
+| `INDEXED_ROW_SCAN_BUDGET` 10,000 | 22 single-row and small indexed lookups | The same number as `LARGE_SEQ_SCAN_ROWS`, deliberately: this repository already calls 10,000 table rows in one pass a large read, so an indexed lookup that touches that many is not the lookup it claims to be. The widest table these reach is `news_market_instruments`, ~16,500 rows in #570's snapshot, and they reach it by index. |
+| `BOUNDED_WINDOW_SCAN_BUDGET` 100,000 | 46 windowed page, funnel and aggregate reads | ~7.5x the widest pass #570 measured on production: the status pipeline's Evidence scan, 13,273 rows actual against 61 estimated. These are bounded by a time window rather than a row cap, so there is no cap to derive from; the margin is for growth within the window, not a claim that 100,000 is safe. |
+| `MARKET_WINDOW_SCAN_BUDGET` 500,000 | `news_market_groups`, `news_market_sources`, `news_market_delivery_summary` | `news_market_groups` caps its materialised window at `MARKET_WINDOW_ROW_CAP` 5,000 and joins it five ways, so a cap-derived ceiling would be ~30,000. The other two have no row cap at all: `news_market_sources` materialises the entire 168 h window, and `news_market_delivery_summary` aggregates the same window over `news_market_deliveries`. 500,000 is therefore a loose first ceiling -- ~500x the 977 observations #570 measured -- and its only claim is that two uncapped reads now have a ceiling where they had none. Tighten it, or derive it from a cap, when #570 A3/A4 bound those reads. |
+
+None of these ceilings is exercised by the empty-schema catalog test: an empty
+database scans nothing, so `db query-audit --analyze` there proves SQL and route
+coverage and nothing about volume. Only the real-PostgreSQL guard test builds
+tables large enough to cross one.
 
 Use ad hoc `EXPLAIN (ANALYZE, BUFFERS)` only on a representative bounded
 query. Since `ANALYZE` executes mutating SQL, wrap `INSERT`, `UPDATE`, `DELETE`,

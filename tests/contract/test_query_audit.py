@@ -606,6 +606,41 @@ def test_analyzed_query_audit_keeps_the_returned_rows_denominator_for_a_paged_re
     assert payload["queries"][0]["violations"] == ["read_return_amplification_exceeded"]
 
 
+def test_analyzed_query_audit_keeps_the_returned_rows_denominator_for_an_empty_page():
+    """#570 A1: a page that matched nothing folded nothing, and it is the most amplified read there is.
+
+    An ungrouped aggregate emits exactly one row, so a result of none did not come from one. Reading zero
+    as "at most one row, so it folded" made the filter that discards a whole window to return nothing --
+    `news_market_groups` on a group key no observation carries, which is #570 A3's shape, and
+    `news_review_market` through its subquery -- report a bounded read: 25,000 rows discarded beside a
+    `count(*)` over 500,000 came back as amplification 1.05 with no violation.
+    """
+
+    conn = RecordingJsonPlanConn(_empty_page_with_scalar_subplan(discarded_rows=25_000, subplan_rows=500_000))
+
+    payload = PostgresQueryAudit(
+        conn,
+        catalog=_single_query_catalog(
+            ReadQuerySpec(
+                name="empty_page",
+                sql="SELECT 1",
+                max_read_return_amplification=100.0,
+                max_scanned_rows=1_000_000,
+            )
+        ),
+    ).run(analyze=True)
+    metrics = payload["queries"][0]["metrics"]
+
+    assert metrics["returned_rows"] == 0
+    assert metrics["scan_output_rows"] == 500_000
+    assert metrics["scanned_rows"] == 525_000
+    assert metrics["amplification_basis"] == "returned_rows"
+    assert metrics["amplification_basis_rows"] == 0
+    # Nothing came back, so every row read was read for nothing: the denominator floors at one row.
+    assert metrics["read_return_amplification"] == 525_000.0
+    assert payload["queries"][0]["violations"] == ["read_return_amplification_exceeded"]
+
+
 def test_analyzed_query_audit_bounds_a_folded_read_by_its_own_scanned_rows_budget():
     """#570 A1: the fold is not an exemption, and the sequential-scan rule does not cover for it.
 
@@ -882,6 +917,21 @@ def _page_with_scalar_subplan(*, page_rows: int, subplan_rows: int) -> dict:
         "Planning Time": 0.5,
         "Execution Time": 2.0,
     }
+
+
+def _empty_page_with_scalar_subplan(*, discarded_rows: int, subplan_rows: int) -> dict:
+    """The same page shape, filtered down to nothing: the whole window read and no row returned."""
+
+    plan = _page_with_scalar_subplan(page_rows=0, subplan_rows=subplan_rows)
+    plan["Plan"]["Plans"][0] = {
+        "Node Type": "Index Scan",
+        "Relation Name": "page",
+        "Index Name": "idx_page_id",
+        "Actual Rows": 0,
+        "Rows Removed by Filter": discarded_rows,
+        "Actual Loops": 1,
+    }
+    return plan
 
 
 def _index_aggregate_plan(*, scanned_rows: int) -> dict:

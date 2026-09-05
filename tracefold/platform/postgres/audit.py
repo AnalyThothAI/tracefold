@@ -19,10 +19,19 @@ LARGE_SEQ_SCAN_ROWS = 10_000
 # Declared scanned-row ceilings a read may claim, in the three shapes this repository has. They are the
 # operator's bound on how much table a statement may touch, not a measurement: an owner tightens one when
 # real numbers arrive, and a read that outgrows its claim is reported by `db query-audit --analyze`
-# rather than failing anything that serves. #570 measured the only production figures available, and
-# these sit above them (#570 A1).
+# rather than failing anything that serves. `docs/OPERATIONS.md` argues each of the three against the
+# only production figures there are, which are #570's (#570 A1).
+#
+# The same number as LARGE_SEQ_SCAN_ROWS on purpose: an indexed lookup that touches as much table as
+# this repository already calls a large read is not the lookup it claims to be.
 INDEXED_ROW_SCAN_BUDGET = 10_000
+# ~7.5x the widest pass #570 measured, the status pipeline's 13,273-row Evidence scan. These reads are
+# bounded by a time window rather than a row cap, so there is no cap to derive a ceiling from.
 BOUNDED_WINDOW_SCAN_BUDGET = 100_000
+# A loose first ceiling, not a derived one. `news_market_groups` caps its window at
+# MARKET_WINDOW_ROW_CAP and would justify ~30,000, but `news_market_sources` and
+# `news_market_delivery_summary` materialise the whole 168 h window with no row cap and had no ceiling
+# at all before this. Tighten or derive it when #570 A3/A4 bound those two reads.
 MARKET_WINDOW_SCAN_BUDGET = 500_000
 
 APPLICATION_ROLE = "tracefold"
@@ -561,11 +570,11 @@ def _plan_metrics(plan_payload: Any) -> dict[str, Any]:
     reads 50,000 rows and returns none used to be recorded as zero rows read.
 
     The amplification denominator comes from the plan, not from a per-query flag, and it folds only when
-    the whole statement folded: a plan that returned more than one row multiplied something per row, and
-    an aggregate inside it is one column of that result rather than the result. A statement that returned
-    at most one row read everything it read to produce that row, so an ungrouped aggregate's input is the
-    only honest denominator -- asking a bounded `count(*)` to return as many rows as it counted is a
-    threshold no correct aggregate can meet.
+    the whole statement folded: an ungrouped aggregate emits exactly one row, so a plan that returned any
+    other number did not fold, and an aggregate inside it is one column of that result rather than the
+    result. A statement that returned exactly one row read everything it read to produce that row, so an
+    ungrouped aggregate's input is the only honest denominator there -- asking a bounded `count(*)` to
+    return as many rows as it counted is a threshold no correct aggregate can meet.
 
     Amplification cannot bound a folding read by itself: dividing what a `count(*)` scanned by what it
     folded is 1 whatever it scanned. The sequential-scan rule catches only the sequential shape, so the
@@ -640,14 +649,19 @@ def _plan_metrics(plan_payload: Any) -> dict[str, Any]:
 def _amplification_basis(nodes: list[dict[str, Any]], *, returned_rows: int) -> tuple[str, int]:
     """Name the rows the statement's own result is built from, and how the plan said so.
 
-    A statement that returned more than one row did not fold, whatever aggregates its plan contains. A
-    page read carrying `(SELECT count(*) FROM observations) AS scanned` is the case that matters: the
-    subquery reads the whole window and the page returns fifty rows, and taking the subquery's input as
-    the denominator would divide the window by itself and report a bounded read. So the rows it returned
-    stay the denominator, and the amplification guard keeps working on every paged read.
+    An ungrouped aggregate emits exactly one row. A statement that returned any other number of rows --
+    fifty, or none -- therefore did not fold, whatever aggregates its plan contains. A page read carrying
+    `(SELECT count(*) FROM observations) AS scanned` is the case that matters: the subquery reads the
+    whole window and the page returns a handful of groups, and taking the subquery's input as the
+    denominator would divide the window by itself and report a bounded read.
+
+    Zero is the same case and not a smaller one. A filter that matches nothing still reads the window --
+    `news_market_groups` on a group key that no observation carries is #570 A3's shape exactly, and
+    `news_review_market` reaches it through a subquery -- and a plan that discards 25,000 rows to return
+    none beside a `count(*)` over 500,000 is the most amplified read there is, not a folded one.
     """
 
-    if returned_rows > 1:
+    if returned_rows != 1:
         return "returned_rows", returned_rows
     folded_input_rows = max(
         (

@@ -309,13 +309,15 @@ def test_query_audit_guards_a_paged_read_and_an_unbounded_aggregate_on_real_plan
     tmp_path,
     postgres_clone_dsn: str,
 ):
-    """Two shapes the fold must not excuse, both planned by PostgreSQL rather than written by hand.
+    """Three shapes the fold must not excuse, all planned by PostgreSQL rather than written by hand.
 
     A page read carrying `(SELECT count(*) FROM ...)` -- the shape of `news_market_groups` and every
     review-desk queue read -- returns many rows and folded nothing, so its own returned rows stay the
-    denominator. And an aggregate that reads a whole table by an index path has amplification 1 by
-    construction and no sequential scan to flag, so only the spec's declared scanned-rows ceiling can
-    bound it.
+    denominator. The same page filtered down to nothing is the same case, not a smaller one: an ungrouped
+    aggregate emits exactly one row, so a result of none did not come from one, and a filter that
+    discards the window to return nothing is the most amplified read there is. And an aggregate that
+    reads a whole table by an index path has amplification 1 by construction and no sequential scan to
+    flag, so only the spec's declared scanned-rows ceiling can bound it.
     """
 
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
@@ -323,8 +325,8 @@ def test_query_audit_guards_a_paged_read_and_an_unbounded_aggregate_on_real_plan
         conn.execute("SET max_parallel_workers_per_gather = 0")
         conn.execute("CREATE TABLE audit_wide (id bigint PRIMARY KEY)")
         conn.execute("INSERT INTO audit_wide (id) SELECT generate_series(1, %s)", (500_000,))
-        conn.execute("CREATE TABLE audit_page (id bigint PRIMARY KEY)")
-        conn.execute("INSERT INTO audit_page (id) SELECT generate_series(1, 200)")
+        conn.execute("CREATE TABLE audit_page (id bigint PRIMARY KEY, payload text NOT NULL)")
+        conn.execute("INSERT INTO audit_page (id, payload) SELECT g, 'present' FROM generate_series(1, 25000) AS g")
         _vacuum_analyze(conn, "audit_wide")
         _vacuum_analyze(conn, "audit_page")
         payload = PostgresQueryAudit(
@@ -334,6 +336,18 @@ def test_query_audit_guards_a_paged_read_and_an_unbounded_aggregate_on_real_plan
                     name="paged_read_with_scalar_subplan",
                     sql="SELECT id, (SELECT count(*) FROM audit_wide) AS scanned FROM audit_page ORDER BY id LIMIT 200",
                     params=(),
+                    max_read_return_amplification=_COUNTEREXAMPLE_BUDGET,
+                    max_scanned_rows=1_000_000,
+                ),
+                ReadQuerySpec(
+                    # The window is materialised before the filter, the way `news_market_groups`
+                    # materialises its own, so the aggregate really runs on a group key that matches
+                    # nothing. A target-list subquery would be left unevaluated and prove less.
+                    name="empty_page_with_materialised_aggregate",
+                    sql="WITH counted AS MATERIALIZED (SELECT count(*) AS n FROM audit_wide)"
+                    " SELECT p.id, counted.n AS scanned FROM counted CROSS JOIN audit_page p"
+                    " WHERE p.payload = %s ORDER BY p.id LIMIT 200",
+                    params=("absent",),
                     max_read_return_amplification=_COUNTEREXAMPLE_BUDGET,
                     max_scanned_rows=1_000_000,
                 ),
@@ -354,6 +368,7 @@ def test_query_audit_guards_a_paged_read_and_an_unbounded_aggregate_on_real_plan
 
     audited = {item["name"]: item for item in payload["queries"]}
     paged = audited["paged_read_with_scalar_subplan"]
+    empty = audited["empty_page_with_materialised_aggregate"]
     unbounded = audited["unbounded_aggregate_by_index"]
 
     # The page returned 200 rows, so those are the denominator; folding the subplan would report 1.0004.
@@ -362,6 +377,16 @@ def test_query_audit_guards_a_paged_read_and_an_unbounded_aggregate_on_real_plan
     assert paged["metrics"]["amplification_basis_rows"] == 200
     assert paged["metrics"]["read_return_amplification"] > _COUNTEREXAMPLE_BUDGET
     assert "read_return_amplification_exceeded" in paged["violations"]
+
+    # Nothing matched, and the aggregate ran anyway: 500,000 rows folded plus 25,000 discarded, for no
+    # row at all. Reading that as a fold reported 1.05 and passed.
+    assert empty["metrics"]["returned_rows"] == 0
+    assert empty["metrics"]["scan_output_rows"] == 500_000
+    assert empty["metrics"]["scanned_rows"] == 525_000
+    assert empty["metrics"]["amplification_basis"] == "returned_rows"
+    assert empty["metrics"]["amplification_basis_rows"] == 0
+    assert empty["metrics"]["read_return_amplification"] == 525_000.0
+    assert "read_return_amplification_exceeded" in empty["violations"]
 
     # One row out, a quarter of a million rows in, by an index. Amplification and the sequential-scan
     # rule are both silent here on purpose; the declared ceiling is not.
