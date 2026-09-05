@@ -12,7 +12,9 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
@@ -26,7 +28,13 @@ WS_TOKEN = "browser-smoke-token"
 # console's default view, and that view is the 已推送 tab; #458 stopped the OI lane pushing, so it
 # can no longer carry the test. The liquidation lane is the other deterministic judge that still
 # delivers and needs no model.
-SERVICE_FACT = "BTC Large Short Liquidation 4.55M at $118000"
+# Two frames, because the service now has two planes and the smoke has to prove both reached HTTP
+# through the real broker, the real Workers process and the real serve process (#553). The news frame
+# opens an Event and lands in `/api/news/feed`; the liquidation is a market observation, opens no
+# Event by design, and lands in `/api/news/market`. Before the cut the smoke seeded only the
+# liquidation and waited for it on the feed, which is exactly the path that no longer exists.
+SERVICE_FACT = "Regulator approves the second spot ETF listing of the year"
+MARKET_FACT = "BTC Large Short Liquidation 4.55M at $118000"
 
 
 def main() -> int:
@@ -163,56 +171,80 @@ async def _publish_opennews(amqp_url: str, name_prefix: str) -> None:
     bus = RabbitMQBus(url=amqp_url, name_prefix=name_prefix, connect_timeout_seconds=5.0)
     await bus.connect()
     try:
-        await bus.publish(
-            BusMessage(
-                kind="raw",
-                message_id=f"raw:{message_id}",
-                routing_key=RK_RAW_LIVE.format(strategy_id="2000"),
-                payload={
-                    "params": {
-                        "id": message_id,
-                        "newsType": "strategy",
-                        "engineType": "market",
-                        "text": SERVICE_FACT,
-                        "source": "binance",
-                        "coins": [],
-                        "ts": stamp,
-                        "strategy": {
-                            "id": 2000,
-                            "name": "实时清算",
-                            "engineType": "market",
-                            "sourceType": "market",
-                        },
-                    },
-                    "strategy_id": "2000",
-                    "ingest_mode": "live",
-                    "observed_at_ms": stamp,
-                },
-                trace_id=new_trace_id(),
-                occurred_at_ms=stamp,
-            )
+        frames: tuple[tuple[str, str, str, str, str, dict[str, Any]], ...] = (
+            ("1018", "News Score > 70", "news", "news", SERVICE_FACT, {"score": 92}),
+            ("2000", "实时清算", "market", "market", MARKET_FACT, {}),
         )
+        for offset, (strategy_id, strategy_name, source_type, engine_type, text, extra) in enumerate(frames):
+            record_id = message_id + offset
+            params: dict[str, Any] = {
+                "id": record_id,
+                "newsType": "strategy",
+                "engineType": engine_type,
+                "text": text,
+                "source": "binance",
+                "coins": [],
+                "ts": stamp,
+                "strategy": {
+                    "id": int(strategy_id),
+                    "name": strategy_name,
+                    "engineType": engine_type,
+                    "sourceType": source_type,
+                },
+                **extra,
+            }
+            await bus.publish(
+                BusMessage(
+                    kind="raw",
+                    message_id=f"raw:{record_id}",
+                    routing_key=RK_RAW_LIVE.format(strategy_id=strategy_id),
+                    payload={
+                        "params": params,
+                        "strategy_id": strategy_id,
+                        "ingest_mode": "live",
+                        "observed_at_ms": stamp,
+                    },
+                    trace_id=new_trace_id(),
+                    occurred_at_ms=stamp,
+                )
+            )
     finally:
         await bus.close()
 
 
 def _wait_for_service_fact(base_url: str) -> None:
+    """Both planes, through the real stack: an Event on the feed and an observation on the market read."""
+
+    _wait_for_fact(
+        f"{base_url}/api/news/feed",
+        lambda body: any(event.get("leader_title") == SERVICE_FACT for event in body["data"]["events"]),
+        "news Event did not reach the HTTP feed",
+    )
+    _wait_for_fact(
+        f"{base_url}/api/news/market",
+        lambda body: any(
+            group["latest"].get("title") == MARKET_FACT and group["market_kind"] == "liquidation"
+            for group in body["data"]["groups"]
+        ),
+        "market observation did not reach the HTTP market read",
+    )
+
+
+def _wait_for_fact(url: str, matches: Callable[[dict[str, Any]], bool], failure: str) -> None:
     deadline = time.monotonic() + 30.0
     last = ""
     while time.monotonic() < deadline:
         response = httpx.get(
-            f"{base_url}/api/news/feed",
+            url,
             headers={"Authorization": f"Bearer {WS_TOKEN}"},
             timeout=5.0,
             trust_env=False,
         )
         last = response.text[:500]
-        if response.status_code == 200 and any(
-            event.get("leader_title") == SERVICE_FACT for event in response.json()["data"]["events"]
-        ):
+        if response.status_code == 200 and matches(response.json()):
             return
         time.sleep(0.1)
-    raise AssertionError(f"service fact did not reach the HTTP feed: {last}")
+    raise AssertionError(f"{failure}: {last}")
 
 
 def _unused_port() -> int:
