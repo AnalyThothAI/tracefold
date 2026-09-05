@@ -70,6 +70,11 @@ def worker_business_tasks(
 
     The Signal lane's loop is declared here rather than inside `tracefold.trading`: the lane
     exposes one business action and App owns polling, the stop event and the process lifecycle.
+
+    These declarations do not set capability states. Composition already did, and it knows more than
+    a task list can: a Deliverer task runs whether or not a sender could be built, so "a task exists"
+    is not "the capability works", and letting this loop declare `running` would quietly overwrite
+    the `unavailable` that composition recorded.
     """
 
     tasks: list[WorkerTask] = []

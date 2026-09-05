@@ -14,6 +14,7 @@ from tracefold.app.workers.runtime import (
     NEWS_INGESTION,
     CapabilityStates,
 )
+from tracefold.app.workers.task_contract import worker_business_tasks
 from tracefold.app.workers.wiring import news as news_wiring
 from tracefold.app.workers.wiring.components import _wire_components
 from tracefold.platform.config.models import Settings
@@ -175,6 +176,13 @@ def test_a_sender_that_cannot_be_constructed_leaves_the_fact_chain_composed_and_
     assert capabilities.payload()[NEWS_INGESTION] == {"state": "running", "reason": None}
     # Reception, admission and retention are all still declared; only the send is missing.
     assert {name for name, _ in pipeline.runners()} >= {"news-deduper", "news-janitor", "news-deliverer"}
+
+    # The Deliverer task still runs -- it settles those Events `delivery_unavailable` rather than
+    # dropping them -- so "a task exists" must not be read back as "the capability works". Declaring
+    # the task must leave the composition's `unavailable` exactly where composition put it.
+    tasks = worker_business_tasks(news_pipeline=pipeline, signal_lane=None)
+    assert ("news-deliverer", NEWS_DELIVERY) in {(task.name, task.capability) for task in tasks}
+    assert capabilities.payload()[NEWS_DELIVERY]["state"] == "unavailable"
 
 
 def test_a_program_that_cannot_be_assembled_faults_editorial_and_leaves_the_rest_composed(

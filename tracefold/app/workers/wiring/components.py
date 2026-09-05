@@ -137,4 +137,6 @@ def _wire_trading_lane(
         return None
     if lane is None:
         capabilities.disabled(TRADING_SIGNAL_LANE, "trading_disabled")
+    else:
+        capabilities.running(TRADING_SIGNAL_LANE)
     return lane

@@ -66,16 +66,15 @@ def _arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-# The turns run under real News task names because the Workers task contract maps a task name onto
-# the capability it answers for, and refuses a name it does not know. `news-deduper` is the admission
-# task: the one whose continued fact writes are the point of every confinement test here.
-_TURN_TASK_NAMES = ("news-deduper", "news-instruments", "news-janitor")
-
-
 class _TurnPipeline:
-    """Carry the test turns through the runtime's business-task slots."""
+    """Carry the test turns through the runtime's business-task slots.
 
-    def __init__(self, turns: tuple[tuple[Any, float], ...]) -> None:
+    Turns run under real News task names because the Workers task contract maps a task name onto the
+    capability it answers for, and refuses a name it does not know. `news-deduper` is the admission
+    task: the one whose continued fact writes are the point of every confinement test here.
+    """
+
+    def __init__(self, turns: tuple[tuple[str, Any, float], ...]) -> None:
         self._turns = turns
 
     @property
@@ -86,10 +85,7 @@ class _TurnPipeline:
         return None
 
     def runners(self) -> list[tuple[str, Any]]:
-        return [
-            (_TURN_TASK_NAMES[index], _turn_runner(turn, idle_seconds))
-            for index, (turn, idle_seconds) in enumerate(self._turns)
-        ]
+        return [(name, _turn_runner(turn, idle_seconds)) for name, turn, idle_seconds in self._turns]
 
     def disable_editorial(self) -> None:
         return None
@@ -194,6 +190,47 @@ def _backlog_consumer(db: Any, *, resume_gate: Path) -> Any:
     return turn
 
 
+def _declare_news_capabilities(
+    capabilities: Any,
+    *,
+    market_review: bool = False,
+    delivery: str = "disabled",
+) -> None:
+    """Stand in for what the real News composition declares about the tasks it just wired."""
+
+    from tracefold.app.workers.runtime import (
+        NEWS_DELIVERY,
+        NEWS_EDITORIAL,
+        NEWS_INGESTION,
+        NEWS_MARKET_REVIEW,
+    )
+
+    capabilities.running(NEWS_INGESTION)
+    capabilities.running(NEWS_EDITORIAL)
+    capabilities.declare(
+        NEWS_DELIVERY,
+        delivery,
+        reason=(
+            "news_item_push_telegram_bot_token_unavailable"
+            if delivery == "unavailable"
+            else "news_item_push_not_requested"
+        ),
+    )
+    if market_review:
+        capabilities.running(NEWS_MARKET_REVIEW)
+    else:
+        capabilities.disabled(NEWS_MARKET_REVIEW, "news_market_review_not_configured")
+
+
+def _idle_turn() -> Any:
+    """A task that runs and does nothing, so only its presence is under test."""
+
+    async def turn() -> bool:
+        return False
+
+    return turn
+
+
 def _turn_runner(turn: Any, idle_seconds: float) -> Any:
     async def run(stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
@@ -210,7 +247,7 @@ def _turn_runner(turn: Any, idle_seconds: float) -> Any:
 def _components(
     workers_module: Any,
     *,
-    due_turns: tuple[tuple[Any, float], ...],
+    due_turns: tuple[tuple[str, Any, float], ...],
 ) -> Any:
     return workers_module._Components(
         news_pipeline=_TurnPipeline(due_turns),
@@ -394,7 +431,7 @@ async def _main() -> None:
                 )
                 return True
 
-            return _components(workers, due_turns=((overrun, 1.0),))
+            return _components(workers, due_turns=(("news-deduper", overrun, 1.0),))
 
         if arguments.mode == "control_overrun":
             return _components(workers, due_turns=())
@@ -425,7 +462,7 @@ async def _main() -> None:
             published = True
             return True
 
-        return _components(workers, due_turns=((provider_publication, 1.0),))
+        return _components(workers, due_turns=(("news-deduper", provider_publication, 1.0),))
 
     if arguments.mode == "manifest_barrier":
         release_gate = Path(os.environ["TRACEFOLD_TEST_MANIFEST_GATE"])
@@ -438,7 +475,8 @@ async def _main() -> None:
         # The real `_wire_components` runs: what fails is the editorial Program registration, and the
         # fact-writing ingestion task beside it must keep committing.
         async def wire_registration_fault(**kwargs: Any) -> tuple[None, _RegistrationFaultPipeline]:
-            return None, _RegistrationFaultPipeline(((_fact_writer(kwargs["db"]), 1.0),))
+            _declare_news_capabilities(kwargs["capabilities"])
+            return None, _RegistrationFaultPipeline((("news-deduper", _fact_writer(kwargs["db"]), 1.0),))
 
         workers_wiring._wire_news_pipeline = wire_registration_fault
     elif arguments.mode == "optional_task_fault":
@@ -446,10 +484,11 @@ async def _main() -> None:
 
         async def wire_optional_task_fault(**kwargs: Any) -> tuple[None, _TurnPipeline]:
             db = kwargs["db"]
+            _declare_news_capabilities(kwargs["capabilities"], market_review=True)
             return None, _TurnPipeline(
                 (
-                    (_fact_writer(db), 1.0),
-                    (_backlog_consumer(db, resume_gate=resume_gate), 1.0),
+                    ("news-deduper", _fact_writer(db), 1.0),
+                    ("news-instruments", _backlog_consumer(db, resume_gate=resume_gate), 1.0),
                 )
             )
 
@@ -458,7 +497,16 @@ async def _main() -> None:
         from tracefold.trading.signal_lane import SignalLane
 
         async def wire_trading_lane_fault(**kwargs: Any) -> tuple[None, _TurnPipeline]:
-            return None, _TurnPipeline(((_fact_writer(kwargs["db"]), 1.0),))
+            # A Deliverer task runs beside an `unavailable` sender on purpose: it settles those
+            # Events `delivery_unavailable` rather than dropping them, so declaring the task must not
+            # overwrite what composition recorded about the sender it could not build.
+            _declare_news_capabilities(kwargs["capabilities"], delivery="unavailable")
+            return None, _TurnPipeline(
+                (
+                    ("news-deduper", _fact_writer(kwargs["db"]), 1.0),
+                    ("news-deliverer", _idle_turn(), 1.0),
+                )
+            )
 
         async def failing_advance(_self: Any) -> None:
             print("TRADING_LANE_ABOUT_TO_FAIL", flush=True)

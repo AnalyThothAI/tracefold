@@ -220,7 +220,6 @@ async def run_workers(settings: Settings) -> None:
                 logger.bind(error=type(exc).__name__).error("Workers capability report not persisted")
 
         async with asyncio.TaskGroup() as group:
-            business_tasks: list[asyncio.Task[Any]] = []
             control_task: asyncio.Task[Any] | None = None
             probe_task = group.create_task(
                 _guard_child(
@@ -229,23 +228,22 @@ async def run_workers(settings: Settings) -> None:
                 ),
                 name=WORKERS_PROBE_TASK_NAME,
             )
-            for task in worker_business_tasks(
-                news_pipeline=components.news_pipeline,
-                signal_lane=components.signal_lane,
-                telemetry=components.telemetry,
-            ):
-                components.capabilities.running(task.capability)
-                business_tasks.append(
-                    group.create_task(
-                        _run_capability_task(
-                            task,
-                            stop_event=work_stop_event,
-                            capabilities=components.capabilities,
-                            on_fault=publish_capabilities,
-                        ),
-                        name=task.name,
-                    )
+            business_tasks = [
+                group.create_task(
+                    _run_capability_task(
+                        task,
+                        stop_event=work_stop_event,
+                        capabilities=components.capabilities,
+                        on_fault=publish_capabilities,
+                    ),
+                    name=task.name,
                 )
+                for task in worker_business_tasks(
+                    news_pipeline=components.news_pipeline,
+                    signal_lane=components.signal_lane,
+                    telemetry=components.telemetry,
+                )
+            ]
             await _guard_child(
                 _wait_for_probe_start(server),
                 on_fatal=enter_fatal,

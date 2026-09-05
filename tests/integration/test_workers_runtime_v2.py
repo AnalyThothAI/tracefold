@@ -334,6 +334,12 @@ def test_real_trading_lane_fault_keeps_news_fact_writes_and_reads_running(tmp_pa
             "state": "faulted",
             "reason": "trading-signal-lane:RuntimeError",
         }
+        # A running Deliverer task beside a sender that could not be built is still `unavailable`:
+        # declaring a task is not a claim that its capability works.
+        assert payload["capabilities"]["news_delivery"] == {
+            "state": "unavailable",
+            "reason": "news_item_push_telegram_bot_token_unavailable",
+        }
         row = _runtime_row()
         assert row["lifecycle_state"] == "running"
         assert row["fatal_code"] is None
