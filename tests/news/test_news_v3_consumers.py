@@ -60,6 +60,7 @@ from tracefold.news.program.contracts import (
     TriageContext,
 )
 from tracefold.news.program.runtime import PROGRAM_VERSION
+from tracefold.news.reader_card import ReaderCard
 from tracefold.news.reader_history import ReaderHistorySnapshot, assemble_reader_history
 from tracefold.news.release.canary import CanaryRuntimeArm
 from tracefold.news.triage_rules import DEFAULT_POLICY
@@ -1227,7 +1228,10 @@ def test_triage_rejects_missing_event_id_and_missing_event() -> None:
 # ---------------------------------------------------------------- Deliverer
 class RecordingSender:
     def __init__(self, order: list[str] | None = None) -> None:
+        # `cards` is the frozen channel payload the ledger stores; `reader_cards` is the value
+        # object a model-rendering channel serializes for itself (#562 PR-C).
         self.cards: list[dict[str, Any]] = []
+        self.reader_cards: list[ReaderCard] = []
         self.presentations: list[ReaderDeliveryPresentation] = []
         self.order = order
 
@@ -1237,13 +1241,15 @@ class RecordingSender:
 
     def send_card(
         self,
-        card: Mapping[str, Any],
+        card: ReaderCard,
         *,
+        channel_payload: Mapping[str, Any],
         presentation: ReaderDeliveryPresentation | None = None,
     ) -> dict[str, Any]:
         if self.order is not None:
             self.order.append("send")
-        self.cards.append(dict(card))
+        self.cards.append(dict(channel_payload))
+        self.reader_cards.append(card)
         self.presentations.append(presentation or ReaderDeliveryPresentation())
         return {"status_code": 200, "code": 0}
 
@@ -1255,16 +1261,18 @@ class RecordingEditableSender(RecordingSender):
     def __init__(self, order: list[str]) -> None:
         super().__init__(order)
         self.edited_cards: list[dict[str, Any]] = []
+        self.edited_reader_cards: list[ReaderCard] = []
         self.edited_presentations: list[ReaderDeliveryPresentation] = []
         self._message_id = 41
 
     def send_card(
         self,
-        card: Mapping[str, Any],
+        card: ReaderCard,
         *,
+        channel_payload: Mapping[str, Any],
         presentation: ReaderDeliveryPresentation | None = None,
     ) -> dict[str, Any]:
-        super().send_card(card, presentation=presentation)
+        super().send_card(card, channel_payload=channel_payload, presentation=presentation)
         self._message_id += 1
         return {
             "provider": "telegram",
@@ -1276,13 +1284,15 @@ class RecordingEditableSender(RecordingSender):
     def edit_card(
         self,
         receipt: Mapping[str, Any],
-        card: Mapping[str, Any],
+        card: ReaderCard,
         *,
+        channel_payload: Mapping[str, Any],
         presentation: ReaderDeliveryPresentation | None = None,
     ) -> dict[str, Any]:
         assert isinstance(receipt["message_id"], int) and receipt["message_id"] >= 42
         self.order.append("edit")
-        self.edited_cards.append(dict(card))
+        self.edited_cards.append(dict(channel_payload))
+        self.edited_reader_cards.append(card)
         self.edited_presentations.append(presentation or ReaderDeliveryPresentation())
         return {**dict(receipt), "edited_at_ms": NOW_MS + 1_000}
 
@@ -1291,11 +1301,12 @@ class FailingEditSender(RecordingEditableSender):
     def edit_card(
         self,
         receipt: Mapping[str, Any],
-        card: Mapping[str, Any],
+        card: ReaderCard,
         *,
+        channel_payload: Mapping[str, Any],
         presentation: ReaderDeliveryPresentation | None = None,
     ) -> dict[str, Any]:
-        del receipt, card, presentation
+        del receipt, card, channel_payload, presentation
         self.order.append("edit")
         raise RuntimeError("telegram edit unavailable")
 
@@ -1310,14 +1321,15 @@ class BlockingEditSender(RecordingEditableSender):
     def edit_card(
         self,
         receipt: Mapping[str, Any],
-        card: Mapping[str, Any],
+        card: ReaderCard,
         *,
+        channel_payload: Mapping[str, Any],
         presentation: ReaderDeliveryPresentation | None = None,
     ) -> dict[str, Any]:
         self.started.set()
         if not self.release.wait(timeout=5.0):
             raise RuntimeError("blocking edit test timed out")
-        return super().edit_card(receipt, card, presentation=presentation)
+        return super().edit_card(receipt, card, channel_payload=channel_payload, presentation=presentation)
 
     def close(self) -> None:
         assert self.release.is_set()
@@ -2041,6 +2053,9 @@ def test_single_name_without_a_grounded_asset_is_edited_to_say_so_after_authorit
 
     assert "delete" not in sender.order
     assert sender.edited_cards[0]["elements"][0]["content"].startswith("未找到可交易标的\n")
+    # The notice is a fact about the card, not one channel's line: the model carries it and every
+    # serializer reads it from there (#562 PR-C).
+    assert sender.edited_reader_cards[0].untradeable is True
     assert sender.edited_cards[0]["tradability_review"]["state"] == "absent"
     assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
 

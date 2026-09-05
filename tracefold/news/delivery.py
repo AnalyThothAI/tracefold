@@ -238,6 +238,7 @@ def news_reader_card(
     assets: Sequence[str] | None = None,
     degraded: bool = False,
     quotes: Sequence[Mapping[str, Any]] = (),
+    untradeable: bool = False,
 ) -> ReaderCard:
     """One Event's card, in facts. `quotes` are `PriceRepository.quotes_for_symbols` rows for the
     rendered assets, in that order; passing none renders exactly the v9 card, so the price is additive
@@ -278,6 +279,7 @@ def news_reader_card(
         link=ReaderCardLink(url=link, label=_SOURCE_BUTTON_LABEL) if link else None,
         note=ReaderCardNote(id=str(event.get("event_id", ""))),
         times=ReaderCardTimes(event_at_ms=event.get("leader_published_at_ms") or event.get("opened_at_ms")),
+        untradeable=untradeable,
     )
 
 
@@ -291,7 +293,12 @@ def render_first_card(
     degraded: bool = False,
     quotes: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
-    """The Event's `ReaderCard` in the wire shape the delivery ledger freezes and Feishu accepts."""
+    """The Event's `ReaderCard` in the wire shape the delivery ledger freezes and Feishu accepts.
+
+    The Deliverer builds the two shapes separately -- the card model for the channels that serialize it
+    themselves, and this payload for the ledger and Feishu (#562 PR-C) -- so this composition is the
+    single entry point the production-card byte regression pins the pair through.
+    """
 
     return feishu_card(
         news_reader_card(

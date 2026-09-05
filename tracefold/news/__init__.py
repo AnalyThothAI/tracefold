@@ -6,6 +6,8 @@ configuration constants remain under their owning modules instead of becoming an
 
 from __future__ import annotations
 
+from .card_format import LINKABLE_TICKER_RE
+from .card_format import clock as card_clock
 from .delivery_contracts import COMMIT_PHASE_NOT_SENT, COMMIT_PHASE_UNKNOWN
 from .market_contracts import MARKET_PAGE_MAX, MARKET_WINDOW_DEFAULT_MS, MARKET_WINDOW_MAX_MS
 from .models import (
@@ -42,6 +44,7 @@ from .progression_review import (
     PROGRESSION_REVIEW_TIMEOUT_SECONDS,
     ProgressionVerifier,
 )
+from .reader_card import NOVELTY_ZH, UNTRADEABLE_NOTICE_ZH, ReaderCard, quote_line
 from .source_contracts import EVENT_KINDS, MARKET_KINDS, EventKind, MarketKind
 from .taxonomy import (
     ASSERTION_STATUSES,
@@ -72,17 +75,20 @@ __all__ = [
     "EVENT_FAMILIES",
     "EVENT_KINDS",
     "IPTC_SUBJECT_CODES",
+    "LINKABLE_TICKER_RE",
     "MARKET_KINDS",
     "MARKET_PAGE_MAX",
     "MARKET_WINDOW_DEFAULT_MS",
     "MARKET_WINDOW_MAX_MS",
     "NEWS_RETRIEVAL_SHA256",
+    "NOVELTY_ZH",
     "OI_METRIC_VERSION",
     "PROGRESSION_REVIEW_REASON_MAX_CHARS",
     "PROGRESSION_REVIEW_TIMEOUT_SECONDS",
     "REQUIRED_TRADABILITY_VENUES",
     "SOURCE_AUTHORITIES",
     "TRADABILITY_REVIEW_TIMEOUT_SECONDS",
+    "UNTRADEABLE_NOTICE_ZH",
     "EditorialEnvelope",
     "EventKind",
     "IPTCCodebookSha",
@@ -97,6 +103,7 @@ __all__ = [
     "ProgramTrace",
     "ProgramUsage",
     "ProgressionVerifier",
+    "ReaderCard",
     "ReaderCardSemanticView",
     "ReaderDeliveryPresentation",
     "ReaderMarketMovement",
@@ -115,5 +122,7 @@ __all__ = [
     "TradeRelevanceV1",
     "TriageContext",
     "TriageVerdict",
+    "card_clock",
+    "quote_line",
     "source_authority_from_evidence",
 ]

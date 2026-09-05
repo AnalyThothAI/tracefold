@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
 from tracefold.platform.config.models import Settings, news_push_availability
 
@@ -73,17 +72,33 @@ def test_serve_can_report_configured_push_without_reading_the_workers_only_secre
     assert availability.telegram_bot_token_file_configured is True
 
 
-@pytest.mark.parametrize("chat_id", ["@channel", "not-a-number", True])
-def test_telegram_push_reads_a_chat_id_that_is_a_number_and_nothing_else(tmp_path: Path, chat_id: object) -> None:
-    """`Settings` reads the operator's number; the adapter owns what a valid target looks like.
+@pytest.mark.parametrize(
+    ("chat_id", "stored"),
+    [
+        # A public channel is named by its `@name`; both of Telegram's own ways of naming one channel
+        # reach the adapter as the operator wrote them (#562 §5 rows 1 and 11).
+        ("@channel", "@channel"),
+        ("-1001234567890", -1_001_234_567_890),
+        # And a shape neither the adapter nor Telegram can address still loads: the process starts and
+        # the delivery capability is what carries the fault.
+        ("not-a-number", "not-a-number"),
+        (True, "True"),
+    ],
+)
+def test_telegram_push_reads_the_chat_target_the_operator_wrote(
+    tmp_path: Path, chat_id: object, stored: object
+) -> None:
+    """`Settings` reads the operator's target; the adapter owns what a valid one looks like.
 
     #562 §5 rows 1 and 8: the private-channel shape used to be enforced here as well as in
     `TelegramNewsPushSender`, and this copy refused the whole configuration -- so a mistyped digit took
     reception, triage and the market loop down with the process, with nothing left running to say so.
     """
 
-    with pytest.raises(ValidationError, match="news_push_telegram_chat_id_invalid"):
-        _telegram_settings(tmp_path, chat_id=chat_id)
+    settings = _telegram_settings(tmp_path, chat_id=chat_id)
+
+    assert settings.news.push.telegram_chat_id == stored
+    assert news_push_availability(settings).telegram_chat_id_configured is True
 
 
 @pytest.mark.parametrize("chat_id", [0, 123456789, -123456789])

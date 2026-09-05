@@ -22,6 +22,17 @@ PUBLIC_NEWS_INTERFACE = {
     "COMMIT_PHASE_UNKNOWN",
     "EVENT_FAMILIES",
     "EVENT_KINDS",
+    # #562 PR-C: the reader card model and the reader-facing formats a channel serializer needs. The
+    # two delivery adapters live outside News and now render from the card instead of parsing another
+    # channel's JSON, so the value object, the vocabulary a reviewed novelty is named in, the clock a
+    # card writes a time with and the ticker grammar a trade action is built from are the surface they
+    # are given. The renderers themselves (`render_first_card`, `feishu_card`) stay private.
+    "LINKABLE_TICKER_RE",
+    "NOVELTY_ZH",
+    "ReaderCard",
+    "UNTRADEABLE_NOTICE_ZH",
+    "card_clock",
+    "quote_line",
     "EditorialEnvelope",
     "EventKind",
     "IPTCCodebookSha",

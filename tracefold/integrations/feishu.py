@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from tracefold.news import COMMIT_PHASE_NOT_SENT, COMMIT_PHASE_UNKNOWN, ReaderDeliveryPresentation
+from tracefold.news import COMMIT_PHASE_NOT_SENT, COMMIT_PHASE_UNKNOWN, ReaderCard, ReaderDeliveryPresentation
 
 FEISHU_WEBHOOK_REQUEST_MAX_BYTES = 20 * 1024
 FEISHU_WEBHOOK_RATE_LIMIT_CODE = 11232
@@ -237,13 +237,17 @@ class FeishuNewsPushSender:
 
     def send_card(
         self,
-        card: Mapping[str, Any],
+        card: ReaderCard,
         *,
+        channel_payload: Mapping[str, Any],
         presentation: ReaderDeliveryPresentation | None = None,
     ) -> dict[str, Any]:
-        del presentation  # Feishu receives the stable reader card unchanged; rich context is adapter-only.
+        # `channel_payload` is this channel's own wire shape, serialized from `card` and frozen in the
+        # delivery ledger before the first attempt. Feishu posts exactly that snapshot, so a retry
+        # sends the bytes the ledger holds rather than a re-rendering of the same facts.
+        del card, presentation  # The card model is the model-rendering channels'; rich context is adapter-only.
         try:
-            receipt = self._client.send(dict(card), timestamp_seconds=self._timestamp_seconds())
+            receipt = self._client.send(dict(channel_payload), timestamp_seconds=self._timestamp_seconds())
         except FeishuDeliveryError as exc:
             raise NewsPushExternalError(
                 f"news_delivery_{exc.code}",

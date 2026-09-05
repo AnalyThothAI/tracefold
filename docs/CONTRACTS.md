@@ -188,9 +188,12 @@ tradability. `news_deliveries` keeps its `delete_*` columns as the audit of the 
 that path existed; no writer reaches them. The
 Telegram projection gives every asset its own block: the first line is `🎯 标的 BTC`, followed by separate
 `新闻后 +1.10%`, `1h +0.80%，`, and `24h +3.20%` lines. Multiple assets repeat that complete block with a blank
-line between them. Direction and magnitude remain presentation metadata: an unclear verdict renders `方向待定`,
-and a positional tail token that does not match the code-owned ticker grammar fails closed rather than becoming a
-trade target. The novelty badge sits directly
+line between them. Both adapters serialize the same reader card value object, so the assets, direction, magnitude,
+novelty, origin, report count and event time a block is built from are read as card fields: an unclear verdict
+renders `方向待定`, and no value is recovered from another channel's rendered text. A market notification card
+(open interest, liquidation, smart money, provider raw) carries no asset block and no market movement plane at
+all; it keeps its family mark, its own body lines and its observation event time. An authoritative five-venue
+absence sets the card's own `未找到可交易标的`, which leads the card in both channels. The novelty badge sits directly
 below the title: `🆕 新事实`, or `🔄 新进展`. With a post-delivery verifier configured, an initial progression also
 shows an indented one-line `关联确认中` child block and never waits for another model call; with none configured no
 review is coming, so no badge is shown and no prior headline is named (#562 §5 rows 3 and 6). The same message is later
@@ -224,10 +227,11 @@ The calculation never mixes venues or contracts, needs no continuously collected
 write these presentation returns into `reaction_v1`. The 24 h value is calculated from the current and
 push-minus-24H anchors on that same contract; a fresh same-contract `rolling_24h` snapshot is only a fallback when
 the on-demand point path is unavailable. An unavailable value is labelled rather than replaced with another window.
-Direction renders impact and polarity together on one line, such as `🧭 方向 明显利空`; novelty remains its
-own line. The footer has no time heading: it lists news publication time, send-start time, and then the
-normalized source words carrying the original HTTPS link, with no separate source button. Times use
-whole-second precision in UTC+8; any missing
+Direction renders polarity and impact together on one line, such as `🧭 方向 利空 · 影响明显`; novelty remains
+its own line. The footer has no time heading: it lists the card's own event time (news publication time, or a
+market observation's stamp), the send-start time, and then the normalized source words carrying the original
+HTTPS link, with no separate source button. A market card's link is its console detail button on its own footer
+line rather than a source label. Times use the reader card's one whole-minute UTC+8 clock; any missing
 input is displayed as `暂无` without hiding known timestamps. The persisted reader card and Feishu payload are
 unchanged; these values travel only in an ephemeral typed delivery presentation.
 When push is disabled, both processes still start and a verdict that reaches a

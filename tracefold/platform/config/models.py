@@ -221,7 +221,7 @@ class NewsPushSettings(BaseModel):
     feishu_webhook_url: str | None = None
     feishu_signing_secret: str | None = None
     telegram_bot_token_file: str | None = None
-    telegram_chat_id: int | None = None
+    telegram_chat_id: int | str | None = None
     min_interval_seconds: float = 0.6
 
     @field_validator("feishu_webhook_url", "feishu_signing_secret", mode="before")
@@ -238,25 +238,28 @@ class NewsPushSettings(BaseModel):
 
     @field_validator("telegram_chat_id", mode="before")
     @classmethod
-    def parse_private_channel_id(cls, value: Any) -> int | None:
-        """Read the operator's chat id as an integer. What a *valid* one looks like is the adapter's rule.
+    def parse_channel_target(cls, value: Any) -> int | str | None:
+        """Read the operator's chat target. What a *valid* one looks like is the adapter's rule.
 
-        The private-channel shape was written down twice: here, and in `TelegramNewsPushSender`, which
-        is the code that actually talks to Telegram and refuses anything else. The copy here was the
-        more expensive of the two by far -- a mistyped digit failed `Settings` validation, so the whole
-        process could not start, and no `tracefold config` or `/readyz` could say why. One typo, and
-        reception, triage and the market loop were down with it. The adapter's copy costs a delivery
-        capability marked `unavailable` beside a running process (#562 §5 rows 1 and 8).
+        Telegram addresses a channel by its Bot API id (`-100…`) or by its public `@name`, and this
+        reads whichever the operator wrote: the number as a number, anything else as the text they
+        typed. It refuses nothing, because the shape used to be written down twice -- here and in
+        `TelegramNewsPushSender`, which is the code that actually talks to Telegram -- and the copy
+        here was the more expensive of the two by far: a mistyped digit failed `Settings` validation,
+        so the whole process could not start and no `tracefold config` or `/readyz` could say why. One
+        typo, and reception, triage and the market loop were down with it. The adapter's refusal costs
+        one delivery capability marked `unavailable` beside a running process (#562 §5 rows 1 and 8).
         """
 
         if value is None or value == "":
             return None
-        if isinstance(value, bool):
-            raise ValueError("news_push_telegram_chat_id_invalid")
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        text = str(value).strip()
         try:
-            return int(str(value).strip())
+            return int(text)
         except ValueError:
-            raise ValueError("news_push_telegram_chat_id_invalid") from None
+            return text
 
     @model_validator(mode="after")
     def validate_pacing(self) -> NewsPushSettings:

@@ -1648,9 +1648,10 @@ push-minus-1h, and push-minus-24h anchors. `24h` is calculated from the current 
 same contract; a fresh same-contract snapshot is only a fallback when the on-demand point path is unavailable. A missing value is
 shown as `暂无`, never borrowed from another window. Telegram renders each asset as a separate four-line block:
 `🎯 标的 BTC`, `新闻后 +1.10%`, `1h +0.80%，`, and `24h +3.20%`; multiple assets repeat the complete block with
-a blank line between them. The adapter recognizes the code-owned `方向待定` metadata label and admits only
-tokens matching the bounded ticker grammar into those asset blocks, so direction, magnitude, or arbitrary card
-text cannot become a target. Impact and polarity share one direction row, such as `🧭 方向 明显利空`, while
+a blank line between them. The adapter reads those assets from the reader card's own fields rather than from any
+rendered line, and admits only tokens matching the bounded ticker grammar into a trade link, so direction,
+magnitude, or arbitrary card text cannot become a target. Polarity and impact share one direction row, such as
+`🧭 方向 利空 · 影响明显`, while
 novelty is a badge immediately below the title (`🆕 新事实` or `🔄 新进展`). A progression names the previous
 headline immediately only when the optional post-delivery verifier is unavailable and an exact-fact retrieval or
 a stored title-similarity score of at least `0.50` supports it. With the verifier configured, the first message

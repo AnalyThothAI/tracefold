@@ -207,14 +207,19 @@ card header is the Triage verdict's `headline_zh` (the original title when
 Triage is degraded) and the body is `why_zh` plus the code-owned facts line.
 Telegram delivery reads `news.push.telegram_bot_token_file` under the same
 regular-file, no-symlink, mode-`0600` policy as other provider files. The
-configured `telegram_chat_id` must be a channel Bot API ID beginning with
-`-100`; the adapter owns that rule and configuration only reads the number, so a
-mistyped digit no longer stops the process from starting (#562 §5 rows 1 and 8).
-Before the first send, Workers asks Telegram for the target metadata, verifies
-the exact ID is a channel, and verifies the bot is an administrator allowed to
-post. Invite links, personal chats, groups, and supergroups are rejected before
-the first message; a channel with a public `@name` is the operator's own
-publishing decision and is accepted. Feishu and Telegram fields may not be
+configured `telegram_chat_id` is either a channel Bot API ID beginning with
+`-100` or that channel's public `@name`, which are Telegram's own two ways of
+naming one channel. The adapter owns that rule and configuration only reads
+whatever the operator wrote, so neither a mistyped digit nor an `@name` stops
+the process from starting; a target of no known shape is reported as
+`news_delivery: unavailable` (#562 §5 rows 1, 8 and 11). Before the first send,
+Workers asks Telegram for the target metadata, verifies the exact ID (or, for an
+`@name`, that the channel answering still carries that name) is a channel, and
+verifies the bot is an administrator allowed to post. Every later provider
+response is checked against the numeric ID Telegram itself answered with.
+Invite links, personal chats, groups, and supergroups are rejected before the
+first message; a channel with a public `@name` is the operator's own publishing
+decision and is accepted. Feishu and Telegram fields may not be
 configured together while push is enabled. An enabled but incomplete or insecure
 provider configuration is reported as `news_delivery: unavailable` with its
 reason, beside a running process that keeps receiving, admitting and triaging;
