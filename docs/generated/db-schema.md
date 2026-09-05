@@ -353,6 +353,13 @@
 | `quote_asset` | `TEXT` | True | `None` |
 | `status` | `TEXT` | False | `None` |
 
+## `news_market_instrument_snapshot_state`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `venue` | `TEXT` | False | `None` |
+| `last_snapshot_ms` | `BIGINT` | False | `None` |
+
 ## `news_market_instruments`
 
 | Column | Type | Nullable | Default |
@@ -363,7 +370,7 @@
 | `instrument_class` | `TEXT` | False | `'unknown'::text` |
 | `quote_asset` | `TEXT` | True | `None` |
 | `status` | `TEXT` | False | `'trading'::text` |
-| `last_seen_ms` | `BIGINT` | False | `None` |
+| `observed_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_market_liquidations`
 

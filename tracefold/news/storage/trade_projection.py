@@ -67,7 +67,11 @@ class OiTradeProjectionRow(TypedDict):
 
 
 class TradeInstrumentProjectionRow(TypedDict):
-    """One exactly-listed native crypto perpetual for one underlying."""
+    """One exactly-listed native crypto perpetual for one underlying.
+
+    ``observed_at_ms`` is when this identity was observed, which is the listing event that produced it — the
+    same fact under both branches below. It is not "the last refresh that saw this contract": since #570 A11 an
+    unchanged catalogue writes no row, so a refresh that changes nothing moves nothing here."""
 
     venue: str
     venue_symbol: str
@@ -75,7 +79,7 @@ class TradeInstrumentProjectionRow(TypedDict):
     instrument_class: str
     quote_asset: str | None
     status: str
-    last_seen_ms: int
+    observed_at_ms: int
 
 
 class TradeEvidenceCollectionHealthRow(TypedDict):
@@ -330,7 +334,7 @@ class TradeProjectionStorage:
             rows = self.conn.execute(
                 """
                 SELECT venue, venue_symbol, base_symbol, instrument_class,
-                       quote_asset, status, last_seen_ms
+                       quote_asset, status, observed_at_ms
                   FROM news_market_instruments
                  WHERE base_symbol = %s
                    AND venue = ANY(%s)
@@ -364,7 +368,7 @@ class TradeProjectionStorage:
                    ORDER BY event.venue, event.venue_symbol, event.observed_at_ms DESC
                 )
                 SELECT venue, venue_symbol, base_symbol, instrument_class,
-                       quote_asset, status, observed_at_ms AS last_seen_ms
+                       quote_asset, status, observed_at_ms
                   FROM historical
                  WHERE base_symbol = %s
                    AND status = 'trading'
@@ -390,7 +394,7 @@ class TradeProjectionStorage:
                 instrument_class=row["instrument_class"],
                 quote_asset=row["quote_asset"],
                 status=row["status"],
-                last_seen_ms=row["last_seen_ms"],
+                observed_at_ms=row["observed_at_ms"],
             )
             for row in rows
         ]
@@ -404,7 +408,7 @@ class TradeProjectionStorage:
 
         rows = self.conn.execute(
             """
-            SELECT venue, venue_symbol, base_symbol, instrument_class, quote_asset, status, last_seen_ms
+            SELECT venue, venue_symbol, base_symbol, instrument_class, quote_asset, status, observed_at_ms
               FROM news_market_instruments
              WHERE venue = 'binance.perp'
                AND status = 'trading'
@@ -419,7 +423,7 @@ class TradeProjectionStorage:
                 instrument_class=row["instrument_class"],
                 quote_asset=row["quote_asset"],
                 status=row["status"],
-                last_seen_ms=row["last_seen_ms"],
+                observed_at_ms=row["observed_at_ms"],
             )
             for row in rows
         ]

@@ -52,9 +52,11 @@ NEWS_TABLES = {
     "news_review_external_source_v1",
     "news_review_pairwise_tasks_v1",
     "news_review_active_agent_v1",
-    # #75 instrument universe: a News-owned provider fact table plus its alias map.
+    # #75 instrument universe: a News-owned provider fact table plus its alias map, and the per-venue
+    # record of when a complete catalogue last answered (#570 A11).
     "news_market_instruments",
     "news_market_instrument_listing_events",
+    "news_market_instrument_snapshot_state",
     "news_symbol_aliases",
     # #88 price review plane: latest-only current quotes, versioned deterministic Event Reactions.
     "news_quote_snapshots",
@@ -2084,7 +2086,7 @@ def test_feed_search_hard_cuts_asset_identity_from_full_text(conn) -> None:
         )
         conn.execute(
             "INSERT INTO news_market_instruments"
-            " (venue, venue_symbol, base_symbol, instrument_class, quote_asset, status, last_seen_ms)"
+            " (venue, venue_symbol, base_symbol, instrument_class, quote_asset, status, observed_at_ms)"
             " VALUES (%s, %s, %s, 'crypto', 'USDT', 'trading', 0)"
             " ON CONFLICT (venue, venue_symbol) DO UPDATE SET base_symbol = EXCLUDED.base_symbol",
             ("qsearch.venue", "QSEARCHBASE-PERP", "QSEARCHBASE"),
