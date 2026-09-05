@@ -3378,8 +3378,12 @@ def test_janitor_runs_raw_batches_and_learning_retention_in_separate_cold_transa
         # #553 PR-2: one bounded batch per pass, beside the purge that made those observations
         # unreadable, so alerting state for a group nobody can read any more goes with them.
         "news_market_track_retention",
+        # #572 PR-1: the wallet tape's own bounded batch, on the same heavy slot and beside the other
+        # sweeps rather than as a task of its own.
+        "news_chain_tape_retention",
         "news_learning_retention",
     ]
+    assert news.kwargs_of("chain_tape_purge_fills")["limit"] == 500
     # The judged cutoff, not the raw one: a track outlives the raw text and dies with the judged
     # window, which is when its group's last observation actually stops being readable.
     prune = news.kwargs_of("market_prune_tracks")
@@ -3408,6 +3412,7 @@ def test_janitor_records_retention_failure_without_stopping_the_loop() -> None:
         "news_expire_bands",
         "news_raw_retention",
         "news_market_track_retention",
+        "news_chain_tape_retention",
         "news_learning_retention",
         "news_learning_retention_error",
     ]
