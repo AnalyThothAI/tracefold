@@ -73,10 +73,27 @@ def test_serve_can_report_configured_push_without_reading_the_workers_only_secre
     assert availability.telegram_bot_token_file_configured is True
 
 
-@pytest.mark.parametrize("chat_id", [0, 123456789, -123456789, "@channel"])
-def test_telegram_push_rejects_any_target_that_is_not_a_private_channel_id(tmp_path: Path, chat_id: object) -> None:
+@pytest.mark.parametrize("chat_id", ["@channel", "not-a-number", True])
+def test_telegram_push_reads_a_chat_id_that_is_a_number_and_nothing_else(tmp_path: Path, chat_id: object) -> None:
+    """`Settings` reads the operator's number; the adapter owns what a valid target looks like.
+
+    #562 §5 rows 1 and 8: the private-channel shape used to be enforced here as well as in
+    `TelegramNewsPushSender`, and this copy refused the whole configuration -- so a mistyped digit took
+    reception, triage and the market loop down with the process, with nothing left running to say so.
+    """
+
     with pytest.raises(ValidationError, match="news_push_telegram_chat_id_invalid"):
         _telegram_settings(tmp_path, chat_id=chat_id)
+
+
+@pytest.mark.parametrize("chat_id", [0, 123456789, -123456789])
+def test_a_chat_id_that_is_not_a_private_channel_still_loads_and_reports_itself(tmp_path: Path, chat_id: int) -> None:
+    settings = _telegram_settings(tmp_path, chat_id=chat_id)
+
+    assert settings.news.push.telegram_chat_id == chat_id
+    # The configuration is loadable, so the process starts and the capability can name the fault --
+    # `tests/test_news_push_wiring.py` proves the sender refuses it and delivery reads `unavailable`.
+    assert news_push_availability(settings).telegram_chat_id_configured is True
 
 
 def test_push_rejects_ambiguous_feishu_and_telegram_provider_configuration(tmp_path: Path) -> None:

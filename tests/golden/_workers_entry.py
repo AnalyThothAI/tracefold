@@ -62,7 +62,7 @@ def main() -> int:
     settings.set_config_dir(Path(args.app_home))
     # The provider side of the production delivery port is deterministic; broker routing, Workers
     # composition, transactions, card rendering, durable delivery and HTTP projection remain real.
-    news_wiring._news_push_sender = lambda _settings: _scripted_push_sender()
+    news_wiring._news_push_sender = lambda _settings: news_wiring._ComposedPushSender(sender=_scripted_push_sender())
     workers_root._WORKER_INTERNAL_PORT = args.probe_port
     asyncio.run(run_workers(settings))
     return 0

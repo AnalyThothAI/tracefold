@@ -187,8 +187,12 @@ def test_quote_freshness_missing_source_and_future_skew_boundaries_are_explicit(
 def test_current_and_reference_freshness_ceilings_are_the_frozen_304_contract() -> None:
     assert QUOTE_FRESH_MAX_AGE_MS == 45_000
     assert QUOTE_PERIOD_SECONDS == 20.0
-    assert reference_freshness(measured_at_ms=360_000, reference_at_ms=0) == (360_000, True)
-    assert reference_freshness(measured_at_ms=360_001, reference_at_ms=0) == (360_001, False)
+    # #562 §5 row 10: the 24 h reference window is 10 min, not 6. The old ceiling sat 60 s past the
+    # 300 s cadence that refreshes it, so exactly one missed optional day read took the percentage off
+    # the card; a reference one read old still authors it.
+    assert reference_freshness(measured_at_ms=360_001, reference_at_ms=0) == (360_001, True)
+    assert reference_freshness(measured_at_ms=600_000, reference_at_ms=0) == (600_000, True)
+    assert reference_freshness(measured_at_ms=600_001, reference_at_ms=0) == (600_001, False)
     assert reference_freshness(
         measured_at_ms=0,
         reference_at_ms=QUOTE_MAX_FUTURE_SKEW_MS,

@@ -1256,7 +1256,6 @@ class RecordingEditableSender(RecordingSender):
         super().__init__(order)
         self.edited_cards: list[dict[str, Any]] = []
         self.edited_presentations: list[ReaderDeliveryPresentation] = []
-        self.deleted_receipts: list[dict[str, Any]] = []
         self._message_id = 41
 
     def send_card(
@@ -1286,11 +1285,6 @@ class RecordingEditableSender(RecordingSender):
         self.edited_cards.append(dict(card))
         self.edited_presentations.append(presentation or ReaderDeliveryPresentation())
         return {**dict(receipt), "edited_at_ms": NOW_MS + 1_000}
-
-    def delete_card(self, receipt: Mapping[str, Any]) -> dict[str, Any]:
-        self.order.append("delete")
-        self.deleted_receipts.append(dict(receipt))
-        return {**dict(receipt), "deleted_at_ms": NOW_MS + 2_000}
 
 
 class FailingEditSender(RecordingEditableSender):
@@ -1431,9 +1425,6 @@ def _delivery_news(**overrides: Any) -> RecordingNews:
         "begin_delivery_edit": True,
         "settle_delivery_edit": True,
         "mark_delivery_edit_ambiguous": True,
-        "begin_delivery_delete": True,
-        "settle_delivery_delete": True,
-        "mark_delivery_delete_ambiguous": True,
     }
     responses.update(overrides)
     return RecordingNews(**responses)
@@ -1547,13 +1538,16 @@ def test_deliverer_skips_dropped_first_cards() -> None:
         )
 
 
-def test_deliverer_passes_macro_scope_and_withholds_an_unreviewed_progression_reference() -> None:
-    """#553 PR-3. The scope is a verdict fact and ships; the progression reference is a reviewed claim.
+def test_deliverer_passes_macro_scope_and_shows_no_badge_for_a_review_that_will_never_run() -> None:
+    """#562 §5 rows 3 and 6. The scope is a verdict fact and ships; the reference is a reviewed claim.
 
     With no verifier composed -- none configured, or the editorial Program faulted and left one
-    unwired -- the card says the association is `pending` and prints no reference. The reviewed
-    headline reaches the reader through the confirmed edit, which
-    `test_telegram_sends_a_progression_before_llm_association_review_then_edits_with_reason` proves.
+    unwired (#553 PR-3) -- no edit is coming, and `⏳ 关联确认中` used to stay on the card for the rest
+    of its life because nothing existed to clear it. The reference is still withheld, which is the risk
+    the badge was protecting; what the reader now sees is the plain `新进展` the verdict earned. The
+    reviewed headline still reaches them through the confirmed edit, which
+    `test_telegram_sends_a_progression_before_llm_association_review_then_edits_with_reason` proves,
+    and that test also proves `pending` is still shown while a real review is in flight.
     """
 
     news = _delivery_news(
@@ -1597,62 +1591,11 @@ def test_deliverer_passes_macro_scope_and_withholds_an_unreviewed_progression_re
             market_data_state="pending",
             market_scope="macro",
             novelty="progression",
-            progression_review_state="pending",
         )
     ]
-    assert sender.edited_presentations == []
-
-
-@pytest.mark.parametrize(
-    ("similarity", "expected_review_state"),
-    [(0.4999, None), (0.5, "pending")],
-)
-def test_deliverer_links_a_progression_only_at_fifty_percent_title_similarity(
-    similarity: float,
-    expected_review_state: str | None,
-) -> None:
-    """The 50 % band decides whether there is anything to review; the review decides what is shown.
-
-    #553 PR-3: with no verifier composed -- none configured, or the editorial Program faulted and left
-    one unwired -- a candidate above the band stays `pending` and the card prints no progression. The
-    unreviewed headline is not a fallback: a fault in one capability must not silently drop the gate
-    that another capability owns.
-    """
-
-    news = _delivery_news(
-        event_card=_card(grounded_assets=[]),
-        latest_verdict=lambda **_kwargs: {
-            "final_decision": "push",
-            "verdict": {
-                "direction": "bullish",
-                "magnitude": 2,
-                "scope": "macro",
-                "novelty": "progression",
-                "headline_zh": "巴拿马运河拥堵迫使液化气油轮绕行",
-                "assets": [],
-            },
-            "trace": {
-                "told": [
-                    {
-                        "tier": "storyline",
-                        "similarity": similarity,
-                        "headline_zh": "a16z 推出 Machine Age Fund",
-                    }
-                ]
-            },
-        },
-    )
-    sender = RecordingEditableSender([])
-
-    asyncio.run(
-        _deliverer(news, FakeBus(), sender=sender).handle(
-            _message("verdict", {"event_id": "ev-strong", "kind": "first"})
-        )
-    )
-
-    assert sender.presentations[0].novelty == "progression"
+    assert sender.presentations[0].progression_review_state is None
     assert sender.presentations[0].progression_from_headline is None
-    assert sender.presentations[0].progression_review_state == expected_review_state
+    assert sender.edited_presentations == []
 
 
 def test_telegram_sends_a_progression_before_llm_association_review_then_edits_with_reason() -> None:
@@ -1739,6 +1682,67 @@ def test_telegram_sends_a_progression_before_llm_association_review_then_edits_w
     assert updated.progression_review_parent_message_id == 41
     assert sender.edited_cards[0]["progression_review"]["state"] == "confirmed"
     assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
+
+
+def test_a_told_entry_with_a_new_upstream_field_still_reaches_the_reader() -> None:
+    """#562 §5 row 4. An added key in the told ledger used to raise and block the whole card.
+
+    Every field the candidate builder reads is named one at a time, with its own type check and its own
+    bound, so a key it does not read cannot change a candidate. Refusing the Event over one meant that
+    the day retrieval grew a column, no progression card was delivered at all -- the message failed in
+    `handle` before the send. The reader gets the card; the unknown key is simply not carried.
+    """
+
+    async def scenario() -> tuple[RecordingEditableSender, list[str], BlockingProgressionVerifier]:
+        order: list[str] = []
+        news = _delivery_news(
+            event_card=_card(grounded_assets=[]),
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "bullish",
+                    "magnitude": 2,
+                    "scope": "macro",
+                    "novelty": "progression",
+                    "headline_zh": "巴拿马运河拥堵迫使液化气油轮绕行",
+                    "assets": [],
+                },
+                "trace": {
+                    "told": [
+                        {
+                            "i": 0,
+                            "tier": "storyline",
+                            "similarity": 0.35,
+                            "headline_zh": "巴拿马运河管理局上调通行费",
+                            "retrieval_lane_v2": "a field this builder has never been shown",
+                        }
+                    ]
+                },
+            },
+        )
+        sender = RecordingEditableSender(order)
+        verifier = BlockingProgressionVerifier(
+            order,
+            response={
+                "state": "rejected",
+                "reason_zh": "两条新闻只是被归入了同一条主题线。",
+                "verifier_id": "scripted-progression-review-v1",
+            },
+        )
+        verifier.release.set()
+        consumer = _deliverer(news, FakeBus(), sender=sender, progression_verifier=verifier)
+
+        await consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
+        await consumer.close()
+        return sender, order, verifier
+
+    sender, order, verifier = asyncio.run(scenario())
+
+    assert order == ["prepare", "send", "review", "edit"]
+    assert sender.presentations[0].progression_review_state == "pending"
+    candidate = verifier.calls[0]["candidates"][0]
+    assert candidate["headline_zh"] == "巴拿马运河管理局上调通行费"
+    assert "retrieval_lane_v2" not in candidate
 
 
 def test_telegram_removes_an_unverified_previous_headline_and_marks_the_reason() -> None:
@@ -1911,7 +1915,6 @@ def test_single_name_is_sent_first_then_edited_with_a_fresh_cross_venue_contract
 
     news, sender = asyncio.run(scenario())
 
-    assert sender.deleted_receipts == []
     assert sender.edited_cards[0]["tradability_review"]["state"] == "matched"
     assert sender.edited_presentations[0].trade_targets == (
         ReaderTradeTarget(
@@ -1986,7 +1989,6 @@ def test_single_name_without_a_grounded_asset_is_edited_when_the_title_resolves_
     news, sender, order = asyncio.run(scenario())
 
     assert order == ["prepare", "send", "market-search", "edit"]
-    assert sender.deleted_receipts == []
     assert sender.edited_presentations[0].trade_targets == (
         ReaderTradeTarget("METALIGHT", "bitget.perp", "METALIGHTUSDT", "METALIGHT", "USDT"),
     )
@@ -1994,7 +1996,15 @@ def test_single_name_without_a_grounded_asset_is_edited_when_the_title_resolves_
     assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
 
 
-def test_single_name_without_a_grounded_asset_is_deleted_after_authoritative_absence() -> None:
+def test_single_name_without_a_grounded_asset_is_edited_to_say_so_after_authoritative_absence() -> None:
+    """#562 §5 row 5. The five-venue absence now edits the card; it never takes it back.
+
+    A card the reader has already read was deleted out of their channel on an LLM-derived candidate list
+    plus a title heuristic. The review is unchanged -- same five catalogues, same authoritative-absence
+    rule, same identity confidence -- and what it authorises is a line on the card saying what the
+    catalogues answered.
+    """
+
     async def scenario() -> tuple[RecordingNews, RecordingEditableSender]:
         news = _delivery_news(
             event_card=_card(leader_title="MetaLight (02605.HK) announces interim results", grounded_assets=[]),
@@ -2029,12 +2039,15 @@ def test_single_name_without_a_grounded_asset_is_deleted_after_authoritative_abs
 
     news, sender = asyncio.run(scenario())
 
-    assert sender.edited_cards == []
-    assert len(sender.deleted_receipts) == 1
-    assert news.kwargs_of("begin_delivery_delete")["evidence"]["tradability_review"]["state"] == "absent"
+    assert "delete" not in sender.order
+    assert sender.edited_cards[0]["elements"][0]["content"].startswith("未找到可交易标的\n")
+    assert sender.edited_cards[0]["tradability_review"]["state"] == "absent"
+    assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
 
 
-def test_single_name_is_deleted_only_after_all_five_catalogues_confirm_absence() -> None:
+def test_the_untradeable_notice_survives_all_five_catalogues_and_reaches_the_sent_message() -> None:
+    """#562 §5 row 5. Same authoritative absence on a grounded asset: one edit, one durable intent."""
+
     async def scenario() -> tuple[RecordingNews, RecordingEditableSender]:
         order: list[str] = []
         news = _delivery_news(
@@ -2075,10 +2088,9 @@ def test_single_name_is_deleted_only_after_all_five_catalogues_confirm_absence()
 
     news, sender = asyncio.run(scenario())
 
-    assert sender.edited_cards == []
-    assert len(sender.deleted_receipts) == 1
-    assert news.kwargs_of("begin_delivery_delete")["evidence"]["tradability_review"]["state"] == "absent"
-    assert news.kwargs_of("settle_delivery_delete")["receipt"]["deleted_at_ms"] == NOW_MS + 2_000
+    assert sender.order == ["prepare", "send", "market-search", "edit"]
+    assert sender.edited_cards[0]["elements"][0]["content"].startswith("未找到可交易标的\n")
+    assert news.kwargs_of("settle_delivery_edit")["receipt"]["edited_at_ms"] == NOW_MS + 1_000
 
 
 def test_title_only_acronym_is_kept_when_five_venue_absence_is_not_deletion_safe() -> None:
@@ -2114,11 +2126,12 @@ def test_title_only_acronym_is_kept_when_five_venue_absence_is_not_deletion_safe
         await consumer.close()
         return news, sender
 
-    news, sender = asyncio.run(scenario())
+    _news, sender = asyncio.run(scenario())
 
-    assert sender.deleted_receipts == []
     assert sender.edited_cards[0]["tradability_review"]["state"] == "absent"
-    assert "begin_delivery_delete" not in news.names()
+    # #562 §5 row 5: the identity confidence still decides whether an absence is worth stating. An
+    # ordinary name shaped like a ticker earns no claim about catalogues on the reader's card.
+    assert "未找到可交易标的" not in sender.edited_cards[0]["elements"][0]["content"]
 
 
 def test_single_name_is_kept_when_even_one_catalogue_check_is_incomplete() -> None:
@@ -2152,11 +2165,10 @@ def test_single_name_is_kept_when_even_one_catalogue_check_is_incomplete() -> No
         await consumer.close()
         return news, sender
 
-    news, sender = asyncio.run(scenario())
+    _news, sender = asyncio.run(scenario())
 
-    assert sender.deleted_receipts == []
     assert sender.edited_cards[0]["tradability_review"]["state"] == "incomplete"
-    assert "begin_delivery_delete" not in news.names()
+    assert "未找到可交易标的" not in sender.edited_cards[0]["elements"][0]["content"]
 
 
 def test_deliverer_prices_exactly_the_assets_the_card_names() -> None:

@@ -1881,9 +1881,11 @@ def test_card_is_the_reader_contract() -> None:
     assert "模型" not in json.dumps(degraded, ensure_ascii=False) and "中性" not in json.dumps(
         degraded, ensure_ascii=False
     )
-    # Card assets are the verdict primaries the Gate grounded; a small grounded set shows when the model named none.
+    # Card assets are the verdict primaries the Gate grounded; the grounded set itself shows when the
+    # model named none. #562 §5 row 9: a wide grounded set is a reason to print the first four, not
+    # none -- five grounded symbols and no named primary used to leave the card with no ticker at all.
     assert card_assets({"assets": [{"symbol": "CC", "role": "primary"}]}, ["CC"]) == ["CC"]
-    assert card_assets({"assets": []}, ["A", "B", "C", "D", "E"]) == []
+    assert card_assets({"assets": []}, ["A", "B", "C", "D", "E"]) == ["A", "B", "C", "D"]
     assert card_assets({"assets": [{"symbol": "BTC", "role": "primary"}]}, ["BTC", "CL", "XYZ-CL"]) == ["BTC"]
 
 

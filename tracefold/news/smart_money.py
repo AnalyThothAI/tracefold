@@ -7,8 +7,8 @@ OpenNews strategy 2026 (`聪明钱监控`) reports what one labelled account did
     js-2 Close Long XYZ-NBIS $6.27 , Price $208.95 , PNL -$0.16
 
 The label, the action, the side, the native instrument and the two dollar figures are the whole
-message; `PNL` appears on close reports only. The provider abbreviates a notional or a PNL with the
-same `K`/`M`/`B` it uses on the liquidation template, and writes a price in full. The provider also
+message; `PNL` appears on close reports only. The provider abbreviates any of the three dollar figures
+with the same `K`/`M`/`B` it uses on the liquidation template. The provider also
 emits account activity that is not a position report at all — ``Withdraw USDC`` is the measured
 example — and it emits new templates without warning. Those are not failures of the account: they are
 reports this module cannot turn into numbers, so it returns ``None`` and the Item is stored as a raw
@@ -29,32 +29,31 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Final, Literal
 
-from tracefold.news.liquidations import MAGNITUDE_SUFFIXES, scaled_amount
+from tracefold.news.liquidations import FIGURE, MAGNITUDE_SUFFIXES, MAX_INSTRUMENT_LEN, scaled_amount
 
 PARSER_VERSION: Final = "smart_money_parser_v1"
 SOURCE_CONTRACT_VERSION: Final = "opennews_smart_money_source_v1"
 
-# One dollar figure as the provider writes it: `798.18`, `79,817.87`, `214`. Thousands separators are
-# optional on every figure because the provider uses them on exactly the ones wide enough to need them.
-_FIGURE: Final = r"\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?"
 # Anchored on the whole line. The label may contain spaces (`js-2`, `whale 7`), so it is captured
 # non-greedily up to the first `Open`/`Close` token, which is what makes the action word the anchor
 # rather than a position count.
 #
-# The notional and the PNL may carry the provider's `K`/`M`/`B`, read through the one multiplier
-# defined in `liquidations.py`. The comment that used to stand here said such a suffix "has never been
-# measured here" and refused it on that ground. It had been measured: of the 113 distinct titles in the
-# retained production window only 8 parsed, and the other 104 position reports -- `$798.18K`,
-# `$2.21M`, `PNL +$50.41K` -- were stored raw with `smart_money_template_unmatched` and sent one card
-# per record, outside the §4.4 account grouping. A rule written to protect the reader from a guessed
-# multiplier was hiding almost every report it applied to (#553). A price is still read plain: the
-# provider spells prices in full (`$79,817.87`), so an abbreviated price is a template this module has
-# not been shown, and it answers one of those with a raw card rather than a number.
+# Every dollar figure on this template -- notional, price and PNL alike -- may carry the provider's
+# `K`/`M`/`B`, read through the one multiplier defined in `liquidations.py`. The comment that used to
+# stand here said such a suffix "has never been measured here" and refused it on that ground. It had
+# been measured: of the 113 distinct titles in the retained production window only 8 parsed, and the
+# other 104 position reports -- `$798.18K`, `$2.21M`, `PNL +$50.41K` -- were stored raw with
+# `smart_money_template_unmatched` and sent one card per record, outside the §4.4 account grouping
+# (#553). The price was the one figure left out of that fix, on the argument that the provider spells
+# prices in full. The cost of being wrong about that was the whole record -- action, side, notional and
+# PNL included -- not just the price, for a suffix whose meaning is the same three powers of ten the
+# line's other two figures already use (#562 §5 row 2). A suffix outside `K`/`M`/`B` is still refused
+# on every figure: that one this module genuinely has not been shown.
 _REPORT = re.compile(
     rf"^\s*(?P<label>\S(?:.*?\S)?)\s+(?P<action>Open|Close)\s+(?P<side>Long|Short)\s+"
-    rf"(?P<instrument>\S{{1,32}})\s+\$(?P<notional>{_FIGURE})(?P<notional_unit>[{MAGNITUDE_SUFFIXES}]?)\s*,\s*"
-    rf"Price\s+\$(?P<price>{_FIGURE})"
-    rf"(?:\s*,\s*PNL\s*(?P<pnl_sign>[+-])?\s*\$(?P<pnl>{_FIGURE})(?P<pnl_unit>[{MAGNITUDE_SUFFIXES}]?))?\s*$",
+    rf"(?P<instrument>\S{{1,64}})\s+\$(?P<notional>{FIGURE})(?P<notional_unit>[{MAGNITUDE_SUFFIXES}]?)\s*,\s*"
+    rf"Price\s+\$(?P<price>{FIGURE})(?P<price_unit>[{MAGNITUDE_SUFFIXES}]?)"
+    rf"(?:\s*,\s*PNL\s*(?P<pnl_sign>[+-])?\s*\$(?P<pnl>{FIGURE})(?P<pnl_unit>[{MAGNITUDE_SUFFIXES}]?))?\s*$",
     re.IGNORECASE,
 )
 _MAX_NUMERIC: Final = Decimal("1e24")
@@ -118,9 +117,10 @@ def parse_smart_money(
     """Parse one Strategy 2026 position report, or return ``None`` for anything that is not one.
 
     ``None`` covers `Withdraw USDC`, a template that has drifted, and a figure this module cannot read
-    without assuming a unit -- an abbreviated price, or a suffix outside the provider's own `K`/`M`/`B`
-    vocabulary. The caller stores the Item either way; the only difference is whether a typed row
-    exists beside it.
+    without assuming a unit -- a suffix outside the provider's own `K`/`M`/`B` vocabulary. The caller
+    stores the Item either way; the only difference is whether a typed row exists beside it. An
+    over-long label or instrument token is clipped rather than refused: its width says nothing about
+    whether the numbers on the line are readable.
 
     The two clocks are recorded, never compared (#544): `event_at_ms` is the provider's stamp and
     `received_at_ms` is when this host read the frame. A non-positive `event_at_ms` is a missing stamp
@@ -130,18 +130,16 @@ def parse_smart_money(
     match = _REPORT.fullmatch(str(title or ""))
     if match is None or event_at_ms <= 0:
         return None
-    label = match.group("label").strip()
-    if not label or len(label) > _MAX_LABEL_LEN:
+    label = match.group("label").strip()[:_MAX_LABEL_LEN]
+    if not label:
         return None
-    raw_instrument = match.group("instrument").strip()
+    raw_instrument = match.group("instrument").strip()[:MAX_INSTRUMENT_LEN]
     symbol = raw_instrument.upper().removeprefix("XYZ-")
     if not symbol:
         return None
     try:
         notional = scaled_amount(match.group("notional"), match.group("notional_unit"))
-        # The empty suffix is not an oversight: it is this template's statement that a price is a
-        # price in full, and it keeps the one multiplier in one place all the same.
-        price = scaled_amount(match.group("price"), "")
+        price = scaled_amount(match.group("price"), match.group("price_unit"))
         pnl = None if match.group("pnl") is None else scaled_amount(match.group("pnl"), match.group("pnl_unit"))
     except (InvalidOperation, KeyError):
         return None

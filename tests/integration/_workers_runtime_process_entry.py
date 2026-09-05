@@ -38,6 +38,9 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--dsn", required=True)
     parser.add_argument("--port", required=True, type=int)
     parser.add_argument("--graceful-timeout-seconds", type=float)
+    parser.add_argument("--amqp-url")
+    parser.add_argument("--management-url")
+    parser.add_argument("--name-prefix", default="")
     parser.add_argument(
         "--mode",
         required=True,
@@ -63,6 +66,7 @@ def _arguments() -> argparse.Namespace:
             "trading_enabled",
             "trading_execution_requested",
             "trading_wiring_fault",
+            "push_misconfigured",
         ),
     )
     return parser.parse_args()
@@ -586,6 +590,11 @@ async def _main() -> None:
 
         workers_wiring._wire_news_pipeline = wire_trading_lane_fault
         SignalLane.advance = failing_advance  # type: ignore[method-assign]
+    elif arguments.mode == "push_misconfigured":
+        # Nothing is stubbed: the real `_wire_components`, the real News composition, the real broker
+        # and the real push wiring, against a configured push target the adapter will refuse. What is
+        # under test is that everything else composes and runs anyway (#562 §5 row 1).
+        pass
     elif arguments.mode == "schema_mismatch":
         workers.latest_migration_version = lambda: "00000000_0000"
     elif arguments.mode in {
@@ -614,16 +623,35 @@ async def _main() -> None:
         "market_notifications_fault",
         "ingestion_task_fault",
         "trading_lane_fault",
+        "push_misconfigured",
     }
+    news: dict[str, Any] = {"enabled": news_process}
+    if arguments.mode == "push_misconfigured":
+        news |= {
+            "broker": {
+                "url": arguments.amqp_url,
+                "name_prefix": arguments.name_prefix,
+                "management_url": arguments.management_url,
+            },
+            "venues": {"enabled": False},
+            "push": {
+                "enabled": True,
+                "telegram_bot_token_file": "telegram_bot_token",
+                # A real bot token file beside a chat id that is not a private channel: the shape the
+                # `Settings` validator used to refuse outright, taking the whole process with it.
+                "telegram_chat_id": -100123,
+                "min_interval_seconds": 0,
+            },
+        }
     settings = Settings(
-        news={"enabled": news_process},
+        news=news,
         trading={
             "enabled": trading_process,
             "execution": {"mode": "paper" if arguments.mode == "trading_execution_requested" else "disabled"},
         },
         storage={"postgres": {"dsn": arguments.dsn, "password_file": None}},
     )
-    if trading_process:
+    if trading_process or arguments.mode == "push_misconfigured":
         settings.set_config_dir(Path(os.environ["TRACEFOLD_TEST_CONFIG_DIR"]))
     await workers.run_workers(settings)
 

@@ -88,9 +88,6 @@ WRITE_REPOSITORY_METHODS = (
     "begin_delivery_edit",
     "settle_delivery_edit",
     "mark_delivery_edit_ambiguous",
-    "begin_delivery_delete",
-    "settle_delivery_delete",
-    "mark_delivery_delete_ambiguous",
     "open_incident",
     "close_open_incidents",
     "complete_recovery",
@@ -104,9 +101,7 @@ WRITE_REPOSITORY_METHODS = (
     "purge_before",
     "terminalize_interrupted_deliveries",
     "terminalize_interrupted_delivery_edits",
-    "terminalize_interrupted_delivery_deletes",
     "terminalize_stale_delivery_edits",
-    "terminalize_stale_delivery_deletes",
     # #553 PR-2. The market notification loop's own writes: the group's alerting state, the card
     # ledger, and the two markers on `news_items` that say which group and which card an observation
     # belongs to. The public read routes may call none of them.

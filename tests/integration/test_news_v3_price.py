@@ -468,7 +468,7 @@ def test_quote_freshness_preserves_future_timestamps_and_expires_only_the_refere
                     change_pct=1.5,
                     change_basis="rolling_24h",
                     source_at_ms=NOW + 5_001,
-                    reference_at_ms=NOW - 360_001,
+                    reference_at_ms=NOW - 600_001,
                 )
             ],
             target_count=1,
@@ -499,8 +499,8 @@ def test_quote_freshness_preserves_future_timestamps_and_expires_only_the_refere
     assert rows["BTC"]["source_at_ms"] == NOW + 5_001
     assert rows["BTC"]["source_age_ms"] == 0
     assert rows["BTC"]["change_pct"] is None
-    assert rows["BTC"]["reference_at_ms"] == NOW - 360_001
-    assert rows["BTC"]["reference_age_ms"] == 360_001
+    assert rows["BTC"]["reference_at_ms"] == NOW - 600_001
+    assert rows["BTC"]["reference_age_ms"] == 600_001
     assert rows["HYPE"]["state"] == "fresh"
     assert rows["HYPE"]["freshness_basis"] == "received_only"
     assert rows["HYPE"]["source_age_ms"] is None
@@ -524,7 +524,7 @@ def test_quote_api_status_and_delivery_render_share_one_snapshot_freshness(conn)
                     change_pct=1.5,
                     change_basis="rolling_24h",
                     source_at_ms=NOW,
-                    reference_at_ms=NOW - 360_001,
+                    reference_at_ms=NOW - 600_001,
                 )
             ],
             target_count=1,

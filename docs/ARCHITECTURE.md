@@ -169,9 +169,9 @@ does not apply.
 | RabbitMQ raw handoff | message delivery | durable backlog | message ID | raw prefetch 1 | one queue delivery | broker prefetch 1 | broker connection/confirm budgets | yes / no / no | PostgreSQL Admission is idempotent; decode/permanent/exhausted transient failures are terminal, handler-side broker failures are counted returns, and only settlement or unknown failures reach root supervision |
 | RabbitMQ event handoff | message delivery plus 60 s repair scan inside a 30 min relevance window | durable Event marker | Event ID | configured bounded Triage prefetch; repair batch 50 | one queue delivery | configured bounded consumer | broker connection/confirm budgets | yes / stable-ID duplicates coalesce at Triage / expired is explicit | confirmed publish precedes Event marker; PostgreSQL repairs marker-null Events while relevant and projects older rows as expired |
 | RabbitMQ verdict handoff | message delivery plus 60 s repair scan inside a 30 min relevance window | durable Verdict marker | Event ID + delivery kind | delivery prefetch 1; repair batch 50 | one queue delivery | broker prefetch 1 | broker connection/confirm budgets | yes / stable-ID duplicates converge on the delivery ledger / expired is explicit | confirmed publish precedes Verdict marker; PostgreSQL repairs push/escalate Verdicts while relevant, while external delivery remains at-most-once |
-| Binance spot quote/day quote | start-based 20 s current; 300 s day reference | current <=45 s; reference <=360 s | `binance.spot` source group | shared cap 256 symbols | shared cap 12 current groups; at most 2 due Binance day calls/turn; 100 requested symbols where supported | current 4; due day calls parallel after store | 10 s current turn / 8 s provider | no / yes / yes | completed current answers commit together; failed/pending source keeps its previous row; day failure cannot undo current |
-| Binance perpetual quote/day quote | start-based 20 s current; 300 s day reference | current <=45 s; reference <=360 s | `binance.perp` source group | shared cap 256 symbols | shared cap 12 current groups; at most 2 due Binance day calls/turn; 100 requested symbols where supported | current 4; due day calls parallel after store | 10 s current turn / 8 s provider | no / yes / yes | completed current answers commit together; failed/pending source keeps its previous row; day failure cannot undo current |
-| Hyperliquid quote | start-based 20 s | current <=45 s; native reference <=360 s | bounded `hl.*` source group | shared cap 256 symbols | shared cap 12 current groups; one group request | current 4 | 10 s current turn / 8 s provider | no / yes / yes | completed answer commits even when another source times out; failed/pending source keeps its previous row |
+| Binance spot quote/day quote | start-based 20 s current; 300 s day reference | current <=45 s; reference <=600 s | `binance.spot` source group | shared cap 256 symbols | shared cap 12 current groups; at most 2 due Binance day calls/turn; 100 requested symbols where supported | current 4; due day calls parallel after store | 10 s current turn / 8 s provider | no / yes / yes | completed current answers commit together; failed/pending source keeps its previous row; day failure cannot undo current |
+| Binance perpetual quote/day quote | start-based 20 s current; 300 s day reference | current <=45 s; reference <=600 s | `binance.perp` source group | shared cap 256 symbols | shared cap 12 current groups; at most 2 due Binance day calls/turn; 100 requested symbols where supported | current 4; due day calls parallel after store | 10 s current turn / 8 s provider | no / yes / yes | completed current answers commit together; failed/pending source keeps its previous row; day failure cannot undo current |
+| Hyperliquid quote | start-based 20 s | current <=45 s; native reference <=600 s | bounded `hl.*` source group | shared cap 256 symbols | shared cap 12 current groups; one group request | current 4 | 10 s current turn / 8 s provider | no / yes / yes | completed answer commits even when another source times out; failed/pending source keeps its previous row |
 | OKX quote | 20 s | fresh through 60 s | `okx.spot` / `okx.perp` source group | shared cap 256 symbols | shared cap 12 groups; one whole-market request/group | shared cap 4 calls | 10 s turn / 8 s provider | no / yes / yes | failed or empty answer leaves the previous source row untouched |
 | Delivery price anchors | one approved delivery | event/push-time | one venue symbol + news/push-1h/push/push-24h anchors | displayed assets only | at most two Binance contracts, then one Hyperliquid, one OKX, one Lighter, and one Bitget contract; 2 s/contract | displayed assets parallel; anchors parallel where supported | bounded by the per-contract deadline | no / duplicate anchors coalesced / no | use the last trade at/before each anchor only within 60 s, then the last closed 1 m candle within 90 s; venue failure tries the next whole calculation and never changes delivery policy |
 | Single-name tradeability verification | one eligible sent card | current catalogue | exact ticker aliases | one single-name ticker | exactly five venue families | venue families parallel | 25 s whole review | no / exact contract dedupe / yes | any hit edits and keeps; only five successful empty answers delete; any failure or unresolved identity keeps |
@@ -876,8 +876,10 @@ moves 0.023% per turn.
 
 Nothing is cached for a day read that failed or was cancelled, so the source
 remains due while its already-written current row stays intact. A reference is
-valid through 360,000 ms; at 360,001 ms, when missing, or when more than 5,000 ms
-in the future, only `change_pct` becomes `null`. The price, `change_basis`, raw
+valid through 600,000 ms; at 600,001 ms, when missing, or when more than 5,000 ms
+in the future, only `change_pct` becomes `null`. The window is deliberately wider
+than one 300 s day cadence: at 360,000 ms a single missed optional day read took
+the 24 h change off every card (#562 §5 row 10). The price, `change_basis`, raw
 timestamps and reference timestamp stay visible. Hyperliquid never adds a day
 request: its current response already carries `prevDayPx`, stamped with that
 current response's receipt time.
@@ -1682,10 +1684,13 @@ For a `single_name` card with one candidate ticker, or with no grounded ticker b
 in its title, a second post-send task derives exact ticker aliases (including market-coded forms such as
 `02605.HK`) and queries fresh Binance, Hyperliquid, OKX, Lighter, and Bitget catalogues.
 An exact hit keeps the message, adds the typed target link, and prices that contract without waiting for the
-periodic universe snapshot. Only five successful empty catalogue answers authorize deletion. Any missing identity,
-timeout, blocked response, malformed catalogue, or partial venue fan-out keeps the message. Before `deleteMessage`,
-the full catalogue outcome and reason become a durable `deleting` intent bound to the original receipt; provider
-success becomes `deleted`, while uncertainty becomes `ambiguous` and is never retried destructively at startup.
+periodic universe snapshot. Five successful empty catalogue answers on a candidate specific enough to be an
+exchange identifier lead the same in-place edit with `未找到可交易标的`. Any missing identity, timeout, blocked
+response, malformed catalogue, or partial venue fan-out states nothing about tradability. Nothing is deleted:
+#562 §5 row 5 removed the `deleteMessage` path and its durable `deleting` intent, because removing a card the
+reader has already read, on an LLM-derived candidate list plus a title heuristic, cost more than a line saying
+what the catalogues answered. `news_deliveries` keeps its `delete_*` columns as the audit of the deliveries
+removed while that path existed; no writer reaches them.
 Feishu still receives the stable card unchanged.
 The stable Feishu card then has a 打开来源 button and a small `Tracefold · <event_id[:8]>`
 note. There is no original headline line, no translated title, no event type or

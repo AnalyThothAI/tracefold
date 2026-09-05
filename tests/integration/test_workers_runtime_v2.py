@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -361,6 +362,161 @@ def test_real_trading_lane_fault_keeps_news_fact_writes_and_reads_running(tmp_pa
         assert _runtime_row()["lifecycle_state"] == "stopped"
     finally:
         _ensure_process_stopped(process)
+
+
+@pytest.mark.slow
+def test_real_push_misconfiguration_leaves_delivery_unavailable_and_everything_else_running(
+    tmp_path: Path, rabbitmq_url: str
+) -> None:
+    """#562 §5 row 1. A push target the adapter refuses is one capability's fact, not a dead process.
+
+    The real Workers root, the real News composition, the real broker: the only thing wrong is the
+    configured Telegram chat id. Two gates used to turn that typo into a total outage -- `Settings`
+    refused to validate it at all, so the process could not start and nothing was left running to say
+    why, and the wiring raised on the sender it could not build. Reception, admission, triage and the
+    market loop have nothing to do with a push target, and this proves they keep running and keep
+    committing real facts while `news_delivery` reads `unavailable`.
+    """
+
+    import uuid
+
+    management_url = os.environ.get(
+        "TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL",
+        f"http://{urllib.parse.urlsplit(rabbitmq_url).hostname or '127.0.0.1'}:15672",
+    ).rstrip("/")
+    name_prefix = f"tf_push_{uuid.uuid4().hex[:8]}"
+    config_dir = tmp_path / "app-home"
+    config_dir.mkdir()
+    token_file = config_dir / "telegram_bot_token"
+    token_file.write_text("123456:abcdefghijklmnopqrstuvwxyzABCDE_12345", encoding="utf-8")
+    token_file.chmod(0o600)
+
+    # Workers verifies the checked-in broker policy and refuses to consume without it; applying it is
+    # the deployment's job, which this stands in for.
+    asyncio.run(_apply_broker_policies(rabbitmq_url, management_url, name_prefix))
+    port = _free_port()
+    process = _start_workers_process(
+        "push_misconfigured",
+        port,
+        extra_env={"TRACEFOLD_TEST_CONFIG_DIR": str(config_dir)},
+        broker=(rabbitmq_url, management_url, name_prefix),
+    )
+    try:
+        _wait_ready(process, port, timeout_seconds=60.0)
+        payload = _readiness_payload(port)
+        capabilities = payload["capabilities"]
+        assert isinstance(capabilities, dict)
+        assert capabilities["news_delivery"] == {
+            "state": "unavailable",
+            "reason": "news_item_push_telegram_sender_invalid",
+        }
+        assert capabilities["news_ingestion"] == {"state": "running", "reason": None}
+        assert capabilities["market_notifications"] == {"state": "running", "reason": None}
+        assert payload["ok"] is True
+        assert _runtime_row()["fatal_code"] is None
+        assert _runtime_capabilities()["news_delivery"]["state"] == "unavailable"
+
+        # And the fact chain is not merely declared: one raw frame through the real broker becomes a
+        # durable row, with the push target still misconfigured underneath it.
+        before = _news_item_count()
+        asyncio.run(_publish_raw_frame(rabbitmq_url, management_url, name_prefix))
+        _wait_until(lambda: _news_item_count() > before, "admission stopped with the push target")
+
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=10.0) == 0
+        assert _runtime_row()["lifecycle_state"] == "stopped"
+    finally:
+        _ensure_process_stopped(process)
+        asyncio.run(_delete_broker_topology(rabbitmq_url, management_url, name_prefix))
+
+
+async def _apply_broker_policies(amqp_url: str, management_url: str, name_prefix: str) -> None:
+    from tracefold.integrations.rabbitmq import RabbitMQBus
+
+    bus = RabbitMQBus(
+        url=amqp_url,
+        name_prefix=name_prefix,
+        connect_timeout_seconds=5,
+        management_url=management_url,
+    )
+    await bus.connect()
+    try:
+        await bus.apply_policies()
+    finally:
+        await bus.close()
+
+
+async def _publish_raw_frame(amqp_url: str, management_url: str, name_prefix: str) -> None:
+    from tracefold.integrations.rabbitmq import RabbitMQBus
+    from tracefold.news.bus import RK_RAW_LIVE, BusMessage, new_trace_id
+
+    bus = RabbitMQBus(
+        url=amqp_url,
+        name_prefix=name_prefix,
+        connect_timeout_seconds=5,
+        management_url=management_url,
+    )
+    await bus.connect()
+    try:
+        stamp = int(time.time() * 1_000)
+        hit = {
+            "id": 9_900_001,
+            "newsType": "strategy",
+            "engineType": "listing",
+            "text": "Binance will list PUSHGATE (PUSHGATE) perpetual contracts",
+            "source": "binance",
+            "coins": [],
+            "ts": stamp,
+            "strategy": {
+                "id": 1353,
+                "name": "Listing and Delisting Announcements",
+                "engineType": "listing",
+                "sourceType": "news",
+            },
+        }
+        await bus.publish(
+            BusMessage(
+                kind="raw",
+                message_id="raw:9900001",
+                routing_key=RK_RAW_LIVE.format(strategy_id="1353"),
+                payload={
+                    "params": hit,
+                    "strategy_id": "1353",
+                    "ingest_mode": "live",
+                    "observed_at_ms": stamp,
+                },
+                trace_id=new_trace_id(),
+                occurred_at_ms=stamp,
+            )
+        )
+    finally:
+        await bus.close()
+
+
+async def _delete_broker_topology(amqp_url: str, management_url: str, name_prefix: str) -> None:
+    from tracefold.integrations.rabbitmq import RabbitMQBus
+
+    bus = RabbitMQBus(
+        url=amqp_url,
+        name_prefix=name_prefix,
+        connect_timeout_seconds=5,
+        management_url=management_url,
+    )
+    await bus.connect()
+    try:
+        await bus.delete_topology()
+    finally:
+        await bus.close()
+
+
+def _news_item_count() -> int:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        row = conn.execute("SELECT count(*) AS n FROM news_items").fetchone()
+        assert row is not None
+        return int(row["n"])
+    finally:
+        conn.close()
 
 
 @pytest.mark.slow
@@ -828,6 +984,7 @@ def _start_workers_process(
     *,
     extra_env: dict[str, str] | None = None,
     graceful_timeout_seconds: float | None = None,
+    broker: tuple[str, str, str] | None = None,
 ) -> subprocess.Popen[str]:
     command = [
         sys.executable,
@@ -841,6 +998,18 @@ def _start_workers_process(
     ]
     if graceful_timeout_seconds is not None:
         command.extend(("--graceful-timeout-seconds", str(graceful_timeout_seconds)))
+    if broker is not None:
+        amqp_url, management_url, name_prefix = broker
+        command.extend(
+            (
+                "--amqp-url",
+                amqp_url,
+                "--management-url",
+                management_url,
+                "--name-prefix",
+                name_prefix,
+            )
+        )
     return subprocess.Popen(
         command,
         cwd=_PROCESS_ENTRY.parents[2],

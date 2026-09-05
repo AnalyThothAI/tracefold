@@ -208,7 +208,14 @@ def reader_quotes(quotes: Sequence[Mapping[str, Any]]) -> tuple[ReaderCardQuote,
 
 def card_assets(verdict: Mapping[str, Any], grounded_assets: Sequence[str]) -> list[str]:
     """Assets shown on the card: the verdict's primary assets that the Gate grounded (code fact ∩ model claim);
-    when the model named no grounded primary, the grounded assets themselves — never provider noise alone."""
+    when the model named no grounded primary, the grounded assets themselves — never provider noise alone.
+
+    The fallback used to apply only while the Gate had grounded at most `_MAX_ASSETS` symbols, so a card
+    the Gate grounded five or more symbols on and whose model named no grounded primary showed the reader
+    no ticker at all — the widest, most cross-asset stories losing the one line that says what they are
+    about. The count is a reason to print fewer names, not none: the same first four, in the same stable
+    order the line already truncates to (#562 §5 row 9).
+    """
 
     grounded = {str(a).upper().replace("XYZ-", "") for a in grounded_assets}
     primaries = [
@@ -217,7 +224,7 @@ def card_assets(verdict: Mapping[str, Any], grounded_assets: Sequence[str]) -> l
         if isinstance(a, Mapping) and a.get("role") == "primary"
     ]
     shown = [s for s in dict.fromkeys(primaries) if s in grounded]
-    if not shown and len(grounded) <= _MAX_ASSETS:
+    if not shown:
         shown = sorted(grounded)
     return shown[:_MAX_ASSETS]
 

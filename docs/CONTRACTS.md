@@ -165,36 +165,40 @@ keys, or webhook.
 
 Push delivery is available only when `news.push.enabled` is true, exactly one
 provider is complete, and Workers is running. Feishu requires a valid HTTPS custom-bot v2 URL.
-Telegram requires a secure bot-token file and one private channel Bot API ID
-beginning with `-100`. Provider conflicts, invalid targets, and missing or
-insecure credentials fail closed: Serve remains credential-free, while an
-explicitly enabled invalid provider configuration makes Workers fail startup.
+Telegram requires a secure bot-token file and one channel Bot API ID; the adapter
+is the single owner of what a valid target is, and configuration reads the
+operator's number without a second copy of that rule (#562 §5 rows 1 and 8).
+Provider conflicts, invalid targets, and missing or insecure credentials fail
+closed on the capability they describe: Serve remains credential-free, and an
+explicitly enabled invalid provider configuration leaves Workers running with
+`news_delivery` reported `unavailable` and its reason, while reception,
+admission, triage and the market loop carry on.
 On Telegram, a reader ticker is clickable only when an official venue catalogue proves an exact contract.
 Destinations are built from typed Binance, Hyperliquid, OKX, Lighter, or Bitget identities; untyped URLs and
 inconsistent metadata remain plain text. A pushed `single_name` card with exactly one candidate ticker, or no
 grounded ticker but a confident code-like title identity, is checked after the initial send against fresh catalogues
 from all five venue families. Any exact match keeps the message and
 is added through one in-place edit; its delivery prices use trade-first anchors and closed one-minute candles as
-fallback. An absent result authorizes `deleteMessage` only when all five catalogues answered successfully and none
-matched. A timeout, blocked endpoint, malformed catalogue, incomplete issuer identity, or any other partial result
-retains the message. PostgreSQL records the complete five-venue evidence and reason before deletion, then settles
-the exact receipt as `deleted` or `ambiguous`; startup and the stale-intent sweep terminalize inherited `deleting`
-intents instead of retrying an uncertain destructive action. A settled deletion is excluded from the durable
-reader-history ledger, so a removed untradeable issuer cannot suppress a later genuinely tradable listing. The
+fallback. An absent result that all five catalogues answered successfully, on a candidate specific enough to be an
+exchange identifier, leads the same in-place edit with `未找到可交易标的`. Nothing is deleted: #562 §5 row 5 removed
+the `deleteMessage` path, because taking a card the reader has already read out of their channel on an LLM-derived
+candidate list plus a title heuristic cost more than saying what the catalogues answered. A timeout, blocked
+endpoint, malformed catalogue, incomplete issuer identity, or any other partial result states nothing about
+tradability. `news_deliveries` keeps its `delete_*` columns as the audit of the deliveries that were removed while
+that path existed; no writer reaches them. The
 Telegram projection gives every asset its own block: the first line is `🎯 标的 BTC`, followed by separate
 `新闻后 +1.10%`, `1h +0.80%，`, and `24h +3.20%` lines. Multiple assets repeat that complete block with a blank
 line between them. Direction and magnitude remain presentation metadata: an unclear verdict renders `方向待定`,
 and a positional tail token that does not match the code-owned ticker grammar fails closed rather than becoming a
 trade target. The novelty badge sits directly
-below the title: `🆕 新事实`, or `🔄 新进展` with the prior
-headline immediately only when no post-delivery verifier is configured and an exact-fact retrieval or stored
-title-similarity score of at least `0.50` supports it. With the verifier configured, an initial progression shows
-an indented one-line `关联确认中` child block and never waits for another model call. The same message is later
+below the title: `🆕 新事实`, or `🔄 新进展`. With a post-delivery verifier configured, an initial progression also
+shows an indented one-line `关联确认中` child block and never waits for another model call; with none configured no
+review is coming, so no badge is shown and no prior headline is named (#562 §5 rows 3 and 6). The same message is later
 edited to a compact child block: `✅ 已确认关联`, a clickable `此前：<parent headline>` quote bound to the
 previous sent Telegram receipt, and its receipt-to-receipt age. A rejected, unavailable, or otherwise non-confirmed
 final result changes the same message's novelty badge to `🆕 新事实` and removes the complete association child
 block; the verifier's result and reason remain in the durable desired-card audit rather than appearing to readers.
-A model confirmation without a sent, undeleted, same-target parent receipt follows the same `🆕 新事实` rule; it
+A model confirmation without a sent, same-target parent receipt follows the same `🆕 新事实` rule; it
 never renders an unlinked parent or candidate/event-time age. The verifier considers at most eight already-delivered told-ledger candidates and its
 structured result plus content-addressed verifier identity enters the durable desired card. A broad macro or sector
 verdict with no code-verified ticker shows its scope and `暂无直接标的` instead of silently removing the target area
@@ -1210,7 +1214,7 @@ reader/writer.
   A price is a positive decimal
   string or `null`; it is never `0`, and a failed venue leaves the previous row
   in place rather than blanking it. `change_pct` is `null` until the venue's day
-  reference is known and becomes `null` again above 360,000 ms or beyond the
+  reference is known and becomes `null` again above 600,000 ms or beyond the
   future-skew bound. Reference expiry removes only the percentage: current
   price, basis and timestamps stay. Binance refreshes the reference only after
   a successful current store and persists it on the next natural turn;

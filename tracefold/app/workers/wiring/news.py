@@ -280,18 +280,16 @@ def _push_sender_or_fault(
     sent. Recovery is a corrected config plus a restart; there is no hot reload console (#553 PR-3).
     """
 
-    try:
-        sender = _news_push_sender(settings)
-    except RuntimeError as exc:
-        reason = str(exc).removeprefix("news_push_unavailable:") or "news_item_push_configuration_invalid"
-        logger.error("News push sender unavailable reason={}", reason)
-        capabilities.unavailable(NEWS_DELIVERY, reason)
+    composed = _news_push_sender(settings)
+    if composed.reason is not None:
+        logger.error("News push sender unavailable reason={}", composed.reason)
+        capabilities.unavailable(NEWS_DELIVERY, composed.reason)
         return None
-    if sender is None:
+    if composed.sender is None:
         capabilities.disabled(NEWS_DELIVERY, "news_item_push_not_requested")
     else:
         capabilities.running(NEWS_DELIVERY)
-    return sender
+    return composed.sender
 
 
 async def _connect_news_bus(
@@ -473,29 +471,54 @@ def _candidate_runtime_arms(
     return canary_arms, candidate_facts
 
 
-def _news_push_sender(settings: Settings) -> FeishuNewsPushSender | TelegramNewsPushSender | None:
+@dataclass(frozen=True, slots=True)
+class _ComposedPushSender:
+    """The sender the configuration describes, or the reason there is none. Never both."""
+
+    sender: FeishuNewsPushSender | TelegramNewsPushSender | None = None
+    reason: str | None = None
+
+
+def _news_push_sender(settings: Settings) -> _ComposedPushSender:
+    """Build the configured push sender, or name the configuration fact that stops one being built.
+
+    Nothing here raises. A misspelled signing secret, an unreadable token file or a chat id that is not
+    a private channel is a fact about one capability's configuration; it used to be thrown as a
+    `RuntimeError` for the caller a few lines below to catch and translate straight back into that same
+    fact. A raise that is always caught in its own module is one rule written twice, and the shapes that
+    escaped it were not hypothetical: a `ValueError` out of a sender constructor is not a `RuntimeError`,
+    and it took reception, triage and the market loop down with it (#562 §5 row 1).
+    """
+
     push = news_push_availability(settings)
     if not push.requested:
-        return None
+        return _ComposedPushSender()
     if not push.delivery_available:
-        raise RuntimeError(f"news_push_unavailable:{push.reason or 'news_item_push_configuration_invalid'}")
+        return _ComposedPushSender(reason=push.reason or "news_item_push_configuration_invalid")
     if push.provider == "telegram":
         token_file = settings.news_telegram_bot_token_file()
         chat_id = settings.news.push.telegram_chat_id
         if token_file is None or chat_id is None:
-            raise RuntimeError("news_push_unavailable:news_item_push_telegram_configuration_invalid")
+            return _ComposedPushSender(reason="news_item_push_telegram_configuration_invalid")
         try:
             bot_token = read_secure_secret_text(token_file)
-        except SecretFileError:
-            raise RuntimeError("news_push_unavailable:news_item_push_telegram_bot_token_unavailable") from None
+        except (SecretFileError, OSError):
+            return _ComposedPushSender(reason="news_item_push_telegram_bot_token_unavailable")
         try:
-            return TelegramNewsPushSender(bot_token=bot_token, chat_id=chat_id)
+            return _ComposedPushSender(sender=TelegramNewsPushSender(bot_token=bot_token, chat_id=chat_id))
         except ValueError:
-            raise RuntimeError("news_push_unavailable:news_item_push_telegram_sender_invalid") from None
-    return FeishuNewsPushSender(
-        webhook_url=str(settings.news.push.feishu_webhook_url),
-        signing_secret=settings.news.push.feishu_signing_secret,
-    )
+            # The private-channel shape now lives only here, where the code that talks to Telegram
+            # keeps it. `Settings` reads the operator's number and stops there (#562 §5 row 8).
+            return _ComposedPushSender(reason="news_item_push_telegram_sender_invalid")
+    try:
+        return _ComposedPushSender(
+            sender=FeishuNewsPushSender(
+                webhook_url=str(settings.news.push.feishu_webhook_url),
+                signing_secret=settings.news.push.feishu_signing_secret,
+            )
+        )
+    except ValueError:
+        return _ComposedPushSender(reason="news_item_push_feishu_sender_invalid")
 
 
 def _compose_news_pipeline(

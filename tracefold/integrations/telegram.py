@@ -35,13 +35,15 @@ _TELEGRAM_MAX_PHASE_TIMEOUT_SECONDS = 1.25
 _TELEGRAM_TEXT_MAX = 4096
 _TELEGRAM_RESPONSE_MAX_BYTES = 1024 * 1024
 _SOURCE_URL_MAX_LENGTH = 2_048
+_SOURCE_URL_DEFAULT_PORT = {"http": 80, "https": 443}
+_SECTION_SEPARATOR = "\n\n"
 _BOT_TOKEN_RE = re.compile(r"^[0-9]{6,15}:[A-Za-z0-9_-]{30,80}$")
 _PRIVATE_CHANNEL_ID_RE = re.compile(r"^-100[1-9][0-9]{5,15}$")
 _TELEGRAM_TIME_RE = re.compile(r"^[0-2][0-9]:[0-5][0-9]$")
 _REPORTING_ORIGIN_RE = re.compile(r"^(?P<origin>.+)（(?P<count>[1-9][0-9]*) 条报道）$")
 _LINKABLE_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,19}$")
 _TELEGRAM_HTML_TAG_RE = re.compile(r'</?(?:b|strong|blockquote)>|<a href="[^"]+">|</a>')
-_BOT_API_METHODS = frozenset({"getChat", "getMe", "getChatMember", "sendMessage", "editMessageText", "deleteMessage"})
+_BOT_API_METHODS = frozenset({"getChat", "getMe", "getChatMember", "sendMessage", "editMessageText"})
 _DIRECTION_LABELS = frozenset({"利多", "利空", "中性", "不明确", "方向待定"})
 _NOVELTY_LABELS = frozenset({"新事实", "新进展", "复述"})
 _MAGNITUDE_LABELS = {
@@ -308,37 +310,6 @@ class TelegramNewsPushSender:
             target_sha256=self._target_sha256,
         ).canonical()
 
-    def delete_card(self, receipt: Mapping[str, Any]) -> dict[str, Any]:
-        """Delete exactly one previously receipted message from the configured private channel."""
-
-        if not self._target_validated:
-            raise TelegramDeliveryError(
-                "news_delivery_telegram_target_not_prepared", commit_phase=COMMIT_PHASE_NOT_SENT
-            )
-        try:
-            parsed_receipt = TelegramDeliveryReceipt.model_validate(receipt)
-        except ValueError:
-            raise TelegramDeliveryError("news_delivery_telegram_delete_receipt_invalid") from None
-        if parsed_receipt.target_sha256 != self._target_sha256 or parsed_receipt.deleted_at_ms is not None:
-            raise TelegramDeliveryError("news_delivery_telegram_delete_receipt_invalid")
-        deadline_at = self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS
-        result = self._call_api_result(
-            "deleteMessage",
-            {"chat_id": self._chat_id, "message_id": parsed_receipt.message_id},
-            error_prefix="news_delivery_telegram_delete",
-            deadline_at=deadline_at,
-        )
-        if result is not True:
-            raise TelegramDeliveryError("news_delivery_telegram_delete_response_invalid")
-        return TelegramDeliveryReceipt(
-            provider="telegram",
-            message_id=parsed_receipt.message_id,
-            pushed_at_ms=parsed_receipt.pushed_at_ms,
-            edited_at_ms=parsed_receipt.edited_at_ms,
-            deleted_at_ms=int(self._wall_clock_ms()),
-            target_sha256=self._target_sha256,
-        ).canonical()
-
     def _message_payload(self, text: str, *, message_id: int | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "chat_id": self._chat_id,
@@ -380,7 +351,12 @@ class TelegramNewsPushSender:
         chat_id = chat.get("id")
         if isinstance(chat_id, bool) or not isinstance(chat_id, int) or chat_id != self._chat_id:
             raise TelegramDeliveryError("news_delivery_telegram_target_chat_mismatch")
-        if chat.get("type") != "channel" or str(chat.get("username") or "").strip():
+        # The exact chat id, and that it is a channel rather than a group or a personal chat, is what
+        # binds delivery to one target. Whether that channel also has a public @name is the operator's
+        # own publishing decision, and refusing it turned a product choice into a dead capability
+        # (#562 §5 row 11). Everything else this preflight proves -- the id, the type, the bot's own
+        # identity and its permission to post -- is unchanged.
+        if chat.get("type") != "channel":
             raise TelegramDeliveryError("news_delivery_telegram_target_not_private_channel")
 
         bot = self._call_api(
@@ -550,11 +526,6 @@ def _telegram_message(
         displayed_parent_headline = None
         displayed_parent_age = None
         displayed_parent_url = None
-    elif displayed_review_state == "confirmed" and not displayed_parent_url:
-        displayed_novelty = "new_fact"
-        displayed_review_state = None
-        displayed_parent_headline = None
-        displayed_parent_age = None
 
     novelty_line = _telegram_novelty_html(
         displayed_novelty,
@@ -572,7 +543,9 @@ def _telegram_message(
         sections.append(novelty_line)
     elif progression_review_line:
         sections.append(progression_review_line)
+    explanation_index: int | None = None
     if explanation:
+        explanation_index = len(sections)
         sections.append(_escape_html(_clip(explanation, 1800)))
 
     metadata_groups: list[str] = []
@@ -603,13 +576,42 @@ def _telegram_message(
         footer.append(f"🔗 <b>来源</b>  {source}{count}")
     if footer:
         metadata_groups.append("\n".join(footer))
-    if metadata_groups:
-        sections.append("\n\n".join(metadata_groups))
+    # One section per metadata group rather than one joined block: both are joined with the same
+    # separator, so the message is byte-identical, and clipping can then give up an asset block without
+    # giving up the source line under it.
+    sections.extend(metadata_groups)
 
-    message = "\n\n".join(sections).strip()
-    if len(_plain_html_text(message)) > _TELEGRAM_TEXT_MAX:
-        raise TelegramDeliveryError("news_delivery_telegram_message_too_long")
-    return message
+    return _fit_telegram_message(sections, explanation_index=explanation_index)
+
+
+def _fit_telegram_message(sections: Sequence[str], *, explanation_index: int | None) -> str:
+    """Join the card's sections into a message Telegram will accept, clipping if it must.
+
+    Telegram refuses a message over 4096 characters, and this used to answer that by raising: the whole
+    delivery settled `terminal` and the reader got nothing at all, for a card whose title, body and
+    source link would all have fitted. A clipped card is worth more than no card (#562 §5 row 7).
+    Sections are dropped whole, never cut mid-way, so the HTML handed to Telegram stays well-formed.
+    """
+
+    working = list(sections)
+    if _telegram_text_length(working) <= _TELEGRAM_TEXT_MAX:
+        return _SECTION_SEPARATOR.join(working).strip()
+    # The title leads and the source closes; the metadata blocks between the body and the source give
+    # way first, from the bottom up. Dropping from the tail instead would take the reader's link with
+    # it, which is the one thing the card is for.
+    body = 0 if explanation_index is None else explanation_index
+    while len(working) >= body + 3 and _telegram_text_length(working) > _TELEGRAM_TEXT_MAX:
+        working.pop(-2)
+    # Backstop: with the metadata gone, whatever is left goes too, newest block first. The renderer
+    # bounds the title and the body well under the limit, so this is the case that says a future
+    # renderer changed those bounds -- and it still ships a card rather than none.
+    while len(working) > 1 and _telegram_text_length(working) > _TELEGRAM_TEXT_MAX:
+        working.pop()
+    return _SECTION_SEPARATOR.join(working).strip()
+
+
+def _telegram_text_length(sections: Sequence[str]) -> int:
+    return len(_plain_html_text(_SECTION_SEPARATOR.join(sections).strip()))
 
 
 def _telegram_novelty_html(value: str, *, progression_from_headline: str | None) -> str:
@@ -885,6 +887,15 @@ def _source_url(value: object) -> str:
 
 
 def _safe_https_url(value: str) -> bool:
+    """Whether a card's source button carries a link this adapter will hand to Telegram.
+
+    `http` is accepted beside `https`. Refusing it dropped the source button off legitimately
+    plain-HTTP publishers' cards -- the reader lost the link, and the only thing gained was a transport
+    opinion about somebody else's site, which the reader's own client is better placed to have. The
+    rules that are about this adapter stay: no credentials in the URL, and no non-default port, because
+    a userinfo or port in a provider-supplied link is a redirect trick, not a publisher (#562 §5 row 11).
+    """
+
     if len(value) > _SOURCE_URL_MAX_LENGTH:
         return False
     try:
@@ -893,9 +904,9 @@ def _safe_https_url(value: str) -> bool:
     except ValueError:
         return False
     return bool(
-        parsed.scheme == "https"
+        parsed.scheme in _SOURCE_URL_DEFAULT_PORT
         and parsed.hostname
-        and port in {None, 443}
+        and port in {None, _SOURCE_URL_DEFAULT_PORT.get(parsed.scheme)}
         and parsed.username is None
         and parsed.password is None
     )
