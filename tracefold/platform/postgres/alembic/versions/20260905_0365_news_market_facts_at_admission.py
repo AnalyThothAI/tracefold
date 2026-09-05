@@ -327,12 +327,38 @@ def _smart_money_table() -> None:
 def _backfill_market_items() -> None:
     """Classify every retained Item that a market Strategy reported.
 
-    By Strategy id, exactly as the live classifier now does. An Item whose Event was recorded as
-    `unsupported_market` under a Strategy this repository still has no template for keeps that answer
-    under its current name, `unknown_market`: the frame was always readable, and calling it
-    unsupported was a statement about this code, not about the observation.
+    By Strategy id, exactly as the live classifier does: `market_route` reads the frame's primary
+    Strategy, keeps non-market tuples as metadata, and answers `unknown_market` with
+    `market_category_conflict` when one record names two different market families. All three
+    branches are below in the same order, so an Item classified here and the same record classified
+    live cannot disagree -- `test_the_backfill_and_the_live_classifier_agree_on_every_fixture` feeds
+    one corpus to both and compares.
+
+    An Item whose Event was recorded as `unsupported_market` under a Strategy this repository still
+    has no template for keeps that answer under its current name, `unknown_market`: the frame was
+    always readable, and calling it unsupported was a statement about this code, not about the
+    observation.
     """
 
+    # Conflict first, because it is the narrower rule and must win over the primary Strategy's family.
+    op.execute(
+        f"""
+        WITH kinds(strategy_id, market_kind) AS (VALUES {_MARKET_STRATEGY_KINDS})
+        UPDATE public.news_items i
+           SET market_kind = 'unknown_market',
+               market_source_strategy_id = COALESCE(i.provider_metadata #>> '{{strategies,0,id}}', ''),
+               market_parse_status = 'raw',
+               market_parse_error = 'market_category_conflict'
+         WHERE i.market_kind IS NULL
+           AND i.provider_metadata #>> '{{strategies,0,id}}' IN (SELECT strategy_id FROM kinds)
+           AND (
+             SELECT count(DISTINCT kinds.market_kind)
+               FROM jsonb_array_elements(
+                      COALESCE(i.provider_metadata -> 'strategies', '[]'::jsonb)) AS strategy
+               JOIN kinds ON kinds.strategy_id = strategy ->> 'id'
+           ) > 1
+        """  # noqa: S608 -- `kinds` is a module-owned literal tuple list, not caller input
+    )
     op.execute(
         f"""
         WITH kinds(strategy_id, market_kind) AS (VALUES {_MARKET_STRATEGY_KINDS})
@@ -346,6 +372,28 @@ def _backfill_market_items() -> None:
            AND i.provider_metadata #>> '{{strategies,0,id}}' = kinds.strategy_id
         """  # noqa: S608 -- `kinds` is a module-owned literal tuple list, not caller input
     )
+    # An unbound market Strategy, by the same test `classify_source_contract` applies: a primary
+    # tuple whose source type is market or wallet, or whose engine type is market, with no provider
+    # score. Reading the metadata rather than the Event it once opened is what keeps this in step with
+    # the live rule -- an Item that never reached an Event is classified identically either way.
+    op.execute(
+        f"""
+        WITH kinds(strategy_id, market_kind) AS (VALUES {_MARKET_STRATEGY_KINDS})
+        UPDATE public.news_items i
+           SET market_kind = 'unknown_market',
+               market_source_strategy_id = COALESCE(i.provider_metadata #>> '{{strategies,0,id}}', ''),
+               market_parse_status = 'raw',
+               market_parse_error = 'unknown_market_source'
+         WHERE i.market_kind IS NULL
+           AND i.provider_metadata #>> '{{strategies,0,id}}' NOT IN (SELECT strategy_id FROM kinds)
+           AND jsonb_typeof(i.provider_metadata -> 'score') IS DISTINCT FROM 'number'
+           AND (
+             i.provider_metadata #>> '{{strategies,0,source_type}}' IN ('market', 'wallet')
+             OR i.provider_metadata #>> '{{strategies,0,engine_type}}' = 'market'
+           )
+        """  # noqa: S608 -- `kinds` is a module-owned literal tuple list, not caller input
+    )
+    # And the Items the classifier of the day already called market, whatever their metadata says now.
     op.execute(
         """
         UPDATE public.news_items i

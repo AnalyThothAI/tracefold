@@ -357,10 +357,51 @@ def test_the_page_scan_bound_is_reported_and_never_ends_pagination_early(conn, m
         cursor_at = int(page[0]["oldest_received_at_ms"])
         cursor_id = str(page[0]["oldest_item_id"])
 
-    # Every group is reachable one page at a time even though each page scans at most two rows.
+    # Every group is reachable one page at a time even though each page scans at most two rows, and
+    # each step continued from the previous page's cursor rather than restarting at the window top.
     assert walked == [f"oi-cap-{offset}" for offset in reversed(range(6))]
+    assert len(set(walked)) == len(walked), "a truncated scan must not re-emit a group it already paged"
     # Every page but the last filled its two-row scan and says so; the last one had a single row left.
     assert truncations == [True, True, True, True, True, False]
     # The intake summary is not scan-bounded, so its counts stay exact.
     sources = {row["market_kind"]: row for row in news.market_sources(from_ms=NOW - 1, to_ms=NOW + 3_600_000)}
     assert sources["oi"]["received"] == 6
+
+
+def test_a_run_longer_than_the_page_scan_reports_a_floor_rather_than_a_wrong_total(conn, monkeypatch) -> None:
+    """The one thing a bounded page can still get wrong, made visible instead of silent.
+
+    Four consecutive observations of one group, scanned two at a time: the count a reader is shown is
+    a floor and `scan_truncated` says so. This is also what makes the bound observable at all -- with
+    six *distinct* groups a capped and an uncapped scan return the same rows, so a test built only on
+    those would pass against a statement that ignored the cap entirely.
+    """
+
+    repos = repositories_for_connection(conn)
+    news = repos.news
+    with repos.transaction():
+        for offset in range(4):
+            item_id = f"oi-run-{offset}"
+            _item(news, item_id, kind="oi", at_ms=NOW + offset)
+            _oi(news, item_id, venue="binance", symbol="RUN", at_ms=NOW + offset)
+
+    whole, whole_truncated = _page(news, limit=5)
+    assert [group["observation_count"] for group in whole] == [4]
+    assert whole_truncated is False
+
+    monkeypatch.setattr(market_storage, "MARKET_WINDOW_ROW_CAP", 2)
+    bounded, bounded_truncated = _page(news, limit=5)
+
+    assert [group["observation_count"] for group in bounded] == [2], "the scan bound must actually bind"
+    assert bounded_truncated is True
+    # And the rest of the run is still reachable: the cursor continues below the truncated page.
+    rest, _ = news.market_groups(
+        kinds=(),
+        from_ms=NOW - 3_600_000,
+        to_ms=NOW + 3_600_000,
+        cursor_received_at_ms=int(bounded[0]["oldest_received_at_ms"]),
+        cursor_item_id=str(bounded[0]["oldest_item_id"]),
+        limit=5,
+    )
+    assert [group["observation_count"] for group in rest] == [2]
+    assert [group["latest"]["item_id"] for group in rest] == ["oi-run-1"]

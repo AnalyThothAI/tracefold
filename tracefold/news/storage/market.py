@@ -201,7 +201,7 @@ MARKET_GROUPS_SQL = f"""
            AND i.observed_at_ms < %s
            AND (i.observed_at_ms, i.item_id) < (%s, %s)
          ORDER BY i.observed_at_ms DESC, i.item_id DESC
-         LIMIT {MARKET_WINDOW_ROW_CAP}) AS windowed
+         LIMIT %s) AS windowed
     ), islands AS (
       SELECT observations.*,
              row_number() OVER (ORDER BY received_at_ms DESC, item_id DESC)
@@ -225,7 +225,7 @@ MARKET_GROUPS_SQL = f"""
       JOIN islands i ON i.item_id = c.latest_item_id
      ORDER BY c.sort_received_at_ms DESC, c.latest_item_id DESC
      LIMIT %s
-"""  # noqa: S608 -- the only interpolations are this module's own row cap and column list
+"""  # noqa: S608 -- the only interpolation is this module's own observation projection
 
 # The second `news_items` reference is a primary-key lookup for the three columns only the detail page
 # needs. Widening the shared observation projection with them would put a provider payload into every
@@ -288,6 +288,9 @@ class MarketStorage:
         instead of being handed a count that quietly stopped counting.
         """
 
+        # The cap is bound, not baked: a statement that carried it as a literal could not be narrowed
+        # by a test, so a test that thought it was proving the bound would be scanning the whole
+        # window and passing against the very shape this replaced.
         rows = self.conn.execute(
             MARKET_GROUPS_SQL,
             (
@@ -296,6 +299,7 @@ class MarketStorage:
                 int(to_ms),
                 int(cursor_received_at_ms),
                 cursor_item_id,
+                MARKET_WINDOW_ROW_CAP,
                 int(limit),
             ),
         ).fetchall()

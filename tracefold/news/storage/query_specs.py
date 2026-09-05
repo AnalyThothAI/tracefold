@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from tracefold.platform.postgres.audit import ReadQuerySpec
 
+from ..market_contracts import MARKET_WINDOW_ROW_CAP
 from ..market_review.pricing import REACTION_METRIC_VERSION
 from ..review.desk import review_read_statements
 from ..source_contracts import MARKET_KINDS
@@ -235,7 +236,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="news_market_groups",
             sql=MARKET_GROUPS_SQL,
-            params=(list(MARKET_KINDS), week_ago, now_ms, now_ms, "", 51),
+            params=(list(MARKET_KINDS), week_ago, now_ms, now_ms, "", MARKET_WINDOW_ROW_CAP, 51),
             max_read_return_amplification=100.0,
         ),
         ReadQuerySpec(

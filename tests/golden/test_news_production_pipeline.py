@@ -9,6 +9,8 @@ import httpx
 import psycopg
 from psycopg.rows import dict_row
 
+from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
+
 
 def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden_runtime: Any) -> None:
     """RabbitMQ, production Workers wiring and PostgreSQL must all participate in this result.
@@ -45,8 +47,16 @@ def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden
     assert data["event"]["admission"] == "listing_deterministic"
     assert data["event"]["published_at_ms"] is not None
     assert data["members"] and data["members"][0]["reporting_origin"] == "binance"
-    assert data["verdicts"][-1]["program_version"] == "news_liquidation_fact_v2"
-    assert data["verdicts"][-1]["final_decision"] == "push"
+    # No model is configured in the golden runtime, so the listing route fails open: the verdict is
+    # degraded, carries the semantic Program identity it could not run, and still pushes. That is the
+    # whole point of the frame -- it reaches a reader without a model, which is what makes this a
+    # test of the broker/Workers/PostgreSQL/HTTP path rather than of a judgment.
+    verdict = data["verdicts"][-1]
+    assert verdict["program_version"] == SEMANTIC_PROGRAM_VERSION
+    assert verdict["degraded"] is True
+    assert verdict["error_code"] == "news_semantic_program_unconfigured"
+    assert verdict["override_rule"] == "degraded_listing_objective"
+    assert verdict["final_decision"] == "push"
     assert len(data["deliveries"]) == 1
     delivery = data["deliveries"][0]
     assert (delivery["kind"], delivery["state"], delivery["error_code"]) == (
@@ -70,7 +80,10 @@ def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden
 def test_triage_publish_failure_uses_broker_retry_without_restarting_workers(golden_runtime: Any) -> None:
     """The production Triage/outbox path ends in evidence, while the same Workers root stays live."""
 
-    title = "Binance will delist ACMEUSDT perpetual futures on 2026-09-09"
+    # Deliberately unlike the first frame in both ticker and wording. `listing` is an editorial kind
+    # and takes the ordinary near-duplicate path, so two announcements differing in one word collapse
+    # into one Event and the second frame would never open its own.
+    title = "OKX schedules ZETAUSDT margin pair removal for 2026-09-11"
     initial_readiness = golden_runtime.workers_readiness()
 
     golden_runtime.set_verdict_route(enabled=False)
@@ -191,3 +204,121 @@ def _wait_for_verdict(golden_runtime: Any, *, event_id: str, published: bool) ->
             return last
         time.sleep(0.1)
     raise AssertionError(f"verdict did not reach published={published}: {last}")
+
+
+def test_an_oi_frame_crosses_production_workers_and_reaches_the_market_read(golden_runtime: Any) -> None:
+    """#553. The market plane, through the same broker, Workers process and PostgreSQL as the Event one.
+
+    Strategy 1019 is the deployed account's real traffic. The frame must become a stored observation
+    with its parsed numbers, open no Event, and leave the editorial feed's counts exactly where they
+    were -- which is the whole claim of the cut, measured end to end rather than at a storage seam.
+    """
+
+    title = "TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
+    before = _feed_counts(golden_runtime)
+
+    golden_runtime.publish_opennews(
+        {
+            "id": 2_850_900,
+            "newsType": "strategy",
+            "engineType": "market",
+            "text": title,
+            "source": "binance",
+            "coins": [],
+            "ts": int(time.time() * 1_000),
+            "strategy": {
+                "id": 1019,
+                "name": "OI Event Monitor",
+                "engineType": "market",
+                "sourceType": "market",
+            },
+        }
+    )
+
+    group = _wait_for_market_group(golden_runtime, title=title)
+
+    assert group["market_kind"] == "oi"
+    latest = group["latest"]
+    assert (latest["parse_status"], latest["parse_error"]) == ("parsed", None)
+    assert (latest["symbol"], latest["raw_instrument"], latest["direction"]) == ("TRUMP", "TRUMP", "rise")
+    assert (latest["oi_change_bps"], latest["oi_value_usd"]) == (455, 32_170_000)
+    assert (latest["whale_long_profit_bps"], latest["whale_oi_ratio_bps"]) == (8_021, 10_071)
+    assert latest["source_venue"] == "binance"
+    assert latest["measurement_definition"] == "oi_signal_v1|opennews_oi_source_v1|300000"
+    assert latest["historical"] is False
+    # PR-1 wires no notification loop, and the surface says so rather than implying a decision.
+    assert (group["notification_status"], group["notification_reason"]) == (
+        "not_connected",
+        "market_notifications_not_connected",
+    )
+
+    # No Event, and the editorial denominator is untouched.
+    assert _feed_counts(golden_runtime) == before
+    assert not any(event["leader_title"] == title for event in _feed_events(golden_runtime)), (
+        "a market observation must not appear on the Event feed"
+    )
+    with psycopg.connect(golden_runtime.postgres_dsn, row_factory=dict_row) as conn:
+        item_id = latest["item_id"]
+        assert (
+            conn.execute(
+                "SELECT count(*) AS n FROM news_events e"
+                " JOIN news_event_members m ON m.event_id = e.event_id WHERE m.item_id = %s",
+                (item_id,),
+            ).fetchone()["n"]
+            == 0
+        )
+        assert (
+            conn.execute("SELECT count(*) AS n FROM news_oi_signals WHERE source_item_id = %s", (item_id,)).fetchone()[
+                "n"
+            ]
+            == 1
+        )
+
+    detail = httpx.get(
+        f"{golden_runtime.base_url}/api/news/market/{latest['item_id']}",
+        headers=golden_runtime.headers,
+        timeout=5.0,
+    )
+    assert detail.status_code == 200
+    body = detail.json()["data"]
+    assert body["observation"]["item_id"] == latest["item_id"]
+    assert body["provider_params"]["strategy"]["id"] == 1019
+    assert [row["item_id"] for row in body["timeline"]] == [latest["item_id"]]
+
+
+def _feed_events(golden_runtime: Any) -> list[dict[str, Any]]:
+    response = httpx.get(
+        f"{golden_runtime.base_url}/api/news/feed",
+        headers=golden_runtime.headers,
+        timeout=5.0,
+    )
+    response.raise_for_status()
+    return [dict(event) for event in response.json()["data"]["events"]]
+
+
+def _feed_counts(golden_runtime: Any) -> dict[str, Any]:
+    response = httpx.get(
+        f"{golden_runtime.base_url}/api/news/feed",
+        headers=golden_runtime.headers,
+        timeout=5.0,
+    )
+    response.raise_for_status()
+    return dict(response.json()["data"]["counts"])
+
+
+def _wait_for_market_group(golden_runtime: Any, *, title: str) -> dict[str, Any]:
+    deadline = time.monotonic() + 30.0
+    last_body = ""
+    while time.monotonic() < deadline:
+        response = httpx.get(
+            f"{golden_runtime.base_url}/api/news/market",
+            headers=golden_runtime.headers,
+            timeout=5.0,
+        )
+        last_body = response.text
+        if response.status_code == 200:
+            for group in response.json()["data"]["groups"]:
+                if group["latest"]["title"] == title:
+                    return dict(group)
+        time.sleep(0.1)
+    raise AssertionError(f"market observation never reached the HTTP market read: {last_body}")

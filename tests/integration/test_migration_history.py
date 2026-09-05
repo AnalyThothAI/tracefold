@@ -10,6 +10,7 @@ import tempfile
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 from alembic import command
@@ -23,6 +24,7 @@ from tracefold.integrations.nautilus.oi_runtime.audit_sink import (
     day_start_baseline_from_observation,
 )
 from tracefold.news.oi_signals import parse_oi_signal
+from tracefold.news.source_contracts import MARKET_CATEGORY_CONFLICT, classify_source_contracts, market_route
 from tracefold.platform.postgres.migrations import alembic_config
 from tracefold.trading.storage.execution_stream import (
     materialize_execution_observation,
@@ -1706,5 +1708,101 @@ def test_the_rebuild_reproduces_the_parsers_own_arithmetic() -> None:
                 assert row["whale_oi_ratio_bps"] == expected.whale_oi_ratio_bps, title
                 # And the same 32-character cap `parse_liquidation` applies to a venue string.
                 assert row["source_venue"] == long_venue[:32], title
+    finally:
+        conn.close()
+
+
+# One corpus, both classifiers. Each entry is the `strategies` array an Item carries and nothing else,
+# because the primary Strategy plus the set of market families present is all either side reads.
+_CLASSIFIER_FIXTURES: tuple[tuple[str, list[str]], ...] = (
+    ("oi-only", ["1019"]),
+    ("oi-with-news", ["1019", "1018"]),
+    ("news-primary-with-oi", ["1018", "1019"]),
+    ("oi-and-liquidation", ["1019", "2083"]),
+    ("both-liquidation-strategies", ["2000", "2083"]),
+    ("smart-money-only", ["2026"]),
+    ("news-only", ["1018"]),
+    ("unbound-market", ["9999"]),
+)
+
+
+def test_the_backfill_and_the_live_classifier_agree_on_every_fixture() -> None:
+    """#553. The migration mirrors `market_route`; nothing enforces that but this comparison.
+
+    A migration may not import a parser a later revision can change underneath it, so the rule is
+    written twice. The cost of that is drift, and the drift that matters is silent: one record
+    classified `oi` by the live path and `unknown_market` by the backfill would exist or not exist as
+    a typed fact depending only on which ran. So the same fixtures go through both and the answers
+    are compared.
+    """
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260904_0363")
+
+    names = {
+        "1018": "News Score > 70",
+        "1019": "OI Event Monitor",
+        "2000": "实时清算",
+        "2026": "聪明钱监控",
+        "2083": "Large-scale liquidation",
+        "9999": "An unbound market monitor",
+    }
+    source_types = {"1018": "news", "2026": "wallet"}
+
+    def _metadata(strategy_ids: list[str]) -> dict[str, Any]:
+        return {
+            "strategies": [
+                {
+                    "id": strategy_id,
+                    "name": names[strategy_id],
+                    "source_type": source_types.get(strategy_id, "market"),
+                    "engine_type": "news" if strategy_id == "1018" else "market",
+                }
+                for strategy_id in strategy_ids
+            ]
+        }
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        at_ms = 1_787_542_200_000
+        for item_id, strategy_ids in _CLASSIFIER_FIXTURES:
+            conn.execute(
+                """
+                INSERT INTO news_items (
+                  item_id, source_id, source_item_key, title, raw_first_line, description,
+                  reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
+                  first_ingest_mode, trace_id, created_at_ms, updated_at_ms
+                ) VALUES (
+                  %(item)s, 'opennews', %(item)s, 'a frame with no template', '', '', 'opennews',
+                  %(at)s, %(at)s, %(metadata)s::jsonb, '[]'::jsonb, 'live', 'trace', %(at)s, %(at)s
+                )
+                """,
+                {"item": item_id, "at": at_ms, "metadata": json.dumps(_metadata(strategy_ids))},
+            )
+        conn.commit()
+
+        command.upgrade(config, HEAD)
+
+        stored = {
+            str(row["item_id"]): (row["market_kind"], row["market_parse_error"])
+            for row in conn.execute(
+                "SELECT item_id, market_kind, market_parse_error FROM news_items WHERE item_id = ANY(%s)",
+                ([item_id for item_id, _ in _CLASSIFIER_FIXTURES],),
+            ).fetchall()
+        }
+
+        for item_id, strategy_ids in _CLASSIFIER_FIXTURES:
+            live = market_route(classify_source_contracts(_metadata(strategy_ids)))
+            migrated_kind, migrated_reason = stored[item_id]
+            if live is None:
+                assert migrated_kind is None, item_id
+                continue
+            expected_kind, expected_conflict = live
+            assert migrated_kind == expected_kind, item_id
+            # The reasons differ by design where they must: the live path records what its parser
+            # read, and the backfill records that no parser was run. A conflict is the one reason both
+            # can state, because it is decided before any parser is consulted.
+            assert (migrated_reason == MARKET_CATEGORY_CONFLICT) is (expected_conflict is not None), item_id
     finally:
         conn.close()

@@ -33,7 +33,10 @@ WS_TOKEN = "browser-smoke-token"
 # opens an Event and lands in `/api/news/feed`; the liquidation is a market observation, opens no
 # Event by design, and lands in `/api/news/market`. Before the cut the smoke seeded only the
 # liquidation and waited for it on the feed, which is exactly the path that no longer exists.
-SERVICE_FACT = "Regulator approves the second spot ETF listing of the year"
+# The console's default News view is the 已推送 tab, so the seeded Event has to be one that is
+# actually pushed. `listing_deterministic` is the one deterministic route left that reaches a reader
+# without a model: it is admitted, its degraded verdict pushes, and delivery settles `sent`.
+SERVICE_FACT = "Binance will list ACMEUSDT perpetual futures on 2026-09-08"
 MARKET_FACT = "BTC Large Short Liquidation 4.55M at $118000"
 
 
@@ -172,7 +175,7 @@ async def _publish_opennews(amqp_url: str, name_prefix: str) -> None:
     await bus.connect()
     try:
         frames: tuple[tuple[str, str, str, str, str, dict[str, Any]], ...] = (
-            ("1018", "News Score > 70", "news", "news", SERVICE_FACT, {"score": 92}),
+            ("1353", "Listing and Delisting Announcements", "news", "listing", SERVICE_FACT, {}),
             ("2000", "实时清算", "market", "market", MARKET_FACT, {}),
         )
         for offset, (strategy_id, strategy_name, source_type, engine_type, text, extra) in enumerate(frames):
@@ -215,10 +218,13 @@ async def _publish_opennews(amqp_url: str, name_prefix: str) -> None:
 def _wait_for_service_fact(base_url: str) -> None:
     """Both planes, through the real stack: an Event on the feed and an observation on the market read."""
 
+    # `outcome=pushed` on purpose: it is what the console's default News view sends
+    # (`parseOutcome(null) === "pushed"`), so this wait asserts exactly what the browser step then
+    # asserts. Waiting on the unfiltered feed would pass for an Event the page never shows.
     _wait_for_fact(
-        f"{base_url}/api/news/feed",
+        f"{base_url}/api/news/feed?outcome=pushed",
         lambda body: any(event.get("leader_title") == SERVICE_FACT for event in body["data"]["events"]),
-        "news Event did not reach the HTTP feed",
+        "news Event did not reach the HTTP feed's pushed tab",
     )
     _wait_for_fact(
         f"{base_url}/api/news/market",
