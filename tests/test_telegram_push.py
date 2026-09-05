@@ -12,7 +12,12 @@ from urllib.parse import urlsplit
 import httpx
 import pytest
 
-from tracefold.integrations.telegram import TelegramDeliveryError, TelegramNewsPushSender
+from tracefold.integrations.telegram import (
+    _TELEGRAM_TEXT_MAX,
+    TelegramDeliveryError,
+    TelegramNewsPushSender,
+    _plain_html_text,
+)
 from tracefold.news import ReaderDeliveryPresentation, ReaderMarketMovement, ReaderTradeTarget
 
 CHANNEL_ID = -1001234567890
@@ -423,43 +428,6 @@ def test_sender_hides_unavailable_progression_evidence_after_downgrading_to_new_
     assert "🔄 <b>新进展</b>" not in str(observed["text"])
     assert "关联待确认" not in str(observed["text"])
     assert "上游复核服务暂时不可用" not in str(observed["text"])
-
-
-def test_sender_deletes_only_the_exact_receipted_message() -> None:
-    observed: list[tuple[str, dict[str, object]]] = []
-
-    def handle(request: httpx.Request) -> httpx.Response:
-        method = request.url.path.rsplit("/", maxsplit=1)[-1]
-        preflight = _preflight_response(request)
-        if preflight is not None:
-            return preflight
-        payload = json.loads(request.content)
-        observed.append((method, payload))
-        result: object = (
-            True
-            if method == "deleteMessage"
-            else {
-                "message_id": 42,
-                "chat": {"id": CHANNEL_ID, "type": "channel"},
-            }
-        )
-        return httpx.Response(200, json={"ok": True, "result": result})
-
-    clock = iter((1_787_885_313_000, 1_787_885_315_000))
-    sender = TelegramNewsPushSender(
-        bot_token=BOT_TOKEN,
-        chat_id=CHANNEL_ID,
-        transport=httpx.MockTransport(handle),
-        wall_clock_ms=lambda: next(clock),
-    )
-    sender.prepare()
-    initial = sender.send_card(_card())
-    deleted = sender.delete_card(initial)
-
-    assert [method for method, _payload in observed] == ["sendMessage", "deleteMessage"]
-    assert observed[1][1] == {"chat_id": CHANNEL_ID, "message_id": 42}
-    assert deleted["message_id"] == 42
-    assert deleted["deleted_at_ms"] == 1_787_885_315_000
 
 
 def test_sender_links_a_fresh_bitget_target_even_when_prices_are_unavailable() -> None:
@@ -1229,10 +1197,99 @@ def test_sender_accepts_only_a_private_channel_bot_api_id(chat_id: object) -> No
         TelegramNewsPushSender(bot_token=BOT_TOKEN, chat_id=chat_id)  # type: ignore[arg-type]
 
 
+def test_a_plain_http_source_keeps_its_button() -> None:
+    """#562 §5 row 11. Refusing `http://` dropped the source link off legitimate publishers' cards.
+
+    A transport opinion about somebody else's site is the reader's own client's to have; what this
+    adapter owes the reader is the link the card was built with.
+    """
+
+    observed: dict[str, object] = {}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        observed.update(json.loads(request.content))
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID}}})
+
+    sender = TelegramNewsPushSender(bot_token=BOT_TOKEN, chat_id=CHANNEL_ID, transport=httpx.MockTransport(handle))
+    sender.prepare()
+    sender.send_card(_card(source_url="http://www.example.test/story"))
+
+    assert '<a href="http://www.example.test/story">' in str(observed["text"])
+
+
+def test_a_channel_with_a_public_username_is_a_valid_target() -> None:
+    """#562 §5 row 11. A public channel is a product decision, not a delivery failure.
+
+    The preflight still binds delivery to the exact chat id and to a channel rather than a group or a
+    personal chat; what it stopped doing is refusing the operator's own choice to publish.
+    """
+
+    methods: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", maxsplit=1)[-1]
+        methods.append(method)
+        if method == "getChat":
+            return httpx.Response(
+                200,
+                json={"ok": True, "result": {"id": CHANNEL_ID, "type": "channel", "username": "public_feed"}},
+            )
+        return _preflight_response(request) or httpx.Response(
+            200, json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID}}}
+        )
+
+    sender = TelegramNewsPushSender(bot_token=BOT_TOKEN, chat_id=CHANNEL_ID, transport=httpx.MockTransport(handle))
+    sender.prepare()
+    receipt = sender.send_card(_card())
+
+    assert methods == ["getChat", "getMe", "getChatMember", "sendMessage"]
+    assert receipt["message_id"] == 42
+
+
+def test_an_over_long_card_is_clipped_rather_than_lost() -> None:
+    """#562 §5 row 7. Telegram's 4096-character limit used to settle the whole delivery `terminal`.
+
+    Everything the reader came for -- the title, the facts line, the assets and the source link -- fits;
+    only the body ran long, and the card was thrown away whole rather than trimmed.
+    """
+
+    observed: dict[str, object] = {}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        observed.update(json.loads(request.content))
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID}}})
+
+    card = _card()
+    tickers = " ".join(f"AA{index:04d}" for index in range(400))
+    card["elements"][0]["content"] = (  # type: ignore[index]
+        f"连续第三日净流入\n利多 · 新进展 · 影响明显 · {tickers} · CoinDesk（2 条报道） · 14:32"
+    )
+    sender = TelegramNewsPushSender(bot_token=BOT_TOKEN, chat_id=CHANNEL_ID, transport=httpx.MockTransport(handle))
+    sender.prepare()
+    receipt = sender.send_card(card)
+
+    text = str(observed["text"])
+    assert receipt["message_id"] == 42
+    assert len(_plain_html_text(text)) <= _TELEGRAM_TEXT_MAX
+    assert text.startswith("🟢 <b>BTC ETF 净流入</b>")
+    assert "连续第三日净流入" in text
+    assert text.endswith('🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道')
+
+
 @pytest.mark.parametrize(
     "source_url",
     [
-        "http://example.test/not-allowed",
+        # The rules that are about this adapter, not about somebody else's transport: credentials in
+        # the URL, a non-default port, and a length no card needs (#562 §5 row 11).
+        "https://user:secret@example.test/story",
+        "https://example.test:8443/story",
+        "ftp://example.test/story",
         "https://example.test/" + "a" * 2_100,
     ],
 )
@@ -1267,7 +1324,6 @@ def test_sender_keeps_an_unsafe_source_destination_as_plain_text(source_url: str
     ("chat", "error"),
     [
         ({"id": CHANNEL_ID, "type": "supergroup"}, "target_not_private_channel"),
-        ({"id": CHANNEL_ID, "type": "channel", "username": "public_feed"}, "target_not_private_channel"),
         ({"id": -1009999999999, "type": "channel"}, "target_chat_mismatch"),
     ],
 )

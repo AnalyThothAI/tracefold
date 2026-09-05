@@ -125,9 +125,6 @@ def test_the_corpus_still_covers_the_shapes_this_parser_claims_to_read() -> None
     [
         # Not a position report at all -- the measured example.
         "js-2 Withdraw USDC $160K",
-        # An abbreviated price. The provider spells prices in full, so this is a drifted template and
-        # not an invitation to pick a multiplier for it.
-        "js-2 Open Long BTC $798.18K , Price $79.81K",
         # A suffix outside the provider's own vocabulary.
         "js-2 Open Long BTC $798.18T , Price $79,817.87",
         # Structure the template does not have: no price, no dollar mark, an unknown action, no figures.
@@ -141,6 +138,28 @@ def test_the_corpus_still_covers_the_shapes_this_parser_claims_to_read() -> None
 )
 def test_an_unproven_template_is_still_refused(title: str) -> None:
     assert _parse(title) is None
+
+
+def test_an_abbreviated_price_keeps_the_whole_record_instead_of_losing_it() -> None:
+    """#562 §5 row 2. The price was the one figure the `K`/`M`/`B` fix left out, and refusing it cost
+    the entire report -- action, side, notional, PNL and account grouping -- not just the price."""
+
+    fact = _parse("js-2 Close Long BTC $798.18K , Price $79.81K , PNL -$1.84K")
+    assert fact is not None
+    assert fact.price == Decimal("79810")
+    assert fact.reported_notional_usd == Decimal("798180")
+    assert fact.pnl_usd == Decimal("-1840")
+    assert (fact.action, fact.position_side, fact.symbol) == ("close", "long", "BTC")
+
+
+def test_an_over_long_label_or_instrument_is_clipped_rather_than_losing_the_report() -> None:
+    """#562 §5 row 12. Width is not unreadability: the numbers on the line are the same either way."""
+
+    fact = _parse(f"{'w' * 200} Open Long {'X' * 60} $798.18K , Price $79,817.87")
+    assert fact is not None
+    assert fact.trader_label == "w" * 128
+    assert fact.raw_instrument == "X" * 32
+    assert fact.reported_notional_usd == Decimal("798180")
 
 
 def test_thousands_separators_are_read_in_every_figure() -> None:

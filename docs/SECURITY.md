@@ -376,22 +376,23 @@ from the small private-channel-ID space and changes when the bot token rotates.
 The credential never enters the httpx request URL seen by its INFO logger: a
 fixed-origin transport injects `/bot{token}/` only while building the TLS wire
 path and converts transport failures to sanitized codes.
-Before the first send it verifies exact target ID, private
-channel type, bot identity, administrator status, and post permission; a public
-channel, group, supergroup, or mismatched target fails closed. Preflight and
+Before the first send it verifies exact target ID, channel type, bot identity,
+administrator status, and post permission; a group, supergroup, or mismatched
+target fails closed. A channel that also has a public `@name` is the operator's
+own publishing decision and is accepted (#562 §5 row 11). Preflight and
 `sendMessage` are separate finite operations: preflight completes before the
 durable `sending` row exists, and the operation behind that row contains only
-`sendMessage`. After that message is verified and durably settled `sent`, the only permitted mutations are
-`editMessageText` and receipt-bound `deleteMessage` for the exact same configured channel and positive message ID
-from the canonical receipt. The
+`sendMessage`. After that message is verified and durably settled `sent`, the only permitted mutation is
+`editMessageText` for the exact same configured channel and positive message ID
+from the canonical receipt; #562 §5 row 5 removed `deleteMessage` from the Adapter entirely. The
 Adapter rejects a receipt with a different provider, target digest, invalid message ID, or missing original send
 timestamp. It independently verifies the edit response still names the configured channel and same message ID.
 The typed receipt has an exact allowlist (`provider`, `message_id`, `pushed_at_ms`, `target_sha256`, and optional
 `edited_at_ms` / `deleted_at_ms`); extra provider text, URLs, or metadata fail validation. Storage binds
 `pushed_at_ms` as well as
 message and target identity before accepting either edit intent or settlement.
-The Bot API transport allowlist contains only the fixed preflight methods, `sendMessage`,
-`editMessageText`, and `deleteMessage`; arbitrary bot methods and destinations remain impossible. Each operation uses a seven-second application budget; every HTTP
+The Bot API transport allowlist contains only the fixed preflight methods, `sendMessage`
+and `editMessageText`; arbitrary bot methods and destinations remain impossible. Each operation uses a seven-second application budget; every HTTP
 phase is capped at 1.25 seconds and later calls stop when the monotonic budget is
 exhausted. Socket timeouts are inactivity limits rather than a strict wall-clock
 guarantee, so DNS or a continuously slow peer can outlive that budget. A timed-out

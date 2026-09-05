@@ -56,7 +56,8 @@ def test_worker_reads_the_secure_token_and_binds_the_configured_channel(
 
     monkeypatch.setattr(news_wiring, "TelegramNewsPushSender", build_sender)
 
-    assert news_wiring._news_push_sender(_settings(tmp_path)) is sender
+    composed = news_wiring._news_push_sender(_settings(tmp_path))
+    assert composed.sender is sender and composed.reason is None
     assert captured == {"bot_token": BOT_TOKEN, "chat_id": CHANNEL_ID}
 
 
@@ -75,11 +76,9 @@ def test_worker_does_not_construct_a_sender_from_an_insecure_token_file(
 
     monkeypatch.setattr(news_wiring, "TelegramNewsPushSender", build_sender)
 
-    with pytest.raises(
-        RuntimeError,
-        match="news_push_unavailable:news_item_push_telegram_bot_token_unavailable",
-    ):
-        news_wiring._news_push_sender(_settings(tmp_path))
+    composed = news_wiring._news_push_sender(_settings(tmp_path))
+    assert composed.sender is None
+    assert composed.reason == "news_item_push_telegram_bot_token_unavailable"
     assert constructed is False
 
 
@@ -87,7 +86,31 @@ def test_worker_leaves_delivery_off_when_push_is_not_requested(tmp_path: Path) -
     settings = _settings(tmp_path)
     settings.news.push.enabled = False
 
-    assert news_wiring._news_push_sender(settings) is None
+    assert news_wiring._news_push_sender(settings) == news_wiring._ComposedPushSender()
+
+
+def test_a_chat_id_that_is_not_a_private_channel_is_a_delivery_reason_not_a_dead_process(
+    tmp_path: Path,
+) -> None:
+    """#562 §5 rows 1 and 8. A mistyped chat id used to stop `Settings` itself from validating.
+
+    The private-channel shape was written down twice -- in `NewsPushSettings` and in the adapter that
+    talks to Telegram -- and the config copy was the expensive one: one wrong digit and the process
+    could not start at all, so no `/readyz` and no `tracefold config` could say why reception, triage
+    and the market loop were down. The adapter still refuses the target; what it costs now is one
+    capability marked `unavailable` beside a running process.
+    """
+
+    token_file = tmp_path / "telegram_bot_token"
+    token_file.write_text(BOT_TOKEN, encoding="utf-8")
+    token_file.chmod(0o600)
+    settings = _settings(tmp_path)
+    settings.news.push.telegram_chat_id = -100123  # too short to be a channel id
+
+    composed = news_wiring._news_push_sender(settings)
+
+    assert composed.sender is None
+    assert composed.reason == "news_item_push_telegram_sender_invalid"
 
 
 def test_a_push_target_declared_against_disabled_news_is_a_capability_fault_not_a_startup_refusal() -> None:

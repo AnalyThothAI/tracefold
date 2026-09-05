@@ -803,10 +803,15 @@ def test_a_symbol_rotated_out_of_an_active_source_must_reacquire_its_reference()
     assert price.snapshots["binance.perp"]["quotes"][0].change_pct is not None
 
 
-def test_reference_is_valid_through_360_seconds_then_only_the_change_expires(
+def test_reference_is_valid_through_600_seconds_then_only_the_change_expires(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#304 F2P: reference staleness removes the ratio, never the current price or its basis."""
+    """#304 F2P: reference staleness removes the ratio, never the current price or its basis.
+
+    #562 §5 row 10 widened the window from 360 s to 600 s. The day read that refreshes the reference
+    runs every 300 s and is optional -- it never enters the turn deadline -- so the old ceiling gave it
+    no room to miss one: 361 s after the last successful read the card lost its 24 h change entirely.
+    """
 
     clock = [100]
     monkeypatch.setattr(loops_module, "now_ms", lambda: clock[0])
@@ -817,7 +822,12 @@ def test_reference_is_valid_through_360_seconds_then_only_the_change_expires(
     asyncio.run(loop.turn())
     loop.day_fetcher_for = None  # hold the one successful reference fixed while current keeps moving
 
-    clock[0] += 360_000
+    clock[0] += 360_001  # one missed day read: what used to expire the change and no longer does
+    asyncio.run(loop.turn())
+    missed_read = price.snapshots["binance.perp"]["quotes"][0]
+    assert missed_read.change_pct is not None
+
+    clock[0] = 100 + 600_000
     asyncio.run(loop.turn())
     boundary = price.snapshots["binance.perp"]["quotes"][0]
     assert boundary.change_pct is not None

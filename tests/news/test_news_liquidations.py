@@ -112,6 +112,28 @@ def test_ambiguous_or_malformed_prose_fails_closed(text: str) -> None:
     assert _parse(text) is None
 
 
+def test_thousands_separators_are_read_on_the_liquidation_template_too() -> None:
+    """#562 §5 row 12. One figure grammar for both provider templates.
+
+    The account template accepted `$1,234,567.89` while this one refused the same separator outright,
+    so a wide forced trade -- exactly the one a reader wants -- was the one stored raw with no numbers.
+    """
+
+    fact = _parse("SOL Large Short Liquidation 1,250.5K at $79,817.87")
+    assert fact is not None
+    assert fact.notional_usd == Decimal("1250500")
+    assert fact.price == Decimal("79817.87")
+
+
+def test_a_wide_instrument_token_is_clipped_rather_than_losing_the_forced_trade() -> None:
+    """#562 §5 row 12. Both parsers clip the provider's token; neither refuses a record for its width."""
+
+    fact = _parse(f"{'S' * 40} Large Short Liquidation 10K at $150")
+    assert fact is not None
+    assert fact.raw_instrument == "S" * 32
+    assert fact.notional_usd == Decimal("10000")
+
+
 def test_a_missing_event_stamp_fails_closed() -> None:
     assert (
         parse_liquidation(

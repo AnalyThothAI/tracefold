@@ -681,11 +681,16 @@ def _decide_raw(
     A `Withdraw`, a new provider action word or a drifted format is exactly the thing a reader most
     needs to see, and the Open/Close window would swallow it. The group is the record itself, so one
     record is one card and two unreadable records never merge into one (§4.4, §4.1.6).
+
+    That group key -- `raw|<kind>|<item_id>` -- is why there is no anchor test here. One record is the
+    whole group, so a group whose card has already been attempted never comes back with a second
+    observation to decide about, and the `anchor_state` arm that used to stand beside `has_open_intent`
+    could not be reached by any record the provider can send (#562 §5 row 13).
     """
 
     for observation in observations:
         track = _observed(track, observation)
-    if has_open_intent or track.anchor_state != "":
+    if has_open_intent:
         return GroupTurn(track=replace(track, pending_reason=REASON_MERGING))
     return GroupTurn(
         track=replace(track, pending_reason=REASON_MERGING, next_due_at_ms=now_ms),
@@ -791,6 +796,14 @@ def market_reader_card(
 
     first, latest = observations[0], observations[-1]
     subject = track.symbol or track.raw_instrument or latest.symbol or latest.raw_instrument or ""
+    # #562 §5 row 13 called this the second copy of `market_detail_url`'s absolute-URL check and asked
+    # for it to go. It is kept, and the reason is a measured card: the two checks answer different
+    # questions. `market_detail_url` asks whether the *operator configured* a console origin; this asks
+    # whether the *link on this card* is one a Feishu or Telegram client can open. `market_reader_card`
+    # is public and takes any `detail_url`, and the 32 pre-#553 production cards in
+    # `tests/fixtures/news/reader_card_production_cards.json` are exactly the callers that handed it
+    # `/news/market/<id>` -- a button no client could follow. That is the demonstrated failure this
+    # keeps preventing; deleting it made those fixtures render an unfollowable button again.
     link = _absolute_http_url(detail_url)
     return ReaderCard(
         header=ReaderCardHeader(

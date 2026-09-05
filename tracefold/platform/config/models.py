@@ -239,14 +239,24 @@ class NewsPushSettings(BaseModel):
     @field_validator("telegram_chat_id", mode="before")
     @classmethod
     def parse_private_channel_id(cls, value: Any) -> int | None:
+        """Read the operator's chat id as an integer. What a *valid* one looks like is the adapter's rule.
+
+        The private-channel shape was written down twice: here, and in `TelegramNewsPushSender`, which
+        is the code that actually talks to Telegram and refuses anything else. The copy here was the
+        more expensive of the two by far -- a mistyped digit failed `Settings` validation, so the whole
+        process could not start, and no `tracefold config` or `/readyz` could say why. One typo, and
+        reception, triage and the market loop were down with it. The adapter's copy costs a delivery
+        capability marked `unavailable` beside a running process (#562 §5 rows 1 and 8).
+        """
+
         if value is None or value == "":
             return None
         if isinstance(value, bool):
             raise ValueError("news_push_telegram_chat_id_invalid")
-        normalized = str(value).strip()
-        if not re.fullmatch(r"-100[1-9][0-9]{5,15}", normalized):
-            raise ValueError("news_push_telegram_chat_id_invalid")
-        return int(normalized)
+        try:
+            return int(str(value).strip())
+        except ValueError:
+            raise ValueError("news_push_telegram_chat_id_invalid") from None
 
     @model_validator(mode="after")
     def validate_pacing(self) -> NewsPushSettings:

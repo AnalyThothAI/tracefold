@@ -40,11 +40,21 @@ _UNIT: Final[dict[str, Decimal]] = {
     "M": Decimal(1_000_000),
     "B": Decimal(1_000_000_000),
 }
+# One dollar figure as the provider writes it: `798.18`, `79,817.87`, `214`. Thousands separators are
+# optional on every figure because the provider uses them on exactly the ones wide enough to need
+# them, and this template is not exempt: `1,250K at $79,817.87` used to fail the frame outright and be
+# stored raw while the same separator on the same provider's account template parsed (#562 §5 row 12).
+# One figure grammar, read by both parsers.
+FIGURE: Final = r"\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?"
+# How much of the provider's own instrument token is kept. Both parsers clip to it rather than
+# refusing the record: a token wider than this is a wide name, not an unreadable one, and dropping the
+# whole forced trade over its width lost the number the reader came for.
+MAX_INSTRUMENT_LEN: Final = 32
 
 _FRAME = re.compile(
-    r"^\s*(?P<symbol>[A-Z0-9._-]{1,16})\s+Large\s+"
+    r"^\s*(?P<symbol>[A-Z0-9._-]{1,64})\s+Large\s+"
     r"(?P<side>Short|Long)\s+Liquidation\s+"
-    rf"(?P<notional>\d+(?:\.\d+)?)(?P<unit>[{MAGNITUDE_SUFFIXES}]?)\s+at\s+\$(?P<price>\d+(?:\.\d+)?)\s*$",
+    rf"(?P<notional>{FIGURE})(?P<unit>[{MAGNITUDE_SUFFIXES}]?)\s+at\s+\$(?P<price>{FIGURE})\s*$",
     re.IGNORECASE,
 )
 _MAX_NUMERIC: Final = Decimal("1e24")
@@ -131,7 +141,7 @@ def parse_liquidation(
     if notional <= 0 or price <= 0 or notional > _MAX_NUMERIC or price > _MAX_NUMERIC:
         return None
     position_side = match.group("side").lower()
-    raw_instrument = match.group("symbol").strip()[:32]
+    raw_instrument = match.group("symbol").strip()[:MAX_INSTRUMENT_LEN]
     symbol = raw_instrument.upper().removeprefix("XYZ-")
     if not symbol:
         return None
@@ -163,7 +173,9 @@ def parse_liquidation(
 
 
 __all__ = [
+    "FIGURE",
     "MAGNITUDE_SUFFIXES",
+    "MAX_INSTRUMENT_LEN",
     "PARSER_VERSION",
     "RAW_REASON_TEMPLATE_UNMATCHED",
     "SOURCE_CONTRACT_VERSION",

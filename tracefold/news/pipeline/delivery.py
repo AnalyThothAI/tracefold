@@ -37,8 +37,13 @@ _ONE_HOUR_MS = 3_600_000
 _DELIVERY_EDIT_TIMEOUT_SECONDS = 8.0
 _DELIVERY_EDIT_RECONCILE_SECONDS = 30.0
 _DELIVERY_STARTUP_RECONCILE_RETRY_SECONDS = 0.25
-_PROGRESSION_LINK_SIMILARITY_MIN = 0.5
 _PROGRESSION_REVIEW_CANDIDATE_MAX = 8
+# What an authoritative five-venue absence puts on the card. It replaces deleting the card: the
+# tradability review is the same review, run at the same moment, on the same evidence -- what changed
+# is that a model-derived candidate list plus a text heuristic no longer takes a card the reader has
+# already read out of their channel. A reader who saw a story about a name they cannot trade is better
+# served by being told that than by watching the message vanish (#562 §5 row 5).
+_UNTRADEABLE_NOTICE_ZH = "未找到可交易标的"
 
 logger = logging.getLogger(__name__)
 
@@ -70,35 +75,23 @@ def _reader_novelty(verdict: Mapping[str, Any]) -> Novelty | None:
     return None
 
 
-def _progression_from_headline(triage_row: Mapping[str, Any], verdict: Mapping[str, Any]) -> str | None:
-    """Name a prior card only when the stored retrieval evidence supports that relationship.
+def _with_untradeable_notice(card: dict[str, Any]) -> dict[str, Any]:
+    """Lead the enrichment edit with the catalogue's answer, leaving every other block untouched.
 
-    ``progression`` currently does not carry an explicit told-ledger index. The selected ledger is relevance-ranked,
-    but broad buckets such as a whole conflict may also contain unrelated zero-similarity cards. We therefore show
-    a prior headline only for an exact-fact match or a non-zero semantic/title match; otherwise the reader sees the
-    truthful ``新进展`` badge without a fabricated ``上一条`` relationship.
+    The notice goes at the top of the markdown block, above the copy and clear of the facts line the
+    block ends with, so both configured adapters print it with no channel branch of their own.
     """
 
-    if verdict.get("novelty") != "progression":
-        return None
-    trace = triage_row.get("trace")
-    told = trace.get("told") if isinstance(trace, Mapping) else None
-    if not isinstance(told, Sequence) or isinstance(told, str | bytes):
-        return None
-    for entry in told:
-        if not isinstance(entry, Mapping):
+    elements = list(card.get("elements") or ())
+    for index, element in enumerate(elements):
+        if not isinstance(element, Mapping) or element.get("tag") != "markdown":
             continue
-        tier = str(entry.get("tier") or "")
-        similarity = entry.get("similarity")
-        related = tier == "exact_fact" or (
-            isinstance(similarity, int | float)
-            and not isinstance(similarity, bool)
-            and float(similarity) >= _PROGRESSION_LINK_SIMILARITY_MIN
-        )
-        headline = str(entry.get("headline_zh") or "").strip()
-        if related and headline:
-            return headline
-    return None
+        content = str(element.get("content") or "")
+        if content.startswith(_UNTRADEABLE_NOTICE_ZH):
+            return card
+        elements[index] = {**dict(element), "content": f"{_UNTRADEABLE_NOTICE_ZH}\n{content}".strip()}
+        return {**card, "elements": elements}
+    return card
 
 
 def _progression_review_candidates(
@@ -111,32 +104,13 @@ def _progression_review_candidates(
     if not isinstance(told, Sequence) or isinstance(told, str | bytes):
         return ()
     candidates: list[dict[str, Any]] = []
-    entry_fields = frozenset(
-        {
-            "i",
-            "event_id",
-            "at_ms",
-            "ago_min",
-            "storyline_key",
-            "comparison_title",
-            "comparison_fingerprint",
-            "symbols",
-            "magnitude",
-            "direction",
-            "headline_zh",
-            "why_zh",
-            "tier",
-            "similarity",
-            "history_scope",
-            "retrieval_reason",
-        }
-    )
+    # Every field this builder reads is named below, one at a time, with its own type check and its own
+    # bound. A key it does not read cannot change a candidate, so a told entry carrying one is not a
+    # reason to refuse anything: the rejected shape used to stop *every* progression card on the Event,
+    # and the only thing an added upstream field proves is that the ledger grew a column (#562 §5 row 4).
     for fallback_i, entry in enumerate(told):
         if not isinstance(entry, Mapping):
             continue
-        unexpected = set(entry).difference(entry_fields)
-        if unexpected:
-            raise ValueError(f"news_progression_trace_fields_unexpected:{','.join(sorted(unexpected))}")
         headline = str(entry.get("headline_zh") or "").strip()
         if not headline:
             continue
@@ -211,13 +185,6 @@ class EditableNewsPushSender(Protocol):
         *,
         presentation: ReaderDeliveryPresentation | None = None,
     ) -> Mapping[str, Any]: ...
-
-
-@runtime_checkable
-class DeletableNewsPushSender(Protocol):
-    """Provider capability for deleting one exactly receipted reader message."""
-
-    def delete_card(self, receipt: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,10 +346,6 @@ class DelivererConsumer:
                 "news_delivery_edit_reconcile",
                 lambda repos: repos.news.terminalize_interrupted_delivery_edits(now_ms=now_ms()),
             ),
-            (
-                "news_delivery_delete_reconcile",
-                lambda repos: repos.news.terminalize_interrupted_delivery_deletes(now_ms=now_ms()),
-            ),
         )
         for name, reconcile in startup_reconciliations:
             while not stop_event.is_set():
@@ -423,15 +386,9 @@ class DelivererConsumer:
                 await self._reconcile_stale_delivery_edits()
 
     async def _reconcile_stale_delivery_edits(self) -> None:
-        await asyncio.gather(
-            self.db.tx(
-                "news_delivery_edit_stale_reconcile",
-                lambda repos: repos.news.terminalize_stale_delivery_edits(now_ms=now_ms()),
-            ),
-            self.db.tx(
-                "news_delivery_delete_stale_reconcile",
-                lambda repos: repos.news.terminalize_stale_delivery_deletes(now_ms=now_ms()),
-            ),
+        await self.db.tx(
+            "news_delivery_edit_stale_reconcile",
+            lambda repos: repos.news.terminalize_stale_delivery_edits(now_ms=now_ms()),
         )
 
     async def handle(self, message: BusMessage) -> None:
@@ -443,12 +400,13 @@ class DelivererConsumer:
         bundle = await self.db.read("news_delivery_load", lambda repos: self._load(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_delivery_inputs_missing")
-        card, triage_row, _admission, event_kind, timing = bundle
+        card, triage_row, _admission, timing = bundle
         # A delivery message can outlive the source-contract migration that held its Event. Immutable
         # evidence and historical verdicts remain audit facts; current PostgreSQL routing still wins before
         # a delivery ledger row, quote read, or external send is attempted. A retired market kind is one of
-        # those held Events (#553): it is readable evidence and it is never delivered.
-        if event_kind not in EVENT_KINDS:
+        # those held Events (#553): `_load` answers it with no verdict, which is what "readable evidence,
+        # never delivered" is. Re-testing `EVENT_KINDS` here was that same rule written a second time.
+        if triage_row is None:
             return
         tv = dict(triage_row.get("verdict") or {})
         if triage_row["final_decision"] not in {"push", "escalate"}:
@@ -473,13 +431,6 @@ class DelivererConsumer:
         observed_at_ms = int(timing["observed_at_ms"]) if timing and timing.get("observed_at_ms") is not None else None
         progression_candidates = _progression_review_candidates(triage_row, tv)
         progression_review_pending = self._progression_verifier is not None and bool(progression_candidates)
-        progression_headline = _progression_from_headline(triage_row, tv)
-        # A progression claim is a *reviewed* claim. With no verifier -- none configured, or the
-        # editorial Program faulted and left one unwired (#553 PR-3) -- a claim the title band would
-        # have shown reads "not reviewed" rather than shipping as though a gate had passed it: a fault
-        # in one capability must not silently drop the gate another capability owns. Below the band
-        # there is no claim to gate, so nothing is pending either.
-        progression_unreviewed = self._progression_verifier is None and progression_headline is not None
         _, title_identity_confident = tradability_candidates(event=card, verdict=tv, symbols=shown)
         tradability_pending = (
             self._tradability_verifier is not None
@@ -491,10 +442,12 @@ class DelivererConsumer:
             observed_at_ms=observed_at_ms,
             market_scope=_reader_market_scope(tv),
             novelty=_reader_novelty(tv),
-            progression_from_headline=(
-                None if progression_review_pending or progression_unreviewed else progression_headline
-            ),
-            progression_review_state=("pending" if progression_review_pending or progression_unreviewed else None),
+            # `⏳ 关联确认中` is a promise that an edit is on its way. With no verifier -- none
+            # configured, or the editorial Program faulted and left one unwired (#553 PR-3) -- no edit
+            # is coming, and the badge stayed on the card forever: a permanent "confirming" is a worse
+            # answer than the plain `新进展` the verdict already earned. It is shown only while a review
+            # this delivery actually started is still running (#562 §5 rows 3 and 6).
+            progression_review_state=("pending" if progression_review_pending else None),
         )
         progressive_sender = self.sender if isinstance(self.sender, EditableNewsPushSender) else None
         quotes = (
@@ -662,12 +615,13 @@ class DelivererConsumer:
             if (
                 tradability_review is not None
                 and tradability_review.state == "absent"
+                # Still the identity confidence the deletion path was gated on: an authoritative
+                # absence is only worth printing about a candidate specific enough to be a ticker.
+                # What changed is what it authorises -- a line on the card, not its removal.
                 and tradability_review.deletion_safe
                 and not reader_trade_targets(quotes)
-                and isinstance(context.sender, DeletableNewsPushSender)
             ):
-                await self._delete_untradeable(context, tradability_review, progression_review)
-                return
+                card_payload = _with_untradeable_notice(card_payload)
             presentation = replace(
                 context.presentation,
                 trade_targets=reader_trade_targets(quotes),
@@ -776,74 +730,6 @@ class DelivererConsumer:
                 matches=(),
                 reason_zh="交易所目录核验超时或返回异常，按安全规则保留消息。",
             )
-
-    async def _delete_untradeable(
-        self,
-        context: _EnrichmentEditContext,
-        review: TradabilityReview,
-        progression_review: ProgressionReview | None,
-    ) -> None:
-        sender = context.sender
-        if not isinstance(sender, DeletableNewsPushSender):
-            return
-        evidence: dict[str, Any] = {"tradability_review": review.model_dump(mode="json", exclude_none=True)}
-        if progression_review is not None:
-            evidence["progression_review"] = progression_review.model_dump(mode="json", exclude_none=True)
-        intent_started = bool(
-            await self.db.tx(
-                "news_delivery_begin_delete",
-                lambda repos: repos.news.begin_delivery_delete(
-                    event_id=context.event_id,
-                    kind=context.kind,
-                    evidence=evidence,
-                    reason=review.reason_zh,
-                    receipt=context.receipt.canonical(),
-                    now_ms=now_ms(),
-                ),
-            )
-        )
-        if not intent_started:
-            logger.warning("News delivery delete failed: news_delivery_delete_intent_conflict")
-            return
-        try:
-            result = await self.finite.run(
-                "news_delivery_delete",
-                sender.delete_card,
-                context.receipt.canonical(),
-                timeout_seconds=_DELIVERY_EDIT_TIMEOUT_SECONDS,
-                allow_shutdown=True,
-            )
-            deleted_receipt = TelegramDeliveryReceipt.model_validate(result)
-            if deleted_receipt.deleted_at_ms is None:
-                raise RuntimeError("news_delivery_delete_receipt_unsettled")
-            recorded = bool(
-                await self.db.tx(
-                    "news_delivery_settle_delete",
-                    lambda repos: repos.news.settle_delivery_delete(
-                        event_id=context.event_id,
-                        kind=context.kind,
-                        receipt=deleted_receipt.canonical(),
-                        now_ms=now_ms(),
-                    ),
-                )
-            )
-            if not recorded:
-                raise RuntimeError("news_delivery_delete_receipt_conflict")
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            error_code = getattr(exc, "code", None) or f"{type(exc).__module__}.{type(exc).__name__}"
-            await self.db.tx(
-                "news_delivery_ambiguous_delete",
-                lambda repos: repos.news.mark_delivery_delete_ambiguous(
-                    event_id=context.event_id,
-                    kind=context.kind,
-                    receipt=context.receipt.canonical(),
-                    error_code=str(error_code)[:160],
-                    now_ms=now_ms(),
-                ),
-            )
-            logger.warning("News delivery delete failed: %s", error_code)
 
     async def _progression_review(self, context: _EnrichmentEditContext) -> ProgressionReview | None:
         verifier = self._progression_verifier
@@ -1289,13 +1175,13 @@ class DelivererConsumer:
         admission = str(routing.get("admission") or "")
         event_kind = str(routing.get("event_kind") or "")
         if event_kind not in EVENT_KINDS:
-            return card, None, admission, event_kind, timing
+            return card, None, admission, timing
         triage = repos.news.latest_verdict(event_id=event_id, stage="triage")
         if triage is None:
             return None
         # No OI frame row travels in this bundle any more (#458). It grounded the symbol on a pushed OI
         # card, and Triage publishes to this consumer only on `push`, which the OI lane no longer produces.
-        return card, triage, admission, event_kind, timing
+        return card, triage, admission, timing
 
     async def drain(self) -> None:
         tasks = tuple(self._edit_tasks)
