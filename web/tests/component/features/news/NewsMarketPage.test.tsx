@@ -66,6 +66,10 @@ describe("NewsMarketPage", () => {
 
     await waitFor(() => expect(paths).toContain("/api/news/market"));
     expect(paths.filter((path) => path.startsWith("/api/trading"))).toEqual([]);
+    // And the observations are on screen while that is true, so "Trading is unavailable" is not a
+    // state this page can be in: it never asks.
+    expect(await screen.findByText(/WIF OI Rise 6.71%/)).toBeInTheDocument();
+    expect(document.querySelectorAll(".news-market-row")).toHaveLength(3);
   });
 
   it("renders the observations when the pipeline status read fails", async () => {
@@ -88,19 +92,6 @@ describe("NewsMarketPage", () => {
     expect(document.querySelectorAll(".news-market-row")).toHaveLength(3);
   });
 
-  it("renders the observations when Trading is unavailable", async () => {
-    server.use(
-      http.get(/.*\/api\/trading\/.*/, () =>
-        HttpResponse.json({ ok: false, error: "trading unavailable" }, { status: 503 }),
-      ),
-    );
-
-    renderMarket();
-
-    expect(await screen.findByText(/WIF OI Rise 6.71%/)).toBeInTheDocument();
-    expect(document.querySelectorAll(".news-market-row")).toHaveLength(3);
-  });
-
   it("states the push channel from the server's own flag, on every group and once for the page", async () => {
     renderMarket();
     await screen.findByText(/WIF OI Rise 6.71%/);
@@ -108,8 +99,8 @@ describe("NewsMarketPage", () => {
     expect(screen.getByText("未接通")).toBeInTheDocument();
     expect(screen.getByText(/观测只入库，不推送/)).toBeInTheDocument();
     // The per-group answer is the notification owner's own string, printed rather than glossed.
-    expect(screen.getAllByText("not_sent").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("notifications_not_connected").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("not_connected").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("market_notifications_not_connected").length).toBeGreaterThan(0);
 
     cleanup();
     server.use(
@@ -136,7 +127,7 @@ describe("NewsMarketPage", () => {
     expect(within(oi).getByText("解析")).toBeInTheDocument();
     expect(within(oi).getByText("已解析")).toBeInTheDocument();
     expect(within(oi).getByText("推送")).toBeInTheDocument();
-    expect(within(oi).getByText("not_sent")).toBeInTheDocument();
+    expect(within(oi).getByText("not_connected")).toBeInTheDocument();
     expect(oi.querySelectorAll(".news-market-flag")).toHaveLength(2);
   });
 

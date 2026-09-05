@@ -248,6 +248,9 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "sources",
         "filters",
         "notifications_connected",
+        # A page scans a bounded number of rows. When it fills that bound a run's `observation_count`
+        # is a floor, and the client is told rather than shown a number that stopped counting.
+        "scan_truncated",
     }
     assert set(components["NewsMarketItemData"]["properties"]) == {
         "observation",
@@ -264,6 +267,8 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
     # sender did. A client cannot derive either from the other, which is why neither is folded away.
     assert {"parse_status", "parse_error"} <= set(components["NewsMarketObservationData"]["properties"])
     assert {"notification_status", "notification_reason"} <= set(components["NewsMarketGroupData"]["required"])
+    # Where the next page starts. Paging from `latest` would re-scan the rest of the run.
+    assert {"oldest_received_at_ms", "oldest_item_id"} <= set(components["NewsMarketGroupData"]["properties"])
     assert components["NewsMarketObservationData"]["properties"]["market_kind"]["enum"] == [
         "oi",
         "liquidation",

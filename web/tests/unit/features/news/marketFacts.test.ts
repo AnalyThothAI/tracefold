@@ -2,11 +2,12 @@ import {
   marketObservationTrace,
   marketParseLabel,
   marketSubject,
+  mergeMarketGroups,
   nextMarketParams,
   parseMarketKinds,
   toggleMarketKind,
 } from "@features/news/model/marketFacts";
-import { newsMarketObservationFixture } from "@tests/fixtures/newsFixture";
+import { newsMarketGroupFixture, newsMarketObservationFixture } from "@tests/fixtures/newsFixture";
 import { describe, expect, it } from "vitest";
 
 describe("market kind filter state", () => {
@@ -77,5 +78,39 @@ describe("market observation display", () => {
         "historical",
       ),
     ).toBe("true");
+  });
+});
+
+describe("merging the polled page with the frozen pages behind it", () => {
+  const run = (runId: string, latestItemId: string, observationCount: number) =>
+    newsMarketGroupFixture({
+      group_key: `oi|opennews|binance|WIF|${runId}`,
+      latest: newsMarketObservationFixture({
+        group_key: `oi|opennews|binance|WIF|${runId}`,
+        item_id: latestItemId,
+      }),
+      observation_count: observationCount,
+      oldest_item_id: `${runId}-oldest`,
+    });
+
+  it("keeps one row for a run that gained an observation between the two reads", () => {
+    // The frozen "load more" page saw two observations; the next poll of the first page saw a third,
+    // which moved `latest.item_id`. Keying on that rendered the run twice, with two different counts.
+    const polled = [run("a", "wif-3", 3)];
+    const frozen = [run("a", "wif-2", 2)];
+
+    const merged = mergeMarketGroups([polled, frozen]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].observation_count).toBe(3);
+    expect(merged[0].latest.item_id).toBe("wif-3");
+  });
+
+  it("keeps both runs when one group legitimately appears twice in the window", () => {
+    // An observation of another group between them splits one group into two runs, and a reader must
+    // see both -- which is why the key is the run's oldest member and not the group alone.
+    const merged = mergeMarketGroups([[run("a", "wif-9", 1), run("b", "wif-4", 2)]]);
+
+    expect(merged.map((group) => group.oldest_item_id)).toEqual(["a-oldest", "b-oldest"]);
   });
 });

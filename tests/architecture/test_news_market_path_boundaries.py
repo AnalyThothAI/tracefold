@@ -14,17 +14,20 @@ mechanism is gone is worth more than the absence of the word.
 
 from __future__ import annotations
 
+import ast
 import io
 import re
 import token
 import tokenize
 from pathlib import Path
+from typing import Final
 
 ROOT = Path(__file__).resolve().parents[2]
 
 # Every module a market observation passes through between the provider frame and the reader.
 MARKET_PATH = (
     "tracefold/news/opennews.py",
+    "tracefold/news/pipeline/admission.py",
     "tracefold/news/source_contracts.py",
     "tracefold/news/oi_signals.py",
     "tracefold/news/oi_contracts.py",
@@ -64,10 +67,41 @@ FORBIDDEN = (
 _SQL_MARKERS = re.compile(r"\b(SELECT|INSERT|UPDATE|DELETE|FROM|JOIN)\b")
 
 
+# `admission.py` is the one module on the path that hosts *both* branches: the editorial one still
+# builds a storyline key and an Event, and must. Scanning the whole file would either fail on the
+# editorial code or force the forbid-list to be weakened for everyone. The market lane's own
+# functions are named instead, so the scan over them is stricter than the file-wide one, not looser.
+MARKET_OWNED_FUNCTIONS: Final[dict[str, tuple[str, ...]]] = {
+    "tracefold/news/pipeline/admission.py": (
+        "_prepare_market",
+        "_related_address",
+        "admit_market_item",
+        "_write_market_fact",
+    ),
+}
+
+
+def _market_owned_source(relative: str, names: tuple[str, ...]) -> str:
+    """The exact source of the named top-level functions, and nothing else in the module."""
+
+    tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
+    found = {
+        node.name: ast.unparse(node)
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name in names
+    }
+    missing = sorted(set(names) - set(found))
+    assert missing == [], f"{relative}: market-owned functions renamed or removed: {missing}"
+    return "\n".join(found[name] for name in names)
+
+
 def _scannable(relative: str) -> str:
     """The module's code, plus any string literal that contains SQL. Comments and prose removed."""
 
-    text = (ROOT / relative).read_text(encoding="utf-8")
+    names = MARKET_OWNED_FUNCTIONS.get(relative)
+    # `ast.unparse` has already dropped the comments; docstrings are still string literals and are
+    # filtered by the same rule as every other module's prose.
+    text = _market_owned_source(relative, names) if names is not None else (ROOT / relative).read_text(encoding="utf-8")
     kept: list[str] = []
     for tok in tokenize.generate_tokens(io.StringIO(text).readline):
         if tok.type == token.COMMENT:
@@ -89,6 +123,22 @@ def _offenders(patterns: tuple[str, ...]) -> list[str]:
 
 def test_the_live_market_path_names_no_verdict_history_model_or_event_mechanism() -> None:
     assert _offenders(FORBIDDEN) == []
+
+
+def test_the_admission_scan_reads_the_market_functions_and_not_the_editorial_ones() -> None:
+    """Not vacuous: the module it narrows genuinely contains the names, in the branch it excludes.
+
+    `admission.py` hosts both lanes. If the narrowing ever silently matched nothing -- a rename, a
+    move -- this scan would pass by reading an empty string, so the two halves are asserted directly.
+    """
+
+    scanned = _scannable("tracefold/news/pipeline/admission.py")
+    whole = (ROOT / "tracefold/news/pipeline/admission.py").read_text(encoding="utf-8")
+
+    assert "admit_market_item" in scanned and "_write_market_fact" in scanned
+    assert "storyline_key" in whole, "the editorial branch still builds one, and must"
+    assert "storyline_key" not in scanned
+    assert len(scanned) < len(whole)
 
 
 def test_the_scan_would_still_catch_a_reintroduced_name() -> None:

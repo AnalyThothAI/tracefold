@@ -115,8 +115,6 @@ class NewsPipelineStatusData(ExactApiSchema):
     model_triage_24h: int = 0
     triage_degraded_24h: int = 0
     decided_push_24h: int = 0
-    # #207: Events on the deterministic admission, which is the 持仓异动 table's own universe. `received`
-    # counts provider items before the Gate and so names frames no row can reach.
     throttled_24h: int = 0
     triage_p50_ms: float | None = None
     triage_p95_ms: float | None = None

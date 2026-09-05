@@ -11,7 +11,7 @@ from .decisions import UNPUBLISHED_VERDICT_CANDIDATES_SQL
 from .events import UNPUBLISHED_EVENT_CANDIDATES_SQL
 from .feed_sql import (
     ASSET_SEARCH_PREDICATE,
-    CURRENT_EVENT_CARD_SQL,
+    EDITORIAL_EVENT_CARD_SQL,
     EVENT_VERDICTS_SQL,
     STATUS_INGEST_SQL,
     STATUS_LEARNING_RETENTION_SQL,
@@ -135,7 +135,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         ReadQuerySpec(
             name="news_event_detail",
-            sql=CURRENT_EVENT_CARD_SQL,
+            sql=EDITORIAL_EVENT_CARD_SQL,
             params=("event",),
             max_read_return_amplification=8.0,
         ),

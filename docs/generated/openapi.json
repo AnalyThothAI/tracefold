@@ -2818,6 +2818,11 @@
             "title": "Notifications Connected",
             "type": "boolean"
           },
+          "scan_truncated": {
+            "default": false,
+            "title": "Scan Truncated",
+            "type": "boolean"
+          },
           "sources": {
             "items": {
               "$ref": "#/components/schemas/NewsMarketSourceData"
@@ -2909,6 +2914,14 @@
           "observation_count": {
             "title": "Observation Count",
             "type": "integer"
+          },
+          "oldest_item_id": {
+            "title": "Oldest Item Id",
+            "type": "string"
+          },
+          "oldest_received_at_ms": {
+            "title": "Oldest Received At Ms",
+            "type": "integer"
           }
         },
         "required": [
@@ -2918,6 +2931,8 @@
           "first_event_at_ms",
           "last_event_at_ms",
           "latest",
+          "oldest_received_at_ms",
+          "oldest_item_id",
           "notification_status",
           "notification_reason"
         ],
@@ -7171,7 +7186,7 @@
     },
     "/api/news/market": {
       "get": {
-        "description": "Market observations in one window, consecutive observations of a group collapsed.\n\nThe window is absolute rather than a \"last N hours\" offset, because a reader reviewing what\narrived on Tuesday is asking a question a rolling offset cannot express. It defaults to the last\n72 h, spans at most 168 h in one request, and may sit anywhere inside the retention -- the span\nbound is what one page may scan, not how far back the data goes.\n\n\"Not pushed\" is not a filter and never becomes one. Whether a card was sent is reported per group\nand is not a precondition for reading the observation.",
+        "description": "Market observations in one window, consecutive observations of a group collapsed.\n\nThe window is absolute rather than a \"last N hours\" offset, because a reader reviewing what\narrived on Tuesday is asking a question a rolling offset cannot express. It defaults to the last\n72 h, spans at most 168 h in one request, and may sit anywhere inside the retention.\n\n`scan_truncated` is the honest name for the one thing a bounded page can still get wrong: a\nsingle run longer than one page's scan is split, so its `observation_count` is a floor. The\nper-kind `sources` block is not bounded that way and its counts are exact.\n\n\"Not pushed\" is not a filter and never becomes one. Whether a card was sent is reported per group\nand is not a precondition for reading the observation.",
         "operationId": "get_news_market_api_news_market_get",
         "parameters": [
           {

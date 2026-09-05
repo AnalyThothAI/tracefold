@@ -191,8 +191,17 @@ def _insert_oi(news: Any, *, event_id: str, item_id: str, signal: OiSignal, **ov
         "source_venue": "binance",
         "historical": False,
     }
+    historical = bool(fields.pop("historical", False))
     fields.update(over)
+    reconstructed = bool(fields.pop("historical", historical))
     news.insert_oi_signal(**fields)
+    if reconstructed:
+        # Only the migration marks a fact as rebuilt, so a test that needs one writes it the same way
+        # rather than reopening a live writer that must never be able to.
+        news.conn.execute(
+            "UPDATE news_oi_signals SET historical = true WHERE source_item_id = %s",
+            (fields["source_item_id"],),
+        )
 
 
 def test_oi_trade_projection_reads_the_ledger_without_an_event_or_a_verdict(conn) -> None:
@@ -336,7 +345,7 @@ def test_a_historical_rebuild_is_readable_and_stays_out_of_the_live_trigger_set(
         == []
     )
     # And it is readable, which is the whole reason it was reconstructed.
-    live = news.market_groups(
+    live, _ = news.market_groups(
         kinds=("oi",),
         from_ms=NOW - 1,
         to_ms=NOW + 1,

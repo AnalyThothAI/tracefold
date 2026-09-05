@@ -18,11 +18,11 @@ from fastapi.testclient import TestClient
 
 from tracefold.app.http.app import create_app
 from tracefold.app.http.schemas import market as market_schemas
-from tracefold.news import (
-    MARKET_KINDS,
-    MARKET_PAGE_MAX,
-    MARKET_WINDOW_DEFAULT_MS,
-    MARKET_WINDOW_MAX_MS,
+from tracefold.news import MARKET_KINDS, MARKET_PAGE_MAX, MARKET_WINDOW_DEFAULT_MS, MARKET_WINDOW_MAX_MS
+
+# Read from the owning module, not from the News package surface: they are what `news` and its storage
+# report until PR-2 wires the loop, and `tracefold.app` has no use for either.
+from tracefold.news.market_contracts import (
     NOTIFICATION_REASON_NOT_CONNECTED,
     NOTIFICATION_STATUS_NOT_CONNECTED,
 )
@@ -46,12 +46,12 @@ def _observation(item_id: str, *, market_kind: str, group_key: str, **overrides:
         market_kind=market_kind,
         parse_status="parsed",
         ingest_mode="live",
-        historical=False,
         group_key=group_key,
         title="BTCUSDT 持仓异动",
         event_at_ms=1_800_000_000_000,
         received_at_ms=1_800_000_001_000,
         provider="opennews",
+        historical=False,
     )
     observation.update(overrides)
     return observation
@@ -114,6 +114,10 @@ def _group(observation: dict[str, Any], *, observation_count: int = 1) -> dict[s
         "first_event_at_ms": observation["event_at_ms"] - 60_000,
         "last_event_at_ms": observation["event_at_ms"],
         "latest": observation,
+        # The run's oldest member. The next page anchors here, not on `latest`, so a run cannot be
+        # re-scanned into a second group on the following page.
+        "oldest_received_at_ms": observation["received_at_ms"] - (observation_count - 1),
+        "oldest_item_id": observation["item_id"],
         "notification_status": NOTIFICATION_STATUS_NOT_CONNECTED,
         "notification_reason": NOTIFICATION_REASON_NOT_CONNECTED,
     }
@@ -126,6 +130,7 @@ def _position(group: dict[str, Any]) -> tuple[int, str]:
 class _FakeNewsRepository:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.scan_truncated = False
         # Newest first, exactly as the storage read orders them.
         self.groups = [
             _group(OI_OBSERVATION, observation_count=3),
@@ -152,7 +157,7 @@ class _FakeNewsRepository:
         cursor_received_at_ms: int,
         cursor_item_id: str,
         limit: int,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], bool]:
         self.calls.append(
             (
                 "market_groups",
@@ -170,7 +175,7 @@ class _FakeNewsRepository:
         after_cursor = [
             group for group in selected if _position(group) < (int(cursor_received_at_ms), str(cursor_item_id))
         ]
-        return after_cursor[: int(limit)]
+        return after_cursor[: int(limit)], self.scan_truncated
 
     def market_sources(self, *, from_ms: int, to_ms: int) -> list[dict[str, Any]]:
         self.calls.append(("market_sources", {"from_ms": from_ms, "to_ms": to_ms}))
@@ -239,7 +244,14 @@ def test_the_market_list_reports_what_was_parsed_and_what_was_sent_as_two_separa
     body = response.json()
     assert body["ok"] is True
     data = body["data"]
-    assert set(data) == {"groups", "next_cursor", "sources", "filters", "notifications_connected"}
+    assert set(data) == {
+        "groups",
+        "next_cursor",
+        "sources",
+        "filters",
+        "notifications_connected",
+        "scan_truncated",
+    }
     assert [group["market_kind"] for group in data["groups"]] == ["oi", "liquidation", "unknown_market"]
     assert set(data["groups"][0]) == set(market_schemas.NewsMarketGroupData.model_fields)
     assert set(data["groups"][0]["latest"]) == set(market_schemas.NewsMarketObservationData.model_fields)
@@ -433,7 +445,13 @@ def test_a_market_cursor_is_an_opaque_position_that_round_trips_to_the_next_page
 
     assert second.status_code == 200
     forwarded = news.calls[2][1]
-    assert (forwarded["cursor_received_at_ms"], forwarded["cursor_item_id"]) == _position(first_page["groups"][0])
+    # The cursor anchors on the run's *oldest* member, so the next page starts below the whole run
+    # rather than re-scanning its tail into a duplicate group.
+    last = first_page["groups"][0]
+    assert (forwarded["cursor_received_at_ms"], forwarded["cursor_item_id"]) == (
+        last["oldest_received_at_ms"],
+        last["oldest_item_id"],
+    )
     assert [group["market_kind"] for group in second.json()["data"]["groups"]] == ["liquidation"]
 
     # An opaque cursor is still bounded input: a broken one is named, never decoded into a silent

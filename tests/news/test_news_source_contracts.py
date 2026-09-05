@@ -164,9 +164,12 @@ def test_the_primary_strategy_decides_the_branch_and_accumulated_labels_never_mo
     news_first["strategies"].append(_metadata("1019", "OI Event Monitor", "market", "market")["strategies"][0])
     assert market_route(classify_source_contracts(news_first)) is None
 
+    # And the mirror: a market frame keeps its parser when a news Strategy is merged onto the same
+    # record. The extra tuple is metadata about the record, not a second reading of it -- and the
+    # migration's backfill classifies by the primary Strategy too, so the two cannot disagree.
     market_first = _metadata("1019", "OI Event Monitor", "market", "market")
     market_first["strategies"].append(_metadata("1018", "News Score > 70", "news", "news")["strategies"][0])
-    assert market_route(classify_source_contracts(market_first)) == ("unknown_market", MARKET_CATEGORY_CONFLICT)
+    assert market_route(classify_source_contracts(market_first)) == ("oi", None)
 
 
 def test_two_market_families_on_one_frame_are_recorded_as_a_conflict_not_reinterpreted() -> None:

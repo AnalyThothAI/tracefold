@@ -577,9 +577,13 @@ export function newsMarketGroupFixture(overrides: Partial<NewsMarketGroup> = {})
     group_key: latest.group_key,
     last_event_at_ms: latest.event_at_ms,
     market_kind: latest.market_kind,
-    notification_reason: "notifications_not_connected",
-    notification_status: "not_sent",
+    notification_reason: "market_notifications_not_connected",
+    notification_status: "not_connected",
     observation_count: 3,
+    // The run's oldest member: the server's cursor anchors here and so does the page's dedupe, because
+    // it holds still while the run grows at the newest end.
+    oldest_item_id: `${latest.item_id}-oldest`,
+    oldest_received_at_ms: latest.received_at_ms - 120_000,
     ...overrides,
     latest,
   };
@@ -616,6 +620,8 @@ export function newsMarketFixture(overrides: Partial<NewsMarket> = {}): NewsMark
     groups: [newsMarketGroupFixture()],
     next_cursor: null,
     notifications_connected: false,
+    // A page that did not fill its scan. Flip it to see the floor note beside the run counts.
+    scan_truncated: false,
     sources: [
       newsMarketSourceFixture(),
       newsMarketSourceFixture({
@@ -652,8 +658,8 @@ export function newsMarketItemFixture(overrides: Partial<NewsMarketItem> = {}): 
   const observation = overrides.observation ?? newsMarketObservationFixture();
   return {
     description: "Open interest rose over the provider's own trigger window.",
-    notification_reason: "notifications_not_connected",
-    notification_status: "not_sent",
+    notification_reason: "market_notifications_not_connected",
+    notification_status: "not_connected",
     notifications_connected: false,
     provider_params: { rule: "oi_rise", window_minutes: 15 },
     raw_first_line: observation.title,

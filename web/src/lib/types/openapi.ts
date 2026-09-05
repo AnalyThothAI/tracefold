@@ -68,8 +68,11 @@ export interface paths {
          *
          *     The window is absolute rather than a "last N hours" offset, because a reader reviewing what
          *     arrived on Tuesday is asking a question a rolling offset cannot express. It defaults to the last
-         *     72 h, spans at most 168 h in one request, and may sit anywhere inside the retention -- the span
-         *     bound is what one page may scan, not how far back the data goes.
+         *     72 h, spans at most 168 h in one request, and may sit anywhere inside the retention.
+         *
+         *     `scan_truncated` is the honest name for the one thing a bounded page can still get wrong: a
+         *     single run longer than one page's scan is split, so its `observation_count` is a floor. The
+         *     per-kind `sources` block is not bounded that way and its counts are exact.
          *
          *     "Not pushed" is not a filter and never becomes one. Whether a card was sent is reported per group
          *     and is not a precondition for reading the observation.
@@ -1332,6 +1335,11 @@ export interface components {
              * @default false
              */
             notifications_connected: boolean;
+            /**
+             * Scan Truncated
+             * @default false
+             */
+            scan_truncated: boolean;
             /** Sources */
             sources: components["schemas"]["NewsMarketSourceData"][];
         };
@@ -1369,6 +1377,10 @@ export interface components {
             notification_status: string;
             /** Observation Count */
             observation_count: number;
+            /** Oldest Item Id */
+            oldest_item_id: string;
+            /** Oldest Received At Ms */
+            oldest_received_at_ms: number;
         };
         /**
          * NewsMarketItemData

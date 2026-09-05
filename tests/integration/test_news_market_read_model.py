@@ -23,6 +23,7 @@ from tracefold.news.market_contracts import (
 from tracefold.news.oi_signals import measurement_definition, oi_source_contract
 from tracefold.news.smart_money import parse_smart_money
 from tracefold.news.source_contracts import MARKET_PROVIDER
+from tracefold.news.storage import market as market_storage
 
 pytestmark = pytest.mark.integration
 
@@ -85,11 +86,14 @@ def _oi(news: Any, item_id: str, *, venue: str, symbol: str, at_ms: int) -> None
         measurement_definition=measurement_definition(source),
         source_item_id=item_id,
         source_venue=venue,
-        historical=False,
     )
 
 
 def _groups(news: Any, *, kinds: tuple[str, ...] = (), limit: int = 50) -> list[dict[str, Any]]:
+    return _page(news, kinds=kinds, limit=limit)[0]
+
+
+def _page(news: Any, *, kinds: tuple[str, ...] = (), limit: int = 50) -> tuple[list[dict[str, Any]], bool]:
     return news.market_groups(
         kinds=kinds,
         from_ms=NOW - 3_600_000,
@@ -260,12 +264,103 @@ def test_the_page_cursor_walks_groups_without_repeating_or_skipping_one(conn) ->
 
     first = _groups(news, limit=2)
     assert [group["latest"]["item_id"] for group in first] == ["oi-page-4", "oi-page-3"]
-    second = news.market_groups(
+    second, _ = news.market_groups(
         kinds=(),
         from_ms=NOW - 3_600_000,
         to_ms=NOW + 3_600_000,
-        cursor_received_at_ms=int(first[-1]["latest"]["received_at_ms"]),
-        cursor_item_id=str(first[-1]["latest"]["item_id"]),
+        cursor_received_at_ms=int(first[-1]["oldest_received_at_ms"]),
+        cursor_item_id=str(first[-1]["oldest_item_id"]),
         limit=2,
     )
     assert [group["latest"]["item_id"] for group in second] == ["oi-page-2", "oi-page-1"]
+
+
+def test_a_second_metric_version_of_one_record_is_a_re_parse_not_a_second_observation(conn) -> None:
+    """#553 SHOULD-FIX 2. The ledger's key is `(source_item_id, metric_version)` and the read uses both.
+
+    A parser generation bump writes a second row for the same provider record. It is the same
+    measurement read again, so the list must still show one observation: joining on the Item alone
+    would duplicate every OI row and double the count a reader is shown the day a new version lands.
+    """
+
+    repos = repositories_for_connection(conn)
+    news = repos.news
+    with repos.transaction():
+        _item(news, "oi-two-versions", kind="oi", at_ms=NOW)
+        _oi(news, "oi-two-versions", venue="binance", symbol="BTC", at_ms=NOW)
+        # The next parser generation, written beside the current one exactly as a re-parse would.
+        conn.execute(
+            """
+            INSERT INTO news_oi_signals (
+              event_id, metric_version, symbol, raw_instrument, direction, oi_change_bps, oi_value_usd,
+              whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, received_at_ms, created_at_ms,
+              provider, measurement_definition, source_item_id, source_venue, available_at_ms, historical
+            ) VALUES (
+              'event-oi-two-versions-next', 'oi_signal_v2', %(symbol)s, 'BTC', 'rise', 999, 1, 1, 1,
+              %(at)s, %(at)s, %(at)s, 'opennews', 'oi_signal_v2|unproven|unproven', 'oi-two-versions',
+              'binance', %(at)s, false
+            )
+            """,
+            {"at": NOW, "symbol": "BTC"},
+        )
+
+    groups = _groups(news)
+
+    assert [(group["market_kind"], group["observation_count"]) for group in groups] == [("oi", 1)]
+    # The current metric version is what the reader is shown; the re-parse is evidence beside it.
+    assert groups[0]["latest"]["oi_change_bps"] == 455
+    assert groups[0]["latest"]["measurement_definition"].startswith("oi_signal_v1|")
+    sources = {row["market_kind"]: row for row in news.market_sources(from_ms=NOW - 1, to_ms=NOW + 3_600_000)}
+    assert (sources["oi"]["received"], sources["oi"]["groups"]) == (1, 1)
+
+
+def test_the_page_scan_bound_is_reported_and_never_ends_pagination_early(conn, monkeypatch) -> None:
+    """#553 SHOULD-FIX 3. A bounded scan must bound one page, not the window.
+
+    The first form capped the *window* read, so a busy 168 h window stopped producing groups once the
+    cap was reached and `next_cursor` went null with rows still unread — the list simply ended, and
+    the per-kind counts reported the ceiling as the provider's number. Now each page scans from the
+    cursor down, so the cap can only split one run, and it says so when it does.
+    """
+
+    repos = repositories_for_connection(conn)
+    news = repos.news
+    with repos.transaction():
+        for offset in range(6):
+            item_id = f"oi-cap-{offset}"
+            _item(news, item_id, kind="oi", at_ms=NOW + offset)
+            _oi(news, item_id, venue=f"cap-venue-{offset}", symbol="BTC", at_ms=NOW + offset)
+
+    monkeypatch.setattr(market_storage, "MARKET_WINDOW_ROW_CAP", 2)
+    monkeypatch.setattr(
+        market_storage,
+        "MARKET_GROUPS_SQL",
+        market_storage.MARKET_GROUPS_SQL.replace(f"LIMIT {market_storage.MARKET_WINDOW_ROW_CAP}", "LIMIT 2"),
+    )
+
+    walked: list[str] = []
+    cursor_at, cursor_id = OPEN_CURSOR, ""
+    truncations: list[bool] = []
+    for _ in range(6):
+        page, truncated = news.market_groups(
+            kinds=(),
+            from_ms=NOW - 1,
+            to_ms=NOW + 3_600_000,
+            cursor_received_at_ms=cursor_at,
+            cursor_item_id=cursor_id,
+            limit=1,
+        )
+        if not page:
+            break
+        truncations.append(truncated)
+        walked.append(str(page[0]["latest"]["item_id"]))
+        cursor_at = int(page[0]["oldest_received_at_ms"])
+        cursor_id = str(page[0]["oldest_item_id"])
+
+    # Every group is reachable one page at a time even though each page scans at most two rows.
+    assert walked == [f"oi-cap-{offset}" for offset in reversed(range(6))]
+    # Every page but the last filled its two-row scan and says so; the last one had a single row left.
+    assert truncations == [True, True, True, True, True, False]
+    # The intake summary is not scan-bounded, so its counts stay exact.
+    sources = {row["market_kind"]: row for row in news.market_sources(from_ms=NOW - 1, to_ms=NOW + 3_600_000)}
+    assert sources["oi"]["received"] == 6

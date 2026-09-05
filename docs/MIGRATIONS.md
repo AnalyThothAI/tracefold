@@ -258,6 +258,16 @@ snapshot lateral is now keyed to `v.evidence_version`, and
 `(event_id, evidence_version)` is that table's primary key, so it still yields at
 most one row and the view still yields at most one row per Event.
 
+The result is a strict superset of the old one: when the newest snapshot is the
+judged one, both forms select the same row byte for byte, and only the Events the
+old form dropped are added. It writes and reads no row, changes no column, index,
+constraint or other object, and restates the view's `security_barrier`. It
+archives nothing, refuses nothing, needs no operator config step and touches no
+table the execution Runtime writes, so `make up` alone applies it. Its
+`downgrade` restores the previous definition exactly: a rule changed, not a fact,
+so the reversal only makes the freeze blind again to reviews whose Event has
+since gained a member.
+
 `20260905_0364` adds `workers_runtime.capabilities`, a `jsonb` object keyed by
 capability name (#553 PR-3). Until that revision, `workers_runtime` could say
 only whether the Workers process was alive, which was enough while every
@@ -270,51 +280,7 @@ previous revision never names it and gets `'{}'`, which reads as "this runtime
 published no report" rather than as a fault. `downgrade` drops it and loses only
 the current process's report, which the next start republishes.
 
-The result is a strict superset of the old one: when the newest snapshot is the
-judged one, both forms select the same row byte for byte, and only the Events the
-old form dropped are added. It writes and reads no row, changes no column, index,
-constraint or other object, and restates the view's `security_barrier`. It
-archives nothing, refuses nothing, needs no operator config step and touches no
-table the execution Runtime writes, so `make up` alone applies it. Its
-`downgrade` restores the previous definition exactly: a rule changed, not a fact,
-so the reversal only makes the freeze blind again to reviews whose Event has
-since gained a member.
-
-## Database development standard
-
-1. The deployment has one non-superuser application login, `tracefold`.
-   Process categories use stable `application_name` values, not database roles
-   or ACL matrices.
-2. Connections default to autocommit. Use a short explicit transaction only
-   for an atomic write or a stated consistent snapshot; keep provider, model,
-   file, broker, large-JSON, and hashing work outside it.
-3. One production statement has one owner. Runtime, audit, and tests reuse that
-   statement or builder instead of carrying approximate copies.
-4. Bind values. Compose dynamic identifiers with `psycopg.sql`.
-5. Page, claim, purge, and backfill operations have a hard limit, deterministic
-   order, tie-breaker, and maximum transaction/payload budget.
-6. Natural PK/UNIQUE identities plus `ON CONFLICT` or conditional writes own
-   idempotency; do not implement check-then-write races.
-7. Keep cross-process, cross-table, economic-state, and append-only database
-   invariants. Typed application models normally own single-process payload
-   shape; internal permission denial is not a business rule.
-8. Use typed columns for query, join, and order keys. JSONB is for bounded
-   payloads that must be versioned as a whole; do not duplicate the same truth
-   in scalar columns and an unconstrained payload.
-9. A new index names its production query, predicate/order, measured scale,
-   and write/storage cost. Zero scans are deletion evidence only after a reset
-   and a complete representative business window.
-10. A migration serves an actual schema or durable-data change. The current
-    role model adds no application GRANT matrix. Planned downtime prefers
-    ordinary transactional DDL over compatibility or dual reads.
-11. Performance claims compare the same revision, configuration, parameters,
-    and workload window across application, pool, and PostgreSQL evidence.
-12. Every view, trigger, function, gate, timeout, index, and projection names a
-    current correctness or measured-performance owner. Otherwise remove it. A
-    new database role first proves a distinct trust domain; a process name is
-    not sufficient justification.
-
-`20260905_0364` makes a market observation a stored fact and stops the OI ledger
+`20260905_0365` makes a market observation a stored fact and stops the OI ledger
 depending on an Event (#553 PR-1). Four provider Strategies publish market
 observations and the schema could hold two of them. `news_oi_signals` was
 reachable only through `news_events`, so a recovery frame — which never reaches
@@ -359,3 +325,37 @@ is deliberately untouched — the market judgment branches it validates describe
 verdicts already written, and no new verdict of those origins is produced after
 this revision. `downgrade` is refused: the new columns and table hold evidence
 that exists nowhere else, so a mistake here is rolled forward.
+
+## Database development standard
+
+1. The deployment has one non-superuser application login, `tracefold`.
+   Process categories use stable `application_name` values, not database roles
+   or ACL matrices.
+2. Connections default to autocommit. Use a short explicit transaction only
+   for an atomic write or a stated consistent snapshot; keep provider, model,
+   file, broker, large-JSON, and hashing work outside it.
+3. One production statement has one owner. Runtime, audit, and tests reuse that
+   statement or builder instead of carrying approximate copies.
+4. Bind values. Compose dynamic identifiers with `psycopg.sql`.
+5. Page, claim, purge, and backfill operations have a hard limit, deterministic
+   order, tie-breaker, and maximum transaction/payload budget.
+6. Natural PK/UNIQUE identities plus `ON CONFLICT` or conditional writes own
+   idempotency; do not implement check-then-write races.
+7. Keep cross-process, cross-table, economic-state, and append-only database
+   invariants. Typed application models normally own single-process payload
+   shape; internal permission denial is not a business rule.
+8. Use typed columns for query, join, and order keys. JSONB is for bounded
+   payloads that must be versioned as a whole; do not duplicate the same truth
+   in scalar columns and an unconstrained payload.
+9. A new index names its production query, predicate/order, measured scale,
+   and write/storage cost. Zero scans are deletion evidence only after a reset
+   and a complete representative business window.
+10. A migration serves an actual schema or durable-data change. The current
+    role model adds no application GRANT matrix. Planned downtime prefers
+    ordinary transactional DDL over compatibility or dual reads.
+11. Performance claims compare the same revision, configuration, parameters,
+    and workload window across application, pool, and PostgreSQL evidence.
+12. Every view, trigger, function, gate, timeout, index, and projection names a
+    current correctness or measured-performance owner. Otherwise remove it. A
+    new database role first proves a distinct trust domain; a process name is
+    not sufficient justification.

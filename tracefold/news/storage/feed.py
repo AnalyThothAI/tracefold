@@ -171,7 +171,10 @@ class FeedStorage:
         return {key: int((row or {}).get(key) or 0) for key in ("total", "pushed", "held", "pending")}
 
     def event_detail(self, event_id: str) -> dict[str, Any] | None:
-        card = self._current_event_card(event_id)  # type: ignore[attr-defined]
+        # A retired market Event is immutable history, not a 404 waiting to be a 500: the public
+        # `EventKind` cannot spell its kind, so the read refuses it here rather than handing the row to
+        # a response envelope that will reject it (#553). Its observation is at `/api/news/market`.
+        card = self._editorial_event_card(event_id)  # type: ignore[attr-defined]
         if card is None:
             return None
         members = self.conn.execute(

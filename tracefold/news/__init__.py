@@ -6,14 +6,7 @@ configuration constants remain under their owning modules instead of becoming an
 
 from __future__ import annotations
 
-from .market_contracts import (
-    MARKET_PAGE_MAX,
-    MARKET_TIMELINE_MAX,
-    MARKET_WINDOW_DEFAULT_MS,
-    MARKET_WINDOW_MAX_MS,
-    NOTIFICATION_REASON_NOT_CONNECTED,
-    NOTIFICATION_STATUS_NOT_CONNECTED,
-)
+from .market_contracts import MARKET_PAGE_MAX, MARKET_WINDOW_DEFAULT_MS, MARKET_WINDOW_MAX_MS
 from .models import (
     NewsFeedEntry,
     ReaderDeliveryPresentation,
@@ -78,12 +71,9 @@ __all__ = [
     "IPTC_SUBJECT_CODES",
     "MARKET_KINDS",
     "MARKET_PAGE_MAX",
-    "MARKET_TIMELINE_MAX",
     "MARKET_WINDOW_DEFAULT_MS",
     "MARKET_WINDOW_MAX_MS",
     "NEWS_RETRIEVAL_SHA256",
-    "NOTIFICATION_REASON_NOT_CONNECTED",
-    "NOTIFICATION_STATUS_NOT_CONNECTED",
     "OI_METRIC_VERSION",
     "PROGRESSION_REVIEW_REASON_MAX_CHARS",
     "PROGRESSION_REVIEW_TIMEOUT_SECONDS",

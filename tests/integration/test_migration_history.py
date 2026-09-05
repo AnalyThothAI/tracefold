@@ -22,6 +22,7 @@ from tracefold.integrations.nautilus.oi_runtime.audit_sink import (
     ObservationFactory,
     day_start_baseline_from_observation,
 )
+from tracefold.news.oi_signals import parse_oi_signal
 from tracefold.platform.postgres.migrations import alembic_config
 from tracefold.trading.storage.execution_stream import (
     materialize_execution_observation,
@@ -1383,7 +1384,16 @@ def _table_checks(conn, table: str) -> set[str]:
 _OI_TITLE = "TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
 
 
-def _seed_pre_cut_oi_event(conn, *, event_id: str, leader_item: str, member_item: str, at_ms: int) -> None:
+def _seed_pre_cut_oi_event(
+    conn,
+    *,
+    event_id: str,
+    leader_item: str,
+    member_item: str,
+    at_ms: int,
+    title: str = _OI_TITLE,
+    venue: str = "binance",
+) -> None:
     """One pre-#553 OI Event with two Items: the leader, and a frame the deduper merged into it."""
 
     for item_id in (leader_item, member_item):
@@ -1396,11 +1406,14 @@ def _seed_pre_cut_oi_event(conn, *, event_id: str, leader_item: str, member_item
             ) VALUES (
               %(item)s, 'opennews', %(item)s, %(title)s, %(title)s, '', 'opennews',
               %(at)s, %(at)s,
-              '{"source": "binance", "strategies": [{"id": "1019", "name": "OI Event Monitor"}]}'::jsonb,
+              jsonb_build_object(
+                'source', %(venue)s::text,
+                'strategies', jsonb_build_array(jsonb_build_object('id', '1019', 'name', 'OI Event Monitor'))
+              ),
               '[]'::jsonb, 'recovery', 'trace', %(at)s, %(at)s
             )
             """,
-            {"item": item_id, "title": _OI_TITLE, "at": at_ms},
+            {"item": item_id, "title": title, "at": at_ms, "venue": venue},
         )
     conn.execute(
         """
@@ -1418,7 +1431,7 @@ def _seed_pre_cut_oi_event(conn, *, event_id: str, leader_item: str, member_item
         {
             "event": event_id,
             "leader": leader_item,
-            "title": _OI_TITLE,
+            "title": title,
             "at": at_ms,
             "leader_fact": f"fact-{leader_item}",
         },
@@ -1435,7 +1448,7 @@ def _seed_pre_cut_oi_event(conn, *, event_id: str, leader_item: str, member_item
                 "at": at_ms,
                 "kind": match_kind,
                 "fact": f"fact-{item_id}",
-                "title": _OI_TITLE,
+                "title": title,
             },
         )
 
@@ -1575,5 +1588,123 @@ def test_a_market_item_whose_template_is_not_reconstructed_says_so_rather_than_c
         assert row["market_kind"] == "smart_money"
         assert (row["market_parse_status"], row["market_parse_error"]) == ("raw", "market_backfill_not_reparsed")
         assert row["market_source_strategy_id"] == "2026"
+    finally:
+        conn.close()
+
+
+def test_the_backfill_classifies_a_mixed_strategy_item_by_its_primary_strategy() -> None:
+    """#553 SHOULD-FIX 4. The migration and the live classifier answer the same record the same way.
+
+    An Item unions every Strategy tuple it was reported under. Both sides read the *primary* one, so a
+    1019 record a news Strategy also matched is an OI observation whichever of the two classified it.
+    """
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260904_0363")
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        at_ms = 1_787_542_200_000
+        conn.execute(
+            """
+            INSERT INTO news_items (
+              item_id, source_id, source_item_key, title, raw_first_line, description,
+              reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
+              first_ingest_mode, trace_id, created_at_ms, updated_at_ms
+            ) VALUES (
+              'mixed-primary-oi', 'opennews', 'mixed-primary-oi', %(title)s, '', '', 'opennews',
+              %(at)s, %(at)s,
+              '{"source": "binance", "strategies": [
+                 {"id": "1019", "name": "OI Event Monitor"},
+                 {"id": "1018", "name": "News Score > 70"}]}'::jsonb,
+              '[]'::jsonb, 'live', 'trace', %(at)s, %(at)s
+            )
+            """,
+            {"at": at_ms, "title": _OI_TITLE},
+        )
+        conn.commit()
+
+        command.upgrade(config, HEAD)
+
+        row = conn.execute(
+            "SELECT market_kind, market_source_strategy_id, market_parse_status FROM news_items"
+            " WHERE item_id = 'mixed-primary-oi'"
+        ).fetchone()
+        assert row["market_kind"] == "oi"
+        assert row["market_source_strategy_id"] == "1019"
+        # No Event ever carried it, so there is nothing to reconstruct from and the Item stays raw --
+        # what the classifier decides and what a parser could read are two separate answers.
+        assert row["market_parse_status"] == "raw"
+    finally:
+        conn.close()
+
+
+# Frames chosen for the three places the rebuild's SQL and the parser could disagree: half-up basis
+# points including a negative, the six-digit truncation of the OI value under each unit, and a symbol
+# carrying the provider prefix.
+_REBUILD_ARITHMETIC_FRAMES = (
+    "TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%",
+    "BTC OI Fall 0.5%, OI Value 3.8600005M, Whale Long Profit -3.5%, Whale/OI Ratio 1438.2%",
+    "XYZ-UNITREE OI Drop 1438.25%, OI Value 999.9999999B, Whale Long Profit 0.005%, Whale/OI Ratio 0%",
+    "S OI Rise 3.04%, OI Value 3.86K, Whale Long Profit 92.31%, Whale/OI Ratio 31.42%",
+    "4 OI Rise 0.004%, OI Value 7, Whale Long Profit 0.5%, Whale/OI Ratio 0.5%",
+)
+
+
+def test_the_rebuild_reproduces_the_parsers_own_arithmetic() -> None:
+    """#553. The migration re-implements the 1019 template deliberately; this is what holds it honest.
+
+    A rebuild is a statement about what the provider sent, so it must not import a parser a later
+    revision can change underneath it. The cost of that freedom is that the two can drift, and every
+    place they could was wrong at least once: half-up basis points, the six-digit truncation of the OI
+    value *before* the unit is applied (`3.8600005M` is 3_860_000, not 3_860_001), and the 32-character
+    cap on the venue. So the same frames go through both and every field is compared.
+    """
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260904_0363")
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        at_ms = 1_787_542_200_000
+        long_venue = "a-venue-name-far-longer-than-the-thirty-two-character-cap"
+        for index, title in enumerate(_REBUILD_ARITHMETIC_FRAMES):
+            _seed_pre_cut_oi_event(
+                conn,
+                event_id=f"arith-event-{index}",
+                leader_item=f"arith-leader-{index}",
+                member_item=f"arith-member-{index}",
+                at_ms=at_ms,
+                title=title,
+                venue=long_venue,
+            )
+        conn.commit()
+
+        command.upgrade(config, HEAD)
+
+        rebuilt = {
+            str(row["source_item_id"]): row
+            for row in conn.execute(
+                "SELECT source_item_id, symbol, raw_instrument, direction, oi_change_bps, oi_value_usd,"
+                " whale_long_profit_bps, whale_oi_ratio_bps, source_venue FROM news_oi_signals"
+            ).fetchall()
+        }
+        assert len(rebuilt) == 2 * len(_REBUILD_ARITHMETIC_FRAMES)
+        for index, title in enumerate(_REBUILD_ARITHMETIC_FRAMES):
+            expected = parse_oi_signal(title)
+            assert expected is not None, title
+            for role in ("leader", "member"):
+                row = rebuilt[f"arith-{role}-{index}"]
+                assert row["symbol"] == expected.symbol, title
+                assert row["raw_instrument"] == expected.raw_instrument, title
+                assert row["direction"] == expected.direction, title
+                assert row["oi_change_bps"] == expected.oi_change_bps, title
+                assert row["oi_value_usd"] == expected.oi_value_usd, title
+                assert row["whale_long_profit_bps"] == expected.whale_long_profit_bps, title
+                assert row["whale_oi_ratio_bps"] == expected.whale_oi_ratio_bps, title
+                # And the same 32-character cap `parse_liquidation` applies to a venue string.
+                assert row["source_venue"] == long_venue[:32], title
     finally:
         conn.close()

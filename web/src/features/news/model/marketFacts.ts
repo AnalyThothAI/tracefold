@@ -1,5 +1,6 @@
 import {
   NEWS_MARKET_KINDS,
+  type NewsMarketGroup,
   type NewsMarketKind,
   type NewsMarketObservation,
 } from "../api/newsQueries";
@@ -116,4 +117,32 @@ export function marketObservationTrace(
   return fields
     .filter(([, value]) => value !== null && value !== undefined && value !== "")
     .map(([key, value]) => [key, String(value)]);
+}
+
+/**
+ * One row per run across the polled first page and the frozen pages behind it.
+ *
+ * The key is the run's identity: its `group_key` and its **oldest** member. A run grows at the newest
+ * end, so `latest.item_id` changes the moment an observation lands -- keying on that rendered the same
+ * run twice, once with the count the "load more" page had frozen and once with the count the next poll
+ * returned. `oldest_item_id` is the member the run started at, and the anchor the server's own cursor
+ * pages from, so it holds still while the run grows.
+ *
+ * `group_key` alone would be wrong in the other direction: one group legitimately appears as two runs
+ * when an observation of another group sits between them, and both must stay on the page.
+ *
+ * First writer wins, because the caller passes the freshest page first: a run present in both the poll
+ * and a frozen page keeps the poll's copy, which is the one carrying the newer count.
+ */
+export function mergeMarketGroups(
+  pages: readonly (readonly NewsMarketGroup[])[],
+): NewsMarketGroup[] {
+  const byRun = new Map<string, NewsMarketGroup>();
+  for (const page of pages) {
+    for (const group of page) {
+      const runId = `${group.group_key}\u0000${group.oldest_item_id}`;
+      if (!byRun.has(runId)) byRun.set(runId, group);
+    }
+  }
+  return [...byRun.values()];
 }

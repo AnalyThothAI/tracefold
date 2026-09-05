@@ -31,6 +31,7 @@ from ..market_contracts import (
     NOTIFICATION_REASON_NOT_CONNECTED,
     NOTIFICATION_STATUS_NOT_CONNECTED,
 )
+from ..oi_contracts import OI_METRIC_VERSION
 from ..source_contracts import MARKET_KINDS
 
 
@@ -79,6 +80,10 @@ class MarketGroupRow(TypedDict):
     first_event_at_ms: int
     last_event_at_ms: int
     latest: MarketObservationRow
+    # The run's *oldest* member, which is where the next page must start. Paging from the newest
+    # member would re-scan the rest of this run and emit the same group a second time.
+    oldest_received_at_ms: int
+    oldest_item_id: str
     notification_status: str
     notification_reason: str
 
@@ -97,7 +102,11 @@ class MarketSourceSummaryRow(TypedDict):
 # One observation, whatever kind it is. The three fact tables stay separate tables -- a shared
 # supertable would need a column for every kind's semantics and a NULL for every other kind's -- and
 # they are unioned into one shape only here, at the point a reader actually needs one list.
-_OBSERVATIONS_SQL = """
+# The OI ledger's key is `(source_item_id, metric_version)`, so the join needs both halves. A second
+# metric version is a re-parse of the same provider record under a new parser generation, not a second
+# observation of the market -- joining on the Item alone would duplicate every OI row and double the
+# `observation_count` a reader is shown the day one lands.
+_OBSERVATIONS_SQL = f"""
     SELECT i.item_id,
            i.market_kind,
            i.market_source_strategy_id AS source_strategy_id,
@@ -142,10 +151,12 @@ _OBSERVATIONS_SQL = """
              ELSE 'raw|' || i.market_kind || '|' || i.item_id
            END AS group_key
       FROM news_items i
-      LEFT JOIN news_oi_signals o ON o.source_item_id = i.item_id
+      LEFT JOIN news_oi_signals o
+             ON o.source_item_id = i.item_id
+            AND o.metric_version = '{OI_METRIC_VERSION}'
       LEFT JOIN news_market_liquidations l ON l.item_id = i.item_id
       LEFT JOIN news_market_smart_money w ON w.item_id = i.item_id
-"""
+"""  # noqa: S608 -- the only interpolation is the code-owned `OI_METRIC_VERSION` literal
 
 _OBSERVATION_KEYS: Final[tuple[str, ...]] = (
     "item_id",
@@ -188,6 +199,7 @@ MARKET_GROUPS_SQL = f"""
            AND i.market_kind = ANY(%s)
            AND i.observed_at_ms >= %s
            AND i.observed_at_ms < %s
+           AND (i.observed_at_ms, i.item_id) < (%s, %s)
          ORDER BY i.observed_at_ms DESC, i.item_id DESC
          LIMIT {MARKET_WINDOW_ROW_CAP}) AS windowed
     ), islands AS (
@@ -200,17 +212,20 @@ MARKET_GROUPS_SQL = f"""
              min(event_at_ms) AS first_event_at_ms,
              max(event_at_ms) AS last_event_at_ms,
              (array_agg(item_id ORDER BY received_at_ms DESC, item_id DESC))[1] AS latest_item_id,
-             max(received_at_ms) AS sort_received_at_ms
+             (array_agg(item_id ORDER BY received_at_ms ASC, item_id ASC))[1] AS oldest_item_id,
+             max(received_at_ms) AS sort_received_at_ms,
+             min(received_at_ms) AS oldest_received_at_ms,
+             (SELECT count(*) FROM observations) AS scanned
         FROM islands
        GROUP BY group_key, island
     )
-    SELECT c.observation_count, c.first_event_at_ms, c.last_event_at_ms, i.*
+    SELECT c.observation_count, c.first_event_at_ms, c.last_event_at_ms,
+           c.oldest_received_at_ms, c.oldest_item_id, c.scanned, i.*
       FROM collapsed c
       JOIN islands i ON i.item_id = c.latest_item_id
-     WHERE (c.sort_received_at_ms, c.latest_item_id) < (%s, %s)
      ORDER BY c.sort_received_at_ms DESC, c.latest_item_id DESC
      LIMIT %s
-"""  # noqa: S608 -- the only interpolation is this module's own row cap and column list
+"""  # noqa: S608 -- the only interpolations are this module's own row cap and column list
 
 # The second `news_items` reference is a primary-key lookup for the three columns only the detail page
 # needs. Widening the shared observation projection with them would put a provider payload into every
@@ -228,14 +243,17 @@ MARKET_TIMELINE_SQL = f"""
      LIMIT {MARKET_TIMELINE_MAX}
 """  # noqa: S608 -- interpolates only this module's own timeline cap
 
+# Deliberately uncapped. This is the answer to "what arrived", and a capped count would report a
+# ceiling as a fact -- `received = 5000` on a busy window would read as the provider's number. The
+# window is already bounded by the caller to at most `MARKET_WINDOW_MAX_MS`, and the aggregate is one
+# indexed pass over it. `groups` counts distinct group keys rather than collapsed runs, which is the
+# per-kind subject count a reader wants beside the intake.
 MARKET_SOURCES_SQL = f"""
     WITH observations AS MATERIALIZED (
       SELECT * FROM ({_OBSERVATIONS_SQL}
          WHERE i.market_kind IS NOT NULL
            AND i.observed_at_ms >= %s
-           AND i.observed_at_ms < %s
-         ORDER BY i.observed_at_ms DESC, i.item_id DESC
-         LIMIT {MARKET_WINDOW_ROW_CAP}) AS windowed
+           AND i.observed_at_ms < %s) AS windowed
     )
     SELECT market_kind,
            count(*) AS received,
@@ -245,7 +263,7 @@ MARKET_SOURCES_SQL = f"""
            max(received_at_ms) AS last_received_at_ms
       FROM observations
      GROUP BY market_kind
-"""  # noqa: S608 -- interpolates only this module's own row cap
+"""  # noqa: S608 -- interpolates only this module's own observation projection
 
 
 class MarketStorage:
@@ -260,8 +278,15 @@ class MarketStorage:
         cursor_received_at_ms: int,
         cursor_item_id: str,
         limit: int,
-    ) -> list[MarketGroupRow]:
-        """One page of collapsed groups, newest observation first."""
+    ) -> tuple[list[MarketGroupRow], bool]:
+        """One page of collapsed groups, newest observation first, and whether the scan hit its cap.
+
+        The page is scanned from the cursor downward rather than from the top of the window, so the
+        row cap bounds one page instead of the whole window: it can no longer end pagination early by
+        running out of scan before it runs out of groups. What the cap can still do is split a single
+        run longer than `MARKET_WINDOW_ROW_CAP`, which is why the caller is told when it was reached
+        instead of being handed a count that quietly stopped counting.
+        """
 
         rows = self.conn.execute(
             MARKET_GROUPS_SQL,
@@ -274,7 +299,7 @@ class MarketStorage:
                 int(limit),
             ),
         ).fetchall()
-        return [
+        groups = [
             MarketGroupRow(
                 group_key=str(row["group_key"]),
                 market_kind=str(row["market_kind"]),
@@ -282,11 +307,15 @@ class MarketStorage:
                 first_event_at_ms=int(row["first_event_at_ms"]),
                 last_event_at_ms=int(row["last_event_at_ms"]),
                 latest=_observation(row),
+                oldest_received_at_ms=int(row["oldest_received_at_ms"]),
+                oldest_item_id=str(row["oldest_item_id"]),
                 notification_status=NOTIFICATION_STATUS_NOT_CONNECTED,
                 notification_reason=NOTIFICATION_REASON_NOT_CONNECTED,
             )
             for row in rows
         ]
+        scanned = int(rows[0]["scanned"]) if rows else 0
+        return groups, scanned >= MARKET_WINDOW_ROW_CAP
 
     def market_item(self, *, item_id: str) -> dict[str, Any] | None:
         """One market Item with its stored provider payload. Not bound by the list's window."""

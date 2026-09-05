@@ -4961,7 +4961,9 @@ def test_an_oi_frame_is_stored_with_its_typed_fact_and_opens_no_event() -> None:
     assert (signal["symbol"], signal["direction"], signal["oi_change_bps"]) == ("TRUMP", "rise", 455)
     assert signal["source_venue"] == "binance"
     assert signal["measurement_definition"] == "oi_signal_v1|opennews_oi_source_v1|300000"
-    assert signal["historical"] is False
+    # No live writer can mark a fact as reconstructed: the column defaults to false and only the
+    # migration ever sets it.
+    assert "historical" not in signal
     for editorial in ("insert_event", "add_member", "append_evidence_snapshot", "find_band_candidates"):
         assert editorial not in news.names(), editorial
     assert bus.published == []

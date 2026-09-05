@@ -7,7 +7,7 @@ import {
   useNewsMarketWithToken,
   useNewsStatusWithToken,
 } from "../../api/newsQueries";
-import { nextMarketParams, parseMarketKinds } from "../../model/marketFacts";
+import { mergeMarketGroups, nextMarketParams, parseMarketKinds } from "../../model/marketFacts";
 import { optionalTime } from "../../model/newsLabels";
 import { NewsPageHeader, NewsPageShell } from "../chrome/NewsChrome";
 import { NewsSourceLine } from "../chrome/NewsSourceLine";
@@ -67,13 +67,11 @@ export function NewsMarketPage({ token }: { token: string }) {
   const anchorCursor = anchor?.kindKey === kindKey ? anchor.cursor : null;
   const historyQuery = useNewsMarketHistoryWithToken(token, kinds, anchorCursor, moreRequested);
   const pages = historyQuery.data?.pages ?? [];
-  const groups = Array.from(
-    new Map(
-      [firstPage?.groups ?? [], ...pages.map((page) => page.groups)]
-        .flat()
-        .map((group) => [`${group.group_key}:${group.latest.item_id}`, group]),
-    ).values(),
-  );
+  /*
+   * Freshest page first, so a run that gained an observation between "load more" and the next poll
+   * keeps the poll's copy instead of rendering beside the frozen one.
+   */
+  const groups = mergeMarketGroups([firstPage?.groups ?? [], ...pages.map((page) => page.groups)]);
   const hasMore = Boolean(moreRequested ? historyQuery.hasNextPage : anchorCursor);
 
   return (
@@ -126,6 +124,7 @@ export function NewsMarketPage({ token }: { token: string }) {
                 else void historyQuery.fetchNextPage();
               }}
               filters={firstPage.filters}
+              scanTruncated={firstPage.scan_truncated}
               token={token}
             />
 

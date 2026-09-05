@@ -343,8 +343,9 @@ business payload of one `strategy.triggered` frame and carries no transport or
 authentication material — the provider token lives in the connection URL and the
 request headers, neither of which reaches the parser — so what is refused there
 is shapes PostgreSQL's `jsonb` cannot hold, not values. It is bounded by the
-transport's own `OPENNEWS_MAX_FRAME_BYTES` and by no second, smaller ceiling
-that would silently truncate a payload the transport accepted. Provider ratings
+transport's own `OPENNEWS_MAX_FRAME_BYTES` on the live socket and
+`OPENNEWS_HISTORY_MAX_BODY_BYTES` on the recovery path, and by no second, smaller
+ceiling that would silently truncate a payload either transport accepted. Provider ratings
 and provenance are descriptive NewsItem metadata after admission and cannot
 change fact identity, Event membership, priority, or feed ordering. Disconnect, overflow, outage, and
 provider non-delivery create sanitized typed incidents with bounded cause,

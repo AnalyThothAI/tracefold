@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -1234,7 +1235,7 @@ def test_a_withdraw_report_is_stored_as_a_raw_card_and_stays_visible(conn) -> No
     observed = conn.execute("SELECT observed_at_ms FROM news_items WHERE item_id = %s", (result.item_id,)).fetchone()[
         "observed_at_ms"
     ]
-    groups = repositories_for_connection(conn).news.market_groups(
+    groups, _ = repositories_for_connection(conn).news.market_groups(
         kinds=("smart_money",),
         from_ms=observed,
         to_ms=observed + 1,
@@ -1293,6 +1294,45 @@ def test_the_native_instrument_prefix_survives_beside_the_normalized_symbol(conn
     assert (row["symbol"], row["raw_instrument"]) == ("UNITREE", "XYZ-UNITREE")
     assert row["measurement_definition"] == "oi_signal_v1|opennews_oi_source_v1|300000"
     assert row["provider"] == "opennews"
+    conn.commit()
+
+
+def test_a_market_item_that_accumulated_a_news_strategy_keeps_its_parser_and_its_typed_fact(conn) -> None:
+    """#553 SHOULD-FIX 4. The primary Strategy decides, live and in the backfill alike.
+
+    An Item unions every Strategy tuple it is ever reported under, so a 1019 record that a news
+    Strategy also matched carries both. The migration's backfill classifies by `strategies[0]` alone;
+    a live path that demoted the same record to `unknown_market` would make one record mean two
+    different things depending on which of the two wrote it, and the typed fact would exist or not by
+    accident of timing.
+    """
+
+    repos = repositories_for_connection(conn)
+    frame = _market_frame(
+        hit_id=9_580_001,
+        text="MIXED OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%",
+        strategy_id=1019,
+        strategy_name="OI Event Monitor",
+        source_type="market",
+    )
+    merged = dict(frame.provider_metadata)
+    merged["strategies"] = [
+        *merged["strategies"],
+        {"id": "1018", "name": "News Score > 70", "source_type": "news", "engine_type": "news"},
+    ]
+    result = _admit_market_frame(repos, replace(frame, provider_metadata=merged))
+
+    assert result.market is not None
+    assert (result.market.market_kind, result.market.parse_status) == ("oi", "parsed")
+    row = conn.execute("SELECT symbol FROM news_oi_signals WHERE source_item_id = %s", (result.item_id,)).fetchone()
+    assert row is not None and row["symbol"] == "MIXED"
+    # Both tuples survive on the Item: the second is metadata about the record, never a reason to
+    # re-read it, and never a reason to open an Event for it.
+    stored = conn.execute("SELECT provider_metadata FROM news_items WHERE item_id = %s", (result.item_id,)).fetchone()[
+        "provider_metadata"
+    ]
+    assert {strategy["id"] for strategy in stored["strategies"]} == {"1018", "1019"}
+    assert _editorial_rows(conn, (result.item_id,)) == {"events": 0, "members": 0, "snapshots": 0, "verdicts": 0}
     conn.commit()
 
 

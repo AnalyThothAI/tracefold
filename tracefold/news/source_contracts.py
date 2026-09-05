@@ -180,20 +180,24 @@ def classify_source_contracts(provider_metadata: Any) -> tuple[SourceContract, .
 def market_route(contracts: tuple[SourceContract, ...]) -> tuple[MarketKind, str | None] | None:
     """The market kind one frame routes to, or ``None`` when it stays on the ordinary News branch.
 
-    The frame's *primary* Strategy decides the branch: an Item that has accumulated a market Strategy
-    across replays does not drag an already-classified news frame into the market plane, and a market
-    frame is never handed to the model because a second tuple happens to look like news.
+    One rule, and it is the rule the backfill in `20260905_0365` applies too, so a frame admitted
+    live and the same frame classified by the migration cannot disagree about what it is.
 
-    A frame whose own tuples name two different market families is stored as `unknown_market` with an
-    explicit reason. Reinterpreting one family's numbers under another's semantics is the one thing
-    this function must never do quietly.
+    The frame's *primary* Strategy decides the branch. An Item that has accumulated a market Strategy
+    across replays does not drag an already-classified news frame into the market plane, and a market
+    frame is not taken away from its parser because a second tuple on it happens to be news --
+    additional non-market Strategies are metadata about the record, not a second reading of it.
+
+    The one thing that does change the answer is two different *market* families on one frame: no
+    single set of numeric semantics can be applied without inventing one, so the observation is stored
+    as `unknown_market` with an explicit reason. Reinterpreting one family's numbers under another's
+    is what this function must never do quietly.
     """
 
     if not contracts or not contracts[0].is_market:
         return None
     families = {contract.source_contract_family for contract in contracts if contract.is_market}
-    non_market = any(not contract.is_market for contract in contracts)
-    if len(families) > 1 or non_market:
+    if len(families) > 1:
         return "unknown_market", MARKET_CATEGORY_CONFLICT
     # Read back through the family map rather than off the contract, so the kind is proven by the same
     # table that assigned it instead of by a narrowing the type checker has to be told about.

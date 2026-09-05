@@ -53,8 +53,11 @@ def get_news_market(
 
     The window is absolute rather than a "last N hours" offset, because a reader reviewing what
     arrived on Tuesday is asking a question a rolling offset cannot express. It defaults to the last
-    72 h, spans at most 168 h in one request, and may sit anywhere inside the retention -- the span
-    bound is what one page may scan, not how far back the data goes.
+    72 h, spans at most 168 h in one request, and may sit anywhere inside the retention.
+
+    `scan_truncated` is the honest name for the one thing a bounded page can still get wrong: a
+    single run longer than one page's scan is split, so its `observation_count` is a floor. The
+    per-kind `sources` block is not bounded that way and its counts are exact.
 
     "Not pushed" is not a filter and never becomes one. Whether a card was sent is reported per group
     and is not a precondition for reading the observation.
@@ -73,7 +76,7 @@ def get_news_market(
     cursor_received_at_ms, cursor_item_id = _decode_cursor(cursor)
     runtime = _authenticated_runtime(request)
     with runtime.repositories() as repos:
-        groups = repos.news.market_groups(
+        groups, scan_truncated = repos.news.market_groups(
             kinds=kinds,
             from_ms=window_from,
             to_ms=window_to,
@@ -85,8 +88,10 @@ def get_news_market(
     page = groups[: int(limit)]
     next_cursor = None
     if len(groups) > int(limit):
+        # The next page starts below the *oldest* member of the last run returned. Anchoring on the
+        # newest member would re-scan the rest of that run and emit the same group twice.
         last = page[-1]
-        next_cursor = _encode_cursor(int(last["latest"]["received_at_ms"]), str(last["latest"]["item_id"]))
+        next_cursor = _encode_cursor(int(last["oldest_received_at_ms"]), str(last["oldest_item_id"]))
     return _etagged(
         {
             "groups": page,
@@ -99,6 +104,7 @@ def get_news_market(
                 "limit": int(limit),
             },
             "notifications_connected": False,
+            "scan_truncated": scan_truncated,
         },
         request,
         envelope=_MarketEnvelope,

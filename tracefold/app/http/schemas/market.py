@@ -61,6 +61,9 @@ class NewsMarketGroupData(ExactApiSchema):
     first_event_at_ms: int
     last_event_at_ms: int
     latest: NewsMarketObservationData
+    # Where the next page starts: the run's oldest member, not its newest.
+    oldest_received_at_ms: int
+    oldest_item_id: str
     notification_status: str
     notification_reason: str
 
@@ -87,6 +90,9 @@ class NewsMarketData(ExactApiSchema):
     sources: list[NewsMarketSourceData]
     filters: NewsMarketFiltersData
     notifications_connected: bool = False
+    # True when one page's scan reached its bound, so a run's `observation_count` is a floor rather
+    # than a total. `sources` is unbounded and stays exact either way.
+    scan_truncated: bool = False
 
 
 class NewsMarketItemData(ExactApiSchema):

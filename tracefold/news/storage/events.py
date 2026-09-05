@@ -10,7 +10,7 @@ from typing import Any, cast
 from ..models import ADMITTED_ADMISSIONS
 from ..opennews import source_artifact_identity
 from ..source_contracts import EventKind
-from .feed_sql import CURRENT_EVENT_CARD_SQL
+from .feed_sql import CURRENT_EVENT_CARD_SQL, EDITORIAL_EVENT_CARD_SQL
 from .sql_values import _ADMITTED_SQL, _dumps
 
 _HANDOFF_STATE_LIMIT = 1_000
@@ -723,6 +723,12 @@ class EventStorage:
 
     def _current_event_card(self, event_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(CURRENT_EVENT_CARD_SQL, (event_id,)).fetchone()
+        return dict(row) if row else None
+
+    def _editorial_event_card(self, event_id: str) -> dict[str, Any] | None:
+        """The same row, refused for an Event of a kind the public contract no longer names (#553)."""
+
+        row = self.conn.execute(EDITORIAL_EVENT_CARD_SQL, (event_id,)).fetchone()
         return dict(row) if row else None
 
     def append_evidence_snapshot(

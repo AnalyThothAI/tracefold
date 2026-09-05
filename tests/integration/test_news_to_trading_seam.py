@@ -278,7 +278,6 @@ def _numeric_oi_fact(conn: Any, *, event_id: str, item_id: str, observed_at_ms: 
             measurement_definition="oi_signal_v1|opennews_oi_source_v1|300000",
             source_item_id=item_id,
             source_venue="binance",
-            historical=False,
         )
 
 

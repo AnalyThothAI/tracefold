@@ -33,11 +33,3 @@ export function newsSymbolPath(base: string): string {
 export function tradingPath(): string {
   return "/trading";
 }
-
-/**
- * One Case's frozen evidence on the Trading workbench. It was `/news/alpha?case=` until #460 removed
- * that page; the Case card there opens the linked Case and scrolls no differently from a bare visit.
- */
-export function tradingCasePath(caseId: string): string {
-  return `/trading?case=${encodeURIComponent(caseId)}`;
-}

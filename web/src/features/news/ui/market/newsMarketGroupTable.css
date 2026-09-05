@@ -184,6 +184,14 @@
     white-space: nowrap;
   }
 
+  .news-market-truncated {
+    margin: 0;
+    padding: 10px 14px;
+    border-top: 1px solid var(--border-faint);
+    color: var(--text-subtle);
+    font-size: var(--font-size-mono-meta);
+  }
+
   .news-market-more {
     display: flex;
     flex-wrap: wrap;

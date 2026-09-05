@@ -332,7 +332,6 @@ class DecisionStorage:
         measurement_definition: str,
         source_item_id: str,
         source_venue: str | None,
-        historical: bool,
     ) -> None:
         """Append one parsed frame to the OI ledger. Idempotent on the Item that produced it.
 
@@ -346,9 +345,9 @@ class DecisionStorage:
         whose measurement interval could not be proven. A default of five minutes here would make
         every unprovable frame claim to be a 5-minute measurement.
 
-        `historical` marks a fact this ledger reconstructed rather than received. Its timestamps are
-        the original ones; what is true of it is that no consumer could have read it until the rebuild,
-        which is why the live trigger set excludes it and every reader still shows it.
+        Every row this writer appends is `historical = false`, which is the column's default: a fact
+        arriving through admission is one this process received. The reconstructed rows are the
+        migration's, written by its own statement, and no live path may mark a fact as rebuilt.
         """
 
         proven = (
@@ -360,10 +359,10 @@ class DecisionStorage:
               event_id, metric_version, symbol, raw_instrument, direction, oi_change_bps, oi_value_usd,
               whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, received_at_ms, created_at_ms,
               provider, source_strategy_id, source_contract_version, measurement_window_ms,
-              measurement_definition, source_item_id, source_venue, available_at_ms, historical
+              measurement_definition, source_item_id, source_venue, available_at_ms
             ) VALUES (
               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s, %s, %s, %s, %s, %s
+              %s, %s, %s, %s, %s, %s, %s, %s
             )
             ON CONFLICT (source_item_id, metric_version) DO NOTHING
             """,
@@ -388,7 +387,6 @@ class DecisionStorage:
                 source_item_id,
                 source_venue,
                 int(now_ms),
-                bool(historical),
             ),
         )
 

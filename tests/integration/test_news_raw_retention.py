@@ -287,7 +287,6 @@ def _seed_market_item(repos, *, item_id: str, at_ms: int, parsed: bool) -> None:
         measurement_definition="oi_signal_v1|opennews_oi_source_v1|300000",
         source_item_id=item_id,
         source_venue="binance",
-        historical=False,
     )
 
 

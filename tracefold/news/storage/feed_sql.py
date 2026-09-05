@@ -58,6 +58,13 @@ CURRENT_EVENT_CARD_SQL: Final = """
       JOIN news_items i ON i.item_id = e.leader_item_id
      WHERE e.event_id = %s
 """
+# The public Event read. The statement above is the raw row, and internal callers that already know an
+# Event's identity keep using it; this one is what a *reader* may be served, and the two differ by
+# exactly the predicate the feed uses. The migration keeps every pre-cut market Event, `EventKind` no
+# longer names their kinds, and a bookmarked or pushed link to one is an ordinary thing to still have
+# -- so it has to resolve to "not an Event" rather than to a row the response envelope cannot
+# validate. The observation that Event was built from is readable at `/api/news/market`.
+EDITORIAL_EVENT_CARD_SQL: Final = f"{CURRENT_EVENT_CARD_SQL.rstrip()}\n       AND {EDITORIAL_EVENT_SQL}\n"
 EVENT_VERDICTS_SQL: Final = """
     SELECT event_id, stage, policy_version, rule_baseline_decision, final_decision,
            override_rule, throttled_by, verdict, model, degraded, error_code, trace,
@@ -165,6 +172,7 @@ __all__ = [
     "ADMITTED_SQL",
     "ASSET_SEARCH_PREDICATE",
     "CURRENT_EVENT_CARD_SQL",
+    "EDITORIAL_EVENT_CARD_SQL",
     "EDITORIAL_EVENT_SQL",
     "EVENT_KIND_SQL",
     "EVENT_VERDICTS_SQL",

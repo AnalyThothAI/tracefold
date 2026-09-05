@@ -18,8 +18,8 @@ Migration evidence:
   instrument, which measurement definition, which account, which direction. Every one of those is a
   column here because a reader collapses consecutive observations of one group, and a group key that
   is not a column is a group key that is recomputed differently by every caller.
-- current_source_revision: 20260904_0363
-- minimum_supported_source_revision: 20260904_0363
+- current_source_revision: 20260905_0364
+- minimum_supported_source_revision: 20260905_0364
 - lock_level_and_order: `ACCESS EXCLUSIVE` on `news_items`, then `news_oi_signals`, then
   `news_market_liquidations`, then the new `news_market_smart_money`, in that order. Each is held for
   a catalog update plus, on `news_items` and `news_oi_signals`, one table scan for the backfill and
@@ -60,8 +60,8 @@ Migration evidence:
 - production_postgres_image:
   postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
 
-Revision ID: 20260905_0364
-Revises: 20260904_0363
+Revision ID: 20260905_0365
+Revises: 20260905_0364
 Create Date: 2026-09-05 00:00:00
 """
 
@@ -69,14 +69,23 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "20260905_0364"
-down_revision = "20260904_0363"
+revision = "20260905_0365"
+down_revision = "20260905_0364"
 branch_labels = None
 depends_on = None
 
-# The exact 1019 wire template, frozen into this revision. It is spelled here rather than imported
-# from `tracefold.news.oi_signals` on purpose: a rebuild is a statement about what the provider sent
-# in 2026, and a future parser revision must not silently change what this migration reconstructed.
+# The exact 1019 wire template and arithmetic, frozen into this revision. Spelled here rather than
+# imported from `tracefold.news.oi_signals` on purpose: a rebuild is a statement about what the
+# provider sent in 2026, and a future parser revision must not silently change what this migration
+# reconstructed. That freedom is also the risk, so the two are held together by a test rather than by
+# a shared import -- `test_the_rebuild_reproduces_the_parsers_own_arithmetic` drives the same frames
+# through `parse_oi_signal` and through this statement and compares every field.
+#
+# The three places the arithmetic has to agree exactly, each of which was wrong once:
+#   * basis points are half-up on the decimal digits, which `round(x * 100)` is for `numeric`;
+#   * the OI value truncates the fraction at six digits *before* applying the unit, so
+#     `3.8600005M` is 3_860_000 and not 3_860_001 -- `round(x, 6)` would have rounded it up;
+#   * the venue is lowercased, trimmed and capped at 32 characters, as `parse_liquidation` caps it.
 _OI_TEMPLATE = (
     r"^\s*(\S{1,16})\s+OI\s+(Rise|Fall|Drop)\s+(-?\d+(?:\.\d+)?)\s*%,\s*"
     r"OI\s+Value\s+(\d+(?:\.\d+)?)([KMB]?),\s*"
@@ -385,8 +394,8 @@ def _rebuild_missing_oi_facts() -> None:
           left(btrim(parts[1]), 32),
           CASE WHEN lower(parts[2]) IN ('fall', 'drop') THEN 'fall' ELSE 'rise' END,
           round(parts[3]::numeric * 100)::bigint,
-          trunc(round(parts[4]::numeric, 6) * CASE upper(parts[5])
-            WHEN 'K' THEN 1000 WHEN 'M' THEN 1000000 WHEN 'B' THEN 1000000000 ELSE 1 END)::bigint,
+          trunc(trunc(parts[4]::numeric * 1000000) * CASE upper(parts[5])
+            WHEN 'K' THEN 1000 WHEN 'M' THEN 1000000 WHEN 'B' THEN 1000000000 ELSE 1 END / 1000000)::bigint,
           round(parts[6]::numeric * 100)::bigint,
           round(parts[7]::numeric * 100)::bigint,
           i.published_at_ms,
@@ -401,7 +410,7 @@ def _rebuild_missing_oi_facts() -> None:
                THEN 'oi_signal_v1|opennews_oi_source_v1|300000'
                ELSE 'oi_signal_v1|unproven|unproven' END,
           m.item_id,
-          NULLIF(lower(btrim(COALESCE(i.provider_metadata ->> 'source', ''))), ''),
+          NULLIF(left(lower(btrim(COALESCE(i.provider_metadata ->> 'source', ''))), 32), ''),
           true
           FROM public.news_event_members m
           JOIN public.news_events e ON e.event_id = m.event_id AND e.event_kind = 'oi'

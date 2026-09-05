@@ -553,8 +553,8 @@ every Event this code can open.
   venue — which is how a reader tells `SPOT` on a Spot Gold headline from a
   real listing. Each response reads all Event assets in one bounded batch and
   resolves all symbols in one instrument batch, never one query per Event.
-- `GET /api/news/events/{event_id}` returns one Event, its durable `event_kind`,
-  its `outcome`, a
+- `GET /api/news/events/{event_id}` returns one **editorial** Event, its durable
+  `event_kind`, its `outcome`, a
   `timeline` (ordered steps `received` → `gate` → `triage` → `decide` →
   `delivery`, each with `title_zh`, `at_ms`, `summary_zh`, and the raw
   `facts` it was built from), its member Items (title, URL, origin,
@@ -576,7 +576,12 @@ every Event this code can open.
   headline, history scope, and retrieval reason (`recent`,
   `exact_fingerprint`, `canonical_asset_overlap`, or `title_similarity`).
   `tracefold news why`
-  prints the same `outcome` sentence and timeline. Unknown ids return 404.
+  prints the same `outcome` sentence and timeline. Unknown ids return 404, and
+  so does an Event of a kind this contract no longer names: the migration keeps
+  every pre-cut `oi`, `liquidation` and `unsupported_market` Event as immutable
+  history, the read filters `e.event_kind IN ('news','listing')` exactly as the
+  feed does, and the observation such an Event was built from is served by
+  `/api/news/market` (#553).
 - `GET /api/news/market?kind=...&from_ms=...&to_ms=...&limit=...&cursor=...`
   returns market observations in one absolute window, newest first, with
   *consecutive* observations of the same group collapsed onto their newest

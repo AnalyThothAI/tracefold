@@ -40,6 +40,7 @@ export function NewsMarketGroupTable({
   loadingMore,
   onKindsChange,
   onLoadMore,
+  scanTruncated,
   token,
 }: {
   filters: NewsMarket["filters"];
@@ -49,6 +50,7 @@ export function NewsMarketGroupTable({
   loadingMore: boolean;
   onKindsChange: (kinds: NewsMarketKind[]) => void;
   onLoadMore: () => void;
+  scanTruncated: boolean;
   token: string;
 }) {
   return (
@@ -94,6 +96,17 @@ export function NewsMarketGroupTable({
           ))}
         </div>
       )}
+
+      {/*
+       * The run counts above are what one bounded page could see. When a page fills that bound the
+       * server says so, and a floor is reported as a floor -- the window-wide numbers in the source
+       * summary are not bounded that way and stay exact either way.
+       */}
+      {scanTruncated ? (
+        <p className="news-market-truncated" role="note">
+          本页读取已达单页上限，×N 观测数按下限计；来源汇总仍是整窗口的准确计数。
+        </p>
+      ) : null}
 
       {hasMore ? (
         <div className="news-market-more">
