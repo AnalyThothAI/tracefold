@@ -19,6 +19,7 @@ from alembic.script import ScriptDirectory
 from tests.postgres_test_utils import connect_postgres_test, prepare_test_migration_database
 from tests.postgres_test_utils import postgres_migration_test_dsn as postgres_test_dsn
 from tests.postgres_test_utils import test_postgres_dsn as admin_postgres_test_dsn
+from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import (
     ObservationFactory,
     day_start_baseline_from_observation,
@@ -40,7 +41,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260905_0365"
+HEAD = "20260905_0366"
 
 
 def _config():
@@ -122,6 +123,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260905_0365",
         "20260905_0364",
         "20260904_0363",
         "20260904_0362",
@@ -148,32 +150,33 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260901_0341",
         BASELINE,
     ]
-    assert revisions[0].down_revision == "20260905_0364"
-    assert revisions[1].down_revision == "20260904_0363"
-    assert revisions[2].down_revision == "20260904_0362"
-    assert revisions[3].down_revision == "20260904_0361"
-    assert revisions[4].down_revision == "20260904_0360"
-    assert revisions[5].down_revision == "20260903_0359"
-    assert revisions[6].down_revision == "20260903_0358"
-    assert revisions[7].down_revision == "20260903_0357"
-    assert revisions[8].down_revision == "20260903_0356"
-    assert revisions[9].down_revision == "20260903_0355"
-    assert revisions[10].down_revision == "20260903_0354"
-    assert revisions[11].down_revision == "20260903_0353"
-    assert revisions[12].down_revision == "20260903_0352"
-    assert revisions[13].down_revision == "20260902_0351"
-    assert revisions[14].down_revision == "20260902_0350"
-    assert revisions[15].down_revision == "20260902_0349"
-    assert revisions[16].down_revision == "20260902_0348"
-    assert revisions[17].down_revision == "20260901_0347"
-    assert revisions[18].down_revision == "20260901_0346"
-    assert revisions[19].down_revision == "20260901_0345"
-    assert revisions[20].down_revision == "20260901_0344"
-    assert revisions[21].down_revision == "20260901_0343"
-    assert revisions[22].down_revision == "20260901_0342"
-    assert revisions[23].down_revision == "20260901_0341"
-    assert revisions[24].down_revision == BASELINE
-    assert revisions[25].down_revision is None
+    assert revisions[0].down_revision == "20260905_0365"
+    assert revisions[1].down_revision == "20260905_0364"
+    assert revisions[2].down_revision == "20260904_0363"
+    assert revisions[3].down_revision == "20260904_0362"
+    assert revisions[4].down_revision == "20260904_0361"
+    assert revisions[5].down_revision == "20260904_0360"
+    assert revisions[6].down_revision == "20260903_0359"
+    assert revisions[7].down_revision == "20260903_0358"
+    assert revisions[8].down_revision == "20260903_0357"
+    assert revisions[9].down_revision == "20260903_0356"
+    assert revisions[10].down_revision == "20260903_0355"
+    assert revisions[11].down_revision == "20260903_0354"
+    assert revisions[12].down_revision == "20260903_0353"
+    assert revisions[13].down_revision == "20260903_0352"
+    assert revisions[14].down_revision == "20260902_0351"
+    assert revisions[15].down_revision == "20260902_0350"
+    assert revisions[16].down_revision == "20260902_0349"
+    assert revisions[17].down_revision == "20260902_0348"
+    assert revisions[18].down_revision == "20260901_0347"
+    assert revisions[19].down_revision == "20260901_0346"
+    assert revisions[20].down_revision == "20260901_0345"
+    assert revisions[21].down_revision == "20260901_0344"
+    assert revisions[22].down_revision == "20260901_0343"
+    assert revisions[23].down_revision == "20260901_0342"
+    assert revisions[24].down_revision == "20260901_0341"
+    assert revisions[25].down_revision == BASELINE
+    assert revisions[26].down_revision is None
     assert sorted(path.name for path in VERSIONS.glob("*.py")) == [
         "20260831_0340_baseline.py",
         "20260901_0341_trading_signal_hard_cut.py",
@@ -201,6 +204,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260904_0363_news_review_task_source_judged_evidence.py",
         "20260905_0364_workers_runtime_capabilities.py",
         "20260905_0365_news_market_facts_at_admission.py",
+        "20260905_0366_news_market_notification_tracks.py",
     ]
 
 
@@ -232,13 +236,15 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    # `20260905_0365` is now the first refusal the walk to base meets, and it is the head, so the walk
-    # stops before reversing anything: it adds the market columns, the smart-money ledger and the
-    # reconstructed OI observations, and every one of those holds evidence that exists nowhere else.
-    # `20260905_0364`'s dropped capability column, `20260904_0363`'s restored view and
-    # `20260904_0362`'s re-added CHECKs are all reversible and all behind it, as are the two refusals
+    # `20260905_0366` is now the first refusal the walk to base meets, and it is the head, so the walk
+    # stops before reversing anything: it adds the notification to-do list and the delivery ledger,
+    # whose receipts are the only record of which cards a reader actually received, and dropping the
+    # `market_notify_state` marker would make every already-notified market Item look unprocessed and
+    # re-send the whole retained backlog. `20260905_0365`'s market facts are the refusal immediately
+    # behind it, and `20260905_0364`'s dropped capability column, `20260904_0363`'s restored view and
+    # `20260904_0362`'s re-added CHECKs are all reversible and all behind that, as are the two refusals
     # that were in front before — `20260904_0361` and `20260903_0357`.
-    with pytest.raises(RuntimeError, match="news_market_facts_downgrade_unsupported"):
+    with pytest.raises(RuntimeError, match="news_market_notifications_downgrade_unsupported"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
 
@@ -1804,5 +1810,132 @@ def test_the_backfill_and_the_live_classifier_agree_on_every_fixture() -> None:
             # read, and the backfill records that no parser was run. A conflict is the one reason both
             # can state, because it is decided before any parser is consulted.
             assert (migrated_reason == MARKET_CATEGORY_CONFLICT) is (expected_conflict is not None), item_id
+    finally:
+        conn.close()
+
+
+def test_the_market_notification_marker_separates_the_pre_enable_backlog_from_live_records() -> None:
+    """`20260905_0366` is enable-time: what was already here is history, what arrives next is a to-do.
+
+    The revision cannot ask the loop which observations a reader has already seen, because before it
+    ran no loop existed. What it can say is that every market record that predates it belongs to a
+    window nobody was being alerted for, and alerting on a two-day-old OI frame at enable time
+    interrupts a reader with something they cannot act on (#553 §4.1.5). This proves both halves on
+    one database: the backlog seeded *before* the upgrade is `historical` and stays out of the take
+    query, and a record admitted *after* it is `pending` and is the first thing the loop reads.
+    """
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260905_0365")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            for item_id, kind in (("backlog-oi", "oi"), ("backlog-liq", "liquidation")):
+                conn.execute(
+                    """
+                    INSERT INTO news_items (
+                      item_id, source_id, source_item_key, title, raw_first_line, description,
+                      reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
+                      first_ingest_mode, trace_id, created_at_ms, updated_at_ms,
+                      market_kind, market_source_strategy_id, market_parse_status, market_parse_error
+                    ) VALUES (
+                      %s, 'opennews', %s, %s, %s, '', 'opennews', 1000, 1000, '{}'::jsonb, '[]'::jsonb,
+                      'live', 'trace', 1000, 1000, %s, '1019', 'raw', 'market_backfill_not_reparsed'
+                    )
+                    """,
+                    (item_id, item_id, item_id, item_id, kind),
+                )
+            # Ordinary news sits beside them and must come out of the upgrade with no marker at all:
+            # its delivery is its Event's, and this column is not part of that decision.
+            conn.execute(
+                """
+                INSERT INTO news_items (
+                  item_id, source_id, source_item_key, title, raw_first_line, description,
+                  reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
+                  first_ingest_mode, trace_id, created_at_ms, updated_at_ms
+                ) VALUES (
+                  'backlog-news', 'opennews', 'backlog-news', 'ordinary', 'ordinary', '', 'opennews',
+                  1000, 1000, '{}'::jsonb, '[]'::jsonb, 'live', 'trace', 1000, 1000
+                )
+                """
+            )
+
+        command.upgrade(config, "head")
+
+        marked = {
+            str(row["item_id"]): row["market_notify_state"]
+            for row in conn.execute("SELECT item_id, market_notify_state FROM news_items ORDER BY item_id").fetchall()
+        }
+        assert marked == {
+            "backlog-liq": "historical",
+            "backlog-news": None,
+            "backlog-oi": "historical",
+        }
+        # The take query is the marker, so the backlog is not in it -- no card is ever prepared for
+        # an observation that arrived before anyone was listening.
+        backlog = conn.execute(
+            "SELECT count(*) AS pending FROM news_items WHERE market_notify_state = 'pending'"
+        ).fetchone()
+        assert int(backlog["pending"]) == 0
+
+        # And the writer that runs after the revision produces the other half.
+        repos = repositories_for_connection(conn)
+        with repos.transaction():
+            for item_id, mode in (("live-oi", "live"), ("recovered-oi", "recovery")):
+                repos.news.upsert_item(
+                    item_id=item_id,
+                    source_id="opennews",
+                    source_item_key=item_id,
+                    title=item_id,
+                    raw_first_line=item_id,
+                    description="",
+                    canonical_url=None,
+                    reporting_origin="opennews",
+                    published_at_ms=2000,
+                    observed_at_ms=2000,
+                    provider_metadata_json="{}",
+                    strategy_ids_json="[]",
+                    ingest_mode=mode,
+                    trace_id="trace",
+                    now_ms=2000,
+                    market_kind="oi",
+                    market_source_strategy_id="1019",
+                    market_parse_status="parsed",
+                    market_parse_error=None,
+                )
+        admitted = {
+            str(row["item_id"]): row["market_notify_state"]
+            for row in conn.execute(
+                "SELECT item_id, market_notify_state FROM news_items WHERE item_id IN ('live-oi', 'recovered-oi')"
+            ).fetchall()
+        }
+        assert admitted == {"live-oi": "pending", "recovered-oi": "historical"}
+
+        # A replay of a record the backlog already marked does not put it back on the to-do list.
+        with repos.transaction():
+            repos.news.upsert_item(
+                item_id="backlog-oi",
+                source_id="opennews",
+                source_item_key="backlog-oi",
+                title="backlog-oi",
+                raw_first_line="backlog-oi",
+                description="",
+                canonical_url=None,
+                reporting_origin="opennews",
+                published_at_ms=1000,
+                observed_at_ms=1000,
+                provider_metadata_json="{}",
+                strategy_ids_json="[]",
+                ingest_mode="live",
+                trace_id="trace",
+                now_ms=3000,
+                market_kind="oi",
+                market_source_strategy_id="1019",
+                market_parse_status="parsed",
+                market_parse_error=None,
+            )
+        replayed = conn.execute("SELECT market_notify_state FROM news_items WHERE item_id = 'backlog-oi'").fetchone()
+        assert replayed["market_notify_state"] == "historical"
     finally:
         conn.close()

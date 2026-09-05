@@ -52,6 +52,17 @@
     min-width: 0;
   }
 
+  /* The receipt row reads as the quieter half of the tile: intake is what arrived, and this is what
+     was said about it. Same grid, one hairline, no second colour vocabulary. */
+  .news-market-source-figures[data-row="delivery"] {
+    padding-top: 6px;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .news-market-source-figures[data-row="delivery"] .news-market-source-figure b {
+    color: var(--text-subtle);
+  }
+
   .news-market-source-figure {
     display: grid;
     gap: 2px;

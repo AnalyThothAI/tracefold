@@ -548,6 +548,8 @@ export function newsMarketObservationFixture(
     ingest_mode: "live",
     item_id: "mkt-oi-wif-3",
     market_kind: "oi",
+    notification_reason: "",
+    notification_status: "sent",
     oi_change_bps: 671,
     oi_value_usd: 11_030_000,
     parse_error: null,
@@ -577,8 +579,8 @@ export function newsMarketGroupFixture(overrides: Partial<NewsMarketGroup> = {})
     group_key: latest.group_key,
     last_event_at_ms: latest.event_at_ms,
     market_kind: latest.market_kind,
-    notification_reason: "market_notifications_not_connected",
-    notification_status: "not_connected",
+    notification_reason: latest.notification_reason,
+    notification_status: latest.notification_status,
     observation_count: 3,
     // The run's oldest member: the server's cursor anchors here and so does the page's dedupe, because
     // it holds still while the run grows at the newest end.
@@ -593,21 +595,26 @@ export function newsMarketSourceFixture(
   overrides: Partial<NewsMarketSource> = {},
 ): NewsMarketSource {
   return {
+    failed: 0,
     groups: 24,
+    last_failed_at_ms: null,
     last_received_at_ms: NEWS_NOW_MS - 118_000,
+    last_sent_at_ms: NEWS_NOW_MS - 118_000,
+    last_unknown_at_ms: null,
     market_kind: "oi",
+    merged: 37,
     parsed: 61,
     raw: 0,
     received: 61,
+    sent: 24,
+    unknown: 0,
     ...overrides,
   };
 }
 
 /**
- * The market page as one read: groups, the per-kind intake summary, and whether anything is listening.
- *
- * `notifications_connected` defaults to `false` because that is what production answers today. The page
- * must render it rather than state it, so a test that flips this must see the sentence change.
+ * The market page as one read: the collapsed groups, and the per-kind intake and receipt summary beside
+ * them. There is no page-level "is push wired" flag: every group answers that for itself (#553 PR-2).
  */
 export function newsMarketFixture(overrides: Partial<NewsMarket> = {}): NewsMarket {
   return {
@@ -619,7 +626,6 @@ export function newsMarketFixture(overrides: Partial<NewsMarket> = {}): NewsMark
     },
     groups: [newsMarketGroupFixture()],
     next_cursor: null,
-    notifications_connected: false,
     // A page that did not fill its scan. Flip it to see the floor note beside the run counts.
     scan_truncated: false,
     sources: [
@@ -658,9 +664,31 @@ export function newsMarketItemFixture(overrides: Partial<NewsMarketItem> = {}): 
   const observation = overrides.observation ?? newsMarketObservationFixture();
   return {
     description: "Open interest rose over the provider's own trigger window.",
-    notification_reason: "market_notifications_not_connected",
-    notification_status: "not_connected",
-    notifications_connected: false,
+    notification_covered_item_ids: [observation.item_id],
+    notification_delivery: {
+      attempts: 1,
+      card: {
+        elements: [
+          { content: "上升 6.71% · 14:20\nOI $11.03M · binance · oi_signal_v1", tag: "markdown" },
+        ],
+        header: { template: "blue", title: { content: "持仓异动 WIF", tag: "plain_text" } },
+      },
+      covered_count: 2,
+      covered_from_ms: observation.received_at_ms - 600_000,
+      covered_to_ms: observation.received_at_ms,
+      delivery_key: "0".repeat(32),
+      error: null,
+      first_attempt_at_ms: observation.received_at_ms + 2_000,
+      last_attempt_at_ms: observation.received_at_ms + 2_000,
+      next_attempt_at_ms: observation.received_at_ms,
+      receipt_provider: "feishu",
+      settled_at_ms: observation.received_at_ms + 2_400,
+      state: "sent",
+      trigger_item_id: observation.item_id,
+      trigger_reason: "followup",
+    },
+    notification_reason: observation.notification_reason,
+    notification_status: observation.notification_status,
     provider_params: { rule: "oi_rise", window_minutes: 15 },
     raw_first_line: observation.title,
     timeline: [

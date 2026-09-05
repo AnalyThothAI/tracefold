@@ -3348,8 +3348,15 @@ def test_janitor_runs_raw_batches_and_learning_retention_in_separate_cold_transa
         "news_expire_bands",
         "news_raw_retention",
         "news_raw_retention",
+        # #553 PR-2: one bounded batch per pass, beside the purge that made those observations
+        # unreadable, so alerting state for a group nobody can read any more goes with them.
+        "news_market_track_retention",
         "news_learning_retention",
     ]
+    # The judged cutoff, not the raw one: a track outlives the raw text and dies with the judged
+    # window, which is when its group's last observation actually stops being readable.
+    prune = news.kwargs_of("market_prune_tracks")
+    assert prune == {"cutoff_ms": news.kwargs_of("purge_before")["judged_cutoff_ms"], "limit": 500}
     assert db.operations == ["news_opennews_incident_summary"]
     assert news.kwargs_of("purge_learning_retention") == {"batch_size": 500}
     assert [name for name in news.names() if name == "purge_before"] == ["purge_before", "purge_before"]
@@ -3373,6 +3380,7 @@ def test_janitor_records_retention_failure_without_stopping_the_loop() -> None:
     assert db.heavy_operations == [
         "news_expire_bands",
         "news_raw_retention",
+        "news_market_track_retention",
         "news_learning_retention",
         "news_learning_retention_error",
     ]

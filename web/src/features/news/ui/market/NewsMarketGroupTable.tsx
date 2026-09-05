@@ -7,6 +7,7 @@ import {
   useNewsMarketItemWithToken,
   type NewsMarket,
   type NewsMarketGroup,
+  type NewsMarketItem,
   type NewsMarketKind,
   type NewsMarketObservation,
 } from "../../api/newsQueries";
@@ -189,6 +190,99 @@ function PushChip({ reason, status }: { reason: string; status: string }) {
 }
 
 /**
+ * What the notification owner recorded for this one observation.
+ *
+ * Server strings, printed as written, for the same reason `PushChip` prints them: the operator greps
+ * these. A card that was sent shows the snapshot's own numbers — how many observations it spoke for and
+ * how many attempts it took — because "sent" without them cannot be checked against the timeline below.
+ */
+function notificationTrace(item: NewsMarketItem): Array<[string, string]> {
+  const delivery = item.notification_delivery;
+  const entries: Array<[string, unknown]> = [
+    ["notification_status", item.notification_status || "—"],
+    ["notification_reason", item.notification_reason || "—"],
+    ["trigger_reason", delivery?.trigger_reason],
+    ["covered_count", delivery?.covered_count],
+    ["attempts", delivery?.attempts],
+    ["error", delivery?.error],
+    ["receipt_provider", delivery?.receipt_provider],
+    ["settled_at_ms", delivery?.settled_at_ms],
+  ];
+  return entries
+    .filter(([, value]) => value !== null && value !== undefined && value !== "")
+    .map(([key, value]) => [key, String(value)]);
+}
+
+/**
+ * The card as it was actually sent, and the observations it spoke for.
+ *
+ * This is what an operator holds against the message their channel received: the snapshot is frozen at
+ * the first attempt and is never re-rendered, so a difference between it and the received card is a
+ * real difference rather than a re-render. The covered ids are the Items that carry this card's key —
+ * "which observations did this one message answer for" — and the count beside them is the card's own,
+ * which is the honest total when the id list is capped.
+ */
+function SentSnapshot({
+  covered,
+  delivery,
+}: {
+  covered: readonly string[];
+  delivery: NonNullable<NewsMarketItem["notification_delivery"]>;
+}) {
+  const lines = cardLines(delivery.card);
+  return (
+    <>
+      <small className="news-market-detail-label">发送快照 · {delivery.covered_count} 条观测</small>
+      {lines.length ? (
+        <div className="news-market-card-snapshot">
+          {lines.map((line, index) => (
+            // The snapshot is a frozen payload with no identity of its own; a line's position in it
+            // is the only key there is, and it never reorders because it is never rewritten.
+            <p key={`${index}-${line}`}>{line}</p>
+          ))}
+        </div>
+      ) : (
+        <p className="news-market-detail-empty">这张卡还没有开始发送，快照要到首次尝试才冻结。</p>
+      )}
+      <small className="news-market-detail-label">覆盖观测 · {covered.length}</small>
+      {covered.length ? (
+        <ul className="news-market-covered">
+          {covered.map((itemId) => (
+            <li key={itemId}>
+              <code>{itemId}</code>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="news-market-detail-empty">这张卡还没有认领任何观测。</p>
+      )}
+    </>
+  );
+}
+
+/**
+ * The card's own text, read out of the frozen payload rather than re-derived.
+ *
+ * The header title and the markdown block are the two parts a channel actually renders; anything else
+ * in the payload is transport. A snapshot this build cannot read prints nothing rather than a guess.
+ */
+function cardLines(card: Record<string, unknown> | undefined): string[] {
+  if (!card) return [];
+  const header = card.header as { title?: { content?: unknown } } | undefined;
+  const title = String(header?.title?.content ?? "").trim();
+  const elements = Array.isArray(card.elements) ? card.elements : [];
+  const body = elements
+    .filter(
+      (element): element is { tag: string; content: unknown } =>
+        typeof element === "object" &&
+        element !== null &&
+        (element as { tag?: string }).tag === "markdown",
+    )
+    .flatMap((element) => String(element.content ?? "").split("\n"));
+  return [title, ...body].map((line) => line.trim()).filter(Boolean);
+}
+
+/**
  * One expanded group, read by the newest observation's Item identity.
  *
  * The detail endpoint carries the group's retained timeline, so expanding is one request rather than one
@@ -231,13 +325,13 @@ function GroupDetail({ itemId, token }: { itemId: string; token: string }) {
         <small className="news-market-detail-label">已入库字段</small>
         <TraceList entries={marketObservationTrace(item.observation)} />
         <small className="news-market-detail-label">推送</small>
-        <TraceList
-          entries={[
-            ["notifications_connected", String(item.notifications_connected)],
-            ["notification_status", item.notification_status || "—"],
-            ["notification_reason", item.notification_reason || "—"],
-          ]}
-        />
+        <TraceList entries={notificationTrace(item)} />
+        {item.notification_delivery ? (
+          <SentSnapshot
+            covered={item.notification_covered_item_ids ?? []}
+            delivery={item.notification_delivery}
+          />
+        ) : null}
       </div>
 
       <div className="news-market-detail-panel">

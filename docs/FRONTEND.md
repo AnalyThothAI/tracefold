@@ -165,17 +165,22 @@ the route components into the eager shell chunk.
   cell, a colour or a word. `notification_status`, `notification_reason` and
   `parse_error` are open server strings and are printed verbatim — the operator
   greps them, and a Chinese gloss invented in the browser would either rename
-  one or silently swallow a value this build has not seen. The page-level
-  `notifications_connected` is rendered the same way: the console must not
-  promise a channel the API says is unwired, and must not keep saying 未接通
-  once one is.
+  one or silently swallow a value this build has not seen. There is no
+  page-level "is push wired" banner (#553 PR-2): one group can be `sent` while
+  another is `merging` in the same moment, so a single banner would be a second,
+  weaker answer to a question every row already answers. The expanded detail adds
+  the card's own numbers — its trigger reason, how many observations it spoke
+  for, how many attempts it took, and which provider answered — because "sent"
+  without them cannot be checked against the timeline beside it.
 
   `raw` is a shape, not a failure. An `unknown_market` source has no parser at
   all, and its record is retained with its provider line and its stated reason —
   which is why the per-kind strip puts `raw` beside `parsed` rather than under
   it. That strip is `sources[]`, counted off the stored facts in the same
   response as the rows, so the summary and the rows cannot disagree about what
-  the window holds. Every kind keeps a tile whether or not it sent anything:
+  the window holds. Its second line is the receipt half — `merged`, `sent`,
+  `failed`, `unknown` — drawn quieter than the intake because it answers a
+  different question: what a reader was actually told about what arrived. Every kind keeps a tile whether or not it sent anything:
   「这个来源 72 小时没发过东西」 is the answer a reader came for.
 
   The four kind chips write `?kind=` as the server's own comma-separated subset

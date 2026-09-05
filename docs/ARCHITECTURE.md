@@ -2849,11 +2849,61 @@ it.
 
 `/api/news/market` and `/api/news/market/{item_id}` are the whole reader surface;
 `docs/CONTRACTS.md` pins their grammar. `notification_status` is reported beside
-`parse_status` and never folded into it, and in PR-1 it is the constant
-`not_connected`: storing and reading market facts is this change, sending them is
-PR-2's, and a field that says so is the honest form of "not wired yet" — the
-alternative is a page that looks like it weighed the observation and decided not
-to send it.
+`parse_status` and never folded into it: a raw card that was delivered and a
+parsed card that was not are both ordinary outcomes, and one combined column
+would have to misreport one of them.
+
+### The market notification loop
+
+One loop, one tick, one card at a time (#553 PR-2). `tracefold/news/market_notifications.py`
+holds three direct rule branches — OI, liquidation, smart money — and a fourth
+that prints the provider's own line when no template could be proved. There is no
+Policy object, no Strategy registry, no per-symbol task or timer and no model: an
+abstraction over three branches would need a consumer this repository does not
+have.
+
+Two durable states, each answering one question. `news_market_tracks` answers
+*when is this group worth interrupting a reader again* — the last observation,
+the anchor the last delivered card covered, the current action, the next due
+time. `news_market_deliveries` answers *what happened to one card* — a stable
+`delivery_key` derived from the group, the trigger Item and the reason, the
+snapshot frozen at the first attempt, the attempts, and the receipt or the error.
+Neither is a second copy of the facts: the observations a card covers are the
+Items carrying its `market_notify_delivery_key`, so "which observations did this
+card speak for" is answered by the Items themselves.
+
+There is no market queue on the broker. The PostgreSQL intent already carries
+persistence, due time and restart recovery, so bridging it through RabbitMQ would
+add a second ledger that could disagree with the first. Every wait is a due time:
+a retry is a later `next_attempt_at_ms`, never a sleeping task, which is why a
+process that dies mid-wait loses nothing.
+
+The loop takes work by marker rather than by cursor. `news_items.market_notify_state`
+is `pending` until the loop has grouped an observation, and a transaction that
+commits late — with an earlier stamp than one already processed — is still in the
+next turn's answer. A `created_at_ms` high-water mark would have skipped it for
+ever.
+
+Sending goes through the one entry ordinary News uses. `InitialSendEntry` in
+`tracefold/news/pipeline/delivery.py` holds the operator's single
+`min_interval_seconds` and one lock, so both owners queue in arrival order and the
+provider never sees two sends at once. The market loop claims one card, releases
+its PostgreSQL connection, and only then calls the sender.
+
+What a failed send *proved* is decided in the adapter and nowhere else. Feishu and
+Telegram now carry `commit_phase` beside the code ordinary News still records: a
+pre-connect failure, an explicit vendor rejection and a 429 are `not_sent`; a
+write/read timeout, an unparsable answer and a provider 5xx are `unknown`. Only
+`not_sent` is retried, at most three real attempts with 5 s and then 30 s held in
+PostgreSQL. An `unknown` card is never re-sent and never reported as delivered —
+the provider may well have it — but it does not lock the group either: its
+snapshot becomes the anti-duplicate anchor, and the next genuine escalation, action
+change or window still reaches the reader.
+
+The task is one optional Workers capability, `market_notifications`, declared in
+`worker_business_tasks()` beside the Trading Signal lane and polled by App at the
+loop's own 2 s tick. An unexpected program error stops that task and faults that
+capability; reception, fact writes and every read carry on beside it (#553 PR-3).
 
 Trading is unchanged by all of this and reads the same ledger it always did:
 `news_oi_signals` through `tracefold/app/workers/wiring/news_to_trading.py`, at

@@ -162,6 +162,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.learning.evaluate",
         "tracefold.news.oi_signals",
         "tracefold.news.pipeline",
+        # #553 PR-2. The market notification loop is one News-owned object with one business action,
+        # `advance()`. App composes it, declares its capability key and owns its tick, exactly as it
+        # does the Trading Signal lane's; the rules and the durable state stay inside News.
+        "tracefold.news.market_notifications",
         "tracefold.news.market_review.loops",
         # The database composition adapter constructs narrow callback views from the concrete
         # repositories; no business package imports the App adapter in return.

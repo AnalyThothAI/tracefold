@@ -246,11 +246,12 @@ def test_an_oi_frame_crosses_production_workers_and_reaches_the_market_read(gold
     assert latest["source_venue"] == "binance"
     assert latest["measurement_definition"] == "oi_signal_v1|opennews_oi_source_v1|300000"
     assert latest["historical"] is False
-    # PR-1 wires no notification loop, and the surface says so rather than implying a decision.
-    assert (group["notification_status"], group["notification_reason"]) == (
-        "not_connected",
-        "market_notifications_not_connected",
-    )
+    # #553 PR-2 runs the notification loop in this same Workers process, against the same scripted
+    # push sender the editorial path uses. The first observation of an OI group earns a first card and
+    # that card is delivered, so the pair the reader sees is the send's own outcome -- reached with no
+    # broker queue of the loop's own.
+    notified = _wait_for_market_group(golden_runtime, title=title, notification_status="sent")
+    assert notified["notification_reason"] == ""
 
     # No Event, and the editorial denominator is untouched.
     assert _feed_counts(golden_runtime) == before
@@ -273,6 +274,23 @@ def test_an_oi_frame_crosses_production_workers_and_reaches_the_market_read(gold
             ]
             == 1
         )
+        # One card, in the durable ledger the read model projects: the loop's to-do list is in
+        # PostgreSQL, so what the reader was told is a row here rather than a counter somewhere.
+        marker = conn.execute(
+            "SELECT market_notify_state, market_notify_group_key, market_notify_delivery_key"
+            " FROM news_items WHERE item_id = %s",
+            (item_id,),
+        ).fetchone()
+        assert marker["market_notify_state"] == "processed"
+        assert marker["market_notify_group_key"] and marker["market_notify_delivery_key"]
+        delivery = conn.execute(
+            "SELECT state, trigger_reason, attempts, covered_count, receipt, error"
+            " FROM news_market_deliveries WHERE delivery_key = %s",
+            (marker["market_notify_delivery_key"],),
+        ).fetchone()
+        assert (delivery["state"], delivery["trigger_reason"], delivery["attempts"]) == ("sent", "first", 1)
+        assert (delivery["covered_count"], delivery["error"]) == (1, None)
+        assert delivery["receipt"]["provider"] == "feishu"
 
     detail = httpx.get(
         f"{golden_runtime.base_url}/api/news/market/{latest['item_id']}",
@@ -306,7 +324,16 @@ def _feed_counts(golden_runtime: Any) -> dict[str, Any]:
     return dict(response.json()["data"]["counts"])
 
 
-def _wait_for_market_group(golden_runtime: Any, *, title: str) -> dict[str, Any]:
+def _wait_for_market_group(
+    golden_runtime: Any, *, title: str, notification_status: str | None = None
+) -> dict[str, Any]:
+    """The group as the reader sees it, optionally once its notification pair has settled.
+
+    #553 PR-2 runs the notification loop inside the same Workers process, so the pair moves on its own
+    while this test polls. Waiting for the named status is what keeps the assertion about the loop's
+    result rather than about which tick the HTTP read happened to land between.
+    """
+
     deadline = time.monotonic() + 30.0
     last_body = ""
     while time.monotonic() < deadline:
@@ -318,7 +345,9 @@ def _wait_for_market_group(golden_runtime: Any, *, title: str) -> dict[str, Any]
         last_body = response.text
         if response.status_code == 200:
             for group in response.json()["data"]["groups"]:
-                if group["latest"]["title"] == title:
+                if group["latest"]["title"] != title:
+                    continue
+                if notification_status is None or group["notification_status"] == notification_status:
                     return dict(group)
         time.sleep(0.1)
     raise AssertionError(f"market observation never reached the HTTP market read: {last_body}")

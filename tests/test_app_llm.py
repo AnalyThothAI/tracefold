@@ -941,7 +941,7 @@ def _wire_startup_test(
 
     monkeypatch.setattr(workers, "runtime_identity", read_runtime_identity)
 
-    bus, pipeline = asyncio.run(
+    bus, pipeline, _market = asyncio.run(
         workers._wire_news_pipeline(
             settings=_startup_settings(),
             db=database,

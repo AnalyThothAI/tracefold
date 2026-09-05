@@ -342,3 +342,39 @@
     }
   }
 }
+
+@layer components {
+  /* The frozen card, drawn as the message it is rather than as another key/value row: an operator
+     compares these lines with what their channel received, so they have to read like lines. */
+  .news-market-card-snapshot {
+    display: grid;
+    gap: 4px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--surface-raised);
+  }
+
+  .news-market-card-snapshot p {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: var(--font-size-meta);
+    line-height: 1.45;
+  }
+
+  .news-market-covered {
+    display: grid;
+    gap: 2px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .news-market-covered code {
+    overflow: hidden;
+    color: var(--text-subtle);
+    font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

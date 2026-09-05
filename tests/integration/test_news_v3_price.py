@@ -300,10 +300,15 @@ def test_quote_working_set_includes_recent_oi_ledger_symbols(conn) -> None:
         INSERT INTO news_items (
           item_id, source_id, source_item_key, title, raw_first_line, description, reporting_origin,
           published_at_ms, observed_at_ms, provider_metadata, provenance, first_ingest_mode, trace_id,
-          created_at_ms, updated_at_ms, market_kind, market_source_strategy_id, market_parse_status
+          created_at_ms, updated_at_ms, market_kind, market_source_strategy_id, market_parse_status,
+          market_notify_state
         ) VALUES (
           'i-ev-oi', 'opennews', 'i-ev-oi', 'DOGE OI Rise', '', '', 'opennews', %s, %s,
-          '{}'::jsonb, '[]'::jsonb, 'live', 'trace', %s, %s, 'oi', '1019', 'parsed'
+          '{}'::jsonb, '[]'::jsonb, 'live', 'trace', %s, %s, 'oi', '1019', 'parsed',
+          -- A live market Item is a to-do for the notification loop, and the CHECK that says so
+          -- refuses a NULL marker outright (#553 PR-2): a writer that does not know the column is an
+          -- old writer, and the loop would never see its observation.
+          'pending'
         )
         """,
         (NOW, NOW, NOW, NOW),

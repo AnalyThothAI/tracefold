@@ -109,11 +109,10 @@ test("The market page renders the observation the broker delivered, parsed and r
   const liquidation = page.locator('.news-market-row[data-kind="liquidation"]');
   await expect(liquidation).toHaveCount(1);
   await expect(liquidation).toContainText("BTC Large Short Liquidation 4.55M at $118000");
-  // Two independent answers on the same row: what the parser read, and what the sender did. PR-1
-  // wires no notification loop and the page states that from the server's own flag.
+  // Two independent answers on the same row: what the parser read, and what the notification owner
+  // recorded. Both are printed from the server's own strings, and neither is derived from the other.
   await expect(liquidation.locator('[data-flag="parse"][data-status="parsed"]')).toBeVisible();
   await expect(liquidation.locator('[data-flag="push"]')).toBeVisible();
-  expect(marketData.notifications_connected).toBe(false);
 
   // The Event feed never carries it, which is the whole point of the cut.
   const feedResponse = await page.request.get("/api/news/feed?limit=100", {

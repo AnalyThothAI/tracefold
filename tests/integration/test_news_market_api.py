@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
 from tracefold.app.http.app import create_app
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.news.market_notifications import REASON_UNPROCESSED
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
 from tracefold.platform.config.models import NewsSettings, Settings
@@ -248,7 +249,6 @@ def test_the_market_list_collapses_orders_and_pages_through_the_real_envelope(ap
         narrowed = client.get(f"/api/news/market?{window}&kind=liquidation", headers=AUTH)
 
     assert first.status_code == 200
-    assert page["notifications_connected"] is False
     assert page["filters"] == {"kind": None, "from_ms": NOW - 1, "to_ms": NOW + 10, "limit": 2}
     # Newest first: the wallet print, then the liquidation. The two OI frames are one run and collapse
     # onto the second page as a single group carrying both.
@@ -270,6 +270,10 @@ def test_the_market_list_collapses_orders_and_pages_through_the_real_envelope(ap
     assert sources["oi"]["received"] == 2 and sources["oi"]["groups"] == 1
     assert sources["smart_money"]["parsed"] == 1
     assert sources["unknown_market"]["received"] == 0
+    # No notification loop turn is taken in this test, so what a reader was told is nothing -- stated
+    # as zeroes beside the intake rather than left out of the block (#553 PR-2 §6).
+    assert (sources["oi"]["merged"], sources["oi"]["sent"], sources["oi"]["failed"]) == (0, 0, 0)
+    assert [group["notification_status"] for group in page["groups"]] == ["unprocessed", "unprocessed"]
 
 
 def test_the_market_detail_returns_the_stored_payload_the_typed_fact_and_the_timeline(app, conn) -> None:
@@ -310,8 +314,10 @@ def test_the_market_detail_returns_the_stored_payload_the_typed_fact_and_the_tim
     assert body["provider_params"]["relatedAddress"] == address
     assert body["provider_params"]["strategy"]["metrics"]["position_value"]["value"] == 482113.55
     assert [row["item_id"] for row in body["timeline"]] == [item_id]
-    assert body["notification_status"] == "not_connected"
-    assert body["notifications_connected"] is False
+    # Admitted live and no loop turn taken here, so it is on the notification to-do list and says so.
+    assert (body["notification_status"], body["notification_reason"]) == ("unprocessed", REASON_UNPROCESSED)
+    assert body["notification_delivery"] is None
+    assert body["notification_covered_item_ids"] == []
 
     assert missing.status_code == 404
     assert missing.json() == {"ok": False, "error": "news_market_item_not_found"}

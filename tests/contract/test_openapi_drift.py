@@ -173,6 +173,7 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "NewsDuplicatesWithheld24hData",
         "NewsLearningRetentionStatusData",
         "NewsMarketData",
+        "NewsMarketDeliveryData",
         "NewsMarketFiltersData",
         "NewsMarketGroupData",
         "NewsMarketItemData",
@@ -247,7 +248,6 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "next_cursor",
         "sources",
         "filters",
-        "notifications_connected",
         # A page scans a bounded number of rows. When it fills that bound a run's `observation_count`
         # is a floor, and the client is told rather than shown a number that stopped counting.
         "scan_truncated",
@@ -259,14 +259,58 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "raw_first_line",
         "notification_status",
         "notification_reason",
+        # #553 PR-2: the card that spoke for this observation, and the observations it covered.
+        "notification_delivery",
+        "notification_covered_item_ids",
         "timeline",
-        "notifications_connected",
     }
+    # #553 PR-2 is a hard cut: the placeholder that said "no loop is wired" is gone from both payloads
+    # rather than left publishing a constant `false`.
+    for payload in ("NewsMarketData", "NewsMarketItemData"):
+        assert "notifications_connected" not in components[payload]["properties"], payload
+    # One card: what it covered, what was attempted, what came back. The receipt itself is never
+    # published -- only which provider answered -- because a receipt carries channel identifiers and
+    # the console's question is whether a reader was told, not how to address the message.
+    assert set(components["NewsMarketDeliveryData"]["properties"]) == {
+        "delivery_key",
+        "trigger_reason",
+        "trigger_item_id",
+        "state",
+        "attempts",
+        "covered_count",
+        "covered_from_ms",
+        "covered_to_ms",
+        "card",
+        "error",
+        "receipt_provider",
+        "first_attempt_at_ms",
+        "last_attempt_at_ms",
+        "next_attempt_at_ms",
+        "settled_at_ms",
+    }
+    assert "receipt" not in components["NewsMarketDeliveryData"]["properties"]
+    assert components["NewsMarketDeliveryData"]["properties"]["state"]["enum"] == [
+        "pending",
+        "sending",
+        "sent",
+        "failed",
+        "unknown",
+        "unavailable",
+    ]
     assert set(components["NewsMarketFiltersData"]["properties"]) == {"kind", "from_ms", "to_ms", "limit"}
     # Two independent pairs, on the group and on the Item alike: what the parser proved, and what the
     # sender did. A client cannot derive either from the other, which is why neither is folded away.
     assert {"parse_status", "parse_error"} <= set(components["NewsMarketObservationData"]["properties"])
     assert {"notification_status", "notification_reason"} <= set(components["NewsMarketGroupData"]["required"])
+    assert {"notification_status", "notification_reason"} <= set(components["NewsMarketObservationData"]["required"])
+    # Which notification group the loop assigned the observation to, and which card spoke for it.
+    # Deliberately not the display `group_key`: a smart-money account changing action breaks the
+    # display run and must not break the notification group, because that change is the news.
+    assert {"notify_group_key", "delivery_key"} <= set(components["NewsMarketObservationData"]["properties"])
+    # What arrived, and what a reader was told about it, in one per-kind block.
+    assert {"received", "parsed", "raw", "groups", "merged", "sent", "failed", "unknown"} <= set(
+        components["NewsMarketSourceData"]["properties"]
+    )
     # Where the next page starts. Paging from `latest` would re-scan the rest of the run.
     assert {"oldest_received_at_ms", "oldest_item_id"} <= set(components["NewsMarketGroupData"]["properties"])
     assert components["NewsMarketObservationData"]["properties"]["market_kind"]["enum"] == [

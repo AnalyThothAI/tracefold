@@ -6,9 +6,10 @@ import pytest
 from psycopg import OperationalError
 
 from tracefold.app.workers import root as workers_module
-from tracefold.app.workers.runtime import CapabilityStates
+from tracefold.app.workers.runtime import MARKET_NOTIFICATIONS, CapabilityStates
 from tracefold.app.workers.task_contract import WorkerTask, worker_business_tasks
 from tracefold.app.workers.wiring.components import _capability_fault_reason
+from tracefold.app.workers.wiring.news import run_market_notifications
 from tracefold.news.bus import BrokerUnavailable
 from tracefold.platform.resource import ResourceCapability, ResourceOperationOverrun
 
@@ -126,7 +127,14 @@ def test_a_shared_resource_overrun_inside_a_business_task_is_still_root_fatal() 
 def test_every_news_ingestion_task_is_foundational_and_every_optional_one_owns_its_key() -> None:
     """#553 PR-3. The information entry is not confinable, and a fault always names one capability."""
 
-    tasks = worker_business_tasks(news_pipeline=_AllStagesPipeline(), signal_lane=None)
+    # #553 PR-2's market notification loop is the newest optional task, and it is declared beside the
+    # Signal lane rather than through `runners()`. Passing one here is what puts its capability key
+    # inside the uniqueness assertion below, where a key reused from another loop would be caught.
+    tasks = worker_business_tasks(
+        news_pipeline=_AllStagesPipeline(),
+        signal_lane=None,
+        market_notifications=_StubMarketNotifications(),
+    )
     by_name = {task.name: task for task in tasks}
 
     assert {name for name, task in by_name.items() if task.foundational} == {
@@ -135,7 +143,10 @@ def test_every_news_ingestion_task_is_foundational_and_every_optional_one_owns_i
         "news-deduper",
         "news-janitor",
     }
+    assert by_name["market-notifications"].capability == MARKET_NOTIFICATIONS
+    assert by_name["market-notifications"].foundational is False
     optional = [task.capability for task in tasks if not task.foundational]
+    assert MARKET_NOTIFICATIONS in optional
     assert optional == sorted(set(optional), key=optional.index)
     assert len(optional) == len(set(optional)), "two optional tasks share one capability key"
 
@@ -156,6 +167,16 @@ def test_the_root_refuses_to_confine_a_foundational_task() -> None:
                 on_fault=on_fault,
             )
         )
+
+
+class _StubMarketNotifications:
+    """The loop's shape as the task contract uses it: one `advance()`, one startup sweep."""
+
+    async def start(self) -> int:  # pragma: no cover - the task is declared, never run here
+        return 0
+
+    async def advance(self) -> None:  # pragma: no cover - the task is declared, never run here
+        return None
 
 
 class _AllStagesPipeline:
@@ -293,3 +314,73 @@ def test_persistent_transient_heartbeat_failures_degrade_readiness_until_stopped
     monkeypatch.setattr(workers_module, "_CONTROL_HEARTBEAT_STALE_SECONDS", 0.01)
 
     asyncio.run(scenario())
+
+
+class _CountingMarketLoop:
+    """A market loop that records the order the runner drove it in."""
+
+    def __init__(self, *, fail_start: bool = False, fail_after_turns: int | None = None) -> None:
+        self.fail_start = fail_start
+        self.fail_after_turns = fail_after_turns
+        self.calls: list[str] = []
+
+    async def start(self) -> int:
+        self.calls.append("start")
+        if self.fail_start:
+            raise RuntimeError("sweep_failed")
+        return 0
+
+    async def advance(self) -> object:
+        self.calls.append("advance")
+        if self.fail_after_turns is not None and self.calls.count("advance") >= self.fail_after_turns:
+            raise RuntimeError("turn_failed")
+        return object()
+
+
+def test_the_market_runner_sweeps_once_then_ticks_until_the_stop_event() -> None:
+    """`run_market_notifications` owns the tick, and the startup sweep is not part of it (#553 PR-2)."""
+
+    loop = _CountingMarketLoop()
+    stop = asyncio.Event()
+
+    async def drive() -> None:
+        runner = asyncio.create_task(
+            run_market_notifications(loop, stop_event=stop, poll_seconds=0.01)  # type: ignore[arg-type]
+        )
+        await asyncio.sleep(0.05)
+        stop.set()
+        await asyncio.wait_for(runner, timeout=2.0)
+
+    asyncio.run(drive())
+    # Swept exactly once, before any turn, and every turn after it is a tick.
+    assert loop.calls[0] == "start"
+    assert loop.calls.count("start") == 1
+    assert loop.calls.count("advance") >= 1
+
+
+def test_a_failed_startup_sweep_stops_the_task_rather_than_running_without_it() -> None:
+    """A sweep that could not adopt the previous process's in-flight cards must not be skipped.
+
+    Running on would leave a row reading `sending` that no process owns: the next turn would see it
+    as in flight for ever and the card would never be settled either way.
+    """
+
+    loop = _CountingMarketLoop(fail_start=True)
+    stop = asyncio.Event()
+    with pytest.raises(RuntimeError, match="sweep_failed"):
+        asyncio.run(run_market_notifications(loop, stop_event=stop, poll_seconds=0.01))  # type: ignore[arg-type]
+    assert loop.calls == ["start"]
+
+
+def test_an_unexpected_turn_error_is_raised_rather_than_swallowed() -> None:
+    """Every business outcome of a send is a durable row, so an exception here is infrastructure.
+
+    Raising is what makes the Workers root record `market_notifications` faulted and stop the task;
+    swallowing it would keep a broken loop ticking behind a green capability.
+    """
+
+    loop = _CountingMarketLoop(fail_after_turns=2)
+    stop = asyncio.Event()
+    with pytest.raises(RuntimeError, match="turn_failed"):
+        asyncio.run(run_market_notifications(loop, stop_event=stop, poll_seconds=0.001))  # type: ignore[arg-type]
+    assert loop.calls == ["start", "advance", "advance"]

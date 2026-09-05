@@ -129,7 +129,9 @@ def _composed_pipeline(settings: Settings, capabilities: CapabilityStates) -> An
     and admission tasks composed and running (#553 PR-3).
     """
 
-    _, pipeline = asyncio.run(_wire_news_pipeline_with_stub_bus(settings=settings, capabilities=capabilities))
+    # #553 PR-2 added the market notification loop to the wiring seam. It is composed here too --
+    # it shares the Deliverer's send entry -- but the subject of these tests is the pipeline.
+    _, pipeline, _ = asyncio.run(_wire_news_pipeline_with_stub_bus(settings=settings, capabilities=capabilities))
     return pipeline
 
 

@@ -844,7 +844,8 @@ The separate loopback Workers probe answers two questions, not one. `ok` is
 basic readiness: this process still owns PostgreSQL, its schema and its
 singleton session. `capabilities` is a separate object keyed by capability name
 -- `news_ingestion`, `news_editorial`, `news_delivery`, `news_instruments`,
-`news_quotes`, `news_reactions`, `trading_signal_lane` -- each with a `state` of
+`news_quotes`, `news_reactions`, `market_notifications`, `trading_signal_lane` --
+each with a `state` of
 `running`, `faulted`, `unavailable` or `disabled` and the reason that put it
 there. The same object is persisted on `workers_runtime.capabilities` and
 republished on `/api/status` under `runtime.workers_runtime.capabilities`, and
@@ -1117,9 +1118,18 @@ Diagnose News in this order:
    for the window, and `/api/news/market/{item_id}` adds the stored
    `provider_params`. A `raw` observation is a template this repository cannot
    prove, not a refusal, and it is never retried into the model lane.
-   Notifications are not connected in #553 PR-1: every group reports
-   `notification_status = not_connected`, which is a statement about the loop,
-   not about the observation.
+   `notification_status` is the second, independent answer (#553 PR-2). With no
+   send attempt it names the rule holding the observation -- `unprocessed`,
+   `historical`, or `merging` with the track's reason. With one it is the card's
+   state, and three of those mean different things an operator acts on
+   differently: `failed` told nobody and the next observation opens a fresh card;
+   `unknown` means this process could not read the provider's answer, so the card
+   is never re-sent and never claimed as delivered; `unavailable` means no sender
+   is configured and no attempt was consumed. Fix the configuration and restart:
+   held cards become due and each group sends one merged summary, not a replay of
+   every window that passed. The per-kind `sent`/`failed`/`unknown`/`merged`
+   counts beside the intake on `/api/news/market` are the same question at the
+   source level.
 3. `tracefold news bus-check`: consumers attached to every queue (Deduper and
    Deliverer show exactly one), `news.dead` depth, each queue's `delayed`
    (native retry backlog), `dead_letter_pending` (at-least-once dead letters the

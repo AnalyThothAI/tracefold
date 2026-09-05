@@ -92,30 +92,63 @@ describe("NewsMarketPage", () => {
     expect(document.querySelectorAll(".news-market-row")).toHaveLength(3);
   });
 
-  it("states the push channel from the server's own flag, on every group and once for the page", async () => {
+  it("prints each group's own push status and reason, and no page-level channel banner", async () => {
+    /*
+     * #553 PR-2. There is no "is push wired" flag any more, and a banner would be a second, weaker
+     * answer to a question every row already answers: one group was sent, another is still merging,
+     * and both are true at the same moment.
+     */
     renderMarket();
     await screen.findByText(/WIF OI Rise 6.71%/);
 
-    expect(screen.getByText("未接通")).toBeInTheDocument();
-    expect(screen.getByText(/观测只入库，不推送/)).toBeInTheDocument();
-    // The per-group answer is the notification owner's own string, printed rather than glossed.
-    expect(screen.getAllByText("not_connected").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("market_notifications_not_connected").length).toBeGreaterThan(0);
+    expect(screen.queryByText("推送通道")).not.toBeInTheDocument();
+    // Printed as written, never glossed: the operator greps these strings.
+    expect(screen.getAllByText("sent").length).toBeGreaterThan(0);
+    expect(screen.getByText("merging")).toBeInTheDocument();
+    expect(screen.getByText("liquidation_followup_window_open")).toBeInTheDocument();
+  });
 
-    cleanup();
+  it("renders the frozen card and the observations it covered, not just their count", async () => {
+    /*
+     * #553 PR-2. The operator's real-channel receipt check is "does the message my channel received
+     * match the snapshot the ledger froze". That comparison is impossible if the console only prints
+     * how many observations the card spoke for, so both the card's own lines and the covered ids are
+     * on the page.
+     */
+    renderMarket();
+    const rows = await screen.findAllByRole("button", { expanded: false });
+    fireEvent.click(rows[0]);
+
+    const snapshot = await screen.findByText("持仓异动 WIF");
+    expect(snapshot).toBeInTheDocument();
+    expect(screen.getByText(/发送快照 · 2 条观测/)).toBeInTheDocument();
+    expect(screen.getByText(/覆盖观测 · 1/)).toBeInTheDocument();
+    expect(screen.getByText("mkt-oi-wif-3")).toBeInTheDocument();
+  });
+
+  it("says so when a prepared card has not frozen a snapshot yet", async () => {
     server.use(
-      http.get(/.*\/api\/news\/market$/, () =>
+      http.get(/.*\/api\/news\/market\/.+$/, () =>
         HttpResponse.json({
           ok: true,
-          data: marketWithEveryKind({ notifications_connected: true }),
+          data: newsMarketItemFixture({
+            notification_covered_item_ids: [],
+            notification_delivery: {
+              ...newsMarketItemFixture().notification_delivery!,
+              attempts: 0,
+              card: {},
+              state: "pending",
+            },
+          }),
         }),
       ),
     );
     renderMarket();
+    const rows = await screen.findAllByRole("button", { expanded: false });
+    fireEvent.click(rows[0]);
 
-    // Rendered, not hardcoded: the sentence has to change when the channel is wired.
-    expect(await screen.findByText("已接通")).toBeInTheDocument();
-    expect(screen.queryByText(/观测只入库，不推送/)).not.toBeInTheDocument();
+    expect(await screen.findByText(/快照要到首次尝试才冻结/)).toBeInTheDocument();
+    expect(screen.getByText(/还没有认领任何观测/)).toBeInTheDocument();
   });
 
   it("keeps the parse answer and the push answer in separate cells", async () => {
@@ -127,7 +160,7 @@ describe("NewsMarketPage", () => {
     expect(within(oi).getByText("解析")).toBeInTheDocument();
     expect(within(oi).getByText("已解析")).toBeInTheDocument();
     expect(within(oi).getByText("推送")).toBeInTheDocument();
-    expect(within(oi).getByText("not_connected")).toBeInTheDocument();
+    expect(within(oi).getByText("sent")).toBeInTheDocument();
     expect(oi.querySelectorAll(".news-market-flag")).toHaveLength(2);
   });
 
@@ -250,6 +283,10 @@ function marketWithEveryKind(overrides: Partial<ReturnType<typeof newsMarketFixt
           item_id: "mkt-liq-doge-1",
           liquidated_position_side: "long",
           market_kind: "liquidation",
+          // Still inside its 60 s follow-up window: sent and merging are both current states of the
+          // same page, and the row is the only place either is visible.
+          notification_reason: "liquidation_followup_window_open",
+          notification_status: "merging",
           notional_usd: "412530.00",
           oi_change_bps: null,
           oi_value_usd: null,

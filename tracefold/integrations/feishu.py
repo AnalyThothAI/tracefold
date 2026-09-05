@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from tracefold.news import ReaderDeliveryPresentation
+from tracefold.news import COMMIT_PHASE_NOT_SENT, COMMIT_PHASE_UNKNOWN, ReaderDeliveryPresentation
 
 FEISHU_WEBHOOK_REQUEST_MAX_BYTES = 20 * 1024
 FEISHU_WEBHOOK_RATE_LIMIT_CODE = 11232
@@ -23,12 +23,27 @@ _FEISHU_TIMEOUT_SECONDS = 6.5
 
 
 class FeishuDeliveryError(RuntimeError):
-    """A sanitized expected Feishu webhook failure."""
+    """A sanitized expected Feishu webhook failure, and what it proves about the message.
 
-    def __init__(self, code: str, *, status_code: int | None = None) -> None:
+    `code` is unchanged and is still what the News Deliverer records. `commit_phase` is additive and
+    answers the one question a code cannot: did this message provably not reach Feishu? A connect
+    failure and an explicit refusal did not; a read timeout and a 5xx from Feishu's own tier tell us
+    nothing either way, and calling those "not sent" is how a retry double-notifies a reader (#553).
+    """
+
+    def __init__(
+        self,
+        code: str,
+        *,
+        status_code: int | None = None,
+        commit_phase: str = COMMIT_PHASE_UNKNOWN,
+        retryable: bool = False,
+    ) -> None:
         super().__init__(code)
         self.code = code
         self.status_code = status_code
+        self.commit_phase = commit_phase
+        self.retryable = retryable
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +88,7 @@ class FeishuWebhookClient:
         if self._signing_secret is not None:
             timestamp = int(time.time()) if timestamp_seconds is None else int(timestamp_seconds)
             if timestamp <= 0:
-                raise FeishuDeliveryError("feishu_timestamp_invalid")
+                raise FeishuDeliveryError("feishu_timestamp_invalid", commit_phase=COMMIT_PHASE_NOT_SENT)
             payload = {
                 "timestamp": str(timestamp),
                 "sign": generate_feishu_signature(
@@ -89,20 +104,38 @@ class FeishuWebhookClient:
                 separators=(",", ":"),
             ).encode("utf-8")
         except (TypeError, ValueError):
-            raise FeishuDeliveryError("feishu_card_invalid") from None
+            raise FeishuDeliveryError("feishu_card_invalid", commit_phase=COMMIT_PHASE_NOT_SENT) from None
         if len(body) > FEISHU_WEBHOOK_REQUEST_MAX_BYTES:
-            raise FeishuDeliveryError("feishu_card_too_large")
+            raise FeishuDeliveryError("feishu_card_too_large", commit_phase=COMMIT_PHASE_NOT_SENT)
 
         try:
             response = self._client.post(self._webhook_url, content=body)
+        except _PRE_CONNECT_FAILURES:
+            # The connection was never established, so no byte of this card left the process. That is
+            # the one transport failure a retry cannot duplicate.
+            raise FeishuDeliveryError(
+                "feishu_transport_failed", commit_phase=COMMIT_PHASE_NOT_SENT, retryable=True
+            ) from None
         except (httpx.TimeoutException, httpx.TransportError):
+            # Written, and the answer was not read. Feishu may have the card.
             raise FeishuDeliveryError("feishu_transport_failed") from None
 
         status_code = int(response.status_code)
-        if status_code == 429 or status_code >= 500:
+        if status_code == 429:
+            raise FeishuDeliveryError(
+                "feishu_http_failed",
+                status_code=status_code,
+                commit_phase=COMMIT_PHASE_NOT_SENT,
+                retryable=True,
+            )
+        if status_code >= 500:
+            # Deliberately not "not sent". A 5xx is Feishu's own tier answering, and it can answer
+            # that way after having accepted the card.
             raise FeishuDeliveryError("feishu_http_failed", status_code=status_code)
         if status_code < 200 or status_code >= 300:
-            raise FeishuDeliveryError("feishu_http_rejected", status_code=status_code)
+            raise FeishuDeliveryError(
+                "feishu_http_rejected", status_code=status_code, commit_phase=COMMIT_PHASE_NOT_SENT
+            )
         try:
             response_payload = response.json()
         except ValueError:
@@ -113,9 +146,16 @@ class FeishuWebhookClient:
         if isinstance(code, bool) or not isinstance(code, int):
             raise FeishuDeliveryError("feishu_response_invalid", status_code=status_code)
         if code == FEISHU_WEBHOOK_RATE_LIMIT_CODE:
-            raise FeishuDeliveryError("feishu_business_rate_limited", status_code=status_code)
+            raise FeishuDeliveryError(
+                "feishu_business_rate_limited",
+                status_code=status_code,
+                commit_phase=COMMIT_PHASE_NOT_SENT,
+                retryable=True,
+            )
         if code != 0:
-            raise FeishuDeliveryError("feishu_business_rejected", status_code=status_code)
+            raise FeishuDeliveryError(
+                "feishu_business_rejected", status_code=status_code, commit_phase=COMMIT_PHASE_NOT_SENT
+            )
         return FeishuDeliveryReceipt(status_code=status_code, code=code)
 
     def close(self) -> None:
@@ -155,9 +195,26 @@ def _is_feishu_webhook_url(value: str) -> bool:
     )
 
 
+# httpx raises these before any request byte is written: no connection, no proxy, no route. Every
+# other transport failure happened at or after the write, so it cannot claim the card did not arrive.
+_PRE_CONNECT_FAILURES = (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError, httpx.UnsupportedProtocol)
+
+
 class NewsPushExternalError(RuntimeError):
-    def __init__(self, code: str) -> None:
+    """The sender's own error. `code` is what News records; the rest is what the adapter proved."""
+
+    def __init__(
+        self,
+        code: str,
+        *,
+        status_code: int | None = None,
+        commit_phase: str = COMMIT_PHASE_UNKNOWN,
+        retryable: bool = False,
+    ) -> None:
         self.code = code
+        self.status_code = status_code
+        self.commit_phase = commit_phase
+        self.retryable = retryable
         super().__init__(code)
 
 
@@ -188,7 +245,12 @@ class FeishuNewsPushSender:
         try:
             receipt = self._client.send(dict(card), timestamp_seconds=self._timestamp_seconds())
         except FeishuDeliveryError as exc:
-            raise NewsPushExternalError(f"news_delivery_{exc.code}") from None
+            raise NewsPushExternalError(
+                f"news_delivery_{exc.code}",
+                status_code=exc.status_code,
+                commit_phase=exc.commit_phase,
+                retryable=exc.retryable,
+            ) from None
         return {"provider": "feishu", "code": receipt.code, "status_code": receipt.status_code}
 
     def close(self) -> None:

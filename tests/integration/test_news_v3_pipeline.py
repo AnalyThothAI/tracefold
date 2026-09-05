@@ -62,6 +62,10 @@ NEWS_TABLES = {
     "news_oi_signals",
     "news_market_liquidations",
     "news_market_smart_money",
+    # #553 PR-2. The notification loop's two durable states: one track per group -- when is this group
+    # worth interrupting a reader again -- and one row per card, with its attempts and its receipt.
+    "news_market_tracks",
+    "news_market_deliveries",
     # #112 immutable evidence actually read by the SemanticJudge.
     "news_event_evidence_snapshots",
 }

@@ -11,7 +11,7 @@ import base64
 import binascii
 import re
 import time
-from typing import Annotated, Final
+from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
@@ -103,7 +103,6 @@ def get_news_market(
                 "to_ms": window_to,
                 "limit": int(limit),
             },
-            "notifications_connected": False,
             "scan_truncated": scan_truncated,
         },
         request,
@@ -142,8 +141,9 @@ def get_news_market_item(request: Request, item_id: str) -> Response:
             "raw_first_line": detail["raw_first_line"],
             "notification_status": detail["notification_status"],
             "notification_reason": detail["notification_reason"],
+            "notification_delivery": _delivery(detail["notification_delivery"]),
+            "notification_covered_item_ids": detail["notification_covered_item_ids"],
             "timeline": timeline,
-            "notifications_connected": False,
         },
         request,
         envelope=_MarketItemEnvelope,
@@ -151,6 +151,25 @@ def get_news_market_item(request: Request, item_id: str) -> Response:
 
 
 _OBSERVATION_FIELDS: Final = frozenset(market_schemas.NewsMarketObservationData.model_fields)
+_DELIVERY_FIELDS: Final = frozenset(market_schemas.NewsMarketDeliveryData.model_fields) - {"receipt_provider"}
+
+
+def _delivery(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Publish the card and its attempts; publish which provider answered, never the receipt.
+
+    A receipt carries channel identifiers -- a chat id hash, a message id -- and the console's
+    question is whether a reader was told, not how to address the message.
+    """
+
+    if row is None:
+        return None
+    published = {key: value for key, value in row.items() if key in _DELIVERY_FIELDS}
+    receipt = row.get("receipt")
+    published["card"] = dict(row.get("card") or {})
+    published["receipt_provider"] = (
+        str(receipt.get("provider")) if isinstance(receipt, dict) and receipt.get("provider") else None
+    )
+    return published
 
 
 def _parse_kinds(value: str) -> tuple[str, ...]:

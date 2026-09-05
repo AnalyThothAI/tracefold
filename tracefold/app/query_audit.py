@@ -50,10 +50,16 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_reaction_attach",
     ),
     "/api/news/quotes": ("news_quote_snapshot_read",),
-    # #553. Two statements per list request -- the collapsed page and the per-kind intake summary --
-    # and two per detail request, because the timeline is its own bounded read.
-    "/api/news/market": ("news_market_groups", "news_market_sources"),
-    "/api/news/market/{item_id}": ("news_market_item", "news_market_group_timeline"),
+    # #553. Three statements per list request -- the collapsed page, the per-kind intake summary and
+    # the per-kind receipt summary beside it -- and four per detail request, because the card that
+    # spoke for an observation and the observations it covered are each their own bounded read.
+    "/api/news/market": ("news_market_groups", "news_market_sources", "news_market_delivery_summary"),
+    "/api/news/market/{item_id}": (
+        "news_market_item",
+        "news_market_item_delivery",
+        "news_market_item_covered",
+        "news_market_group_timeline",
+    ),
     # Three reads per request, and all three are named: `is_tradeable` runs its own statement and a
     # manifest that omitted it would let `db query-audit --analyze` report full coverage of a public route
     # while never planning one of its queries.

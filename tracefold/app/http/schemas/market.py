@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from pydantic import Field
+
 from .common import ExactApiSchema
 
 MarketKindLiteral = Literal["oi", "liquidation", "smart_money", "unknown_market"]
@@ -50,6 +52,40 @@ class NewsMarketObservationData(ExactApiSchema):
     action: str | None = None
     position_side: str | None = None
     pnl_usd: str | None = None
+    # The second independent pair. With no attempt this says which rule is holding the observation --
+    # `historical`, `merging`, `unprocessed` -- and with one it says what the send did.
+    notification_status: str
+    notification_reason: str
+    # The notification group the loop assigned this observation to, and the card that spoke for it.
+    # Deliberately not `group_key`: the display run above breaks when a smart-money account changes
+    # action, and the notification group must not, because that change is the thing worth a card.
+    notify_group_key: str | None = None
+    delivery_key: str | None = None
+
+
+class NewsMarketDeliveryData(ExactApiSchema):
+    """One card: what it covered, what was attempted, and what came back.
+
+    The receipt itself is not published -- only which provider answered. A receipt carries channel
+    identifiers, and the console's question is "did this reach a reader", not "which message id".
+    """
+
+    delivery_key: str
+    trigger_reason: Literal["first", "followup", "action_change", "raw"]
+    trigger_item_id: str
+    state: Literal["pending", "sending", "sent", "failed", "unknown", "unavailable"]
+    attempts: int = 0
+    covered_count: int = 0
+    covered_from_ms: int | None = None
+    covered_to_ms: int | None = None
+    # The frozen snapshot: exactly what was sent, not a re-render of what would be sent now.
+    card: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+    receipt_provider: str | None = None
+    first_attempt_at_ms: int | None = None
+    last_attempt_at_ms: int | None = None
+    next_attempt_at_ms: int | None = None
+    settled_at_ms: int | None = None
 
 
 class NewsMarketGroupData(ExactApiSchema):
@@ -69,12 +105,23 @@ class NewsMarketGroupData(ExactApiSchema):
 
 
 class NewsMarketSourceData(ExactApiSchema):
+    """What one kind did in the window: what arrived, and what a reader was told about it."""
+
     market_kind: MarketKindLiteral
     received: int = 0
     parsed: int = 0
     raw: int = 0
     groups: int = 0
     last_received_at_ms: int | None = None
+    # Observations a card spoke for without being the record that triggered it: the noise reduction,
+    # as a number rather than a claim.
+    merged: int = 0
+    sent: int = 0
+    failed: int = 0
+    unknown: int = 0
+    last_sent_at_ms: int | None = None
+    last_failed_at_ms: int | None = None
+    last_unknown_at_ms: int | None = None
 
 
 class NewsMarketFiltersData(ExactApiSchema):
@@ -89,7 +136,6 @@ class NewsMarketData(ExactApiSchema):
     next_cursor: str | None = None
     sources: list[NewsMarketSourceData]
     filters: NewsMarketFiltersData
-    notifications_connected: bool = False
     # True when one page's scan reached its bound, so a run's `observation_count` is a floor rather
     # than a total. `sources` is unbounded and stays exact either way.
     scan_truncated: bool = False
@@ -104,12 +150,15 @@ class NewsMarketItemData(ExactApiSchema):
     raw_first_line: str = ""
     notification_status: str
     notification_reason: str
+    # The card that spoke for this observation, if one did, and the observations it covered.
+    notification_delivery: NewsMarketDeliveryData | None = None
+    notification_covered_item_ids: list[str] = Field(default_factory=list)
     timeline: list[NewsMarketObservationData]
-    notifications_connected: bool = False
 
 
 __all__ = [
     "NewsMarketData",
+    "NewsMarketDeliveryData",
     "NewsMarketFiltersData",
     "NewsMarketGroupData",
     "NewsMarketItemData",
