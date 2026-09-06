@@ -865,4 +865,3 @@ def _insert_kind(conn: Any, kind: str) -> None:
         """,
         ("0x" + "8" * 64, SELL_WALLET, FSD, kind),
     )
-
