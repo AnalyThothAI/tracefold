@@ -24,7 +24,10 @@ from tracefold.integrations.nautilus.oi_runtime.audit_sink import (
     ObservationFactory,
     day_start_baseline_from_observation,
 )
+from tracefold.news.events.facts import extract_fact_units
 from tracefold.news.oi_signals import parse_oi_signal
+from tracefold.news.smart_money import PARSER_VERSION
+from tracefold.news.smart_money import source_key as smart_money_source_key
 from tracefold.news.source_contracts import MARKET_CATEGORY_CONFLICT, classify_source_contracts, market_route
 from tracefold.platform.postgres.migrations import alembic_config
 from tracefold.trading.storage.execution_stream import (
@@ -41,7 +44,10 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260906_0369"
+HEAD = "20260906_0370"
+# The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
+# ran the production parser over it.
+BEFORE_REPARSE = "20260906_0369"
 
 
 def _config():
@@ -123,6 +129,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260906_0369",
         "20260906_0368",
         "20260905_0367",
         "20260905_0366",
@@ -153,36 +160,37 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260901_0341",
         BASELINE,
     ]
-    assert revisions[0].down_revision == "20260906_0368"
-    assert revisions[1].down_revision == "20260905_0367"
-    assert revisions[2].down_revision == "20260905_0366"
-    assert revisions[3].down_revision == "20260905_0365"
-    assert revisions[4].down_revision == "20260905_0364"
-    assert revisions[5].down_revision == "20260904_0363"
-    assert revisions[6].down_revision == "20260904_0362"
-    assert revisions[7].down_revision == "20260904_0361"
-    assert revisions[8].down_revision == "20260904_0360"
-    assert revisions[9].down_revision == "20260903_0359"
-    assert revisions[10].down_revision == "20260903_0358"
-    assert revisions[11].down_revision == "20260903_0357"
-    assert revisions[12].down_revision == "20260903_0356"
-    assert revisions[13].down_revision == "20260903_0355"
-    assert revisions[14].down_revision == "20260903_0354"
-    assert revisions[15].down_revision == "20260903_0353"
-    assert revisions[16].down_revision == "20260903_0352"
-    assert revisions[17].down_revision == "20260902_0351"
-    assert revisions[18].down_revision == "20260902_0350"
-    assert revisions[19].down_revision == "20260902_0349"
-    assert revisions[20].down_revision == "20260902_0348"
-    assert revisions[21].down_revision == "20260901_0347"
-    assert revisions[22].down_revision == "20260901_0346"
-    assert revisions[23].down_revision == "20260901_0345"
-    assert revisions[24].down_revision == "20260901_0344"
-    assert revisions[25].down_revision == "20260901_0343"
-    assert revisions[26].down_revision == "20260901_0342"
-    assert revisions[27].down_revision == "20260901_0341"
-    assert revisions[28].down_revision == BASELINE
-    assert revisions[29].down_revision is None
+    assert revisions[0].down_revision == "20260906_0369"
+    assert revisions[1].down_revision == "20260906_0368"
+    assert revisions[2].down_revision == "20260905_0367"
+    assert revisions[3].down_revision == "20260905_0366"
+    assert revisions[4].down_revision == "20260905_0365"
+    assert revisions[5].down_revision == "20260905_0364"
+    assert revisions[6].down_revision == "20260904_0363"
+    assert revisions[7].down_revision == "20260904_0362"
+    assert revisions[8].down_revision == "20260904_0361"
+    assert revisions[9].down_revision == "20260904_0360"
+    assert revisions[10].down_revision == "20260903_0359"
+    assert revisions[11].down_revision == "20260903_0358"
+    assert revisions[12].down_revision == "20260903_0357"
+    assert revisions[13].down_revision == "20260903_0356"
+    assert revisions[14].down_revision == "20260903_0355"
+    assert revisions[15].down_revision == "20260903_0354"
+    assert revisions[16].down_revision == "20260903_0353"
+    assert revisions[17].down_revision == "20260903_0352"
+    assert revisions[18].down_revision == "20260902_0351"
+    assert revisions[19].down_revision == "20260902_0350"
+    assert revisions[20].down_revision == "20260902_0349"
+    assert revisions[21].down_revision == "20260902_0348"
+    assert revisions[22].down_revision == "20260901_0347"
+    assert revisions[23].down_revision == "20260901_0346"
+    assert revisions[24].down_revision == "20260901_0345"
+    assert revisions[25].down_revision == "20260901_0344"
+    assert revisions[26].down_revision == "20260901_0343"
+    assert revisions[27].down_revision == "20260901_0342"
+    assert revisions[28].down_revision == "20260901_0341"
+    assert revisions[29].down_revision == BASELINE
+    assert revisions[30].down_revision is None
     assert sorted(path.name for path in VERSIONS.glob("*.py")) == [
         "20260831_0340_baseline.py",
         "20260901_0341_trading_signal_hard_cut.py",
@@ -214,6 +222,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260905_0367_news_market_alert_round_start.py",
         "20260906_0368_news_instrument_snapshot_state.py",
         "20260906_0369_news_market_wallet_tape.py",
+        "20260906_0370_news_smart_money_reparse.py",
     ]
 
 
@@ -246,17 +255,17 @@ def test_current_head_downgrade_is_irreversible() -> None:
     command.upgrade(config, "head")
 
     # `20260906_0369` is now the first refusal the walk to base meets, and it is the head, so the walk
-    # stops before reversing anything: it adds the wallet tape's fills, whose rows are the only record
-    # of what a followed wallet did -- the public RPC keeps state for about ten minutes and the
-    # provider's own tape is missing about two thirds of its closes, so nothing can rebuild them.
-    # `20260906_0368` is the refusal immediately behind it: renaming `observed_at_ms` back to
-    # `last_seen_ms` would restore a name whose meaning it deliberately narrows, and dropping its state
-    # table would lose the only record of which venue last answered. Then `20260905_0367`'s
-    # `round_started_at_ms`, `20260905_0366`'s notification to-do list and delivery receipts, and
-    # `20260905_0365`'s market facts; `20260905_0364`'s dropped capability column, `20260904_0363`'s
-    # restored view and `20260904_0362`'s re-added CHECKs are all reversible and all behind those, as
-    # are the two refusals that were in front before -- `20260904_0361` and `20260903_0357`.
-    with pytest.raises(RuntimeError, match="news_market_wallet_tape_downgrade_unsupported"):
+    # stops before reversing anything: the smart-money facts it parses are the only structured record
+    # of those provider reports, and the reason it spends -- "no parser has been run against this
+    # frame" -- is false the moment it has run. `20260906_0369` is the refusal immediately behind it:
+    # it adds the wallet tape's fills, whose rows are the only record of what a followed wallet did.
+    # Then `20260906_0368`, whose `observed_at_ms` rename and state table cannot be undone without
+    # losing which venue last answered; `20260905_0367`'s `round_started_at_ms`; `20260905_0366`'s
+    # notification to-do list and delivery receipts; and `20260905_0365`'s market facts.
+    # `20260905_0364`'s dropped capability column, `20260904_0363`'s restored view and
+    # `20260904_0362`'s re-added CHECKs are all reversible and all behind those, as are the two
+    # refusals that were in front before -- `20260904_0361` and `20260903_0357`.
+    with pytest.raises(RuntimeError, match="news_smart_money_reparse_downgrade_unsupported"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
 
@@ -1572,7 +1581,11 @@ def test_the_market_cut_rebuilds_every_observation_an_event_had_swallowed() -> N
 
 
 def test_a_market_item_whose_template_is_not_reconstructed_says_so_rather_than_claiming_a_parse() -> None:
-    """A 2083 or 2026 Item predates any parser for it. `raw` with a reason is the honest state."""
+    """A 2083 or 2026 Item predates any parser for it. `raw` with a reason is the honest state.
+
+    Read at `BEFORE_REPARSE`, because that reason is exactly what `20260906_0370` spends: it is true
+    only while no parser has been run against the frame, and the revision below runs one.
+    """
 
     config = _config()
     _empty_the_schema()
@@ -1599,7 +1612,7 @@ def test_a_market_item_whose_template_is_not_reconstructed_says_so_rather_than_c
         )
         conn.commit()
 
-        command.upgrade(config, HEAD)
+        command.upgrade(config, BEFORE_REPARSE)
 
         row = conn.execute(
             "SELECT market_kind, market_parse_status, market_parse_error, market_source_strategy_id"
@@ -1608,6 +1621,213 @@ def test_a_market_item_whose_template_is_not_reconstructed_says_so_rather_than_c
         assert row["market_kind"] == "smart_money"
         assert (row["market_parse_status"], row["market_parse_error"]) == ("raw", "market_backfill_not_reparsed")
         assert row["market_source_strategy_id"] == "2026"
+    finally:
+        conn.close()
+
+
+# The four Strategy 2026 titles the reparse has to answer, in the shapes the retained production
+# window actually holds: the abbreviated notional #560 taught the parser to read, a second report from
+# the same account, another account's close with a PNL and the provider's `XYZ-` prefix, and the one
+# `Withdraw` line that is not a position report at all.
+_SMART_MONEY_TITLES = {
+    "reparse-k-suffix": "js-2 Open Long BTC $798.18K , Price $79,817.87",
+    "reparse-same-account": "js-2 Open Long BTC $1.20M , Price $79,900.00",
+    "reparse-other-account": "whale 7 Close Short XYZ-NBIS $6.27M , Price $208.95 , PNL -$1.16K",
+    "reparse-withdraw": "js-2 Withdraw USDC",
+}
+
+
+def _seed_pre_cut_smart_money(conn, *, item_id: str, title: str, at_ms: int, venue: str = "hyperliquid") -> None:
+    """One Strategy 2026 Item as it was stored before any smart-money parser existed."""
+
+    conn.execute(
+        """
+        INSERT INTO news_items (
+          item_id, source_id, source_item_key, title, raw_first_line, description,
+          reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
+          first_ingest_mode, trace_id, created_at_ms, updated_at_ms
+        ) VALUES (
+          %(item)s, 'opennews', %(record)s, %(title)s, %(title)s, '', 'opennews',
+          %(at)s, %(received)s,
+          jsonb_build_object(
+            'source', %(venue)s::text,
+            'strategies', jsonb_build_array(jsonb_build_object('id', '2026', 'name', '聪明钱监控'))
+          ),
+          '[]'::jsonb, 'live', 'trace', %(received)s, %(received)s
+        )
+        """,
+        {
+            "item": item_id,
+            "record": f"record-{item_id}",
+            "title": title,
+            "at": at_ms,
+            # The host read the frame a second after the provider stamped it. The two clocks are
+            # recorded and never compared (#544), and the reparse must carry both through unchanged.
+            "received": at_ms + 1_000,
+            "venue": venue,
+        },
+    )
+
+
+def test_the_reparse_turns_every_backfilled_smart_money_record_into_the_fact_it_proves() -> None:
+    """#562. `20260905_0365` marked these Items `raw / market_backfill_not_reparsed` because no parser
+    had been run against them; #560 then taught `parse_smart_money` the provider's `K`/`M`/`B`. This
+    revision runs that parser once, and it is parse evidence only: the provider stamps and the source
+    identity are unchanged, the notification marker stays `historical`, and no track, delivery or
+    trade appears.
+    """
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260904_0363")
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        at_ms = 1_787_542_200_000
+        for offset, (item_id, title) in enumerate(_SMART_MONEY_TITLES.items()):
+            _seed_pre_cut_smart_money(conn, item_id=item_id, title=title, at_ms=at_ms + offset * 60_000)
+        conn.commit()
+
+        command.upgrade(config, BEFORE_REPARSE)
+        # Every backfilled Item's payload is empty in production -- `20260905_0365` classified rows
+        # that were admitted before `provider_params` existed. The parser still reads the account
+        # address from there for anything admitted after it, so one row states that read.
+        conn.execute(
+            """
+            UPDATE news_items SET provider_params = jsonb_build_object('relatedAddress', %(address)s::text)
+             WHERE item_id = 'reparse-other-account'
+            """,
+            {"address": "0x" + "7" * 40},
+        )
+        conn.commit()
+        backlog = conn.execute(
+            "SELECT market_parse_status, market_parse_error, market_notify_state FROM news_items"
+            " WHERE market_kind = 'smart_money' ORDER BY item_id"
+        ).fetchall()
+        assert [(row["market_parse_status"], row["market_parse_error"]) for row in backlog] == [
+            ("raw", "market_backfill_not_reparsed")
+        ] * 4
+        # The production population this revision meets: all 112 rows are `historical`, none pending.
+        assert {row["market_notify_state"] for row in backlog} == {"historical"}
+
+        command.upgrade(config, HEAD)
+
+        items = conn.execute(
+            "SELECT item_id, title, published_at_ms, observed_at_ms, market_parse_status,"
+            " market_parse_error, market_notify_state, market_notify_group_key,"
+            " market_notify_delivery_key, first_ingest_mode, source_item_key"
+            " FROM news_items ORDER BY item_id"
+        ).fetchall()
+        assert [(row["item_id"], row["market_parse_status"], row["market_parse_error"]) for row in items] == [
+            ("reparse-k-suffix", "parsed", None),
+            ("reparse-other-account", "parsed", None),
+            ("reparse-same-account", "parsed", None),
+            # The one refusal, under the reason the parser actually gives rather than "not reparsed".
+            ("reparse-withdraw", "raw", "smart_money_template_unmatched"),
+        ]
+        # The provider record is untouched: same title, same stamps, same source identity.
+        assert {row["title"] for row in items} == set(_SMART_MONEY_TITLES.values())
+        assert {row["source_item_key"] for row in items} == {f"record-{item}" for item in _SMART_MONEY_TITLES}
+        assert [row["published_at_ms"] for row in items] == [at_ms, at_ms + 120_000, at_ms + 60_000, at_ms + 180_000]
+        # A reparse is not a new observation: it may not put a months-old report back on the reader's
+        # to-do list, and it may not be adopted by the notification loop.
+        assert {row["market_notify_state"] for row in items} == {"historical"}
+        assert [row["market_notify_group_key"] for row in items] == [None] * 4
+        assert [row["market_notify_delivery_key"] for row in items] == [None] * 4
+        assert conn.execute("SELECT count(*) AS n FROM news_market_tracks").fetchone()["n"] == 0
+        assert conn.execute("SELECT count(*) AS n FROM news_market_deliveries").fetchone()["n"] == 0
+
+        facts = conn.execute(
+            "SELECT * FROM news_market_smart_money ORDER BY item_id",
+        ).fetchall()
+        assert [row["item_id"] for row in facts] == [
+            "reparse-k-suffix",
+            "reparse-other-account",
+            "reparse-same-account",
+        ]
+        by_item = {row["item_id"]: row for row in facts}
+
+        abbreviated = by_item["reparse-k-suffix"]
+        assert (abbreviated["trader_label"], abbreviated["action"], abbreviated["position_side"]) == (
+            "js-2",
+            "open",
+            "long",
+        )
+        # The whole record, not just the price, was what the pre-#560 refusal cost.
+        assert abbreviated["reported_notional_usd"] == Decimal("798180")
+        assert abbreviated["price"] == Decimal("79817.87")
+        assert abbreviated["pnl_usd"] is None
+        assert (abbreviated["raw_instrument"], abbreviated["symbol"]) == ("BTC", "BTC")
+        assert abbreviated["source_venue"] == "hyperliquid"
+        assert abbreviated["account_address"] is None
+        assert (abbreviated["provider"], abbreviated["source_strategy_id"]) == ("opennews", "2026")
+        assert abbreviated["ingest_mode"] == "live"
+        assert abbreviated["parser_version"] == PARSER_VERSION
+        assert abbreviated["provider_record_identity"] == "record-reparse-k-suffix"
+
+        other = by_item["reparse-other-account"]
+        assert (other["trader_label"], other["action"], other["position_side"]) == ("whale 7", "close", "short")
+        assert (other["raw_instrument"], other["symbol"]) == ("XYZ-NBIS", "NBIS")
+        assert other["pnl_usd"] == Decimal("-1160")
+        assert other["account_address"] == "0x" + "7" * 40
+
+        # The provider's own stamps survive; only availability is the rebuild's, because that is the
+        # first instant any consumer could read these facts (#553 §3.3).
+        for item_id, row in by_item.items():
+            offset = list(_SMART_MONEY_TITLES).index(item_id) * 60_000
+            assert row["event_at_ms"] == at_ms + offset
+            assert row["received_at_ms"] == at_ms + offset + 1_000
+            assert row["available_at_ms"] > at_ms + offset + 1_000
+            assert row["created_at_ms"] == row["available_at_ms"]
+            # The identity a live replay of the same provider record would compute, so the replay
+            # collides with this row instead of writing a second one.
+            title = _SMART_MONEY_TITLES[item_id]
+            unit = extract_fact_units(item_id=item_id, raw_text=title, fallback_title=title)[0]
+            assert row["fact_id"] == unit.fact_id
+            assert row["source_key"] == smart_money_source_key(item_id=item_id, fact_id=unit.fact_id)
+    finally:
+        conn.close()
+
+
+def test_the_reparse_is_a_no_op_when_it_runs_again() -> None:
+    """Re-running it writes nothing: every row it touched has left the set its predicate selects."""
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260904_0363")
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        at_ms = 1_787_542_200_000
+        for offset, (item_id, title) in enumerate(_SMART_MONEY_TITLES.items()):
+            _seed_pre_cut_smart_money(conn, item_id=item_id, title=title, at_ms=at_ms + offset * 60_000)
+        conn.commit()
+        command.upgrade(config, HEAD)
+
+        before = conn.execute(
+            "SELECT source_key, item_id, available_at_ms FROM news_market_smart_money ORDER BY source_key"
+        ).fetchall()
+        items_before = conn.execute(
+            "SELECT item_id, market_parse_status, market_parse_error FROM news_items ORDER BY item_id"
+        ).fetchall()
+
+        # Alembic will not replay a revision it has stamped, so the second run is asked for directly.
+        conn.execute("UPDATE alembic_version SET version_num = %(previous)s", {"previous": BEFORE_REPARSE})
+        conn.commit()
+        command.upgrade(config, HEAD)
+
+        assert [
+            dict(row)
+            for row in conn.execute(
+                "SELECT source_key, item_id, available_at_ms FROM news_market_smart_money ORDER BY source_key"
+            ).fetchall()
+        ] == [dict(row) for row in before]
+        assert [
+            dict(row)
+            for row in conn.execute(
+                "SELECT item_id, market_parse_status, market_parse_error FROM news_items ORDER BY item_id"
+            ).fetchall()
+        ] == [dict(row) for row in items_before]
     finally:
         conn.close()
 

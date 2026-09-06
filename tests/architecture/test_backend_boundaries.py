@@ -226,6 +226,22 @@ INTEGRATION_BUSINESS_ADAPTER_FAMILIES = {
     "opentrade": {"trading"},
     "trading_catalog": {"trading"},
 }
+# The one place a schema revision may run a business parser, named file by file and module by module
+# so the exception cannot spread. A migration that reparses stored rows has to ask the business
+# question the production code asks; the alternative is a second copy of the parser frozen in the
+# revision, able to disagree with the one every live frame goes through -- which is exactly what
+# `20260906_0370` exists to stop being true of the smart-money backlog (#562). Nothing outside
+# `tracefold/platform/postgres/alembic/versions/` may appear here, and a revision is immutable, so an
+# entry is never edited once merged.
+BUSINESS_PARSER_MIGRATIONS: dict[str, frozenset[str]] = {
+    "tracefold/platform/postgres/alembic/versions/20260906_0370_news_smart_money_reparse.py": frozenset(
+        {
+            "tracefold.news.events.facts",
+            "tracefold.news.smart_money",
+            "tracefold.news.source_contracts",
+        }
+    ),
+}
 # News V3 cross-domain reads: none since the Analyst lane was retired (#57). Every edge
 # would have to be named here; no News module may write another business package's tables.
 ALLOWED_READ_ONLY_CROSS_DOMAIN_TABLES: dict[str, set[str]] = {}
@@ -331,6 +347,12 @@ def _business_dependencies(path: Path) -> set[str]:
             if len(parts) > 1 and parts[0] == "tracefold" and parts[1] in BUSINESS_PACKAGES:
                 dependencies.add(parts[1])
     return dependencies
+
+
+def _migration_parser_imports(path: Path) -> frozenset[str]:
+    """The business modules this file is named as allowed to run, or nothing."""
+
+    return BUSINESS_PARSER_MIGRATIONS.get(path.relative_to(ROOT).as_posix(), frozenset())
 
 
 def _private_import_allowed(importer: str, imported: str) -> bool:
@@ -511,6 +533,7 @@ def test_app_is_the_only_top_level_package_that_may_know_both_businesses() -> No
             relative = path.relative_to(SRC / "integrations") if owner == "integrations" else None
             integration_family = relative.parts[0].removesuffix(".py") if relative is not None else ""
             path_allowed = INTEGRATION_BUSINESS_ADAPTER_FAMILIES.get(integration_family, owner_allowed)
+            path_allowed = path_allowed | {module.split(".")[1] for module in _migration_parser_imports(path)}
             unexpected = sorted(dependencies - path_allowed)
             if owner != "app" and dependencies == {"news", "trading"}:
                 unexpected = ["news+trading"]
@@ -523,15 +546,38 @@ def test_platform_does_not_depend_on_app_business_or_integrations() -> None:
     forbidden = {"app", "integrations", *BUSINESS_PACKAGES}
     violations: dict[str, list[str]] = {}
     for path in _python_files(SRC / "platform"):
+        named = _migration_parser_imports(path)
         dependencies = {
             imported.split(".")[1]
             for imported in _imports(path)
-            if imported.startswith("tracefold.") and len(imported.split(".")) > 1
+            if imported.startswith("tracefold.") and len(imported.split(".")) > 1 and imported not in named
         }
         unexpected = sorted(dependencies & forbidden)
         if unexpected:
             violations[path.relative_to(ROOT).as_posix()] = unexpected
     assert violations == {}
+
+
+def test_only_the_named_revisions_run_a_business_parser() -> None:
+    """The exception is exact: every named file exists, and every named module is really imported.
+
+    A revision is immutable, so this list only ever grows by one entry per new revision that reparses
+    stored rows. It fails closed in both directions -- an entry whose file or import has gone stale is
+    a rule nobody is following any more, and a revision importing a business module it did not declare
+    is the spread this list exists to prevent.
+    """
+
+    declared = {relative: sorted(modules) for relative, modules in BUSINESS_PARSER_MIGRATIONS.items()}
+    versions = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
+    actual = {
+        path.relative_to(ROOT).as_posix(): sorted(
+            imported for imported in _imports(path) if imported.startswith("tracefold.")
+        )
+        for path in _python_files(versions)
+        if any(imported.startswith("tracefold.") for imported in _imports(path))
+    }
+
+    assert actual == declared
 
 
 def test_integrations_do_not_depend_on_app() -> None:
@@ -555,7 +601,9 @@ def test_external_consumers_use_declared_business_interfaces() -> None:
             violations.extend(
                 f"{path.relative_to(ROOT)} -> {imported}"
                 for imported in _imports(path)
-                if imported.startswith(prefix) and not _private_import_allowed(importer, imported)
+                if imported.startswith(prefix)
+                and not _private_import_allowed(importer, imported)
+                and imported not in _migration_parser_imports(path)
             )
     assert violations == []
 
