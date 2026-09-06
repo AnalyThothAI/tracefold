@@ -2962,12 +2962,28 @@ the attempt count and due time the card was *read* with. A card another process
 claimed, sent and re-queued in that window fails this compare-and-set instead of
 spending its second attempt early against the first attempt's snapshot, and the
 loop that lost moves on to the next due card rather than ending its turn. On the card the two planes are never written as one:
-`来源报告价` is the provider's own exact figure — the price a liquidation or an
+`来源报告价` is the provider's own figure — the price a liquidation or an
 account action was reported at, and the smart-money report's realised PNL beside
-it — while `行情` is the market's current quote in the console's own characters.
-The OI card carries the frame's own `Whale Long Profit` and `Whale/OI Ratio`
-percentages on one line of their own, in the provider's terms and only when the
-frame carried them.
+it — while `行情` is the market's current quote. They carry different labels and
+sit on different lines, but they are written by one money rule, because two
+adjacent numbers in two number systems are read as a move nobody made: every
+dollar figure on every card — a smart-money notional, a liquidation's largest
+reported amount, a reported price, a PNL, a quote — is `card_format.money`,
+exact to the cent with thousands separators and the sign outside the currency
+mark. The single exception is the OI *value* line, which is `usd_compact`
+(`$1.20B`) because an open-interest total is a magnitude whose last six digits
+say nothing a reader acts on. A `raw` card formats nothing at all: its body is
+the provider's own sentence, quoted. A liquidation group's largest reported
+amount is chosen by comparing the reports as numbers —
+`MarketObservation.notional_amount` is the one place that text becomes a
+quantity — because `max` over the stored text answered `980000` for a group that
+also reported `1000000`. The OI card carries the frame's own `Whale
+Long Profit` and `Whale/OI Ratio` percentages on one line of their own, in the
+provider's terms and only when the frame carried them. The smart-money caveat
+that a `Close` is only the source's reported close or reduction is printed by a
+card that printed a Close, and by no other — on an open-only card it explained a
+word that is not there, which is how a caveat stops being read on the cards that
+need it.
 
 The card's detail button needs an absolute URL or no button at all. A reader opens
 the card in Feishu or Telegram, where `/news/market/{item_id}` is not a link — the

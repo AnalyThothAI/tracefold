@@ -1548,7 +1548,7 @@
       "elements": [
         {
           "tag": "markdown",
-          "content": "hyperliquid · 多单被强平 1 笔 · 03:18\n最大单笔来源报告金额 $1000000\n各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。\nXYZ · opennews liquidation（1 条报道） · 03:18"
+          "content": "hyperliquid · 多单被强平 1 笔 · 03:18\n最大单笔来源报告金额 $1,000,000.00\n各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。\nXYZ · opennews liquidation（1 条报道） · 03:18"
         },
         {
           "tag": "note",
@@ -2150,7 +2150,7 @@
       "elements": [
         {
           "tag": "markdown",
-          "content": "binance · 空单被强平 1 笔 · 01:00\n最大单笔来源报告金额 $743120\n各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。\nETH · opennews liquidation（1 条报道） · 01:00"
+          "content": "binance · 空单被强平 1 笔 · 01:00\n最大单笔来源报告金额 $743,120.00\n各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。\nETH · opennews liquidation（1 条报道） · 01:00"
         },
         {
           "tag": "note",

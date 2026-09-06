@@ -1750,7 +1750,7 @@ def test_a_liquidation_card_carries_the_familys_mark_and_the_reported_figure() -
     assert text == (
         "🔴 <b>强平 · ETH</b>\n\n"
         "binance · 空单被强平 3 笔 · 16:40–16:51\n"
-        "最大单笔来源报告金额 $980000\n"
+        "最大单笔来源报告金额 $1,000,000.00\n"
         "各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。\n\n"
         "事件时间  16:51\n"
         "推送时间  17:27\n"
@@ -1767,13 +1767,26 @@ def test_a_smart_money_card_keeps_its_turquoise_mark_and_its_action_timeline() -
         "💠 <b>聪明钱 · 动作变化</b>\n\n"
         "js-2（来源标签，非已核实地址） · hyperliquid · 10:00–10:42\n"
         "动作变化 3 次 · 首 平空 → 末 开空\n"
-        "开多 $160180 · 开多 · 平多 $7500.25 · 开空 $1000000\n"
+        "开多 $160,180.00 · 开多 · 平多 $7,500.25 · 开空 $1,000,000.00\n"
         "Close 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。\n\n"
         "事件时间  10:42\n"
         "推送时间  17:27\n"
         "🔗 <b>来源</b>  opennews smart_money · 6 条报道"
     )
     assert "暂无" not in text
+
+
+def test_a_smart_money_card_that_reported_no_close_carries_no_close_caveat() -> None:
+    """The caveat is the card model's, so this channel drops it on the same cards Feishu does (#562).
+
+    Telegram serializes `market_lines()` rather than a layout of its own, which is exactly what this
+    states: an account that has only opened gets no sentence about what a Close would have meant.
+    """
+
+    text = _sent_text(_fixture_market_card("market-smart-money-unlabelled-account"))
+
+    assert "开多 $500" in text
+    assert "Close" not in text and "清仓" not in text
 
 
 def test_a_raw_card_carries_the_providers_own_text_and_no_judgment() -> None:
