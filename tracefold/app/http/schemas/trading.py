@@ -10,13 +10,6 @@ from tracefold.trading import CommandStage, ExecutionStage
 
 from .common import ExactApiSchema
 
-# The admission ledger's two closed vocabularies, exactly as `trading_candidate_gate_status_check` and
-# `trading_candidate_gate_stage_check` admit them and `AdmissionStatus` / `AdmissionStage` write them.
-# `GET /api/trading/gate/{event_id}` reads one stored row with no time bound, so a value here that the
-# database can hold but this Literal cannot would turn opening that Event into a 500.
-GateStatus = Literal["DEFERRED", "REJECTED", "CASE_CREATED", "EXPIRED"]
-GateStage = Literal["source", "venue", "eligibility", "market_context", "freeze"]
-
 
 class TradingDecisionRuntimeData(ExactApiSchema):
     """When the Signal lane last froze a Case; `None` means it has not frozen one yet (#520)."""
@@ -114,45 +107,6 @@ class TradingStatusData(ExactApiSchema):
 
     decision: TradingDecisionRuntimeData
     execution: TradingExecutionReadinessData
-
-
-class TradingGateDecisionData(ExactApiSchema):
-    source_key: str
-    event_id: str | None = None
-    gate_status: GateStatus | None = None
-    gate_stage: GateStage | None = None
-    gate_reason: str | None = None
-    gate_retryable: bool | None = None
-    # The admission ledger's `evidence` jsonb, rendered exactly as the deciding rule wrote it. Enumerating
-    # its keys here made this a second shape check over a ledger that keeps rows for 90 days: `market_key`
-    # (#510 PR-2) turned every `GET /api/trading/gate` into a 500 (#532). The rule that wrote a row owns
-    # what it says; the console renders whatever keys it finds.
-    gate_evidence: dict[str, str | int | bool | list[str] | None] = Field(default_factory=dict)
-    gate_first_evaluated_at_ms: int | None = None
-    gate_last_evaluated_at_ms: int | None = None
-    gate_attempt_count: int | None = None
-    case_id: str | None = None
-
-
-class TradingGateData(ExactApiSchema):
-    """The admission ledger `/news/oi` joins each OI frame against (#537 D4).
-
-    The running admission configuration was published here as `config` and the ledger's two extreme
-    clocks as `latest_source_at_ms` / `latest_gate_eligible_at_ms`; the second pair cost an unbounded
-    scan of the 90-day ledger on every 15 s poll for one card hint. Both are gone with the desk's own
-    read of this route (#537 PR-5).
-    """
-
-    decisions: list[TradingGateDecisionData] = Field(default_factory=list)
-    status_counts_24h: dict[str, int] = Field(default_factory=dict)
-    reason_counts_24h: dict[str, int] = Field(default_factory=dict)
-    complete: bool
-
-
-class TradingGateSourceData(ExactApiSchema):
-    event_id: str
-    joinable: bool
-    decision: TradingGateDecisionData | None = None
 
 
 class TradingPolicyCheckData(ExactApiSchema):

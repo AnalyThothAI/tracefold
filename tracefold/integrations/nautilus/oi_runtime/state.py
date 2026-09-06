@@ -7,7 +7,7 @@ from collections.abc import Container
 from dataclasses import dataclass, field
 from decimal import Decimal
 from threading import Lock
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from nautilus_trader.model.enums import OrderSide, OrderType
 from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId, PositionId
@@ -22,9 +22,9 @@ PrivateReconciliationReason = Literal[
     "flatten_pending",
     "unexpected_exposure",
 ]
-PRIVATE_RECONCILIATION_REASONS = frozenset(
-    {"unknown_outcome", "protection_ambiguity", "flatten_pending", "unexpected_exposure"}
-)
+# The set and the type are one declaration: a fifth reason added to the Literal above is in the set
+# without a second edit, and the two can no longer disagree about what a legal reason is (#589 PR-2).
+PRIVATE_RECONCILIATION_REASONS = frozenset(get_args(PrivateReconciliationReason))
 # How long an entry may keep a freshly opened quote subscription alive while waiting for the venue's
 # first tick. Binance closed the WebSocket with 1008 `Too many requests` when the Runtime subscribed
 # to all ~500 routed perpetuals at start, so a stream is opened per admitted entry instead (#510 E).
@@ -87,7 +87,14 @@ class RuntimeControlSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeEntryRequest:
-    """One concrete entry request, correlated to exactly one durable fact type."""
+    """One concrete entry request, correlated to exactly one durable fact type.
+
+    The two constructors below are the only way one is built, and each copies its four fields off the
+    single fact it carries. A `__post_init__` that re-derived those same four values from that same
+    fact and compared them to itself could not fail for any request this Runtime can make (#589 PR-2);
+    the shape check that *can* fail - a Command that is not a `manual_entry` - stays in
+    `from_manual_command`, where the caller's fact is what is being checked.
+    """
 
     entry_id: str
     market_key: str
@@ -95,34 +102,6 @@ class RuntimeEntryRequest:
     expires_at_ns: int
     signal: TradeSignalV1 | None = None
     command: OperatorIntentV1 | None = None
-
-    def __post_init__(self) -> None:
-        if (self.signal is None) == (self.command is None):
-            raise ValueError("oi_runtime_entry_source_invalid")
-        if self.signal is not None:
-            expected = (
-                self.signal.signal_id,
-                self.signal.market_key,
-                self.signal.direction,
-                self.signal.expires_at_ns,
-            )
-        else:
-            command = self.command
-            if (
-                command is None
-                or command.action != "manual_entry"
-                or command.market_key is None
-                or command.direction is None
-            ):
-                raise ValueError("oi_runtime_manual_entry_invalid")
-            expected = (
-                command.command_id,
-                command.market_key,
-                command.direction,
-                command.expires_at_ns,
-            )
-        if expected != (self.entry_id, self.market_key, self.direction, self.expires_at_ns):
-            raise ValueError("oi_runtime_entry_source_invalid")
 
     @classmethod
     def from_signal(cls, signal: TradeSignalV1) -> RuntimeEntryRequest:
@@ -390,7 +369,7 @@ def entry_order_valid(
     order: Any,
 ) -> bool:
     expected_id = deterministic_client_order_id(
-        namespace=profile.client_order_namespace,
+        namespace=profile.namespace,
         entry_id=request.entry_id,
         leg="entry",
     )
@@ -418,7 +397,7 @@ def exit_order_valid(
     position: Any,
 ) -> bool:
     expected_id = deterministic_client_order_id(
-        namespace=profile.client_order_namespace,
+        namespace=profile.namespace,
         entry_id=state.entry.entry_id,
         leg=exit_leg(state.exit_generation),
     )

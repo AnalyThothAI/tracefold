@@ -33,11 +33,10 @@ from tracefold.trading import IDENTITY_PATTERN, MARKET_KEY_PATTERN
 _IDENTITY = re.compile(IDENTITY_PATTERN)
 _MARKET_KEY = re.compile(MARKET_KEY_PATTERN)
 
-# What a Runtime that is actually going to trade can be, and the whole set including the one that is
-# not. Keeping them apart is what lets the composition root's single `disabled` return narrow the
-# mode once, instead of re-proving downstream that a live path is not disabled (#537 PR-4).
+# What a Runtime that is actually going to trade can be. `disabled` is not one of them: `run_nautilus`
+# returns on it before any profile exists, so a `RuntimeMode` alias that admitted it only made every
+# path downstream re-prove that it was not looking at a Runtime that cannot trade (#589 PR-2).
 ActiveRuntimeMode = Literal["paper", "live"]
-RuntimeMode = Literal["disabled"] | ActiveRuntimeMode
 
 
 class _SecretValue(str):
@@ -122,23 +121,27 @@ class OiRuntimeProfile:
     `account_slot` plus `mode` is the whole execution identity (#520), and now it is the only one:
     `runtime_release` and `config_sha256` rode along on the projection and on every observation
     naming what was running, and no reader ever named either (#537 PR-4).
+
+    `namespace` is that identity spelled once. It was two fields, `cache_namespace` and
+    `client_order_namespace`, and the composition root has only ever built both out of the same
+    `tracefold:{account_slot}:{mode}` string: the Nautilus trader id and every deterministic client
+    order id are derived from it, so two fields could only ever let a restart derive order ids under
+    one namespace while claiming the Cache of another (#589 PR-2).
     """
 
-    mode: RuntimeMode
+    mode: ActiveRuntimeMode
     account_slot: str
     account_id: AccountId
-    cache_namespace: str
-    client_order_namespace: str
+    namespace: str
     routes: tuple[OiInstrumentRoute, ...]
     risk: OiRiskLimits
 
     def __post_init__(self) -> None:
-        if self.mode not in ("disabled", "paper", "live"):
+        if self.mode not in ("paper", "live"):
             raise ValueError("oi_runtime_mode_invalid")
         for value, reason in (
             (self.account_slot, "oi_runtime_account_slot_invalid"),
-            (self.cache_namespace, "oi_runtime_cache_namespace_invalid"),
-            (self.client_order_namespace, "oi_runtime_client_namespace_invalid"),
+            (self.namespace, "oi_runtime_namespace_invalid"),
         ):
             if _IDENTITY.fullmatch(value) is None:
                 raise ValueError(reason)
@@ -146,7 +149,7 @@ class OiRuntimeProfile:
         instrument_ids = tuple(route.instrument_id for route in self.routes)
         if len(market_keys) != len(set(market_keys)) or len(instrument_ids) != len(set(instrument_ids)):
             raise ValueError("oi_runtime_route_identity_duplicate")
-        if self.mode != "disabled" and not self.routes:
+        if not self.routes:
             raise ValueError("oi_runtime_routes_missing")
 
 
@@ -161,15 +164,15 @@ class BinanceRuntimeCredentials:
 
 
 def _trader_id(profile: OiRuntimeProfile) -> TraderId:
-    digest = hashlib.sha256(profile.cache_namespace.encode()).hexdigest()[:12].upper()
+    digest = hashlib.sha256(profile.namespace.encode()).hexdigest()[:12].upper()
     return TraderId(f"OI-{digest}")
 
 
 def _instance_id(profile: OiRuntimeProfile) -> UUID4:
-    """Stable per account slot and mode, which is what the Cache namespace already carries.
+    """Stable per account slot and mode, which is what the namespace already carries.
 
     It was derived from the whole configuration digest instead, so every risk-limit edit gave the
-    same Runtime a new Nautilus instance id and therefore a new Cache namespace (#537 PR-4).
+    same Runtime a new Nautilus instance id and therefore a new Nautilus Cache namespace (#537 PR-4).
     """
 
     digest = hashlib.sha256(f"tracefold:oi-runtime:{profile.account_slot}:{profile.mode}".encode()).digest()
@@ -193,8 +196,6 @@ def build_oi_node_config(
 ) -> TradingNodeConfig:
     """Build the pinned paper/live graph."""
 
-    if profile.mode == "disabled":
-        raise ValueError("oi_runtime_disabled_has_no_node")
     environment = binance_environment(profile.mode)
     instrument_ids = frozenset(route.instrument_id for route in profile.routes)
     provider = BinanceInstrumentProviderConfig(
@@ -266,7 +267,6 @@ __all__ = [
     "OiInstrumentRoute",
     "OiRiskLimits",
     "OiRuntimeProfile",
-    "RuntimeMode",
     "binance_environment",
     "build_oi_node_config",
 ]

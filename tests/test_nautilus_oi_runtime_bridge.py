@@ -13,6 +13,9 @@ from uuid import UUID
 import psycopg
 from loguru import logger
 
+from tests.helpers.nautilus_oi_runtime_process import (
+    audit_queued_count,
+)
 from tests.nautilus_oi_runtime_fixtures import NOW_NS, oi_profile
 from tracefold.app.nautilus.oi_runtime import OiRuntimeDatabaseBridge, RuntimeStateProjector
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
@@ -169,7 +172,7 @@ def test_a_failing_audit_step_never_stops_the_command_read_and_logs_one_cause_on
     assert len(trading.appended) == 1
     gap = next(iter(trading.appended))
     assert gap != poisoned.event_id
-    assert audit.queued_count == 0
+    assert audit_queued_count(audit) == 0
     assert audit.healthy is True
     assert records.count("OI Runtime database bridge step failed (signals)") == 1
     assert records.count("OI Runtime database bridge step failed (audit)") == 0
@@ -207,7 +210,7 @@ def test_a_transient_audit_failure_leaves_the_batch_queued_without_killing_the_b
 
     assert trading.command_reads == 1
     assert bridge.fatal_error is None
-    assert audit.queued_count == 1
+    assert audit_queued_count(audit) == 1
     assert audit.failure_reason == "audit_append_failed"
     assert audit.healthy is False
 

@@ -71,7 +71,7 @@ def build_runtime_reconciliation_snapshot(
     # durable entries could claim the same position the most recent one is the one that opened it.
     for request in reversed(subjects):
         entry_id = deterministic_client_order_id(
-            namespace=profile.client_order_namespace,
+            namespace=profile.namespace,
             entry_id=request.entry_id,
             leg="entry",
         )
@@ -138,7 +138,7 @@ def _recovery_legs(*, profile: OiRuntimeProfile, entry_id: str) -> dict[ClientOr
     for generation in range(_MAX_RECOVERY_GENERATIONS + 1):
         legs[
             deterministic_client_order_id(
-                namespace=profile.client_order_namespace,
+                namespace=profile.namespace,
                 entry_id=entry_id,
                 leg=exit_leg(generation),
             )
@@ -147,7 +147,7 @@ def _recovery_legs(*, profile: OiRuntimeProfile, entry_id: str) -> dict[ClientOr
             continue
         legs[
             deterministic_client_order_id(
-                namespace=profile.client_order_namespace,
+                namespace=profile.namespace,
                 entry_id=entry_id,
                 leg=protection_leg(generation),
             )

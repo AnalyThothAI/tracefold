@@ -1,4 +1,10 @@
-"""``tracefold trading`` read projections and one bounded operator-intent ingress."""
+"""``tracefold trading`` read projections and one bounded operator-intent ingress.
+
+Every read here calls the same repository statement the console route for it called, so an operator
+reading the CLI and an operator reading the desk cannot be told two different things about the same
+instant. `gate` is the whole reader of the admission ledger since #589 PR-2 deleted the two `GET
+/api/trading/gate*` routes: #553 PR-1 had already removed their only browser caller.
+"""
 
 from __future__ import annotations
 
@@ -20,7 +26,6 @@ from tracefold.trading import (
 )
 
 _WINDOW_MS = 24 * 3_600_000
-_MAX_FUTURE_SKEW_NS = 30 * 1_000_000_000
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,127}$")
 
 
@@ -82,6 +87,23 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                     limit=int(getattr(args, "limit", 20) or 20),
                 ),
             }
+        if command == "gate":
+            # The admission ledger's two reads, exactly as the deleted `GET /api/trading/gate` and
+            # `GET /api/trading/gate/{event_id}` asked for them. One source key answers "why did this
+            # frame produce no case"; no source key answers it for a whole window, newest frame first
+            # (#589 PR-2).
+            source_key = getattr(args, "source_key", None)
+            if source_key:
+                row = trading.gate_decision_for_source_key(source_key=str(source_key))
+                return 0, {"ok": True, "data": [] if row is None else [row]}
+            since_ms = getattr(args, "since_ms", None)
+            return 0, {
+                "ok": True,
+                "data": trading.gate_decisions_since(
+                    since_ms=int(since_ms) if since_ms else now_ms - _WINDOW_MS,
+                    limit=int(getattr(args, "limit", 20) or 20),
+                ),
+            }
         if command == "commands":
             return 0, {
                 "ok": True,
@@ -111,11 +133,8 @@ def _issue_operator_intent(args: Any, *, settings: Any) -> tuple[int, dict[str, 
             operator_identity=f"local-cli:{local_uid}",
             authentication_identity=f"local-os-uid:{local_uid}",
             requested_at_ns=requested_at_ns,
+            now_ns=now_ns,
         )
-        if requested_at_ns > now_ns + _MAX_FUTURE_SKEW_NS:
-            raise OperatorCommandError("operator_command_clock_invalid")
-        if prepared.value.expires_at_ns <= now_ns:
-            raise OperatorCommandError("operator_command_expired")
     except OperatorCommandError as exc:
         return 2, {"ok": False, "error": exc.code}
     with repositories(settings, application_name="tracefold_trading_control_cli") as repos, repos.transaction():

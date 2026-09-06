@@ -18,31 +18,6 @@ TOKEN = "trading-contract-token"
 NOW = 1_900_000_000_000
 
 
-# #532: one stored admission row whose `evidence` carries `market_key`, the key #510 PR-2 added to the
-# `instrument_unmapped` rejection. The ledger's jsonb is the truth; the read contract renders whatever a
-# writer stored under it rather than re-declaring its shape.
-_GATE_ROW: dict[str, Any] = {
-    "source_key": "oi:evt-oi-dell:oi_signal_v1",
-    "underlying_key": "crypto:DELL",
-    "trigger_kind": "oi",
-    "source_observed_at_ms": NOW - 120_000,
-    "case_id": None,
-    "status": "REJECTED",
-    "stage": "venue",
-    "reason": "instrument_unmapped",
-    "retryable": False,
-    "evidence": {
-        "market_key": "crypto:perp:DELL:USDT",
-        "venue": "binance.usdm",
-        "gate_version": "trading_admission_v9",
-        "gate_config_digest": "d" * 64,
-    },
-    "first_evaluated_at_ms": NOW - 119_000,
-    "last_evaluated_at_ms": NOW - 60_000,
-    "attempt_count": 1,
-}
-
-
 class _Trading:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -176,18 +151,6 @@ class _Trading:
             }
         ]
 
-    def candidate_admission_report(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("candidate_admission_report", kwargs))
-        return {
-            "decisions": [_GATE_ROW],
-            "candidate_counts_24h": {"REJECTED": 1},
-            "candidate_reasons_24h": {"venue:instrument_unmapped": 1},
-        }
-
-    def gate_decision_for_source_key(self, **kwargs: Any) -> dict[str, Any] | None:
-        self.calls.append(("gate_decision_for_source_key", kwargs))
-        return _GATE_ROW if kwargs.get("source_key") == _GATE_ROW["source_key"] else None
-
 
 class _Runtime:
     def __init__(self, settings: Settings, trading: _Trading) -> None:
@@ -313,48 +276,6 @@ def test_cases_page_has_no_cursor_to_follow(client: tuple[TestClient, _Trading])
 
     assert set(data) == {"cases", "state_counts_24h", "reason_counts_24h", "complete", "window_hours"}
     assert api.get("/api/trading/cases", params={"token": TOKEN, "cursor": "anything"}).status_code == 400
-
-
-def test_gate_renders_a_stored_evidence_key_no_schema_enumerates(client: tuple[TestClient, _Trading]) -> None:
-    """#532. `market_key` reached the ledger in #510 PR-2 and turned the whole read into a 500."""
-
-    api, _ = client
-    decisions = api.get("/api/trading/gate", params={"token": TOKEN}).json()["data"]["decisions"]
-    single = api.get("/api/trading/gate/evt-oi-dell", params={"token": TOKEN, "lane": "oi"}).json()["data"]
-
-    assert [decision["gate_evidence"] for decision in decisions] == [
-        {
-            "market_key": "crypto:perp:DELL:USDT",
-            "venue": "binance.usdm",
-            "gate_version": "trading_admission_v9",
-            "gate_config_digest": "d" * 64,
-        }
-    ]
-    assert single["decision"]["gate_evidence"]["market_key"] == "crypto:perp:DELL:USDT"
-    # The rulebook that decided the row is one of those keys now, not two fields of its own (#537 PR-3).
-    assert "gate_version" not in decisions[0]
-    assert "gate_config_digest" not in decisions[0]
-
-
-def test_gate_is_the_admission_ledger_and_not_the_running_configuration(
-    client: tuple[TestClient, _Trading],
-) -> None:
-    """#537 PR-5. `/news/oi` reads the answers; it never read the thresholds or the two clocks.
-
-    `latest_source_at_ms` / `latest_gate_eligible_at_ms` cost an unbounded scan of the 90-day ledger
-    on every 15 s poll for one card hint, and the four decision fields below had no reader anywhere.
-    The whole response is now one bounded page plus the two durable distributions, read in one call.
-    """
-
-    api, trading = client
-    data = api.get("/api/trading/gate", params={"token": TOKEN}).json()["data"]
-
-    assert set(data) == {"decisions", "status_counts_24h", "reason_counts_24h", "complete"}
-    assert data["status_counts_24h"] == {"REJECTED": 1}
-    assert data["reason_counts_24h"] == {"venue:instrument_unmapped": 1}
-    assert {"underlying_key", "base_symbol", "trigger_kind", "source_observed_at_ms"}.isdisjoint(data["decisions"][0])
-    assert [name for name, _ in trading.calls] == ["candidate_admission_report"]
-    assert trading.calls[0][1]["limit"] == 401
 
 
 def test_console_command_post_records_only_an_intent(
@@ -527,8 +448,12 @@ def test_retired_execution_routes_are_absent_and_current_routes_are_authenticate
     # #537 PR-5. The Signal list and the two raw execution projections nothing in the browser called.
     for path in ("/api/trading/signals", "/api/trading/execution/observations"):
         assert api.get(path, params={"token": TOKEN}).status_code == 404
+    # #589 PR-2. The admission ledger's two shapes, on the same terms: #553 PR-1 deleted the OI frame
+    # table that joined each row to its Event, and `tracefold trading gate` reads the same statements.
+    for path in ("/api/trading/gate", "/api/trading/gate/oi:evt:oi_signal_v1"):
+        assert api.get(path, params={"token": TOKEN}).status_code == 404
     assert api.get("/api/trading/execution/commands", params={"token": TOKEN}).status_code == 405
-    for path in ("/api/trading/cases", "/api/trading/executions", "/api/trading/gate"):
+    for path in ("/api/trading/cases", "/api/trading/executions", "/api/trading/status"):
         assert api.get(path).status_code == 401
 
 

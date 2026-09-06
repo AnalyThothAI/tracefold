@@ -2644,13 +2644,16 @@ locks and primitive row checks.
 
 ### Read projections
 
-Current product reads are Source/Admission, Case/Alpha, the folded per-entry
-execution table, and the current execution Runtime projection — one HTTP owner
-each, four GET routes plus `GET /api/trading/gate/{event_id}` for one Source.
-The TradeSignal and ExecutionObservation ledgers have no HTTP owner since #537
-PR-5: their routes published a second and third shape over exactly the rows the
-execution table folds, no browser surface called either, and
-`tracefold trading signals | observations` reads the repository directly.
+Current product reads are Case/Alpha, the folded per-entry execution table, and
+the current execution Runtime projection — one HTTP owner each, three GET
+routes. The TradeSignal and ExecutionObservation ledgers have no HTTP owner
+since #537 PR-5: their routes published a second and third shape over exactly
+the rows the execution table folds, no browser surface called either, and
+`tracefold trading signals | observations` reads the repository directly. The
+admission ledger has had none since #589 PR-2, on the same terms: #553 PR-1
+deleted the OI frame table that joined each admission row to its Event, which
+was the only browser reader either `/api/trading/gate*` route ever had, and
+`tracefold trading gate` reads the same two statements.
 `trading_cases`, `trading_candidate_gate_decisions`, `trading_trade_signals`,
 `trading_operator_intents`, `trading_execution_observations`,
 `trading_execution_runtime_control_state` and
@@ -2676,11 +2679,12 @@ or alternate account truth.
 The admission ledger holds one row per `source_key`, so the frame table a reader
 scrolls and the distributions printed above it are the same rows: both are plain
 scans of `trading_candidate_gate_decisions`, where each used to be a
-`DISTINCT ON` over a key that could hold two rows for one frame. Two statements
-answer the whole of `GET /api/trading/gate` now — one bounded index scan in
-frame order, and one `GROUPING SETS` pass for both distributions — where the
-route ran four, the fourth of them an unbounded scan of the 90-day ledger for
-two clocks one card hint printed (#537 PR-5). The Runtime
+`DISTINCT ON` over a key that could hold two rows for one frame. One bounded
+index scan in frame order is the whole of what `tracefold trading gate` runs,
+where the deleted route ran four — the fourth an unbounded scan of the 90-day
+ledger for two clocks one card hint printed (#537 PR-5) — and a distribution
+over the window is a `GROUPING SETS` query an operator writes against the same
+rows (#589 PR-2). The Runtime
 projection publishes `routes_count`, not the catalogue itself — the count is
 what `/api/trading/status` renders, and the catalogue's one rule belongs to the
 process that can act on it.

@@ -5,7 +5,7 @@ from contextlib import nullcontext
 from dataclasses import replace
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
@@ -13,6 +13,9 @@ from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
 from nautilus_trader.model.identifiers import InstrumentId
 from pydantic import ValidationError
 
+from tests.helpers.nautilus_oi_runtime_process import (
+    audit_queued_count,
+)
 from tests.nautilus_oi_runtime_fixtures import oi_profile
 from tracefold.app.nautilus import root as nautilus_root
 from tracefold.app.nautilus.oi_runtime import RuntimeStateProjector
@@ -26,8 +29,10 @@ from tracefold.app.nautilus.root import (
     _risk_limits,
 )
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
-from tracefold.integrations.nautilus.oi_runtime.config import BinanceRuntimeCredentials
+from tracefold.integrations.nautilus.oi_runtime.config import BinanceRuntimeCredentials, _trader_id
 from tracefold.integrations.nautilus.oi_runtime.nautilus_1231_binance_compat import CompleteBinanceAccountReports
+from tracefold.integrations.nautilus.oi_runtime.state import deterministic_client_order_id
+from tracefold.integrations.nautilus.oi_runtime.strategy import oi_strategy_config
 from tracefold.platform.config.models import Settings
 from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
 
@@ -399,17 +404,17 @@ def test_a_steady_reconciliation_that_changed_nothing_stays_out_of_the_ledger() 
     third = _observe_reconciliation(audit=audit, result=steady(held, 3_000), previous_identity=second)
 
     assert first == second == third
-    assert audit.queued_count == 1
+    assert audit_queued_count(audit) == 1
 
     flat = _complete_reports()
     fourth = _observe_reconciliation(audit=audit, result=steady(flat, 4_000), previous_identity=third)
 
     assert fourth != third
-    assert audit.queued_count == 2
+    assert audit_queued_count(audit) == 2
 
     _observe_reconciliation(audit=audit, result=steady(flat, 5_000), previous_identity=fourth)
 
-    assert audit.queued_count == 2
+    assert audit_queued_count(audit) == 2
 
     _observe_reconciliation(
         audit=audit,
@@ -422,7 +427,7 @@ def test_a_steady_reconciliation_that_changed_nothing_stays_out_of_the_ledger() 
         previous_identity=fourth,
     )
 
-    assert audit.queued_count == 3
+    assert audit_queued_count(audit) == 3
     observed = audit.flush_once(lambda _values: None)
     assert [value.summary["trigger"] for value in observed] == ["steady", "steady", "unexpected_exposure"]
     assert [value.summary["positions"] for value in observed] == [1, 0, 0]
@@ -477,8 +482,8 @@ def test_every_risk_value_reaches_the_runtime_policy_without_renaming_the_accoun
     It used to also change `config_sha256`, a digest of the whole configuration that rode on the
     durable projection and on a start receipt no reader ever opened; the one mechanism that consumed
     it was the Nautilus instance id, which then made every risk edit a new Cache namespace. The
-    account slot, the mode and the client order namespace are what identity means here, and none of
-    them may move when a risk number does.
+    account slot, the mode and the namespace derived from them are what identity means here, and none
+    of them may move when a risk number does.
     """
 
     routes = oi_profile().routes
@@ -486,10 +491,63 @@ def test_every_risk_value_reaches_the_runtime_policy_without_renaming_the_accoun
     edited = nautilus_root._active_profile(_settings_with_risk(**override), "paper", routes)
 
     assert edited.account_slot == baseline.account_slot
-    assert edited.client_order_namespace == baseline.client_order_namespace
-    assert edited.cache_namespace == baseline.cache_namespace
+    assert edited.namespace == baseline.namespace
     if "stop_distance_bps" not in override:
         assert edited.risk != baseline.risk
+
+
+# #589 PR-2 (T-F15). The exact venue-visible identity strings a fixed account slot and mode produce.
+# `namespace` and `namespace` were two fields carrying one value, and merging them
+# is only safe if nothing a venue or a restart sees moves: the Nautilus trader id, the strategy's
+# `order_id_tag` and every deterministic client order id are all derived from that one namespace.
+_PINNED_ENTRY_ID = "e" * 64
+_PINNED_IDENTITY = {
+    "paper": {
+        "trader_id": "OI-F46FB62A731F",
+        "order_id_tag": "F46",
+        "entry": "tf80c234dfddf49bb7dae54e6e54940c",
+        "exit": "tfcf358bb5857ab37ab22714ab1bdae7",
+        "protection:3": "tf3be829ca58e89db3fb3ab305d438b3",
+    },
+    "live": {
+        "trader_id": "OI-436C67334FF6",
+        "order_id_tag": "436",
+        "entry": "tf62ab44161ae7839b91694b6f7ee798",
+        "exit": "tf5ff87915624c72eb0ba893b6c6023e",
+        "protection:3": "tf118d5baf1f7dc82c45cdacd6760a94",
+    },
+}
+
+
+@pytest.mark.parametrize("mode", ["paper", "live"])
+def test_the_runtime_namespace_produces_exactly_these_venue_visible_identities(mode: str) -> None:
+    """One namespace per account slot and mode, and these are the strings it produces.
+
+    A restart rebuilds ownership of live orders by re-deriving these ids, so a change here is a
+    Runtime that cannot recognise its own open orders. Pinning the literal strings is what makes
+    that impossible to do by accident.
+    """
+
+    routes = oi_profile().routes
+    profile = nautilus_root._active_profile(
+        Settings(trading={"execution": {"mode": mode}}),
+        cast(Any, mode),
+        routes,
+    )
+    expected = _PINNED_IDENTITY[mode]
+
+    assert profile.namespace == f"tracefold:binance_usdm_primary:{mode}"
+    assert _trader_id(profile).value == expected["trader_id"]
+    assert oi_strategy_config(profile).order_id_tag == expected["order_id_tag"]
+    for leg in ("entry", "exit", "protection:3"):
+        assert (
+            deterministic_client_order_id(
+                namespace=profile.namespace,
+                entry_id=_PINNED_ENTRY_ID,
+                leg=leg,
+            ).value
+            == expected[leg]
+        )
 
 
 @pytest.mark.parametrize(

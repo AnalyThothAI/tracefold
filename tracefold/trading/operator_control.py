@@ -21,6 +21,9 @@ _CONTROL_TTL_SECONDS = 300
 _SHORT_TTL_MIN_SECONDS = 5
 _SHORT_TTL_MAX_SECONDS = 120
 _MARKET_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
+# How far ahead of the ingress's own clock a caller-sealed `requested_at_ns` may be. One number, so
+# the HTTP console and the local CLI cannot disagree about which sealed commands are from the future.
+_MAX_FUTURE_SKEW_NS = 30_000_000_000
 
 
 class OperatorCommandError(ValueError):
@@ -33,7 +36,15 @@ class OperatorCommandError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class ParsedOperatorCommand:
-    kind: Literal["status", "intent"]
+    """One parsed intent. There is no second kind of parse result.
+
+    `/status` parsed to `kind="status"` and every caller then handed it to
+    `prepare_parsed_operator_intent`, whose first act was to refuse it as
+    `operator_command_has_no_intent`. A command word whose only possible outcome is the refusal of
+    the one thing this grammar exists to produce is not a command (#589 PR-2); `tracefold trading
+    status` and `GET /api/trading/status` are what answer that question.
+    """
+
     action: str | None = None
     scope: str | None = None
     reason: str | None = None
@@ -53,8 +64,6 @@ def parse_operator_command(text: str) -> ParsedOperatorCommand:
     if not tokens or not tokens[0].startswith("/"):
         raise OperatorCommandError("operator_command_invalid")
     command = tokens[0]
-    if command == "/status" and len(tokens) == 1:
-        return ParsedOperatorCommand(kind="status")
     if command == "/pause" and len(tokens) >= 2:
         return _control("pause_entries", "entries", " ".join(tokens[1:]))
     if command in {"/resume", "/halt"} and len(tokens) >= 2:
@@ -64,7 +73,6 @@ def parse_operator_command(text: str) -> ParsedOperatorCommand:
     if command == "/flatten" and len(tokens) == 3 and tokens[1] == "account":
         scope = tokens[1]
         return ParsedOperatorCommand(
-            kind="intent",
             action="flatten",
             scope=scope,
             reason=f"flatten {scope}",
@@ -76,7 +84,6 @@ def parse_operator_command(text: str) -> ParsedOperatorCommand:
         if _MARKET_KEY.fullmatch(market_key) is None:
             raise OperatorCommandError("operator_command_market_invalid")
         return ParsedOperatorCommand(
-            kind="intent",
             action="manual_entry",
             scope="market",
             reason=f"manual {direction}",
@@ -96,10 +103,19 @@ def prepare_parsed_operator_intent(
     operator_identity: str,
     authentication_identity: str,
     requested_at_ns: int,
+    now_ns: int,
 ) -> PreparedOperatorIntent:
-    """Bind one parsed command to an authenticated, deterministic source identity."""
+    """Bind one parsed command to an authenticated, deterministic source identity and one clock.
 
-    if parsed.kind != "intent" or parsed.action is None or parsed.scope is None or parsed.reason is None:
+    `now_ns` is the ingress's own reading of the wall clock, and the two rules measured against it
+    live here rather than beside each caller: a sealed request may not claim a future beyond
+    `_MAX_FUTURE_SKEW_NS`, and one that has already expired is not an intent to record. The HTTP
+    ingress and the CLI each carried their own copy of both, with their own skew constant, so the
+    same sealed command could be accepted by one and refused by the other (#589 PR-2). The refusal
+    codes are unchanged.
+    """
+
+    if parsed.action is None or parsed.scope is None or parsed.reason is None:
         raise OperatorCommandError("operator_command_has_no_intent")
     if parsed.ttl_seconds is None:
         raise OperatorCommandError("operator_command_invalid")
@@ -111,7 +127,7 @@ def prepare_parsed_operator_intent(
         }
     )
     try:
-        return prepare_operator_intent(
+        prepared = prepare_operator_intent(
             command_id=command_id,
             account_slot=account_slot,
             action=parsed.action,
@@ -126,13 +142,17 @@ def prepare_parsed_operator_intent(
         )
     except ValueError:
         raise OperatorCommandError("operator_command_invalid") from None
+    if requested_at_ns > now_ns + _MAX_FUTURE_SKEW_NS:
+        raise OperatorCommandError("operator_command_clock_invalid")
+    if prepared.value.expires_at_ns <= now_ns:
+        raise OperatorCommandError("operator_command_expired")
+    return prepared
 
 
 def _control(action: str, scope: str, reason: str) -> ParsedOperatorCommand:
     if not reason or len(reason) > 256:
         raise OperatorCommandError("operator_command_reason_invalid")
     return ParsedOperatorCommand(
-        kind="intent",
         action=action,
         scope=scope,
         reason=reason,

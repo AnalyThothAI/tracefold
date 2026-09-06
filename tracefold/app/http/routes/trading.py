@@ -1,10 +1,16 @@
 """Trading reads plus the one authenticated bounded operator-command append.
 
-Four reads and one write. `GET /api/trading/signals` and the two `GET /api/trading/execution/*`
+Three reads and one write. `GET /api/trading/signals` and the two `GET /api/trading/execution/*`
 projections were three more public shapes over ledgers the desk already reads folded: the Signal list
 is `executions[]` with its venue outcome attached, the raw observation stream is what that fold reads,
 and the Command list is `executions[].commands`. Nothing in the browser called any of the three, and
 `tracefold trading signals | observations | commands` reads the same repository directly (#537 PR-5).
+
+`GET /api/trading/gate` and `GET /api/trading/gate/{event_id}` left on the same terms (#589 PR-2).
+#553 PR-1 removed the OI frame table that joined each admission row to its Event, and with it the
+only browser reader either route ever had; what remained was a public HTTP shape over the admission
+ledger with no caller. `tracefold trading gate [--source-key KEY] [--since-ms N]` reads the same two
+repository statements directly, and the runbook in Operations reads the row in SQL.
 """
 
 from __future__ import annotations
@@ -36,15 +42,12 @@ from ..schemas import trading as trading_schemas
 
 router = APIRouter()
 _StatusEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingStatusData]
-_GateEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingGateData]
-_GateSourceEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingGateSourceData]
 _CasesEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingCasesData]
 _ExecutionsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingExecutionsData]
 _CommandReceiptEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingOperatorCommandReceiptData]
 
 _WINDOW_MS: Final = 24 * 3_600_000
 _ROW_LIMIT: Final = 100
-_GATE_LIMIT: Final = 400
 _OI_METRIC_VERSION: Final = OI_METRIC_VERSION
 _BASE_SYMBOL: Final = re.compile(r"^[A-Z0-9._-]{1,24}$")
 _CASE_STATE_FILTERS: Final[dict[str, tuple[str, ...]]] = {
@@ -54,7 +57,6 @@ _CASE_STATE_FILTERS: Final[dict[str, tuple[str, ...]]] = {
     "emitted": ("SIGNAL_EMITTED",),
 }
 _CONSOLE_COMMAND_ACTIONS: Final = frozenset({"pause_entries", "resume_entries", "flatten"})
-_MAX_FUTURE_SKEW_NS: Final = 30_000_000_000
 _MAX_COMMAND_REQUEST_BYTES: Final = 2_048
 _COMMAND_REQUEST_OPENAPI: Final = {
     "requestBody": {
@@ -84,51 +86,6 @@ def get_trading_status(request: Request) -> Response:
         {"decision": {"last_case_at_ms": last_case_at_ms}, "execution": execution_status},
         request,
         envelope=_StatusEnvelope,
-    )
-
-
-@router.get("/trading/gate", response_model=_GateEnvelope)
-def get_trading_gate(request: Request) -> Response:
-    _validate_query_params(request, supported={"token"})
-    runtime = _authenticated_runtime(request)
-    now_ms = int(time.time() * 1000)
-    with runtime.repositories() as repos:
-        report = repos.trading.candidate_admission_report(now_ms=now_ms, limit=_GATE_LIMIT + 1)
-    rows = report["decisions"]
-    return _etagged(
-        {
-            "decisions": [_gate_decision(row) for row in rows[:_GATE_LIMIT]],
-            "status_counts_24h": report["candidate_counts_24h"],
-            "reason_counts_24h": report["candidate_reasons_24h"],
-            "complete": len(rows) <= _GATE_LIMIT,
-        },
-        request,
-        envelope=_GateEnvelope,
-    )
-
-
-@router.get("/trading/gate/{event_id}", response_model=_GateSourceEnvelope)
-def get_trading_gate_source(request: Request, event_id: str) -> Response:
-    _validate_query_params(request, supported={"lane", "token"})
-    if not event_id or len(event_id) > 128:
-        raise ApiBadRequest("trading_event_id_invalid", field="event_id")
-    lane = request.query_params.get("lane", "")
-    if lane and lane != "oi":
-        raise ApiBadRequest("trading_event_lane_invalid", field="lane")
-    runtime = _authenticated_runtime(request)
-    if lane != "oi":
-        return _etagged(
-            {"event_id": event_id, "joinable": False, "decision": None},
-            request,
-            envelope=_GateSourceEnvelope,
-        )
-    source_key = f"oi:{event_id}:{_OI_METRIC_VERSION}"
-    with runtime.repositories() as repos:
-        row = repos.trading.gate_decision_for_source_key(source_key=source_key)
-    return _etagged(
-        {"event_id": event_id, "joinable": True, "decision": None if row is None else _gate_decision(row)},
-        request,
-        envelope=_GateSourceEnvelope,
     )
 
 
@@ -224,11 +181,8 @@ async def post_operator_intent(
             operator_identity="operator-console",
             authentication_identity="http-operator-write-token:v1",
             requested_at_ns=requested_at_ns,
+            now_ns=now_ns,
         )
-        if requested_at_ns > now_ns + _MAX_FUTURE_SKEW_NS:
-            raise OperatorCommandError("operator_command_clock_invalid")
-        if prepared.value.expires_at_ns <= now_ns:
-            raise OperatorCommandError("operator_command_expired")
     except OperatorCommandError as exc:
         raise ApiBadRequest(exc.code, field="text") from None
     receipt = await run_in_threadpool(runtime.persist_operator_intent, prepared)
@@ -246,24 +200,6 @@ async def post_operator_intent(
             },
         },
     )
-
-
-def _gate_decision(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "source_key": str(row["source_key"]),
-        "event_id": _oi_event_id(row.get("source_key")),
-        "case_id": row.get("case_id"),
-        "gate_status": str(row["status"]),
-        "gate_stage": str(row["stage"]),
-        "gate_reason": str(row["reason"]),
-        "gate_retryable": bool(row["retryable"]),
-        # The rulebook that decided the row is inside `evidence`, where the console renders it with
-        # the numbers it read rather than as two fields of its own (#537 PR-3).
-        "gate_evidence": row.get("evidence") or {},
-        "gate_first_evaluated_at_ms": int(row["first_evaluated_at_ms"]),
-        "gate_last_evaluated_at_ms": int(row["last_evaluated_at_ms"]),
-        "gate_attempt_count": int(row["attempt_count"]),
-    }
 
 
 def _case(row: dict[str, Any]) -> dict[str, Any]:

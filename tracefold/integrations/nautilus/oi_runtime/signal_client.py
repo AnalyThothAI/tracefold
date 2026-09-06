@@ -41,10 +41,11 @@ class ExecutionSignalClient:
         self._bytes = 0
         self._lock = Lock()
 
-    @property
-    def queued_count(self) -> int:
-        with self._lock:
-            return len(self._values) + len(self._commands)
+    # The two the Runtime itself reads: `_pump` drains Commands before it looks at a single Signal, so
+    # it has to know both that the Command queue is empty and that the last scan of it was complete.
+    # `queued_count`, `queued_bytes`, `pending_ids` and `pending_command_ids` were four more public
+    # properties beside them that only assertions ever read; they are test-side readers of this
+    # object's private state now (`tests/helpers/nautilus_oi_runtime_process.py`, #589 PR-2).
 
     @property
     def queued_command_count(self) -> int:
@@ -55,21 +56,6 @@ class ExecutionSignalClient:
     def command_scan_complete(self) -> bool:
         with self._lock:
             return self._command_scan_complete
-
-    @property
-    def queued_bytes(self) -> int:
-        with self._lock:
-            return self._bytes
-
-    @property
-    def pending_ids(self) -> frozenset[str]:
-        with self._lock:
-            return frozenset(self._pending_ids)
-
-    @property
-    def pending_command_ids(self) -> frozenset[str]:
-        with self._lock:
-            return frozenset(self._pending_command_ids)
 
     def poll_once(self, reader: SignalReader) -> int:
         with self._lock:

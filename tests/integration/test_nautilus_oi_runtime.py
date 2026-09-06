@@ -17,6 +17,14 @@ from uuid import uuid4
 import psycopg
 import pytest
 
+from tests.helpers.nautilus_oi_runtime_process import (
+    audit_queued_count,
+    bridge_connected,
+    signal_pending_command_ids,
+    signal_pending_ids,
+    signal_queued_bytes,
+    signal_queued_count,
+)
 from tests.nautilus_oi_runtime_fixtures import NOW_NS, oi_profile
 from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
 from tracefold.app.nautilus.oi_runtime import (
@@ -124,7 +132,7 @@ def _append_entry_order_fact(repo: TradingRepository, *, signal_id: str, observe
             "observed_at_ns": observed_at_ns,
             "native_identity_references": (
                 deterministic_client_order_id(
-                    namespace=oi_profile().client_order_namespace,
+                    namespace=oi_profile().namespace,
                     entry_id=signal_id,
                     leg="entry",
                 ).value,
@@ -280,7 +288,7 @@ def _wait_for_bridge(
 def _stop_bridge(bridge: OiRuntimeDatabaseBridge) -> None:
     bridge.stop()
     bridge.join(2.0)
-    assert bridge.connected is False
+    assert bridge_connected(bridge) is False
 
 
 _NAUTILUS_SHAPED_REFERENCES = (
@@ -320,7 +328,7 @@ def test_a_database_refused_batch_is_quarantined_and_leaves_a_durable_audit_gap(
         assert signals.poll_once(partial(load_unresolved_trade_signals, repos)) == 1
         signal = signals.next_nowait()
         assert signal is not None
-        assert signals.pending_ids == {signal.signal_id}
+        assert signal_pending_ids(signals) == {signal.signal_id}
 
         orphan_command_id = "9" * 64
         orphan = factory.create(
@@ -350,8 +358,8 @@ def test_a_database_refused_batch_is_quarantined_and_leaves_a_durable_audit_gap(
 
         assert flush_audit_once(repos=repos, audit=audit, signals=signals) == 3
 
-        assert signals.pending_ids == set()
-        assert audit.queued_count == 0
+        assert signal_pending_ids(signals) == set()
+        assert audit_queued_count(audit) == 0
         assert audit.healthy is True
         rows = conn.execute(
             "SELECT event_id, normalized_kind, summary FROM trading_execution_observations ORDER BY seq"
@@ -441,13 +449,13 @@ def test_production_bridge_delivers_within_one_poll_interval_on_one_session() ->
         )
         bridge = _runtime_bridge(signals)
         bridge.start()
-        _wait_for_bridge(bridge, lambda: bridge.connected)
+        _wait_for_bridge(bridge, lambda: bridge_connected(bridge))
 
         latencies: list[float] = []
         for suffix in "123456":
             started = time.perf_counter()
             _append_signal(repo, suffix=suffix)
-            _wait_for_bridge(bridge, lambda: signals.queued_count == 1)
+            _wait_for_bridge(bridge, lambda: signal_queued_count(signals) == 1)
             assert signals.next_nowait() is not None
             latencies.append(time.perf_counter() - started)
 
@@ -482,27 +490,27 @@ def test_production_bridge_100_pair_burst_is_bounded_and_repeat_polls_do_not_dup
         )
         bridge = _runtime_bridge(signals)
         bridge.start()
-        _wait_for_bridge(bridge, lambda: bridge.connected)
+        _wait_for_bridge(bridge, lambda: bridge_connected(bridge))
 
         _append_input_burst(repo, size=100)
-        _wait_for_bridge(bridge, lambda: signals.queued_count == 200)
+        _wait_for_bridge(bridge, lambda: signal_queued_count(signals) == 200)
         # Several more poll cycles over the same unresolved rows: the in-process pending set is what
         # keeps a redelivery from becoming a second queued input.
         time.sleep(1.0)
 
-        assert signals.queued_count == 200
+        assert signal_queued_count(signals) == 200
         assert signals.queued_command_count == 100
-        assert signals.queued_bytes <= 1_048_576
+        assert signal_queued_bytes(signals) <= 1_048_576
         commands = tuple(signals.next_command_nowait() for _ in range(100))
         values = tuple(signals.next_nowait() for _ in range(100))
         assert None not in commands
         assert None not in values
         assert len({command.command_id for command in commands if command is not None}) == 100
         assert len({value.signal_id for value in values if value is not None}) == 100
-        assert signals.queued_count == 0
-        assert signals.queued_bytes == 0
-        assert len(signals.pending_command_ids) == 100
-        assert len(signals.pending_ids) == 100
+        assert signal_queued_count(signals) == 0
+        assert signal_queued_bytes(signals) == 0
+        assert len(signal_pending_command_ids(signals)) == 100
+        assert len(signal_pending_ids(signals)) == 100
     finally:
         if bridge is not None:
             _stop_bridge(bridge)
@@ -521,7 +529,7 @@ def test_production_bridge_reconnect_resumes_consuming_on_a_new_session() -> Non
         )
         bridge = _runtime_bridge(signals)
         bridge.start()
-        _wait_for_bridge(bridge, lambda: bridge.connected)
+        _wait_for_bridge(bridge, lambda: bridge_connected(bridge))
         row = writer.execute(
             """
             SELECT pg_terminate_backend(pid) AS terminated
@@ -532,10 +540,10 @@ def test_production_bridge_reconnect_resumes_consuming_on_a_new_session() -> Non
         ).fetchone()
         assert row == {"terminated": True}
 
-        _wait_for_bridge(bridge, lambda: not bridge.connected)
-        _wait_for_bridge(bridge, lambda: bridge.connected)
+        _wait_for_bridge(bridge, lambda: not bridge_connected(bridge))
+        _wait_for_bridge(bridge, lambda: bridge_connected(bridge))
         _append_signal(repo, suffix="8")
-        _wait_for_bridge(bridge, lambda: signals.queued_count == 1)
+        _wait_for_bridge(bridge, lambda: signal_queued_count(signals) == 1)
         assert signals.next_nowait() is not None
     finally:
         if bridge is not None:
@@ -759,7 +767,11 @@ def test_real_postgres_signal_to_pinned_nautilus_callback_to_observation_process
     assert receipt["flushed"] == 6
     assert receipt["open_position_quantity"] == "0.049"
     assert len(receipt["orders"]) == 2
-    entry, protection = receipt["orders"]
+    # By role, not by position: the receipt's order list comes from a Nautilus cache index that is a
+    # set of `ClientOrderId`, so its iteration order follows the id strings and is not the submission
+    # order it looked like (#589 PR-2 changed the namespace those ids are derived from).
+    entry = next(order for order in receipt["orders"] if not order["reduce_only"])
+    protection = next(order for order in receipt["orders"] if order["reduce_only"])
     assert entry == {
         "client_order_id": entry["client_order_id"],
         "order_type": "MARKET",
@@ -847,6 +859,7 @@ def test_authenticated_cli_to_postgres_to_nautilus_command_observation_process_s
         operator_identity="local-cli:0",
         authentication_identity="local-os-uid:0",
         requested_at_ns=NOW_NS,
+        now_ns=NOW_NS,
     )
     conn = connect_postgres_test(read_only=False)
     try:
@@ -1192,7 +1205,7 @@ def test_the_bridge_thread_owns_the_projection_write_and_the_account_slot_heartb
             projector=projector,
         )
         bridge.start()
-        _wait_for_bridge(bridge, lambda: bridge.connected)
+        _wait_for_bridge(bridge, lambda: bridge_connected(bridge))
 
         started = projector.current
         running = replace(

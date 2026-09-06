@@ -296,40 +296,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/trading/gate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Trading Gate */
-        get: operations["get_trading_gate_api_trading_gate_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/trading/gate/{event_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Trading Gate Source */
-        get: operations["get_trading_gate_source_api_trading_gate__event_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/trading/status": {
         parameters: {
             query?: never;
@@ -525,26 +491,6 @@ export interface components {
         /** ApiEnvelope[TradingExecutionsData] */
         ApiEnvelope_TradingExecutionsData_: {
             data?: components["schemas"]["TradingExecutionsData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[TradingGateData] */
-        ApiEnvelope_TradingGateData_: {
-            data?: components["schemas"]["TradingGateData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[TradingGateSourceData] */
-        ApiEnvelope_TradingGateSourceData_: {
-            data?: components["schemas"]["TradingGateSourceData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -3217,64 +3163,6 @@ export interface components {
             /** Executions */
             executions?: components["schemas"]["TradingExecutionRowData"][];
         };
-        /**
-         * TradingGateData
-         * @description The admission ledger `/news/oi` joins each OI frame against (#537 D4).
-         *
-         *     The running admission configuration was published here as `config` and the ledger's two extreme
-         *     clocks as `latest_source_at_ms` / `latest_gate_eligible_at_ms`; the second pair cost an unbounded
-         *     scan of the 90-day ledger on every 15 s poll for one card hint. Both are gone with the desk's own
-         *     read of this route (#537 PR-5).
-         */
-        TradingGateData: {
-            /** Complete */
-            complete: boolean;
-            /** Decisions */
-            decisions?: components["schemas"]["TradingGateDecisionData"][];
-            /** Reason Counts 24H */
-            reason_counts_24h?: {
-                [key: string]: number;
-            };
-            /** Status Counts 24H */
-            status_counts_24h?: {
-                [key: string]: number;
-            };
-        };
-        /** TradingGateDecisionData */
-        TradingGateDecisionData: {
-            /** Case Id */
-            case_id?: string | null;
-            /** Event Id */
-            event_id?: string | null;
-            /** Gate Attempt Count */
-            gate_attempt_count?: number | null;
-            /** Gate Evidence */
-            gate_evidence?: {
-                [key: string]: string | number | boolean | string[] | null;
-            };
-            /** Gate First Evaluated At Ms */
-            gate_first_evaluated_at_ms?: number | null;
-            /** Gate Last Evaluated At Ms */
-            gate_last_evaluated_at_ms?: number | null;
-            /** Gate Reason */
-            gate_reason?: string | null;
-            /** Gate Retryable */
-            gate_retryable?: boolean | null;
-            /** Gate Stage */
-            gate_stage?: ("source" | "venue" | "eligibility" | "market_context" | "freeze") | null;
-            /** Gate Status */
-            gate_status?: ("DEFERRED" | "REJECTED" | "CASE_CREATED" | "EXPIRED") | null;
-            /** Source Key */
-            source_key: string;
-        };
-        /** TradingGateSourceData */
-        TradingGateSourceData: {
-            decision?: components["schemas"]["TradingGateDecisionData"] | null;
-            /** Event Id */
-            event_id: string;
-            /** Joinable */
-            joinable: boolean;
-        };
         /** TradingOperatorCommandReceiptData */
         TradingOperatorCommandReceiptData: {
             /** Command Id */
@@ -3803,57 +3691,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_TradingExecutionsData_"];
-                };
-            };
-        };
-    };
-    get_trading_gate_api_trading_gate_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_TradingGateData_"];
-                };
-            };
-        };
-    };
-    get_trading_gate_source_api_trading_gate__event_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                event_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_TradingGateSourceData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

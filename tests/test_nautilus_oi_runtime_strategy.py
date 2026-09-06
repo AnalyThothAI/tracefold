@@ -19,6 +19,11 @@ from nautilus_trader.model.position import Position
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
 
+from tests.helpers.nautilus_oi_runtime_process import (
+    audit_queued_count,
+    signal_pending_command_ids,
+    signal_pending_ids,
+)
 from tests.nautilus_oi_runtime_fixtures import (
     ACCOUNT_ID,
     NOW_NS,
@@ -92,8 +97,8 @@ def test_signal_submits_one_native_entry_and_emits_unique_disposition() -> None:
     assert order.is_reduce_only is False
     assert order.quantity.as_decimal() == Decimal("0.049")
     assert order.client_order_id.value.startswith("tf")
-    assert context.signals.pending_ids == {signal.signal_id}
-    assert context.audit.queued_count == 2
+    assert signal_pending_ids(context.signals) == {signal.signal_id}
+    assert audit_queued_count(context.audit) == 2
 
 
 def test_cold_activation_starts_paused_until_an_explicit_resume() -> None:
@@ -291,7 +296,7 @@ def test_flatten_is_runtime_accepted_but_not_complete_until_fresh_flat_reconcili
     assert accepted[0].normalized_kind == "readiness"
     assert accepted[0].summary == {"action": "flatten", "control_stage": "runtime_accepted"}
     assert context.strategy.control_state().flatten_pending == (flatten.command_id,)
-    assert context.signals.pending_command_ids == {flatten.command_id}
+    assert signal_pending_command_ids(context.signals) == {flatten.command_id}
     assert context.reconciliation_requests == ["flatten_pending"]
 
     assert context.strategy.reconcile_runtime(
@@ -356,7 +361,7 @@ def test_a_redelivered_signal_whose_entry_id_is_cached_submits_no_second_economi
     signal = trade_signal()
     first = registered_oi_strategy()
     entry_id = deterministic_client_order_id(
-        namespace=first.profile.client_order_namespace,
+        namespace=first.profile.namespace,
         entry_id=signal.signal_id,
         leg="entry",
     )
@@ -384,7 +389,7 @@ def test_closed_replayed_entry_does_not_keep_instrument_busy() -> None:
     next_signal = trade_signal(signal_id="9" * 64)
     first = registered_oi_strategy()
     entry_id = deterministic_client_order_id(
-        namespace=first.profile.client_order_namespace,
+        namespace=first.profile.namespace,
         entry_id=first_signal.signal_id,
         leg="entry",
     )
@@ -412,7 +417,7 @@ def test_restart_reconciliation_rejects_wrong_entry_shape() -> None:
     signal = trade_signal()
     first = registered_oi_strategy()
     entry_id = deterministic_client_order_id(
-        namespace=first.profile.client_order_namespace,
+        namespace=first.profile.namespace,
         entry_id=signal.signal_id,
         leg="entry",
     )
@@ -495,7 +500,7 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
         )
     )
     old_stop_id = deterministic_client_order_id(
-        namespace=first.profile.client_order_namespace,
+        namespace=first.profile.namespace,
         entry_id=signal.signal_id,
         leg="protection:1",
     )
@@ -510,7 +515,7 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
     )
     _accepted(first, old_stop, position_id=position_id)
     replacement_id = deterministic_client_order_id(
-        namespace=first.profile.client_order_namespace,
+        namespace=first.profile.namespace,
         entry_id=signal.signal_id,
         leg="protection:2",
     )
@@ -769,7 +774,7 @@ def test_cached_same_id_invalid_protection_flattens_instead_of_replaying() -> No
     first_stop = context.strategy.submitted[1][0]
     context.strategy.on_order_accepted(_accepted(context, first_stop, position_id=position_id))
     cached_id = deterministic_client_order_id(
-        namespace=context.profile.client_order_namespace,
+        namespace=context.profile.namespace,
         entry_id=signal.signal_id,
         leg="protection:2",
     )
@@ -1031,7 +1036,7 @@ def test_cached_exit_with_wrong_shape_is_never_reclaimed() -> None:
         )
     )
     bad_exit_id = deterministic_client_order_id(
-        namespace=context.profile.client_order_namespace,
+        namespace=context.profile.namespace,
         entry_id=signal.signal_id,
         leg="exit",
     )
@@ -1321,7 +1326,7 @@ def _cold_stop(context: SimpleNamespace, entry_id: str, *, quantity: str = "0.05
         trigger_type=TriggerType.LAST_PRICE,
         reduce_only=True,
         client_order_id=deterministic_client_order_id(
-            namespace=context.profile.client_order_namespace,
+            namespace=context.profile.namespace,
             entry_id=entry_id,
             leg=protection_leg(1),
         ),
@@ -1641,7 +1646,7 @@ def test_a_stale_account_clock_returns_the_signal_to_the_ledger_and_the_ttl_stil
     assert context.strategy.submitted == []
     assert _dispositions(context) == []
     # The claim is released, not marked durable: nothing about this Signal is in the ledger.
-    assert context.signals.pending_ids == frozenset()
+    assert signal_pending_ids(context.signals) == frozenset()
 
     assert context.signals.poll_once(SignalRows(signal)) == 1
     context.readiness.reconciled(account_observed_at_ns=NOW_NS, reconciliation_observed_at_ns=NOW_NS)
@@ -1664,7 +1669,7 @@ def test_a_retried_signal_that_never_recovers_still_ends_as_expired() -> None:
 
     for _ in range(3):
         context.strategy.on_timer(None)
-        assert context.signals.pending_ids == frozenset()
+        assert signal_pending_ids(context.signals) == frozenset()
         assert context.signals.poll_once(SignalRows(signal)) == 1
 
     context.clock.set_time(signal.expires_at_ns + 1)
@@ -1673,7 +1678,7 @@ def test_a_retried_signal_that_never_recovers_still_ends_as_expired() -> None:
     assert context.strategy.submitted == []
     expired = _dispositions(context)
     assert [value.summary["disposition"] for value in expired] == ["expired"]
-    assert signal.signal_id in context.signals.pending_ids
+    assert signal.signal_id in signal_pending_ids(context.signals)
 
 
 @pytest.mark.parametrize(
@@ -1700,7 +1705,7 @@ def test_every_transient_entry_refusal_returns_the_signal_instead_of_burying_it(
     assert reason in RETRYABLE_ENTRY_REASONS
     assert context.strategy.submitted == []
     assert _dispositions(context) == []
-    assert context.signals.pending_ids == frozenset()
+    assert signal_pending_ids(context.signals) == frozenset()
 
 
 def test_a_deterministic_refusal_is_still_written_once_and_never_redelivered() -> None:
@@ -1713,4 +1718,4 @@ def test_a_deterministic_refusal_is_still_written_once_and_never_redelivered() -
 
     assert context.strategy.submitted == []
     assert [value.summary["disposition"] for value in _dispositions(context)] == ["instrument_unmapped"]
-    assert context.signals.pending_ids == {signal.signal_id}
+    assert signal_pending_ids(context.signals) == {signal.signal_id}

@@ -198,10 +198,10 @@ class OiRuntimeDatabaseBridge:
         self._appended_since_recovery_read = 0
         self._recovery_read_at_ns = 0
 
-    @property
-    def connected(self) -> bool:
-        with self._lock:
-            return self._connected
+    # `_connected` is this loop's own record of whether it currently holds a session. Nothing in
+    # production reads it -- no gate, no projection, no log line -- so the public `connected` property
+    # that stood here was a production accessor with only assertions behind it, and the reconnect
+    # proof that needs it reads the flag through a test-side helper now (#589 PR-2).
 
     @property
     def fatal_error(self) -> BaseException | None:

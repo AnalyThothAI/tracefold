@@ -188,8 +188,19 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     assert "/api/trading/execution/observations" not in catalog.query_routes
     # The Command path is a write now and only a write: its GET went with the other two (#537 PR-5).
     assert "/api/trading/execution/commands" not in catalog.query_routes
-    # The two CLI-only ledger reads stay audited without belonging to a public route.
-    assert {"trading_signal_ledger", "trading_observation_ledger"} <= {query.name for query in catalog.queries}
+    # #589 PR-2. The admission ledger's two routes are gone and `tracefold trading gate` is what runs
+    # their statements now. A statement stops being audited when nothing executes it, not when a route
+    # is deleted, so both stay here beside the other two CLI-only ledger reads -- and the grouped
+    # 24 h distribution, which had no caller left at all, does not.
+    assert not any(route.startswith("/api/trading/gate") for route in catalog.query_routes)
+    query_names = {query.name for query in catalog.queries}
+    assert {
+        "trading_signal_ledger",
+        "trading_observation_ledger",
+        "trading_gate_decisions_since",
+        "trading_gate_decision_for_source_key",
+    } <= query_names
+    assert "trading_gate_decision_counts" not in query_names
     assert not any(
         route.startswith(("/api/news/stories", "/api/news/brief", "/api/news/sources"))
         for route in catalog.query_routes

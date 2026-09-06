@@ -24,6 +24,7 @@ from psycopg.rows import dict_row
 
 from tests.nautilus_oi_runtime_fixtures import ACCOUNT_ID, NOW_NS, oi_profile
 from tracefold.app.nautilus.oi_runtime import (
+    OiRuntimeDatabaseBridge,
     flush_audit_once,
     load_recovery_inputs,
     load_runtime_control_state,
@@ -47,6 +48,47 @@ from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrate
 
 _COLD_QUANTITY = Decimal("0.049")
 _COLD_ENTRY_PRICE = Decimal(10_000)
+
+
+# Test-side readers of bounded-queue and bridge private state (#589 PR-2). Production reads none of
+# these: the Runtime drains its queues through `next_nowait` / `next_command_nowait` and decides on
+# `queued_command_count` plus `command_scan_complete`, and nothing at all reads whether the database
+# bridge currently holds a session. Six public properties existed only so assertions could name what a
+# bound had done, which is a reader of the object's internals wherever it is spelled -- so they are
+# spelled here, once, instead of on the production classes.
+def audit_queued_count(sink: AuditSink) -> int:
+    with sink._lock:
+        return len(sink._values)
+
+
+def audit_queued_bytes(sink: AuditSink) -> int:
+    with sink._lock:
+        return sink._bytes
+
+
+def signal_queued_count(client: ExecutionSignalClient) -> int:
+    with client._lock:
+        return len(client._values) + len(client._commands)
+
+
+def signal_queued_bytes(client: ExecutionSignalClient) -> int:
+    with client._lock:
+        return client._bytes
+
+
+def signal_pending_ids(client: ExecutionSignalClient) -> frozenset[str]:
+    with client._lock:
+        return frozenset(client._pending_ids)
+
+
+def signal_pending_command_ids(client: ExecutionSignalClient) -> frozenset[str]:
+    with client._lock:
+        return frozenset(client._pending_command_ids)
+
+
+def bridge_connected(bridge: OiRuntimeDatabaseBridge) -> bool:
+    with bridge._lock:
+        return bridge._connected
 
 
 class _CountingOiStrategy(OiNautilusStrategy):
@@ -134,7 +176,7 @@ def _seed_cold_cache(
         trigger_type=TriggerType.LAST_PRICE,
         reduce_only=True,
         client_order_id=deterministic_client_order_id(
-            namespace=profile.client_order_namespace,
+            namespace=profile.namespace,
             entry_id=entry_id,
             leg=protection_leg(1),
         ),
@@ -367,8 +409,8 @@ def main() -> None:
                     ],
                     "open_position_quantity": str(positions[0].quantity) if positions else None,
                     "flushed": flushed,
-                    "pending": sorted(signals.pending_ids),
-                    "pending_commands": sorted(signals.pending_command_ids),
+                    "pending": sorted(signal_pending_ids(signals)),
+                    "pending_commands": sorted(signal_pending_command_ids(signals)),
                     "control": {
                         "entries_paused": strategy.control_state().entries_paused,
                         "emergency_halted": strategy.control_state().emergency_halted,

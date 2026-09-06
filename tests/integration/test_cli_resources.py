@@ -122,6 +122,63 @@ def test_trading_issue_records_idempotent_intent_without_interpreting_activation
     }
 
 
+def test_trading_gate_reads_the_admission_ledger_the_deleted_routes_read(postgres_clone_dsn: str) -> None:
+    """#589 PR-2 (T-F13). The CLI is the admission ledger's reader now, over real PostgreSQL.
+
+    `GET /api/trading/gate` and `GET /api/trading/gate/{event_id}` were the only public shapes over
+    `trading_candidate_gate_decisions`, and #553 PR-1 deleted the OI frame table that was their only
+    browser reader. This command runs the same two repository statements: the window read, newest
+    frame first, and the one row by source key.
+    """
+
+    from tests.postgres_test_utils import connect_postgres_test
+    from tracefold.trading.storage.root import TradingRepository
+
+    now_ms = int(time.time() * 1000)
+    source_key = "oi:cli-gate-evt:oi_signal_v1"
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        with conn.transaction():
+            repo.record_gate_decision(
+                source_key=source_key,
+                trigger_kind="oi",
+                underlying_key="crypto:DELL",
+                source_observed_at_ms=now_ms - 60_000,
+                status="REJECTED",
+                stage="venue",
+                reason="instrument_unmapped",
+                retryable=False,
+                evidence={"market_key": "crypto:perp:DELL:USDT", "venue": "binance.usdm"},
+                case_id=None,
+                now_ms=now_ms,
+            )
+    finally:
+        conn.close()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        home = Path(tmpdir)
+        write_runtime_config(home, postgres_dsn=postgres_migration_test_dsn(postgres_clone_dsn))
+        stdout = io.StringIO()
+        with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
+            exit_codes = [
+                main(["trading", "gate"], stdout=stdout),
+                main(["trading", "gate", "--source-key", source_key], stdout=stdout),
+                main(["trading", "gate", "--source-key", "oi:absent:oi_signal_v1"], stdout=stdout),
+            ]
+
+    window, by_key, absent = (json.loads(line) for line in stdout.getvalue().splitlines())
+    assert exit_codes == [0, 0, 0]
+    assert [row["source_key"] for row in window["data"]] == [source_key]
+    assert by_key["data"] == window["data"]
+    # The stored `evidence` jsonb is rendered exactly as the deciding rule wrote it (#532).
+    assert by_key["data"][0]["evidence"]["market_key"] == "crypto:perp:DELL:USDT"
+    assert by_key["data"][0]["status"] == "REJECTED"
+    assert by_key["data"][0]["reason"] == "instrument_unmapped"
+    # A source key with no decision is an empty page, not an error and not a missing key.
+    assert absent == {"ok": True, "data": []}
+
+
 def _management_url(url: str) -> str:
     from urllib.parse import urlsplit
 

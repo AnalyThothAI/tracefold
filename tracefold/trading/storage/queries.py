@@ -180,8 +180,7 @@ def console_executions_statement(*, since_ns: int, limit: int) -> tuple[str, dic
                    AS stop_trigger_price,
                  (array_agg(observation.summary ORDER BY observation.seq DESC)
                     FILTER (WHERE observation.normalized_kind = 'position'))[1]
-                   AS position_summary,
-                 max(observation.observed_at_ns) AS last_observation_at_ns
+                   AS position_summary
             FROM entry_window entry
             LEFT JOIN trading_execution_observations observation
                    ON coalesce(observation.signal_id, observation.command_id) = entry.entry_id
@@ -200,8 +199,7 @@ def console_executions_statement(*, since_ns: int, limit: int) -> tuple[str, dic
                position_summary ->> 'status' AS position_status,
                position_summary ->> 'exit_price' AS exit_price,
                position_summary ->> 'realized_pnl_usd' AS realized_pnl_usd,
-               position_summary ->> 'exit_reason' AS exit_reason,
-               greatest(observed_at_ns, coalesce(last_observation_at_ns, 0)) AS last_observed_at_ns
+               position_summary ->> 'exit_reason' AS exit_reason
           FROM folded
          ORDER BY observed_at_ns DESC, entry_id DESC
     """

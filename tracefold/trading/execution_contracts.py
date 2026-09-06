@@ -216,10 +216,10 @@ class ExecutionObservationV1(_FrozenContract):
             raise ValueError("execution_observation_signal_identity_required")
         if self.normalized_kind == "control_disposition" and self.command_id is None:
             raise ValueError("execution_observation_command_identity_required")
-        if self.normalized_kind == "signal_disposition" and self.command_id is not None:
-            raise ValueError("execution_observation_correlation_ambiguous")
-        if self.normalized_kind == "control_disposition" and self.signal_id is not None:
-            raise ValueError("execution_observation_correlation_ambiguous")
+        # A `signal_disposition` that also carried a command id, and a `control_disposition` that also
+        # carried a signal id, were two more `correlation_ambiguous` raises here. Neither could fire:
+        # the mutual-exclusion rule above rejects any row holding both identities before either kind
+        # rule is reached, and each kind rule requires the identity of its own half (#589 PR-2).
         return self
 
 

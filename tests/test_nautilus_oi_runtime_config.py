@@ -17,8 +17,8 @@ from tests.nautilus_oi_runtime_fixtures import NOW_NS, oi_profile
 from tracefold.app.nautilus.root import _build_active_node, _discover_routes
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.config import (
+    ActiveRuntimeMode,
     BinanceRuntimeCredentials,
-    RuntimeMode,
     binance_environment,
     build_oi_node_config,
 )
@@ -36,7 +36,7 @@ from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrate
     [("paper", BinanceEnvironment.DEMO), ("live", BinanceEnvironment.LIVE)],
 )
 def test_paper_and_live_change_only_cold_identity_and_binance_environment(
-    mode: RuntimeMode,
+    mode: ActiveRuntimeMode,
     environment: BinanceEnvironment,
 ) -> None:
     profile = oi_profile(mode)
@@ -65,12 +65,17 @@ def test_paper_and_live_change_only_cold_identity_and_binance_environment(
     assert config.cache.use_instance_id is True
 
 
-def test_disabled_profile_builds_no_node() -> None:
-    # #537 PR-4. A disabled Runtime is a branch in `run_nautilus`, not a second profile carried to a
-    # second `run_nautilus` that asserted the profile was disabled and returned. Building a node out
-    # of one is the only refusal left, and it is the one that matters.
-    with pytest.raises(ValueError, match="oi_runtime_disabled_has_no_node"):
-        build_oi_node_config(oi_profile("disabled"), BinanceRuntimeCredentials(api_key="x", api_secret="y"))
+def test_disabled_is_not_a_runtime_profile_at_all() -> None:
+    """#589 PR-2 (T-F14). `disabled` is refused where a profile is built, not re-checked downstream.
+
+    #537 PR-4 made a disabled Runtime one branch in `run_nautilus`, which returns before any profile
+    exists. Three more guards then re-proved the same thing on paths a disabled profile could not
+    reach - the mode Literal, the node builder and the strategy constructor - so the mode a profile
+    may hold is exactly the mode that can trade, and the refusal is here.
+    """
+
+    with pytest.raises(ValueError, match="oi_runtime_mode_invalid"):
+        oi_profile(cast(ActiveRuntimeMode, "disabled"))
 
 
 def test_binance_environment_is_the_single_paper_to_demo_decision() -> None:
@@ -85,7 +90,7 @@ def test_binance_environment_is_the_single_paper_to_demo_decision() -> None:
 
 def test_unknown_mode_fails_closed_instead_of_falling_through_to_live() -> None:
     with pytest.raises(ValueError, match="oi_runtime_mode_invalid"):
-        replace(oi_profile("paper"), mode=cast(RuntimeMode, "staging"))
+        replace(oi_profile("paper"), mode=cast(ActiveRuntimeMode, "staging"))
 
 
 def test_credentials_never_expose_secrets_in_repr() -> None:
@@ -98,17 +103,17 @@ def test_credentials_never_expose_secrets_in_repr() -> None:
     assert "visible-secret" not in repr(node)
 
 
-def test_paper_and_live_have_disjoint_profile_cache_and_client_namespaces() -> None:
+def test_paper_and_live_have_disjoint_profile_namespaces() -> None:
     paper = oi_profile("paper")
     live = oi_profile("live")
     paper_node = build_oi_node_config(paper, BinanceRuntimeCredentials("paper-key", "paper-secret"))
     live_node = build_oi_node_config(live, BinanceRuntimeCredentials("live-key", "live-secret"))
 
     # One account slot, two modes: the mode is what keeps paper and live from claiming each other's
-    # orders, because it is the second half of the namespace every client order id is derived from.
+    # orders, because it is the second half of the one namespace the Cache identity and every client
+    # order id are both derived from (#589 PR-2).
     assert paper.account_slot == live.account_slot
-    assert paper.cache_namespace != live.cache_namespace
-    assert paper.client_order_namespace != live.client_order_namespace
+    assert paper.namespace != live.namespace
     assert paper_node.trader_id != live_node.trader_id
     assert paper_node.instance_id != live_node.instance_id
 
