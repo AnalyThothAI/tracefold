@@ -159,11 +159,25 @@ def _recorded(name: str, *, block_number: int | None = None) -> _Receipt:
     return _receipt(document, block_number=block_number)
 
 
-def _synthetic_receipt(name: str, *, block_number: int, transaction_index: int) -> _Receipt:
+def _synthetic_receipt(
+    name: str,
+    *,
+    block_number: int,
+    transaction_index: int,
+    transaction_hash: str | None = None,
+) -> _Receipt:
+    """One recorded synthetic receipt, re-anchored at a chosen position and, if asked, identity.
+
+    The fixtures each carry one transaction hash. A test that needs two movements on the chain at once
+    has to give the second its own, or the fake chain -- which is keyed by hash, as the real one is --
+    keeps only the last of them and the test proves nothing about the two coexisting.
+    """
+
     document = json.loads((FIXTURES / "synthetic_receipts.json").read_text(encoding="utf-8"))[name]["result"]
     decoded = _receipt(document, block_number=block_number)
+    tx = (transaction_hash or decoded.transaction_hash).lower()
     return _Receipt(
-        transaction_hash=decoded.transaction_hash,
+        transaction_hash=tx,
         block_number=block_number,
         block_hash=decoded.block_hash,
         transaction_index=transaction_index,
@@ -175,7 +189,7 @@ def _synthetic_receipt(name: str, *, block_number: int, transaction_index: int) 
                 data=log.data,
                 block_number=block_number,
                 block_hash=log.block_hash,
-                transaction_hash=log.transaction_hash,
+                transaction_hash=tx,
                 transaction_index=transaction_index,
                 log_index=log.log_index,
             )
@@ -656,9 +670,19 @@ def test_a_second_movement_above_the_marker_is_still_counted(conn: Any) -> None:
     _seed_cursor(conn, block=SELL_BLOCK - 1, roster_version=version)
     asyncio.run(_loop(conn, _Chain([first], head=SELL_BLOCK + 2), _Roster([])).advance())
 
-    later = _synthetic_receipt("airdrop_in", block_number=SELL_BLOCK + 5, transaction_index=0)
-    asyncio.run(_loop(conn, _Chain([first, later], head=SELL_BLOCK + 7), _Roster([])).advance())
+    # Its own identity, so both movements are on the chain at once and the second turn re-reads the
+    # first rather than replacing it.
+    later = _synthetic_receipt(
+        "airdrop_in",
+        block_number=SELL_BLOCK + 5,
+        transaction_index=0,
+        transaction_hash="0x" + "7" * 64,
+    )
+    chain = _Chain([first, later], head=SELL_BLOCK + 7)
+    result = asyncio.run(_loop(conn, chain, _Roster([])).advance())
 
+    assert result["receipts"] == 2  # both were classified this turn
+    assert result["ignored_inbound"] == 1  # and only the one above the marker was counted
     state = _state(conn)
     assert state is not None
     assert state["ignored_inbound_total"] == 2

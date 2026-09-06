@@ -1621,6 +1621,16 @@ The same two counts are published as
 are never reset; the Prometheus counters restart with the process. Both count *movements*, not passes
 over them — see `noise_through_block` below.
 
+`unknown_total` also counts transactions the RPC would not produce a receipt for. The endpoint is load
+balanced, so one that has just appeared in one node's logs can 404 from another; it is asked for again
+on the next `MISSING_RECEIPT_ATTEMPTS` turns (3, in `tracefold/news/chain_tape/loop.py`, and that
+constant is the only lever) and then banked as one `unknown` and never asked for again while the log
+window still offers it. That is deliberate: it keeps one movement to one outcome — a stored fill or one
+count, never both — and by the third turn the transaction has already been carried past the chain time
+the 30-block overlap covers, so it was leaving the window regardless. A rising `unknown_total` with
+`last_error` naming `robinhood_rpc:receipt_missing` is that path; raising the constant buys more
+retries at the cost of holding the classified position back longer.
+
 The tape's own position and last turn are one row:
 
 ```sql
