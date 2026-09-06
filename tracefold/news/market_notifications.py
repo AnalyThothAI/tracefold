@@ -118,6 +118,10 @@ REASON_LIQUIDATION_WINDOW: Final = "liquidation_followup_window_open"
 REASON_SMART_MONEY_WINDOW: Final = "smart_money_followup_window_open"
 REASON_SENDER_UNAVAILABLE: Final = "market_sender_unavailable"
 REASON_SEND_INTERRUPTED: Final = "market_send_interrupted"
+# The one reason that is final without a send: the round this observation was held in ended before a
+# card spoke for it, and the card that opened the next round covers that round only. Saying `merging`
+# here would promise a card that is never coming (#562 PR-F).
+REASON_ROUND_CLOSED: Final = "alert_round_ended_before_a_card"
 
 __all__ = [
     "BACKLOG_BATCH_MAX",
@@ -137,6 +141,7 @@ __all__ = [
     "REASON_MERGING",
     "REASON_OI_BELOW_THRESHOLD",
     "REASON_OI_ZERO_UNCHANGED",
+    "REASON_ROUND_CLOSED",
     "REASON_SENDER_UNAVAILABLE",
     "REASON_SEND_INTERRUPTED",
     "REASON_SMART_MONEY_WINDOW",
@@ -282,6 +287,13 @@ class MarketTrack:
     open_delivery_key: str | None = None
     next_due_at_ms: int | None = None
     pending_reason: str = ""
+    # Where this group's current alert round began, on the host's receive clock. A card speaks for
+    # its own round and never reaches below this: an OI change four quiet hours ago that no card was
+    # worth, or a report older than a follow-up window that has closed, was never told to anyone and
+    # is not told now, half a day late, on a card about something else. Production made the case --
+    # the first MARSCOIN card covered a suppressed 01:20 observation together with the 07:34 one that
+    # opened the next round, and printed `01:20-07:34` as its span (#562 PR-F).
+    round_started_at_ms: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -531,6 +543,7 @@ def _carry(track: MarketTrack | None, identity: MarketTrack) -> MarketTrack:
         open_delivery_key=track.open_delivery_key,
         next_due_at_ms=track.next_due_at_ms,
         pending_reason=track.pending_reason,
+        round_started_at_ms=track.round_started_at_ms,
     )
 
 
@@ -560,6 +573,7 @@ def _decide_oi(
 
     intent: IntentPlan | None = None
     reason = ""
+    round_start = track.round_started_at_ms
     for observation in observations:
         quiet_reset = (
             track.last_observed_at_ms > 0
@@ -571,13 +585,25 @@ def _decide_oi(
             continue
         if track.anchor_state == "" or quiet_reset:
             intent = IntentPlan("first", observation.item_id, now_ms)
+            # A first card is the start of a round, and this observation is its first: whatever the
+            # previous round held and never sent stays where it is (#562 PR-F).
+            round_start = observation.received_at_ms
             continue
         hold = _oi_hold(track, observation)
         if hold is None:
+            # A follow-up is inside the round it follows, so it still speaks for everything that
+            # round held: after a 6 % card, `9 → 13` is one card covering both numbers (§4.2).
             intent = IntentPlan("followup", observation.item_id, now_ms)
         else:
             reason = hold
-    return GroupTurn(track=replace(track, pending_reason=reason if intent is None else REASON_MERGING), intent=intent)
+    return GroupTurn(
+        track=replace(
+            track,
+            pending_reason=reason if intent is None else REASON_MERGING,
+            round_started_at_ms=round_start,
+        ),
+        intent=intent,
+    )
 
 
 def _oi_hold(track: MarketTrack, observation: MarketObservation) -> str | None:
@@ -618,13 +644,22 @@ def _decide_liquidation(
     # though an attempt was made: the reason names what the reader is about to be told, not what this
     # process tried to do.
     reason: TriggerReason = "first" if track.anchor_state == "" else "followup"
+    # Here the round *is* the window: the card about to be prepared speaks for the reports of this
+    # window, and a report older than a window that has closed was never covered and is not swept
+    # into this one (#562 PR-F).
+    round_start = observations[0].received_at_ms
     if window_end is None or now_ms >= window_end:
         return GroupTurn(
-            track=replace(track, pending_reason=REASON_MERGING, next_due_at_ms=now_ms),
+            track=replace(track, pending_reason=REASON_MERGING, next_due_at_ms=now_ms, round_started_at_ms=round_start),
             intent=IntentPlan(reason, trigger, now_ms),
         )
     return GroupTurn(
-        track=replace(track, pending_reason=REASON_LIQUIDATION_WINDOW, next_due_at_ms=window_end),
+        track=replace(
+            track,
+            pending_reason=REASON_LIQUIDATION_WINDOW,
+            next_due_at_ms=window_end,
+            round_started_at_ms=round_start,
+        ),
         intent=IntentPlan(reason, trigger, window_end),
     )
 
@@ -668,13 +703,22 @@ def _decide_smart_money(
     window_end = _window_end(track, SMART_MONEY_WINDOW_MS)
     trigger = observations[0].item_id
     reason: TriggerReason = "first" if track.anchor_state == "" else "followup"
+    # The same-action segment's own window is its round, exactly as liquidation's is. An action
+    # change is *not* a new round: the old segment's un-notified activity belongs on the change card
+    # with the new action, which is what §4.4 asks for, so the branch above moves nothing.
+    round_start = observations[0].received_at_ms
     if window_end is None or now_ms >= window_end:
         return GroupTurn(
-            track=replace(track, pending_reason=REASON_MERGING, next_due_at_ms=now_ms),
+            track=replace(track, pending_reason=REASON_MERGING, next_due_at_ms=now_ms, round_started_at_ms=round_start),
             intent=IntentPlan(reason, trigger, now_ms),
         )
     return GroupTurn(
-        track=replace(track, pending_reason=REASON_SMART_MONEY_WINDOW, next_due_at_ms=window_end),
+        track=replace(
+            track,
+            pending_reason=REASON_SMART_MONEY_WINDOW,
+            next_due_at_ms=window_end,
+            round_started_at_ms=round_start,
+        ),
         intent=IntentPlan(reason, trigger, window_end),
     )
 
@@ -703,7 +747,13 @@ def _decide_raw(
     if has_open_intent:
         return GroupTurn(track=replace(track, pending_reason=REASON_MERGING))
     return GroupTurn(
-        track=replace(track, pending_reason=REASON_MERGING, next_due_at_ms=now_ms),
+        track=replace(
+            track,
+            pending_reason=REASON_MERGING,
+            next_due_at_ms=now_ms,
+            # One record is the whole group, so its round starts and ends at itself.
+            round_started_at_ms=observations[0].received_at_ms,
+        ),
         intent=IntentPlan("raw", observations[0].item_id, now_ms),
     )
 
@@ -728,11 +778,17 @@ def notification_status(
     delivery_state: str | None,
     delivery_error: str | None,
     track_reason: str | None,
+    round_closed: bool,
 ) -> tuple[str, str]:
     """What the page says about one observation: an independent status and its reason.
 
     Never folded into `parse_status`. A raw card that was delivered and a parsed card that was not are
     both ordinary outcomes, and the two pairs answer two different questions (§6).
+
+    `round_closed` is the read model's own comparison -- no card claimed this observation, and the
+    alert round it belonged to started before it. There is no attempt to report and no rule still
+    holding it: it is a recorded fact no card ever spoke for, which is a fourth answer rather than a
+    variety of `merging` (#562 PR-F).
     """
 
     if delivery_state:
@@ -745,6 +801,8 @@ def notification_status(
         return "unprocessed", REASON_UNPROCESSED
     if notify_state == NOTIFY_STATE_HISTORICAL:
         return "historical", REASON_HISTORICAL
+    if round_closed:
+        return "uncovered", REASON_ROUND_CLOSED
     return "merging", str(track_reason or REASON_MERGING)
 
 
@@ -1161,9 +1219,16 @@ class MarketNotificationLoop:
         state = replace(turn.track, open_delivery_key=open_key)
         news.market_save_track(track=_track_as_row(state), now_ms=now_ms)
         if open_key is not None:
-            # Every observation this group still owes a card for joins the un-started one. This is
-            # the merge: no second "first" card, and the covered set is the Items themselves.
-            news.market_adopt_unclaimed(group_key=identity.group_key, delivery_key=open_key)
+            # Every observation of this group's *current round* that still owes a card joins the
+            # un-started one. This is the merge: no second "first" card, and the covered set is the
+            # Items themselves. The round is the bound, and it is the track's rather than this
+            # turn's, because a card merges across turns and the round it belongs to must not shift
+            # under it (#562 PR-F).
+            news.market_adopt_unclaimed(
+                group_key=identity.group_key,
+                delivery_key=open_key,
+                min_received_at_ms=state.round_started_at_ms,
+            )
         return created
 
     # --- sending ---
@@ -1478,6 +1543,7 @@ MARKET_TRACK_FIELDS: Final[tuple[str, ...]] = (
     "open_delivery_key",
     "next_due_at_ms",
     "pending_reason",
+    "round_started_at_ms",
 )
 
 
@@ -1489,6 +1555,7 @@ def _track_from_row(row: Mapping[str, Any]) -> MarketTrack:
     values["last_observed_item_id"] = str(values["last_observed_item_id"] or "")
     values["anchor_state"] = str(values["anchor_state"] or "")
     values["pending_reason"] = str(values["pending_reason"] or "")
+    values["round_started_at_ms"] = int(values["round_started_at_ms"] or 0)
     return MarketTrack(**values)
 
 

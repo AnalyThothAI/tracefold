@@ -41,7 +41,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260905_0366"
+HEAD = "20260905_0367"
 
 
 def _config():
@@ -123,6 +123,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260905_0366",
         "20260905_0365",
         "20260905_0364",
         "20260904_0363",
@@ -150,33 +151,34 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260901_0341",
         BASELINE,
     ]
-    assert revisions[0].down_revision == "20260905_0365"
-    assert revisions[1].down_revision == "20260905_0364"
-    assert revisions[2].down_revision == "20260904_0363"
-    assert revisions[3].down_revision == "20260904_0362"
-    assert revisions[4].down_revision == "20260904_0361"
-    assert revisions[5].down_revision == "20260904_0360"
-    assert revisions[6].down_revision == "20260903_0359"
-    assert revisions[7].down_revision == "20260903_0358"
-    assert revisions[8].down_revision == "20260903_0357"
-    assert revisions[9].down_revision == "20260903_0356"
-    assert revisions[10].down_revision == "20260903_0355"
-    assert revisions[11].down_revision == "20260903_0354"
-    assert revisions[12].down_revision == "20260903_0353"
-    assert revisions[13].down_revision == "20260903_0352"
-    assert revisions[14].down_revision == "20260902_0351"
-    assert revisions[15].down_revision == "20260902_0350"
-    assert revisions[16].down_revision == "20260902_0349"
-    assert revisions[17].down_revision == "20260902_0348"
-    assert revisions[18].down_revision == "20260901_0347"
-    assert revisions[19].down_revision == "20260901_0346"
-    assert revisions[20].down_revision == "20260901_0345"
-    assert revisions[21].down_revision == "20260901_0344"
-    assert revisions[22].down_revision == "20260901_0343"
-    assert revisions[23].down_revision == "20260901_0342"
-    assert revisions[24].down_revision == "20260901_0341"
-    assert revisions[25].down_revision == BASELINE
-    assert revisions[26].down_revision is None
+    assert revisions[0].down_revision == "20260905_0366"
+    assert revisions[1].down_revision == "20260905_0365"
+    assert revisions[2].down_revision == "20260905_0364"
+    assert revisions[3].down_revision == "20260904_0363"
+    assert revisions[4].down_revision == "20260904_0362"
+    assert revisions[5].down_revision == "20260904_0361"
+    assert revisions[6].down_revision == "20260904_0360"
+    assert revisions[7].down_revision == "20260903_0359"
+    assert revisions[8].down_revision == "20260903_0358"
+    assert revisions[9].down_revision == "20260903_0357"
+    assert revisions[10].down_revision == "20260903_0356"
+    assert revisions[11].down_revision == "20260903_0355"
+    assert revisions[12].down_revision == "20260903_0354"
+    assert revisions[13].down_revision == "20260903_0353"
+    assert revisions[14].down_revision == "20260903_0352"
+    assert revisions[15].down_revision == "20260902_0351"
+    assert revisions[16].down_revision == "20260902_0350"
+    assert revisions[17].down_revision == "20260902_0349"
+    assert revisions[18].down_revision == "20260902_0348"
+    assert revisions[19].down_revision == "20260901_0347"
+    assert revisions[20].down_revision == "20260901_0346"
+    assert revisions[21].down_revision == "20260901_0345"
+    assert revisions[22].down_revision == "20260901_0344"
+    assert revisions[23].down_revision == "20260901_0343"
+    assert revisions[24].down_revision == "20260901_0342"
+    assert revisions[25].down_revision == "20260901_0341"
+    assert revisions[26].down_revision == BASELINE
+    assert revisions[27].down_revision is None
     assert sorted(path.name for path in VERSIONS.glob("*.py")) == [
         "20260831_0340_baseline.py",
         "20260901_0341_trading_signal_hard_cut.py",
@@ -205,6 +207,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260905_0364_workers_runtime_capabilities.py",
         "20260905_0365_news_market_facts_at_admission.py",
         "20260905_0366_news_market_notification_tracks.py",
+        "20260905_0367_news_market_alert_round_start.py",
     ]
 
 
@@ -236,15 +239,17 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    # `20260905_0366` is now the first refusal the walk to base meets, and it is the head, so the walk
-    # stops before reversing anything: it adds the notification to-do list and the delivery ledger,
-    # whose receipts are the only record of which cards a reader actually received, and dropping the
-    # `market_notify_state` marker would make every already-notified market Item look unprocessed and
-    # re-send the whole retained backlog. `20260905_0365`'s market facts are the refusal immediately
-    # behind it, and `20260905_0364`'s dropped capability column, `20260904_0363`'s restored view and
-    # `20260904_0362`'s re-added CHECKs are all reversible and all behind that, as are the two refusals
-    # that were in front before — `20260904_0361` and `20260903_0357`.
-    with pytest.raises(RuntimeError, match="news_market_notifications_downgrade_unsupported"):
+    # `20260905_0367` is now the first refusal the walk to base meets, and it is the head, so the walk
+    # stops before reversing anything: its `round_started_at_ms` is the only record of which alert
+    # round each notification group is currently in, and dropping it returns every group to an
+    # unbounded adoption that sweeps observations from ended rounds into the next card.
+    # `20260905_0366` is the refusal immediately behind it -- the notification to-do list and the
+    # delivery ledger, whose receipts are the only record of which cards a reader actually received --
+    # then `20260905_0365`'s market facts; `20260905_0364`'s dropped capability column,
+    # `20260904_0363`'s restored view and `20260904_0362`'s re-added CHECKs are all reversible and all
+    # behind those, as are the two refusals that were in front before — `20260904_0361` and
+    # `20260903_0357`.
+    with pytest.raises(RuntimeError, match="news_market_alert_round_downgrade_unsupported"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
 
@@ -1937,5 +1942,43 @@ def test_the_market_notification_marker_separates_the_pre_enable_backlog_from_li
             )
         replayed = conn.execute("SELECT market_notify_state FROM news_items WHERE item_id = 'backlog-oi'").fetchone()
         assert replayed["market_notify_state"] == "historical"
+    finally:
+        conn.close()
+
+
+def test_the_alert_round_backfill_starts_each_group_at_its_last_send_attempt() -> None:
+    """`20260905_0367` on groups that already exist, which is every group in production.
+
+    The round start bounds what the next card adopts, so the value the upgrade leaves behind decides
+    which observations the first card after the deploy speaks for. The last send attempt is the
+    newest moment a group is known to have interrupted a reader: what came before it was either on
+    that card or held in a round that has ended. A group that has never sent keeps 0, so its first
+    card still speaks for everything it holds (#562 PR-F).
+    """
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260905_0366")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            for group_key, attempt_at_ms in (("oi|sent", 1_700_000_000_000), ("oi|never-sent", None)):
+                conn.execute(
+                    """
+                    INSERT INTO news_market_tracks (
+                      group_key, market_kind, family, last_observed_at_ms, last_observed_item_id,
+                      anchor_attempt_at_ms, created_at_ms, updated_at_ms
+                    ) VALUES (%s, 'oi', 'oi', 1, 'item', %s, 1, 1)
+                    """,
+                    (group_key, attempt_at_ms),
+                )
+
+        command.upgrade(config, "head")
+
+        started = {
+            str(row["group_key"]): int(row["round_started_at_ms"])
+            for row in conn.execute("SELECT group_key, round_started_at_ms FROM news_market_tracks").fetchall()
+        }
+        assert started == {"oi|sent": 1_700_000_000_000, "oi|never-sent": 0}
     finally:
         conn.close()

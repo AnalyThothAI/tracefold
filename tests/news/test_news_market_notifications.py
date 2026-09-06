@@ -21,6 +21,7 @@ import pytest
 from tracefold.news.market_notifications import (
     LIQUIDATION_WINDOW_MS,
     OI_QUIET_RESET_MS,
+    REASON_ROUND_CLOSED,
     SEND_ATTEMPTS_MAX,
     SEND_RETRY_BACKOFF_MS,
     SMART_MONEY_WINDOW_MS,
@@ -198,15 +199,26 @@ class _Group:
         if self.open_intent is None or self.track is None or now_ms < self.open_intent.due_at_ms:
             return None
         assert self.open_key is not None
+        # The card covers its own alert round and no further back, which is what the loop's adoption
+        # bound does: an observation a rule held in a round that has ended keeps waiting for a card
+        # that never comes, on the page rather than on this one (#562 PR-F).
+        start = self.track.round_started_at_ms
+        covered = [observation for observation in self.uncovered if observation.received_at_ms >= start]
+        held_over = [observation for observation in self.uncovered if observation.received_at_ms < start]
+        if not covered:
+            # Nothing left to put on it: an intent that has never been attempted is discarded.
+            self.open_intent = None
+            self.open_key = None
+            self.uncovered = held_over
+            return None
         card = _Card(
             delivery_key=self.open_key,
             reason=self.open_intent.reason,
-            covered=tuple(observation.item_id for observation in self.uncovered),
+            covered=tuple(observation.item_id for observation in covered),
         )
-        covered = list(self.uncovered)
         self.covered[self.open_key] = covered
         self.cards.append(card)
-        self.uncovered = []
+        self.uncovered = held_over
         # The attempt anchors the follow-up window whatever it proves, and the card stops merging.
         self.track = replace(self.track, anchor_attempt_at_ms=now_ms, open_delivery_key=None, next_due_at_ms=None)
         self.open_intent = None
@@ -318,6 +330,84 @@ def test_oi_four_hour_quiet_reset_boundary(gap_ms: int, expected_reason: str | N
     group.observe(oi(at_ms=T0 + gap_ms, change_bps=610))
     card = group.send(now_ms=T0 + gap_ms)
     assert (None if card is None else card.reason) == expected_reason
+
+
+def test_a_new_oi_round_does_not_reach_back_over_the_quiet_gap() -> None:
+    """The production card this rule was written for (#562 PR-F).
+
+    The 01:20 observation was held below the follow-up threshold and told nobody. Four quiet hours
+    later the next observation opens a new round -- and the first card of that round covered both,
+    printing `01:20-07:34` as its span. A round that ended is not re-opened by the next one.
+    """
+
+    group = _Group()
+    group.observe(oi(at_ms=T0, change_bps=600))
+    assert group.send(now_ms=T0) is not None
+
+    held_at = T0 + 60_000
+    group.observe(oi(at_ms=held_at, change_bps=610, item_id="oi-held"))
+    assert group.send(now_ms=held_at) is None
+
+    opened_at = held_at + OI_QUIET_RESET_MS
+    group.observe(oi(at_ms=opened_at, change_bps=620, item_id="oi-new-round"))
+    card = group.send(now_ms=opened_at)
+    assert card is not None
+    assert card.reason == "first"
+    assert card.covered == ("oi-new-round",)
+
+    # And no later card of the new round picks it up either.
+    followup_at = opened_at + 60_000
+    group.observe(oi(at_ms=followup_at, change_bps=1_300, item_id="oi-followup"))
+    followup = group.send(now_ms=followup_at)
+    assert followup is not None
+    assert followup.covered == ("oi-followup",)
+
+
+def test_an_oi_followup_still_speaks_for_everything_held_inside_its_own_round() -> None:
+    """The bound is the round, not the last card: §4.2's `6 -> 9 -> 13` still covers the held 9 %."""
+
+    group = _Group()
+    group.observe(oi(at_ms=T0, change_bps=600))
+    assert group.send(now_ms=T0) is not None
+    group.observe(oi(at_ms=T0 + 60_000, change_bps=900, item_id="oi-nine"))
+    group.observe(oi(at_ms=T0 + 120_000, change_bps=1_300, item_id="oi-thirteen"))
+    followup = group.send(now_ms=T0 + 120_000)
+    assert followup is not None
+    assert followup.covered == ("oi-nine", "oi-thirteen")
+
+
+def test_a_liquidation_report_older_than_a_closed_window_is_never_swept_into_a_later_card() -> None:
+    """§4.3's window is the round: the next report starts the next one, at itself (#562 PR-F)."""
+
+    group = _Group()
+    group.observe(liquidation(at_ms=T0))
+    assert group.track is not None and group.track.round_started_at_ms == T0
+    assert group.send(now_ms=T0) is not None
+
+    inside = T0 + LIQUIDATION_WINDOW_MS - 1_000
+    group.observe(liquidation(at_ms=inside, item_id="liq-inside"))
+    assert group.track.round_started_at_ms == inside
+    card = group.send(now_ms=T0 + LIQUIDATION_WINDOW_MS)
+    assert card is not None and card.covered == ("liq-inside",)
+
+    # The window closed and the next report opens the next round at itself.
+    after = T0 + 2 * LIQUIDATION_WINDOW_MS + 1_000
+    group.observe(liquidation(at_ms=after, item_id="liq-next"))
+    assert group.track.round_started_at_ms == after
+
+
+def test_a_smart_money_action_change_still_carries_the_segment_it_ends() -> None:
+    """§4.4: an action change is not a new round -- the old segment's activity is on the same card."""
+
+    group = _Group()
+    group.observe(wallet(at_ms=T0, action="open", side="long"))
+    assert group.send(now_ms=T0) is not None
+    group.observe(wallet(at_ms=T0 + 10_000, action="open", side="long", item_id="sm-merging"))
+    group.observe(wallet(at_ms=T0 + 20_000, action="close", side="long", item_id="sm-change"))
+    card = group.send(now_ms=T0 + 20_000)
+    assert card is not None
+    assert card.reason == "action_change"
+    assert card.covered == ("sm-merging", "sm-change")
 
 
 def test_oi_groups_split_on_venue_instrument_and_measurement_definition() -> None:
@@ -964,6 +1054,7 @@ def test_notification_status_names_the_rule_holding_an_observation(
         # The track's live reason is always present, because it always is in the read model's join.
         # A settled card must not borrow it.
         track_reason="liquidation_followup_window_open",
+        round_closed=False,
     )
     assert (status, reason) == expected
 
@@ -974,15 +1065,29 @@ def test_a_settled_card_reports_its_own_error_and_nothing_else() -> None:
         delivery_state="failed",
         delivery_error="news_delivery_feishu_business_rejected",
         track_reason="liquidation_followup_window_open",
+        round_closed=False,
     )
     assert (status, reason) == ("failed", "news_delivery_feishu_business_rejected")
+
+
+def test_an_observation_a_closed_round_left_behind_is_not_called_merging() -> None:
+    """`merging` promises a card. This one is never coming, and the page says so (#562 PR-F)."""
+
+    status, reason = notification_status(
+        notify_state="processed",
+        delivery_state=None,
+        delivery_error=None,
+        track_reason="oi_change_below_followup_threshold",
+        round_closed=True,
+    )
+    assert (status, reason) == ("uncovered", REASON_ROUND_CLOSED)
 
 
 def test_a_raw_record_that_was_delivered_is_both_raw_and_sent() -> None:
     """The two pairs are independent, which is the whole reason they are two pairs."""
 
     status, _ = notification_status(
-        notify_state="processed", delivery_state="sent", delivery_error=None, track_reason=None
+        notify_state="processed", delivery_state="sent", delivery_error=None, track_reason=None, round_closed=False
     )
     assert status == "sent"
     assert group_family(raw_record(at_ms=T0, title="Withdraw")) == "raw"

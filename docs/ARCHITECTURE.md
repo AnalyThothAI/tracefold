@@ -2894,6 +2894,20 @@ Neither is a second copy of the facts: the observations a card covers are the
 Items carrying its `market_notify_delivery_key`, so "which observations did this
 card speak for" is answered by the Items themselves.
 
+A card speaks for one alert round and no further back.
+`news_market_tracks.round_started_at_ms` is where the group's current round began
+on the host's receive clock — the observation that opened a first card after the
+4 h OI quiet reset, or the first report of the current 60 s follow-up window —
+and `market_adopt_unclaimed` never reaches below it. Without that bound the first
+production MARSCOIN card covered an OI observation held below the follow-up
+threshold six hours earlier together with the one that opened the new round, and
+printed `01:20–07:34` as its span. Inside a round nothing changes: a follow-up
+still speaks for everything that round held, which is why `6 % → 9 % → 13 %` is
+one first card and one follow-up covering both later numbers. An observation the
+rules finished with and no card will ever cover reads `uncovered` /
+`alert_round_ended_before_a_card` on the page rather than claiming to be merging
+into a card that is never coming (#562 PR-F).
+
 There is no market queue on the broker. The PostgreSQL intent already carries
 persistence, due time and restart recovery, so bridging it through RabbitMQ would
 add a second ledger that could disagree with the first. Every wait is a due time:
