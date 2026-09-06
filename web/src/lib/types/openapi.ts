@@ -3247,7 +3247,7 @@ export interface components {
                 [key: string]: components["schemas"]["WorkersCapabilityData"];
             };
             /** Fatal Code */
-            fatal_code: ("startup_failed" | "child_failed" | "control_failed" | "singleton_lost" | "runtime_invariant_failed" | "resource_operation_overrun" | "graceful_deadline_exceeded" | "cleanup_failed") | null;
+            fatal_code: ("startup_failed" | "child_failed" | "control_failed" | "singleton_lost" | "resource_operation_overrun" | "graceful_deadline_exceeded" | "cleanup_failed") | null;
             /** Heartbeat At Ms */
             heartbeat_at_ms: number | null;
             /**

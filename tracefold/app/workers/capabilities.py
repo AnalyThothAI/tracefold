@@ -6,6 +6,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from functools import partial
 from typing import Any
 
+from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.resource import (
     ResourceAdmissionTimeout,
     ResourceCapability,
@@ -19,7 +20,7 @@ _THREAD_FUTURE_COMPLETION_GRACE_SECONDS = 0.500
 class FiniteOperations:
     """The one process-wide capability for bounded synchronous external work."""
 
-    def __init__(self, *, telemetry: Any | None = None) -> None:
+    def __init__(self, *, telemetry: TelemetryRegistry) -> None:
         self._executor = ThreadPoolExecutor(
             max_workers=3,
             thread_name_prefix="tracefold-finite-operation",
@@ -162,30 +163,27 @@ def _release_on_completion(
 
 
 def _record_admission(
-    telemetry: Any | None,
+    telemetry: TelemetryRegistry,
     capability: str,
     operation: str,
     outcome: str,
     started_at: float,
 ) -> None:
-    if telemetry is not None:
-        telemetry.record_resource_admission(
-            capability,
-            _operation_name(operation),
-            outcome,
-            max(0.0, asyncio.get_running_loop().time() - started_at),
-        )
+    telemetry.record_resource_admission(
+        capability,
+        _operation_name(operation),
+        outcome,
+        max(0.0, asyncio.get_running_loop().time() - started_at),
+    )
 
 
 def _record_completion(
-    telemetry: Any | None,
+    telemetry: TelemetryRegistry,
     capability: str,
     operation: str,
     submitted_at: float,
     future: Future[Any],
 ) -> None:
-    if telemetry is None:
-        return
     outcome = "cancelled" if future.cancelled() else "error" if future.exception() is not None else "success"
     telemetry.record_resource_service(
         capability,
@@ -196,9 +194,8 @@ def _record_completion(
     telemetry.change_resource_active(capability, -1)
 
 
-def _change_active(telemetry: Any | None, capability: str, delta: int) -> None:
-    if telemetry is not None:
-        telemetry.change_resource_active(capability, delta)
+def _change_active(telemetry: TelemetryRegistry, capability: str, delta: int) -> None:
+    telemetry.change_resource_active(capability, delta)
 
 
 async def _drain(

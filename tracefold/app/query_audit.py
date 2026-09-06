@@ -142,7 +142,7 @@ def query_audit_catalog(
 ) -> QueryAuditCatalog:
     provider = news_query_specs or _default_news_query_specs
     queries = (
-        *postgres_query_specs(now_ms=int(now_ms)),
+        *postgres_query_specs(),
         workers_runtime_read_query(),
         *provider(now_ms=int(now_ms)),
         *execution_stream_query_specs(),

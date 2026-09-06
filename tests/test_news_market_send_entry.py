@@ -34,6 +34,7 @@ from tracefold.news.feishu_card import feishu_card
 from tracefold.news.market_notifications import SEND_ATTEMPTS_MAX, classify_send_failure
 from tracefold.news.pipeline.delivery import InitialSendEntry
 from tracefold.news.reader_card import ReaderCard, ReaderCardHeader
+from tracefold.platform.observability import TelemetryRegistry
 
 FEISHU_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/0123456789abcdef"
 SIGNING_SECRET = "replay-signing-secret"
@@ -74,7 +75,7 @@ class _SlowSender:
 
 
 async def _entry(sender: Any, *, min_interval_seconds: float = 0.0) -> tuple[InitialSendEntry, FiniteOperations]:
-    finite = FiniteOperations()
+    finite = FiniteOperations(telemetry=TelemetryRegistry())
     return (
         InitialSendEntry(sender=sender, finite_operations=finite, min_interval_seconds=min_interval_seconds),
         finite,

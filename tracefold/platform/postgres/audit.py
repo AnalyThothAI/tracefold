@@ -8,7 +8,6 @@ from typing import Any
 from psycopg import sql
 
 from tracefold.platform.postgres.migrations import latest_migration_version
-from tracefold.platform.validation import require_nonnegative_int
 
 # A sequential scan is judged by the table rows one pass of it actually read, never by `Plan Rows`: that
 # is the planner's estimate of what the node would *output*, and a filter that discards 50,000 rows to
@@ -36,12 +35,6 @@ MARKET_WINDOW_SCAN_BUDGET = 500_000
 
 APPLICATION_ROLE = "tracefold"
 BOOTSTRAP_ROLE = "tracefold_app"
-RETIRED_APPLICATION_ROLES = (
-    "tracefold_owner",
-    "tracefold_serve",
-    "tracefold_workers",
-    "tracefold_nautilus",
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,10 +145,9 @@ _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (
 )
 
 
-def postgres_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
-    """Return platform-owned reads (no clock parameters remain, ``now_ms`` keeps the catalog contract)."""
+def postgres_query_specs() -> tuple[ReadQuerySpec, ...]:
+    """Return platform-owned reads. No clock parameter: none of these statements reads a clock."""
 
-    del now_ms
     return tuple(
         ReadQuerySpec(
             name=str(template["name"]),
@@ -229,7 +221,7 @@ class PostgresOperationalAudit:
             """
         ).fetchone()
         extensions = self.conn.execute("SELECT extname, extversion FROM pg_extension ORDER BY extname").fetchall()
-        role_names = (APPLICATION_ROLE, BOOTSTRAP_ROLE, *RETIRED_APPLICATION_ROLES)
+        role_names = (APPLICATION_ROLE, BOOTSTRAP_ROLE)
         role_rows = self.conn.execute(
             """
             SELECT rolname, rolsuper, rolcreatedb, rolcreaterole, rolcanlogin,
@@ -253,7 +245,6 @@ class PostgresOperationalAudit:
         }
         application_role = roles.get(APPLICATION_ROLE)
         bootstrap_role = roles.get(BOOTSTRAP_ROLE)
-        retired_roles_present = sorted(set(roles) & set(RETIRED_APPLICATION_ROLES))
         schema_owner_row = self.conn.execute(
             """
             SELECT pg_get_userbyid(nspowner) AS owner
@@ -326,7 +317,6 @@ class PostgresOperationalAudit:
             "bootstrap_role_no_login_superuser": bool(
                 bootstrap_role and bootstrap_role["superuser"] and not bootstrap_role["login"]
             ),
-            "retired_roles_absent": not retired_roles_present,
             "public_schema_owned_by_application": public_schema_owner == APPLICATION_ROLE,
             "application_objects_owned_by_application": not unexpected_application_object_owners,
         }
@@ -339,10 +329,7 @@ class PostgresOperationalAudit:
             "extensions": extension_versions,
             "settings": {key: str(settings[key]) for key in setting_names},
             "current_user": str(settings["current_user"]),
-            "role_catalog": {
-                "roles": roles,
-                "retired_roles_present": retired_roles_present,
-            },
+            "role_catalog": {"roles": roles},
             "ownership": {
                 "public_schema_owner": public_schema_owner,
                 "unexpected_application_object_owners": unexpected_application_object_owners,
@@ -489,11 +476,7 @@ class ProjectionValidationAudit:
     def __init__(self, conn: Any):
         self.conn = conn
 
-    def run(self, *, sample: int) -> dict[str, Any]:
-        sample_size = require_nonnegative_int(
-            sample,
-            error_code="projection_validation_sample_required",
-        )
+    def run(self) -> dict[str, Any]:
         bounded_models = self.conn.execute(
             """
             WITH ingest_mismatch AS (
@@ -547,7 +530,6 @@ class ProjectionValidationAudit:
         return {
             "ok": mismatch_count == 0,
             "status": "ready",
-            "sample": sample_size,
             "checked_count": len(bounded_checks),
             "mismatch_count": mismatch_count,
             "checks": bounded_checks,

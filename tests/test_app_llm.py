@@ -37,16 +37,17 @@ from tracefold.news.release.canary import (
     CANARY_SELECTOR_VERSION,
 )
 from tracefold.news.triage_rules import DecidePolicy
-from tracefold.platform.config.models import Settings
+from tracefold.platform.config.models import LlmRequestConfig, Settings
+
+
+def _llm(*, api_key: str, base_url: str) -> SimpleNamespace:
+    """One partial `llm` section, carrying the request envelope every real endpoint model has."""
+
+    return SimpleNamespace(api_key=api_key, base_url=base_url, request=LlmRequestConfig())
 
 
 def test_deepseek_v4_disables_thinking_for_structured_tool_calls() -> None:
-    settings = SimpleNamespace(
-        llm=SimpleNamespace(
-            api_key="test-key",
-            base_url="https://models.test/v1",
-        )
-    )
+    settings = SimpleNamespace(llm=_llm(api_key="test-key", base_url="https://models.test/v1"))
     endpoint = configured_lm_endpoint(
         settings,
         model_name="openai/deepseek-v4-flash",
@@ -57,12 +58,7 @@ def test_deepseek_v4_disables_thinking_for_structured_tool_calls() -> None:
 
 
 def test_non_deepseek_model_does_not_receive_provider_specific_thinking_flag() -> None:
-    settings = SimpleNamespace(
-        llm=SimpleNamespace(
-            api_key="test-key",
-            base_url="https://models.test/v1",
-        )
-    )
+    settings = SimpleNamespace(llm=_llm(api_key="test-key", base_url="https://models.test/v1"))
     endpoint = configured_lm_endpoint(
         settings,
         model_name="openai/gpt-5.4-mini",
@@ -72,14 +68,14 @@ def test_non_deepseek_model_does_not_receive_provider_specific_thinking_flag() -
 
 
 def test_qwen_disables_thinking_via_chat_template_kwargs() -> None:
-    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://models.test/v1"))
+    settings = SimpleNamespace(llm=_llm(api_key="test-key", base_url="https://models.test/v1"))
     endpoint = configured_lm_endpoint(settings, model_name="qwen3.8-27b")
     assert endpoint.model_name == "openai/qwen3.8-27b"
     assert endpoint.model_kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
 def test_qwen_thinking_alias_is_called_without_a_disable_override() -> None:
-    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://models.test/v1"))
+    settings = SimpleNamespace(llm=_llm(api_key="test-key", base_url="https://models.test/v1"))
 
     endpoint = configured_lm_endpoint(settings, model_name="qwen3.8-27b:thinking")
 
@@ -114,7 +110,7 @@ def test_configured_provider_capability_shapes_the_actual_native_dspy_request(
     expected_format: str,
     expected_extra: dict[str, Any],
 ) -> None:
-    settings = SimpleNamespace(llm=SimpleNamespace(api_key="request-shape-secret", base_url=base_url))
+    settings = SimpleNamespace(llm=_llm(api_key="request-shape-secret", base_url=base_url))
     endpoint = configured_lm_endpoint(settings, model_name=model)
     valid_semantics = {
         "novelty": "new_fact",
@@ -187,7 +183,7 @@ def test_configured_provider_capability_shapes_the_actual_native_dspy_request(
 
 
 def test_kimi_coding_endpoint_has_no_hidden_compatibility_profile() -> None:
-    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.kimi.com/coding/v1"))
+    settings = SimpleNamespace(llm=_llm(api_key="test-key", base_url="https://api.kimi.com/coding/v1"))
 
     endpoint = configured_lm_endpoint(settings, model_name="k3")
 
@@ -254,7 +250,7 @@ def test_configured_endpoint_rejects_unreviewed_secret_bearing_extra_body_before
 
 
 def test_endpoint_override_targets_the_fallback_gateway() -> None:
-    settings = SimpleNamespace(llm=SimpleNamespace(api_key="local-key", base_url="http://192.168.0.2:8080/v1"))
+    settings = SimpleNamespace(llm=_llm(api_key="local-key", base_url="http://192.168.0.2:8080/v1"))
     endpoint = configured_lm_endpoint(
         settings,
         model_name="deepseek-chat",

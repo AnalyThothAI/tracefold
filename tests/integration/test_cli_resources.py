@@ -35,7 +35,7 @@ def test_db_audit_query_audit_and_validate_projections_use_postgres_only(postgre
             exit_codes = [
                 main(["db", "audit"], stdout=stdout),
                 main(["db", "query-audit"], stdout=stdout),
-                main(["ops", "validate-projections", "--sample", "5"], stdout=stdout),
+                main(["ops", "validate-projections"], stdout=stdout),
             ]
 
     lines = [json.loads(line) for line in stdout.getvalue().splitlines()]

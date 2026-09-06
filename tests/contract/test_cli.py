@@ -155,8 +155,8 @@ class CliTests(unittest.TestCase):
                 },
             ),
             (
-                ["ops", "validate-projections", "--sample", "5"],
-                {"command": "ops", "ops_command": "validate-projections", "sample": 5},
+                ["ops", "validate-projections"],
+                {"command": "ops", "ops_command": "validate-projections"},
             ),
         )
 
@@ -181,7 +181,7 @@ class CliTests(unittest.TestCase):
             (
                 add_ops_commands,
                 ["ops", "validate-projections"],
-                {"command": "ops", "ops_command": "validate-projections", "sample": 100},
+                {"command": "ops", "ops_command": "validate-projections"},
             ),
         )
 
@@ -200,7 +200,7 @@ class CliTests(unittest.TestCase):
             ["db", "query-audit"],
             ["db", "query-audit", "--analyze"],
             ["db", "audit", "--deep"],
-            ["ops", "validate-projections", "--sample", "5"],
+            ["ops", "validate-projections"],
             ["news", "review", "queue", "--event", "ev-1", "--limit", "5"],
             ["news", "dlq", "inspect", "--limit", "5"],
             ["news", "review", "evidence", "evt.ev-1.1.0123456789abcdef", "--version", "a" * 64],
@@ -214,7 +214,6 @@ class CliTests(unittest.TestCase):
         self.assertTrue(parsed[2].analyze)
         self.assertTrue(parsed[3].deep)
         self.assertEqual(parsed[4].ops_command, "validate-projections")
-        self.assertEqual(parsed[4].sample, 5)
         self.assertEqual((parsed[5].news_command, parsed[5].review_command), ("review", "queue"))
         self.assertEqual((parsed[5].event, parsed[5].limit), ("ev-1", 5))
         self.assertEqual((parsed[6].news_command, parsed[6].dlq_action, parsed[6].limit), ("dlq", "inspect", 5))
@@ -708,7 +707,9 @@ def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeyp
     assert all((app_home / name).stat().st_mode & 0o777 == 0o700 for name in ("logs", "cache"))
 
 
-def test_init_migrates_the_pre_433c_trading_config_without_losing_operator_values(tmp_path, monkeypatch):
+def test_init_leaves_a_retired_config_shape_for_settings_to_refuse_by_name(tmp_path, monkeypatch):
+    """#589 P-F3: `init` no longer rewrites config content, and the retired key is named at load."""
+
     monkeypatch.setenv("HOME", str(tmp_path))
     app_home = tmp_path / ".tracefold"
     app_home.mkdir(parents=True)
@@ -716,22 +717,7 @@ def test_init_migrates_the_pre_433c_trading_config_without_losing_operator_value
     old_payload = {
         "ws_token": "operator-owned-token",
         "storage": {"postgres": {"dsn": "postgresql://tracefold@postgres:5432/tracefold"}},
-        "news": {"enabled": False},
-        "trading": {
-            "enabled": True,
-            "candidates": {"max_age_seconds": 240, "min_oi_value_usd": 30_000_000},
-            "order": {"fixed_notional_usd": 7},
-            "bindings": {
-                "binance_usdm": {
-                    "api_key_file": "operator-binance-key",
-                    "api_secret_file": "operator-binance-secret",
-                },
-                "hyperliquid_perp": {
-                    "private_key_file": "operator-hyperliquid-key",
-                    "account_address": "0xoperator",
-                },
-            },
-        },
+        "trading": {"enabled": True, "order": {"fixed_notional_usd": 7}},
     }
     old_bytes = yaml.safe_dump(old_payload, sort_keys=False).encode()
     config_path.write_bytes(old_bytes)
@@ -740,115 +726,15 @@ def test_init_migrates_the_pre_433c_trading_config_without_losing_operator_value
     assert main(["init"], stdout=stdout) == 0
 
     result = json.loads(stdout.getvalue())["data"]
-    assert result["config_migrated"] is True
-    backup_path = app_home / "config.pre-433c.yaml"
-    assert result["config_backup_path"] == str(backup_path)
-    assert backup_path.read_bytes() == old_bytes
-    assert backup_path.stat().st_mode & 0o777 == 0o600
-    migrated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert migrated["ws_token"] == "operator-owned-token"
-    assert migrated["news"] == {"enabled": False}
-    assert migrated["trading"] == {
-        "enabled": True,
-        "candidates": {"max_age_seconds": 240, "min_oi_value_usd": 30_000_000},
-        "execution": {
-            "mode": "disabled",
-            "account_slot": "binance_usdm_primary",
-            "credentials": {
-                "api_key_file": "operator-binance-key",
-                "api_secret_file": "operator-binance-secret",
-            },
-        },
-    }
-    Settings.model_validate(migrated)
-    migrated_bytes = config_path.read_bytes()
-
-    second_stdout = io.StringIO()
-    assert main(["init"], stdout=second_stdout) == 0
-
-    second_result = json.loads(second_stdout.getvalue())["data"]
-    assert second_result["config_migrated"] is False
-    assert second_result["config_backup_path"] is None
-    assert config_path.read_bytes() == migrated_bytes
-    assert backup_path.read_bytes() == old_bytes
-
-
-def test_init_migrates_pre_449_postgres_roles_to_one_login(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    app_home = tmp_path / ".tracefold"
-    app_home.mkdir(parents=True)
-    config_path = app_home / "config.yaml"
-    old_payload = {
-        "storage": {
-            "postgres": {
-                "serve_dsn": "postgresql://tracefold_serve@postgres:5432/tracefold",
-                "workers_dsn": "postgresql://tracefold_workers@postgres:5432/tracefold",
-                "migrate_dsn": "postgresql://tracefold_owner@postgres:5432/tracefold",
-                "serve_password_file": "postgres_serve_password",
-                "workers_password_file": "postgres_workers_password",
-                "migrate_password_file": "postgres_migrate_password",
-                "connect_timeout_seconds": 7,
-            }
-        }
-    }
-    old_bytes = yaml.safe_dump(old_payload, sort_keys=False).encode()
-    config_path.write_bytes(old_bytes)
-
-    stdout = io.StringIO()
-    assert main(["init"], stdout=stdout) == 0
-
-    result = json.loads(stdout.getvalue())["data"]
-    backup_path = app_home / "config.pre-449.yaml"
-    assert result["config_migrated"] is True
-    assert result["config_backup_path"] == str(backup_path)
-    assert result["config_backup_paths"] == [str(backup_path)]
-    assert backup_path.read_bytes() == old_bytes
-    migrated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert migrated["storage"]["postgres"] == {
-        "dsn": "postgresql://tracefold@postgres:5432/tracefold",
-        "password_file": "postgres_database_password",
-        "connect_timeout_seconds": 7,
-    }
-    Settings.model_validate(migrated)
-
-
-def test_init_refuses_a_mixed_pre_and_post_433c_trading_config_without_writing(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    app_home = tmp_path / ".tracefold"
-    app_home.mkdir(parents=True)
-    config_path = app_home / "config.yaml"
-    mixed_payload = {
-        "trading": {
-            "order": {"fixed_notional_usd": 10},
-            "execution": {"mode": "disabled"},
-        }
-    }
-    original = yaml.safe_dump(mixed_payload, sort_keys=False).encode()
-    config_path.write_bytes(original)
-
-    with pytest.raises(ValueError, match="trading_config_cutover_mixed_shape"):
-        main(["init"], stdout=io.StringIO())
-
-    assert config_path.read_bytes() == original
+    assert result["created"] is False
+    assert "config_migrated" not in result
+    assert config_path.read_bytes() == old_bytes
     assert not (app_home / "config.pre-433c.yaml").exists()
 
-
-def test_init_refuses_a_conflicting_pre_433c_backup_without_writing(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    app_home = tmp_path / ".tracefold"
-    app_home.mkdir(parents=True)
-    config_path = app_home / "config.yaml"
-    original = b"trading:\n  order:\n    fixed_notional_usd: 10\n"
-    config_path.write_bytes(original)
-    backup_path = app_home / "config.pre-433c.yaml"
-    conflicting_backup = b"operator-owned-existing-backup\n"
-    backup_path.write_bytes(conflicting_backup)
-
-    with pytest.raises(ValueError, match="trading_config_cutover_backup_conflict"):
-        main(["init"], stdout=io.StringIO())
-
-    assert config_path.read_bytes() == original
-    assert backup_path.read_bytes() == conflicting_backup
+    with pytest.raises(ValidationError) as caught:
+        Settings.model_validate(yaml.safe_load(config_path.read_text(encoding="utf-8")))
+    assert "order" in str(caught.value)
+    assert "extra_forbidden" in str(caught.value)
 
 
 def test_init_refuses_a_config_symlink_without_touching_its_target(tmp_path, monkeypatch):
@@ -864,7 +750,6 @@ def test_init_refuses_a_config_symlink_without_touching_its_target(tmp_path, mon
         main(["init"], stdout=io.StringIO())
 
     assert target.read_bytes() == original
-    assert not (app_home / "config.pre-433c.yaml").exists()
 
 
 # --- api.public_url: the console origin the operator names, and nothing defaults (#553) ---

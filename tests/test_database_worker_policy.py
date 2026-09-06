@@ -21,13 +21,14 @@ from tracefold.app.workers.wiring.database import (
     WorkerReactionDatabase,
     WorkerTradingDatabase,
 )
+from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 
 def test_background_worker_session_bounds_postgres_parallelism() -> None:
     conn = _FakeConnection()
     pool = _FakePool(conn)
-    bundle = WorkerDatabase(worker_pool=pool, telemetry=None)
+    bundle = WorkerDatabase(worker_pool=pool, telemetry=TelemetryRegistry())
 
     with bundle.worker_session("news_janitor"):
         pass
@@ -41,7 +42,7 @@ def test_background_worker_session_bounds_postgres_parallelism() -> None:
 def test_all_worker_sessions_use_the_uniform_bounded_postgres_policy() -> None:
     conn = _FakeConnection()
     pool = _FakePool(conn)
-    bundle = WorkerDatabase(worker_pool=pool, telemetry=None)
+    bundle = WorkerDatabase(worker_pool=pool, telemetry=TelemetryRegistry())
 
     with bundle.worker_session("collector"):
         pass
@@ -52,7 +53,7 @@ def test_all_worker_sessions_use_the_uniform_bounded_postgres_policy() -> None:
 
 def test_steady_worker_session_default_sql_budget_leaves_native_cleanup_grace() -> None:
     conn = _FakeConnection()
-    bundle = WorkerDatabase(worker_pool=_FakePool(conn), telemetry=None)
+    bundle = WorkerDatabase(worker_pool=_FakePool(conn), telemetry=TelemetryRegistry())
 
     with bundle.worker_session("news_janitor"):
         pass
@@ -66,7 +67,7 @@ def test_steady_worker_session_default_sql_budget_leaves_native_cleanup_grace() 
 def test_worker_session_enforces_transaction_local_timeout() -> None:
     conn = _FakeConnection()
     pool = _FakePool(conn)
-    bundle = WorkerDatabase(worker_pool=pool, telemetry=None)
+    bundle = WorkerDatabase(worker_pool=pool, telemetry=TelemetryRegistry())
 
     with bundle.worker_session(
         "news_janitor",
@@ -122,7 +123,7 @@ def test_business_database_callbacks_receive_only_their_repository_capabilities(
 def test_worker_session_applies_dynamic_policy_in_one_local_round_trip() -> None:
     conn = _FakeConnection()
     pool = _FakePool(conn)
-    bundle = WorkerDatabase(worker_pool=pool, telemetry=None)
+    bundle = WorkerDatabase(worker_pool=pool, telemetry=TelemetryRegistry())
 
     with bundle.worker_session(
         "news_deduper",
@@ -143,7 +144,7 @@ def test_worker_session_applies_dynamic_policy_in_one_local_round_trip() -> None
 
 def test_worker_lock_timeout_is_recoverable_bounded_contention() -> None:
     async def scenario() -> None:
-        database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=None)
+        database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=TelemetryRegistry())
 
         def lock_timeout() -> None:
             raise LockNotAvailable("canceling statement due to lock timeout")
@@ -174,7 +175,7 @@ def test_worker_lock_timeout_is_recoverable_bounded_contention() -> None:
 
 def test_native_statement_timeout_finishes_before_the_wrapper_watchdog(monkeypatch: pytest.MonkeyPatch) -> None:
     async def scenario() -> None:
-        database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=None)
+        database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=TelemetryRegistry())
 
         def native_statement_timeout() -> None:
             time.sleep(0.02)
@@ -200,7 +201,7 @@ def test_native_statement_timeout_finishes_before_the_wrapper_watchdog(monkeypat
 
 def test_native_control_statement_timeout_finishes_before_the_wrapper_watchdog(monkeypatch: pytest.MonkeyPatch) -> None:
     async def scenario() -> None:
-        database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=None)
+        database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=TelemetryRegistry())
 
         def native_statement_timeout() -> None:
             time.sleep(0.02)
@@ -226,7 +227,7 @@ def test_native_control_statement_timeout_finishes_before_the_wrapper_watchdog(m
 
 def test_native_transaction_timeout_is_recoverable() -> None:
     async def scenario() -> None:
-        database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=None)
+        database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=TelemetryRegistry())
 
         def native_transaction_timeout() -> None:
             raise TransactionTimeout("terminating transaction due to timeout")
@@ -249,7 +250,7 @@ def test_native_transaction_timeout_is_recoverable() -> None:
 
 def test_business_connection_loss_is_recoverable_but_control_loss_is_fatal() -> None:
     async def scenario() -> None:
-        database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=None)
+        database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=TelemetryRegistry())
 
         def connection_lost() -> None:
             raise OperationalError("consuming input failed: server closed the connection unexpectedly")
@@ -278,7 +279,7 @@ def test_business_connection_loss_is_recoverable_but_control_loss_is_fatal() -> 
 
 def test_business_idle_transaction_timeout_is_recoverable_but_control_and_other_internal_errors_are_fatal() -> None:
     async def scenario() -> None:
-        database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=None)
+        database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=TelemetryRegistry())
 
         def idle_transaction_timeout() -> None:
             raise IdleInTransactionSessionTimeout("terminating connection due to idle-in-transaction timeout")
@@ -316,7 +317,7 @@ def test_business_idle_transaction_timeout_is_recoverable_but_control_and_other_
 
 def test_business_pool_checkout_timeout_is_recoverable_but_control_timeout_is_fatal() -> None:
     async def scenario() -> None:
-        database = WorkerDatabase(worker_pool=_TimedOutWorkerPool(), telemetry=None)
+        database = WorkerDatabase(worker_pool=_TimedOutWorkerPool(), telemetry=TelemetryRegistry())
 
         def checkout() -> None:
             with database.worker_session("pool_checkout"):
@@ -346,7 +347,7 @@ def test_business_pool_checkout_timeout_is_recoverable_but_control_timeout_is_fa
 
 def test_serve_admission_reserves_the_control_lane(monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _FakeConnection()
-    database = ServeDatabase(api_pool=_FakeApiPool(conn), telemetry=None)
+    database = ServeDatabase(api_pool=_FakeApiPool(conn), telemetry=TelemetryRegistry())
     monkeypatch.setattr(serve_database_module, "_SERVE_PERMIT_TIMEOUT_SECONDS", 0.0)
 
     with ExitStack() as ordinary_sessions:
@@ -366,7 +367,7 @@ def test_serve_admission_reserves_the_control_lane(monkeypatch: pytest.MonkeyPat
 
 
 def test_serve_pool_checkout_timeout_is_typed_busy() -> None:
-    database = ServeDatabase(api_pool=_TimedOutApiPool(), telemetry=None)
+    database = ServeDatabase(api_pool=_TimedOutApiPool(), telemetry=TelemetryRegistry())
 
     with (
         pytest.raises(ServeDatabaseBusy, match="serve_database_pool_busy:ordinary"),

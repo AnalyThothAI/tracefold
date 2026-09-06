@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import signal
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, replace
 from threading import Lock
@@ -36,11 +35,11 @@ from tracefold.app.nautilus.oi_runtime import (
     load_recovery_inputs,
     load_runtime_control_state,
 )
-from tracefold.app.nautilus.probe import create_nautilus_probe_app
 from tracefold.app.nautilus.reconciliation import (
     build_runtime_reconciliation_snapshot,
     reconcile_reports_into_cache,
 )
+from tracefold.app.process import create_probe_app, install_signal_handlers, remove_signal_handlers
 from tracefold.app.repository_session import RepositorySession, postgres_connection, repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.config import (
@@ -282,7 +281,7 @@ async def _run_active_runtime(
         stop.set()
         runtime_wake.set()
 
-    installed_signals = _install_signal_handlers(loop, request_stop)
+    installed_signals = install_signal_handlers(loop, request_stop)
     node_task = asyncio.create_task(node.run_async(), name="oi-nautilus-node")
     probe_task = asyncio.create_task(server.serve(), name="oi-nautilus-probe")
     try:
@@ -467,7 +466,7 @@ async def _run_active_runtime(
             )
         if bridge is not None:
             bridge.join(_STOP_TIMEOUT_SECONDS)
-        _remove_signal_handlers(loop, installed_signals)
+        remove_signal_handlers(loop, installed_signals)
         node.dispose()
 
 
@@ -585,9 +584,9 @@ async def _reconcile_account(
     client: Any,
     triggers: tuple[str, ...],
 ) -> _PrivateReconciliationResult:
-    allowed = {*PRIVATE_RECONCILIATION_REASONS, "startup", "steady"}
-    if not triggers or any(trigger not in allowed for trigger in triggers):
-        raise ValueError("oi_runtime_private_reconciliation_trigger_invalid")
+    # Every trigger here is either a literal this module wrote or one `_PrivateReconciliationRequests
+    # .request` already refused by name; re-checking the same vocabulary twice only lets the two
+    # lists drift (#589 P-F13).
     started_at_ns = time.perf_counter_ns()
     reports = await load_complete_binance_account_reports(client)
     for report in (*reports.positions, *reports.orders):
@@ -752,7 +751,7 @@ def _read_secret(path: Any, name: str) -> str:
 
 def _probe_server(readiness: Callable[[], dict[str, Any]]) -> uvicorn.Server:
     config = uvicorn.Config(
-        create_nautilus_probe_app(readiness),
+        create_probe_app(title="Tracefold Nautilus Probe", readiness=readiness),
         host="0.0.0.0",  # noqa: S104 -- Compose publishes only on operator-selected host loopback
         port=_INTERNAL_PORT,
         log_config=None,
@@ -761,25 +760,6 @@ def _probe_server(readiness: Callable[[], dict[str, Any]]) -> uvicorn.Server:
     server = uvicorn.Server(config)
     server.capture_signals = nullcontext  # type: ignore[method-assign, assignment]
     return server
-
-
-def _install_signal_handlers(
-    loop: asyncio.AbstractEventLoop,
-    callback: Callable[[], None],
-) -> tuple[signal.Signals, ...]:
-    installed: list[signal.Signals] = []
-    for signum in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(signum, callback)
-        except (NotImplementedError, RuntimeError):
-            continue
-        installed.append(signum)
-    return tuple(installed)
-
-
-def _remove_signal_handlers(loop: asyncio.AbstractEventLoop, installed: Sequence[signal.Signals]) -> None:
-    for signum in installed:
-        loop.remove_signal_handler(signum)
 
 
 __all__ = ["run_nautilus"]

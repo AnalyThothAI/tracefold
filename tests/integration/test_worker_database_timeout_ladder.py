@@ -15,6 +15,7 @@ from tracefold.app.workers.wiring.database import (
     WorkerReactionDatabase,
     WorkerTradingDatabase,
 )
+from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.client import connect_postgres, create_pool
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
@@ -36,7 +37,7 @@ def test_quote_ordinary_lane_progresses_while_trading_holds_the_heavy_gate() -> 
         idle_in_transaction_session_timeout_seconds=5.0,
     )
     pool.wait(timeout=5.0)
-    database = WorkerDatabase(worker_pool=pool, telemetry=None)
+    database = WorkerDatabase(worker_pool=pool, telemetry=TelemetryRegistry())
     quote = WorkerQuoteDatabase(database)
     reaction = WorkerReactionDatabase(database)
     trading = WorkerTradingDatabase(database)
@@ -107,7 +108,7 @@ def test_native_postgres_timeout_is_recoverable_before_wrapper_watchdog() -> Non
         idle_in_transaction_session_timeout_seconds=5.0,
     )
     pool.wait(timeout=5.0)
-    database = WorkerDatabase(worker_pool=pool, telemetry=None)
+    database = WorkerDatabase(worker_pool=pool, telemetry=TelemetryRegistry())
 
     def slow_query() -> None:
         with database.worker_session(
@@ -162,7 +163,7 @@ def test_control_loop_survives_one_idle_pool_connection_closed_by_postgres(
         idle_in_transaction_session_timeout_seconds=5.0,
     )
     pool.wait(timeout=5.0)
-    database = WorkerDatabase(worker_pool=pool, telemetry=None)
+    database = WorkerDatabase(worker_pool=pool, telemetry=TelemetryRegistry())
     killer = connect_postgres(_test_postgres_dsn())
     try:
         conn = pool.getconn(timeout=1.0)
@@ -232,7 +233,7 @@ def test_native_transaction_timeout_bounds_the_complete_worker_session() -> None
         idle_in_transaction_session_timeout_seconds=5.0,
     )
     pool.wait(timeout=5.0)
-    database = WorkerDatabase(worker_pool=pool, telemetry=None)
+    database = WorkerDatabase(worker_pool=pool, telemetry=TelemetryRegistry())
 
     def two_individually_bounded_queries() -> None:
         with database.worker_session(
@@ -288,7 +289,7 @@ def test_worker_statement_budget_does_not_cancel_a_multi_statement_transaction()
         idle_in_transaction_session_timeout_seconds=5.0,
     )
     pool.wait(timeout=5.0)
-    database = WorkerDatabase(worker_pool=pool, telemetry=None)
+    database = WorkerDatabase(worker_pool=pool, telemetry=TelemetryRegistry())
 
     def two_individually_bounded_queries() -> int:
         with database.worker_session("transaction_margin_probe", statement_timeout_seconds=0.2) as repos:
@@ -327,7 +328,7 @@ def test_idle_transaction_timeout_is_recoverable_only_on_the_business_lane() -> 
         idle_in_transaction_session_timeout_seconds=5.0,
     )
     pool.wait(timeout=5.0)
-    database = WorkerDatabase(worker_pool=pool, telemetry=None)
+    database = WorkerDatabase(worker_pool=pool, telemetry=TelemetryRegistry())
 
     def idle_in_transaction() -> None:
         with database.worker_session("idle_transaction_timeout_probe") as repos:
