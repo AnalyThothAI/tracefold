@@ -64,6 +64,7 @@ from tracefold.news.reader_card import ReaderCard
 from tracefold.news.reader_history import ReaderHistorySnapshot, assemble_reader_history
 from tracefold.news.release.canary import CanaryRuntimeArm
 from tracefold.news.triage_rules import DEFAULT_POLICY
+from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 NOW_MS = 1_800_000_000_000
@@ -2791,7 +2792,7 @@ def test_delivery_drain_waits_for_native_edit_before_closing_the_sender() -> Non
     async def scenario() -> tuple[list[str], BlockingEditSender]:
         order: list[str] = []
         sender = BlockingEditSender(order)
-        finite = FiniteOperations()
+        finite = FiniteOperations(telemetry=TelemetryRegistry())
         news = _delivery_news(
             event_card=_card(grounded_assets=["MSFT"]),
             latest_verdict=lambda **_kwargs: {
@@ -2854,7 +2855,7 @@ def test_delivery_drain_allows_an_accepted_edit_to_submit_after_shutdown_admissi
         price_started = asyncio.Event()
         allow_price = asyncio.Event()
         sender = RecordingEditableSender(order)
-        finite = FiniteOperations()
+        finite = FiniteOperations(telemetry=TelemetryRegistry())
         news = _delivery_news(
             event_card=_card(grounded_assets=["MSFT"]),
             latest_verdict=lambda **_kwargs: {

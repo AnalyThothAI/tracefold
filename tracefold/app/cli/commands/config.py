@@ -5,12 +5,7 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Any, cast
 
-from tracefold.platform.config.loader import (
-    load_settings,
-    migrate_pre_433c_trading_config,
-    migrate_pre_449_postgres_config,
-    write_default_config,
-)
+from tracefold.platform.config.loader import load_settings, write_default_config
 from tracefold.platform.config.models import (
     news_model_availability,
     news_push_availability,
@@ -19,18 +14,16 @@ from tracefold.platform.paths import config_path
 
 
 def handle_init(args: Namespace) -> tuple[int, dict[str, Any]]:
+    """Create or repair the operator directory; never rewrite the content of an existing config.
+
+    `init` writes permissions and missing files, and the config models are `extra="forbid"`, so a
+    config still carrying a retired key fails `Settings` validation by name at the next load rather
+    than being silently rewritten here. The one-shot #433-C and #449 shape rewrites that used to run
+    from this command are gone with the releases they carried (#589 P-F3).
+    """
+
     existed = config_path().exists()
     path = write_default_config(force=args.force)
-    config_backup_paths = (
-        [
-            backup
-            for migration in (migrate_pre_433c_trading_config, migrate_pre_449_postgres_config)
-            if (backup := migration(path)) is not None
-        ]
-        if existed and not args.force
-        else []
-    )
-    config_backup_path = config_backup_paths[-1] if config_backup_paths else None
     password_path = _ensure_postgres_password_file(path.parent)
     bootstrap_password_path = _ensure_bootstrap_postgres_password_file(path.parent)
     telegram_bot_token_path = _ensure_optional_secret_file(path.parent / "telegram_bot_token")
@@ -52,9 +45,6 @@ def handle_init(args: Namespace) -> tuple[int, dict[str, Any]]:
                     name: str(secret_path) for name, secret_path in trading_execution_secret_paths.items()
                 },
                 "created": args.force or not existed,
-                "config_migrated": bool(config_backup_paths),
-                "config_backup_path": None if config_backup_path is None else str(config_backup_path),
-                "config_backup_paths": [str(value) for value in config_backup_paths],
             },
         },
     )

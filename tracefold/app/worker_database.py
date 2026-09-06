@@ -16,12 +16,7 @@ from psycopg_pool import PoolTimeout
 from tracefold.app.repository_session import RepositorySession, repositories_for_connection
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.client import create_pool, with_password_from_file
-from tracefold.platform.postgres.maintenance_gate import (
-    acquire_maintenance_gate,
-    acquire_steady_gate,
-    release_maintenance_gate,
-    release_steady_gate,
-)
+from tracefold.platform.postgres.maintenance_gate import acquire_steady_gate, release_steady_gate
 from tracefold.platform.resource import (
     ResourceAdmissionTimeout,
     ResourceCapability,
@@ -67,7 +62,10 @@ class WorkerDatabase:
     """One Workers pool with two business slots, a four-slot News lane, and one control slot."""
 
     worker_pool: Any
-    telemetry: TelemetryRegistry | None = field(default_factory=TelemetryRegistry)
+    # Every process that owns this pool owns a registry too, and `/metrics` is the only reader of
+    # either. An optional registry only bought fourteen `is not None` branches no caller reached
+    # (#589 P-F14).
+    telemetry: TelemetryRegistry
     _business_executor: ThreadPoolExecutor = field(
         default_factory=lambda: ThreadPoolExecutor(
             max_workers=2,
@@ -97,35 +95,34 @@ class WorkerDatabase:
     _executors_closed: bool = False
 
     @classmethod
-    def create(cls, settings: Any, *, telemetry: TelemetryRegistry | None = None) -> WorkerDatabase:
+    def create(cls, settings: Any, *, telemetry: TelemetryRegistry) -> WorkerDatabase:
         postgres = settings.storage.postgres
         dsn = with_password_from_file(
             postgres.dsn,
             settings.postgres_password_file(),
         )
+        worker_pool = create_pool(
+            dsn,
+            min_size=_WORKER_POOL_MIN_SIZE,
+            max_size=_WORKER_POOL_MAX_SIZE,
+            max_waiting=_WORKER_POOL_MAX_WAITING,
+            connect_timeout_seconds=postgres.connect_timeout_seconds,
+            application_name="tracefold_workers",
+            statement_timeout_seconds=_WORKER_CONNECTION_BASE_STATEMENT_TIMEOUT_SECONDS,
+            lock_timeout_seconds=WORKER_DATABASE_LOCK_TIMEOUT_SECONDS,
+            idle_in_transaction_session_timeout_seconds=_WORKER_IDLE_IN_TRANSACTION_TIMEOUT_SECONDS,
+        )
+        # There is one pool, and it exists by the time anything can fail: a `create_pool` that raises
+        # left nothing open, and only the first connection wait can strand it (#589 P-F16).
         try:
-            worker_pool = create_pool(
-                dsn,
-                min_size=_WORKER_POOL_MIN_SIZE,
-                max_size=_WORKER_POOL_MAX_SIZE,
-                max_waiting=_WORKER_POOL_MAX_WAITING,
-                connect_timeout_seconds=postgres.connect_timeout_seconds,
-                application_name="tracefold_workers",
-                statement_timeout_seconds=_WORKER_CONNECTION_BASE_STATEMENT_TIMEOUT_SECONDS,
-                lock_timeout_seconds=WORKER_DATABASE_LOCK_TIMEOUT_SECONDS,
-                idle_in_transaction_session_timeout_seconds=_WORKER_IDLE_IN_TRANSACTION_TIMEOUT_SECONDS,
-            )
             worker_pool.wait(timeout=float(postgres.connect_timeout_seconds))
         except Exception as exc:
-            _close_partial_pools(
-                exc,
-                locals().get("worker_pool"),
-            )
+            try:
+                cast(_SyncClosePool, worker_pool).close()
+            except Exception as close_exc:
+                exc.add_note(f"partial db pool cleanup failed: {type(close_exc).__name__}: {close_exc}")
             raise
-        return cls(
-            worker_pool=worker_pool,
-            telemetry=telemetry if telemetry is not None else TelemetryRegistry(),
-        )
+        return cls(worker_pool=worker_pool, telemetry=telemetry)
 
     async def run_business[T](
         self,
@@ -419,11 +416,10 @@ class WorkerDatabase:
         else:
             self.worker_pool.putconn(conn)
         finally:
-            if telemetry is not None:
-                telemetry.record_transaction_seconds(
-                    name,
-                    max(0.0, time.perf_counter() - transaction_started),
-                )
+            telemetry.record_transaction_seconds(
+                name,
+                max(0.0, time.perf_counter() - transaction_started),
+            )
 
     async def aclose(self) -> None:
         await _close_pool(self.worker_pool)
@@ -457,44 +453,8 @@ class WorkerDatabase:
         finally:
             self.worker_pool.putconn(conn)
 
-    def acquire_maintenance_runtime_lock(self) -> Any:
-        conn = self.worker_pool.getconn(timeout=_WORKER_CHECKOUT_TIMEOUT_SECONDS)
-        try:
-            acquire_maintenance_gate(conn)
-            conn.commit()
-            return conn
-        except Exception:
-            conn.rollback()
-            self.worker_pool.putconn(conn)
-            raise
-
-    def release_maintenance_runtime_lock(self, conn: Any) -> None:
-        try:
-            release_maintenance_gate(conn)
-            conn.commit()
-        finally:
-            self.worker_pool.putconn(conn)
-
-    @contextmanager
-    def _checkout(self, pool: Any, *, pool_name: str) -> Iterator[Any]:
-        started = time.perf_counter()
-        context = pool.connection()
-        conn = context.__enter__()
-        self._record_pool_wait(pool_name, (time.perf_counter() - started) * 1000)
-        clean_exit = False
-        try:
-            yield conn
-            clean_exit = True
-        except BaseException as exc:
-            context.__exit__(type(exc), exc, exc.__traceback__)
-            raise
-        finally:
-            if clean_exit:
-                context.__exit__(None, None, None)
-
     def _record_pool_wait(self, pool_name: str, wait_ms: float) -> None:
-        if self.telemetry is not None:
-            self.telemetry.record_pool_wait(pool_name, wait_ms)
+        self.telemetry.record_pool_wait(pool_name, wait_ms)
 
     def _record_resource_admission(
         self,
@@ -503,13 +463,12 @@ class WorkerDatabase:
         outcome: str,
         seconds: float,
     ) -> None:
-        if self.telemetry is not None:
-            self.telemetry.record_resource_admission(
-                capability.value,
-                _normalize_operation_name(operation_name),
-                outcome,
-                seconds,
-            )
+        self.telemetry.record_resource_admission(
+            capability.value,
+            _normalize_operation_name(operation_name),
+            outcome,
+            seconds,
+        )
 
     def _record_resource_completion(
         self,
@@ -518,8 +477,6 @@ class WorkerDatabase:
         submitted_at: float,
         future: Future[Any],
     ) -> None:
-        if self.telemetry is None:
-            return
         outcome = "cancelled" if future.cancelled() else "error" if future.exception() is not None else "success"
         self.telemetry.record_resource_service(
             capability.value,
@@ -530,8 +487,7 @@ class WorkerDatabase:
         self.telemetry.change_resource_active(capability.value, -1)
 
     def _change_resource_active(self, capability: ResourceCapability, delta: int) -> None:
-        if self.telemetry is not None:
-            self.telemetry.change_resource_active(capability.value, delta)
+        self.telemetry.change_resource_active(capability.value, delta)
 
 
 @dataclass(frozen=True, slots=True)
@@ -564,19 +520,8 @@ def _normalize_operation_name(name: str) -> str:
     return (str(name).strip().replace(" ", "_") or "unknown")[:96]
 
 
-def _statement_timeout_value(seconds: float) -> str:
-    timeout_seconds = require_nonnegative_float(
-        seconds,
-        error_code="db_statement_timeout_seconds_required",
-    )
-    return f"{int(timeout_seconds * 1000)}ms"
-
-
-def _transaction_timeout_value(seconds: float) -> str:
-    timeout_seconds = require_nonnegative_float(
-        seconds,
-        error_code="db_transaction_timeout_seconds_required",
-    )
+def _timeout_value(seconds: float, *, error_code: str) -> str:
+    timeout_seconds = require_nonnegative_float(seconds, error_code=error_code)
     return f"{int(timeout_seconds * 1000)}ms"
 
 
@@ -607,8 +552,14 @@ def _set_worker_operation_config(
         conn,
         {
             **_BOUNDED_QUERY_CONFIG,
-            "statement_timeout": _statement_timeout_value(effective_statement_timeout_seconds),
-            "transaction_timeout": _transaction_timeout_value(effective_transaction_timeout_seconds),
+            "statement_timeout": _timeout_value(
+                effective_statement_timeout_seconds,
+                error_code="db_statement_timeout_seconds_required",
+            ),
+            "transaction_timeout": _timeout_value(
+                effective_transaction_timeout_seconds,
+                error_code="db_transaction_timeout_seconds_required",
+            ),
         },
         local=True,
     )
@@ -617,18 +568,6 @@ def _set_worker_operation_config(
 def _discard_connection(pool: Any, conn: Any) -> None:
     conn.close()
     pool.putconn(conn)
-
-
-def _close_partial_pools(error: BaseException, *pools: object | None) -> None:
-    seen: set[int] = set()
-    for pool in pools:
-        if pool is None or id(pool) in seen:
-            continue
-        seen.add(id(pool))
-        try:
-            cast(_SyncClosePool, pool).close()
-        except Exception as exc:
-            error.add_note(f"partial db pool cleanup failed: {type(exc).__name__}: {exc}")
 
 
 async def _close_pool(pool: Any) -> None:

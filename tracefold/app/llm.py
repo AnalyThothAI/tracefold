@@ -41,20 +41,19 @@ def configured_lm_endpoint(
     )
     model_kwargs = _provider_model_kwargs(effective_model, thinking=thinking)
     temperature, structured_output = _provider_request_defaults(effective_model)
-    request = request_config if request_config is not None else getattr(settings.llm, "request", None)
-    if request is not None:
-        send_temperature = getattr(request, "send_temperature", None)
-        if send_temperature is False:
-            temperature = None
-        elif send_temperature is True:
-            temperature = float(request.temperature)
-        configured_mode = str(getattr(request, "structured_output", "auto"))
-        if configured_mode != "auto":
-            structured_output = configured_mode  # type: ignore[assignment]
-        configured_extra = dict(getattr(request, "extra_body", {}) or {})
-        if configured_extra:
-            provider_extra = dict(model_kwargs.get("extra_body") or {})
-            model_kwargs["extra_body"] = {**provider_extra, **configured_extra}
+    # `LlmRequestConfig` is a required field of every endpoint model, so the envelope is always
+    # there to read: an absent one was never a shape this configuration can have (#589 P-F15).
+    request = request_config if request_config is not None else settings.llm.request
+    if request.send_temperature is False:
+        temperature = None
+    elif request.send_temperature is True:
+        temperature = float(request.temperature)
+    if request.structured_output != "auto":
+        structured_output = request.structured_output
+    configured_extra = dict(request.extra_body)
+    if configured_extra:
+        provider_extra = dict(model_kwargs.get("extra_body") or {})
+        model_kwargs["extra_body"] = {**provider_extra, **configured_extra}
     return ConfiguredLMEndpoint(
         model_name=effective_model,
         api_key=str(endpoint_key),
