@@ -396,6 +396,16 @@ API responses use a typed envelope:
 
 Errors use `ok: false` with a stable error code. Pydantic response models generate `docs/generated/openapi.json` and `web/src/lib/types/openapi.ts`; frontend code consumes those generated types.
 
+**What this section is, and is not.** `docs/generated/openapi.json` is the
+request and response shape: every path, parameter, field, type, enum and
+nullability. It is regenerated from the Pydantic models by `make regen-contract`
+and it cannot be wrong. This section states only what a schema cannot: retention
+windows, admission and outcome vocabularies, ordering and pagination guarantees,
+ETag basis, error codes and the field each names, provenance rules, and the
+arguments behind them. Where the two disagree the generated artefact wins, and
+`tests/contract/test_openapi_drift.py` fails when a path named here is not live
+or a live path is unmentioned.
+
 ### Endpoint families
 
 | Family | Routes | Source of data |
@@ -404,21 +414,26 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 | News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/wallets`, `/api/news/wallets/cards` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, market observations read straight from `news_items` and their typed facts, one observation with its group timeline, four-layer status, bounded quotes, one symbol's identity, and the chain wallet tape's own state — its roster, its ingest position, and every card it opened with the price receipt taken after it |
 | Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/executions`, `/api/trading/gate`, `/api/trading/gate/{event_id}`, `POST /api/trading/execution/commands` | one owner per question the console asks: current execution/account readiness, frozen Case decisions, the folded per-entry execution table with its Command ledger, and the Source-admission ledger. Five GETs and one bounded POST append. #537 PR-5 deleted `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections — three more public shapes over the ledgers `/api/trading/executions` already reads folded, none of them called by any browser surface, and all three still readable through `tracefold trading signals \| observations \| commands` |
 
-The public API is exactly these routes — including the two #553 PR-1 market
-reads `/api/news/market` and `/api/news/market/{item_id}` and the two #572 PR-3
-wallet reads `/api/news/wallets` and `/api/news/wallets/cards` — plus `/healthz`,
-`/readyz`, and `/metrics`. The retired GMGN-lane routes (`/ws`, `/api/recent`,
-`/api/events/by-ids`, `/api/search`, `/api/search/inspect`, `/api/token-case`,
-`/api/target-posts`, `/api/target-social-timeline`, `/api/live-market`,
-`/api/token-images/*`, `/api/token-radar`, `/api/stocks-radar`) are not
-registered and answer the ordinary `404`; there is no alias, redirect, or
-feature flag.
+The public API is exactly the paths in `docs/generated/openapi.json` plus
+`/healthz`, `/readyz`, and `/metrics`; the table above says which owner answers
+each. Everything else is retired: not registered, answering the ordinary `404`,
+with no alias, redirect, or feature flag.
+
+<!-- retired-routes:begin -->
+- the GMGN lane: `/ws`, `/api/recent`, `/api/events/by-ids`, `/api/search`,
+  `/api/search/inspect`, `/api/token-case`, `/api/target-posts`,
+  `/api/target-social-timeline`, `/api/live-market`, `/api/token-images/*`,
+  `/api/token-radar`, `/api/stocks-radar`;
+- deleted by #537 PR-5: `/api/trading/signals` and the two
+  `/api/trading/execution/*` projections.
+<!-- retired-routes:end -->
 
 ### News
 
 News is an operator-bound, Strategy-qualified surface with two planes: the
-editorial Event plane and the market-observation plane (#553). The public
-surface is exactly seven GET route templates and no write route at all. The four
+editorial Event plane and the market-observation plane (#553). Every News route
+is a GET and there is no News write route at all; the generated schema is where
+the set is counted. The four
 ReviewDesk routes — two reads and the only two News HTTP writes — were removed
 with the console page they served (#256); `news review
 queue|evidence|submit|external-miss` is now the whole ReviewDesk surface, and
@@ -484,20 +499,13 @@ with the market Event kinds. `news_events.source_contract_reason` survives as a
 column named by `news_event_evidence_current_contract_check`, and is `NULL` on
 every Event this code can open.
 
-- `GET /api/news/feed?event_family=...&change_state=...&assertion_status=...&source_authority=...&subject_code=...&final_decision=...&event_kind=...&admission=...&symbol=...&q=...&limit=...&cursor=...&outcome=...&hours=...&direction=...`
-  returns current Events newest first with the leader title, durable `event_kind`, admission,
-  asset class, grounded assets, watchlist hits, storyline key, context line,
-  **one `outcome`** (`kind` from the stable enum `held_recovery`, `held_gate`,
-  `expired_triage_handoff`, `expired_delivery_handoff`, `queued_publish`,
-  `queued_triage`, `dropped`, `throttled`,
-  `degraded_dropped`, `pending_delivery`, `delivered`, `delivery_failed`;
-  reader copy `text_zh` and `reason_zh`; `group` = `pushed|held|pending`),
-  the latest Triage summary (final decision, override rule, throttle reason,
-  degraded flag, error code, direction, magnitude, scope, taxonomy, typed
-  relevance, `headline_zh`, `why_zh`, and server-owned Chinese labels), and the first delivery state with its
-  error code. `outcome` is the feed's task-tab filter (its SQL mirrors the
-  outcome groups); `hours` bounds `opened_at_ms` to the last N hours (`0`
-  or absent = no bound).
+- `GET /api/news/feed` returns current Events newest first: the leader title,
+  the durable routing facts, the latest Triage summary, the first delivery state
+  and **one `outcome`**. An Event has exactly one outcome; it is the feed's
+  task-tab filter and its SQL mirrors the three outcome groups
+  (`pushed|held|pending`), so a row and the tab it appears under can never
+  disagree. `hours` bounds `opened_at_ms` to the last N hours (`0` or absent =
+  no bound).
 
   Event-to-Triage and push-Verdict-to-Delivery use the same code-owned
   30-minute relevance ceiling. A marker-null handoff is pending at exactly the
@@ -511,12 +519,11 @@ every Event this code can open.
   `e.event_kind IN ('news','listing')`, so a market observation is never a feed
   row under any filter, and `/api/news/market` is where it is read (#553).
 
-  `event_family`, `change_state`, `assertion_status`, `source_authority`,
-  `subject_code`, `final_decision`, `event_kind`, and `direction` accept
-  comma-separated, duplicate-free closed sets. Taxonomy axes filter the current
-  model editorial object; `event_kind` filters the durable source/routing fact.
-  Neither is inferred from the other. The axes compose with every existing predicate
-  before the count aggregate and cursor pagination.
+  The set-valued filters accept comma-separated, duplicate-free closed sets.
+  Taxonomy axes filter the current model editorial object; `event_kind` filters
+  the durable source/routing fact. Neither is inferred from the other. The axes
+  compose with every existing predicate before the count aggregate and cursor
+  pagination.
 
   `q` and `symbol` are mutually exclusive. `symbol` (maximum 32 characters) is
   always an exact asset-identity request. A normalized single-token `q` becomes
@@ -573,19 +580,14 @@ every Event this code can open.
   venue — which is how a reader tells `SPOT` on a Spot Gold headline from a
   real listing. Each response reads all Event assets in one bounded batch and
   resolves all symbols in one instrument batch, never one query per Event.
-- `GET /api/news/events/{event_id}` returns one **editorial** Event, its durable
-  `event_kind`, its `outcome`, a
+- `GET /api/news/events/{event_id}` returns one **editorial** Event in full: its
   `timeline` (ordered steps `received` → `gate` → `triage` → `decide` →
-  `delivery`, each with `title_zh`, `at_ms`, `summary_zh`, and the raw
-  `facts` it was built from), its member Items (title, URL, origin,
-  publication time, match kind, Jaccard estimate, provenance, description),
-  every Triage verdict (model decision, rule baseline, final decision,
-  override rule, throttle reason, verdict payload, runtime model, Program
-  version/SHA, degraded flag and trace; nullable `prompt_version` is Prompt-era
-  audit history only), deliveries (including confirmed `card`, nullable `pending_card`, canonical receipt,
-  `edit_state`, bounded edit error, and edit attempt/settlement timestamps), and `normalization[]` — the alias
-  groups this Event's assets fall into (`base_symbol`, every `alias` that
-  resolves into it including the base itself, and the alias `sources`). Only
+  `delivery`, each carrying the raw `facts` it was built from, so a step is
+  auditable rather than narrated), its member Items, every Triage verdict, its
+  deliveries, and `normalization[]`. Nullable `prompt_version` on a verdict is
+  Prompt-era audit history only and is never written again.
+
+  `normalization[]` is the alias groups this Event's assets fall into. Only
   the code-owned seed aliases count (`source = 'seed'`, reconciled from
   `ALIAS_SEEDS` on every snapshot): the venue-derived rows (`XYZ-{base}`,
   `dex:SYMBOL`) are mechanical and would fire the block on every commodity
@@ -642,88 +644,55 @@ every Event this code can open.
   its own group (`raw|<market_kind>|<item_id>`), so unknown never merges with
   unknown.
 
-  `data` is `groups[]`, `next_cursor`, `sources[]` and `filters`
-  (`kind`, `from_ms`, `to_ms`, `limit` — the resolved absolute window, so a
-  default-window request carries a wall-clock `to_ms` and revalidates every
-  call). There is no page-level "is push wired" flag (#553 PR-2): every group
-  answers that for itself, and one banner would be a second, weaker answer to a
-  question the rows already answer. Each group carries `group_key`,
-  `market_kind`, `observation_count`, `first_event_at_ms`, `last_event_at_ms`,
-  `notification_status`, `notification_reason`, and `latest`: one observation
-  with `item_id`, `market_kind`, `source_strategy_id`, `parse_status`,
-  `parse_error`, `ingest_mode`, `historical`, `group_key`, `title`,
-  `event_at_ms`, `received_at_ms`, `available_at_ms`, `provider`,
-  `source_venue`, `raw_instrument`, `symbol`, `measurement_definition`,
-  `direction`, `oi_change_bps`, `oi_value_usd`, `whale_long_profit_bps`,
-  `whale_oi_ratio_bps`, `liquidated_position_side`, `forced_order_side`,
-  `notional_usd`, `price`, `trader_label`, `account_address`, `action`,
-  `position_side`, `pnl_usd`, the `wallet_*` block (`wallet_kind`,
-  `wallet_address`, `wallet_handle`, `wallet_followers`, `wallet_token`,
-  `wallet_segment_key`, `wallet_tone`, `wallet_ratio_bps`, `wallet_basis`,
-  `wallet_quantity`, `wallet_balance_before`, `wallet_usd`,
-  `wallet_position_usd`, `wallet_entry_price`, `wallet_mark_price`,
-  `wallet_peer_wallets`, `wallet_peer_usd`, `wallet_premium_bps`,
-  `wallet_liquidity_usd`, `wallet_tx_hash`, `wallet_block_number`,
-  `wallet_closed`, `wallet_crowding_item_id`, `wallet_digest_lines`,
-  `wallet_window_from_ms` — every one
-  of them absent on the four provider kinds, and the quantities and dollar
-  figures crossing as exact text for the same reason the provider's do;
-  `wallet_kind` is `exit`, `crowding` or `digest`, and `wallet_digest_lines` is
-  present on a digest alone, carrying the sentences it was sent with, in order),
-  `notification_status`, `notification_reason`, `notify_group_key` and
-  `delivery_key`. The last two are the notification
-  loop's own record of what it decided: the group it assigned the observation to
-  and the card that spoke for it. `notify_group_key` is deliberately not the
-  display `group_key` above — a smart-money display run breaks when the account
-  changes action and the notification group must not, because that change is
-  exactly what earns a card. The three `numeric` figures — `notional_usd`
-  (the liquidation notional or the smart-money reported notional),
-  `price` and `pnl_usd` — cross the wire as their exact stored text, not as JSON
-  numbers, because a JSON number would round a provider notional the ledger
-  holds precisely, and the console renders them rather than computing with
-  them. `sources[]` is one row
-  per market kind — all four always present — with `received`, `parsed`, `raw`,
-  `groups` and `last_received_at_ms` for the same window, and beside them the
-  receipt half: `merged` (observations a card spoke for without being the record
-  that triggered it), `sent`, `failed`, `unknown`, `last_sent_at_ms`,
-  `last_failed_at_ms` and `last_unknown_at_ms`. `unknown` is never folded into
-  `failed` — the provider may well have delivered those. These are fact and
-  receipt queries over the two reads the page already makes; there is no gate
-  dashboard behind them.
+  `filters` echoes the *resolved* absolute window, so a default-window request
+  carries a wall-clock `to_ms` and revalidates every call. There is no
+  page-level "is push wired" flag (#553 PR-2): every group answers that for
+  itself, and one banner would be a second, weaker answer to a question the rows
+  already answer.
+
+  Three rules about the group payload that the schema cannot state. The
+  `wallet_*` block is absent on the four provider kinds; `wallet_kind` is
+  `exit`, `crowding` or `digest`, and `wallet_digest_lines` is present on a
+  digest alone, carrying the sentences it was sent with, in order.
+  `notify_group_key` is deliberately not the display `group_key` — a smart-money
+  display run breaks when the account changes action and the notification group
+  must not, because that change is exactly what earns a card. And every
+  quantity and dollar figure crosses the wire as its exact stored text, not as a
+  JSON number: a JSON number would round a provider notional the ledger holds
+  precisely, and the console renders these rather than computing with them.
+
+  `sources[]` is one row per market kind — all four provider kinds always
+  present — with the intake half (`received`, `parsed`, `raw`, `groups`,
+  `last_received_at_ms`) and the receipt half beside it, where `merged` counts
+  observations a card spoke for without being the record that triggered it.
+  `unknown` is never folded into `failed` — the provider may well have delivered
+  those. These are fact and receipt queries over the two reads the page already
+  makes; there is no gate dashboard behind them.
 
   "Not pushed" is not a filter and never becomes one: whether a card was sent is
   reported per group and is not a precondition for reading the observation.
 - `GET /api/news/wallets` returns the chain wallet tape's own state (#572 PR-3):
-  `roster`, `tape`, `fills[]`, `cards[]`, `window_from_ms` and `window_to_ms`.
-  It takes no parameter but `token`; any other is 400
+  its roster, its ingest position, and one day of fills and cards counted per
+  kind. It takes no parameter but `token`; any other is 400
   `unsupported_query_param`. The window is fixed at the last 24 h on the chain's
   own clock, because the four figures a reader opens this page for describe a
   day and a control that disagreed with the card table below it would be two
   answers to one question.
 
   `roster` is the current version only — an earlier version is evidence a card
-  carries, not a page a reader browses — as `roster_version`, `taken_at_ms`,
-  `provider` and `members[]`, each member carrying `wallet`, `handle`,
-  `followers`, `realized_pnl`, `closed_trades`, `win_rate`, `profit_factor`,
-  `open_cost`, `rank_quality`, `rank_whale` and `provider`. The two ranks are
-  two lists — 质量榜 by realized P&L and profit factor, 大户榜 by open cost — and
-  `null` on one means that list did not select this wallet, which is not rank 0.
-  A tape that has never refreshed publishes version `0` with no members rather
-  than `null`.
+  carries, not a page a reader browses. The two ranks are two lists — 质量榜 by
+  realized P&L and profit factor, 大户榜 by open cost — and `null` on one means
+  that list did not select this wallet, which is not rank 0. A tape that has
+  never refreshed publishes version `0` with no members rather than `null`.
 
-  `tape` is one row or `null` when the task has never run: `high_water_block`,
-  `high_water_tx_index`, `roster_version`, `last_outcome`, `last_error`,
-  `last_success_at_ms`, `updated_at_ms`, `ignored_inbound_total`,
-  `unknown_total`, `noise_through_block` and `noise_through_tx_index`.
-  `last_outcome` and `last_error` are the loop's own open strings and are
-  printed as written.
+  `tape` is one row, or `null` when the task has never run. `last_outcome` and
+  `last_error` are the loop's own open strings and are printed as written.
 
-  `fills[]` is one row per stored kind (`buy`, `sell`, `transfer_out`) with
-  `fills`, `usd` (exact text), `unpriced`, `wallets` and `tokens`; `cards[]` is
-  one row per card kind (`exit`, `crowding`, `digest`) with `cards`, `sent` and
-  `last_event_at_ms`. A kind nothing happened for is absent rather than zeroed —
-  unlike the market surface's `sources[]`, these are counts of what the tape did
-  rather than a per-source inventory a reader is owed either way.
+  `fills[]` is counted per stored kind (`buy`, `sell`, `transfer_out`) and
+  `cards[]` per card kind (`exit`, `crowding`, `digest`). A kind nothing
+  happened for is absent rather than zeroed — unlike the market surface's
+  `sources[]`, these are counts of what the tape did rather than a per-source
+  inventory a reader is owed either way.
 - `GET /api/news/wallets/cards?window=...&limit=...` returns one bounded window
   of the cards the tape's rules opened, newest first (#572 PR-3). `window` is
   the closed set `24h|72h|7d`, default `24h`; anything else is 400
@@ -731,17 +700,9 @@ every Event this code can open.
   100; outside that range FastAPI returns 422. Any other query parameter is 400
   `unsupported_query_param`.
 
-  `data` is `cards[]`, `window`, `window_from_ms`, `window_to_ms` and `limit`.
-  Each card carries `item_id`, `kind` (`exit|crowding|digest`), `handle`,
-  `wallet`, `token`, `token_symbol`, `tone`, `ratio_bps`, `basis`
-  (`chain_balance|site_reported`), `closed`, `peer_wallets`, `premium_bps`,
-  `usd`, `position_usd`, `entry_price`, `mark_price`, `event_at_ms`,
-  `window_from_ms`, `window_to_ms`, `delivery_key`, `delivery_state`,
-  `settled_at_ms`, `outcome_1h_source`, `return_1h_bps`, `outcome_4h_source`,
-  `return_4h_bps`, and — on a digest alone — `digest_lines` and
-  `digest_model_used`. Every card is published whether or not it was sent:
-  "was a reader told" is reported per row and is never a filter, exactly as on
-  the market list.
+  `digest_lines` and `digest_model_used` are present on a digest card alone.
+  Every card is published whether or not it was sent: "was a reader told" is
+  reported per row and is never a filter, exactly as on the market list.
 
   The two return figures are #572 §11's effect receipt and are not a gate:
   nothing in the code reads them. They are integer basis points against the
@@ -756,20 +717,12 @@ every Event this code can open.
   `/api/news/market/{item_id}`, which stays the single place one observation is
   read in full.
 - `GET /api/news/market/{item_id}` returns one observation in full: the
-  `observation` above, the stored `provider_params` payload, `description`,
-  `raw_first_line`, `notification_status`, `notification_reason`,
-  `notification_delivery`, `notification_covered_item_ids`, and `timeline` —
-  every retained observation of the same group, newest first, up to the
-  `MARKET_TIMELINE_MAX` of 200. `notification_delivery` is the card that spoke
-  for this observation or `null`: `delivery_key`, `trigger_reason`
-  (`first|followup|action_change|raw`), `trigger_item_id`, `state`
-  (`pending|sending|sent|failed|unknown|unavailable`), `attempts`,
-  `covered_count`, `covered_from_ms`, `covered_to_ms`, the frozen `card`
-  snapshot, `error`, `receipt_provider`, `first_attempt_at_ms`,
-  `last_attempt_at_ms`, `next_attempt_at_ms` and `settled_at_ms`. The receipt
-  itself is never published — only which provider answered — because a receipt
-  carries channel identifiers and the console's question is whether a reader was
-  told. It is read
+  observation itself, the stored `provider_params` payload, the card that spoke
+  for it (`notification_delivery`, or `null`), the Items that card covered, and
+  a `timeline` of every retained observation of the same group, newest first, up
+  to the `MARKET_TIMELINE_MAX` of 200. The receipt itself is never published —
+  only which provider answered — because a receipt carries channel identifiers
+  and the console's question is whether a reader was told. It is read
   by Item identity and is therefore not bound by the list's window: a link into
   a group that last reported nine days ago still opens. `item_id` is normalized
   (trimmed and lowercased) and must match `^[0-9a-f]{64}$` — the
@@ -821,56 +774,43 @@ every Event this code can open.
   configured, which consumes no attempt. The console renders both strings
   verbatim rather than glossing them.
 - `GET /api/news/status` returns `state` (`ready`, `warming`, `degraded`,
-  `unavailable`), the Workers state, `health` (four thresholded items
-  `ingest`/`broker`/`model`/`delivery` with `level` `ok|warn|bad|off`,
-  `summary_zh`, `detail_zh`, and `overall`; thresholds are code-owned, see
-  `docs/OPERATIONS.md`), `funnel_24h` (`received`, `admitted`, `candidates`, `triaged`,
-  `tagged`, `grounded`, `decided_push`, `delivered`, plus
-  `received_1h`/`delivered_1h`),
-  whose four Event-feed stages (`received`/`admitted`/`triaged`/`delivered`) all start from Events
-  opened in the same rolling 24 h cohort and test those Events' durable stage facts,
-  `reasons_24h` (`stage` `gate|drop|throttle|push|degraded|ungrounded`, raw
-  `key`, `label_zh`, `count`, sorted by count), and four layers: `ingest` (WSS
-  connected, last frame/publish, error, open incidents, closed-pending
-  `recovery` summary with `pending_count`, `oldest_opened_at_ms`, and
-  `last_error_code`, plus `reason` (`recovery_pending|recovery_transient|null`),
-  token configured; no
-  Strategy IDs/counts), `broker`
-  (configured, connected, per-queue message/consumer counts when observed,
-  snapshot error code, and the latest confirmed-publish failure code/timestamp
-  observed by the running Workers process), `pipeline` (events and candidates per hour/day, Triage counts,
-  `source_classifier_version`, and `source_contracts_24h` keyed by the two
-  Event families `news_v1` and `listing_v1`. Each family counts the same Event
-  cohort opened in the last 24 h with exactly three stages: `received`, `parsed`
-  and `verdict` (any Triage verdict for the Event). The market families are not
-  here at all (#553) — they open no Event, so an Event funnel cannot count them,
-  and `parse_failed`/`unsupported` went with them; per-kind market intake is
-  `sources[]` on `/api/news/market`. It also returns degraded counts
-  incl. `triage_degraded_by_code_24h`, decided pushes,
-  throttled, Triage
-  p50/p95, queue lag p95, the Triage model name, the cohort fields
-  `funnel_received_24h`/`funnel_admitted_24h`/`funnel_triaged_24h`/
-  `funnel_delivered_24h`, and the
-  named 24 h maps `suppressed_by_reason`, `dropped_by_rule`,
-  `throttled_by_key`, `pushed_by_rule`, `duplicates_withheld_24h`
-  (`all` is the current content-only path), plus `tagged_24h`,
-  `grounded_24h` and
-  the top-ten `ungrounded_by_symbol_24h`),
-  and `delivery` (sent/terminal
-  counts, last error, end-to-end p50/p95, availability; availability requires
-  both a complete declared provider and a running Workers runtime), plus
-  the watchlist symbols, and `instruments` (the
-  #75 universe summary: trading/delisted counts, base symbols, venues, last
-  snapshot time, per-venue and per-class counts, `dangling_aliases`, and
-  `reference_symbols`). `last_snapshot_ms` is the most recent moment any venue
-  answered a complete catalogue, read from the per-venue snapshot state: since
-  #570 A11 a refresh that changes nothing writes no instrument row, so the
-  freshness answer is a fact about the refresh rather than about the newest
-  row. Every figure but the last two counts contracts on
-  venues we poll; `reference_symbols` is the separate US listed-symbol
-  directory (#91), which tells the Gate a ticker is a stock and is tradeable
-  nowhere, so it is kept out of `trading`, `by_venue`, `by_class` and the
-  `符号落表` funnel.
+  `unavailable`), the Workers state, a four-item `health` roll-up, `funnel_24h`,
+  `reasons_24h`, and four layers — `ingest`, `broker`, `pipeline` and
+  `delivery` — beside the watchlist symbols and the `instruments` universe
+  summary. The `health` thresholds are code-owned; `docs/OPERATIONS.md` carries
+  them and their reasoning.
+
+  The counting rules are the part a schema cannot state.
+
+  - `funnel_24h`'s four Event-feed stages (`received`, `admitted`, `triaged`,
+    `delivered`) all start from Events opened in the same rolling 24 h cohort
+    and test those Events' own durable stage facts, so the stages describe one
+    population rather than four windows.
+  - `reasons_24h` is sorted by count and carries the raw key beside its Chinese
+    label, so an unlabelled rule is visible rather than hidden.
+  - `ingest` publishes no Strategy IDs or per-Strategy counts. Its `recovery`
+    summary carries `reason` (`recovery_pending|recovery_transient|null`); the
+    broker layer carries the latest confirmed-publish failure code and timestamp
+    observed by the running Workers process.
+  - `pipeline.source_contracts_24h` is keyed by the two Event families
+    `news_v1` and `listing_v1` only. Each counts the same 24 h Event cohort at
+    exactly three stages — `received`, `parsed`, `verdict` (any Triage verdict
+    for the Event). The market families are not here at all (#553): they open no
+    Event, so an Event funnel cannot count them, and `parse_failed` /
+    `unsupported` went with them. Per-kind market intake is `sources[]` on
+    `/api/news/market`.
+  - `duplicates_withheld_24h` reports `all`, the current content-only path.
+  - `delivery.availability` requires both a complete declared provider and a
+    running Workers runtime; one alone is not availability.
+  - `instruments.last_snapshot_ms` is the most recent moment any venue answered
+    a complete catalogue, read from the per-venue snapshot state: since #570 A11
+    a refresh that changes nothing writes no instrument row, so the freshness
+    answer is a fact about the refresh rather than about the newest row.
+  - Every `instruments` figure but `dangling_aliases` and `reference_symbols`
+    counts contracts on venues we poll. `reference_symbols` is the separate US
+    listed-symbol directory (#91), which tells the Gate a ticker is a stock and
+    is tradeable nowhere, so it is kept out of `trading`, `by_venue`, `by_class`
+    and the `符号落表` funnel.
 
   `funnel_24h.grounded` and `ungrounded_by_symbol_24h` are folded in the route
   from two halves neither repository reaches across for: News reports which
@@ -1056,8 +996,9 @@ format call per Predictor, and every physical invocation appears in the trace.
 There is no legacy Prompt runtime, dual stack, compatibility Adapter or
 production operator-selected artifact path. Nullable Prompt-era fields remain
 audit-only.
-The current execution contract is `EventSemantics.v2 -> deterministic SemanticNormalizer -> Taxonomy ->
-ReaderCard.v2 -> deterministic assembler`:
+The current execution contract is `EventSemantics.v2 -> deterministic
+_normalize_and_validate_semantics -> Taxonomy -> ReaderCard.v2 -> deterministic
+_assemble`:
 normally three serial calls because the normalizer and assembler make no
 provider request; JSONAdapter may make one format fallback per Predictor, so at
 most six calls per route; fallback restarts the full Program, so primary plus
@@ -1177,157 +1118,26 @@ no operator control plane: pause and mute were removed with
 `news_control_state`, which had never withheld a card, so the only things that
 can withhold one are `decide()` and duplicate evidence.
 
-Before the #449 current-schema baseline squash, the now Git-only migration
-chronology began at `20260818_0275` and was followed by
-`20260818_0276_review_49_hard_cut` (drops the retired News title table, the
-DEX discovery/token-profile/token-image tables, and the unused LangGraph
-`checkpoint_*` tables), `20260818_0277_gmgn_lane_removal` (drops the
-social evidence, token identity/registry, DEX/CEX market, live broadcast,
-provider circuit, and News market-mark tables), and
-`20260819_0278_macro_lane_removal` (drops the ten `macro_*` tables, the four
-general market observation tables, `queue_terminal_events`, and the
-`reject_macro_fact_mutation()` trigger function). Revisions `0279` through
-`0283` add listing admission, instruments and Price Review. The #112 chain is
-`0284` through `0290`: immutable fact/evidence snapshots, ReviewDesk v2 and
-verified label-v1 removal, content-addressed learning artifacts/recordings,
-durable canary control, bounded 90/365-day learning retention, and a
-role-authentic Workers evidence-append grant repair. `0291` removes the local
-Strategy allowlist. The irreversible `20260822_0292` hard cut adds Program
-identity to verdicts, per-Predictor call identity/usage/cost to recordings, and
-the append-only deployment-time `program_v1` epoch. `20260822_0293` preserves
-that history and appends the corrected `program_v2` epoch; Prompt-era and
-`program_v1` learning rows are audit-only and promotion-ineligible.
-`20260822_0294` preserves both rows and appends the expert-quality `program_v3`
-epoch; Prompt-era, `program_v1`, and `program_v2` rows are audit-only for the
-then-current release chain. `20260822_0295` preserves v1-v3 and appends
-`program_v4` with factory v2; `20260822_0298` preserves v1-v4 and appends
-`program_v5` with factory v3 on the artifact-v2 envelope. `20260823_0301`
-hard-renames `news_events.priority` to `queue_priority`, appends atomic
-editorial/scored/runtime-manifest identity to verdicts, trips prior canaries,
-and starts `program_v6` with factory/executable v4 and policy v10. Every earlier
-row and review version is audit-only for the current compiler and release chain.
-`20260824_0302` adds the reverse `(event_id, symbol)` read index for bounded
-reader-history asset projection; it changes no fact, table, Program, or policy.
-`20260824_0303` preserves those rows and appends the #162 `program_v7` epoch
-with factory/executable v5 after the Program/Learning package split; v6 remains
-immutable audit evidence and is promotion-ineligible.
-Issue #175's following code hard cut keeps factory/executable v5, epoch
-`program_v7`, and policy v10, but replaces the sole stable Program artifact and
-bundle because the composite reader-history/selector retrieval identity and
-RulePack text changed. Earlier bundles remain immutable audit history and are
-not executable by the new image. Issue #190 reissues that sole bundle again,
-still inside v7, because the package-owned canonical identity primitive now
-rejects NaN/Infinity.
-`20260824_0304` carries Issue #193's strategy-artifact hard cut into the
-database. It adds and drops no column — the artifact is image-carried JSON, not
-a table — and does exactly two things: it trips every armed or active canary,
-whose candidate the new image cannot load, and records one migration receipt in
-the append-only learning ledger. `program_v7` is deliberately not re-opened:
-accepted `news_review_v4` truth stays eligible, and the epoch row keeps naming
-the factory, schema and baseline root it was opened with. The sole stable root
-re-issues a third time inside v7, now as the 262-byte
-`news_program_strategy_artifact_v1` document under factory v6.
-`20260825_0305` carries the compile-record half of the same issue. It adds
-`compile_record` to the `news_learning_artifacts` kind constraint and leaves
-`compile_receipt` in it, so retired rows stay readable audit history, and it
-trips every armed or active canary: a candidate registered against the old
-receipt chain names a document the new image cannot validate, so it can no
-longer be evaluated. `program_v7` is again not re-opened.
-`20260827_0315` carries Issue #288's exact source-contract route and Event-kind
-hard cut. It trips open canary activations and appends the factory-v6 to
-factory-v7 receipt without rewriting or appending the `program_v7` epoch row.
-Accepted review labels remain immutable truth, while exact current-bundle
-eligibility makes prior-factory judgments audit-only and starts the factory-v7
-cohort at zero.
-`20260828_0316` and `20260828_0317` build the retired Capital/Intent execution
-owner and cut authority to it; neither has a downgrade, because restoring a
-second writer is not a safe rollback.
-`20260828_0318` is #306's prompt-layer hard cut: it appends the `program_v8`
-epoch for `factory_v8`, trips every armed or active canary, adds no column, and
-is irreversible. Two byte changes land under that one identity migration —
-the kernel/RulePack/advisory/seal layering collapsing into one seed instruction
-per Predictor, and the Program's self-owned chat transport composing the request
-envelope — deliberately paid once rather than twice.
-`20260828_0319` is #310's envelope hard cut: it appends the `program_v9` epoch
-for `factory_v9`, trips every armed or active canary, adds no column, and is
-irreversible. The structured-output constraint now follows the endpoint —
-`json_schema` where supported, `json_object` with the same schema inlined into
-the system message where not — which moves fallback-route prompt bytes while
-leaving both seed texts unchanged.
-`20260828_0320` adds the retired owner's capability, blacklist and replay
-ledgers together with the immutable News instrument-listing validity events used
-by source-time replay. It has no downgrade.
-`20260828_0321` is #314's computed-identity cut and the last epoch migration
-there will be: `news_learning_epochs` gains `bundle_sha` and `envelope_sha256`,
-`epoch_id` is tied to `left(bundle_sha, 8)` by CHECK, `program_factory_id`
-becomes nullable, and the running deployment opens its own epoch at the startup
-barrier. The append-only trigger remains the durable mutation boundary.
-`20260828_0322` adds the News delivery edit-intent columns and stale-intent
-index used to distinguish a desired, confirmed, or ambiguous in-place Telegram
-update without changing the initial `sent` state.
-`20260828_0323` adds the receipt-bound deletion intent, five-venue evidence,
-reason, settlement timestamps, and stale-intent index used only after
-authoritative single-name tradeability absence.
-`20260828_0324` makes the edit and delete lifecycle shape checks two-valued and
-refuses to advance if any existing delivery row has a partial lifecycle shape.
-A database on that retired chain must be restored with its exact pre-#449
-image/source, advanced to the old terminal head, and cut over before current
-source is used. A fresh database applies baseline `20260831_0340`, the
-`20260901_0341` Signal hard cut, and every revision after it up to current head
-`20260905_0364`; `0342` adds the Trading notification delivery ledger,
-`0343` adds the current execution Runtime projection and recovery indexes, and
-destructive `0344` restates the `news_verdicts` judgment CHECK for the News
-open-interest push cut, dropping `news_oi_signals.rank_in_window` and every
-`judgment_origin='oi'` verdict written under the retired program. `0345` removes
-the stale Runtime projection constraint that rejected transient flatness and
-unexpected-exposure observations while readiness continues to fail closed on
-unexpected exposure. Additive `0346` makes
-`trading_execution_notification_deliveries.message_id` nullable — a Feishu
-custom-bot webhook returns none — and adds `result_delivered_at_ns` for the
-four-hour outcome message. Destructive `0347` drops the twenty-two execution
-tables `0341` had frozen read-only, and the thirteen functions only their
-triggers, defaults and CHECKs called; their 390 archived rows were dumped to
-`~/.tracefold/backups` first. `0348` hard-cuts Runtime readiness into liveness,
-existing-exposure safety, and new-entry admission while adding the
-account-slot-keyed current control projection (`0356` re-keyed it off the
-profile it was written with). `0349` adds the bounded nullable Runtime-owned
-current account JSON projection without changing any append-only ledger.
-Additive `0350` pins the `pg_trgm` extension and admits the `title_similarity`
-retrieval reason into the `news_verdicts` told trace CHECK for the
-reader-history title-similarity band (#491). `0351`, `0352` and `0358` open the same
-CHECK to `news_semantic_program_v9`, `news_triage_policy_v12` and
-`news_triage_policy_v13`. `0353`
-reorders `trading_execution_string_array_valid` by code point (`COLLATE "C"`);
-additive `0354` adds `trading_execution_runtime_state.routes` and its validator;
-destructive `0355` drops the six dead `trading_cases` columns and narrows
-the Case state and admission status/stage CHECKs to the values a writer can
-reach, refusing to run while a stored row still holds a retired one; destructive
-`0356` makes `account_slot` the execution identity; and destructive `0357`
-deletes the JSON-shape CHECKs, their four functions, the unread digests and the
-five readiness booleans; destructive `0359` drops the `0342` notification
-delivery ledger and the partial observation index that fed it, neither of which
-a production writer ever reached. `0360`, `0361` and `0362` are the #537 PR-3 /
-PR-4 Runtime cuts and the #544 cross-clock CHECK deletion; `0363` rekeys the
-review task source view to the evidence version its verdict judged (#548); and
-`0364` moves market observations onto `news_items` with their three typed
-ledgers, drops the OI ledger's `event_id` foreign key and `learning_epoch`, and
-drops the liquidation venue allowlist (#553). The exact
-News base-table set plus four security-barrier review views is asserted by
-the schema integration test instead of a duplicated prose allowlist. Migrations
-perform no provider, broker, model, or outbound call and have no compatibility
-reader/writer.
+Schema history is not an HTTP contract: [`MIGRATIONS.md`](MIGRATIONS.md) owns
+the baseline, the head, and each revision's evidence. Two rules about migrations
+are contract, and stay here. A database on the retired pre-#449 chain must be
+restored with its exact pre-cut image and source, advanced to that chain's
+terminal head, and cut over before current source is used; current source has no
+upgrade path from an earlier revision. And migrations perform no provider,
+broker, model, or outbound call and have no compatibility reader/writer. The
+exact News base-table set plus four security-barrier review views is asserted by
+the schema integration test instead of a duplicated prose allowlist.
 
 - `GET /api/news/quotes?symbols={comma-separated}` returns one result per
-  requested symbol, in request order, for at most 100 deduplicated symbols
+  requested symbol, **in request order**, for at most 100 deduplicated symbols
   (`news_quotes_symbols_too_many` / `news_quotes_symbol_invalid` otherwise).
-  Each result carries the requested symbol, the exact resolved symbol/base, the
-  venue and venue symbol, instrument class, quote asset, price, `price_kind`
-  (`last|mark|mid`), optional `change_pct` with the `change_basis` it came from
-  (`rolling_24h|provider_day`), `source_at_ms`, `received_at_ms`,
-  `received_age_ms`, optional `source_age_ms`, `effective_age_ms`, and
-  `freshness_basis` (`source_and_received|received_only`). It also carries the
-  independent `reference_at_ms` / `reference_age_ms` clock. `age_ms` does not
-  exist. `state` is `fresh` when every applicable raw clock is no more than
+  Each result carries the requested symbol beside the exact resolved identity,
+  the price with its `price_kind`, the optional `change_pct` with the
+  `change_basis` it came from, and three separate clocks: the receipt clock, the
+  optional provider clock, and the independent `reference_at_ms` /
+  `reference_age_ms` reference clock. A single collapsed `age_ms` does not
+  exist, because three ages answer three different questions. `state` is
+  `fresh` when every applicable raw clock is no more than
   5,000 ms in the future and effective age is <=45,000 ms; otherwise a result
   with a price is `stale`. `unavailable` (nothing quoted yet) and `unlisted`
   (no venue we poll lists it) carry null timestamps, ages, basis and reference.
@@ -1343,10 +1153,9 @@ reader/writer.
   fields — a price that changed must not invalidate the Feed ETag or re-run its
   count query every three seconds.
 - `GET /api/news/symbols/{base}` returns what one `base_symbol` *is* (#207
-  PR-W1): `known`, `tradeable`, `venues`, the `contracts` it names, and the
-  operator-alias `normalization` group when one collapses more than the base
-  itself. Identity only — the token page's Events, price and rank window each
-  keep their own endpoint, so nothing here is a second answer to a question one
+  PR-W1), including the operator-alias `normalization` group when one collapses
+  more than the base itself. Identity only — the token page's Events, price and
+  rank window each keep their own endpoint, so nothing here is a second answer to a question one
   of them already answers. `base` is normalized (uppercased, `XYZ-` stripped)
   and must match `[A-Z0-9._-]{1,24}` or the request is
   `news_symbol_invalid`. `known` and `tradeable` are different answers: `known`
@@ -1409,10 +1218,10 @@ Runtime facts, and status carries readiness plus bounded totals.
   no provider client.
 - `GET /api/trading/cases?underlying={base|crypto:BASE}&state={open|no_trade|blocked|emitted}`
   — the Case/Decision aggregate, and the drawer behind `/trading?case=<id>`.
-  Each Case carries its raw `state`, its terminal `policy_reason`, the frozen
+  Every number a Case row publishes is the frozen one it was decided on:
   `policy_config` and `policy_checks` (check, operator, threshold, measured,
-  passed) it was decided on, its policy identity read off the manifest,
-  venue-neutral `market_key`, `base_symbol`, and timestamps, beside the two
+  passed) and the policy identity read off the manifest, never today's
+  thresholds. `market_key` is venue-neutral. Beside the rows travel the two
   durable 24 h distributions `state_counts_24h` and `reason_counts_24h`.
   Bounded to 100 rows with a `complete` flag and **no cursor**: the response
   published a `next_cursor` no reader ever sent back (#537 PR-5). The nine
@@ -1428,12 +1237,10 @@ Runtime facts, and status carries readiness plus bounded totals.
   `manual_entry` Command, which is the identity the Runtime correlates that
   entry's facts under. Each row folds its own `signal_disposition` or
   `control_disposition`, `order`, `fill`, `protection` and `position`
-  observations: `source ∈ {signal, manual}`, `entry_id` (the `signal_id` or the
-  `command_id`), `case_id` (absent on a manual entry, which has no Case),
-  `market_key`, `direction`, `observed_at_ns` (the Signal's, or the Command's
-  `requested_at_ns`), the raw `disposition_reason`, `fill_quantity`,
-  `fill_avg_price`, `stop_trigger_price`, `exit_price`, `realized_pnl_usd`,
-  `exit_reason`, and a backend-derived
+  observations into one row: `source ∈ {signal, manual}` says which kind of
+  entry it was, `entry_id` is the `signal_id` or the `command_id`, `case_id` is
+  absent on a manual entry because a manual entry has no Case, and the venue
+  numbers are the entry's own. The backend derives one
   `stage ∈ {pending, rejected, expired, ordered, filled, protected, closed}`.
   `stage` is the one word derived from the venue's own `order_status` and
   `position_status`, which are its inputs and not published beside it, and the
@@ -1442,9 +1249,9 @@ Runtime facts, and status carries readiness plus bounded totals.
   was a second clock beside `observed_at_ns` that no column printed.
   The same response carries `commands[]`, one row per operator Command in the
   same window — a manual entry appears there too, as the instruction record —
-  as exactly `command_id`, `action`, `requested_at_ns` and
+  each carrying a
   `stage ∈ {recorded, accepted, rejected, completed, expired}` read from
-  its `control_disposition` alone — `completed` only on a flatten whose
+  its `control_disposition` alone, `completed` only on a flatten whose
   disposition reason is `binance_account_flat`. `reason` repeated the text the
   operator typed into the field above the ledger and `operator_identity` was the
   constant `operator-console` on every row a browser wrote. No venue observation
@@ -1965,13 +1772,13 @@ decides. They are nullable for the same reason every other manifest-derived
 field is: the manifest is the only writer of them, and a Case whose manifest
 names no policy must render as that rather than 500 the route (#532).
 All three typed market ledgers are cascade-owned by `news_items`. Migration
-`20260905_0364` gave `news_market_liquidations.item_id` its first foreign key —
+`20260905_0365` gave `news_market_liquidations.item_id` its first foreign key —
 unique, `ON DELETE CASCADE` — and created `news_market_smart_money` with the
 same one; `news_oi_signals.source_item_id` already had it, and the same revision
 dropped that table's `event_id` foreign key so the OI ledger no longer depends
 on an Event existing. A typed fact can no longer outlive the record it was
 parsed from: the liquidation orphans that used to survive an Item purge were
-unreachable evidence, and `0364` deletes them. The market Item that owns the
+unreachable evidence, and `0365` deletes them. The market Item that owns the
 fact is kept for `judged_days` regardless of verdict, push or parse status.
 [ADR 0002](adr/0002-trading-execution-owner-hard-cuts.md) records the retired
 reader, control and replay surfaces and the older manifest generations.

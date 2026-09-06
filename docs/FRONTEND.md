@@ -567,7 +567,12 @@ Common frontend gates:
 - `cd web && npm run test:e2e` (explicit four-project visual/interaction lane)
 - `make test-browser-smoke` (required single-Chromium FastAPI/browser seam)
 
-Playwright projects are part of the frontend contract:
+The four Playwright viewport projects are a local, non-gating diagnostic lane.
+No CI job runs them, and
+[Risk-tiered local verification](DEVELOPMENT.md#risk-tiered-local-verification)
+excludes `make test-visual` from required per-PR evidence. The CI browser seam
+is `tests.browser.run_full_stack_smoke`, which `make test-browser-smoke` and the
+`ci-frontend` owner both run. The four diagnostic projects are:
 
 - `desktop-1366` (`1366x720`)
 - `desktop-1920` (`1920x1080`)
@@ -582,8 +587,8 @@ observes `/api/bootstrap`, verifies the installed bearer reaches
 `/api/news/feed`, and renders a service-owned Event fact on `/news`. Every
 Playwright spec uses the shared guard fixture: unexpected `pageerror`, console
 error, failed request or unhandled API request fails the case. The four-project
-mock/visual lane remains valuable for responsive interaction and screenshots
-but is not evidence of a backend seam and is not required on every PR.
+mock/visual lane remains valuable for responsive interaction and screenshots,
+but it intercepts routes and is therefore not evidence of a backend seam.
 
 Required Vitest runs set `allowOnly=false`, disable retry/repeat, and emit the
 built-in JSON report under `artifacts/test-results/`. Required-test ESLint
