@@ -472,6 +472,67 @@
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `round_started_at_ms` | `BIGINT` | False | `0` |
 
+## `news_market_wallet_fills`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `chain_id` | `BIGINT` | False | `None` |
+| `tx_hash` | `TEXT` | False | `None` |
+| `log_index` | `INTEGER` | False | `None` |
+| `block_number` | `BIGINT` | False | `None` |
+| `block_hash` | `TEXT` | False | `None` |
+| `wallet` | `TEXT` | False | `None` |
+| `token` | `TEXT` | False | `None` |
+| `token_symbol` | `TEXT` | True | `None` |
+| `token_decimals` | `INTEGER` | True | `None` |
+| `kind` | `TEXT` | False | `None` |
+| `amount_raw` | `NUMERIC(78, 0)` | False | `None` |
+| `cash_token` | `TEXT` | True | `None` |
+| `cash_amount_raw` | `NUMERIC(78, 0)` | True | `None` |
+| `cash_decimals` | `INTEGER` | True | `None` |
+| `usd` | `NUMERIC(38, 10)` | True | `None` |
+| `usd_source` | `TEXT` | True | `None` |
+| `event_at_ms` | `BIGINT` | False | `None` |
+| `received_at_ms` | `BIGINT` | False | `None` |
+| `classified_at_ms` | `BIGINT` | False | `None` |
+| `roster_version` | `BIGINT` | False | `None` |
+| `provider` | `TEXT` | False | `'robinhood_chain'::text` |
+
+## `news_market_wallet_roster`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `roster_version` | `BIGINT` | False | `None` |
+| `taken_at_ms` | `BIGINT` | False | `None` |
+| `wallet` | `TEXT` | False | `None` |
+| `handle` | `TEXT` | False | `''::text` |
+| `followers` | `BIGINT` | False | `0` |
+| `realized_pnl` | `DOUBLE PRECISION` | False | `0` |
+| `closed_trades` | `INTEGER` | False | `0` |
+| `win_rate` | `DOUBLE PRECISION` | False | `0` |
+| `profit_factor` | `DOUBLE PRECISION` | True | `None` |
+| `open_cost` | `DOUBLE PRECISION` | False | `0` |
+| `rank_quality` | `INTEGER` | True | `None` |
+| `rank_whale` | `INTEGER` | True | `None` |
+| `provider` | `TEXT` | False | `'robinhoodtrenches'::text` |
+
+## `news_market_wallet_tape_state`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `state_id` | `TEXT` | False | `None` |
+| `high_water_block` | `BIGINT` | False | `0` |
+| `high_water_tx_index` | `INTEGER` | False | `'-1'::integer` |
+| `roster_version` | `BIGINT` | False | `0` |
+| `last_outcome` | `TEXT` | False | `''::text` |
+| `last_error` | `TEXT` | True | `None` |
+| `last_success_at_ms` | `BIGINT` | True | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+| `ignored_inbound_total` | `BIGINT` | False | `0` |
+| `unknown_total` | `BIGINT` | False | `0` |
+| `noise_through_block` | `BIGINT` | False | `0` |
+| `noise_through_tx_index` | `INTEGER` | False | `'-1'::integer` |
+
 ## `news_model_recordings`
 
 | Column | Type | Nullable | Default |

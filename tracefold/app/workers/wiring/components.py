@@ -8,6 +8,7 @@ from loguru import logger
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.runtime import (
+    CHAIN_TAPE,
     MARKET_NOTIFICATIONS,
     NEWS_DELIVERY,
     NEWS_EDITORIAL,
@@ -19,6 +20,7 @@ from tracefold.app.workers.runtime import (
     TRADING_SIGNAL_LANE,
     CapabilityStates,
 )
+from tracefold.app.workers.wiring.chain_tape import ChainTapeComposition, _wire_chain_tape
 from tracefold.app.workers.wiring.news import _wire_news_pipeline
 from tracefold.app.workers.wiring.trading import _wire_signal_lane
 from tracefold.news.bus import BrokerBackpressure, BrokerUnavailable
@@ -38,6 +40,7 @@ class _Components:
     news_bus: RabbitMQBus | None
     runtime_manifest_sha: str | None = None
     market_notifications: MarketNotificationLoop | None = None
+    chain_tape: ChainTapeComposition | None = None
     signal_lane: SignalLane | None = None
     telemetry: TelemetryRegistry | None = None
     capabilities: CapabilityStates = field(default_factory=CapabilityStates)
@@ -76,6 +79,7 @@ async def _wire_components(
     news_bus: RabbitMQBus | None = None
     runtime_manifest_sha: str | None = None
     market_notifications: MarketNotificationLoop | None = None
+    chain_tape: ChainTapeComposition | None = None
     if settings.news.enabled:
         news_bus, news_pipeline, market_notifications = await _wire_news_pipeline(
             settings=settings,
@@ -85,6 +89,12 @@ async def _wire_components(
             capabilities=capabilities,
         )
         runtime_manifest_sha = await _register_runtime_manifest(news_pipeline, capabilities=capabilities)
+        chain_tape = _wire_chain_tape(
+            settings=settings,
+            db=db,
+            capabilities=capabilities,
+            telemetry=telemetry,
+        )
     else:
         for capability in (
             NEWS_INGESTION,
@@ -93,6 +103,7 @@ async def _wire_components(
             NEWS_QUOTES,
             NEWS_REACTIONS,
             MARKET_NOTIFICATIONS,
+            CHAIN_TAPE,
         ):
             capabilities.disabled(capability, "news_disabled")
         # A push target declared against a disabled News is a configuration error, not a delivery.
@@ -109,6 +120,7 @@ async def _wire_components(
         news_bus=news_bus,
         runtime_manifest_sha=runtime_manifest_sha,
         market_notifications=market_notifications,
+        chain_tape=chain_tape,
         signal_lane=signal_lane,
         telemetry=telemetry,
         capabilities=capabilities,

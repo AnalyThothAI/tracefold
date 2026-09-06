@@ -8,6 +8,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, G
 PROMETHEUS_CONTENT_TYPE = CONTENT_TYPE_LATEST
 
 ExternalDataName = Literal[
+    "chain_tape",
     "event_reaction",
     "instrument_snapshot",
     "opennews_recovery",
@@ -24,11 +25,19 @@ ExternalDataSource = Literal[
     "model",
     "opennews",
     "other",
+    "robinhood_rpc",
+    "robinhoodtrenches",
     "us_reference",
 ]
 ExternalDataOutcome = Literal["error", "partial", "success"]
 ExternalDataProviderOutcome = Literal["error", "success"]
-ExternalDataSkipReason = Literal["coalesced", "disabled", "no_work"]
+ExternalDataSkipReason = Literal[
+    "airdrop_ignored",
+    "coalesced",
+    "disabled",
+    "no_work",
+    "unclassified",
+]
 NewsSearchMode = Literal["asset", "text"]
 NewsSearchResult = Literal["zero", "nonzero"]
 NewsHandoffStage = Literal["event", "verdict"]

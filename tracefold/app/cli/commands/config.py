@@ -115,6 +115,10 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                     "watchlist": sorted(settings.news.watchlist_symbols),
                     "policy": settings.news.policy.model_dump(),
                     "retention": settings.news.retention.model_dump(),
+                    # Two public unauthenticated endpoints and four list rules. Nothing here is a
+                    # secret, and an operator reading a week of tape counts needs to see exactly which
+                    # list produced them (#572 PR-1).
+                    "chain_tape": settings.news.chain_tape.model_dump(),
                     "push": {
                         "requested": push_availability.requested,
                         "delivery_available": push_availability.delivery_available,

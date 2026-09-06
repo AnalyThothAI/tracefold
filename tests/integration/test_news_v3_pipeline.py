@@ -68,6 +68,11 @@ NEWS_TABLES = {
     # worth interrupting a reader again -- and one row per card, with its attempts and its receipt.
     "news_market_tracks",
     "news_market_deliveries",
+    # #572 PR-1. The Robinhood Chain wallet tape: the fills ledger, the versioned roster, and the one
+    # row that says how far the tape has been classified.
+    "news_market_wallet_fills",
+    "news_market_wallet_roster",
+    "news_market_wallet_tape_state",
     # #112 immutable evidence actually read by the SemanticJudge.
     "news_event_evidence_snapshots",
 }

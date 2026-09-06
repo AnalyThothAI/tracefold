@@ -404,6 +404,78 @@ class NewsVenuesSettings(BaseModel):
         return self
 
 
+class NewsChainTapeRosterSettings(BaseModel):
+    """Which wallets the chain tape follows (#572 decision 5).
+
+    Four numbers and no model. Win rate is deliberately absent: over the addresses with five or more
+    closes its rank correlation with realized P&L was 0.31, and four of the nine with a win rate above
+    0.6 were losing money (#572 §3.2).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    min_closed_trades: int = 10
+    min_profit_factor: float = 1.2
+    top_quality: int = 20
+    top_whale_by_open_cost: int = 20
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> NewsChainTapeRosterSettings:
+        if not 0 <= self.min_closed_trades <= 10_000:
+            raise ValueError("news_chain_tape_roster_min_closed_trades_invalid")
+        if not 0.0 <= self.min_profit_factor <= 1_000.0:
+            raise ValueError("news_chain_tape_roster_min_profit_factor_invalid")
+        # The roster is a topic array on every `eth_getLogs` call. A list that is not bounded here is a
+        # request size that is not bounded on a public endpoint.
+        if not 0 <= self.top_quality <= 200:
+            raise ValueError("news_chain_tape_roster_top_quality_invalid")
+        if not 0 <= self.top_whale_by_open_cost <= 200:
+            raise ValueError("news_chain_tape_roster_top_whale_invalid")
+        if self.top_quality + self.top_whale_by_open_cost <= 0:
+            raise ValueError("news_chain_tape_roster_empty")
+        return self
+
+
+class NewsChainTapeSettings(BaseModel):
+    """The Robinhood Chain wallet tape (#572 PR-1): read-only, disabled by default, store-only.
+
+    Every value here is a runtime parameter, and none of them is a secret: both providers are public and
+    unauthenticated, which is why `tracefold config` prints them as they are.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    rpc_url: str = "https://rpc.mainnet.chain.robinhood.com"
+    poll_interval_s: float = 2.0
+    roster_provider_url: str = "https://robinhoodtrenches.com"
+    roster: NewsChainTapeRosterSettings = Field(default_factory=NewsChainTapeRosterSettings)
+    retention_days: int = 90
+
+    @field_validator("rpc_url", "roster_provider_url", mode="before")
+    @classmethod
+    def parse_endpoint(cls, value: Any) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return normalized
+        parsed = urlsplit(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("news_chain_tape_endpoint_invalid")
+        return normalized.rstrip("/")
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> NewsChainTapeSettings:
+        if self.enabled and (not self.rpc_url or not self.roster_provider_url):
+            raise ValueError("news_chain_tape_endpoint_missing")
+        # Blocks are ~0.1 s apart and the overlap is 30 of them; a cadence beyond that window would make
+        # the overlap stop overlapping.
+        if not 0.5 <= self.poll_interval_s <= 60.0:
+            raise ValueError("news_chain_tape_poll_interval_invalid")
+        if not 1 <= self.retention_days <= 3650:
+            raise ValueError("news_chain_tape_retention_days_invalid")
+        return self
+
+
 class NewsWatchlistEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -430,6 +502,7 @@ class NewsSettings(BaseModel):
     policy: NewsPolicySettings = Field(default_factory=NewsPolicySettings)
     retention: NewsRetentionSettings = Field(default_factory=NewsRetentionSettings)
     venues: NewsVenuesSettings = Field(default_factory=NewsVenuesSettings)
+    chain_tape: NewsChainTapeSettings = Field(default_factory=NewsChainTapeSettings)
     watchlist: tuple[NewsWatchlistEntry, ...] = ()
 
     @field_validator("opennews_token", mode="before")

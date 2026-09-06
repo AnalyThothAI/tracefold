@@ -3369,7 +3369,7 @@ def test_janitor_runs_raw_batches_and_learning_retention_in_separate_cold_transa
     db = FakeWorkerDatabase(news)
     telemetry = RecordingHandoffTelemetry()
 
-    asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port, telemetry=telemetry).turn())
+    asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port, telemetry=telemetry, chain_tape_enabled=True).turn())
 
     assert db.heavy_operations == [
         "news_expire_bands",
@@ -3378,8 +3378,12 @@ def test_janitor_runs_raw_batches_and_learning_retention_in_separate_cold_transa
         # #553 PR-2: one bounded batch per pass, beside the purge that made those observations
         # unreadable, so alerting state for a group nobody can read any more goes with them.
         "news_market_track_retention",
+        # #572 PR-1: the wallet tape's own bounded batch, on the same heavy slot and beside the other
+        # sweeps rather than as a task of its own.
+        "news_chain_tape_retention",
         "news_learning_retention",
     ]
+    assert news.kwargs_of("chain_tape_purge_fills")["limit"] == 500
     # The judged cutoff, not the raw one: a track outlives the raw text and dies with the judged
     # window, which is when its group's last observation actually stops being readable.
     prune = news.kwargs_of("market_prune_tracks")
@@ -3395,6 +3399,18 @@ def test_janitor_runs_raw_batches_and_learning_retention_in_separate_cold_transa
     assert all(0 < timeout <= 1.0 for timeout in raw_timeouts)
 
 
+def test_janitor_does_not_sweep_a_wallet_tape_that_is_not_running() -> None:
+    """#572 PR-1. A disabled tape writes no fills, so a `DELETE` every sixty seconds has a known answer."""
+
+    news = RecordingNews(purge_before={}, purge_learning_retention={})
+    db = FakeWorkerDatabase(news)
+
+    asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port).turn())
+
+    assert "news_chain_tape_retention" not in db.heavy_operations
+    assert "chain_tape_purge_fills" not in news.names()
+
+
 def test_janitor_records_retention_failure_without_stopping_the_loop() -> None:
     def _fail(**_kwargs: Any) -> dict[str, Any]:
         raise RuntimeError("broken retention function")
@@ -3402,12 +3418,13 @@ def test_janitor_records_retention_failure_without_stopping_the_loop() -> None:
     news = RecordingNews(purge_before={}, purge_learning_retention=_fail)
     db = FakeWorkerDatabase(news)
 
-    asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port).turn())
+    asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port, chain_tape_enabled=True).turn())
 
     assert db.heavy_operations == [
         "news_expire_bands",
         "news_raw_retention",
         "news_market_track_retention",
+        "news_chain_tape_retention",
         "news_learning_retention",
         "news_learning_retention_error",
     ]
