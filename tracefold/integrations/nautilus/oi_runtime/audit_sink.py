@@ -227,6 +227,12 @@ class AuditSink:
         self._max_bytes = max_bytes
         self.factory = factory
         self._values: deque[tuple[ExecutionObservationV1, int]] = deque()
+        # The queue, indexed by the identity `offer` answers on. A native callback offers on the
+        # trading event loop, and answering "is this event already queued" by walking the deque made
+        # that answer cost the whole queue -- up to `max_count` comparisons per callback, worst at
+        # exactly the moment the queue is deepest (#589 PR-2). The dict is maintained by the two
+        # writers below and holds the same values the deque does.
+        self._index: dict[str, ExecutionObservationV1] = {}
         self._bytes = 0
         self._healthy = True
         self._failure_reason: str | None = None
@@ -258,22 +264,13 @@ class AuditSink:
         with self._lock:
             return self._failure_reason
 
-    @property
-    def queued_count(self) -> int:
-        with self._lock:
-            return len(self._values)
-
-    @property
-    def queued_bytes(self) -> int:
-        with self._lock:
-            return self._bytes
-
     def offer(self, value: ExecutionObservationV1) -> bool:
         size = len(value.model_dump_json().encode())
         with self._lock:
-            for queued, _ in self._values:
-                if queued.event_id != value.event_id:
-                    continue
+            queued = self._index.get(value.event_id)
+            if queued is not None:
+                # Same identity: an identical re-offer is already on its way, a different body under
+                # the same identity is a contradiction the ledger has to name.
                 if queued == value:
                     return True
                 self._gap("audit_identity_conflict").record(value)
@@ -283,9 +280,15 @@ class AuditSink:
                 self._gap("audit_queue_overflow").record(value)
                 self._republish_health()
                 return False
-            self._values.append((value, size))
-            self._bytes += size
+            self._append(value, size)
             return True
+
+    def _append(self, value: ExecutionObservationV1, size: int) -> None:
+        """Queue one value and index it. Called with the lock held, by `offer` and by the gap writer."""
+
+        self._values.append((value, size))
+        self._index[value.event_id] = value
+        self._bytes += size
 
     def flush_once(
         self,
@@ -367,6 +370,8 @@ class AuditSink:
                 queued, size = self._values.popleft()
                 if queued.event_id != event_id:
                     raise RuntimeError("oi_runtime_audit_queue_corrupted")
+                if self._index.get(event_id) is queued:
+                    del self._index[event_id]
                 self._bytes -= size
         return event_ids
 
@@ -423,8 +428,7 @@ class AuditSink:
             if len(self._values) >= self._max_count or self._bytes + size > self._max_bytes:
                 gap.sequence -= 1
                 continue
-            self._values.append((value, size))
-            self._bytes += size
+            self._append(value, size)
             gap.pending_event_id = value.event_id
             gap.settled()
 

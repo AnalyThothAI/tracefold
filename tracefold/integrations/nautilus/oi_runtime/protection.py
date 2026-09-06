@@ -191,7 +191,7 @@ class ProtectionCoordinator:
         state.protection_generation += 1
         leg = protection_leg(state.protection_generation)
         client_order_id = deterministic_client_order_id(
-            namespace=self._profile.client_order_namespace,
+            namespace=self._profile.namespace,
             entry_id=state.entry.entry_id,
             leg=leg,
         )
@@ -342,7 +342,7 @@ class ProtectionCoordinator:
             return False
         if expected_leg is not None:
             expected_id = deterministic_client_order_id(
-                namespace=self._profile.client_order_namespace,
+                namespace=self._profile.namespace,
                 entry_id=state.entry.entry_id,
                 leg=expected_leg,
             )

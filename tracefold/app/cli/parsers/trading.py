@@ -26,6 +26,20 @@ def add_trading_commands(
     observations = commands.add_parser("observations", help="list append-only Runtime observations")
     observations.add_argument("--limit", type=_positive_int, default=20)
 
+    gate = commands.add_parser("gate", help="read the candidate admission ledger")
+    gate.add_argument(
+        "--source-key",
+        default=None,
+        help="one admission answer by source key, for example 'oi:<event_id>:oi_signal_v1'",
+    )
+    gate.add_argument(
+        "--since-ms",
+        type=_positive_int,
+        default=None,
+        help="Unix millisecond lower bound on the source frame's own observation clock; default 24 h",
+    )
+    gate.add_argument("--limit", type=_positive_int, default=20)
+
     operator_intents = commands.add_parser("commands", help="list authenticated OperatorIntentV1 rows")
     operator_intents.add_argument(
         "--action",

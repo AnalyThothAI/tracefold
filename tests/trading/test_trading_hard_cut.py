@@ -29,11 +29,13 @@ def test_retired_execution_configuration_fails_closed(retired: dict[str, object]
         Settings.model_validate({"trading": retired})
 
 
-def test_public_http_is_case_execution_gate_and_readiness_only() -> None:
-    """#537 PR-5. Four reads and one write; every retired execution surface stays deleted.
+def test_public_http_is_case_execution_and_readiness_only() -> None:
+    """#537 PR-5, #589 PR-2. Three reads and one write; every retired execution surface stays deleted.
 
     The Signal list and the raw observation stream were two more public shapes over the ledgers
-    `/api/trading/executions` already reads folded, and nothing in the browser called either.
+    `/api/trading/executions` already reads folded, and nothing in the browser called either. The two
+    admission-ledger routes left on the same terms: #553 PR-1 deleted the OI frame table that joined
+    each row to its Event, which was their only browser reader.
     """
 
     schema = create_app(settings=Settings(ws_token="schema-test")).openapi()
@@ -43,11 +45,11 @@ def test_public_http_is_case_execution_gate_and_readiness_only() -> None:
         "/api/trading/status",
         "/api/trading/cases",
         "/api/trading/executions",
-        "/api/trading/gate",
-        "/api/trading/gate/{event_id}",
         "/api/trading/execution/commands",
     }
     assert set(schema["paths"]["/api/trading/execution/commands"]) == {"post"}
+    for retired in ("/api/trading/gate", "/api/trading/gate/{event_id}"):
+        assert retired not in paths, retired
 
 
 def test_active_signal_path_has_no_execution_or_nautilus_import() -> None:

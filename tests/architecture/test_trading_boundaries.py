@@ -289,6 +289,9 @@ def test_live_wiring_uses_source_native_public_bars_and_no_model_runner() -> Non
 def test_package_root_exports_only_current_app_facing_values() -> None:
     from tracefold import trading
 
+    # #589 PR-2. Every name here is imported from `tracefold.trading` by an application seam. Nine
+    # were not imported from here by anything and are gone: a package root that re-exports whatever
+    # the package happens to contain is not a boundary, it is a second spelling of every module in it.
     assert trading.__all__ == [
         # The read-model stage vocabulary #528 PR-1 derives once for `/api/trading/executions`.
         "ACCEPTED_ENTRY_DISPOSITIONS",
@@ -299,10 +302,6 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
         "MARKET_KEY_PATTERN",
         "MAX_OBSERVATION_APPEND_BATCH",
         "MAX_OBSERVATION_APPEND_BYTES",
-        "SHA256_PATTERN",
-        "AlphaDecision",
-        "Bar",
-        "CaseState",
         "CommandStage",
         "ExecutionAccountOrder",
         "ExecutionAccountPosition",
@@ -312,16 +311,11 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
         "OiTradeCandidate",
         "OperatorCommandError",
         "OperatorIntentV1",
-        "ParsedOperatorCommand",
         "PreparedOperatorIntent",
         "TradeSignalV1",
-        "TradingCaseManifest",
-        "canonical_sha256",
         "command_stage",
         "execution_stage",
         "parse_operator_command",
-        "postgres_text_valid",
-        "prepare_execution_observations",
         "prepare_parsed_operator_intent",
     ]
     assert "TradingRepository" not in trading.__dict__

@@ -402,7 +402,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
 | News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/wallets`, `/api/news/wallets/cards` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, market observations read straight from `news_items` and their typed facts, one observation with its group timeline, four-layer status, bounded quotes, one symbol's identity, and the chain wallet tape's own state — its roster, its ingest position, and every card it opened with the price receipt taken after it |
-| Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/executions`, `/api/trading/gate`, `/api/trading/gate/{event_id}`, `POST /api/trading/execution/commands` | one owner per question the console asks: current execution/account readiness, frozen Case decisions, the folded per-entry execution table with its Command ledger, and the Source-admission ledger. Five GETs and one bounded POST append. #537 PR-5 deleted `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections — three more public shapes over the ledgers `/api/trading/executions` already reads folded, none of them called by any browser surface, and all three still readable through `tracefold trading signals \| observations \| commands` |
+| Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/executions`, `POST /api/trading/execution/commands` | one owner per question the console asks: current execution/account readiness, frozen Case decisions, and the folded per-entry execution table with its Command ledger. Three GETs and one bounded POST append. #537 PR-5 deleted `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections, and #589 PR-2 the two `GET /api/trading/gate*` admission reads — five more public shapes over ledgers `/api/trading/executions` already reads folded or that no browser surface called, all still readable through `tracefold trading signals \| observations \| commands \| gate` |
 
 The public API is exactly these routes — including the two #553 PR-1 market
 reads `/api/news/market` and `/api/news/market/{item_id}` and the two #572 PR-3
@@ -410,7 +410,10 @@ wallet reads `/api/news/wallets` and `/api/news/wallets/cards` — plus `/health
 `/readyz`, and `/metrics`. The retired GMGN-lane routes (`/ws`, `/api/recent`,
 `/api/events/by-ids`, `/api/search`, `/api/search/inspect`, `/api/token-case`,
 `/api/target-posts`, `/api/target-social-timeline`, `/api/live-market`,
-`/api/token-images/*`, `/api/token-radar`, `/api/stocks-radar`) are not
+`/api/token-images/*`, `/api/token-radar`, `/api/stocks-radar`) and the retired
+Trading reads (`/api/trading/signals`, `/api/trading/execution/observations`,
+`/api/trading/execution/state`, `GET /api/trading/gate`,
+`GET /api/trading/gate/{event_id}`) are not
 registered and answer the ordinary `404`; there is no alias, redirect, or
 feature flag. The retired console mounts `/app` and `/app/*` (#589 PR-5) answer
 the same `404`: the SPA has no `app` route, so serving `index.html` there
@@ -893,9 +896,8 @@ There is no `oi` block on `/api/news/status` and no `pipeline.telemetry_*_24h`
 counter (#553). The deterministic open-interest lane they described judged an
 Event, and market frames no longer open one; what the OI Strategy did in a
 window is answered by `/api/news/market?kind=oi`, and there is still no
-`trade_floors` (#331) — Admission's own configuration is published by
-`/api/trading/gate`, and the thresholds that decided a Case travel with that
-Case.
+`trade_floors` (#331) — Admission's own answers are read with `tracefold
+trading gate`, and the thresholds that decided a Case travel with that Case.
 
 The Chinese vocabulary behind `outcome`, `*_zh`, and `label_zh` lives in
 `tracefold.news.outcome` (admissions, `decide()` rules, throttle keys, error
@@ -1466,25 +1468,17 @@ Runtime facts, and status carries readiness plus bounded totals.
   `truth=intent_recorded_not_runtime_or_venue`; only later Runtime Observations
   may establish acceptance, order, fill, completion, expiry, rejection, or a
   fresh private flat proof.
-- `GET /api/trading/gate` — the Source/Admission aggregate over a bounded
-  24-hour window. `/news/oi` was its one browser reader and #553 PR-1 deleted
-  that console page with the OI Event it joined each row to; the route itself is
-  unchanged and still answers per Source the status, stage, named
-  reason, retryability, frozen evidence (which carries the `gate_version` and
-  `gate_config_digest` that decided the row), timestamps, attempt count, and the
-  linked `case_id` when one exists, beside `status_counts_24h`,
-  `reason_counts_24h` and `complete`. It publishes no Case state and no
-  execution state. #537 PR-5 deleted the running admission `config` — the
-  rulebook that decided a row travels in that row's own `evidence` — and
-  `latest_source_at_ms` / `latest_gate_eligible_at_ms`, whose two clocks cost an
-  unbounded scan of the 90-day ledger on every 15 s poll for one card hint. Four
-  decision fields went with them for having no reader anywhere:
-  `underlying_key`, `base_symbol`, `trigger_kind` and `source_observed_at_ms`.
-  The whole response is two statements now: one bounded index scan in frame
-  order, and one `GROUPING SETS` pass that answers both distributions.
-- `GET /api/trading/gate/{event_id}` — one deterministic OI Source's admission
-  answer, joined only by `oi:{event_id}:{metric_version}`. Joining by symbol and
-  time would record a link the ledger does not have.
+- The admission ledger has no HTTP route. `GET /api/trading/gate` and
+  `GET /api/trading/gate/{event_id}` were deleted in #589 PR-2: `/news/oi` was
+  their one browser reader and #553 PR-1 deleted that console page with the OI
+  Event each row was joined to. `tracefold trading gate [--source-key KEY]
+  [--since-ms N] [--limit N]` runs the same two statements — one bounded index
+  scan of `trading_candidate_gate_decisions` in frame order, and one row by
+  source key — and answers per Source the status, stage, named reason,
+  retryability, frozen evidence (which carries the `gate_version` and
+  `gate_config_digest` that decided the row), timestamps, attempt count and the
+  linked `case_id` when one exists. It publishes no Case state and no execution
+  state.
 - `/api/news/feed` and `/api/news/events/{event_id}` additionally carry the
   Event Reaction: the feed the compact event-level aggregate (median signed
   return of the Triage primaries that price, with `state`
@@ -1505,7 +1499,7 @@ Runtime facts, and status carries readiness plus bounded totals.
 - service/config: `serve`, `workers`, `nautilus run`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
 - News: `news bus-check|control|instruments|review|learning|replay|why|dlq`;
-- Trading: `trading status|cases|signals|observations|commands|issue`;
+- Trading: `trading status|cases|signals|observations|gate|commands|issue`;
 - maintenance: `ops validate-projections`.
 
 There is no `recent` or `search` command and no market rebuild/sync/reconcile

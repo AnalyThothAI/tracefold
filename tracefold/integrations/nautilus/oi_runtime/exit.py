@@ -158,7 +158,7 @@ class ExitCoordinator:
             raise RuntimeError("oi_runtime_instrument_missing")
         side = OrderSide.SELL if state.entry.direction == "long" else OrderSide.BUY
         client_order_id = deterministic_client_order_id(
-            namespace=self._profile.client_order_namespace,
+            namespace=self._profile.namespace,
             entry_id=entry_id,
             leg=exit_leg(state.exit_generation),
         )

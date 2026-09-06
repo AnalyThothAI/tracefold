@@ -21,10 +21,10 @@ from nautilus_trader.test_kit.stubs.data import TestDataStubs
 
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.config import (
+    ActiveRuntimeMode,
     OiInstrumentRoute,
     OiRiskLimits,
     OiRuntimeProfile,
-    RuntimeMode,
 )
 from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
@@ -40,22 +40,19 @@ ACCOUNT_ID = AccountId("BINANCE-001")
 _RESUMED_CONTROL_STATE = RuntimeControlSnapshot(False, False, ())
 
 
-def oi_profile(mode: RuntimeMode = "paper") -> OiRuntimeProfile:
-    routes = ()
-    if mode != "disabled":
-        routes = (
-            OiInstrumentRoute(
-                market_key="crypto:perp:BTC:USDT",
-                instrument_id=TestInstrumentProvider.btcusdt_perp_binance().id,
-                stop_distance_bps=200,
-            ),
-        )
+def oi_profile(mode: ActiveRuntimeMode = "paper") -> OiRuntimeProfile:
+    routes = (
+        OiInstrumentRoute(
+            market_key="crypto:perp:BTC:USDT",
+            instrument_id=TestInstrumentProvider.btcusdt_perp_binance().id,
+            stop_distance_bps=200,
+        ),
+    )
     return OiRuntimeProfile(
         mode=mode,
         account_slot="binance_usdm_primary",
         account_id=ACCOUNT_ID,
-        cache_namespace=f"oi-{mode}-cache",
-        client_order_namespace=f"oi-{mode}-orders",
+        namespace=f"oi-{mode}-identity",
         routes=routes,
         risk=OiRiskLimits(
             risk_fraction_per_trade=Decimal("0.01"),

@@ -1421,34 +1421,47 @@ of pre-V3 history.
 no counter beside it that can disagree, and no second row for the same frame
 under a different rulebook.
 
-Start from `GET /api/trading/gate`:
+Start from the window of answers. #589 PR-2 deleted `GET /api/trading/gate` and
+`GET /api/trading/gate/{event_id}` — #553 PR-1 had already removed the OI frame
+table that was their only browser reader — and this command runs the same two
+statements against the same ledger:
 
-- `status_counts_24h` (`candidate_counts_24h` in the report it is built from) —
-  how many source frames the lane saw in the last 24 hours and what happened to
-  them, by `DEFERRED | REJECTED | CASE_CREATED |
-  EXPIRED` for current writers. One window: #528 deleted the seven-day aggregate
-  beside it, which no surface rendered. Counted on the frame's own observation time, so a
-  runner restart that re-reads a backlog cannot move yesterday's frames into
-  today. The four statuses are the whole vocabulary; `20260903_0355` narrowed the
-  CHECK to exactly them.
-- `reason_counts_24h` (`candidate_reasons_24h`) — the same population by `stage:reason`. The stages run
-  `source -> venue -> eligibility -> market_context -> freeze` and the reason
-  vocabulary is closed; anything outside either set is a bug, not a new rule.
-- `latest_source_at_ms` and `latest_gate_eligible_at_ms` sit on either side of
-  admission. A recent source with no recent `CASE_CREATED` is an admission
-  question; a recent `CASE_CREATED` with no Signal is a strategy question, and
-  `trading signals` plus the `signal_disposition` observations answer what the
-  Runtime then did with it.
+```bash
+tracefold trading gate --limit 100
+tracefold trading gate --source-key 'oi:<event_id>:oi_signal_v1'
+```
 
-For one frame, `GET /api/trading/gate/{event_id}?lane=oi` returns the decision
-with its `gate_evidence` — the measurement it failed on and the threshold it
-failed against — or read the row directly:
+Without `--source-key` it is one admission answer per source in the window
+(`--since-ms`, default 24 h), newest frame first. Every row carries `status`,
+`stage`, `reason`, `retryable`, `attempt_count`, `case_id` and the stored
+`evidence` — the measurement it failed on and the threshold it failed against.
+
+The status vocabulary is `DEFERRED | REJECTED | CASE_CREATED | EXPIRED` and
+`20260903_0355` narrowed the CHECK to exactly those four; the stages run
+`source -> venue -> eligibility -> market_context -> freeze` and the reason
+vocabulary is closed. Anything outside either set is a bug, not a new rule.
+
+For the same population as a distribution, or for the two clocks on either side
+of admission, ask the ledger directly. A recent source with no recent
+`CASE_CREATED` is an admission question; a recent `CASE_CREATED` with no Signal
+is a strategy question, and `trading signals` plus the `signal_disposition`
+observations answer what the Runtime then did with it:
 
 ```sql
+SELECT status, stage, reason, count(*) AS n
+  FROM trading_candidate_gate_decisions
+ WHERE trigger_kind = 'oi'
+   AND source_observed_at_ms >= (extract(epoch FROM now()) * 1000)::bigint - 86400000
+ GROUP BY GROUPING SETS ((status), (stage, reason))
+ ORDER BY n DESC;
+
 SELECT status, stage, reason, retryable, attempt_count, evidence, case_id
   FROM trading_candidate_gate_decisions
  WHERE source_key = 'oi:<event_id>:oi_signal_v1';
 ```
+
+The distribution is keyed on the *frame's* own observation time, so a runner
+that restarts and re-reads a backlog cannot move yesterday's frames into today.
 
 `evidence` carries the rulebook that reached the answer — `gate_version` and
 `gate_config_digest` — beside the numbers it read (`20260904_0360`).

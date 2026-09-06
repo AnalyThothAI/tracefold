@@ -75,9 +75,6 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
         # #528 PR-1: the desk table. One row per entry folded from the Runtime's own observations,
         # plus the Command rows beside it; it appends nothing and adds no aggregate.
         "/api/trading/executions",
-        # The admission ledger for a window of frames at once, and one Source at a time.
-        "/api/trading/gate",
-        "/api/trading/gate/{event_id}",
     }
     # Every path except the one Command append is read-only. The ordinary Serve pool still enforces
     # connection-level read-only mode; the command append owns a separate bounded transaction.
@@ -85,8 +82,6 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
         "/api/trading/status",
         "/api/trading/cases",
         "/api/trading/executions",
-        "/api/trading/gate",
-        "/api/trading/gate/{event_id}",
     ):
         assert set(schema["paths"][path]) == {"get"}, path
     assert set(schema["paths"]["/api/trading/execution/commands"]) == {"post"}
@@ -101,8 +96,13 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
         "/api/target-posts",
         "/api/target-social-timeline",
         "/api/live-market",
+        # #589 PR-2. The admission ledger kept its two HTTP shapes for a browser reader #553 PR-1 had
+        # already deleted; `tracefold trading gate` reads the same two statements directly.
+        "/api/trading/gate",
+        "/api/trading/gate/{event_id}",
     ):
         assert retired not in schema["paths"], retired
+    assert all(not name.startswith("TradingGate") for name in components), sorted(components)
     assert all(
         not name.startswith(("TokenRadar", "StocksRadar", "LiveMarket", "Search", "TokenCase", "Provider"))
         for name in components

@@ -488,8 +488,7 @@ def _active_profile(
         mode=mode,
         account_slot=execution.account_slot,
         account_id=_BINANCE_USDM_ACCOUNT_ID,
-        cache_namespace=namespace,
-        client_order_namespace=namespace,
+        namespace=namespace,
         routes=routes,
         risk=_risk_limits(settings),
     )

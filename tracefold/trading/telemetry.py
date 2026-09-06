@@ -12,7 +12,10 @@ TradingExternalDataName = Literal["trading_signal_lane"]
 # The two provider families `sources.SOURCE_VENUES` resolves a source venue to, and nothing else: a
 # third value would be a source venue no rule in this package can name.
 TradingExternalDataSource = Literal["binance", "hyperliquid"]
-TradingExternalDataOutcome = Literal["error", "partial", "success"]
+# One runner, one turn, two answers: the lane's `advance()` either completed or raised. There is no
+# path that reports a fraction of a turn, so `partial` was a third member nothing could ever emit and
+# every reader of this metric had to allow for (#589 PR-2).
+TradingExternalDataOutcome = Literal["error", "success"]
 TradingExternalDataProviderOutcome = Literal["error", "success"]
 
 

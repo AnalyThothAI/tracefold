@@ -8,29 +8,25 @@ unreachable venue never fails a snapshot and never clears another venue's quotes
 ``us_reference`` is the one adapter that does not describe a venue we could trade on (#91): it answers "is this
 symbol a stock?" for the thousands of tickers no crypto exchange lists, and its rows live in a reference tier the
 class map consults only when no real venue knows the symbol. It is never a price source.
+
+This root re-exports exactly the names a composition seam imports *from the package*. Nineteen more
+were re-exported here for no such caller -- base URLs, ``VenueExpectedError``, and the per-venue trade
+and candle fetchers the price layer reaches through ``candle_fetcher_for`` or by module. Each still
+lives in the module that owns it, which is where the tests and the adapters already import it from,
+so a second spelling here only made the package root a mirror of its own contents (#589 PR-2).
 """
 
 from __future__ import annotations
 
-from .binance import (
-    BINANCE_FUTURES_BASE_URL,
-    BINANCE_SPOT_BASE_URL,
-    fetch_binance_instruments,
-)
-from .bitget import BITGET_BASE_URL, fetch_bitget_instruments
+from .binance import fetch_binance_instruments
 from .candles import (
     candle_fetcher_for,
     fetch_binance_candles,
-    fetch_bitget_candles,
     fetch_hyperliquid_candles,
-    fetch_lighter_candles,
-    fetch_okx_candles,
 )
 from .delivery_prices import fetch_delivery_price_points
-from .errors import VenueExpectedError
-from .hyperliquid import HYPERLIQUID_BASE_URL, fetch_hyperliquid_instruments
-from .lighter import LIGHTER_BASE_URL, fetch_lighter_instruments
-from .okx import OKX_BASE_URL, fetch_okx_instruments
+from .hyperliquid import fetch_hyperliquid_instruments
+from .okx import fetch_okx_instruments
 from .quotes import (
     fetch_binance_futures_day_quotes,
     fetch_binance_futures_quotes,
@@ -40,26 +36,10 @@ from .quotes import (
     fetch_okx_quotes,
 )
 from .tradability import VenueCatalogTradabilityVerifier
-from .trades import (
-    fetch_binance_trade_before,
-    fetch_bitget_recent_trades,
-    fetch_hyperliquid_recent_trades,
-    fetch_lighter_recent_trades,
-    fetch_okx_recent_trades,
-)
-from .us_reference import US_REFERENCE_BASE_URL, US_REFERENCE_VENUE, fetch_us_reference_instruments
+from .us_reference import fetch_us_reference_instruments
 
 __all__ = [
-    "BINANCE_FUTURES_BASE_URL",
-    "BINANCE_SPOT_BASE_URL",
-    "BITGET_BASE_URL",
-    "HYPERLIQUID_BASE_URL",
-    "LIGHTER_BASE_URL",
-    "OKX_BASE_URL",
-    "US_REFERENCE_BASE_URL",
-    "US_REFERENCE_VENUE",
     "VenueCatalogTradabilityVerifier",
-    "VenueExpectedError",
     "candle_fetcher_for",
     "fetch_binance_candles",
     "fetch_binance_futures_day_quotes",
@@ -67,21 +47,11 @@ __all__ = [
     "fetch_binance_instruments",
     "fetch_binance_spot_day_quotes",
     "fetch_binance_spot_quotes",
-    "fetch_binance_trade_before",
-    "fetch_bitget_candles",
-    "fetch_bitget_instruments",
-    "fetch_bitget_recent_trades",
     "fetch_delivery_price_points",
     "fetch_hyperliquid_candles",
     "fetch_hyperliquid_instruments",
     "fetch_hyperliquid_quotes",
-    "fetch_hyperliquid_recent_trades",
-    "fetch_lighter_candles",
-    "fetch_lighter_instruments",
-    "fetch_lighter_recent_trades",
-    "fetch_okx_candles",
     "fetch_okx_instruments",
     "fetch_okx_quotes",
-    "fetch_okx_recent_trades",
     "fetch_us_reference_instruments",
 ]

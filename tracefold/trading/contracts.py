@@ -43,8 +43,6 @@ TRADING_MANIFEST_VERSION: Final = "trading_manifest_v11"
 # runtime because the ledger column is Trading's, and `tracefold.trading.storage` cannot import from
 # `tracefold.app`.
 EXECUTION_STRATEGY_ID: Final = "oi_nautilus_v1"
-# Code-owned persistence timing shared by the Signal lane.
-TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
 
 
 # No News identity of any kind: the measurements, the two clocks and the venue are the fact, and every
@@ -121,15 +119,6 @@ class CaseState(StrEnum):
 CURRENT_TERMINAL_STATES: Final[frozenset[CaseState]] = frozenset(
     {CaseState.NO_TRADE, CaseState.SIGNAL_EMITTED, CaseState.BLOCKED}
 )
-
-# Decision could not safely run; Policy stays `not_run` and no Signal is emitted. `source_stale` is
-# the only clock here: a second budget measured from the Case's own creation could not expire before
-# it at any `max_age_ms` an operator would set, so it never decided anything (#537 PR-3).
-DecisionBlockReason = Literal[
-    "manifest_invalid",
-    "policy_identity_retired",
-    "source_stale",
-]
 
 
 def canonical_base_symbol(value: object) -> str:
@@ -318,17 +307,10 @@ class TradingCaseManifest(_Frozen):
     def trigger_kind(self) -> TriggerKind:
         return "oi"
 
-    @property
-    def oi(self) -> OiTradeCandidate:
-        return self.contexts.oi
-
-    @property
-    def mark_price(self) -> Decimal:
-        return self.contexts.market.mark_price
-
-    @property
-    def pre_move_bps(self) -> int | None:
-        return self.contexts.market.pre_move_bps
+    # `oi`, `mark_price` and `pre_move_bps` were three properties forwarding to `contexts.oi` and
+    # `contexts.market`; every reader - the policy, the lane and the tests - already reads the
+    # context objects, which is where the numbers and the thresholds they are compared against are
+    # named together (#589 PR-2).
 
     def digest(self) -> str:
         return canonical_sha256(self.model_dump(mode="json"))
@@ -337,12 +319,10 @@ class TradingCaseManifest(_Frozen):
 __all__ = [
     "CURRENT_TERMINAL_STATES",
     "EXECUTION_STRATEGY_ID",
-    "TRADING_COLD_WRITE_TIMEOUT_SECONDS",
     "TRADING_MANIFEST_VERSION",
     "AlphaDecision",
     "Bar",
     "CaseState",
-    "DecisionBlockReason",
     "FrozenMarketContext",
     "FrozenPolicyContext",
     "OiCandidateRow",

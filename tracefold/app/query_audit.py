@@ -13,7 +13,6 @@ from tracefold.platform.postgres.audit import (
 )
 from tracefold.trading.storage.execution_stream import execution_stream_query_specs
 from tracefold.trading.storage.gate import (
-    GATE_DECISION_COUNTS_SQL,
     GATE_DECISION_FOR_SOURCE_KEY_SQL,
     GATE_DECISIONS_SINCE_SQL,
 )
@@ -121,10 +120,6 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "trading_console_executions",
         "trading_console_commands",
     ),
-    "/api/trading/gate/{event_id}": ("trading_gate_decision_for_source_key",),
-    # #269. The same admission ledger the event endpoint reads one row of, for a whole window — bounded
-    # by 24 h and a hard row limit — plus the one grouped pass that answers both 24 h distributions.
-    "/api/trading/gate": ("trading_gate_decisions_since", "trading_gate_decision_counts"),
 }
 
 PUBLIC_NO_SQL_ROUTES = frozenset(
@@ -190,9 +185,10 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
     predicate and once with all of them, so both plans the route can execute are certified and neither
     can drift away from an audited copy.
 
-    The two ledger reads at the end belong to no public route: `tracefold trading signals` and
-    `tracefold trading observations` are their only callers since #537 PR-5 deleted the `GET` routes
-    that were. They stay audited because they still run against production data.
+    Four of these reads belong to no public route: `tracefold trading signals`, `tracefold trading
+    observations` and `tracefold trading gate` are their only callers since #537 PR-5 and #589 PR-2
+    deleted the `GET` routes that were. They stay audited because they still run against production
+    data — a statement stops being audited when nothing executes it, not when its route is deleted.
     """
 
     since_ms = int(now_ms) - 24 * 3_600_000
@@ -219,18 +215,11 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             # #269. One admission answer per source in the window, newest frame first. One row per
             # frame is the table's own primary key now (#537 PR-3), so the shipped read is the index
             # scan this certifies rather than a materialised `DISTINCT ON` set re-sorted by the outer
-            # query — the table a reader scrolls and the distribution above it cannot disagree.
+            # query. The two 24 h distributions that were grouped over the same window beside it went
+            # with the route that rendered them (#589 PR-2).
             name="trading_gate_decisions_since",
             sql=GATE_DECISIONS_SINCE_SQL,
             params=("oi", since_ms, 401),
-            max_read_return_amplification=20.0,
-            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            # Both 24 h distributions from one grouped pass over the same window (#537 PR-5).
-            name="trading_gate_decision_counts",
-            sql=GATE_DECISION_COUNTS_SQL,
-            params=("oi", since_ms),
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),

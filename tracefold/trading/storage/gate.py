@@ -44,16 +44,6 @@ GATE_DECISIONS_SINCE_SQL: Final = f"""
      ORDER BY source_observed_at_ms DESC, source_key
      LIMIT %s
 """  # noqa: S608 -- a module-owned column list; every predicate stays bound
-# Both distributions from one pass over the window. They were two statements with the same predicate
-# reading the same rows twice per request, and a third beside them scanned the whole 90-day ledger
-# unbounded for two clocks one card printed (#537 PR-5). `status IS NULL` marks the reason rows, which
-# is a shape the CHECK constraint cannot produce for a stored row.
-GATE_DECISION_COUNTS_SQL: Final = """
-    SELECT status, stage, reason, count(*) AS n
-      FROM trading_candidate_gate_decisions
-     WHERE trigger_kind = %s AND source_observed_at_ms >= %s
-     GROUP BY GROUPING SETS ((status), (stage, reason))
-"""
 
 
 class CandidateGateStorage:
@@ -192,10 +182,10 @@ class CandidateGateStorage:
         """One admission answer per source in the window, newest frame first.
 
         One lane per call, defaulting to OI, and that default is the read model's whole shape. Every
-        reader of this table asks an OI question: `/api/trading/gate` joins each row back to an OI
-        frame by `oi:{event}:{version}`. Mixing another trigger kind in would put two populations under
-        one bar. Rows of another kind stay durable evidence, queryable by source key or by SQL, and are
-        deliberately not console numbers.
+        reader of this table asks an OI question: `tracefold trading gate` names each row by the OI
+        source key `oi:{event}:{version}` it was decided for. Mixing another trigger kind in would put
+        two populations under one page. Rows of another kind stay durable evidence, queryable by
+        source key or by SQL.
 
         Ordered by the *frame's* observation time rather than by evaluation time, because that is the
         order the frame table itself is in — a row here has to line up with the frame on the same line.
@@ -205,63 +195,9 @@ class CandidateGateStorage:
         rows = self.conn.execute(GATE_DECISIONS_SINCE_SQL, (trigger_kind, int(since_ms), int(limit))).fetchall()
         return [dict(row) for row in rows]
 
-    def gate_decision_counts(self, *, since_ms: int, trigger_kind: str = "oi") -> dict[str, dict[str, int]]:
-        """Durable status and reason distributions for one lane, keyed on when the *frame* was observed.
-
-        The axis is the source's own observation time rather than the evaluation time, so a runner that
-        restarts and re-reads a backlog cannot move yesterday's facts into today's counts. This is the
-        one of the console's "24 h" figures that does not key on a creation time; collapsing it onto
-        one would reintroduce that bug.
-
-        One row per *source* is the table's own key, so this counts stored rows directly, and one
-        `GROUPING SETS` pass answers both distributions: two statements over the same predicate read
-        the same window twice and could report a status total the reasons beneath it did not sum to.
-        """
-
-        rows = self.conn.execute(GATE_DECISION_COUNTS_SQL, (trigger_kind, int(since_ms))).fetchall()
-        status: dict[str, int] = {}
-        reasons: dict[str, int] = {}
-        for row in rows:
-            if row["status"] is None:
-                reasons[f"{row['stage']}:{row['reason']}"] = int(row["n"])
-            else:
-                status[str(row["status"])] = int(row["n"])
-        return {"status": status, "reasons": reasons}
-
-    def candidate_admission_report(
-        self,
-        *,
-        now_ms: int,
-        limit: int,
-        trigger_kind: str = "oi",
-    ) -> dict[str, Any]:
-        """The whole durable half of the lane's status, assembled once.
-
-        The counts a lane reports are otherwise keyed on a case existing, which is exactly what a lane
-        that froze none has none of. This is the part that survives that, and a question about
-        yesterday still has evidence.
-
-        Two statements for one window: the bounded page of answers `/news/oi` joins each frame
-        against, and the one grouped pass that produces both distributions. It was four -- the two
-        count scans were separate, and `latest_gate_milestones` scanned the whole 90-day ledger with
-        no lower bound on every 15 s poll for two clocks one card hint printed (#537 PR-5).
-        """
-
-        window_24h = self.gate_decision_counts(since_ms=int(now_ms) - 86_400_000, trigger_kind=trigger_kind)
-        return {
-            "decisions": self.gate_decisions_since(
-                since_ms=int(now_ms) - 86_400_000,
-                trigger_kind=trigger_kind,
-                limit=int(limit),
-            ),
-            "candidate_counts_24h": window_24h["status"],
-            "candidate_reasons_24h": window_24h["reasons"],
-        }
-
 
 __all__ = [
     "GATE_DECISIONS_SINCE_SQL",
-    "GATE_DECISION_COUNTS_SQL",
     "GATE_DECISION_FOR_SOURCE_KEY_SQL",
     "CandidateGateStorage",
 ]

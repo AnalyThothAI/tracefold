@@ -113,6 +113,29 @@ class CliTests(unittest.TestCase):
                     "limit": 7,
                 },
             ),
+            # #589 PR-2. The admission ledger's two reads after `GET /api/trading/gate*` were deleted:
+            # one source key answers "why did this frame produce no case", no source key answers it for
+            # a window. Both defaults are the ones the deleted routes used.
+            (
+                ["trading", "gate", "--source-key", "oi:evt-1:oi_signal_v1"],
+                {
+                    "command": "trading",
+                    "trading_command": "gate",
+                    "source_key": "oi:evt-1:oi_signal_v1",
+                    "since_ms": None,
+                    "limit": 20,
+                },
+            ),
+            (
+                ["trading", "gate", "--since-ms", "1900000000000", "--limit", "50"],
+                {
+                    "command": "trading",
+                    "trading_command": "gate",
+                    "source_key": None,
+                    "since_ms": 1_900_000_000_000,
+                    "limit": 50,
+                },
+            ),
             (
                 [
                     "trading",

@@ -17,6 +17,10 @@ from nautilus_trader.model.identifiers import InstrumentId, PositionId
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
 
+from tests.helpers.nautilus_oi_runtime_process import (
+    audit_queued_count,
+    signal_pending_ids,
+)
 from tests.nautilus_oi_runtime_fixtures import (
     ACCOUNT_ID,
     NOW_NS,
@@ -82,8 +86,8 @@ def test_no_order_is_sized_before_the_first_tick_and_the_signal_is_redelivered_n
     # indexed poll offers it again inside its TTL.
     assert context.strategy.quote_subscriptions == frozenset({context.instrument.id})
     assert context.strategy.submitted == []
-    assert context.audit.queued_count == 0
-    assert context.signals.pending_ids == frozenset()
+    assert audit_queued_count(context.audit) == 0
+    assert signal_pending_ids(context.signals) == frozenset()
     assert "market_subscription_pending" in RETRYABLE_ENTRY_REASONS
 
     context.cache.add_quote_tick(
@@ -107,7 +111,7 @@ def test_a_market_that_never_ticks_is_refused_terminally_once_the_warm_up_is_spe
     context = registered_oi_strategy(values=(signal,), with_quote=False)
     context.strategy.on_start()
     context.strategy.on_timer(None)
-    assert context.audit.queued_count == 0
+    assert audit_queued_count(context.audit) == 0
 
     context.clock.set_time(NOW_NS + QUOTE_WARMUP_NS + 1)
     context.signals.poll_once(SignalRows(signal))

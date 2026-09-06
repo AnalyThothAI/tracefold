@@ -45,7 +45,7 @@ _AMBIGUOUS_REASONS = ("-1007", "503", "timeout", "timed out", "response unknown"
 
 def oi_strategy_config(profile: OiRuntimeProfile) -> StrategyConfig:
     claims = sorted((route.instrument_id for route in profile.routes), key=lambda item: item.value)
-    tag = hashlib.sha256(profile.client_order_namespace.encode()).hexdigest()[:3].upper()
+    tag = hashlib.sha256(profile.namespace.encode()).hexdigest()[:3].upper()
     return StrategyConfig(
         strategy_id="OI-RUNTIME",
         order_id_tag=tag,
@@ -76,8 +76,6 @@ class OiNautilusStrategy(Strategy):
         initial_control_state: RuntimeControlSnapshot | None = None,
         config: StrategyConfig | None = None,
     ) -> None:
-        if profile.mode == "disabled":
-            raise ValueError("oi_runtime_disabled_strategy_invalid")
         selected = config or oi_strategy_config(profile)
         claims = sorted((route.instrument_id for route in profile.routes), key=lambda item: item.value)
         if selected.oms_type != "NETTING" or selected.external_order_claims != claims:

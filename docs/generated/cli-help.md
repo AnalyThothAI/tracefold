@@ -760,14 +760,15 @@ options:
 
 ```
 usage: tracefold trading [-h]
-                         {status,cases,signals,observations,commands,issue} ...
+                         {status,cases,signals,observations,gate,commands,issue} ...
 
 positional arguments:
-  {status,cases,signals,observations,commands,issue}
+  {status,cases,signals,observations,gate,commands,issue}
     status              show Alpha producer and disabled execution readiness
     cases               list Trading cases newest first
     signals             list engine-neutral TradeSignalV1 rows
     observations        list append-only Runtime observations
+    gate                read the candidate admission ledger
     commands            list authenticated OperatorIntentV1 rows
     issue               durably record one local OS-authenticated operator
                         intent
@@ -819,6 +820,23 @@ usage: tracefold trading observations [-h] [--limit LIMIT]
 
 options:
   -h, --help     show this help message and exit
+  --limit LIMIT
+
+```
+
+## `trading gate`
+
+```
+usage: tracefold trading gate [-h] [--source-key SOURCE_KEY]
+                              [--since-ms SINCE_MS] [--limit LIMIT]
+
+options:
+  -h, --help            show this help message and exit
+  --source-key SOURCE_KEY
+                        one admission answer by source key, for example
+                        'oi:<event_id>:oi_signal_v1'
+  --since-ms SINCE_MS   Unix millisecond lower bound on the source frame's own
+                        observation clock; default 24 h
   --limit LIMIT
 
 ```

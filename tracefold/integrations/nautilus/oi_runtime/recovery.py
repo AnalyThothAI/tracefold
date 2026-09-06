@@ -66,7 +66,7 @@ class RecoveryCoordinator:
             request = seed.entry
             route = self._routes.get(request.market_key)
             expected_entry = deterministic_client_order_id(
-                namespace=self._profile.client_order_namespace,
+                namespace=self._profile.namespace,
                 entry_id=request.entry_id,
                 leg="entry",
             )
@@ -139,7 +139,7 @@ class RecoveryCoordinator:
             state.exit_generation = seed.exit_generation
             if seed.exit_client_order_id is not None:
                 expected_exit = deterministic_client_order_id(
-                    namespace=self._profile.client_order_namespace,
+                    namespace=self._profile.namespace,
                     entry_id=request.entry_id,
                     leg=exit_leg(seed.exit_generation),
                 )

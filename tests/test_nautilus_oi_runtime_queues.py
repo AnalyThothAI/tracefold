@@ -7,6 +7,13 @@ from decimal import Decimal
 
 import pytest
 
+from tests.helpers.nautilus_oi_runtime_process import (
+    audit_queued_count,
+    signal_pending_command_ids,
+    signal_pending_ids,
+    signal_queued_bytes,
+    signal_queued_count,
+)
 from tests.nautilus_oi_runtime_fixtures import (
     NOW_NS,
     CommandRows,
@@ -47,14 +54,14 @@ def test_signal_queue_is_count_and_byte_bounded_without_silent_pending_claim() -
     admitted = client.poll_once(SignalRows(first, second))
 
     assert admitted == 1
-    assert client.queued_count == 1
-    assert client.pending_ids == {first.signal_id}
-    assert second.signal_id not in client.pending_ids
+    assert signal_queued_count(client) == 1
+    assert signal_pending_ids(client) == {first.signal_id}
+    assert second.signal_id not in signal_pending_ids(client)
     assert client.next_nowait() == first
-    assert client.queued_count == 0
-    assert client.pending_ids == {first.signal_id}
+    assert signal_queued_count(client) == 0
+    assert signal_pending_ids(client) == {first.signal_id}
     client.mark_durable(first.signal_id)
-    assert client.pending_ids == set()
+    assert signal_pending_ids(client) == set()
 
 
 def test_signal_pending_set_prevents_duplicate_enqueue_until_disposition_is_durable() -> None:
@@ -84,7 +91,7 @@ def test_signal_can_be_retried_when_audit_backpressure_prevents_final_dispositio
     client.retry(signal)
 
     assert client.next_nowait() == signal
-    assert client.pending_ids == {signal.signal_id}
+    assert signal_pending_ids(client) == {signal.signal_id}
 
 
 def test_signal_client_consumes_commands_in_the_same_total_count_and_byte_bound() -> None:
@@ -100,11 +107,11 @@ def test_signal_client_consumes_commands_in_the_same_total_count_and_byte_bound(
     assert client.poll_commands_once(CommandRows(command)) == 1
     assert client.poll_once(SignalRows(signal)) == 0
     assert client.next_command_nowait() == command
-    assert client.pending_command_ids == {command.command_id}
+    assert signal_pending_command_ids(client) == {command.command_id}
     client.retry_command(command)
     assert client.next_command_nowait() == command
     client.mark_command_durable(command.command_id)
-    assert client.pending_command_ids == set()
+    assert signal_pending_command_ids(client) == set()
 
 
 def test_poll_admits_operator_commands_before_signals_into_the_shared_bound() -> None:
@@ -139,7 +146,7 @@ def test_signal_retry_cannot_overfill_the_shared_command_and_signal_bound() -> N
     with pytest.raises(RuntimeError, match="oi_runtime_signal_retry_overflow"):
         client.retry(signal)
 
-    assert client.queued_count == 1
+    assert signal_queued_count(client) == 1
 
 
 def test_durable_command_scan_evicts_one_buffered_signal_instead_of_being_starved() -> None:
@@ -155,11 +162,11 @@ def test_durable_command_scan_evicts_one_buffered_signal_instead_of_being_starve
 
     assert client.poll_commands_once(CommandRows(command)) == 1
 
-    assert client.queued_count == 2
+    assert signal_queued_count(client) == 2
     assert client.queued_command_count == 1
     assert client.command_scan_complete is False
-    assert client.pending_ids == {first.signal_id}
-    assert client.pending_command_ids == {command.command_id}
+    assert signal_pending_ids(client) == {first.signal_id}
+    assert signal_pending_command_ids(client) == {command.command_id}
     assert client.poll_once(SignalRows(first, second)) == 0
 
 
@@ -179,9 +186,9 @@ def test_durable_command_scan_can_reclaim_signal_bytes_without_losing_database_t
 
     assert client.poll_commands_once(CommandRows(command)) == 1
 
-    assert client.pending_command_ids == {command.command_id}
-    assert client.queued_bytes <= max(signal_bytes, command_bytes)
-    assert len(client.pending_ids) < 2
+    assert signal_pending_command_ids(client) == {command.command_id}
+    assert signal_queued_bytes(client) <= max(signal_bytes, command_bytes)
+    assert len(signal_pending_ids(client)) < 2
 
 
 def test_failed_command_scan_closes_the_signal_gate() -> None:
@@ -220,12 +227,12 @@ def test_audit_flush_failure_keeps_the_batch_and_reports_unhealthy_until_success
 
     with pytest.raises(RuntimeError, match="append-failed"):
         sink.flush_once(fail)
-    assert sink.queued_count == 1
+    assert audit_queued_count(sink) == 1
     assert sink.healthy is False
 
     written: list[object] = []
     assert sink.flush_once(written.extend) == (value,)
-    assert sink.queued_count == 0
+    assert audit_queued_count(sink) == 0
     assert sink.healthy is True
 
 
@@ -318,6 +325,87 @@ def test_audit_overflow_stays_unhealthy_until_a_durable_gap_is_written() -> None
     assert sink.healthy is True
 
 
+def test_audit_identity_answers_from_an_index_that_survives_flush_and_gap_writes() -> None:
+    """#589 PR-2 (T-F17). `offer` decides identity in one lookup, and the index tracks the queue.
+
+    It walked the whole deque per callback, on the trading event loop, and worst exactly when the
+    queue was deepest. The index that replaces the walk is only correct if it stays equal to the
+    queue: an identity still queued must still conflict, an identity that has been flushed must be
+    offerable again, and a gap record the sink enqueued into its own queue must be indexed like any
+    other value it holds.
+    """
+
+    factory = _factory()
+    event_id = "a" * 64
+    first = factory.create(
+        normalized_kind="readiness",
+        occurred_at_ns=NOW_NS,
+        observed_at_ns=NOW_NS,
+        payload={"version": 1},
+        fixed_event_id=event_id,
+    )
+    conflicting = factory.create(
+        normalized_kind="readiness",
+        occurred_at_ns=NOW_NS + 1,
+        observed_at_ns=NOW_NS + 1,
+        payload={"version": 2},
+        fixed_event_id=event_id,
+    )
+    sink = AuditSink(factory=factory, max_count=4, max_bytes=20_000)
+
+    assert sink.offer(first) is True
+    # Queued: the identical body is already on its way, a different body under the same identity is
+    # the contradiction. Neither answer may depend on where in the queue the row sits.
+    assert sink.offer(first) is True
+    assert sink.offer(conflicting) is False
+    assert audit_queued_count(sink) == 1
+    assert sink.failure_reason == "audit_identity_conflict"
+
+    written: list[object] = []
+    dequeued = sink.flush_once(written.extend)
+    assert first in dequeued
+    gap = next(value for value in dequeued if value.normalized_kind == "audit_gap")
+    assert audit_queued_count(sink) == 0
+    assert sink.healthy is True
+
+    # Flushed: both identities left the queue, so both are new rows rather than conflicts.
+    assert sink.offer(conflicting) is True
+    assert sink.offer(gap) is True
+    assert audit_queued_count(sink) == 2
+    assert sink.offer(gap) is True
+    assert audit_queued_count(sink) == 2
+    assert sink.healthy is True
+
+
+def test_audit_overflow_is_decided_on_the_queue_bound_not_on_the_identity_index() -> None:
+    """A value refused for overflow is admitted once the deque has room, under its own identity."""
+
+    factory = _factory()
+    sink = AuditSink(factory=factory, max_count=2, max_bytes=20_000)
+    values = tuple(
+        factory.create(
+            normalized_kind="readiness",
+            occurred_at_ns=NOW_NS + index,
+            observed_at_ns=NOW_NS + index,
+            summary={"index": index},
+            payload={"index": index},
+        )
+        for index in range(3)
+    )
+
+    assert sink.offer(values[0]) is True
+    assert sink.offer(values[1]) is True
+    assert sink.offer(values[2]) is False
+    assert sink.failure_reason == "audit_queue_overflow"
+
+    written: list[object] = []
+    assert sink.flush_once(written.extend) == values[:2]
+    # What is left is the overflow gap the sink enqueued for itself, and one free slot.
+    assert audit_queued_count(sink) == 1
+    assert sink.offer(values[2]) is True
+    assert audit_queued_count(sink) == 2
+
+
 def test_rejected_batch_is_quarantined_and_the_queue_behind_it_keeps_flushing() -> None:
     """A batch the database refuses leaves the queue, names its loss, and stops blocking the rest.
 
@@ -376,7 +464,7 @@ def test_rejected_batch_is_quarantined_and_the_queue_behind_it_keeps_flushing() 
         *(value.event_id for value in poisoned),
         gap.event_id,
     )
-    assert sink.queued_count == 0
+    assert audit_queued_count(sink) == 0
     assert sink.healthy is True
 
     assert sink.offer(later) is True
@@ -437,7 +525,7 @@ def test_a_systemically_rejected_queue_drains_one_batch_per_pass_without_spinnin
 
     assert sink.flush_once(refuse) == (values[0],)
     assert calls == 2
-    assert sink.queued_count == 1
+    assert audit_queued_count(sink) == 1
     assert sink.healthy is False
 
 

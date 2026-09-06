@@ -1,34 +1,29 @@
 """Public engine-neutral Trading values.
 
 The App composition root imports the one business action from `signal_lane`; this package root exports
-only durable facts shared with application seams.
+only durable facts shared with application seams -- and only the ones an application seam actually
+imports from here. Nine more names were re-exported for no caller; each of them still lives in the
+module that owns it, which is where the Trading modules that use them already import them from
+(#589 PR-2).
 """
 
 from __future__ import annotations
 
 from .contracts import (
     EXECUTION_STRATEGY_ID,
-    AlphaDecision,
-    Bar,
-    CaseState,
     OiTradeCandidate,
-    TradingCaseManifest,
-    canonical_sha256,
 )
 from .execution_contracts import (
     IDENTITY_PATTERN,
     MARKET_KEY_PATTERN,
     MAX_OBSERVATION_APPEND_BATCH,
     MAX_OBSERVATION_APPEND_BYTES,
-    SHA256_PATTERN,
     ExecutionObservationV1,
     OperatorIntentV1,
     TradeSignalV1,
-    postgres_text_valid,
 )
 from .operator_control import (
     OperatorCommandError,
-    ParsedOperatorCommand,
     parse_operator_command,
     prepare_parsed_operator_intent,
 )
@@ -44,7 +39,6 @@ from .storage.execution_stream import (
     ExecutionAccountPosition,
     ExecutionAccountSnapshot,
     PreparedOperatorIntent,
-    prepare_execution_observations,
 )
 
 __all__ = [
@@ -54,10 +48,6 @@ __all__ = [
     "MARKET_KEY_PATTERN",
     "MAX_OBSERVATION_APPEND_BATCH",
     "MAX_OBSERVATION_APPEND_BYTES",
-    "SHA256_PATTERN",
-    "AlphaDecision",
-    "Bar",
-    "CaseState",
     "CommandStage",
     "ExecutionAccountOrder",
     "ExecutionAccountPosition",
@@ -67,15 +57,10 @@ __all__ = [
     "OiTradeCandidate",
     "OperatorCommandError",
     "OperatorIntentV1",
-    "ParsedOperatorCommand",
     "PreparedOperatorIntent",
     "TradeSignalV1",
-    "TradingCaseManifest",
-    "canonical_sha256",
     "command_stage",
     "execution_stage",
     "parse_operator_command",
-    "postgres_text_valid",
-    "prepare_execution_observations",
     "prepare_parsed_operator_intent",
 ]

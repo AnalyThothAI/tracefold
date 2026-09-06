@@ -87,7 +87,7 @@ class EntryCoordinator:
             self._observations.dispose_entry(request, "instrument_busy")
             return
         client_order_id = deterministic_client_order_id(
-            namespace=self._profile.client_order_namespace,
+            namespace=self._profile.namespace,
             entry_id=request.entry_id,
             leg="entry",
         )

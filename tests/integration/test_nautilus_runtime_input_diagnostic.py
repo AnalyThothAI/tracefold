@@ -26,6 +26,14 @@ from fastapi.testclient import TestClient
 from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.identifiers import PositionId
 
+from tests.helpers.nautilus_oi_runtime_process import (
+    audit_queued_bytes,
+    audit_queued_count,
+    bridge_connected,
+    signal_pending_command_ids,
+    signal_pending_ids,
+    signal_queued_count,
+)
 from tests.nautilus_oi_runtime_fixtures import (
     ACCOUNT_ID,
     NOW_NS,
@@ -296,8 +304,7 @@ def _runtime_bridge(
     profile = replace(
         oi_profile(),
         account_slot=account_slot,
-        cache_namespace=f"{account_slot}-cache",
-        client_order_namespace=f"{account_slot}-orders",
+        namespace=f"{account_slot}-identity",
     )
     audit = AuditSink(factory=ObservationFactory(account_slot, "oi_nautilus_v1"))
     singleton = AccountSlotSingleton(
@@ -359,21 +366,21 @@ def _wait_until_bridge_delivers(
     timeout_seconds: float = 2.0,
 ) -> None:
     deadline = time.perf_counter() + timeout_seconds
-    while signals.queued_count < expected_count and time.perf_counter() < deadline:
+    while signal_queued_count(signals) < expected_count and time.perf_counter() < deadline:
         if bridge.fatal_error is not None:
             raise bridge.fatal_error
         time.sleep(0.005)
-    assert bridge.connected
-    assert signals.queued_count == expected_count
+    assert bridge_connected(bridge)
+    assert signal_queued_count(signals) == expected_count
 
 
 def _wait_until_bridge_connects(bridge: OiRuntimeDatabaseBridge, *, timeout_seconds: float = 2.0) -> None:
     deadline = time.perf_counter() + timeout_seconds
-    while not bridge.connected and time.perf_counter() < deadline:
+    while not bridge_connected(bridge) and time.perf_counter() < deadline:
         if bridge.fatal_error is not None:
             raise bridge.fatal_error
         time.sleep(0.005)
-    assert bridge.connected
+    assert bridge_connected(bridge)
 
 
 def _wait_until_initial_cycle_finishes(
@@ -424,8 +431,8 @@ def _stream_samples(settings: Settings) -> tuple[dict[str, Any], int]:
                     )
                     committed = time.perf_counter()
                     _wait_until_bridge_delivers(bridge, client, expected_count=2 * size)
-                    assert client.queued_count == 2 * size
-                    assert len(client.pending_ids) == len(client.pending_command_ids) == size
+                    assert signal_queued_count(client) == 2 * size
+                    assert len(signal_pending_ids(client)) == len(signal_pending_command_ids(client)) == size
                     assert [client.next_command_nowait() is not None for _ in range(size)] == [True] * size
                     assert [client.next_nowait() is not None for _ in range(size)] == [True] * size
                     finished = time.perf_counter()
@@ -441,7 +448,7 @@ def _stream_samples(settings: Settings) -> tuple[dict[str, Any], int]:
                 finally:
                     bridge.stop()
                     bridge.join(2.0)
-                    assert not bridge.connected
+                    assert not bridge_connected(bridge)
                 _dispose_workload(repo, account_slot=slot, size=size, seed=seed)
             by_burst[str(size)] = {
                 "samples": _REPEATS,
@@ -488,7 +495,7 @@ def _audit_sample() -> dict[str, Any]:
                     event_identity=f"runtime-input:{index}",
                 )
             )
-        queued_bytes = sink.queued_bytes
+        queued_bytes = audit_queued_bytes(sink)
         started = time.perf_counter()
         flushed = flush_audit_once(repos=repos, audit=sink, signals=signals)
         duration_ms = (time.perf_counter() - started) * 1_000
@@ -498,8 +505,8 @@ def _audit_sample() -> dict[str, Any]:
             "batch_count": flushed,
             "queued_bytes_before_flush": queued_bytes,
             "append_ms": round(duration_ms, 3),
-            "remaining_count": sink.queued_count,
-            "remaining_bytes": sink.queued_bytes,
+            "remaining_count": audit_queued_count(sink),
+            "remaining_bytes": audit_queued_bytes(sink),
         }
     finally:
         conn.close()
