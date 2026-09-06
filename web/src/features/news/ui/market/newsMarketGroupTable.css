@@ -377,4 +377,18 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
+  /* #572 PR-3: a digest's own sentences. Numbered, because their order is the summary's order. */
+  .news-market-digest {
+    display: grid;
+    gap: 3px;
+    margin: 0;
+    padding-left: 18px;
+  }
+
+  .news-market-digest > li {
+    color: var(--text-primary);
+    font-size: var(--font-size-meta);
+    line-height: 1.5;
+  }
 }

@@ -24,6 +24,7 @@ from typing import Any
 import dspy  # type: ignore[import-untyped]
 import pytest
 
+from tracefold.news.bus import TransientError
 from tracefold.news.chain_tape.contracts import RosterMember, RosterSnapshot
 from tracefold.news.chain_tape.digest import (
     DIGEST_LINES_MAX,
@@ -176,22 +177,51 @@ def test_a_position_with_nothing_left_states_its_net_cash_instead_of_a_recovery_
 
 
 def test_every_template_line_cites_the_one_fact_it_was_rendered_from() -> None:
-    """The template is the same evidence the model would have had to cite, and no more than eight."""
+    """The template is the same evidence the model would have had to cite, and no more than eight.
+
+    It also has to ground against its own pack: the template is what a reader gets when the model does
+    not, so a template line the checker would refuse is a card nobody could publish.
+    """
 
     pack = _pack()
     lines = template_lines(pack)
     ids = {fact.id for fact in pack.facts}
+    grounded = ground(pack, lines)
 
     assert 0 < len(lines) <= DIGEST_LINES_MAX
     assert all(len(line.cites) == 1 and line.cites[0] in ids for line in lines)
-    assert ground(pack, lines) == lines
+    assert (grounded.lines, grounded.dropped) == (lines, 0)
+
+
+def test_the_template_reaches_the_receipts_and_the_cost_bases_before_it_lists_cards() -> None:
+    """The fallback is a summary, not the first eight facts of a pack ordered for a model.
+
+    The pack leads with cards because a model reads all of it and a card is what a reader was already
+    interrupted for. A reader of the template has had those cards; what only this card carries is the
+    +1h/+4h receipt and the three cost bases, and a slice of the pack would never reach either.
+    """
+
+    cards = tuple(
+        DigestCardRow("exit", f"trader{index}", "FSD", 4_000, "chain_balance", 0, None, None, "", True)
+        for index in range(12)
+    )
+    cited = [line.cites[0] for line in template_lines(_pack(cards=cards))]
+
+    assert cited[:3] == ["w0", "w1", "k0"]
+    assert "o1" in cited
+    assert "c1" in cited
+    # Twelve individual card facts are in the pack and none of them displaced a section.
+    assert not any(cite.startswith("k") and cite != "k0" for cite in cited)
 
 
 # --- grounding ------------------------------------------------------------------------------------
-def test_a_line_that_invents_a_number_drops_the_whole_digest() -> None:
-    """One hallucinated figure and the reader gets the template: the other lines are not trustworthy.
+def test_a_line_that_invents_a_number_is_dropped_and_the_lines_beside_it_are_kept() -> None:
+    """Per line, not per answer. `$23,531.60` is in the pack; `$23,900` is not.
 
-    `$23,531.60` is in the pack; `$23,900` is not, and no fact the line cites carries it.
+    All-or-nothing was the first shape of this rule and it made the model dead weight: with any per-line
+    error rate at all, discarding eight good sentences over a ninth rounded figure means the card a
+    reader receives is the template almost every time. A line that grounds is exactly as true whatever
+    the line beside it did.
     """
 
     pack = _pack()
@@ -200,13 +230,33 @@ def test_a_line_that_invents_a_number_drops_the_whole_digest() -> None:
         DigestLine(text="窗口内退出卡 1 张", cites=("k0",)),
     )
 
-    assert ground(pack, answer) is None
+    grounded = ground(pack, answer)
+
+    assert (grounded.kept, grounded.dropped) == (1, 1)
+    assert [line.text for line in grounded.lines] == ["窗口内退出卡 1 张"]
+    # One surviving line is a fragment, not a summary, so the caller renders the template instead.
+    assert grounded.accepted() is False
 
 
-def test_a_line_that_cites_a_fact_that_does_not_exist_drops_the_whole_digest() -> None:
+def test_an_answer_that_mostly_grounds_is_accepted_with_its_offending_line_removed() -> None:
     pack = _pack()
+    answer = (
+        DigestLine(text="窗口内活跃名单地址 2 个，代币 7 个", cites=("w0",)),
+        DigestLine(text="合计买入 4 笔 $13,240.50", cites=("w1",)),
+        DigestLine(text="0xVantaa 清仓 FSD 100%", cites=("k1",)),
+        DigestLine(text="其中已送达 9 张", cites=("k0",)),
+    )
 
-    assert ground(pack, (DigestLine(text="退出卡 1 张", cites=("k9",)),)) is None
+    grounded = ground(pack, answer)
+
+    assert (grounded.kept, grounded.dropped, grounded.accepted()) == (3, 1, True)
+    assert "9" not in " ".join(line.text for line in grounded.lines)
+
+
+def test_a_line_that_cites_a_fact_that_does_not_exist_is_dropped() -> None:
+    grounded = ground(_pack(), (DigestLine(text="退出卡 1 张", cites=("k9",)),))
+
+    assert (grounded.lines, grounded.kept, grounded.dropped) == ((), 0, 1)
 
 
 def test_a_figure_is_grounded_by_any_fact_the_line_cited_however_it_was_separated() -> None:
@@ -216,22 +266,64 @@ def test_a_figure_is_grounded_by_any_fact_the_line_cited_however_it_was_separate
     answer = (
         DigestLine(text="0xVantaa 清仓 FSD 100%，卖前持仓 23531.6 美元", cites=("k1",)),
         DigestLine(text="窗口内活跃名单地址 2 个，代币 7 个", cites=("w0",)),
+        DigestLine(text="合计买入 4 笔 $13,240.50", cites=("w1",)),
     )
 
-    assert ground(pack, answer) == answer
+    assert ground(pack, answer).lines == answer
+
+
+def test_a_sign_flip_is_a_different_figure_and_the_line_that_states_it_is_dropped() -> None:
+    """Half this pack is returns and cash positions that fall either side of zero.
+
+    The +1h median came back at `-5.12%`. A line that reports it as `+5.12%` -- or drops the sign
+    entirely -- is not a rounding, it is the opposite claim, and a grammar that read them as one figure
+    would let it through.
+    """
+
+    pack = _pack()
+    flipped = DigestLine(text="+1h 回执中位 +5.12%", cites=("o1",))
+    unsigned = DigestLine(text="+1h 回执中位 5.12%", cites=("o1",))
+    honest = DigestLine(text="+1h 回执中位 -5.12%", cites=("o1",))
+
+    assert ground(pack, (flipped,)).kept == 0
+    assert ground(pack, (unsigned,)).kept == 0
+    assert ground(pack, (honest,)).lines == (honest,)
+
+
+def test_a_clock_grounds_nothing_and_is_required_to_ground_nothing() -> None:
+    """`17:20-21:20` is a window, not a figure, and its digits mean nothing on their own.
+
+    Left in the allowed set it would let a line citing the window fact state `21 个地址` and pass. It is
+    removed from both sides, so quoting the window costs nothing and a count still has to be a count.
+    """
+
+    pack = _pack()
+
+    assert ground(pack, (DigestLine(text="窗口 17:20–21:20，代币 7 个", cites=("w0",)),)).kept == 1
+    assert ground(pack, (DigestLine(text="活跃名单地址 21 个", cites=("w0",)),)).kept == 0
+
+
+def test_a_line_written_in_chinese_numerals_is_not_checkable_and_is_dropped() -> None:
+    """`两个地址` states a count no fact can be compared against, so the line does not survive."""
+
+    grounded = ground(_pack(), (DigestLine(text="窗口内有两个活跃地址", cites=("w0",)),))
+
+    assert (grounded.kept, grounded.dropped) == (0, 1)
 
 
 def test_a_misspelled_handle_is_as_ungrounded_as_an_invented_number() -> None:
     """A `0x` identifier is one figure, whole. Half of an address is not the address."""
 
-    assert ground(_pack(), (DigestLine(text="0xVantea 清仓 FSD", cites=("k1",)),)) is None
+    assert ground(_pack(), (DigestLine(text="0xVantea 清仓 FSD", cites=("k1",)),)).kept == 0
 
 
-def test_an_answer_longer_than_the_card_is_refused_outright() -> None:
+def test_an_answer_longer_than_the_card_keeps_only_what_the_card_can_hold() -> None:
     pack = _pack()
     line = DigestLine(text="窗口内退出卡 1 张", cites=("k0",))
 
-    assert ground(pack, (line,) * (DIGEST_LINES_MAX + 1)) is None
+    grounded = ground(pack, (line,) * (DIGEST_LINES_MAX + 2))
+
+    assert (grounded.kept, grounded.dropped) == (DIGEST_LINES_MAX, 2)
 
 
 # --- the writer's two refusals to call ------------------------------------------------------------
@@ -242,6 +334,8 @@ class _Db:
     state: Any
     rows: DigestWindowRows | None = None
     written: list[str] = field(default_factory=list)
+    attempted_at_ms: int = 0
+    refuse_digest_write: bool = False
 
     async def read(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float = 3.0) -> Any:
         return fn(_Repos(self))
@@ -254,7 +348,9 @@ class _Db:
         """
 
         self.written.append(name)
-        return True
+        if name == "news_chain_tape_digest" and self.refuse_digest_write:
+            raise TransientError("news_chain_tape_digest_write_refused")
+        return fn(_Repos(self)) if name == "news_chain_tape_digest_attempt" else True
 
 
 class _Repos:
@@ -272,6 +368,19 @@ class _News:
     def chain_tape_digest_window(self, *, from_ms: int, to_ms: int) -> DigestWindowRows:
         assert self._db.rows is not None
         return self._db.rows
+
+    def chain_tape_mark_digest_attempt(self, *, now_ms: int) -> None:
+        self._db.attempted_at_ms = int(now_ms)
+
+
+class _Clock:
+    """A clock the test moves, so "the next turn two seconds later" is a real second call."""
+
+    def __init__(self, at_ms: int) -> None:
+        self.at_ms = at_ms
+
+    def __call__(self) -> int:
+        return self.at_ms
 
 
 class _Program:
@@ -330,6 +439,31 @@ def test_a_window_that_is_not_due_yet_reads_nothing_further() -> None:
     assert (result.digests, program.calls) == (0, 0)
 
 
+def test_a_refused_write_costs_one_model_call_per_interval_rather_than_one_per_turn() -> None:
+    """The loop this bounds is the expensive one: `advance()` runs every two seconds.
+
+    A digest the database will not accept leaves the window due, and without a durable "attempted at"
+    the next turn would build the pack and call the model again -- 1,800 times an hour. The attempt is
+    banked before the call, so a broken write costs exactly one attempt per interval.
+    """
+
+    program = _Program()
+    db = _Db(state=None, rows=_rows(), refuse_digest_write=True)
+    clock = _Clock(WINDOW_TO)
+    writer = WalletDigestWriter(db=db, program=program, interval_s=14_400, clock=clock)
+    errors: list[str] = []
+
+    first = asyncio.run(writer.take_digest(roster=_roster(), errors=errors))
+    db.state = LastDigest(window_to_ms=0, model_calls_last_day=0, attempted_at_ms=db.attempted_at_ms)
+    clock.at_ms += 2_000
+    second = asyncio.run(writer.take_digest(roster=_roster(), errors=errors))
+
+    assert (first.digests, second.digests) == (0, 0)
+    # The model was asked exactly once, on the turn that banked the attempt.
+    assert program.calls == 1
+    assert errors == ["db:TransientError"]
+
+
 def test_a_day_at_its_call_cap_still_produces_the_digest_from_the_template() -> None:
     """The cap bounds the *model*, not the summary: the facts were computed before a call was weighed."""
 
@@ -348,7 +482,8 @@ def test_a_day_at_its_call_cap_still_produces_the_digest_from_the_template() -> 
 
     # The window was due and was written; the model was never asked, because the day had nothing left.
     assert (result.digests, result.model_called, program.calls) == (1, False, 0)
-    assert db.written == ["news_chain_tape_digest"]
+    # The attempt is banked before anything expensive, and the digest is written after.
+    assert db.written == ["news_chain_tape_digest_attempt", "news_chain_tape_digest"]
     assert errors == []
 
 
@@ -390,7 +525,7 @@ def test_the_signature_runs_through_the_audited_seam_and_its_answer_grounds() ->
         part.text for message in delegate.requests[0].messages for part in message.parts if hasattr(part, "text")
     )
     assert "0xVantaa 清仓 FSD 100%" in rendered
-    assert ground(pack, lines) == lines
+    assert ground(pack, lines).lines == tuple(lines)
 
 
 def test_the_digest_signature_records_and_replays_with_no_delegate_at_all() -> None:

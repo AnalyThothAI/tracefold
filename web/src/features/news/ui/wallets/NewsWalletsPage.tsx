@@ -291,7 +291,34 @@ function CardsPanel({ query }: { query: ReturnType<typeof useNewsWalletCardsWith
   );
 }
 
+/**
+ * One card, and — for a digest — the sentences it was sent with beneath it.
+ *
+ * The lines are a second row rather than a cell: they are prose in a table of figures, and the one thing
+ * a digest carries that no column can hold. They are always shown rather than folded away, because a
+ * digest row with its lines hidden is a row that says nothing at all.
+ */
 function CardRow({ card }: { card: NewsWalletCard }) {
+  const lines = card.digest_lines ?? [];
+  return (
+    <>
+      <CardFigures card={card} />
+      {lines.length ? (
+        <tr className="news-wallets-lines" data-kind={card.kind}>
+          <td colSpan={10}>
+            <ol>
+              {lines.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ol>
+          </td>
+        </tr>
+      ) : null}
+    </>
+  );
+}
+
+function CardFigures({ card }: { card: NewsWalletCard }) {
   return (
     <tr data-kind={card.kind}>
       <td title={displayTime(card.event_at_ms)}>{clockTime(card.event_at_ms)}</td>

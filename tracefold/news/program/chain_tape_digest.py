@@ -22,13 +22,13 @@ import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..artifact_identity import canonical_json, canonical_sha
-from ..wallet_contracts import DigestLine
+from ..wallet_contracts import DIGEST_LINES_MAX, DigestLine
 from .lm import AuditedConfiguredLM, LMCallContext, LMCallLedger, program_json_adapter
 
 CHAIN_TAPE_DIGEST_VERSION: Final = "news_chain_tape_digest_v1"
-# Eight lines is what #572 §5.4 asks for, and it is also what a Feishu card can carry without becoming a
-# page. The per-line bound is Chinese characters, not tokens: a digest line is a sentence a reader scans.
-DIGEST_LINES_MAX: Final = 8
+# `DIGEST_LINES_MAX` is #572 §5.4's eight, and it lives in `wallet_contracts` because the tape checks the
+# same bound this Signature declares. The per-line bound is Chinese characters, not tokens: a digest line
+# is a sentence a reader scans.
 DIGEST_LINE_MAX_CHARS: Final = 60
 DIGEST_CITES_MAX: Final = 6
 # Eight short Chinese lines with their citations is a few hundred output tokens under grammar-constrained
@@ -49,8 +49,9 @@ has an `id` and a `text` that already states every figure. Write at most eight l
 compact Chinese sentence a reader can scan, and `cites` must list the ids of the facts that line is built from.
 
 Copy every figure exactly as it is written in the facts you cite: the same digits, the same decimal places, the
-same address prefix. Never compute a new number, never round, never convert a unit, never total two facts into a
-third, and never state a figure that is not in a fact you cited. Do not judge, forecast, recommend or explain
+same sign, the same address prefix. Write every number in Arabic digits, never in Chinese numerals. Never compute
+a new number, never round, never convert a unit, never total two facts into a third, and never state a figure that
+is not in a fact you cited. Do not judge, forecast, recommend or explain
 motives; say what happened. Prefer the largest positions, the cards that were sent and the price receipts, and
 say plainly when something is unknown. Return only the structured digest."""
 
@@ -133,6 +134,13 @@ _PROGRAM_IDENTITY_MATERIAL = {
 CHAIN_TAPE_DIGEST_SHA256: Final = canonical_sha(_PROGRAM_IDENTITY_MATERIAL)
 
 
+def _effective_lm_capability(lm: dspy.BaseLM) -> dict[str, Any]:
+    return {
+        "supported_params": sorted(str(value) for value in lm.supported_params),
+        "supports_response_schema": bool(lm.supports_response_schema),
+    }
+
+
 class ChainTapeDigestProgram(dspy.Module):  # type: ignore[misc]
     """The one audited call the wallet digest makes, and the only place a model touches this flow."""
 
@@ -153,6 +161,10 @@ class ChainTapeDigestProgram(dspy.Module):  # type: ignore[misc]
         self._identity: dict[str, Any] = {
             "program": _PROGRAM_IDENTITY_MATERIAL,
             "program_sha256": CHAIN_TAPE_DIGEST_SHA256,
+            # What the bound endpoint can actually do. A model that cannot be handed a response schema
+            # parses this Signature's JSON a different way, so it is part of the running identity rather
+            # than of the code's -- the same material `progression_review` records.
+            "effective_lm_capability": _effective_lm_capability(lm),
             "runtime_identity": lm.runtime_identity.model_dump(mode="json"),
             "model_binding": lm.model_binding,
         }
@@ -197,7 +209,6 @@ __all__ = [
     "CHAIN_TAPE_DIGEST_TIMEOUT_SECONDS",
     "CHAIN_TAPE_DIGEST_VERSION",
     "DIGEST_CITES_MAX",
-    "DIGEST_LINES_MAX",
     "DIGEST_LINE_MAX_CHARS",
     "ChainTapeDigestProgram",
     "DigestAnswer",

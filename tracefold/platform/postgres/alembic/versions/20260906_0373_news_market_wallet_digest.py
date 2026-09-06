@@ -3,8 +3,9 @@
 Migration evidence:
 
 - category: three CHECK constraints on `news_market_wallet_events` replaced -- the kind vocabulary, the
-  identity predicate and the window predicate -- plus two indexes on that same table. No existing
-  column, row or index is rewritten, and every row that was valid before is still valid.
+  identity predicate and the window predicate -- plus two indexes on that same table and one defaulted
+  column on the one-row `news_market_wallet_tape_state`. No existing column, row or index is rewritten,
+  and every row that was valid before is still valid.
 - why_database_must_change: a digest is an observation about a *window*, not about a movement, so it
   names no wallet and no token. `news_market_wallet_events_kind_check` admits only `exit` and
   `crowding`, and `news_market_wallet_events_identity_check` requires both `wallet` and `token` to be
@@ -33,15 +34,17 @@ Migration evidence:
   of rows at the market Item retention tier; the digest adds six rows a day on top of that.
 - estimated_bytes: the two indexes are tens of kilobytes at that row count; the digest rows themselves
   carry their fact pack in `evidence` at roughly 5 KB each, so about 30 KB a day.
-- rewrite_or_index_build: no rewrite. Each CHECK replacement is one validating scan of a table with
-  low thousands of rows, and both index builds are over the same table. The tape's own writer is
-  blocked for the length of the `ALTER TABLE` and each build; it retries the same turn's range on the
-  next pass, so nothing is lost.
+- rewrite_or_index_build: no rewrite, including the new column: a non-volatile `DEFAULT` is a catalogue
+  entry on PostgreSQL 11+ and the table holds one row either way. Each CHECK replacement is one
+  validating scan of a table with low thousands of rows, and both index builds are over the same table.
+  The tape's own writer is blocked for the length of each statement; it retries the same turn's range on
+  the next pass, so nothing is lost.
 - preflight_and_maintenance_boundary: none required. A writer running the previous code writes no
   `digest` row and is unaffected by constraints that admit one more kind, and the new indexes block
   that writer only for their builds.
 - archive_current_compatibility: every existing `exit` and `crowding` row keeps every value it had and
-  satisfies all three replacements unchanged.
+  satisfies all three replacements unchanged; the tape's existing state row reads `0` for the new
+  column, which is "no digest has been attempted", the same thing an absent column meant.
 - role_and_grant_impact: none; the single `tracefold` login is unchanged.
 - failure_state: the transaction rolls back completely and the table keeps its current constraints and
   indexes.
@@ -75,6 +78,7 @@ def upgrade() -> None:
 
     _events_admit_a_digest()
     _digest_indexes()
+    _tape_records_its_digest_attempt()
 
 
 def _events_admit_a_digest() -> None:
@@ -133,6 +137,30 @@ def _digest_indexes() -> None:
         CREATE INDEX ix_news_market_wallet_events_digest
             ON public.news_market_wallet_events (window_to_ms DESC)
          WHERE kind = 'digest'
+        """
+    )
+
+
+def _tape_records_its_digest_attempt() -> None:
+    """When the tape last tried to write a digest, whether or not that write committed.
+
+    It is a clock rather than a counter, and it is on the tape's own row rather than on a digest row for
+    the reason it exists: the failure it bounds leaves no digest row behind. Marked before the model is
+    called, so a database that will not accept the digest costs one model call per interval instead of
+    one per two-second turn.
+    """
+
+    op.execute(
+        """
+        ALTER TABLE public.news_market_wallet_tape_state
+          ADD COLUMN digest_attempted_at_ms bigint NOT NULL DEFAULT 0
+        """
+    )
+    op.execute(
+        """
+        ALTER TABLE public.news_market_wallet_tape_state
+          ADD CONSTRAINT news_market_wallet_tape_state_digest_check
+          CHECK (digest_attempted_at_ms >= 0)
         """
     )
 

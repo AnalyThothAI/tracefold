@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import {
   NEWS_NOW_MS,
+  newsMarketDigestObservationFixture,
   newsMarketFixture,
   newsMarketGroupFixture,
   newsMarketItemFixture,
@@ -235,6 +236,50 @@ describe("NewsMarketPage", () => {
     // And the summary strip names it beside the four the provider sends.
     const sources = await screen.findByLabelText("来源汇总");
     expect(within(sources).getByTitle(/链上钱包/)).toBeInTheDocument();
+  });
+
+  it("prints a wallet digest's own sentences when its group is expanded", async () => {
+    /*
+     * #572 PR-3. Every other market kind's content is a number in a field; a digest's is the sentences
+     * those numbers were written into, and they are the only thing on the page that says what four
+     * hours of the roster amounted to. Stored in the observation and rendered nowhere would be a
+     * frozen contract nobody reads.
+     */
+    const digest = newsMarketDigestObservationFixture();
+    server.use(
+      http.get(/.*\/api\/news\/market\/.+$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsMarketItemFixture({ observation: digest, timeline: [digest] }),
+        }),
+      ),
+      http.get(/.*\/api\/news\/market$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: marketWithEveryKind({
+            groups: [
+              newsMarketGroupFixture({
+                first_event_at_ms: NEWS_NOW_MS - 4 * 3_600_000,
+                latest: digest,
+                market_kind: "wallet",
+                observation_count: 1,
+              }),
+            ],
+          }),
+        }),
+      ),
+    );
+
+    renderMarket();
+    const rows = await screen.findAllByRole("button", { expanded: false });
+
+    fireEvent.click(rows[0]);
+
+    expect(await screen.findByText("摘要正文")).toBeInTheDocument();
+    expect(
+      screen.getByText("合计买入 62 笔 $394,120.55，卖出 44 笔 $309,002.10"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("窗口内退出卡 4 张、拥挤卡 1 张，其中已送达 5 张")).toBeInTheDocument();
   });
 
   it("puts the chosen kinds in the URL and narrows the request with them", async () => {

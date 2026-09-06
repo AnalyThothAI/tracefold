@@ -28,6 +28,14 @@ WALLET_SOURCE_ID: Final = "news-robinhood-chain"
 # the periodic digest (#572 §5.4), which is about the window rather than about any one movement: it names
 # no wallet and no token, and its subject is what the whole roster did in four hours.
 WalletEventKind = Literal["exit", "crowding", "digest"]
+# The digest's own kind value, as a constant rather than a literal repeated in five SQL statements and
+# three modules. It is a stored value, so the one place it is written down is the one place it can move.
+DIGEST_KIND: Final = "digest"
+# How many lines a digest may carry, and how few it may be reduced to and still be worth sending rather
+# than the deterministic template. They are here because the Program that produces the lines and the
+# tape that checks them both need the same two numbers, and neither may import the other.
+DIGEST_LINES_MAX: Final = 8
+DIGEST_LINES_MIN: Final = 3
 
 # Where the denominator of an exit ratio came from. `chain_balance` is `balanceOf` at the block before
 # the sell -- the chain's own answer, which the public node holds for about ten minutes. `site_reported`
@@ -168,6 +176,9 @@ class WalletOutcome:
 
 
 __all__ = [
+    "DIGEST_KIND",
+    "DIGEST_LINES_MAX",
+    "DIGEST_LINES_MIN",
     "OUTCOME_GIVE_UP_MS",
     "OUTCOME_PRICE_MIN",
     "OUTCOME_UNAVAILABLE",

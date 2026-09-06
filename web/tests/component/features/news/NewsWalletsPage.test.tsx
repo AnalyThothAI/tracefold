@@ -81,7 +81,8 @@ describe("NewsWalletsPage", () => {
     renderWallets();
 
     const cards = await screen.findByRole("region", { name: "钱包卡片" });
-    expect(within(cards).getAllByRole("row")).toHaveLength(4);
+    // Three cards, the header, and the digest's own line row beneath it.
+    expect(within(cards).getAllByRole("row")).toHaveLength(5);
     // The exit's +1h came back at -5.12%; its +4h horizon has not arrived, which is the absence of a row.
     expect(await screen.findByText("-5.12%")).toBeInTheDocument();
     expect(screen.getByText("+17.30%")).toBeInTheDocument();
@@ -89,6 +90,11 @@ describe("NewsWalletsPage", () => {
     expect(screen.getByText("无价")).toBeInTheDocument();
     // The digest carries its own answer to "who wrote this", which the card itself cannot say.
     expect(screen.getByText("模型措辞")).toBeInTheDocument();
+    // And its sentences, which are the whole content of that card and no column can hold.
+    expect(
+      screen.getByText("合计买入 62 笔 $394,120.55，卖出 44 笔 $309,002.10"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("窗口内退出卡 4 张")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "摘要" })).toHaveAttribute(
       "href",
       `/news/market/${"c".repeat(64)}`,

@@ -471,6 +471,16 @@ and with `token`. `downgrade` is refused: a narrower kind vocabulary would leave
 digest rows the CHECK rejects, and dropping them would delete summaries readers
 were sent.
 
+The revision also adds one defaulted column to the one-row
+`news_market_wallet_tape_state`: `digest_attempted_at_ms`, when the tape last got
+as far as trying to write a digest, whether or not that write committed. It has
+to be durable and it cannot live on a digest row, because the case it exists for
+is exactly the one where no digest row was written — a persistently refused write
+would otherwise leave the window due and call the model again on every
+two-second turn. A non-volatile `DEFAULT` is a catalogue entry on PostgreSQL 11+,
+so the column is added without a rewrite, and the existing row reads `0`, which
+means the same thing an absent column meant.
+
 ## Database development standard
 
 1. The deployment has one non-superuser application login, `tracefold`.

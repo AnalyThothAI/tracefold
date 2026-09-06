@@ -31,14 +31,13 @@ from ..telemetry import (
     NewsExternalDataSource,
     NewsExternalDataTelemetryPort,
 )
-from ..wallet_contracts import DigestLine, WalletEvent
+from ..wallet_contracts import DIGEST_KIND, DigestLine, WalletEvent
 from .contracts import CHAIN_TAPE_NAME, RosterSnapshot
 from .digest import (
     DAY_MS,
     DIGEST_BAGS_MAX,
     DIGEST_COSTS_MAX,
     DIGEST_INTERVAL_S_DEFAULT,
-    DIGEST_KIND,
     DIGEST_MAX_CALLS_PER_DAY_DEFAULT,
     DIGEST_WINDOW_MAX_MS,
     DigestBagsPort,
@@ -70,6 +69,19 @@ class DigestResult:
     lines: int = 0
     model_called: bool = False
     model_used: bool = False
+    lines_kept: int = 0
+    lines_dropped: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _Lines:
+    """The sentences this pass will send, and what reconciliation did to get there."""
+
+    lines: tuple[DigestLine, ...]
+    model_called: bool
+    model_used: bool
+    kept: int = 0
+    dropped: int = 0
 
 
 class WalletDigestWriter:
@@ -112,11 +124,21 @@ class WalletDigestWriter:
             return DigestResult()
         last: LastDigest | None = state
         window_to = now
-        if last is not None and window_to - last.window_to_ms < self.interval_ms:
+        # Due against the later of "when the last digest ended" and "when one was last attempted". The
+        # second half is what stops a persistently refused write from calling the model on every 2 s turn
+        # for ever: the attempt is marked before the call and the mark survives the failure, so a broken
+        # write costs one attempt per interval rather than 1,800.
+        settled = max(
+            0 if last is None else last.window_to_ms,
+            0 if last is None else last.attempted_at_ms,
+        )
+        if settled and window_to - settled < self.interval_ms:
             return DigestResult()
+        # The *window* still starts where the last digest ended, not where the last attempt did: a
+        # refused write must not lose the activity it was about.
         window_from = max(
             window_to - DIGEST_WINDOW_MAX_MS,
-            last.window_to_ms if last is not None else window_to - self.interval_ms,
+            last.window_to_ms if last is not None and last.window_to_ms else window_to - self.interval_ms,
         )
         rows = await self._read(
             "news_chain_tape_digest_window",
@@ -127,6 +149,13 @@ class WalletDigestWriter:
             # A quiet four hours is not a card. #572 §5.3 says so in one word -- 空窗跳过 -- and the
             # cost of ignoring it would be six identical "nothing happened" cards a day.
             return DigestResult()
+        # Everything past here costs a provider call, possibly a model call, and a write, so this is
+        # where the attempt is banked.
+        await self._write(
+            "news_chain_tape_digest_attempt",
+            lambda repos: repos.news.chain_tape_mark_digest_attempt(now_ms=now),
+            errors,
+        )
         handles = {member.wallet: member.handle for member in roster.members}
         holding = await self._holding_costs(rows, handles=handles, errors=errors)
         pack = build_pack(
@@ -136,14 +165,12 @@ class WalletDigestWriter:
             handles=handles,
             holding_costs=holding,
         )
-        lines, called, used = await self._lines(pack, calls_today=0 if last is None else last.model_calls_last_day)
+        outcome = await self._lines(pack, calls_today=0 if last is None else last.model_calls_last_day)
         event = _digest_event(
             pack,
             rows=rows,
             roster=roster,
-            lines=lines,
-            model_called=called,
-            model_used=used,
+            outcome=outcome,
             now_ms=now,
         )
         written = await self._write(
@@ -161,28 +188,52 @@ class WalletDigestWriter:
         )
         if written is _FAILED or not written:
             return DigestResult()
-        return DigestResult(digests=1, lines=len(lines), model_called=called, model_used=used)
+        return DigestResult(
+            digests=1,
+            lines=len(outcome.lines),
+            model_called=outcome.model_called,
+            model_used=outcome.model_used,
+            lines_kept=outcome.kept,
+            lines_dropped=outcome.dropped,
+        )
 
-    async def _lines(self, pack: DigestPack, *, calls_today: int) -> tuple[tuple[DigestLine, ...], bool, bool]:
-        """The model's eight lines when they are grounded, and the template's otherwise.
+    async def _lines(self, pack: DigestPack, *, calls_today: int) -> _Lines:
+        """The model's surviving lines when enough of them survive, and the template's otherwise.
 
-        The call happens here, between two database checkouts and inside neither: the pack was read
-        and the connection released before this runs, and the write that follows opens its own.
+        The call happens here, between two database checkouts and inside neither: the pack was read and
+        the connection released before this runs, and the write that follows opens its own.
+
+        Reconciliation is per line (`ground`), so one rounded figure costs its own sentence rather than
+        the whole card. The template takes over only when too few lines are left to be a summary, and
+        the counts are carried either way -- a run where the model answered and lost six of eight lines
+        is the evidence that says the instruction needs work, and the card alone cannot show it.
         """
 
         if self.program is None or calls_today >= self.max_calls_per_day:
-            return template_lines(pack), False, False
+            return _Lines(template_lines(pack), model_called=False, model_used=False)
         try:
             answer = await self.program.summarize(facts_json=pack.as_json())
         except Exception:  # a digest that could not be written is a digest the template writes
             # The audited LM seam already records the call itself; what this decides is only whether
             # the reader gets the model's wording or the pack's own.
             log.warning("chain tape digest model call failed; rendering the template")
-            return template_lines(pack), True, False
+            return _Lines(template_lines(pack), model_called=True, model_used=False)
         grounded = ground(pack, tuple(answer))
-        if grounded is None:
-            return template_lines(pack), True, False
-        return grounded, True, True
+        if not grounded.accepted():
+            return _Lines(
+                template_lines(pack),
+                model_called=True,
+                model_used=False,
+                kept=grounded.kept,
+                dropped=grounded.dropped,
+            )
+        return _Lines(
+            grounded.lines,
+            model_called=True,
+            model_used=True,
+            kept=grounded.kept,
+            dropped=grounded.dropped,
+        )
 
     async def _holding_costs(
         self,
@@ -292,9 +343,7 @@ def _digest_event(
     *,
     rows: DigestWindowRows,
     roster: RosterSnapshot,
-    lines: Sequence[DigestLine],
-    model_called: bool,
-    model_used: bool,
+    outcome: _Lines,
     now_ms: int,
 ) -> WalletEvent:
     """One `wallet` observation whose subject is the window rather than a wallet or a token.
@@ -323,11 +372,15 @@ def _digest_event(
         title=f"名单钱包 {window_hours(pack.window_from_ms, pack.window_to_ms)} 小时摘要",
         peer_wallets=len(rows.activity),
         evidence={
-            "lines": [{"text": line.text, "cites": list(line.cites)} for line in lines],
+            "lines": [{"text": line.text, "cites": list(line.cites)} for line in outcome.lines],
             "facts": [{"id": fact.id, "text": fact.text} for fact in pack.facts],
             "pack_sha256": pack.sha256(),
-            "model_called": bool(model_called),
-            "model_used": bool(model_used),
+            "model_called": outcome.model_called,
+            "model_used": outcome.model_used,
+            # What reconciliation did, whichever wording went out. Only the failures answer "is the
+            # instruction working", and they are not recoverable from the card.
+            "lines_kept": outcome.kept,
+            "lines_dropped": outcome.dropped,
             "roster_version": roster.roster_version,
         },
     )

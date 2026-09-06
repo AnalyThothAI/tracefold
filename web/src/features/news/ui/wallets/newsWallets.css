@@ -143,4 +143,26 @@
   .news-wallets-table td[data-tone="down"] {
     color: var(--dir-bearish);
   }
+
+  /*
+   * A digest's own sentences, under the row whose figures they were written from. Numbered because
+   * their order is the summary's order, and left-aligned against a table whose cells are figures.
+   */
+  .news-wallets-lines > td {
+    padding-top: 0;
+    text-align: left;
+    white-space: normal;
+  }
+
+  .news-wallets-lines ol {
+    display: grid;
+    gap: 3px;
+    margin: 0;
+    padding-left: 20px;
+  }
+
+  .news-wallets-lines li {
+    color: var(--text-secondary);
+    font: 400 var(--font-size-meta)/1.5 var(--font-sans);
+  }
 }

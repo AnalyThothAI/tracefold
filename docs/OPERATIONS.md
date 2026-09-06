@@ -1720,14 +1720,24 @@ A third kind of wallet card, and the one place a model touches this flow. Every 
 tape's turn builds a fact pack in SQL — the window's totals, each roster wallet's buys and sells, the
 three separately-named cost bases per position that moved, the cards the rules opened, and what the
 price receipts said — and makes at most one structured call over it. The model writes at most eight
-short Chinese lines and cites the fact ids each line used; a line stating any figure its cited facts do
-not carry drops the **whole** answer, and the card goes out with the template's sentences instead. Same
-for a timeout, a day at its call cap, and a host with no model endpoint configured. The numbers are the
-same either way — they were computed before a call was weighed.
+short Chinese lines and cites the fact ids each line used. Reconciliation is **per line**: a line that
+states a figure its cited facts do not carry, cites an id that is not a fact, or writes its numbers in
+Chinese numerals is dropped on its own, and the rest of the answer stands. Only when fewer than three
+lines survive does the card fall back to the template — as it also does on a timeout, on a day at its
+call cap, and on a host with no model endpoint configured. The numbers are the same either way; they
+were computed before a call was weighed.
 
 The digest is skipped entirely for a window with no fills and no cards in it. At the default interval
 that is six digests a day at most, against a 24-call ceiling, so the cap is a bound on the endpoint
 rather than something an operator should expect to hit.
+
+**The call runs inside the tape's own turn.** `CHAIN_TAPE_DIGEST_TIMEOUT_SECONDS` is 60 s, and while it
+is outstanding that turn is not reading the chain — so six times a day the exit and crowding cards
+derived on that turn can be up to a minute later than usual. It is deliberate and it is bounded: the
+tape's classified position is durable and lags the head, so the next turn re-reads the range and nothing
+is lost; what degrades is latency on those turns, not completeness. A host that would rather not pay it
+at all sets `news.chain_tape.digest.max_calls_per_day` to `0`, which keeps the digest and never calls
+the model.
 
 How much of the last week's digests carried the model's wording, and how often reconciliation sent the
 template instead:
@@ -1739,6 +1749,8 @@ SELECT to_char(to_timestamp(e.event_at_ms / 1000) AT TIME ZONE 'UTC', 'YYYY-MM-D
        count(*) FILTER (WHERE e.evidence ->> 'model_used' = 'true') AS model_used,
        count(*) FILTER (WHERE e.evidence ->> 'model_called' = 'true'
                           AND e.evidence ->> 'model_used' <> 'true') AS grounding_fallbacks,
+       sum((e.evidence ->> 'lines_kept')::int) AS lines_kept,
+       sum((e.evidence ->> 'lines_dropped')::int) AS lines_dropped,
        count(*) FILTER (WHERE d.state = 'sent') AS sent
   FROM news_market_wallet_events e
   LEFT JOIN news_items i ON i.item_id = e.item_id
@@ -1749,9 +1761,11 @@ SELECT to_char(to_timestamp(e.event_at_ms / 1000) AT TIME ZONE 'UTC', 'YYYY-MM-D
  ORDER BY 1 DESC;
 ```
 
-`model_called` above `model_used` is the reconciliation failing: the model answered and stated a figure
-the facts it cited did not carry. A rising gap is a prompt problem, never a data problem — the digest a
-reader received is still every number this database holds. The pack the model was shown is on the row:
+`lines_dropped` against `lines_kept` is the honest reconciliation rate, and it is the number to watch
+rather than the fallback count: it moves per sentence, so it says how well the instruction is landing
+long before the card changes. `model_called` above `model_used` is the harder failure — fewer than three
+lines survived and the whole answer was set aside. A rising gap in either is a prompt problem, never a
+data problem: the digest a reader received is still every number this database holds. The pack the model was shown is on the row:
 `evidence -> 'facts'` is the exact list of `{id, text}` it saw, and `evidence ->> 'pack_sha256'` is its
 digest, so a disputed line can be checked against what was actually in front of the model.
 

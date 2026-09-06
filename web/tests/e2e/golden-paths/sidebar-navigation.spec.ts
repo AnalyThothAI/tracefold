@@ -7,7 +7,7 @@ import { installMockApi } from "@tests/e2e/support/mockApi";
 
 /**
  * The sidebar is fixed in the frame from 1280px up; below that, the topbar trigger opens the same navigation
- * in a drawer. Both widths reach the same three destinations from one model.
+ * in a drawer. Both widths reach the same four destinations from one model.
  */
 async function expectSidebarRouteChange(page: Page, routeName: string, expectedPath: string) {
   const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
@@ -23,7 +23,7 @@ test.describe("desktop sidebar navigation", () => {
     test.skip(!testInfo.project.name.startsWith("desktop-"), "desktop-only sidebar contract");
   });
 
-  test("keeps all three destinations in the fixed desktop frame", async ({ page }) => {
+  test("keeps all four destinations in the fixed desktop frame", async ({ page }) => {
     await installMockApi(page);
     await page.goto("/");
 
@@ -40,8 +40,10 @@ test.describe("desktop sidebar navigation", () => {
     await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "交易" })).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "市场事实" })).toBeVisible();
-    // #256/#460/#553 PR-1: three working surfaces in one group, with neither Alpha 判定 nor ReviewDesk.
-    await expect(primaryNavigation.getByRole("link")).toHaveCount(3);
+    await expect(primaryNavigation.getByRole("link", { name: "链上钱包" })).toBeVisible();
+    // #256/#460/#553 PR-1/#572 PR-3: four working surfaces in one group, with neither Alpha 判定 nor
+    // ReviewDesk.
+    await expect(primaryNavigation.getByRole("link")).toHaveCount(4);
     await expect(primaryNavigation.getByRole("link", { name: "Alpha 判定" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "学习复盘" })).toHaveCount(0);
     /*

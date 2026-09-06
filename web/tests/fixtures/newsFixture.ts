@@ -826,6 +826,31 @@ export function newsWalletCardsFixture(overrides: Partial<NewsWalletCards> = {})
   };
 }
 
+/** A wallet digest observation: no provider line, no subject, and its own sentences (#572 PR-3). */
+export function newsMarketDigestObservationFixture(
+  overrides: Partial<NewsMarketObservation> = {},
+): NewsMarketObservation {
+  return newsMarketObservationFixture({
+    group_key: "wallet|digest|robinhood_chain|||1779000000000",
+    item_id: "mkt-wallet-digest-1",
+    market_kind: "wallet",
+    oi_change_bps: null,
+    oi_value_usd: null,
+    provider: "robinhood_chain",
+    source_venue: null,
+    symbol: null,
+    title: "名单钱包 4 小时摘要",
+    wallet_digest_lines: [
+      "合计买入 62 笔 $394,120.55，卖出 44 笔 $309,002.10",
+      "窗口内退出卡 4 张、拥挤卡 1 张，其中已送达 5 张",
+    ],
+    wallet_kind: "digest",
+    whale_long_profit_bps: null,
+    whale_oi_ratio_bps: null,
+    ...overrides,
+  });
+}
+
 export function newsMarketItemFixture(overrides: Partial<NewsMarketItem> = {}): NewsMarketItem {
   const observation = overrides.observation ?? newsMarketObservationFixture();
   return {

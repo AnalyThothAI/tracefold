@@ -594,6 +594,7 @@
 | `unknown_total` | `BIGINT` | False | `0` |
 | `noise_through_block` | `BIGINT` | False | `0` |
 | `noise_through_tx_index` | `INTEGER` | False | `'-1'::integer` |
+| `digest_attempted_at_ms` | `BIGINT` | False | `0` |
 
 ## `news_model_recordings`
 

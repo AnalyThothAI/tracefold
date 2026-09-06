@@ -3215,13 +3215,26 @@ answers to three questions and are never averaged into one "cost":
   out than it put in owes nothing back — and a position with nothing left states its net cash instead.
 
 Every fact carries an id. The model is shown the pack as text and returns at most eight short Chinese
-lines plus the fact ids each line stands on; `ground` drops the **whole** answer unless every figure in
-every line appears in the facts that line cited, where "figure" is any number or any `0x` identifier,
-compared after thousands separators are removed. A dropped answer, a timeout, a day already at
-`digest.max_calls_per_day`, and an unconfigured model endpoint all end in the same place:
-`template_lines`, which is the pack's own leading facts as its own sentences. The stored row records
-which happened — `model_called`, `model_used`, the pack's `sha256`, and the whole fact pack in
-`evidence`, so "what did the model see" is answerable from the row rather than from a reconstruction.
+lines plus the fact ids each line stands on, and `ground` checks each line on its own: every id it cites
+has to be a fact, every figure it states has to appear in one of those facts, and it has to be written
+in Arabic digits. A "figure" is any number — sign included, because half this pack is returns and cash
+positions that fall either side of zero — or any `0x` identifier, compared after thousands separators
+are removed. Clock spans are excluded from both sides: `17:20–21:20` is a window, and leaving its digits
+in the allowed set would let a fabricated count ground against a clock.
+
+Reconciliation is **per line rather than per answer**, and that is a correctness decision as much as a
+product one. All-or-nothing discards eight good sentences because a ninth rounded a figure, so with any
+per-line error rate the card a reader receives is the template almost every time and the call is dead
+weight; a line that grounds is exactly as true whatever the line beside it did. Fewer than
+`DIGEST_LINES_MIN` surviving lines is a fragment rather than a summary, and the template takes over.
+
+That template, a timeout, a day already at `digest.max_calls_per_day`, and an unconfigured model
+endpoint all end in the same place: `template_lines`, which is one fact from each section of the pack —
+the window, the totals, the card count, the receipts, the noise, then the cost bases, and individual
+cards only if there is room. It is a selection rather than a slice, because the pack is ordered for a
+model that reads all of it while a reader of the template has already had the cards. The stored row
+records what happened either way — `model_called`, `model_used`, `lines_kept`, `lines_dropped`, the
+pack's `sha256`, and the whole fact pack in `evidence`.
 
 The extension gate's `derived_work` contract for this flow (#572 §5.1) is met exactly as declared: the
 authority is the PostgreSQL fact pack, an empty window is skipped rather than carded, a backlog is one
@@ -3235,6 +3248,13 @@ outside the release envelope GEPA optimises, because it answers no editorial que
 artifact instruction. And the call happens between two database checkouts and inside neither: the pack
 is read, the connection released, the call made, and a short transaction writes the result, which is
 #570's boundary 11 for a News task that talks to somebody else's server.
+
+One thing is durable that a reader might expect not to be. `news_market_wallet_tape_state` carries
+`digest_attempted_at_ms`, banked *before* the model is called, and the due check is against the later of
+that and the last written digest's window end. Without it a digest PostgreSQL will not accept leaves the
+window due, and the two-second turn rebuilds the pack and calls the model again on every pass — 1,800
+times an hour. With it a refused write costs one attempt per interval, and the window itself still
+starts where the last *written* digest ended, so nothing the failure was about is lost.
 
 ### The wallet console page (#572 PR-3)
 

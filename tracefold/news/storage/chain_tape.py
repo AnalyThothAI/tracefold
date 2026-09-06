@@ -34,7 +34,6 @@ from ..chain_tape.contracts import (
 from ..chain_tape.digest import (
     DIGEST_CARDS_MAX,
     DIGEST_COSTS_MAX,
-    DIGEST_KIND,
     DIGEST_WALLETS_MAX,
     DigestCardRow,
     DigestOutcomeRow,
@@ -45,6 +44,7 @@ from ..chain_tape.digest import (
 )
 from ..chain_tape.rules import CrowdingBuyer, PreviousCrowding, PreviousExit
 from ..wallet_contracts import (
+    DIGEST_KIND,
     OUTCOME_GIVE_UP_MS,
     WALLET_OUTCOME_HORIZONS,
     WalletCheck,
@@ -284,11 +284,26 @@ SELECT d.delivery_key, d.settled_at_ms, e.token
 # Where the last digest ended, and how many model calls the last day has already spent. Bounded to the
 # last day on purpose: a digest older than that starts a fresh window anyway, and the model-call budget
 # is a rolling day, so a scan of the whole retention would answer a question nobody asked.
-_LAST_DIGEST_SQL: Final = """
+_LAST_DIGEST_SQL: Final = f"""
 SELECT max(window_to_ms) AS window_to_ms,
        count(*) FILTER (WHERE (evidence ->> 'model_called') = 'true') AS model_calls
   FROM news_market_wallet_events
- WHERE kind = 'digest' AND window_to_ms >= %(since_ms)s
+ WHERE kind = '{DIGEST_KIND}' AND window_to_ms >= %(since_ms)s
+"""  # noqa: S608 -- the only interpolation is this repository's own code-owned kind literal
+
+# When the tape last got as far as trying, whether or not the write that followed committed. It is on
+# the tape's own state row rather than on a digest row for exactly that reason: a refused write leaves
+# no digest row, and without this a broken write would call the model on every two-second turn.
+_MARK_DIGEST_ATTEMPT_SQL: Final = """
+INSERT INTO news_market_wallet_tape_state (state_id, updated_at_ms, digest_attempted_at_ms)
+VALUES (%s, %s, %s)
+ON CONFLICT (state_id) DO UPDATE SET
+    digest_attempted_at_ms = GREATEST(news_market_wallet_tape_state.digest_attempted_at_ms,
+                                      EXCLUDED.digest_attempted_at_ms)
+"""
+
+_DIGEST_ATTEMPTED_SQL: Final = """
+SELECT digest_attempted_at_ms FROM news_market_wallet_tape_state WHERE state_id = %s
 """
 
 # The window's own totals, and the chain the facts came from. A digest with no chain id has nothing to
@@ -353,17 +368,17 @@ SELECT f.wallet, f.token,
  LIMIT %(limit)s
 """
 
-_DIGEST_CARDS_SQL: Final = """
+_DIGEST_CARDS_SQL: Final = f"""
 SELECT e.kind, e.handle, COALESCE(e.token_symbol, '') AS token_symbol, e.ratio_bps, e.basis,
-       e.peer_wallets, e.usd, e.position_usd, e.tone,
+       e.peer_wallets, e.usd, e.position_usd, e.tone, e.chain_id,
        COALESCE(d.state = 'sent', false) AS sent
   FROM news_market_wallet_events e
   LEFT JOIN news_items i ON i.item_id = e.item_id
   LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
- WHERE e.event_at_ms >= %(from_ms)s AND e.event_at_ms < %(to_ms)s AND e.kind <> 'digest'
+ WHERE e.event_at_ms >= %(from_ms)s AND e.event_at_ms < %(to_ms)s AND e.kind <> '{DIGEST_KIND}'
  ORDER BY e.event_at_ms
  LIMIT %(limit)s
-"""
+"""  # noqa: S608 -- the only interpolation is this repository's own code-owned kind literal
 
 # What the price receipts that landed in this window said, against the price the card itself printed.
 # `percentile_cont` skips the rows nothing could price, so `priced` is the honest denominator of the
@@ -435,7 +450,7 @@ SELECT e.kind,
 # printed -- the chain's mark at the moment it fired, or the lead's entry for a crowding window -- and
 # clamped, because these pools print prices spanning thirty orders of magnitude and an unclamped ratio
 # of two of them does not fit the integer it crosses the wire as.
-WALLET_CARDS_SQL: Final = """
+WALLET_CARDS_SQL: Final = f"""
 WITH cards AS (
   SELECT e.item_id, e.kind, e.handle, e.wallet, e.token, e.token_symbol, e.tone,
          e.ratio_bps, e.basis, e.closed, e.peer_wallets, e.premium_bps,
@@ -463,18 +478,18 @@ SELECT c.item_id, c.kind, c.handle, c.wallet, c.token, c.token_symbol, c.tone,
        CASE WHEN o4.price IS NOT NULL AND c.reference_price > 0
             THEN LEAST(10000000, GREATEST(-10000000,
                  round((o4.price / c.reference_price - 1) * 10000)))::integer END AS return_4h_bps,
-       CASE WHEN c.kind = 'digest' THEN (
+       CASE WHEN c.kind = '{DIGEST_KIND}' THEN (
               SELECT jsonb_agg(line ->> 'text' ORDER BY ord)
                 FROM jsonb_array_elements(c.evidence -> 'lines') WITH ORDINALITY AS t(line, ord)
             ) END AS digest_lines,
-       CASE WHEN c.kind = 'digest'
+       CASE WHEN c.kind = '{DIGEST_KIND}'
             THEN COALESCE((c.evidence ->> 'model_used') = 'true', false) END AS digest_model_used
   FROM cards c
   LEFT JOIN news_market_deliveries d ON d.delivery_key = c.delivery_key
   LEFT JOIN news_market_wallet_outcomes o1 ON o1.delivery_key = c.delivery_key AND o1.horizon = '1h'
   LEFT JOIN news_market_wallet_outcomes o4 ON o4.delivery_key = c.delivery_key AND o4.horizon = '4h'
  ORDER BY c.event_at_ms DESC
-"""
+"""  # noqa: S608 -- the only interpolation is this repository's own code-owned kind literal
 
 
 class DueOutcomeRow(TypedDict):
@@ -791,20 +806,36 @@ class ChainTapeStorage:
 
     # ------------------------------------------------------------------ the digest (PR-3)
     def chain_tape_last_digest(self, *, since_ms: int) -> LastDigest | None:
-        """Where the last digest ended and what the rolling day has already spent on the model.
+        """Where the last digest ended, when one was last attempted, and the day's spent model calls.
 
-        `None` means "no digest in the last day", which is also the answer the caller wants when one
-        is older than that: the window it would have to cover is capped at a day anyway, and a day
-        with no digest in it has spent nothing.
+        `None` means "nothing in the last day and no attempt on record", which is also the answer the
+        caller wants when the last digest is older than that: the window it would have to cover is
+        capped at a day anyway, and a day with no digest in it has spent nothing.
+
+        The attempt clock is read from the tape's own state row rather than from a digest row, because
+        the case it exists for is the one where no digest row was written.
         """
 
         row = self.conn.execute(_LAST_DIGEST_SQL, {"since_ms": int(since_ms)}).fetchone()
-        if row is None or row["window_to_ms"] is None:
+        marker = self.conn.execute(_DIGEST_ATTEMPTED_SQL, (TAPE_STATE_ID,)).fetchone()
+        attempted = 0 if marker is None else int(marker["digest_attempted_at_ms"] or 0)
+        written = None if row is None or row["window_to_ms"] is None else int(row["window_to_ms"])
+        if written is None and attempted <= 0:
             return None
         return LastDigest(
-            window_to_ms=int(row["window_to_ms"]),
-            model_calls_last_day=int(row["model_calls"] or 0),
+            window_to_ms=written or 0,
+            model_calls_last_day=0 if row is None else int(row["model_calls"] or 0),
+            attempted_at_ms=attempted,
         )
+
+    def chain_tape_mark_digest_attempt(self, *, now_ms: int) -> None:
+        """Bank the attempt before the model is called, so a refused write cannot loop on it.
+
+        Monotonic, and an upsert rather than an update: the tape writes its state row on every turn,
+        but a database seeded with fills alone has no row yet and the marker must still land.
+        """
+
+        self.conn.execute(_MARK_DIGEST_ATTEMPT_SQL, (TAPE_STATE_ID, int(now_ms), int(now_ms)))
 
     def chain_tape_digest_window(self, *, from_ms: int, to_ms: int) -> DigestWindowRows:
         """Everything one digest states, read in one checkout and computed by nothing but SQL."""
@@ -841,6 +872,12 @@ class ChainTapeStorage:
             )
             for row in self.conn.execute(_DIGEST_FLOWS_SQL, {**window, "limit": DIGEST_COSTS_MAX}).fetchall()
         )
+        card_rows = self.conn.execute(_DIGEST_CARDS_SQL, {**window, "limit": DIGEST_CARDS_MAX}).fetchall()
+        if chain_id <= 0 and card_rows:
+            # The fills a card was derived from can age out from under it -- they are on a 90-day
+            # retention the derived rows do not share -- so the card is the second place the chain the
+            # window's facts came from can be read.
+            chain_id = int(card_rows[0]["chain_id"] or 0)
         cards = tuple(
             DigestCardRow(
                 kind=str(row["kind"]),
@@ -854,7 +891,7 @@ class ChainTapeStorage:
                 tone=str(row["tone"] or ""),
                 sent=bool(row["sent"]),
             )
-            for row in self.conn.execute(_DIGEST_CARDS_SQL, {**window, "limit": DIGEST_CARDS_MAX}).fetchall()
+            for row in card_rows
         )
         outcomes = tuple(
             DigestOutcomeRow(
@@ -1056,7 +1093,6 @@ def _unit_price(usd: Any, amount_raw: Any, decimals: Any) -> Decimal | None:
 
 
 __all__ = [
-    "DIGEST_KIND",
     "TAPE_STATE_ID",
     "WALLET_CARDS_BY_KIND_SQL",
     "WALLET_CARDS_SQL",

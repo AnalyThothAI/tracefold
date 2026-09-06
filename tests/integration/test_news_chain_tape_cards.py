@@ -609,6 +609,7 @@ def test_a_due_window_becomes_a_digest_item_and_a_feishu_card(conn) -> None:
         (
             DigestLine(text="0xVantaa 买入 1 笔 $12,340.50，卖出 1 笔 $23,531.60", cites=("a1",)),
             DigestLine(text="窗口内活跃名单地址 1 个，代币 1 个", cites=("w0",)),
+            DigestLine(text="合计买入 1 笔 $12,340.50，卖出 1 笔 $23,531.60", cites=("w1",)),
         )
     )
     errors: list[str] = []
@@ -617,6 +618,7 @@ def test_a_due_window_becomes_a_digest_item_and_a_feishu_card(conn) -> None:
 
     assert errors == []
     assert (result.digests, result.model_called, result.model_used) == (1, True, True)
+    assert (result.lines_kept, result.lines_dropped) == (3, 0)
     assert program.calls == 1
     # The pack the model saw is deterministic text built from the rows above, and the three cost bases
     # #572 §5.3 names separately are all in it.
@@ -626,6 +628,7 @@ def test_a_due_window_becomes_a_digest_item_and_a_feishu_card(conn) -> None:
     # A digest names no wallet and no token: the schema admits the empty pair for this kind alone.
     assert (event["wallet"], event["token"]) == ("", "")
     assert event["evidence"]["model_used"] is True
+    assert (event["evidence"]["lines_kept"], event["evidence"]["lines_dropped"]) == (3, 0)
     assert len(event["evidence"]["pack_sha256"]) == 64
     assert [line["text"] for line in event["evidence"]["lines"]] == [line.text for line in program.lines]
     item = _rows(conn, "SELECT market_kind, market_notify_state FROM news_items")[0]
@@ -825,7 +828,13 @@ def test_a_digest_reads_back_through_the_wallets_console_read_model(conn) -> Non
             )
         ],
     )
-    program = _Digest((DigestLine(text="窗口内活跃名单地址 1 个，代币 1 个", cites=("w0",)),))
+    program = _Digest(
+        (
+            DigestLine(text="窗口内活跃名单地址 1 个，代币 1 个", cites=("w0",)),
+            DigestLine(text="合计买入 1 笔 $12,340.50", cites=("w1",)),
+            DigestLine(text="0xVantaa 买入 1 笔 $12,340.50", cites=("a1",)),
+        )
+    )
     asyncio.run(_digest_writer(db, clock, program, site=site).take_digest(roster=_roster(conn), errors=[]))
 
     repos = repositories_for_connection(conn)
@@ -834,7 +843,11 @@ def test_a_digest_reads_back_through_the_wallets_console_read_model(conn) -> Non
     roster = repos.news.chain_tape_roster_rows()
 
     assert [card["kind"] for card in cards] == ["digest"]
-    assert cards[0]["digest_lines"] == ["窗口内活跃名单地址 1 个，代币 1 个"]
+    assert cards[0]["digest_lines"] == [
+        "窗口内活跃名单地址 1 个，代币 1 个",
+        "合计买入 1 笔 $12,340.50",
+        "0xVantaa 买入 1 笔 $12,340.50",
+    ]
     assert cards[0]["digest_model_used"] is True
     assert [(row["kind"], row["fills"]) for row in fills] == [("buy", 1)]
     assert [row["handle"] for row in roster] == ["0xVantaa"]

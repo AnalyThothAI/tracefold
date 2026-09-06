@@ -29,9 +29,8 @@ from typing import Any, Final, Protocol
 
 from .. import card_format as fmt
 from ..artifact_identity import canonical_json, canonical_sha
-from ..wallet_contracts import DigestLine
+from ..wallet_contracts import DIGEST_LINES_MAX, DIGEST_LINES_MIN, DigestLine
 
-DIGEST_KIND: Final = "digest"
 # Every four hours, which is #572 §6.3's cadence: the roster traded in 16 of 20 hours the day the
 # window sizes were measured, so an hourly digest would mostly restate itself.
 DIGEST_INTERVAL_S_DEFAULT: Final = 14_400
@@ -51,17 +50,30 @@ DIGEST_CARDS_MAX: Final = 20
 # How many handles the provider is asked about for the moving-average cost. The other two cost bases
 # are computed from our own fills and cost nothing; this one is somebody else's small public server.
 DIGEST_BAGS_MAX: Final = 8
-DIGEST_LINES_MAX: Final = 8
 
 # What counts as "a figure" in a line a model wrote: anything that starts `0x` -- an address, a
-# transaction, or one of this provider's `0x`-prefixed handles -- or a number with its thousands
+# transaction, or one of this provider's `0x`-prefixed handles -- or a signed number with its thousands
 # separators and decimals attached. Anything matching this has to be present in a cited fact.
 #
 # The `0x` alternative comes first and swallows the whole token on purpose. Matching only hex would
 # leave `0xVantaa` contributing the single digit `0`, which is both a false figure and a trivially
 # satisfiable one; taking the identifier whole makes a misspelled handle as ungrounded as an invented
 # number, which is what it is.
-_FIGURE = re.compile(r"0x[0-9A-Za-z]{2,}|\d[\d,]*(?:\.\d+)?")
+#
+# The sign is part of the figure. Half the numbers in this pack are returns and cash positions that can
+# fall either side of zero, so `-5.12%` and `+5.12%` are two different statements about the same window
+# and a grammar that read them as one would let a sign flip through unchallenged.
+_FIGURE = re.compile(r"0x[0-9A-Za-z]{2,}|[-\u2212+]?\d[\d,]*(?:\.\d+)?")
+# `16:00-20:00` is a window, not a figure, and it is the one piece of text in the pack whose digits mean
+# nothing on their own. Left in, it would put `16`, `00` and `20` into the allowed set of every line
+# citing the window fact, and a fabricated `20 个地址` would ground against a clock. It is removed from
+# both sides -- the facts and the lines -- so a clock grounds nothing and is required to ground nothing.
+_CLOCK = re.compile(r"\d{1,2}:\d{2}")
+# Chinese numerals bypass the figure grammar entirely: `三个地址` states a count no fact can be checked
+# against. The instruction asks for Arabic digits, and a line that uses these anyway is not checkable, so
+# it is not kept. `兆` and the formal forms are deliberately absent -- these are the characters a model
+# writing ordinary Chinese would reach for.
+_CHINESE_NUMERALS = frozenset("零一二三四五六七八九十百千万亿两")
 
 _UNKNOWN: Final = "未知"
 
@@ -144,17 +156,29 @@ class DigestWindowRows:
     unpriced: int = 0
 
     def is_empty(self) -> bool:
-        """A window nobody traded in and no card was opened in. It gets no digest at all."""
+        """Nothing to be a digest about: no movement, no card, or no chain the facts came from.
 
-        return not self.activity and not self.cards
+        `chain_id` is the third condition rather than an assertion because the stored row requires one
+        (`chain_id > 0`), and a window whose fills have aged out from under a card that outlived them
+        would otherwise reach the write with a zero and take the turn down with it.
+        """
+
+        return self.chain_id <= 0 or (not self.activity and not self.cards)
 
 
 @dataclass(frozen=True, slots=True)
 class LastDigest:
-    """Where the previous digest ended, and how many model calls the last day has already spent."""
+    """Where the previous digest ended, when one was last attempted, and the day's spent model calls.
+
+    The two clocks answer two questions. `window_to_ms` is where the next window starts, and it moves
+    only when a digest was actually written. `attempted_at_ms` is when the tape last got as far as
+    trying, and it moves whether or not the write succeeded -- which is what bounds a refused write to
+    one attempt per interval instead of one per turn.
+    """
 
     window_to_ms: int
     model_calls_last_day: int
+    attempted_at_ms: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,13 +217,22 @@ class DigestPack:
 
 
 @dataclass(frozen=True, slots=True)
-class DigestResult:
-    """What one digest pass did, counted so a turn can report it on the tape's own state row."""
+class Grounding:
+    """What survived reconciliation, and what did not.
 
-    digests: int = 0
-    lines: int = 0
-    model_called: bool = False
-    model_used: bool = False
+    Both counts are recorded on the digest row whichever way the caller goes: "the model answered and
+    two of its eight lines invented a figure" is the only evidence that says whether the instruction is
+    working, and it is not recoverable from the card a reader received.
+    """
+
+    lines: tuple[DigestLine, ...]
+    kept: int
+    dropped: int
+
+    def accepted(self) -> bool:
+        """Whether enough of the answer survived to be a summary rather than a fragment of one."""
+
+        return self.kept >= DIGEST_LINES_MIN
 
 
 class DigestProgramPort(Protocol):
@@ -406,55 +439,87 @@ def window_hours(from_ms: int, to_ms: int) -> int:
 
 
 def template_lines(pack: DigestPack) -> tuple[DigestLine, ...]:
-    """The digest with no model in it: the pack's own leading facts, as its own sentences.
+    """The digest with no model in it: one fact from each section, as the pack's own sentences.
 
-    This is not a degraded mode to be recovered from. It is what the digest *is* -- every figure in
-    it was computed before any call was considered -- and the model's contribution is that the same
-    facts read as prose. `build_pack` puts the facts a reader needs first, so taking the first eight
-    is a summary rather than a truncation.
+    This is not a degraded mode to be recovered from. It is what the digest *is* -- every figure in it
+    was computed before any call was considered -- and the model's contribution is that the same facts
+    read as prose.
+
+    Which eight is a real decision, not a slice. The pack is ordered for a *model*, which reads all of
+    it, and the cards come first there because they are what a reader was already interrupted for. A
+    reader of the template has already had those cards, so a summary that spent all eight lines
+    restating them would never reach the two things only this card carries: the price receipts that came
+    back, and the three cost bases. One line per section first, then the details, and individual cards
+    only if there is room left over.
     """
 
-    return tuple(DigestLine(text=fact.text, cites=(fact.id,)) for fact in pack.facts[:DIGEST_LINES_MAX])
+    by_id = pack.by_id()
+    sections = (
+        ("w0", "w1", "k0"),
+        tuple(fact.id for fact in pack.facts if fact.id.startswith("o")),
+        ("n1",),
+        tuple(fact.id for fact in pack.facts if fact.id.startswith("c")),
+        tuple(fact.id for fact in pack.facts if fact.id.startswith("a")),
+        tuple(fact.id for fact in pack.facts if fact.id.startswith("k") and fact.id != "k0"),
+    )
+    chosen: list[str] = []
+    for section in sections:
+        for identity in section:
+            if identity in by_id and identity not in chosen and len(chosen) < DIGEST_LINES_MAX:
+                chosen.append(identity)
+    return tuple(DigestLine(text=by_id[identity].text, cites=(identity,)) for identity in chosen)
 
 
-def ground(pack: DigestPack, lines: Sequence[DigestLine]) -> tuple[DigestLine, ...] | None:
-    """The whole answer, or nothing. `None` means the caller renders the template instead.
+def ground(pack: DigestPack, lines: Sequence[DigestLine]) -> Grounding:
+    """Keep the lines that stand on their own citations; drop the ones that do not.
 
-    Two conditions, and both are about the pack rather than about style: every id a line cites has to
-    be a fact, and every figure a line states has to appear in one of the facts that line cited. A
-    single violation drops the *whole* digest rather than the offending line, because a reader cannot
-    tell which sentence of a card was checked -- and because a model that invented one number has
-    already shown what its other seven lines are worth.
+    Three conditions per line, all of them about the pack rather than about style: every id it cites has
+    to be a fact, every figure it states has to appear in one of the facts it cited, and it has to be
+    written in the digits the facts are written in.
+
+    It is per line rather than per answer, and that is a correctness decision as much as a product one.
+    An all-or-nothing rule discards eight good sentences because a ninth rounded a figure, so with any
+    per-line error rate at all the card a reader receives is the template almost every time -- which
+    makes the whole call dead weight. A line that grounds is exactly as true whatever the line beside it
+    did, so it is kept, and the answer is refused only when too little of it survives to be a summary.
+
+    The caller decides what "too little" means with `Grounding.accepted`; what this owns is the check.
     """
 
-    if not lines or len(lines) > DIGEST_LINES_MAX:
-        return None
     facts = pack.by_id()
-    grounded: list[DigestLine] = []
-    for line in lines:
+    kept: list[DigestLine] = []
+    dropped = 0
+    for line in tuple(lines)[:DIGEST_LINES_MAX]:
         text = line.text.strip()
-        if not text or not line.cites:
-            return None
         cited = [facts[cite] for cite in line.cites if cite in facts]
-        if len(cited) != len(line.cites):
-            return None
-        allowed = set().union(*(_figures(fact.text) for fact in cited)) if cited else set()
+        if not text or not line.cites or len(cited) != len(line.cites):
+            dropped += 1
+            continue
+        if _CHINESE_NUMERALS.intersection(text):
+            dropped += 1
+            continue
+        allowed: set[str] = set().union(*(_figures(fact.text) for fact in cited))
         if not _figures(text) <= allowed:
-            return None
-        grounded.append(DigestLine(text=text, cites=tuple(line.cites)))
-    return tuple(grounded)
+            dropped += 1
+            continue
+        kept.append(DigestLine(text=text, cites=tuple(line.cites)))
+    return Grounding(lines=tuple(kept), kept=len(kept), dropped=dropped + max(0, len(lines) - DIGEST_LINES_MAX))
 
 
 def _figures(text: str) -> set[str]:
-    """Every number and hex identity in one string, normalised so `$23,531.60` and `23531.6` agree."""
+    """Every number and hex identity in one string, normalised so `$23,531.60` and `23531.6` agree.
 
-    return {_normalized_figure(match.group(0)) for match in _FIGURE.finditer(text)}
+    Clock spans are removed first: they are a window, not a figure, and their digits would otherwise
+    ground a count that has nothing to do with them.
+    """
+
+    return {_normalized_figure(match.group(0)) for match in _FIGURE.finditer(_CLOCK.sub(" ", text))}
 
 
 def _normalized_figure(value: str) -> str:
     if value.lower().startswith("0x"):
         return value.lower()
-    digits = value.replace(",", "")
+    digits = value.replace(",", "").replace("\u2212", "-").removeprefix("+")
     if "." in digits:
         digits = digits.rstrip("0").rstrip(".")
     return digits or "0"
@@ -466,8 +531,8 @@ __all__ = [
     "DIGEST_CARDS_MAX",
     "DIGEST_COSTS_MAX",
     "DIGEST_INTERVAL_S_DEFAULT",
-    "DIGEST_KIND",
     "DIGEST_LINES_MAX",
+    "DIGEST_LINES_MIN",
     "DIGEST_MAX_CALLS_PER_DAY_DEFAULT",
     "DIGEST_WALLETS_MAX",
     "DIGEST_WINDOW_MAX_MS",
@@ -478,6 +543,7 @@ __all__ = [
     "DigestPack",
     "DigestProgramPort",
     "DigestWindowRows",
+    "Grounding",
     "LastDigest",
     "TokenWindowFlow",
     "WalletWindowActivity",

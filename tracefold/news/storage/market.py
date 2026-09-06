@@ -30,6 +30,7 @@ from ..market_contracts import MARKET_TIMELINE_MAX, MARKET_WINDOW_ROW_CAP
 from ..market_notifications import MARKET_TRACK_FIELDS, notification_status
 from ..oi_contracts import OI_METRIC_VERSION
 from ..source_contracts import MARKET_KINDS
+from ..wallet_contracts import DIGEST_KIND
 from .sql_values import _dumps
 
 
@@ -216,7 +217,7 @@ _OBSERVATIONS_SQL = f"""
            -- The digest's sentences, in the order they were written (#572 PR-3). They live in the
            -- observation's own evidence rather than in a column of their own: the row already carries
            -- the fact pack they were grounded against, and a card is the only thing that reads them.
-           CASE WHEN e.kind = 'digest' THEN (
+           CASE WHEN e.kind = '{DIGEST_KIND}' THEN (
                   SELECT jsonb_agg(line ->> 'text' ORDER BY ord)
                     FROM jsonb_array_elements(e.evidence -> 'lines') WITH ORDINALITY AS digest(line, ord)
                 ) END AS wallet_digest_lines,
@@ -261,7 +262,7 @@ _OBSERVATIONS_SQL = f"""
       LEFT JOIN news_market_wallet_events e ON e.item_id = i.item_id
       LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
       LEFT JOIN news_market_tracks t ON t.group_key = i.market_notify_group_key
-"""  # noqa: S608 -- the only interpolation is the code-owned `OI_METRIC_VERSION` literal
+"""  # noqa: S608 -- the only interpolations are the code-owned `OI_METRIC_VERSION` and `DIGEST_KIND`
 
 _OBSERVATION_KEYS: Final[tuple[str, ...]] = (
     "item_id",
