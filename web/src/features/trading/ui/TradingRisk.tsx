@@ -1,4 +1,5 @@
 import { Card } from "@shared/ui/Card";
+import { EmptyNote } from "@shared/ui/EmptyNote";
 import { Metric, MetricRow } from "@shared/ui/Metric";
 import type { ReactNode } from "react";
 
@@ -162,11 +163,11 @@ export function TradingRisk({
             ))}
           </div>
         ) : (
-          <p className="trading-empty-note">
+          <EmptyNote className="trading-empty-note">
             {!stale && execution.account_flat_proven
               ? "当前账户无仓位，且新鲜 Binance 私有对账已证明账户为空。"
               : "未见当前仓位；这本身不能证明账户为空。"}
-          </p>
+          </EmptyNote>
         )}
 
         {orders.length ? (

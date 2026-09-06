@@ -1,4 +1,0 @@
-[
-  "42[\"public_tw\",{\"channel\":\"twitter_monitor_token\",\"data\":[{\"i\":\"fixture-internal-002\",\"tw\":\"tweet\",\"ti\":\"990000000000000002\",\"cp\":0,\"ts\":\"1777729877000\",\"tt\":\"ca\",\"u\":{\"s\":\"fixture_signal\",\"n\":\"Fixture Signal\",\"f\":12345},\"c\":{\"t\":\"partial snapshot without final token text\"},\"t\":{\"a\":\"0x8f32420f2e3728c49399b00dd0a796602d984444\",\"c\":\"bsc\",\"s\":\"MIRROR\"}}]}]",
-  "42[\"public_tw\",{\"channel\":\"twitter_monitor_token\",\"data\":[{\"i\":\"fixture-internal-002\",\"tw\":\"tweet\",\"ti\":\"990000000000000002\",\"cp\":1,\"ts\":\"1777729877010\",\"tt\":\"ca\",\"u\":{\"s\":\"fixture_signal\",\"n\":\"Fixture Signal\",\"f\":12345},\"c\":{\"t\":\"complete snapshot with final token text\"},\"t\":{\"a\":\"0x8f32420f2e3728c49399b00dd0a796602d984444\",\"c\":\"bsc\",\"s\":\"MIRROR\",\"i\":\"https://example.test/token.png\"}}]}]"
-]

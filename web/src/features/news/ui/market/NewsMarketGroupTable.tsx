@@ -1,4 +1,5 @@
 import { ActionButton } from "@shared/ui/ActionButton";
+import { EmptyNote } from "@shared/ui/EmptyNote";
 import * as PageState from "@shared/ui/PageState";
 import { useState } from "react";
 
@@ -20,7 +21,6 @@ import {
   toggleMarketKind,
 } from "../../model/marketFacts";
 import { clockTime, displayTime, formatCount } from "../../model/newsLabels";
-import { NewsEmptyNote } from "../chrome/NewsChrome";
 
 import "./newsMarketGroupTable.css";
 
@@ -85,7 +85,7 @@ export function NewsMarketGroupTable({
       </div>
 
       {groups.length === 0 ? (
-        <NewsEmptyNote>这个窗口里没有符合当前筛选的市场观测。</NewsEmptyNote>
+        <EmptyNote>这个窗口里没有符合当前筛选的市场观测。</EmptyNote>
       ) : (
         <div className="news-market-rows">
           {groups.map((group) => (

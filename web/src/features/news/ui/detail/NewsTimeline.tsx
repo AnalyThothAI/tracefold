@@ -1,3 +1,4 @@
+import { EmptyNote } from "@shared/ui/EmptyNote";
 import { KeyValue, KeyValueRow } from "@shared/ui/KeyValue";
 import { ChevronRight } from "lucide-react";
 import { useState } from "react";
@@ -9,7 +10,6 @@ import {
   optionalDuration,
   timelineStageTone,
 } from "../../model/newsLabels";
-import { NewsEmptyNote } from "../chrome/NewsChrome";
 
 import "./newsTimeline.css";
 
@@ -22,7 +22,7 @@ import "./newsTimeline.css";
  * Node colour is the stage's tone and nothing else: grey happened, indigo decided, amber held back.
  */
 export function NewsTimeline({ steps }: { steps: NewsTimelineStep[] }) {
-  if (!steps.length) return <NewsEmptyNote>尚无处理记录。</NewsEmptyNote>;
+  if (!steps.length) return <EmptyNote>尚无处理记录。</EmptyNote>;
   return (
     <ol className="news-timeline">
       {steps.map((step, index) => (

@@ -1,6 +1,7 @@
+import { EmptyNote } from "@shared/ui/EmptyNote";
+
 import type { NewsQuote } from "../../api/newsQueries";
 import { quoteAgeLabel } from "../../model/newsPrice";
-import { NewsEmptyNote } from "../chrome/NewsChrome";
 import { NewsQuoteChange, NewsQuotePrice } from "../chrome/NewsQuoteValue";
 
 import "./newsQuoteTable.css";
@@ -13,7 +14,7 @@ import "./newsQuoteTable.css";
  * answer to this headline, which is the single wrong conclusion this whole plane exists to prevent.
  */
 export function NewsQuoteTable({ quotes }: { quotes: NewsQuote[] }) {
-  if (!quotes.length) return <NewsEmptyNote>这条事件没有可以定价的标的。</NewsEmptyNote>;
+  if (!quotes.length) return <EmptyNote>这条事件没有可以定价的标的。</EmptyNote>;
   // The oldest row in the table, because that is the only freshness the whole table can honour. A stale
   // quote stays on screen by design (#88), and a blanket "刚刚" would have been flatly wrong for it.
   const oldest = quotes.reduce((worst, quote) =>

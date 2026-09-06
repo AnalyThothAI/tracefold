@@ -2,7 +2,9 @@ import { CockpitWorkersCapabilities, useCockpitStatusQuery } from "@features/coc
 import { newsPath } from "@shared/routing/paths";
 import { Bar } from "@shared/ui/Bar";
 import { Card } from "@shared/ui/Card";
+import { EmptyNote } from "@shared/ui/EmptyNote";
 import { KeyValue, KeyValueRow } from "@shared/ui/KeyValue";
+import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
 import { Link } from "react-router-dom";
 
@@ -27,7 +29,7 @@ import {
   reasonStageLabel,
   reasonStageTone,
 } from "../../model/newsLabels";
-import { NewsEmptyNote, NewsPageHeader, NewsPageShell, NewsTechnical } from "../chrome/NewsChrome";
+import { NewsPageHeader, NewsTechnical } from "../chrome/NewsChrome";
 import { NewsOverallPill } from "../chrome/NewsHealthPill";
 import { NewsToneDot } from "../chrome/NewsTone";
 
@@ -49,7 +51,7 @@ export function NewsStatusPage({ token }: { token: string }) {
   const runtimeQuery = useCockpitStatusQuery({ token });
   const status = query.data;
   return (
-    <NewsPageShell archetype="scan" className="news-status-shell" label="新闻流水线状态">
+    <PageShell archetype="scan" className="news-status-shell" label="新闻流水线状态">
       <NewsPageHeader
         subtitle="四个环节的健康度、过去 24 小时的去向，以及当前控制状态。"
         title="流水线状态"
@@ -121,7 +123,7 @@ export function NewsStatusPage({ token }: { token: string }) {
           </div>
         </PageState.Stale>
       ) : null}
-    </NewsPageShell>
+    </PageShell>
   );
 }
 
@@ -291,7 +293,7 @@ function BiggestDrop({ status }: { status: NewsStatus }) {
 }
 
 function ReasonBars({ reasons }: { reasons: NewsReasonCount[] }) {
-  if (!reasons.length) return <NewsEmptyNote>过去 24 小时没有记录。</NewsEmptyNote>;
+  if (!reasons.length) return <EmptyNote>过去 24 小时没有记录。</EmptyNote>;
   const max = Math.max(1, ...reasons.map((reason) => reason.count));
   const groups = REASON_STAGE_ORDER.map((stage) => ({
     rows: reasons.filter((reason) => reason.stage === stage).slice(0, 6),

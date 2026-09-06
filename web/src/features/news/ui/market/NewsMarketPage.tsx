@@ -1,4 +1,6 @@
+import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
+import { SourceLine } from "@shared/ui/SourceLine";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
@@ -9,8 +11,7 @@ import {
 } from "../../api/newsQueries";
 import { mergeMarketGroups, nextMarketParams, parseMarketKinds } from "../../model/marketFacts";
 import { optionalTime } from "../../model/newsLabels";
-import { NewsPageHeader, NewsPageShell } from "../chrome/NewsChrome";
-import { NewsSourceLine } from "../chrome/NewsSourceLine";
+import { NewsPageHeader } from "../chrome/NewsChrome";
 
 import { NewsMarketGroupTable } from "./NewsMarketGroupTable";
 import { NewsMarketSources } from "./NewsMarketSources";
@@ -76,7 +77,7 @@ export function NewsMarketPage({ token }: { token: string }) {
   const hasMore = Boolean(moreRequested ? historyQuery.hasNextPage : anchorCursor);
 
   return (
-    <NewsPageShell archetype="scan" className="news-market-shell" label="市场事实">
+    <PageShell archetype="scan" className="news-market-shell" label="市场事实">
       <NewsPageHeader
         subtitle="OpenNews 的市场观测按事实入库：持仓异动、强平、聪明钱，以及没有解析器的原文来源。这一页只答「收到了什么、解析成什么、推没推」。"
         title="市场事实"
@@ -128,14 +129,14 @@ export function NewsMarketPage({ token }: { token: string }) {
               token={token}
             />
 
-            <NewsSourceLine
+            <SourceLine
               note="推送状态、解析状态与来源计数都来自这一次读取，没有第二个端点参与"
               path="GET /api/news/market → groups[] · sources[]"
             />
           </div>
         </PageState.Stale>
       ) : null}
-    </NewsPageShell>
+    </PageShell>
   );
 }
 

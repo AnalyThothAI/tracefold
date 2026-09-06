@@ -1,5 +1,8 @@
+import { EmptyNote } from "@shared/ui/EmptyNote";
 import { Metric, MetricRow } from "@shared/ui/Metric";
+import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
+import { SourceLine } from "@shared/ui/SourceLine";
 import { Link, useSearchParams } from "react-router-dom";
 
 import {
@@ -24,8 +27,7 @@ import {
   walletCardTitle,
   walletFillLabel,
 } from "../../model/walletFacts";
-import { NewsEmptyNote, NewsPageHeader, NewsPageShell } from "../chrome/NewsChrome";
-import { NewsSourceLine } from "../chrome/NewsSourceLine";
+import { NewsPageHeader } from "../chrome/NewsChrome";
 
 import "./newsWallets.css";
 
@@ -55,7 +57,7 @@ export function NewsWalletsPage({ token }: { token: string }) {
   const tape = walletsQuery.data;
 
   return (
-    <NewsPageShell archetype="scan" className="news-wallets-shell" label="链上钱包">
+    <PageShell archetype="scan" className="news-wallets-shell" label="链上钱包">
       <NewsPageHeader
         subtitle="Robinhood Chain 上被跟踪钱包的成交由链上日志推导：名单按原站的已实现盈亏与 profit factor 构建，退出卡与拥挤卡由规则决定，摘要每四小时一次。这一页只答「跟谁、读到哪、存了什么、发了什么、事后值多少」。"
         title="链上钱包"
@@ -91,9 +93,7 @@ export function NewsWalletsPage({ token }: { token: string }) {
                 </small>
               </div>
               {tape.roster.members.length === 0 ? (
-                <NewsEmptyNote>
-                  还没有名单版本：链上钱包任务未开启或第一次刷新尚未完成。
-                </NewsEmptyNote>
+                <EmptyNote>还没有名单版本：链上钱包任务未开启或第一次刷新尚未完成。</EmptyNote>
               ) : (
                 <RosterTable members={tape.roster.members} />
               )}
@@ -124,14 +124,14 @@ export function NewsWalletsPage({ token }: { token: string }) {
               <CardsPanel query={cardsQuery} />
             </section>
 
-            <NewsSourceLine
+            <SourceLine
               note="名单、tape 位置与两块计数来自同一次读取；卡片与 +1h/+4h 回执来自卡片读取，二者互不阻塞"
               path="GET /api/news/wallets → roster · tape · fills[] · cards[] ｜ GET /api/news/wallets/cards → cards[]"
             />
           </div>
         </PageState.Stale>
       ) : null}
-    </NewsPageShell>
+    </PageShell>
   );
 }
 
@@ -262,7 +262,7 @@ function CardsPanel({ query }: { query: ReturnType<typeof useNewsWalletCardsWith
     return <PageState.Loading label="正在读取钱包卡片" layout="panel" rows={6} />;
   }
   if (query.data.cards.length === 0) {
-    return <NewsEmptyNote>这个窗口里规则没有开出任何卡片。</NewsEmptyNote>;
+    return <EmptyNote>这个窗口里规则没有开出任何卡片。</EmptyNote>;
   }
   return (
     <div className="news-wallets-scroll">

@@ -1,6 +1,6 @@
 import { getApi } from "@lib/api/client";
 import type { components } from "@lib/types/openapi";
-import { queryKeys } from "@shared/query/queryKeys";
+import { newsFeedIdentity, queryKeys } from "@shared/query/queryKeys";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
 type NewsSchemas = components["schemas"];
@@ -144,22 +144,9 @@ export const NEWS_WALLET_CARDS_PAGE_SIZE = 100;
 const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: string | null) =>
   (
     await getApi<NewsFeed>("/api/news/feed", {
-      etagKey: `news-feed:${JSON.stringify([
-        filters.q,
-        filters.eventFamilies.join(","),
-        filters.changeStates.join(","),
-        filters.assertionStatuses.join(","),
-        filters.sourceAuthorities.join(","),
-        filters.subjectCodes.join(","),
-        filters.finalDecisions.join(","),
-        filters.eventKinds.join(","),
-        filters.admission,
-        filters.symbol,
-        filters.outcome,
-        filters.hours,
-        filters.directions.join(","),
-        cursor ?? "first",
-      ])}`,
+      // One page of one filter set. `newsFeedIdentity` is the same tuple the React Query key uses, so a
+      // filter added there cannot be forgotten here and serve a page its `If-None-Match` never matched.
+      etagKey: `news-feed:${JSON.stringify([...newsFeedIdentity(filters), cursor ?? "first"])}`,
       params: {
         admission: filters.admission,
         assertion_status: filters.assertionStatuses.join(",") || null,

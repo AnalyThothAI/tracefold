@@ -458,41 +458,11 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .trading-source-line {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 12px;
-    align-items: baseline;
-    margin: 0;
-    padding: 10px 14px;
-    border-top: 1px solid var(--border-subtle);
-    background: var(--surface-raised);
-    color: var(--text-subtle);
-    font-size: var(--font-size-mono-meta);
-    line-height: 1.55;
-  }
-
-  .trading-source-line code {
-    color: var(--text-secondary);
-    font: var(--type-mono-meta);
-    overflow-wrap: anywhere;
-  }
-
-  .trading-source-line-label {
-    font: var(--type-eyebrow);
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-  }
-
-  .trading-source-line-note {
-    flex: 1 1 220px;
-  }
-
+  /* The desk sets its own ledger note inside the card that frames it; the sentence itself is
+     `@shared/ui/EmptyNote` (#589 PR-5). */
   .trading-empty-note {
-    margin: 0;
     padding: 18px 14px;
     color: var(--text-subtle);
-    font-size: var(--font-size-meta);
   }
 
   .trading-case-detail {

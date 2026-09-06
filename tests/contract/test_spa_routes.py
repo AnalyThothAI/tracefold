@@ -20,6 +20,10 @@ def test_frontend_dist_serves_browser_routes_for_spa(tmp_path) -> None:
             client.get("/signal-lab"),
             client.get("/macro"),
             client.get("/watchlist?handle=toly"),
+            # #589 PR-5: the SPA never had an `app` route, so these two mounts served the console's own
+            # "404 Not Found" screen under a 200. They are gone; an unrouted path answers 404.
+            client.get("/app"),
+            client.get("/app/news"),
         ]
         news = client.get("/news")
         detail = client.get("/news/story/story_123")

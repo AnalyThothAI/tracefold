@@ -1,6 +1,6 @@
 @layer app.features {
   /* The same reading measure as 市场事实: two tables of figures, wide but not unbounded. */
-  .news-panel.news-wallets-shell {
+  .news-wallets-shell {
     max-width: 1240px;
   }
 

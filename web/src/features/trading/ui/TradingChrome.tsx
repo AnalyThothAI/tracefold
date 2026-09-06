@@ -1,46 +1,14 @@
-import type { ReactNode } from "react";
+import { EmptyNote } from "@shared/ui/EmptyNote";
 
 import { ledgerSentence } from "../model/tradingLabels";
 
-import "./tradingShell.css";
-
 /**
- * The Signal lane's frame and provenance line.
+ * The one sentence every ledger on the desk shows instead of rows (#537 PR-5).
  *
- * Owned here rather than imported from News: the two features are siblings that must not reach into each
- * other's internals, and a shared frame is exactly the kind of import the boundary gate blocks. The shapes
- * match the News shell on purpose — a reader should not have to learn a second console.
+ * The frame, the provenance line and the bare note are the console's own primitives now — `PageShell`,
+ * `SourceLine` and `EmptyNote` in `@shared/ui` (#589 PR-5). This is the only Trading-owned piece left here:
+ * it is not a shape, it is the desk's wording for a ledger that answered but had nothing to list.
  */
-export function TradingShell({ children, label }: { children: ReactNode; label: string }) {
-  return (
-    /*
-     * `data-page-archetype` is a structural hook the shell's own layout tests and the visual baselines read
-     * to know a route surface has mounted; it is not News styling, and dropping it made the workbench
-     * baseline wait for an element that never arrived.
-     */
-    <section aria-label={label} className="trading-shell" data-page-archetype="scan">
-      {children}
-    </section>
-  );
-}
-
-/** `GET /api/… → field`. A figure that cannot be written this way is one the browser derived (#207 §2). */
-export function TradingSourceLine({ note, path }: { note?: ReactNode; path: string }) {
-  return (
-    <p className="trading-source-line">
-      <span className="trading-source-line-label">读自</span>
-      <code>{path}</code>
-      {note ? <span className="trading-source-line-note">{note}</span> : null}
-    </p>
-  );
-}
-
-/** The sentence a table shows instead of rows. Never "加载失败" — an empty ledger is an answer. */
-export function TradingEmptyNote({ children }: { children: ReactNode }) {
-  return <p className="trading-empty-note">{children}</p>;
-}
-
-/** The one sentence every ledger on the desk shows instead of rows (#537 PR-5). */
 export function TradingLedgerNote(props: { failed: boolean; pending: boolean; subject: string }) {
-  return <p className="trading-empty-note">{ledgerSentence(props)}</p>;
+  return <EmptyNote className="trading-empty-note">{ledgerSentence(props)}</EmptyNote>;
 }

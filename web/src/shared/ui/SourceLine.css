@@ -1,9 +1,9 @@
-@layer app.features {
+@layer app.primitives {
   /*
-   * The provenance line every #207 panel closes with. Owned beside the component that imports it, and
-   * shared by the OI monitor and the token page — one line, one namespace, one place to change it.
+   * The provenance line every #207 panel closes with. One primitive since #589 PR-5: the Trading copy had
+   * drifted to a heavier code weight, and these are the News declarations, which are the console's.
    */
-  .news-source-line {
+  .source-line {
     display: flex;
     flex-wrap: wrap;
     gap: 6px 12px;
@@ -17,19 +17,19 @@
     line-height: 1.55;
   }
 
-  .news-source-line code {
+  .source-line code {
     color: var(--text-secondary);
     font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
     overflow-wrap: anywhere;
   }
 
-  .news-source-line-label {
-    font: 700 var(--font-size-eyebrow)/1 var(--font-mono);
+  .source-line-label {
+    font: var(--type-eyebrow);
     letter-spacing: 0.1em;
     text-transform: uppercase;
   }
 
-  .news-source-line-note {
+  .source-line-note {
     flex: 1 1 220px;
   }
 }

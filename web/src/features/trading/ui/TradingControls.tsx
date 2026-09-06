@@ -1,13 +1,14 @@
 import { ApiError } from "@lib/api/client";
 import { ActionButton } from "@shared/ui/ActionButton";
 import { Card } from "@shared/ui/Card";
+import { SourceLine } from "@shared/ui/SourceLine";
 import { useState } from "react";
 
 import type { TradingExecutionCommand } from "../api/tradingQueries";
 import { useIssueTradingCommandWithToken } from "../api/tradingQueries";
 import { COMMAND_ACTION_ZH, COMMAND_STAGE_ZH, nsClock } from "../model/tradingLabels";
 
-import { TradingLedgerNote, TradingSourceLine } from "./TradingChrome";
+import { TradingLedgerNote } from "./TradingChrome";
 
 type CommandAction = "pause" | "resume" | "flatten";
 type CommandEnvelope = {
@@ -153,7 +154,7 @@ export function TradingControls({
       ) : (
         <TradingLedgerNote failed={commandsFailed} pending={commandsPending} subject="Command" />
       )}
-      <TradingSourceLine path="POST /api/trading/execution/commands · GET /api/trading/executions → commands[].stage" />
+      <SourceLine path="POST /api/trading/execution/commands · GET /api/trading/executions → commands[].stage" />
     </Card>
   );
 }

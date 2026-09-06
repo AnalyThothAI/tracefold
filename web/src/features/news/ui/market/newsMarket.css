@@ -1,7 +1,7 @@
 @layer app.features {
   /* A reading surface, not the thirteen-track frame table it replaced: the rows wrap instead of scrolling
      sideways, so the page keeps the console's ordinary 1240px measure. */
-  .news-panel.news-market-shell {
+  .news-market-shell {
     max-width: 1240px;
   }
 

@@ -1,30 +1,10 @@
 @layer app.features {
   /*
-   * Chrome every News route wears: the measure the route sits in, its heading block, the folded technical
-   * disclosure and the one-line "nothing here" note. Surface-specific layout lives beside its own route
-   * (`ui/feed`, `ui/detail`, `ui/status`, `ui/oi`, `ui/symbol`).
+   * Chrome every News route wears: its heading block and the folded technical disclosure. The measure the
+   * route sits in is `@shared/ui/PageShell` and the "nothing here" note is `@shared/ui/EmptyNote` (#589
+   * PR-5). Surface-specific layout lives beside its own route (`ui/feed`, `ui/detail`, `ui/status`,
+   * `ui/market`, `ui/symbol`, `ui/wallets`).
    */
-  .news-panel {
-    display: grid;
-    align-content: start;
-    gap: 12px;
-    width: 100%;
-    max-width: 1340px;
-    margin: 0 auto;
-    padding: 16px 16px 48px;
-  }
-
-  /* One document, read left to right: a case is centred at a reading measure, not stretched to the frame. */
-  .news-panel[data-page-archetype="case"] {
-    max-width: 1000px;
-  }
-
-  /* Grid items default to `min-width: auto`, so a wide child (a metric row scrolling on a phone) would push
-     the whole panel past the viewport instead of scrolling inside itself. */
-  .news-panel > * {
-    min-width: 0;
-  }
-
   .news-page-header {
     display: flex;
     flex-wrap: wrap;
@@ -129,20 +109,7 @@
     font: var(--font-size-mono-meta)/1.5 var(--font-mono);
   }
 
-  /* One sentence where a section has nothing to show — never an empty grid or a row of dashes. */
-  .news-empty-note {
-    margin: 0;
-    color: var(--text-muted);
-    font-size: var(--font-size-meta);
-    line-height: 1.5;
-  }
-
   @media (max-width: 767px) {
-    .news-panel {
-      gap: 9px;
-      padding: 12px 12px calc(16px + env(safe-area-inset-bottom, 0px));
-    }
-
     /* The subtitle is context, not the reason the page was opened; dropping it lifts the first Event up. */
     .news-heading-copy p {
       display: none;

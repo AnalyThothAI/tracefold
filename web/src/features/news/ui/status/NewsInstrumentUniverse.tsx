@@ -1,8 +1,8 @@
+import { EmptyNote } from "@shared/ui/EmptyNote";
 import { Metric, MetricRow } from "@shared/ui/Metric";
 
 import type { NewsStatus } from "../../api/newsQueries";
 import { formatCount, optionalTime } from "../../model/newsLabels";
-import { NewsEmptyNote } from "../chrome/NewsChrome";
 
 import "./newsInstrumentUniverse.css";
 
@@ -22,7 +22,7 @@ import "./newsInstrumentUniverse.css";
 export function InstrumentUniverse({ status }: { status: NewsStatus }) {
   const universe = status.instruments;
   if (!universe || !universe.last_snapshot_ms) {
-    return <NewsEmptyNote>还没有快照落地，符号归一暂时只走别名种子。</NewsEmptyNote>;
+    return <EmptyNote>还没有快照落地，符号归一暂时只走别名种子。</EmptyNote>;
   }
   const byVenue = Object.entries(universe.by_venue ?? {});
   const byClass = Object.entries(universe.by_class ?? {});

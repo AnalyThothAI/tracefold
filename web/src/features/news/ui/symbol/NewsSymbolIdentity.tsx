@@ -1,8 +1,8 @@
 import { Card } from "@shared/ui/Card";
+import { SourceLine } from "@shared/ui/SourceLine";
 
 import type { NewsQuote, NewsSymbol } from "../../api/newsQueries";
 import { NewsQuotePrice } from "../chrome/NewsQuoteValue";
-import { NewsSourceLine } from "../chrome/NewsSourceLine";
 
 /**
  * What this name *is*, before anything about what happened to it.
@@ -117,7 +117,7 @@ export function NewsSymbolIdentity({
         </div>
       ) : null}
 
-      <NewsSourceLine
+      <SourceLine
         note="报价与合约是两个来源：合约来自标的表快照，报价来自 /api/news/quotes，陈旧就说陈旧，永不显示 0。"
         path="GET /api/news/symbols/{base} → contracts · tradeable · normalization ＋ GET /api/news/feed?symbol={base} → counts.total · counts.pushed ＋ GET /api/news/status → oi.window_occupancy"
       />

@@ -20,10 +20,7 @@ describe("feature boundaries", () => {
         const text = readFileSync(path, "utf8");
         const matches = [
           ...text.matchAll(
-            new RegExp(
-              `(?:\\.\\./)+${featureNamePattern}/(?:api|model|state|ui|tokenSearchRoute)(?:/|["'])`,
-              "g",
-            ),
+            new RegExp(`(?:\\.\\./)+${featureNamePattern}/(?:api|model|state|ui)(?:/|["'])`, "g"),
           ),
         ];
         return matches.map((match) => `${relativePath}: ${match[0]}`);

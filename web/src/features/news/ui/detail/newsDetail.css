@@ -4,7 +4,7 @@
    * the `case` archetype's 1000px; the panel stacks rather than filling a height, so a short Event does not
    * stretch its cards to the viewport.
    */
-  .news-panel.news-detail-shell {
+  .news-detail-shell {
     grid-template-rows: none;
     grid-auto-rows: max-content;
   }
