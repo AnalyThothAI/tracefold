@@ -535,9 +535,29 @@ def test_a_headline_wider_than_the_card_is_clipped_rather_than_dropped() -> None
     headline = next(line for line in lines if line.startswith("· "))
 
     assert headline == f"· {'特' * (NEWS_HEADLINE_MAX - 1)}… 03:18"
-    # A row that carries no title at all is dropped rather than printed as a bare timestamp.
-    empty = _body(_recorded_card(_OI_ENTRY_ID, news_pushed=(ReaderCardHeadline(at_ms=1),), news_total=2))
-    assert "相关新闻 48h · 已推 1 · 共 2" in empty and not any(line.startswith("· ") for line in empty.split("\n"))
+
+
+def test_the_count_is_the_headlines_the_card_actually_printed() -> None:
+    """`已推 n` and the lines under it are one list, so a titleless row cannot inflate the number.
+
+    The row is dropped where the read is composed rather than where it is rendered, so this goes
+    through `reader_news` -- the path the loop uses -- instead of handing the card model a value the
+    read can no longer produce.
+    """
+
+    pushed, total = reader_news(
+        {
+            "pushed": [
+                {"event_id": "e1", "headline_zh": "有标题的一条", "at_ms": 1_788_549_480_000},
+                {"event_id": "e2", "headline_zh": "   ", "at_ms": 1_788_549_480_000},
+            ],
+            "total": 2,
+        }
+    )
+    lines = _body(_recorded_card(_OI_ENTRY_ID, news_pushed=pushed, news_total=total)).split("\n")
+
+    assert "相关新闻 48h · 已推 1 · 共 2" in lines
+    assert [line for line in lines if line.startswith("· ")] == ["· 有标题的一条 03:18"]
 
 
 def test_the_news_lines_cost_at_most_four_lines_and_the_bytes_they_claim() -> None:

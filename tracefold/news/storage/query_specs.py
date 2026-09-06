@@ -379,7 +379,12 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="news_market_news_pushed",
             sql=MARKET_NEWS_PUSHED_SQL,
-            params=("BTC", int(now_ms) - MARKET_NEWS_WINDOW_MS, MARKET_NEWS_PUSHED_MAX),
+            params=(
+                "BTC",
+                int(now_ms) - MARKET_NEWS_WINDOW_MS,
+                int(now_ms) - MARKET_NEWS_WINDOW_MS,
+                MARKET_NEWS_PUSHED_MAX,
+            ),
             max_read_return_amplification=100.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),

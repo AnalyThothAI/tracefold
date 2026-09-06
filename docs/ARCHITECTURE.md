@@ -3007,17 +3007,23 @@ An OI card also says what News the reader already has about the same instrument
 `MarketNotificationDatabasePort.pushed_news_for_symbol` is the port, the Workers
 wiring satisfies it with `read_pushed_news` — the same News lane, the same
 `QUOTE_READ_TIMEOUT_SECONDS` budget, the same "any failure is no line"
-degradation — and both reads run concurrently under one `asyncio.wait_for`,
-because "no card waits longer than this before being sent" is one promise rather
-than one per read. The statements are `storage/decisions.py`'s, beside the
+degradation — and both reads run concurrently under one deadline, because "no
+card waits longer than this before being sent" is one promise rather than one per
+read. One clock, two answers: `asyncio.wait` keeps whichever read finished and
+cancels only the one still running, so a News plane that hangs costs the news
+lines and leaves the price that arrived on the card. The statements are
+`storage/decisions.py`'s, beside the
 reader-history projection they reuse: the delivered-card ledger with the same
 `first` / `sent` / not-deleted predicate and the same headline COALESCE, and the
 same `news_symbol_aliases` equivalence the targeted reader-history band resolves
 an asset with, so a story tagged `9988` counts for a `BABA` card. Two windows
 because there are two questions: `已推` counts by when the reader was interrupted
-(`news_deliveries.settled_at_ms` inside 48 h, at most three titles, newest first)
-and `共` counts how many editorial Events named the instrument at all
-(`news_event_assets.opened_at_ms` inside the same window, told or not). The card
+(at most three titles, newest first) and `共` counts how many editorial Events
+named the instrument at all, told or not. Both carry the Event window
+(`opened_at_ms` inside 48 h) and only the pushed half adds
+`news_deliveries.settled_at_ms`, so what is quoted is always a subset of what is
+counted: a card pushed 10 h ago for an Event opened 50 h ago would otherwise read
+`已推 1 · 共 0`, and a zero total prints nothing at all. The card
 prints nothing when the total is zero, which is the ordinary answer for a token
 nothing was written about, and the whole block is at most four lines with no link
 and no button. Liquidation and smart money spend no read at all: `family == "oi"`

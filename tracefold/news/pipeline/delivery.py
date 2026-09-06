@@ -89,6 +89,10 @@ async def read_pushed_news(db: NewsDatabasePort, symbol: str, *, now_ms: int, na
 
     What "already told" and "48 h" mean is not restated here: the two statements in
     `storage/decisions.py` own the window, the delivered-card predicate and the alias resolution.
+
+    One thing is enforced rather than assumed: an entry the read could not put a title on never
+    reaches the card. The card prints one line per pushed entry and counts what it printed, so a
+    titleless row would be either a line saying only a time or a count with nothing under it.
     """
 
     requested = str(symbol or "").strip()
@@ -102,7 +106,17 @@ async def read_pushed_news(db: NewsDatabasePort, symbol: str, *, now_ms: int, na
         )
     except Exception:  # display-only; all failures degrade to no line
         return {"pushed": [], "total": 0}
-    return dict(answer) if isinstance(answer, Mapping) else {"pushed": [], "total": 0}
+    if not isinstance(answer, Mapping):
+        return {"pushed": [], "total": 0}
+    rows = answer.get("pushed")
+    return {
+        "pushed": [
+            dict(row)
+            for row in (rows if isinstance(rows, Sequence) and not isinstance(rows, str | bytes) else ())
+            if isinstance(row, Mapping) and str(row.get("headline_zh") or "").strip()
+        ],
+        "total": answer.get("total", 0),
+    }
 
 
 DeliveryCandleFetcher = Callable[[str, int, int], Awaitable[Sequence[Candle]]]

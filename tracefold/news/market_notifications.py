@@ -1382,52 +1382,62 @@ class MarketNotificationLoop:
 
         One deadline over both reads rather than one each: `QUOTE_READ_TIMEOUT_SECONDS` is the loop's
         promise that *no card waits longer than this before being sent*, and two serial budgets would
-        quietly make that promise twice as long. They run concurrently under a single `wait_for`, each
-        already degrading to nothing on its own failure, so one plane being down costs its own line
-        and only the shared clock is shared.
+        quietly make that promise twice as long. One clock, but two answers: `asyncio.wait` keeps the
+        result of whichever read finished and cancels only the one still running, so a News plane that
+        hangs costs the news lines and leaves the price that did arrive on the card. Sharing the
+        deadline is not a reason to share the degradation.
 
         The deadline is applied *here* rather than trusted to the ports. The composition site passes
         the same budget to its own reads, but a port that honoured no budget at all would otherwise
         stall the send lane for as long as it liked.
         """
 
-        symbols = () if due.frozen_card is not None else quote_symbols(due.track, due.observations)
-        if not symbols:
+        if due.frozen_card is not None:
             return (), (), 0
-        try:
-            quotes, news = await asyncio.wait_for(
-                asyncio.gather(
-                    self._quotes(symbols, now_ms),
-                    self._news(due.track, symbols[0], now_ms),
-                ),
-                timeout=QUOTE_READ_TIMEOUT_SECONDS,
-            )
-        except Exception:  # the shared deadline, or a port that failed before its own guard
-            return (), (), 0
-        return (quotes, *news)
+        quoting = asyncio.ensure_future(self._quotes(due, now_ms))
+        reading = asyncio.ensure_future(self._news(due, now_ms))
+        _finished, unfinished = await asyncio.wait({quoting, reading}, timeout=QUOTE_READ_TIMEOUT_SECONDS)
+        for task in unfinished:
+            task.cancel()
+        if unfinished:
+            # Awaited rather than abandoned: a cancelled read must be finished with before the claim
+            # transaction opens, or its connection is still in flight when the card is frozen.
+            await asyncio.gather(*unfinished, return_exceptions=True)
+        news_pushed, news_total = _display_answer(reading, ((), 0))
+        return _display_answer(quoting, ()), news_pushed, news_total
 
-    async def _quotes(self, symbols: Sequence[str], now_ms: int) -> tuple[ReaderCardQuote, ...]:
+    async def _quotes(self, due: DueCard, now_ms: int) -> tuple[ReaderCardQuote, ...]:
         """The card's assets at the market's own price, or nothing at all."""
 
+        symbols = quote_symbols(due.track, due.observations)
+        if not symbols:
+            return ()
         try:
             rows = await self.db.quotes_for_symbols(symbols, now_ms=now_ms)
         except Exception:  # display-only, exactly as News treats it: every failure is no line
             return ()
         return reader_quotes(rows)
 
-    async def _news(self, track: MarketTrack, symbol: str, now_ms: int) -> tuple[tuple[ReaderCardHeadline, ...], int]:
+    async def _news(self, due: DueCard, now_ms: int) -> tuple[tuple[ReaderCardHeadline, ...], int]:
         """What News has already said about this instrument, for an OI card and no other.
 
         OI is the family whose whole subject is a number about an instrument, and the reader's first
         question about a number is whether anything happened. A liquidation or a smart-money card is
         already about an event, and #582 §3.3 leaves them out deliberately rather than by omission --
         adding one is this condition, and nothing else. A family that does not read spends no read.
+
+        The instrument is `quote_symbols`', because "the one normalized asset this card is about" is
+        one question with one answer -- a card the quote read cannot name is one the News read cannot
+        name either. What gates the read is the family, though, never the quote: they are two reads.
         """
 
-        if track.family != "oi":
+        if due.track.family != "oi":
+            return (), 0
+        symbols = quote_symbols(due.track, due.observations)
+        if not symbols:
             return (), 0
         try:
-            payload = await self.db.pushed_news_for_symbol(symbol, now_ms=now_ms)
+            payload = await self.db.pushed_news_for_symbol(symbols[0], now_ms=now_ms)
         except Exception:  # display-only: a News plane that cannot answer costs the line, not the card
             return (), 0
         return reader_news(payload)
@@ -1588,6 +1598,14 @@ def _due_card(loop: MarketNotificationLoop, now_ms: int) -> Callable[[Any], DueC
         return loop._due(repos, now_ms)
 
     return run
+
+
+def _display_answer[T](task: asyncio.Future[T], absent: T) -> T:
+    """One display read's own answer, or the absent one when it was cut off by the shared deadline."""
+
+    if task.cancelled() or task.exception() is not None:
+        return absent
+    return task.result()
 
 
 def _claim_due(

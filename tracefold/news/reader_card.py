@@ -443,6 +443,10 @@ class ReaderCard:
         The headlines are the cards the reader actually received, newest first, each clipped to
         `NEWS_HEADLINE_MAX` with the time they were pushed. No link and no button: this line is
         context on a card about an instrument, and a reader who wants the story opens the console.
+
+        `已推` is `len(news_pushed)` because every entry becomes a line: a row the read could not put
+        a title on is dropped where the read is composed (`reader_news`, `read_pushed_news`), not
+        here, so the number and the lines under it cannot disagree.
         """
 
         market = self.market
@@ -454,7 +458,6 @@ class ReaderCard:
             *(
                 f"{_NEWS_HEADLINE_MARK}{fmt.clip(item.headline, NEWS_HEADLINE_MAX)} {fmt.clock(item.at_ms)}"
                 for item in market.news_pushed
-                if item.headline
             ),
         ]
 

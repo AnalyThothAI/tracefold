@@ -151,11 +151,15 @@ _EQUIVALENT_SYMBOLS_CTE = """
       SELECT a.alias FROM news_symbol_aliases a JOIN current_bases b ON b.base = a.base_symbol
     )
 """
-# The titles, newest first, bounded by the window and by `LIMIT`. `settled_at_ms` is the window
-# because "已推" is about when the reader was interrupted, not about when the story opened, and
-# `ix_news_deliveries_sent` is the index that answers it.
+# The titles, newest first, bounded by the window and by `LIMIT`. Two window predicates because the
+# card prints two numbers about one set: `settled_at_ms` is what "已推" means -- when the reader was
+# actually interrupted, answered by `ix_news_deliveries_sent` -- and `opened_at_ms` is the same bound
+# the total below counts with, so what is quoted is always a subset of what is counted. Without the
+# second one a card pushed 10 h ago for an Event opened 50 h ago read `已推 1 · 共 0`, and a `共 0`
+# card prints nothing at all: the headline was silently dropped rather than shown.
 MARKET_NEWS_PUSHED_SQL = f"""{_EQUIVALENT_SYMBOLS_CTE}{_READER_HISTORY_PROJECTION}
      WHERE {EDITORIAL_EVENT_SQL}
+       AND e.opened_at_ms >= %s
        AND d.settled_at_ms >= %s
        AND EXISTS (
          SELECT 1 FROM news_event_assets candidate_asset
@@ -359,9 +363,13 @@ class DecisionStorage:
 
         Two statements because they answer two questions with two windows. `pushed` is what the reader
         was actually interrupted with, bounded by when the card settled and by `MARKET_NEWS_PUSHED_MAX`;
-        `total` is how many editorial Events named this instrument, bounded by when they opened. A card
-        printing only the first would say nothing about the stories nobody was told, which is the half
-        an operator reading an OI number most wants.
+        `total` is how many editorial Events named this instrument, bounded by when they opened. Both
+        carry the Event window, so `pushed` is always a subset of `total` and the card's two numbers
+        describe one set; only the pushed half additionally asks when the reader was interrupted.
+
+        A row whose card and verdict both left the title empty is dropped rather than returned: the
+        card prints one line per entry and counts what it printed, so an untitled row would be a line
+        that says only a time, or a count that does not match the lines under it.
 
         Display only, and it may not raise into a send: an empty symbol is answered here rather than
         with a read, and everything else the loop degrades to no line.
@@ -371,16 +379,19 @@ class DecisionStorage:
         if not requested:
             return {"pushed": [], "total": 0}
         cutoff_ms = int(now_ms) - MARKET_NEWS_WINDOW_MS
-        pushed = self.conn.execute(MARKET_NEWS_PUSHED_SQL, (requested, cutoff_ms, MARKET_NEWS_PUSHED_MAX)).fetchall()
+        pushed = self.conn.execute(
+            MARKET_NEWS_PUSHED_SQL, (requested, cutoff_ms, cutoff_ms, MARKET_NEWS_PUSHED_MAX)
+        ).fetchall()
         counted = self.conn.execute(MARKET_NEWS_TOTAL_SQL, (requested, cutoff_ms)).fetchone()
         return {
             "pushed": [
                 {
                     "event_id": str(row["event_id"]),
-                    "headline_zh": str(row["headline_zh"] or ""),
+                    "headline_zh": headline,
                     "at_ms": int(row["at_ms"] or 0),
                 }
                 for row in pushed
+                if (headline := str(row["headline_zh"] or "").strip())
             ],
             "total": int(counted["total"] or 0) if counted is not None else 0,
         }

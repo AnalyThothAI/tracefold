@@ -1744,6 +1744,7 @@ def test_a_news_read_that_overruns_its_budget_leaves_the_card_newsless_and_on_ti
         settled_at_ms=NOW - 3_600_000 + 30_000,
         delivered_title="WIF 国库向交易所转入大额代币",
     )
+    _quotable(conn)
     _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
     db = _Db(conn)
     db.slow_reads = {"news_market_news"}
@@ -1760,15 +1761,14 @@ def test_a_news_read_that_overruns_its_budget_leaves_the_card_newsless_and_on_ti
     assert _deliveries(conn)[0]["attempts"] == 1
 
 
-def test_a_news_port_that_honours_no_budget_of_its_own_is_still_cut_off_by_the_loop(conn: Any) -> None:
-    """One deadline covers both display reads, so an overrun costs both lines and no time (#582 §3.3).
+def test_a_news_port_that_hangs_costs_its_own_lines_and_leaves_the_quote_on_the_card(conn: Any) -> None:
+    """One clock over both display reads, but two answers (#582 §3.3).
 
-    That is the whole point of the shared `wait_for`: `QUOTE_READ_TIMEOUT_SECONDS` is the loop's
-    promise that no card waits longer than this before being sent, and two serial budgets would
-    quietly make that promise twice as long. The port here applies no budget of its own -- a plausible
-    future composition -- so the loop's own deadline is the only thing cutting it, and it cuts the
-    quote beside it too. That is the accepted cost of one shared clock, and it is asserted rather
-    than left to be discovered: the card goes out, on time, carrying neither line.
+    `QUOTE_READ_TIMEOUT_SECONDS` is the loop's promise that no card waits longer than this before
+    being sent, and two serial budgets would quietly make that promise twice as long -- so the two
+    reads share one deadline. They do not share their degradation: the port here applies no budget of
+    its own and hangs far past the deadline, and the price that did arrive is still on the card. Only
+    the read that was still running is cancelled.
     """
 
     _news_event(
@@ -1792,7 +1792,38 @@ def test_a_news_port_that_honours_no_budget_of_its_own_is_still_cut_off_by_the_l
 
     assert elapsed < QUOTE_READ_TIMEOUT_SECONDS + 1.0
     body = _card_body(conn)
-    assert "相关新闻" not in body and "行情" not in body
+    assert "相关新闻" not in body
+    assert "行情 WIF $0.5432 24h +7.91%" in body
+    assert len(sender.cards) == 1
+    assert _deliveries(conn)[0]["attempts"] == 1
+
+
+def test_a_quote_port_that_hangs_costs_its_own_line_and_leaves_the_news_on_the_card(conn: Any) -> None:
+    """The same claim from the other side: neither read can take the other's line down with it."""
+
+    _news_event(
+        conn,
+        hit_id=582_045,
+        symbol="WIF",
+        text="Dogwifhat treasury moves a large tranche to an exchange",
+        opened_at_ms=NOW - 3_600_000,
+        settled_at_ms=NOW - 3_600_000 + 30_000,
+        delivered_title="WIF 国库向交易所转入大额代币",
+    )
+    _quotable(conn)
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+    db = _Db(conn)
+    db.quote_port_seconds = 30.0
+    sender = _Sender()
+
+    started = time.monotonic()
+    asyncio.run(_loop(db, sender, clock=_Clock()).advance())
+    elapsed = time.monotonic() - started
+
+    assert elapsed < QUOTE_READ_TIMEOUT_SECONDS + 1.0
+    body = _card_body(conn)
+    assert "行情" not in body
+    assert "相关新闻 48h · 已推 1 · 共 1" in body
     assert len(sender.cards) == 1
     assert _deliveries(conn)[0]["attempts"] == 1
 
@@ -2042,3 +2073,53 @@ def test_a_delivered_card_without_a_frozen_title_falls_back_to_the_verdict_headl
     answer = repositories_for_connection(conn).news.pushed_news_for_symbol("WIF", now_ms=NOW)
 
     assert [row["headline_zh"] for row in answer["pushed"]] == ["判定给出的标题"]
+
+
+def test_a_card_pushed_inside_the_window_for_an_older_event_is_neither_quoted_nor_counted(conn: Any) -> None:
+    """The two windows are one window (#582, Issue-owner decision after review).
+
+    `已推` bounds by when the reader was interrupted and `共` by when the Event opened, so an Event
+    that opened 50 h ago and was pushed 10 h ago used to be quoted by the first and missed by the
+    second: `{pushed: 1, total: 0}`, and a total of zero prints nothing at all -- the headline was
+    silently dropped rather than shown. Both statements now carry the Event window, so `pushed` is a
+    subset of `total` and the card either shows a story or does not have one.
+    """
+
+    _news_event(
+        conn,
+        hit_id=582_500,
+        symbol="WIF",
+        text="Dogwifhat treasury moved a large tranche to an exchange two days ago",
+        opened_at_ms=NOW - 50 * 3_600_000,
+        settled_at_ms=NOW - 10 * 3_600_000,
+        delivered_title="窗口之外开的 Event",
+    )
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+    asyncio.run(_loop(_Db(conn), _Sender(), clock=_Clock()).advance())
+
+    assert repositories_for_connection(conn).news.pushed_news_for_symbol("WIF", now_ms=NOW) == {
+        "pushed": [],
+        "total": 0,
+    }
+    assert "相关新闻" not in _card_body(conn)
+    assert "窗口之外开的 Event" not in _card_body(conn)
+
+
+def test_a_card_pushed_inside_the_window_for_an_event_inside_it_is_quoted_and_counted(conn: Any) -> None:
+    """The other half of the same boundary: 40 h opened, 10 h pushed, both numbers see it."""
+
+    _news_event(
+        conn,
+        hit_id=582_501,
+        symbol="WIF",
+        text="A major venue listed a perpetual contract on dogwifhat yesterday",
+        opened_at_ms=NOW - 40 * 3_600_000,
+        settled_at_ms=NOW - 10 * 3_600_000,
+        delivered_title="窗口之内开的 Event",
+    )
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+    asyncio.run(_loop(_Db(conn), _Sender(), clock=_Clock()).advance())
+
+    body = _card_body(conn)
+    assert "相关新闻 48h · 已推 1 · 共 1" in body
+    assert "· 窗口之内开的 Event " + fmt.clock(NOW - 10 * 3_600_000) in body
