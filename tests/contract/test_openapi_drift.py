@@ -441,6 +441,22 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
     verdict = schema["components"]["schemas"]["NewsVerdictData"]["properties"]
     assert {"judgment_contract_version", "judgment_origin", "judgment_sha256", "model_editorial"} <= set(verdict)
     assert {"editorial", "trace", "prompt_version", "model_decision"}.isdisjoint(verdict)
+    # The published judgment is exactly the ten dimensions `TriageVerdict` declares, and the model's
+    # editorial is exactly the two it may add. Both sets are `==`, not `<=`: a field arriving here is
+    # a contract change whether or not anyone remembered to name it.
+    assert set(schema["components"]["schemas"]["NewsPresentationVerdictData"]["properties"]) == {
+        "novelty",
+        "restates",
+        "assets",
+        "direction",
+        "scope",
+        "magnitude",
+        "confidence",
+        "audience",
+        "headline_zh",
+        "why_zh",
+    }
+    assert set(schema["components"]["schemas"]["NewsModelEditorialData"]["properties"]) == {"taxonomy", "relevance"}
     assert {
         "judgment_contract_version",
         "judgment_origin",
@@ -461,6 +477,37 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
     )
     review = schema["components"]["schemas"]["NewsAcceptedReviewData"]["properties"]
     assert {"payload", "dimensions", "novelty"}.isdisjoint(review)
+
+
+# The version families #369/#398 retired. `tests/architecture/test_news_current_contract_hard_cut.py`
+# banned these across five trees — `tracefold/`, `web/src`, `web/tests`, `docs/generated` and `tests/`
+# — with an allowlist of historical files and no removal condition, so every migration, fixture and
+# doc that legitimately mentions a retired name had to be re-declared there. The risk that outlives
+# the cut is narrower and is the one below: a retired identity re-entering the *published* contract.
+# Everything else is proved positively by the exact `==` property sets in the tests above.
+_RETIRED_NEWS_IDENTITIES = frozenset(
+    {f"news_semantic_program_v{version}" for version in range(1, 8)}
+    | {f"news_program_v{version}" for version in range(1, 8)}
+    | {f"news_triage_policy_v{version}" for version in range(1, 11)}
+    | {f"news_delivery_card_v{version}" for version in range(1, 11)}
+    | {f"news_review_v{version}" for version in range(1, 6)}
+    | {
+        "news_liquidation_fact_v1",
+        "news_liquidation_policy_v1",
+        "news_oi_signal_v1",
+        "news_reader_history_v1",
+        "news_reader_history_v2",
+        "told_context_selector_v1",
+        "told_context_selector_v2",
+        "told_context_selector_v3",
+    }
+)
+
+
+@pytest.mark.contract
+def test_published_contract_names_no_retired_news_identity() -> None:
+    openapi_text = OPENAPI_PATH.read_text(encoding="utf-8")
+    assert sorted(token for token in _RETIRED_NEWS_IDENTITIES if token in openapi_text) == []
 
 
 @pytest.mark.contract

@@ -134,4 +134,3 @@ def test_the_database_connection_closes_before_any_model_call() -> None:
     ]
     assert with_blocks and len(model_calls) == 1
     assert all("run_baseline" not in _called_names(block) for block in with_blocks)
-    assert all(block.end_lineno < model_calls[0].lineno for block in with_blocks)

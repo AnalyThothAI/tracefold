@@ -167,76 +167,16 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260901_0341",
         BASELINE,
     ]
-    assert revisions[0].down_revision == "20260906_0372"
-    assert revisions[1].down_revision == "20260906_0371"
-    assert revisions[2].down_revision == "20260906_0370"
-    assert revisions[3].down_revision == "20260906_0369"
-    assert revisions[4].down_revision == "20260906_0368"
-    assert revisions[5].down_revision == "20260905_0367"
-    assert revisions[6].down_revision == "20260905_0366"
-    assert revisions[7].down_revision == "20260905_0365"
-    assert revisions[8].down_revision == "20260905_0364"
-    assert revisions[9].down_revision == "20260904_0363"
-    assert revisions[10].down_revision == "20260904_0362"
-    assert revisions[11].down_revision == "20260904_0361"
-    assert revisions[12].down_revision == "20260904_0360"
-    assert revisions[13].down_revision == "20260903_0359"
-    assert revisions[14].down_revision == "20260903_0358"
-    assert revisions[15].down_revision == "20260903_0357"
-    assert revisions[16].down_revision == "20260903_0356"
-    assert revisions[17].down_revision == "20260903_0355"
-    assert revisions[18].down_revision == "20260903_0354"
-    assert revisions[19].down_revision == "20260903_0353"
-    assert revisions[20].down_revision == "20260903_0352"
-    assert revisions[21].down_revision == "20260902_0351"
-    assert revisions[22].down_revision == "20260902_0350"
-    assert revisions[23].down_revision == "20260902_0349"
-    assert revisions[24].down_revision == "20260902_0348"
-    assert revisions[25].down_revision == "20260901_0347"
-    assert revisions[26].down_revision == "20260901_0346"
-    assert revisions[27].down_revision == "20260901_0345"
-    assert revisions[28].down_revision == "20260901_0344"
-    assert revisions[29].down_revision == "20260901_0343"
-    assert revisions[30].down_revision == "20260901_0342"
-    assert revisions[31].down_revision == "20260901_0341"
-    assert revisions[32].down_revision == BASELINE
-    assert revisions[33].down_revision is None
-    assert sorted(path.name for path in VERSIONS.glob("*.py")) == [
-        "20260831_0340_baseline.py",
-        "20260901_0341_trading_signal_hard_cut.py",
-        "20260901_0342_trading_notification_deliveries.py",
-        "20260901_0343_trading_execution_runtime_state.py",
-        "20260901_0344_news_oi_push_cut.py",
-        "20260901_0345_trading_runtime_exposure_race.py",
-        "20260901_0346_trading_notification_result.py",
-        "20260901_0347_drop_retired_trading_tables.py",
-        "20260902_0348_trading_runtime_control_state.py",
-        "20260902_0349_trading_account_projection.py",
-        "20260902_0350_news_reader_history_title_similarity.py",
-        "20260902_0351_news_program_v9_judgment_check.py",
-        "20260903_0352_news_policy_v12_judgment_check.py",
-        "20260903_0353_trading_execution_reference_collation.py",
-        "20260903_0354_trading_execution_runtime_routes.py",
-        "20260903_0355_trading_case_dead_columns.py",
-        "20260903_0356_trading_account_slot_identity.py",
-        "20260903_0357_trading_pydantic_only_validation.py",
-        "20260903_0358_news_policy_v13_judgment_check.py",
-        "20260903_0359_drop_trading_notification_deliveries.py",
-        "20260904_0360_trading_lane_gate_cut.py",
-        "20260904_0361_trading_runtime_identity_cut.py",
-        "20260904_0362_news_oi_clock_check_cut.py",
-        "20260904_0363_news_review_task_source_judged_evidence.py",
-        "20260905_0364_workers_runtime_capabilities.py",
-        "20260905_0365_news_market_facts_at_admission.py",
-        "20260905_0366_news_market_notification_tracks.py",
-        "20260905_0367_news_market_alert_round_start.py",
-        "20260906_0368_news_instrument_snapshot_state.py",
-        "20260906_0369_news_market_wallet_tape.py",
-        "20260906_0370_news_smart_money_reparse.py",
-        "20260906_0371_news_market_unstructured_not_alerted.py",
-        "20260906_0372_news_market_wallet_cards.py",
-        "20260906_0373_news_market_wallet_digest.py",
-    ]
+    # `walk_revisions` follows `down_revision` from head to root, so the ordered ids above are the
+    # chain itself — a broken or forked link changes that list. Restating each link beside it cost
+    # one edit per migration and only ever asserted the walk against itself.
+    assert revisions[-1].down_revision is None
+
+    # One file per revision, named by it. A dropped or extra file fails here the same way a broken
+    # link fails above, and neither costs an edit when a migration is added.
+    assert sorted("_".join(path.stem.split("_")[:2]) for path in VERSIONS.glob("*.py")) == sorted(
+        revision.revision for revision in revisions
+    )
 
 
 def test_migration_tree_resolves_outside_the_repository() -> None:

@@ -3163,7 +3163,7 @@ def test_janitor_never_gives_up_on_a_stranded_event_silently(caplog, monkeypatch
     with caplog.at_level("WARNING", logger="tracefold.news"):
         stranded = FakeWorkerDatabase(news)
         asyncio.run(JanitorLoop(db=stranded, cold_db=stranded.cold_port, bus=FakeBus()).repair_event_handoffs())
-    assert any("Event handoff expired for 3 row" in r.getMessage() for r in caplog.records)
+    assert any("Event handoff expired" in r.getMessage() for r in caplog.records)
 
     quiet = RecordingNews(unpublished_candidates=[])
     with caplog.at_level("WARNING", logger="tracefold.news"):

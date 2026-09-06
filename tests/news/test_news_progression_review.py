@@ -233,7 +233,7 @@ def test_strict_answer_validation_can_spend_only_the_json_adapter_fallback() -> 
     lm = ScriptedLM([invalid, invalid])
     verifier = _program(lm)
 
-    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+    with pytest.raises(ValidationError) as raised:
         asyncio.run(
             verifier.review(
                 event={"leader_title": "Current"},
@@ -241,6 +241,10 @@ def test_strict_answer_validation_can_spend_only_the_json_adapter_fallback() -> 
                 candidates=[],
             )
         )
+
+    # Pydantic owns the wording; the contract is which key was refused and why. Matching the
+    # sentence would turn a dependency upgrade red and would still pass for the wrong field.
+    assert [(error["type"], error["loc"]) for error in raised.value.errors()] == [("extra_forbidden", ("unexpected",))]
 
     assert len(lm.requests) == PROGRESSION_REVIEW_MAX_CALLS
 

@@ -588,12 +588,12 @@ def test_deploy_runs_decision_without_demo_credentials_or_nautilus(
 
 
 @pytest.mark.parametrize(
-    ("trading_enabled", "credentials_configured", "execution_mode", "expected_ok", "expected_message"),
+    ("trading_enabled", "credentials_configured", "execution_mode", "expected_ok", "expected_state"),
     (
-        ("true", "true", "disabled", True, "execution runtime: disabled (operator selected)"),
-        ("true", "false", "disabled", True, "execution runtime: disabled (operator selected)"),
-        ("false", "false", "disabled", True, "execution runtime: disabled (Trading disabled)"),
-        ("true", "true", "paper", True, "execution runtime: mode=paper (Binance Runtime ready)"),
+        ("true", "true", "disabled", True, "disabled"),
+        ("true", "false", "disabled", True, "disabled"),
+        ("false", "false", "disabled", True, "disabled"),
+        ("true", "true", "paper", True, "mode=paper"),
     ),
 )
 def test_status_does_not_require_an_adapter_before_its_owner_issue(
@@ -602,7 +602,7 @@ def test_status_does_not_require_an_adapter_before_its_owner_issue(
     credentials_configured: str,
     execution_mode: str,
     expected_ok: bool,
-    expected_message: str,
+    expected_state: str,
 ) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = trading_enabled
@@ -620,8 +620,16 @@ def test_status_does_not_require_an_adapter_before_its_owner_issue(
         text=True,
     )
 
+    # The exit code and the reported runtime state are the machine fields. The parenthetical that
+    # follows them tells an operator *why*, and rewording it is not a status regression.
     assert (result.returncode == 0) is expected_ok
-    assert expected_message in result.stdout + result.stderr
+    reported = [
+        line.removeprefix("execution runtime:").strip()
+        for line in (result.stdout + result.stderr).splitlines()
+        if line.startswith("execution runtime:")
+    ]
+    assert reported, result.stdout + result.stderr
+    assert reported[-1].split(" ", 1)[0] == expected_state
 
 
 def test_exact_image_deploy_does_not_start_an_adapter_before_its_owner_issue(tmp_path: Path) -> None:

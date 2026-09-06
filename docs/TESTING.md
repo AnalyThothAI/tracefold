@@ -154,6 +154,16 @@ resources and avoids concurrent broker restarts or destructive database use.
 Its native reports are diagnostic local evidence and never merge, release, or
 deployment authority.
 
+`make check-static` owns every generated-artifact drift check that needs no
+external resource: `scripts/regen_cli_help.py --check`,
+`scripts/regen_rabbitmq_definitions.py --check`, and
+`scripts/sync_agent_router.py --check`. `docs/generated/db-schema.md` is
+introspected from a database at Alembic head, so its checker cannot run there;
+`ci-postgres-behavior` runs `scripts/regen_db_schema.py --check` against a
+scratch database that target migrates and drops, and prints a unified diff
+before failing. `docs/generated/openapi.json` and the frontend types are checked
+by `tests/contract/test_openapi_drift.py` in the same fixed plan.
+
 PostgreSQL behavior tests migrate one run-scoped baseline database to head and
 clone it into private function- or module-scoped databases. Tests that reset a
 schema or traverse historical revisions use a separate empty migration-owned
@@ -162,6 +172,6 @@ database. Broker restart tests require an explicitly supplied disposable
 operator deployment on their own. CI supplies that identity and fails if it
 cannot find the job-local service container.
 
-Scheduled, live/provider, visual, performance, and mutation diagnostics remain
+Scheduled, visual, performance, and mutation diagnostics remain
 outside the fixed merge plan unless a dedicated Issue moves a detector after
 showing which retained required seam owns the original risk.

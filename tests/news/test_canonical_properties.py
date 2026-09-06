@@ -44,8 +44,17 @@ def test_canonical_identity_preserves_unicode_codepoints_and_extreme_integers() 
 
 @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
 def test_canonical_identity_rejects_nonfinite_numbers(value: float) -> None:
-    with pytest.raises(ValueError, match="Out of range float values are not JSON compliant"):
+    """Both halves of the identity refuse, and neither emits a token no JSON parser accepts.
+
+    The message is CPython's wording, not this repository's contract: matching it makes an
+    interpreter upgrade a red test, and it would still pass if `canonical_json` began emitting the
+    bare `NaN` literal under some other message. What must hold is that no identity exists at all.
+    """
+
+    with pytest.raises(ValueError):
         canonical_json({"nested": [value]})
+    with pytest.raises(ValueError):
+        canonical_sha({"nested": [value]})
 
 
 @given(
