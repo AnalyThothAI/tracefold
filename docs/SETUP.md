@@ -56,26 +56,13 @@ and `make up`, or Serve and Workers refuse to start with `extra_forbidden`. The
 same file is bind-mounted read-only into the execution runtime, so the edit must
 also precede the next `make runtime-up`.
 
-#433-C is the one explicit exception to that manual rule. On its first normal
-run, `tracefold init` recognizes the exact former `trading.order` /
-`trading.bindings` shape, validates it, writes the original bytes to
-`~/.tracefold/config.pre-433c.yaml` with mode `0600`, and atomically replaces
-the active config with the current `trading.execution` shape. Existing Binance
-USD-M secret-file references are preserved; fixed notional and Hyperliquid
-execution inputs are retired, and execution is always reset to `disabled` with
-the cold `binance_usdm_primary` identity. A mixed old/new shape, an unknown
-former key, or a conflicting backup fails before the active config is replaced.
-The backup is as sensitive as the original config: do not print, copy, or
-commit it. `make up` and `make deploy-image` run this initialization step. If
-applying the database migration directly, first run `uv run tracefold init`,
+There is no exception to that manual rule. `tracefold init` never rewrites the
+content of an existing config: the one-shot #433-C (`trading.order` /
+`trading.bindings`) and #449 (multi-login PostgreSQL) shape rewrites were
+deleted with #589 once every deployment had run them. A config still carrying a
+retired key now fails `Settings` validation, naming the key, at the next load.
+If applying the database migration directly, first run `uv run tracefold init`,
 then `uv run tracefold config`, and only then `make db-migrate`.
-
-The #449 single-login cutover is the second explicit exception. An exact
-supported multi-login PostgreSQL mapping is backed up byte-for-byte to
-mode-`0600` `~/.tracefold/config.pre-449.yaml` and atomically rewritten to the
-single `tracefold` DSN/password reference. Unknown or mixed shapes and backup
-conflicts fail without replacing the active config. The #433-C and #449
-migrations run sequentially when both are needed.
 
 `news.opennews_strategy_ids` is retired in #126. Which Strategies feed News is
 now decided in the OpenNews account, so delete the key and its list:
@@ -135,12 +122,11 @@ postgres_database_password
 ```
 
 The config, Telegram placeholders, and all password files are mode `0600`.
-Ordinary `tracefold init` preserves an existing current-schema config, never
+Ordinary `tracefold init` preserves an existing config byte-for-byte, never
 rotates an existing password, and repairs the required permissions on every
-run. The only content rewrites are the validated, backed-up, one-time #433-C
-and #449 cutovers described above. `tracefold init --force` replaces only
-`config.yaml` with a newly generated default; it still preserves all existing
-PostgreSQL passwords. Back up intentional config changes before using
+run. It rewrites no config content at all. `tracefold init --force` replaces
+only `config.yaml` with a newly generated default; it still preserves all
+existing PostgreSQL passwords. Back up intentional config changes before using
 `--force`.
 
 `tracefold init` is the sole default-config authority. There is no maintained

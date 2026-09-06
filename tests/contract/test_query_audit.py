@@ -121,7 +121,7 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
 
     assert observed_now_ms == [123_456]
     names = {query.name for query in catalog.queries}
-    assert {query.name for query in postgres_query_specs(now_ms=123_456)} < names
+    assert {query.name for query in postgres_query_specs()} < names
     assert set(_NEWS_QUERY_NAMES) < names
     assert catalog.query_routes["/api/news/feed"] == (
         "news_feed_events",

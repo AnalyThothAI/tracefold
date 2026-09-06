@@ -5,7 +5,7 @@ import threading
 import pytest
 from fastapi.testclient import TestClient
 
-from tracefold.app.workers.probe import _create_workers_probe_app
+from tracefold.app.process import create_probe_app
 from tracefold.app.workers.root import GRACEFUL_DRAIN_TIMEOUT_SECONDS, _ProbeState
 from tracefold.app.workers.runtime import workers_runtime_status
 
@@ -24,7 +24,7 @@ def test_workers_probe_has_only_private_operational_routes_and_health_never_call
         calls += 1
         return {"ok": False, "reason": "starting"}
 
-    app = _create_workers_probe_app(readiness=readiness, render_metrics=lambda: "")
+    app = create_probe_app(title="Tracefold Workers Probe", readiness=readiness, render_metrics=lambda: "")
     with TestClient(app) as client:
         health = client.get("/healthz")
         ready = client.get("/readyz")
@@ -48,7 +48,8 @@ def test_workers_metrics_render_does_not_block_readiness() -> None:
         assert release_metrics.wait(timeout=2.0)
         return "metric 1\n"
 
-    app = _create_workers_probe_app(
+    app = create_probe_app(
+        title="Tracefold Workers Probe",
         readiness=lambda: {"ok": True},
         render_metrics=render_metrics,
     )

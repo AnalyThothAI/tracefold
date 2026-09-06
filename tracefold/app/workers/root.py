@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
-import signal
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,12 +17,14 @@ from psycopg import OperationalError
 from psycopg.errors import IdleInTransactionSessionTimeout, LockNotAvailable, QueryCanceled, TransactionTimeout
 from psycopg_pool import PoolTimeout
 
+from tracefold.app.process import create_probe_app, install_signal_handlers, remove_signal_handlers
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
-from tracefold.app.workers.probe import _create_workers_probe_app
 from tracefold.app.workers.runtime import (
     WORKERS_RUNTIME_VERSION,
     CapabilityStates,
+    FatalCode,
+    LifecycleState,
     WorkersRuntimeRepository,
 )
 from tracefold.app.workers.task_contract import (
@@ -166,7 +167,7 @@ async def run_workers(settings: Settings) -> None:
             1,
         )
 
-    installed_signals = _install_signal_handlers(signal_loop, request_shutdown)
+    installed_signals = install_signal_handlers(signal_loop, request_shutdown)
     try:
         db = WorkerDatabase.create(settings, telemetry=telemetry)
         startup_status = _startup_database_status(db)
@@ -394,7 +395,7 @@ async def run_workers(settings: Settings) -> None:
             deadline_at=fatal_deadline,
         )
     finally:
-        _remove_signal_handlers(signal_loop, installed_signals)
+        remove_signal_handlers(signal_loop, installed_signals)
         if not graceful:
             # The fatal path deliberately leaves the singleton session open;
             # os._exit is the release authority.
@@ -554,7 +555,8 @@ async def _run_probe(server: uvicorn.Server, *, stop_event: asyncio.Event) -> No
 
 def _probe_server(*, probe_state: _ProbeState, telemetry: TelemetryRegistry) -> uvicorn.Server:
     config = uvicorn.Config(
-        _create_workers_probe_app(
+        create_probe_app(
+            title="Tracefold Workers Probe",
             readiness=probe_state.payload,
             render_metrics=telemetry.render_prometheus_text,
         ),
@@ -639,7 +641,7 @@ async def _persist_fatal_transition(
     *,
     db: WorkerDatabase,
     runtime_id: str,
-    fatal_code: str,
+    fatal_code: FatalCode,
     deadline_at: float,
 ) -> None:
     while True:
@@ -669,7 +671,7 @@ async def _persist_fatal_transition(
             await asyncio.sleep(min(_CONTROL_RETRY_SECONDS, remaining))
 
 
-def _fatal_code(exc: BaseException, *, phase: str) -> str:
+def _fatal_code(exc: BaseException, *, phase: str) -> FatalCode:
     leaves = _leaf_exceptions(exc)
     messages = ":".join(str(item) for item in _leaf_exceptions(exc)).lower()
     if any(isinstance(item, ResourceOperationOverrun) for item in leaves):
@@ -684,16 +686,6 @@ def _fatal_code(exc: BaseException, *, phase: str) -> str:
         return "cleanup_failed"
     if any(isinstance(item, _ControlFailure) for item in leaves):
         return "control_failed"
-    if any(
-        marker in messages
-        for marker in (
-            "_invariant_",
-            "_cas_failed",
-            "_mismatch",
-            "parallel_submission",
-        )
-    ):
-        return "runtime_invariant_failed"
     return "child_failed"
 
 
@@ -727,8 +719,8 @@ def _runtime_begin(
 def _runtime_transition(
     db: WorkerDatabase,
     runtime_id: str,
-    lifecycle_state: Any,
-    fatal_code: Any,
+    lifecycle_state: LifecycleState,
+    fatal_code: FatalCode | None,
 ) -> None:
     with db.worker_session("workers_runtime_transition", 1.0) as repos:
         WorkersRuntimeRepository(repos.conn).transition(
@@ -778,28 +770,6 @@ async def _wait_or_stop(stop_event: asyncio.Event, seconds: float) -> None:
         await asyncio.wait_for(stop_event.wait(), timeout=max(0.0, float(seconds)))
     except TimeoutError:
         return
-
-
-def _install_signal_handlers(
-    loop: asyncio.AbstractEventLoop,
-    callback: Callable[[], None],
-) -> tuple[signal.Signals, ...]:
-    installed: list[signal.Signals] = []
-    for signum in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(signum, callback)
-        except (NotImplementedError, RuntimeError):
-            continue
-        installed.append(signum)
-    return tuple(installed)
-
-
-def _remove_signal_handlers(
-    loop: asyncio.AbstractEventLoop,
-    installed: Sequence[signal.Signals],
-) -> None:
-    for signum in installed:
-        loop.remove_signal_handler(signum)
 
 
 def _now_ms() -> int:

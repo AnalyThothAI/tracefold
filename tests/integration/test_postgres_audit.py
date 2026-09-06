@@ -51,7 +51,6 @@ def test_operational_audit_fast_path_uses_catalog_estimates_and_exact_schema(
     assert "plpgsql" in payload["database_identity"]["extensions"]
     assert payload["database_identity"]["current_user"] == "tracefold"
     assert set(payload["database_identity"]["role_catalog"]["roles"]) == {"tracefold", "tracefold_app"}
-    assert payload["database_identity"]["role_catalog"]["retired_roles_present"] == []
     assert payload["database_identity"]["ownership"] == {
         "public_schema_owner": "tracefold",
         "unexpected_application_object_owners": [],
@@ -138,9 +137,9 @@ def test_query_audit_explains_hot_read_paths_without_analyze(tmp_path, postgres_
 def test_projection_validation_checks_bounded_public_models(tmp_path, postgres_clone_dsn: str):
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
-        initial = ProjectionValidationAudit(conn).run(sample=100)
+        initial = ProjectionValidationAudit(conn).run()
         conn.execute("DELETE FROM news_ingest_state")
-        stale = ProjectionValidationAudit(conn).run(sample=100)
+        stale = ProjectionValidationAudit(conn).run()
     finally:
         conn.close()
 

@@ -67,7 +67,6 @@ class WorkersRuntimeData(ExactApiSchema):
             "child_failed",
             "control_failed",
             "singleton_lost",
-            "runtime_invariant_failed",
             "resource_operation_overrun",
             "graceful_deadline_exceeded",
             "cleanup_failed",

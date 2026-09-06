@@ -30,6 +30,8 @@ from tracefold.app.http.app import create_app
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.runtime import WorkersRuntimeRepository
 from tracefold.platform.config.models import Settings
+from tracefold.platform.observability import TelemetryRegistry
+from tracefold.platform.postgres.maintenance_gate import MAINTENANCE_GATE_LOCK_KEYS
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
@@ -147,8 +149,8 @@ def test_real_workers_readiness_waits_for_the_persisted_runtime_manifest(tmp_pat
 def test_steady_lock_retains_a_real_control_query_lane_and_excludes_other_runtimes(tmp_path) -> None:
     settings = Settings(storage=postgres_settings_storage())
     settings.set_config_dir(tmp_path / "app-home")
-    first = WorkerDatabase.create(settings)
-    second = WorkerDatabase.create(settings)
+    first = WorkerDatabase.create(settings, telemetry=TelemetryRegistry())
+    second = WorkerDatabase.create(settings, telemetry=TelemetryRegistry())
     steady_lock = first.acquire_steady_runtime_lock()
     try:
         assert first.worker_pool.get_stats()["pool_available"] >= 1
@@ -178,8 +180,17 @@ def test_steady_lock_retains_a_real_control_query_lane_and_excludes_other_runtim
         )
         with pytest.raises(RuntimeError, match="steady_workers_runtime_already_active"):
             second.acquire_steady_runtime_lock()
-        with pytest.raises(RuntimeError, match="steady_workers_runtime_active"):
-            second.acquire_maintenance_runtime_lock()
+        # The migration side of the same gate is `alembic/env.py`'s own exclusive
+        # `pg_try_advisory_lock`, taken on its migration connection: assert that statement, not a
+        # WorkerDatabase wrapper no process calls (#589 P-F10).
+        with second.worker_pool.connection() as conn:
+            assert (
+                conn.execute(
+                    "SELECT pg_try_advisory_lock(%s, %s) AS acquired",
+                    MAINTENANCE_GATE_LOCK_KEYS,
+                ).fetchone()["acquired"]
+                is False
+            )
     finally:
         first.release_steady_runtime_lock(steady_lock)
         asyncio.run(first.aclose())

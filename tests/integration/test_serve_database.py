@@ -8,6 +8,7 @@ import pytest
 from tests.postgres_test_utils import postgres_settings_storage
 from tracefold.app.serve_database import ServeDatabase
 from tracefold.platform.config.models import Settings
+from tracefold.platform.observability import TelemetryRegistry
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
@@ -15,7 +16,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_d
 def test_serve_session_policy_is_applied_at_connect_time() -> None:
     database = ServeDatabase.create(
         Settings(storage=postgres_settings_storage()),
-        telemetry=None,
+        telemetry=TelemetryRegistry(),
     )
     try:
         with database.api_session() as repos:
@@ -32,7 +33,7 @@ def test_serve_session_policy_is_applied_at_connect_time() -> None:
 def test_serve_pool_uses_the_shared_login_with_stable_read_only_attribution() -> None:
     database = ServeDatabase.create(
         Settings(storage=postgres_settings_storage()),
-        telemetry=None,
+        telemetry=TelemetryRegistry(),
     )
     try:
         with database.api_pool.connection() as conn:
@@ -57,7 +58,7 @@ def test_serve_pool_uses_the_shared_login_with_stable_read_only_attribution() ->
 def test_serve_pool_is_fully_warm_when_startup_returns() -> None:
     database = ServeDatabase.create(
         Settings(storage=postgres_settings_storage()),
-        telemetry=None,
+        telemetry=TelemetryRegistry(),
     )
     try:
         stats = database.api_pool.get_stats()

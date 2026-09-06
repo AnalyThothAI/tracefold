@@ -60,25 +60,10 @@ FatalCode = Literal[
     "child_failed",
     "control_failed",
     "singleton_lost",
-    "runtime_invariant_failed",
     "resource_operation_overrun",
     "graceful_deadline_exceeded",
     "cleanup_failed",
 ]
-
-_LIFECYCLE_STATES = frozenset({"starting", "running", "stopping", "stopped", "failed"})
-_FATAL_CODES = frozenset(
-    {
-        "startup_failed",
-        "child_failed",
-        "control_failed",
-        "singleton_lost",
-        "runtime_invariant_failed",
-        "resource_operation_overrun",
-        "graceful_deadline_exceeded",
-        "cleanup_failed",
-    }
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,11 +164,12 @@ class WorkersRuntimeRepository:
         now_ms: int,
         fatal_code: FatalCode | None = None,
     ) -> None:
-        state = str(lifecycle_state)
-        if state not in _LIFECYCLE_STATES:
-            raise ValueError("workers_runtime_lifecycle_state_invalid")
-        if state == "failed":
-            if fatal_code not in _FATAL_CODES:
+        # `LifecycleState`/`FatalCode` are the compile-time vocabulary and
+        # `workers_runtime_lifecycle_state_check` / `workers_runtime_fatal_code_check` are the
+        # persisted one; re-listing either here only lets the two copies drift (#589 P-F13). The
+        # pairing rule below is the one claim about *two* arguments that a Literal cannot make.
+        if lifecycle_state == "failed":
+            if fatal_code is None:
                 raise ValueError("workers_runtime_fatal_code_required")
         elif fatal_code is not None:
             raise ValueError("workers_runtime_fatal_code_forbidden")
@@ -196,7 +182,7 @@ class WorkersRuntimeRepository:
              WHERE singleton_key
                AND runtime_id = %s
             """,
-            (state, int(now_ms), fatal_code, UUID(str(runtime_id))),
+            (lifecycle_state, int(now_ms), fatal_code, UUID(str(runtime_id))),
         )
         if cursor.rowcount != 1:
             raise RuntimeError("workers_runtime_identity_lost")

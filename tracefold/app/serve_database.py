@@ -79,13 +79,13 @@ class ServeDatabase:
     """
 
     api_pool: Any
-    telemetry: TelemetryRegistry | None = field(default_factory=TelemetryRegistry)
+    telemetry: TelemetryRegistry
     admission: dict[str, BoundedSemaphore] = field(
         default_factory=lambda: {lane: BoundedSemaphore(capacity) for lane, capacity in _SERVE_LANE_CAPACITIES.items()}
     )
 
     @classmethod
-    def create(cls, settings: Any, *, telemetry: TelemetryRegistry | None = None) -> ServeDatabase:
+    def create(cls, settings: Any, *, telemetry: TelemetryRegistry) -> ServeDatabase:
         postgres = settings.storage.postgres
         dsn = with_password_from_file(
             postgres.dsn,
@@ -104,10 +104,7 @@ class ServeDatabase:
             session_settings=_SERVE_SESSION_CONFIG,
         )
         pool.wait(timeout=float(postgres.connect_timeout_seconds))
-        return cls(
-            api_pool=pool,
-            telemetry=telemetry if telemetry is not None else TelemetryRegistry(),
-        )
+        return cls(api_pool=pool, telemetry=telemetry)
 
     @contextmanager
     def api_session(self, lane: str = "ordinary") -> Iterator[ServeRepositories]:
@@ -117,26 +114,23 @@ class ServeDatabase:
             raise ValueError(f"serve_database_lane_invalid:{lane}") from exc
         started = time.perf_counter()
         if not gate.acquire(timeout=_SERVE_PERMIT_TIMEOUT_SECONDS):
-            if self.telemetry is not None:
-                self.telemetry.record_pool_wait(
-                    f"serve_{lane}_permit",
-                    (time.perf_counter() - started) * 1000,
-                )
+            self.telemetry.record_pool_wait(
+                f"serve_{lane}_permit",
+                (time.perf_counter() - started) * 1000,
+            )
             raise ServeDatabaseBusy(f"serve_database_busy:{lane}")
         try:
             permit_acquired_at = time.perf_counter()
-            if self.telemetry is not None:
-                self.telemetry.record_pool_wait(
-                    f"serve_{lane}_permit",
-                    (permit_acquired_at - started) * 1000,
-                )
+            self.telemetry.record_pool_wait(
+                f"serve_{lane}_permit",
+                (permit_acquired_at - started) * 1000,
+            )
             try:
                 with self.api_pool.connection(timeout=_SERVE_CHECKOUT_TIMEOUT_SECONDS) as conn:
-                    if self.telemetry is not None:
-                        self.telemetry.record_pool_wait(
-                            "serve",
-                            (time.perf_counter() - permit_acquired_at) * 1000,
-                        )
+                    self.telemetry.record_pool_wait(
+                        "serve",
+                        (time.perf_counter() - permit_acquired_at) * 1000,
+                    )
                     yield ServeRepositories(repositories_for_connection(conn))
             except (PoolClosed, PoolTimeout) as exc:
                 raise ServeDatabaseBusy(f"serve_database_pool_busy:{lane}") from exc

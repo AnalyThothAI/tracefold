@@ -16,9 +16,7 @@ def alembic_config() -> Config:
     return Config(str(root / "alembic.ini"))
 
 
-def upgrade_head(database_url: str | None = None) -> None:
-    if database_url is None:
-        raise ValueError("migration_database_url_required")
+def upgrade_head(database_url: str) -> None:
     config = alembic_config()
     config.attributes["database_url"] = database_url
     command.upgrade(config, "head")

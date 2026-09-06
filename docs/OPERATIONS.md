@@ -26,14 +26,12 @@ Nautilus Strategy/Risk/OMS/reconciliation path and differ only by immutable
 profile identity, credential namespace, and Binance environment.
 
 Run `uv run tracefold init` before the first current startup; canonical
-`make up` and `make deploy-image` already do so. The supported pre-#449
-multi-login PostgreSQL config is backed up to mode-`0600`
-`~/.tracefold/config.pre-449.yaml` and atomically rewritten to the single
-`tracefold` DSN/password reference. Treat every backup as sensitive operator
-configuration and report only its path. A mixed/unknown shape or backup
-conflict stops before the active config is replaced. For a direct schema
-upgrade, require this order: `uv run tracefold init`, `uv run tracefold config`,
-then `make db-migrate`.
+`make up` and `make deploy-image` already do so. It creates and permissions the
+operator directory and never rewrites config content: a config still holding a
+retired key, such as the pre-#449 multi-login PostgreSQL mapping, is refused by
+`Settings` validation naming that key, and the operator edits it (#589). For a
+direct schema upgrade, require this order: `uv run tracefold init`,
+`uv run tracefold config`, then `make db-migrate`.
 
 Run `uv run tracefold config` to inspect only the execution mode, profile,
 account slot, and resolved secret-file references. Never print or copy a

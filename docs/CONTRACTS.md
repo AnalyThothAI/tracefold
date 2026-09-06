@@ -29,23 +29,13 @@ existing database passwords. The generated config has a new API bearer token
 (`ws_token`) but no live provider/model/webhook/bot credential, `news.push.enabled`
 is false, and `news.broker.url` points at the compose RabbitMQ service.
 
-The one content-changing normal-init exception is the #433-C hard cut. An exact
-pre-433-C `trading.order` / `trading.bindings` config is validated, copied
-byte-for-byte to mode-`0600` `config.pre-433c.yaml`, then atomically rewritten
-to disabled `trading.execution`. Operator-owned Binance secret-file references
-are preserved, while the retired notional and Hyperliquid execution binding
-are not carried forward. The result reports only whether migration occurred
-and the backup path. Mixed old/new shapes, unknown former fields, non-regular
-config paths, and conflicting backups fail without replacing the active
-config. Subsequent normal init runs are content-idempotent.
-
-The later #449 single-login cutover is the second explicit normal-init
-exception. An exact supported multi-login PostgreSQL mapping is copied
-byte-for-byte to mode-`0600` `config.pre-449.yaml`, then atomically rewritten
-to one `storage.postgres` DSN/password reference for the `tracefold` login.
-Mixed shapes, unknown keys, non-regular paths, and backup conflicts fail before
-replacement. The two migrations run sequentially and each reports only whether
-it changed the config and its backup path.
+Normal `tracefold init` changes no config content. The one-shot #433-C
+(`trading.order` / `trading.bindings`) and #449 (multi-login PostgreSQL) shape
+rewrites it used to perform, and the `config_migrated` / `config_backup_path` /
+`config_backup_paths` result fields that reported them, are deleted (#589). A
+config still holding a retired key is refused by `Settings` validation, which
+names the key, rather than being rewritten. A non-regular config path still
+fails with `config_path_not_regular_file` before anything is written.
 
 The configuration schema is exactly the top-level keys `ws_token`, `api`
 (`host`, `port`), `storage.postgres`, `llm`, `news`, and `trading`, each a typed nested
