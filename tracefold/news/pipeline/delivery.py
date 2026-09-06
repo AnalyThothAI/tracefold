@@ -77,6 +77,48 @@ async def read_display_quotes(
     return [dict(row) for row in rows or [] if isinstance(row, Mapping)]
 
 
+async def read_pushed_news(db: NewsDatabasePort, symbol: str, *, now_ms: int, name: str) -> dict[str, Any]:
+    """What News has already told this reader about one instrument, on one short session (#582 §3.3).
+
+    The twin of `read_display_quotes`, deliberately: one bounded read on the same lane, the same
+    pricing-domain budget, no transaction held across it, and every failure -- admission, overrun,
+    timeout, a repository raising -- degrading to "no news to show" rather than to a placeholder or a
+    retry. It lives beside the quote read rather than at the composition site because the budget is
+    News's own: a Workers adapter deciding for itself how long a card may wait would be a second
+    answer to a question this package has already answered.
+
+    What "already told" and "48 h" mean is not restated here: the two statements in
+    `storage/decisions.py` own the window, the delivered-card predicate and the alias resolution.
+
+    One thing is enforced rather than assumed: an entry the read could not put a title on never
+    reaches the card. The card prints one line per pushed entry and counts what it printed, so a
+    titleless row would be either a line saying only a time or a count with nothing under it.
+    """
+
+    requested = str(symbol or "").strip()
+    if not requested:
+        return {"pushed": [], "total": 0}
+    try:
+        answer = await db.read(
+            name,
+            lambda repos: repos.news.pushed_news_for_symbol(requested, now_ms=now_ms),
+            timeout_seconds=QUOTE_READ_TIMEOUT_SECONDS,
+        )
+    except Exception:  # display-only; all failures degrade to no line
+        return {"pushed": [], "total": 0}
+    if not isinstance(answer, Mapping):
+        return {"pushed": [], "total": 0}
+    rows = answer.get("pushed")
+    return {
+        "pushed": [
+            dict(row)
+            for row in (rows if isinstance(rows, Sequence) and not isinstance(rows, str | bytes) else ())
+            if isinstance(row, Mapping) and str(row.get("headline_zh") or "").strip()
+        ],
+        "total": answer.get("total", 0),
+    }
+
+
 DeliveryCandleFetcher = Callable[[str, int, int], Awaitable[Sequence[Candle]]]
 DeliveryCandleFetcherFor = Callable[[str], DeliveryCandleFetcher | None]
 DeliveryPriceFetcher = Callable[[str, Sequence[int]], Awaitable[Mapping[int, PricePoint]]]

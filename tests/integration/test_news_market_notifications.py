@@ -20,14 +20,17 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_judgment import scored_judgment
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news import card_format as fmt
+from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.liquidations import parse_liquidation
 from tracefold.news.market_notifications import (
     OI_QUIET_RESET_MS,
@@ -42,8 +45,12 @@ from tracefold.news.market_notifications import (
 )
 from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.market_review.pricing import QUOTE_FRESH_MAX_AGE_MS, QUOTE_READ_TIMEOUT_SECONDS, Quote
+from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.oi_signals import measurement_definition, oi_source_contract
-from tracefold.news.pipeline.delivery import read_display_quotes
+from tracefold.news.opennews import parse_opennews_message
+from tracefold.news.pipeline.admission import admit_frame
+from tracefold.news.pipeline.delivery import read_display_quotes, read_pushed_news
+from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
 from tracefold.news.smart_money import parse_smart_money
 from tracefold.news.source_contracts import MARKET_PROVIDER
 
@@ -87,6 +94,9 @@ class _Db:
         self.quote_failure: BaseException | None = None
         # A port that honours no budget of its own, which is what the loop's own deadline is for.
         self.quote_port_seconds = 0.0
+        # The News plane's own two, for the second display read the OI card carries (#582 §3.3).
+        self.news_failure: BaseException | None = None
+        self.news_port_seconds = 0.0
         # Runs once, inside the window this PR opens: after the due card's transaction has committed
         # and released its row lock, and before the claim's compare-and-set.
         self.before_quotes: Callable[[], None] | None = None
@@ -119,6 +129,19 @@ class _Db:
         if self.quote_port_seconds:
             await asyncio.sleep(self.quote_port_seconds)
         return await read_display_quotes(self, symbols, now_ms=now_ms, name="news_market_quotes")
+
+    async def pushed_news_for_symbol(self, symbol: str, *, now_ms: int) -> dict[str, Any]:
+        """`MarketNotificationDatabasePort.pushed_news_for_symbol`, composed as Workers composes it.
+
+        One named read on the News lane, running the storage module's own statements, so what this
+        suite proves about the OI card's news line is proved about the SQL production executes.
+        """
+
+        if self.news_failure is not None:
+            raise self.news_failure
+        if self.news_port_seconds:
+            await asyncio.sleep(self.news_port_seconds)
+        return await read_pushed_news(self, symbol, now_ms=now_ms, name="news_market_news")
 
     async def tx(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float = 3.0) -> Any:
         self.names.append(name)
@@ -1473,3 +1496,630 @@ def _observation_of(detail: dict[str, Any]) -> Any:
     from tracefold.news.market_notifications import MarketObservation
 
     return MarketObservation.from_row(detail)
+
+
+# --- the OI card's News line, on the delivered-card ledger it reads (#582 §3.3) --------------------
+#
+# The rows here are written by the production writers -- admission, the verdict insert, the delivery
+# ledger -- because the statement under test joins all four of them. A hand-built row would prove the
+# join it was built to satisfy and nothing about the one production produces.
+
+
+def _news_event(
+    conn: Any,
+    *,
+    hit_id: int,
+    symbol: str,
+    text: str,
+    opened_at_ms: int,
+    # The verdict's own headline, which is what the card's COALESCE falls back to when the frozen
+    # snapshot carries no title. Distinct from every `delivered_title` below on purpose.
+    headline_zh: str = "判定给出的标题",
+    settled_at_ms: int | None = None,
+    delivered_title: str | None = None,
+    state: str = "sent",
+) -> str:
+    """One editorial Event about `symbol`, optionally with the card a reader was sent for it."""
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        stamp = f"{datetime.fromtimestamp(opened_at_ms / 1000, tz=UTC).isoformat()}"
+        message = parse_opennews_message(
+            {
+                "method": "strategy.triggered",
+                "params": {
+                    "id": hit_id,
+                    "text": text,
+                    "link": f"https://example.test/{hit_id}",
+                    "source": f"wire-{hit_id}",
+                    "newsType": "news",
+                    "engineType": "news",
+                    "ts": stamp,
+                    "aiRating": {"score": 90, "signal": "short", "status": "done"},
+                    "coins": [{"expired": False, "grade": "A", "market_type": "cex", "score": 90, "symbol": symbol}],
+                    "strategy": {"id": 1018, "name": "News Score > 70", "engine_type": "news", "source_type": "news"},
+                },
+            }
+        )
+        assert message is not None
+        batch = admit_frame(
+            repos,
+            event=message,
+            ingest_mode="live",
+            observed_at_ms=opened_at_ms,
+            trace_id=f"trace-{hit_id}",
+            watchlist_symbols=frozenset(),
+            now_ms=opened_at_ms,
+        )
+        assert len(batch.results) == 1 and batch.results[0].event_created
+        event_id = batch.results[0].event_id
+        if settled_at_ms is None:
+            return event_id
+        _persist_verdict(repos, event_id=event_id, symbol=symbol, headline_zh=headline_zh, at_ms=settled_at_ms - 1)
+        card = {"header": {"title": {"content": delivered_title}}} if delivered_title is not None else {}
+        assert repos.news.begin_delivery(event_id=event_id, kind="first", card=card, now_ms=settled_at_ms - 1) == "new"
+        assert repos.news.settle_delivery(
+            event_id=event_id,
+            kind="first",
+            state=state,
+            receipt={"ok": True} if state == "sent" else None,
+            error_code=None if state == "sent" else "gave_up",
+            now_ms=settled_at_ms,
+        )
+    return event_id
+
+
+def _persist_verdict(repos: Any, *, event_id: str, symbol: str, headline_zh: str, at_ms: int) -> None:
+    evidence = repos.news.latest_evidence_snapshot(event_id)
+    assert evidence is not None
+    verdict = TriageVerdict(
+        novelty="new_fact",
+        assets=[{"symbol": symbol, "role": "primary"}],
+        direction="bearish",
+        scope="single_name",
+        magnitude=2,
+        confidence=0.9,
+        headline_zh=headline_zh,
+        why_zh="",
+    )
+    judgment = scored_judgment(verdict)
+    manifest_sha = "b" * 64
+    assert repos.news.insert_verdict(
+        event_id=event_id,
+        stage="triage",
+        policy_version=TRIAGE_POLICY_VERSION,
+        judgment_contract_version=judgment.judgment_contract_version,
+        judgment_origin="model",
+        rule_baseline_decision="push",
+        final_decision="push",
+        override_rule="trade_relevance_realtime",
+        throttled_by=None,
+        verdict=verdict.model_dump(mode="json"),
+        model_editorial=judgment.editorial.model_dump(mode="json"),
+        judgment_sha256=judgment.scored_judgment_sha256,
+        runtime_manifest_sha=manifest_sha,
+        model="test",
+        program_version=SEMANTIC_PROGRAM_VERSION,
+        program_sha256="a" * 64,
+        degraded=False,
+        error_code=None,
+        trace={
+            "judgment_contract_version": judgment.judgment_contract_version,
+            "judgment_origin": "model",
+            "judgment_sha256": judgment.scored_judgment_sha256,
+            "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
+            "editorial_sha256": judgment.editorial.editorial_sha256,
+            "runtime_manifest_sha": manifest_sha,
+            "program_version": SEMANTIC_PROGRAM_VERSION,
+            "program_sha256": "a" * 64,
+            "evidence_version": int(evidence["evidence_version"]),
+            "evidence_sha256": str(evidence["evidence_sha256"]),
+            "focus_fact_id": str(evidence["focus_fact_id"]),
+            "told": [],
+            "told_count": 0,
+        },
+        evidence_version=int(evidence["evidence_version"]),
+        evidence_sha256=str(evidence["evidence_sha256"]),
+        focus_fact_id=str(evidence["focus_fact_id"]),
+        now_ms=at_ms,
+    )
+
+
+def test_an_oi_card_carries_the_news_its_own_instrument_already_has(conn: Any) -> None:
+    """The two numbers and the pushed titles, on the card the reader was actually sent."""
+
+    _news_event(
+        conn,
+        hit_id=582_001,
+        symbol="WIF",
+        text="Dogwifhat treasury moves a large tranche to an exchange",
+        opened_at_ms=NOW - 6 * 3_600_000,
+        settled_at_ms=NOW - 6 * 3_600_000 + 30_000,
+        delivered_title="WIF 国库向交易所转入大额代币",
+    )
+    _news_event(
+        conn,
+        hit_id=582_002,
+        symbol="WIF",
+        text="A major venue lists a new perpetual contract on dogwifhat",
+        opened_at_ms=NOW - 2 * 3_600_000,
+        settled_at_ms=NOW - 2 * 3_600_000 + 30_000,
+        delivered_title="某大型交易所上线 WIF 永续合约",
+    )
+    # A third Event nobody was told about: it is the difference between the two numbers.
+    _news_event(
+        conn,
+        hit_id=582_003,
+        symbol="WIF",
+        text="An analyst publishes a routine weekly note mentioning dogwifhat",
+        opened_at_ms=NOW - 3 * 3_600_000,
+    )
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+    db = _Db(conn)
+    asyncio.run(_loop(db, _Sender(), clock=_Clock()).advance())
+
+    body = _card_body(conn).split("\n")
+    # After the whale line the frame carried, before the facts line the card ends on, newest first.
+    assert body[2].startswith("鲸鱼多头盈利 ")
+    assert body[3:6] == [
+        "相关新闻 48h · 已推 2 · 共 3",
+        "· 某大型交易所上线 WIF 永续合约 " + fmt.clock(NOW - 2 * 3_600_000 + 30_000),
+        "· WIF 国库向交易所转入大额代币 " + fmt.clock(NOW - 6 * 3_600_000 + 30_000),
+    ]
+    assert body[6].startswith("WIF · opennews oi")
+    assert db.turns("news_market_news") == 1
+    assert _deliveries(conn)[0]["state"] == "sent"
+
+
+def test_an_oi_card_whose_instrument_has_no_news_carries_no_news_line(conn: Any) -> None:
+    """The ordinary case for most of the instruments a day's OI cards name (#582 §1)."""
+
+    _news_event(
+        conn,
+        hit_id=582_010,
+        symbol="DOGE",
+        text="An unrelated token announces a governance vote",
+        opened_at_ms=NOW - 3_600_000,
+        settled_at_ms=NOW - 3_600_000 + 30_000,
+        delivered_title="另一个代币宣布治理投票",
+    )
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+    db = _Db(conn)
+    asyncio.run(_loop(db, _Sender(), clock=_Clock()).advance())
+
+    assert db.turns("news_market_news") == 1  # it was asked, and the answer was nothing
+    assert "相关新闻" not in _card_body(conn)
+    assert _deliveries(conn)[0]["state"] == "sent"
+
+
+def test_only_an_oi_card_asks_what_news_its_instrument_has(conn: Any) -> None:
+    """§3.3 leaves liquidation and smart money out deliberately: they spend no read at all."""
+
+    _liquidation_item(conn, "liq-1", at_ms=NOW - 60_000, side="long")
+    db = _Db(conn)
+    asyncio.run(_loop(db, _Sender(), clock=_Clock()).advance())
+
+    assert db.turns("news_market_news") == 0
+    assert db.turns("news_market_quotes") == 1  # and the quote it does carry was still read
+    assert _deliveries(conn)[0]["state"] == "sent"
+
+
+def test_a_news_port_that_raises_never_holds_back_a_card_or_spends_an_attempt(conn: Any) -> None:
+    _news_event(
+        conn,
+        hit_id=582_020,
+        symbol="WIF",
+        text="Dogwifhat treasury moves a large tranche to an exchange",
+        opened_at_ms=NOW - 3_600_000,
+        settled_at_ms=NOW - 3_600_000 + 30_000,
+        delivered_title="WIF 国库向交易所转入大额代币",
+    )
+    _quotable(conn)
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+    db = _Db(conn)
+    db.news_failure = RuntimeError("news_plane_down")
+    sender = _Sender()
+    asyncio.run(_loop(db, sender, clock=_Clock()).advance())
+
+    body = _card_body(conn)
+    assert "相关新闻" not in body
+    # The other display plane is untouched: one read failing costs its own line and no other.
+    assert "行情 WIF $0.5432 24h +7.91%" in body
+    assert len(sender.cards) == 1
+    row = _deliveries(conn)[0]
+    assert row["state"] == "sent"
+    assert row["attempts"] == 1
+    assert row["settled_at_ms"] is not None
+
+
+def test_a_news_read_that_overruns_its_budget_leaves_the_card_newsless_and_on_time(conn: Any) -> None:
+    """The 1.5 s budget is the quote's own, applied to the second display read and not waited past."""
+
+    _news_event(
+        conn,
+        hit_id=582_030,
+        symbol="WIF",
+        text="Dogwifhat treasury moves a large tranche to an exchange",
+        opened_at_ms=NOW - 3_600_000,
+        settled_at_ms=NOW - 3_600_000 + 30_000,
+        delivered_title="WIF 国库向交易所转入大额代币",
+    )
+    _quotable(conn)
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+    db = _Db(conn)
+    db.slow_reads = {"news_market_news"}
+    db.slow_seconds = QUOTE_READ_TIMEOUT_SECONDS + 0.5
+    sender = _Sender()
+
+    started = time.monotonic()
+    asyncio.run(_loop(db, sender, clock=_Clock()).advance())
+    elapsed = time.monotonic() - started
+
+    assert elapsed < QUOTE_READ_TIMEOUT_SECONDS + 0.5
+    assert "相关新闻" not in _card_body(conn)
+    assert len(sender.cards) == 1
+    assert _deliveries(conn)[0]["attempts"] == 1
+
+
+def test_a_news_port_that_hangs_costs_its_own_lines_and_leaves_the_quote_on_the_card(conn: Any) -> None:
+    """One clock over both display reads, but two answers (#582 §3.3).
+
+    `QUOTE_READ_TIMEOUT_SECONDS` is the loop's promise that no card waits longer than this before
+    being sent, and two serial budgets would quietly make that promise twice as long -- so the two
+    reads share one deadline. They do not share their degradation: the port here applies no budget of
+    its own and hangs far past the deadline, and the price that did arrive is still on the card. Only
+    the read that was still running is cancelled.
+    """
+
+    _news_event(
+        conn,
+        hit_id=582_040,
+        symbol="WIF",
+        text="Dogwifhat treasury moves a large tranche to an exchange",
+        opened_at_ms=NOW - 3_600_000,
+        settled_at_ms=NOW - 3_600_000 + 30_000,
+        delivered_title="WIF 国库向交易所转入大额代币",
+    )
+    _quotable(conn)
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+    db = _Db(conn)
+    db.news_port_seconds = 30.0
+    sender = _Sender()
+
+    started = time.monotonic()
+    asyncio.run(_loop(db, sender, clock=_Clock()).advance())
+    elapsed = time.monotonic() - started
+
+    assert elapsed < QUOTE_READ_TIMEOUT_SECONDS + 1.0
+    body = _card_body(conn)
+    assert "相关新闻" not in body
+    assert "行情 WIF $0.5432 24h +7.91%" in body
+    assert len(sender.cards) == 1
+    assert _deliveries(conn)[0]["attempts"] == 1
+
+
+def test_a_quote_port_that_hangs_costs_its_own_line_and_leaves_the_news_on_the_card(conn: Any) -> None:
+    """The same claim from the other side: neither read can take the other's line down with it."""
+
+    _news_event(
+        conn,
+        hit_id=582_045,
+        symbol="WIF",
+        text="Dogwifhat treasury moves a large tranche to an exchange",
+        opened_at_ms=NOW - 3_600_000,
+        settled_at_ms=NOW - 3_600_000 + 30_000,
+        delivered_title="WIF 国库向交易所转入大额代币",
+    )
+    _quotable(conn)
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+    db = _Db(conn)
+    db.quote_port_seconds = 30.0
+    sender = _Sender()
+
+    started = time.monotonic()
+    asyncio.run(_loop(db, sender, clock=_Clock()).advance())
+    elapsed = time.monotonic() - started
+
+    assert elapsed < QUOTE_READ_TIMEOUT_SECONDS + 1.0
+    body = _card_body(conn)
+    assert "行情" not in body
+    assert "相关新闻 48h · 已推 1 · 共 1" in body
+    assert len(sender.cards) == 1
+    assert _deliveries(conn)[0]["attempts"] == 1
+
+
+def test_a_retry_re_sends_the_frozen_card_and_asks_for_no_news_at_all(conn: Any) -> None:
+    """A retry is the same card again; re-reading the News would spend a read to change nothing."""
+
+    _news_event(
+        conn,
+        hit_id=582_050,
+        symbol="WIF",
+        text="Dogwifhat treasury moves a large tranche to an exchange",
+        opened_at_ms=NOW - 3_600_000,
+        settled_at_ms=NOW - 3_600_000 + 30_000,
+        delivered_title="WIF 国库向交易所转入大额代币",
+    )
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+    db = _Db(conn)
+    sender = _Sender()
+    sender.raise_with = _Refused("rate_limited", commit_phase="not_sent", retryable=True)
+    clock = _Clock()
+    asyncio.run(_loop(db, sender, clock=clock).advance())
+    assert db.turns("news_market_news") == 1
+
+    sender.raise_with = None
+    clock.advance(SEND_RETRY_BACKOFF_MS[0] + 1_000)
+    asyncio.run(_loop(db, sender, clock=clock).advance())
+
+    assert db.turns("news_market_news") == 1  # the frozen card was re-sent, not re-read
+    assert sender.cards[0] == sender.cards[1]
+    assert "相关新闻 48h · 已推 1 · 共 1" in _card_body(conn)
+
+
+def test_the_news_read_changes_no_notification_decision(conn: Any) -> None:
+    """§4 stays a function of the observations: what was decided is identical either way.
+
+    The twin of `test_the_quote_read_changes_no_notification_decision`, for the second display read.
+    """
+
+    def replay(*, news: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+        connection = connect_postgres_test(read_only=False)
+        try:
+            connection.execute("TRUNCATE news_items, news_market_tracks, news_market_deliveries CASCADE")
+            connection.execute("TRUNCATE news_events, news_deliveries, news_verdicts CASCADE")
+            _news_event(
+                connection,
+                hit_id=582_060,
+                symbol="WIF",
+                text="Dogwifhat treasury moves a large tranche to an exchange",
+                opened_at_ms=NOW - 3_600_000,
+                settled_at_ms=NOW - 3_600_000 + 30_000,
+                delivered_title="WIF 国库向交易所转入大额代币",
+            )
+            db = _Db(connection)
+            if not news:
+                db.news_failure = RuntimeError("news_plane_down")
+            clock = _Clock()
+            sender = _Sender()
+            loop = _loop(db, sender, clock=clock)
+            _oi_item(connection, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+            _liquidation_item(connection, "liq-1", at_ms=NOW - 50_000, side="long")
+            asyncio.run(loop.advance())
+            _oi_item(connection, "oi-2", at_ms=NOW - 10_000, change_bps=1_400)
+            clock.advance(30_000)
+            asyncio.run(loop.advance())
+            decisions = _rows(
+                connection,
+                "SELECT delivery_key, group_key, trigger_reason, trigger_item_id, state, attempts,"
+                " covered_count, next_attempt_at_ms FROM news_market_deliveries ORDER BY delivery_key",
+            )
+            tracks = _rows(
+                connection,
+                "SELECT group_key, family, anchor_state, anchor_oi_change_bps, anchor_direction,"
+                " next_due_at_ms, pending_reason FROM news_market_tracks ORDER BY group_key",
+            )
+            bodies = sorted(
+                next(element["content"] for element in row["card"]["elements"] if element["tag"] == "markdown")
+                for row in _deliveries(connection)
+            )
+            return decisions, tracks, bodies
+        finally:
+            connection.close()
+
+    with_news = replay(news=True)
+    without_news = replay(news=False)
+    assert with_news[:2] == without_news[:2]
+    assert len(with_news[0]) == 3  # not vacuous: three cards, two families, one follow-up
+    # And not vacuous in the other direction: the answered run really did reach the reader with the
+    # line, on the two OI cards and on neither liquidation card.
+    assert sum("相关新闻" in body for body in with_news[2]) == 2
+    assert not any("相关新闻" in body for body in without_news[2])
+
+
+def test_the_pushed_news_read_answers_from_the_delivered_card_ledger(conn: Any) -> None:
+    """The statement itself, against real rows: the window, the bound, the order and the title.
+
+    Four pushed cards inside the window and one Event nobody was told about. `pushed` is the three
+    newest by the time the *reader* was interrupted; `total` counts every editorial Event the
+    instrument was named in, told or not, which is the second number the card prints.
+    """
+
+    # Four unrelated stories rather than four numbered copies of one: admission would fold near
+    # duplicates into a single Event, and this read is about four separate interruptions.
+    stories = (
+        "Dogwifhat treasury moves a large tranche to an exchange wallet",
+        "A major venue lists a perpetual contract on dogwifhat",
+        "An auditor publishes findings on the dogwifhat bridge contract",
+        "A payments company adds dogwifhat to its merchant checkout",
+    )
+    for index, story in enumerate(stories):
+        _news_event(
+            conn,
+            hit_id=582_100 + index,
+            symbol="WIF",
+            text=story,
+            opened_at_ms=NOW - (index + 1) * 3_600_000,
+            settled_at_ms=NOW - (index + 1) * 3_600_000 + 30_000,
+            delivered_title=f"WIF 消息 {index}",
+        )
+    _news_event(
+        conn,
+        hit_id=582_110,
+        symbol="WIF",
+        text="An analyst publishes a routine weekly note mentioning dogwifhat",
+        opened_at_ms=NOW - 5 * 3_600_000,
+    )
+
+    answer = repositories_for_connection(conn).news.pushed_news_for_symbol("WIF", now_ms=NOW)
+
+    assert [row["headline_zh"] for row in answer["pushed"]] == ["WIF 消息 0", "WIF 消息 1", "WIF 消息 2"]
+    assert [row["at_ms"] for row in answer["pushed"]] == sorted(
+        (row["at_ms"] for row in answer["pushed"]), reverse=True
+    )
+    assert answer["total"] == 5
+    # And nothing at all for a symbol nobody wrote about, without a read that has to be guarded.
+    assert repositories_for_connection(conn).news.pushed_news_for_symbol("", now_ms=NOW) == {"pushed": [], "total": 0}
+    assert repositories_for_connection(conn).news.pushed_news_for_symbol("DOGE", now_ms=NOW) == {
+        "pushed": [],
+        "total": 0,
+    }
+
+
+def test_the_pushed_news_read_answers_for_an_equivalent_symbol(conn: Any) -> None:
+    """`9988` and `BABA` are the same instrument to a reader, as they are to reader history."""
+
+    conn.execute(
+        "INSERT INTO news_symbol_aliases(alias, base_symbol, source, updated_at_ms) VALUES ('9988','BABA','seed',1)"
+    )
+    conn.commit()
+    _news_event(
+        conn,
+        hit_id=582_200,
+        symbol="9988",
+        text="Alibaba prices a Hong Kong share placement",
+        opened_at_ms=NOW - 3_600_000,
+        settled_at_ms=NOW - 3_600_000 + 30_000,
+        delivered_title="阿里巴巴配售新股",
+    )
+    repos = repositories_for_connection(conn)
+
+    for asked in ("BABA", "9988"):
+        answer = repos.news.pushed_news_for_symbol(asked, now_ms=NOW)
+        assert [row["headline_zh"] for row in answer["pushed"]] == ["阿里巴巴配售新股"], asked
+        assert answer["total"] == 1, asked
+
+
+def test_the_pushed_news_read_counts_only_cards_a_reader_actually_received(conn: Any) -> None:
+    """Delivered, editorial and inside the window -- each of the three is its own exclusion."""
+
+    told = _news_event(
+        conn,
+        hit_id=582_300,
+        symbol="WIF",
+        text="Dogwifhat treasury moves a large tranche to an exchange",
+        opened_at_ms=NOW - 3_600_000,
+        settled_at_ms=NOW - 3_600_000 + 30_000,
+        delivered_title="WIF 国库向交易所转入大额代币",
+    )
+    # A card that was never delivered, one deleted after it was, one settled before the window opened,
+    # and one whose Event is a retired market kind rather than editorial News.
+    _news_event(
+        conn,
+        hit_id=582_301,
+        symbol="WIF",
+        text="A venue publishes a scheduled maintenance notice touching dogwifhat",
+        opened_at_ms=NOW - 3_600_000,
+        settled_at_ms=NOW - 3_600_000 + 30_000,
+        delivered_title="维护公告",
+        state="terminal",
+    )
+    deleted = _news_event(
+        conn,
+        hit_id=582_302,
+        symbol="WIF",
+        text="A newsroom retracts an earlier report about dogwifhat holders",
+        opened_at_ms=NOW - 3_600_000,
+        settled_at_ms=NOW - 3_600_000 + 30_000,
+        delivered_title="已撤回的报道",
+    )
+    _news_event(
+        conn,
+        hit_id=582_303,
+        symbol="WIF",
+        text="Dogwifhat reported an unusual funding rate two days ago entirely",
+        opened_at_ms=NOW - 50 * 3_600_000,
+        settled_at_ms=NOW - 50 * 3_600_000 + 30_000,
+        delivered_title="窗口之外的旧卡",
+    )
+    retired = _news_event(
+        conn,
+        hit_id=582_304,
+        symbol="WIF",
+        text="Dogwifhat open interest rose sharply on a single venue overnight",
+        opened_at_ms=NOW - 3_600_000,
+        settled_at_ms=NOW - 3_600_000 + 30_000,
+        delivered_title="退役的市场 Event",
+    )
+    conn.execute(
+        "UPDATE news_deliveries SET delete_state = 'deleted', delete_evidence = '{}'::jsonb,"
+        " delete_reason = 'test', delete_attempted_at_ms = %s, delete_settled_at_ms = %s WHERE event_id = %s",
+        (NOW, NOW, deleted),
+    )
+    conn.execute("UPDATE news_events SET event_kind = 'oi' WHERE event_id = %s", (retired,))
+    conn.commit()
+
+    answer = repositories_for_connection(conn).news.pushed_news_for_symbol("WIF", now_ms=NOW)
+
+    assert [row["event_id"] for row in answer["pushed"]] == [told]
+    # The three excluded-from-`pushed` Events that are still inside the Event window are still counted;
+    # the one that opened 50 h ago and the retired market kind are outside the total as well.
+    assert answer["total"] == 3
+
+
+def test_a_delivered_card_without_a_frozen_title_falls_back_to_the_verdict_headline(conn: Any) -> None:
+    """The same COALESCE reader history reads, so both surfaces name a card the same way."""
+
+    _news_event(
+        conn,
+        hit_id=582_400,
+        symbol="WIF",
+        text="Dogwifhat treasury moves a large tranche to an exchange",
+        opened_at_ms=NOW - 3_600_000,
+        settled_at_ms=NOW - 3_600_000 + 30_000,
+        headline_zh="判定给出的标题",
+    )
+
+    answer = repositories_for_connection(conn).news.pushed_news_for_symbol("WIF", now_ms=NOW)
+
+    assert [row["headline_zh"] for row in answer["pushed"]] == ["判定给出的标题"]
+
+
+def test_a_card_pushed_inside_the_window_for_an_older_event_is_neither_quoted_nor_counted(conn: Any) -> None:
+    """The two windows are one window (#582, Issue-owner decision after review).
+
+    `已推` bounds by when the reader was interrupted and `共` by when the Event opened, so an Event
+    that opened 50 h ago and was pushed 10 h ago used to be quoted by the first and missed by the
+    second: `{pushed: 1, total: 0}`, and a total of zero prints nothing at all -- the headline was
+    silently dropped rather than shown. Both statements now carry the Event window, so `pushed` is a
+    subset of `total` and the card either shows a story or does not have one.
+    """
+
+    _news_event(
+        conn,
+        hit_id=582_500,
+        symbol="WIF",
+        text="Dogwifhat treasury moved a large tranche to an exchange two days ago",
+        opened_at_ms=NOW - 50 * 3_600_000,
+        settled_at_ms=NOW - 10 * 3_600_000,
+        delivered_title="窗口之外开的 Event",
+    )
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+    asyncio.run(_loop(_Db(conn), _Sender(), clock=_Clock()).advance())
+
+    assert repositories_for_connection(conn).news.pushed_news_for_symbol("WIF", now_ms=NOW) == {
+        "pushed": [],
+        "total": 0,
+    }
+    assert "相关新闻" not in _card_body(conn)
+    assert "窗口之外开的 Event" not in _card_body(conn)
+
+
+def test_a_card_pushed_inside_the_window_for_an_event_inside_it_is_quoted_and_counted(conn: Any) -> None:
+    """The other half of the same boundary: 40 h opened, 10 h pushed, both numbers see it."""
+
+    _news_event(
+        conn,
+        hit_id=582_501,
+        symbol="WIF",
+        text="A major venue listed a perpetual contract on dogwifhat yesterday",
+        opened_at_ms=NOW - 40 * 3_600_000,
+        settled_at_ms=NOW - 10 * 3_600_000,
+        delivered_title="窗口之内开的 Event",
+    )
+    _oi_item(conn, "oi-1", at_ms=NOW - 60_000, change_bps=600)
+    asyncio.run(_loop(_Db(conn), _Sender(), clock=_Clock()).advance())
+
+    body = _card_body(conn)
+    assert "相关新闻 48h · 已推 1 · 共 1" in body
+    assert "· 窗口之内开的 Event " + fmt.clock(NOW - 10 * 3_600_000) in body

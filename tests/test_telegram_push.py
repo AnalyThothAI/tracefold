@@ -1855,6 +1855,57 @@ def test_a_market_card_shows_the_market_number_its_model_carries() -> None:
     assert "ETH" not in text
 
 
+def test_an_oi_card_carries_the_news_lines_both_channels_take_from_one_list() -> None:
+    """#582 §3.3: the news lines are `market_lines()`, so this channel adds no branch of its own.
+
+    Both surfaces are asserted from the same card here rather than trusted to agree: the Feishu body
+    is the joined list and the Telegram body is the same list escaped, so a channel that grew its own
+    news layout would show up as a difference between the two.
+
+    The card is a `followup`, which is a reason OI actually produces. `action_change` belongs to the
+    account families; an OI track never reaches it, so a news line asserted on an OI `action_change`
+    card would be pinning a combination production cannot make.
+    """
+
+    from tracefold.news.reader_card import ReaderCardHeadline
+
+    fixture = _fixture_market_card("market-oi-followup-unknown-venue-and-measurement")
+    card = replace(
+        fixture,
+        market=replace(
+            fixture.market,
+            news_pushed=(
+                # A headline carrying the three characters HTML cares about, because this channel
+                # sends HTML and the card model knows nothing about that.
+                ReaderCardHeadline(headline="AT&T <b>下调</b>全年指引", at_ms=1_788_549_480_000),
+                ReaderCardHeadline(headline="某交易所下架三个永续合约", at_ms=1_788_500_000_000),
+            ),
+            news_total=4,
+        ),
+    )
+
+    text = _sent_text(card)
+
+    assert text == (
+        "🔵 <b>持仓异动 · 跟进 · PEPE</b>\n\n"
+        "下降 -25% · 22:10–23:05\n"
+        "OI $880 · 场所未知 · 口径未知\n"
+        "相关新闻 48h · 已推 2 · 共 4\n"
+        "· AT&amp;T &lt;b&gt;下调&lt;/b&gt;全年指引 03:18\n"
+        "· 某交易所下架三个永续合约 13:33\n\n"
+        "事件时间  23:05\n"
+        "推送时间  17:27\n"
+        "🔗 <b>来源</b>  opennews oi · 2 条报道"
+    )
+    # One list, two channels: the Feishu body is the same lines, unescaped, and neither adds a link
+    # or a button for a headline (#582 §3.3).
+    feishu_body = next(element["content"] for element in feishu_card(card)["elements"] if element["tag"] == "markdown")
+    assert feishu_body.split("\n") == [*card.market_lines(), feishu_body.split("\n")[-1]]
+    assert "相关新闻 48h · 已推 2 · 共 4" in feishu_body
+    assert "· AT&T <b>下调</b>全年指引 03:18" in feishu_body
+    assert "<a href" not in text  # this fixture carries no console origin, and a headline is not a link
+
+
 def test_the_enrichment_edit_replaces_the_message_from_the_updated_card() -> None:
     """The first send is the card as it stood; the edit is the same message, from the resolved card.
 

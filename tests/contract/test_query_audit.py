@@ -63,6 +63,10 @@ _NEWS_QUERY_NAMES = (
     # PR-2's notification take. It serves no route, but it runs every two seconds for the life of the
     # process, which makes it the market read most able to grow without anyone noticing.
     "news_market_notify_backlog",
+    # #582 PR-2. The OI card's two News reads: they serve no route either, and they run inside the
+    # send lane's own 1.5 s budget, which is what makes an unplanned scan visible to a reader.
+    "news_market_news_pushed",
+    "news_market_news_total",
     "news_reaction_due_scan",
     "news_reaction_attach",
     "news_review_task_queue",
@@ -294,6 +298,33 @@ def test_status_audit_explains_the_statements_the_status_route_executes():
     assert "percentile_cont(0.95)" in pipeline
     assert "news_event_evidence_snapshots" in pipeline
     assert queries["news_status_funnel_totals"].sql.count("news_event_evidence_snapshots") == 2
+
+
+def test_the_oi_cards_news_read_is_audited_as_the_statements_the_port_executes():
+    """#582 §3.3: the registered pair is the storage module's own SQL, with its own bound values.
+
+    Driving `pushed_news_for_symbol` against a recording connection is what keeps the audit honest.
+    A registered look-alike would plan a statement the send lane never runs -- and this read runs
+    inside the card's 1.5 s budget, so a plan nobody checked is a card nobody gets.
+    """
+
+    now_ms = 123_456
+    queries = {query.name: query for query in query_audit_catalog(now_ms=now_ms).queries}
+    conn = RecordingStatementConn()
+
+    NewsRepository(conn).pushed_news_for_symbol("BTC", now_ms=now_ms)
+
+    assert conn.statements == [
+        (queries[name].sql, tuple(queries[name].params))
+        for name in ("news_market_news_pushed", "news_market_news_total")
+    ]
+    # Not vacuous: both statements are bounded, and the pair really is two different reads.
+    pushed, total = queries["news_market_news_pushed"], queries["news_market_news_total"]
+    assert "LIMIT %s" in pushed.sql and "d.settled_at_ms >= %s" in pushed.sql
+    assert "ea.opened_at_ms >= %s" in total.sql and "count(DISTINCT ea.event_id)" in total.sql
+    assert pushed.sql != total.sql
+    # And both resolve the symbol through the alias table rather than matching it literally.
+    assert all("equivalent_symbols" in query.sql for query in (pushed, total))
 
 
 def test_status_audit_reads_its_sql_from_the_production_module_only():

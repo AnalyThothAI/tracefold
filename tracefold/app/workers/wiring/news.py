@@ -51,7 +51,7 @@ from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
 from tracefold.news.market_notifications import TICK_SECONDS, MarketNotificationLoop
 from tracefold.news.market_review.loops import QuoteDatabasePort, ReactionDatabasePort
 from tracefold.news.pipeline.admission import DeduperConsumer
-from tracefold.news.pipeline.delivery import DelivererConsumer, read_display_quotes
+from tracefold.news.pipeline.delivery import DelivererConsumer, read_display_quotes, read_pushed_news
 from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
@@ -88,7 +88,9 @@ class _MarketNotificationDatabase:
     The market loop may not name a repository, a table or a price module, so "quote these symbols"
     is a port and this is the composition that satisfies it -- with the News first card's own read:
     the same session, the same 1.5 s budget, the same degradation. There is no market-specific quote
-    rule anywhere, which is the point (#562).
+    rule anywhere, which is the point (#562). "What has this reader already been told about this
+    instrument" is the second such port, satisfied out of the same lane and the same delivered-card
+    ledger the reader-history bands read (#582 §3.3).
     """
 
     lane: WorkerNewsDatabase
@@ -101,6 +103,16 @@ class _MarketNotificationDatabase:
 
     async def quotes_for_symbols(self, symbols: Sequence[str], *, now_ms: int) -> list[dict[str, Any]]:
         return await read_display_quotes(self.lane, symbols, now_ms=now_ms, name="news_market_quotes")
+
+    async def pushed_news_for_symbol(self, symbol: str, *, now_ms: int) -> dict[str, Any]:
+        """`MarketNotificationDatabasePort.pushed_news_for_symbol`: the delivered-card ledger, read once.
+
+        One named read on the same News lane, through the News-owned read that carries the budget and
+        the degradation -- exactly as the quote beside it is composed. Neither the statement nor the
+        budget is App's: this is the composition and nothing else (#582 §3.3).
+        """
+
+        return await read_pushed_news(self.lane, symbol, now_ms=now_ms, name="news_market_news")
 
 
 @dataclass(frozen=True, slots=True)

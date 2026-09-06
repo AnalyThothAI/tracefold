@@ -9,11 +9,15 @@ from tracefold.platform.postgres.audit import (
     ReadQuerySpec,
 )
 
-from ..market_contracts import MARKET_WINDOW_ROW_CAP
+from ..market_contracts import MARKET_NEWS_PUSHED_MAX, MARKET_NEWS_WINDOW_MS, MARKET_WINDOW_ROW_CAP
 from ..market_review.pricing import REACTION_METRIC_VERSION
 from ..review.desk import review_read_statements
 from ..source_contracts import MARKET_KINDS
-from .decisions import UNPUBLISHED_VERDICT_CANDIDATES_SQL
+from .decisions import (
+    MARKET_NEWS_PUSHED_SQL,
+    MARKET_NEWS_TOTAL_SQL,
+    UNPUBLISHED_VERDICT_CANDIDATES_SQL,
+)
 from .events import UNPUBLISHED_EVENT_CANDIDATES_SQL
 from .feed_sql import (
     ASSET_SEARCH_PREDICATE,
@@ -365,6 +369,29 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             name="news_market_group_timeline",
             sql=MARKET_TIMELINE_SQL,
             params=("oi|opennews||BTC|oi_signal_v1|opennews_oi_source_v1|300000",),
+            max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        ),
+        # #582 §3.3. The OI card's two News reads, as the statements the loop's port executes. They run
+        # once per OI card -- 50-60 a day -- inside the send lane's own 1.5 s budget, which is the whole
+        # reason both are bounded here rather than trusted to be small: the first by `LIMIT` inside a
+        # 48 h delivered window, the second by the indexed `(symbol, opened_at_ms)` window it counts.
+        ReadQuerySpec(
+            name="news_market_news_pushed",
+            sql=MARKET_NEWS_PUSHED_SQL,
+            params=(
+                "BTC",
+                int(now_ms) - MARKET_NEWS_WINDOW_MS,
+                int(now_ms) - MARKET_NEWS_WINDOW_MS,
+                MARKET_NEWS_PUSHED_MAX,
+            ),
+            max_read_return_amplification=100.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_market_news_total",
+            sql=MARKET_NEWS_TOTAL_SQL,
+            params=("BTC", int(now_ms) - MARKET_NEWS_WINDOW_MS),
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),

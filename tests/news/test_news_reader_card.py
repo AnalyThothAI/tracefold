@@ -44,7 +44,7 @@ import pytest
 from tracefold.news import card_format as fmt
 from tracefold.news.delivery import render_first_card
 from tracefold.news.market_notifications import MarketObservation, MarketTrack, render_market_card
-from tracefold.news.reader_card import ReaderCardQuote
+from tracefold.news.reader_card import NEWS_HEADLINE_MAX, ReaderCardHeadline, ReaderCardQuote, reader_news
 
 FIXTURES: Final = Path(__file__).resolve().parents[1] / "fixtures" / "news"
 PRODUCTION_CARDS: Final[list[dict[str, Any]]] = json.loads(
@@ -429,3 +429,189 @@ def test_a_card_the_channel_cannot_price_says_nothing_rather_than_zero() -> None
     # `money` inherits that answer, and puts a sign where a sign goes rather than after the `$`.
     assert fmt.money(None) == fmt.money("") == fmt.money("0") == fmt.money("not-a-price") == ""
     assert fmt.money("-412.75") == "-$412.75" and fmt.money("200840") == "$200,840.00"
+
+
+# --- #582 §3.3: the News an OI card's own instrument already has ----------------------------------
+#
+# One recorded card carries both claims below. `market-oi-quoted-with-whale-columns` is a real quoted
+# OI card with the whale line these lines follow, so "where do they go" and "what do they cost" are
+# measured against a card this repository already renders rather than a constructed one.
+
+_OI_ENTRY_ID: Final = "market-oi-quoted-with-whale-columns"
+_LIQUIDATION_ENTRY_ID: Final = "market-liquidation-three-reports"
+# A headline at the clip bound in the script production writes them in. 40 characters of Chinese is
+# 120 UTF-8 bytes, not 40, which is the whole reason the byte bound is asserted separately.
+_LONGEST_HEADLINE: Final = "特" * (NEWS_HEADLINE_MAX + 10)
+_WIDEST_NEWS: Final = {
+    "news_pushed": tuple(ReaderCardHeadline(headline=_LONGEST_HEADLINE, at_ms=1_788_549_480_000) for _ in range(3)),
+    "news_total": 99,
+}
+# What the widest possible news block costs, measured rather than claimed. #582 §3.3 estimated "at
+# most +4 lines, about +250 bytes"; the line bound is exact, and the byte figure is the *typical*
+# headline. A headline clipped at `NEWS_HEADLINE_MAX` is 40 Chinese characters -- 120 UTF-8 bytes, not
+# 40 -- so the bound the code can actually be held to is the one below, and the typical case is
+# asserted beside it so both numbers stay honest.
+_NEWS_LINES_MAX: Final = 4
+_NEWS_BODY_BYTES_MAX: Final = 429
+_NEWS_CARD_BYTES_MAX: Final = 433
+_TYPICAL_HEADLINE_CHARS: Final = 22
+_NEWS_BODY_BYTES_TYPICAL: Final = 266
+
+
+def _corpus_entry(entry_id: str) -> dict[str, Any]:
+    return next(
+        entry
+        for corpus in (PRODUCTION_CARDS, BRANCH_CARDS["entries"], QUOTED_CARDS["entries"])
+        for entry in corpus
+        if entry["id"] == entry_id
+    )
+
+
+def _recorded_card(entry_id: str, **news: Any) -> dict[str, Any]:
+    """One corpus card re-rendered, optionally carrying the News its instrument already had."""
+
+    inputs = _corpus_entry(entry_id)["inputs"]
+    return render_market_card(
+        track=MarketTrack(**inputs["track"]),
+        reason=inputs["reason"],
+        observations=[MarketObservation(**row) for row in inputs["observations"]],
+        detail_url=inputs["detail_url"],
+        action_changes=inputs["action_changes"],
+        quotes=[ReaderCardQuote(**quote) for quote in inputs.get("quotes", ())],
+        **news,
+    )
+
+
+def test_an_oi_card_names_the_news_its_instrument_already_has() -> None:
+    """The counts, then the titles, after the whale line and before the facts line the card ends on."""
+
+    body = _body(
+        _recorded_card(
+            _OI_ENTRY_ID,
+            news_pushed=(
+                ReaderCardHeadline(headline="美国对进口芯片加征关税", at_ms=1_788_549_000_000),
+                ReaderCardHeadline(headline="某交易所宣布下架三个永续合约", at_ms=1_788_500_000_000),
+            ),
+            news_total=5,
+        )
+    )
+
+    assert body.split("\n") == [
+        "上升 6.12% · 03:18",
+        "OI $11.03M · binance · oi_signal_v1|opennews_oi_source_v1|300000",
+        "行情 WIF $0.5432 24h +7.91%",
+        "鲸鱼多头盈利 88.4% · 鲸鱼持仓/OI 143.9%",
+        "相关新闻 48h · 已推 2 · 共 5",
+        "· 美国对进口芯片加征关税 03:10",
+        "· 某交易所宣布下架三个永续合约 13:33",
+        "WIF · opennews oi（1 条报道） · 03:18",
+    ]
+
+
+def test_an_oi_card_whose_instrument_had_no_news_prints_no_news_line() -> None:
+    """`已推 0 · 共 0` is four bytes to say a token had no news, which is the ordinary case (#582 §1)."""
+
+    plain = _body(_recorded_card(_OI_ENTRY_ID))
+
+    assert "相关新闻" not in plain
+    # And it is the *total* that decides, not the absence of headlines: a card handed pushed titles
+    # for a window that held no Event still prints nothing, because the two numbers are one claim.
+    assert _body(_recorded_card(_OI_ENTRY_ID, news_pushed=_WIDEST_NEWS["news_pushed"], news_total=0)) == plain
+
+
+def test_a_window_of_news_nobody_was_told_about_still_reaches_the_reader() -> None:
+    """Five Events and no card is exactly what an operator reading an OI number wants to know."""
+
+    lines = _body(_recorded_card(_OI_ENTRY_ID, news_total=5)).split("\n")
+
+    assert "相关新闻 48h · 已推 0 · 共 5" in lines
+    assert not any(line.startswith("· ") for line in lines)
+
+
+def test_a_headline_wider_than_the_card_is_clipped_rather_than_dropped() -> None:
+    """An overflow costs the tail of one line; the console holds the rest."""
+
+    lines = _body(_recorded_card(_OI_ENTRY_ID, **_WIDEST_NEWS)).split("\n")
+    headline = next(line for line in lines if line.startswith("· "))
+
+    assert headline == f"· {'特' * (NEWS_HEADLINE_MAX - 1)}… 03:18"
+
+
+def test_the_count_is_the_headlines_the_card_actually_printed() -> None:
+    """`已推 n` and the lines under it are one list, so a titleless row cannot inflate the number.
+
+    The row is dropped where the read is composed rather than where it is rendered, so this goes
+    through `reader_news` -- the path the loop uses -- instead of handing the card model a value the
+    read can no longer produce.
+    """
+
+    pushed, total = reader_news(
+        {
+            "pushed": [
+                {"event_id": "e1", "headline_zh": "有标题的一条", "at_ms": 1_788_549_480_000},
+                {"event_id": "e2", "headline_zh": "   ", "at_ms": 1_788_549_480_000},
+            ],
+            "total": 2,
+        }
+    )
+    lines = _body(_recorded_card(_OI_ENTRY_ID, news_pushed=pushed, news_total=total)).split("\n")
+
+    assert "相关新闻 48h · 已推 1 · 共 2" in lines
+    assert [line for line in lines if line.startswith("· ")] == ["· 有标题的一条 03:18"]
+
+
+def test_the_news_lines_cost_at_most_four_lines_and_the_bytes_they_claim() -> None:
+    """#582 §3.3's volume bound, measured on a recorded card at the widest input the model allows."""
+
+    plain, widest = _recorded_card(_OI_ENTRY_ID), _recorded_card(_OI_ENTRY_ID, **_WIDEST_NEWS)
+    plain_body, widest_body = _body(plain), _body(widest)
+
+    # The card this is measured against is the one #582 §1 measured: 5 lines, 600-700 bytes on the wire.
+    assert len(plain_body.split("\n")) == 5
+    assert 600 <= len(_canonical(plain).encode("utf-8")) <= 700
+
+    assert len(widest_body.split("\n")) - len(plain_body.split("\n")) == _NEWS_LINES_MAX
+    assert len(widest_body.encode("utf-8")) - len(plain_body.encode("utf-8")) == _NEWS_BODY_BYTES_MAX
+    assert len(_canonical(widest).encode("utf-8")) - len(_canonical(plain).encode("utf-8")) == _NEWS_CARD_BYTES_MAX
+
+    # And what the estimate in the Issue describes: three headlines of the length production writes.
+    typical = _recorded_card(
+        _OI_ENTRY_ID,
+        news_pushed=tuple(
+            ReaderCardHeadline(headline="美" * _TYPICAL_HEADLINE_CHARS, at_ms=1_788_549_480_000) for _ in range(3)
+        ),
+        news_total=5,
+    )
+    assert len(_body(typical).encode("utf-8")) - len(plain_body.encode("utf-8")) == _NEWS_BODY_BYTES_TYPICAL
+
+
+def test_only_the_oi_card_prints_the_news_lines() -> None:
+    """§3.3 leaves liquidation and smart money out deliberately; the render is where that is visible."""
+
+    body = _body(_recorded_card(_LIQUIDATION_ENTRY_ID, **_WIDEST_NEWS))
+
+    assert "相关新闻" not in body and "特特" not in body
+
+
+def test_the_news_read_becomes_card_facts_bounded_to_what_a_card_prints() -> None:
+    """`reader_news` is `reader_quotes`' twin: the port's mapping, bounded, never trusted."""
+
+    payload = {
+        "pushed": [
+            {"event_id": f"e{index}", "headline_zh": f"标题{index}", "at_ms": 1_788_549_000_000 + index}
+            for index in range(5)
+        ],
+        "total": 9,
+    }
+    pushed, total = reader_news(payload)
+
+    assert [item.headline for item in pushed] == ["标题0", "标题1", "标题2"]
+    assert total == 9
+    # Everything it cannot read is absent rather than wrong: this line is display, and a broken read
+    # costs it and nothing else.
+    assert reader_news({}) == ((), 0)
+    assert reader_news({"pushed": "not-a-list", "total": "not-a-number"}) == ((), 0)
+    assert reader_news({"pushed": [{"headline_zh": "  "}, {"headline_zh": "有"}], "total": -3}) == (
+        (ReaderCardHeadline(headline="有", at_ms=0),),
+        0,
+    )
