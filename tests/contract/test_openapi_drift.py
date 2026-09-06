@@ -15,6 +15,7 @@ web/src/api/types.ts          — temporary hand-authored domain types until the
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -500,4 +501,66 @@ def test_contracts_md_lists_the_same_trade_channels_as_the_code() -> None:
     documented = "|".join(TRADE_CHANNEL_ORDER)
     assert f"`{documented}`" in document, (
         f"docs/CONTRACTS.md does not spell the current code-owned channel order; expected the literal `{documented}`"
+    )
+
+
+_CONTRACTS_MD = ROOT / "docs" / "CONTRACTS.md"
+_RETIRED_BEGIN = "<!-- retired-routes:begin -->"
+_RETIRED_END = "<!-- retired-routes:end -->"
+# Path templates as they appear in prose. `?` and backticks are excluded so a documented query
+# string stops at the path, and a field path such as `/api/news/status.price` is truncated at the
+# dot to the route that publishes it.
+_API_PATH_RE = re.compile(r"/api/[A-Za-z0-9_{}/*.-]*")
+
+
+def _documented_api_paths(text: str) -> set[str]:
+    """Literal `/api/...` route templates named in prose.
+
+    A token carrying `*` is a family gloss (`/api/*`, `/api/token-images/*`), not a route, and is
+    not a claim this test can check.
+    """
+
+    found: set[str] = set()
+    for raw in _API_PATH_RE.findall(text):
+        if "*" in raw:
+            continue
+        path = raw.split(".", 1)[0].rstrip("/")
+        if path != "/api":
+            found.add(path)
+    return found
+
+
+def test_contracts_md_names_only_live_api_paths_and_names_every_one() -> None:
+    """`docs/CONTRACTS.md` may not describe a route the service does not serve, or omit one it does.
+
+    The document is hand-written and the API is generated, so the two drift in both directions and
+    neither drift is visible to a reader: #589 found it claiming "exactly seven GET route templates"
+    when nine were registered. Route *shapes* are `docs/generated/openapi.json` and are not repeated
+    there; what is repeated is which routes exist, and that is what this pins. Retired routes are
+    exempt by being listed between the retired-routes markers, which is also where the 404 contract
+    is stated, so removing a route means moving one line rather than deleting a paragraph.
+    """
+
+    document = _CONTRACTS_MD.read_text(encoding="utf-8")
+    assert _RETIRED_BEGIN in document and _RETIRED_END in document, (
+        f"docs/CONTRACTS.md must keep the {_RETIRED_BEGIN} / {_RETIRED_END} block naming retired routes"
+    )
+    retired_block = document.split(_RETIRED_BEGIN, 1)[1].split(_RETIRED_END, 1)[0]
+    retired = _documented_api_paths(retired_block)
+    documented = _documented_api_paths(document) - retired
+
+    live = {path for path in json.loads(OPENAPI_PATH.read_text(encoding="utf-8"))["paths"] if path.startswith("/api/")}
+
+    assert live, "docs/generated/openapi.json publishes no /api path; regenerate it before reading this"
+    assert not (retired & live), (
+        "docs/CONTRACTS.md lists a live route as retired: "
+        f"{sorted(retired & live)}. Move it out of the retired-routes block."
+    )
+    assert not (documented - live), (
+        "docs/CONTRACTS.md describes routes that are not registered: "
+        f"{sorted(documented - live)}. Delete the prose, or list the path in the retired-routes block."
+    )
+    assert not (live - documented), (
+        "docs/CONTRACTS.md never names these live routes: "
+        f"{sorted(live - documented)}. Add each to the endpoint families table."
     )

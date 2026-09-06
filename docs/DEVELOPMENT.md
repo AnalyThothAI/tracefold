@@ -609,7 +609,8 @@ open canaries and receipts that cut. `0305` admits the `compile_record`
 artifact kind, keeps `compile_receipt` readable as history, and trips open
 canaries a second time, because a candidate registered against the retired
 receipt chain can no longer be evaluated. Those reissues do not change the
-epoch or accepted `news_review_v4` truth. `0315` then records #288's exact
+epoch, and the reviews accepted under the rubric of the day stayed eligible
+across them. `0315` then records #288's exact
 source route and factory-v7 hard cut without rewriting or appending the
 `program_v7` epoch row. The append-only rows and prior bundles remain audit
 history, but exact current-bundle acceptance makes factory-v6 evidence

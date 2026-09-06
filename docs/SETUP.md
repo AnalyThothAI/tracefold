@@ -333,8 +333,9 @@ and unscored or under-80 market frames skip Program execution; exchange
 listing/delisting frames are admitted and judged like any candidate), Triage is
 the semantic filter, and
 `decide()` applies policy v13 to one `ScoredJudgment`. Semantic generation is
-the code-owned `EventSemantics.v2 -> deterministic SemanticNormalizer ->
-ReaderCard.v2 -> deterministic assembler` Program; `TradeRelevanceV1` is nested
+the code-owned `EventSemantics.v2 -> deterministic
+_normalize_and_validate_semantics -> ReaderCard.v2 -> deterministic _assemble`
+Program; `TradeRelevanceV1` is nested
 inside EventSemantics.v2. It remains behind
 `SemanticJudge.judge(TriageContext)`. A normal judgment makes three serial
 provider calls (EventSemantics, taxonomy, ReaderCard since #501); the Program
@@ -373,9 +374,9 @@ quality uplift; v7 evidence starts from zero
 and the normal graph was exactly two serial Predictor calls until #501 added
 the taxonomy Predictor.
 Migration `0304` carries the #193 strategy-artifact cut: it trips every open
-canary activation and receipts itself, but does not re-open the epoch, so
-accepted `news_review_v4` evidence stays eligible. Migration `0305` carries the
-same issue's compile-record cut: it admits the `compile_record` learning
+canary activation and receipts itself, but does not re-open the epoch, so the
+reviews accepted under the rubric of the day stayed eligible. Migration `0305`
+carries the same issue's compile-record cut: it admits the `compile_record` learning
 artifact kind, keeps `compile_receipt` readable as audit history, and trips
 open activations again, because a candidate registered against the retired
 receipt chain can no longer be evaluated. It does not re-open the epoch either.
@@ -465,25 +466,11 @@ and confirm `config_path` points at `~/.tracefold/config.yaml`. Report only
 paths, booleans, and diagnostic command status; do not paste the API token,
 model keys, provider passwords, or full config payloads into docs or chat.
 
-Alembic has one root: baseline `20260831_0340` and current head
-`20260903_0359`. A new empty PostgreSQL 18 database applies baseline, the
-`0341` Signal hard cut, the additive `0342` Trading notification delivery
-ledger, the additive `0343` execution Runtime projection/indexes, the
-destructive `0344` News open-interest push cut, and the `0345` Runtime
-projection constraint hard cut, followed by the additive `0346` notification
-result, the destructive `0347` retirement-table drop, the `0348` Runtime
-readiness/current-control hard cut, the additive `0349` bounded current
-account read projection, the additive `0350` `pg_trgm` pin with the
-`title_similarity` told-trace reason, the additive `0351` judgment CHECK
-opening to program v9 with blind review drafts, and the additive `0352`
-judgment CHECK opening to triage policy v12 (#504), the `0353` rewrite of
-`trading_execution_string_array_valid` to code-point ordering (#510), the
-additive `0354` Runtime route catalogue, the destructive `0355` dead Case column
-drop, the destructive `0356` `account_slot` identity cut, the destructive
-`0357` cut of every JSON-shape CHECK, its four functions, the unread digests and
-the five readiness booleans (#520), the additive `0358` judgment CHECK
-opening to triage policy v13 (#523), and the destructive `0359` drop of the
-never-written Trading notification delivery ledger (#528), in order.
+Alembic has one root: baseline `20260831_0340` and one head. A new empty
+PostgreSQL 18 database applies the baseline and every revision after it in
+order. [`MIGRATIONS.md`](MIGRATIONS.md) is the only place that names the head
+and what each revision did; this document does not restate that list, because a
+second copy of it is a copy that goes stale.
 Current source intentionally has no upgrade path from an earlier revision. To
 recover a pre-#449 backup, use the exact pre-cut image/source to restore and
 advance it to the old terminal `20260831_0340`, take a verified backup, perform

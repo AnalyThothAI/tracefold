@@ -259,12 +259,15 @@ Material facts include:
   local Strategy allowlist.
 - market: the same `news_items` row is also where a market observation lives
   (#553). A frame from a market Strategy carries `market_kind`
-  (`oi|liquidation|smart_money|unknown_market`), `market_source_strategy_id`,
+  (`oi|liquidation|smart_money|unknown_market`, and `wallet` since `0372` for
+  the observations the chain tape derives rather than a Strategy sends),
+  `market_source_strategy_id`,
   `market_parse_status` (`parsed|raw`), `market_parse_error` and the frame's own
   `provider_params`, and one typed fact row is written beside it in the same
-  transaction: `news_oi_signals`, `news_market_liquidations` or
-  `news_market_smart_money`. `market_kind IS NULL` is exactly "this Item is
-  ordinary news", and one CHECK states that pair as one fact. All three ledgers
+  transaction: `news_oi_signals`, `news_market_liquidations`,
+  `news_market_smart_money` or `news_market_wallet_events`.
+  `market_kind IS NULL` is exactly "this Item is ordinary news", and one CHECK
+  states that pair as one fact. All four ledgers
   are cascade children of `news_items`, so a typed fact cannot outlive the
   record it was parsed from.
 
@@ -304,7 +307,7 @@ physically deleted every pre-genesis Event, including rows that carried the
 retired `source_contract_unverified` value.
 
 `news_oi_signals` is the OI measurement ledger, written at admission from the
-Item and never from an Event. Migration `20260905_0364` dropped its `event_id`
+Item and never from an Event. Migration `20260905_0365` dropped its `event_id`
 foreign key — the column stays as the opaque source identifier a frozen Trading
 Case already resolves — and made `(source_item_id, metric_version)` its
 observation key, so one provider record parsed under one metric version is one
@@ -389,66 +392,23 @@ since `/app` is an import root for the same reason.
 
 ```text
 tracefold.news
-  opennews.py         canonical OpenNews frame adapter (raw_text, provenance)
-  bus.py              broker envelope, routing keys, error classes, Publisher/Consumer protocols
-  events/
-    facts.py / titles.py  atomic FactUnits and content-block title extraction
-    identity.py / javascript_text.py  exact comparison identity and pinned JavaScript text semantics
-    tokens.py / minhash.py  comparison tokens and MinHash 32x4 band keys
-    gate.py / storyline.py  deterministic admission, scheduling metadata, grounded assets, storyline keys
-  similarity.py       Program-bound reader-card similarity; relocation waits for an approved identity migration
-  source_contracts.py  the one classifier: `EVENT_KINDS` vs `MARKET_KINDS`, and `market_route()`
-  market_contracts.py  the market read surface's own bounds and its two status vocabularies
-  oi_signals.py / liquidations.py / smart_money.py  the three market parsers; no judge, no card
-  market_review/
-    instruments.py / pricing.py  instrument and quote/reaction domain contracts
-    loops.py           current Quotes on ordinary DB admission; Event Reactions on one-slot heavy admission
-    storage.py         instrument, quote, Event Reaction, and bounded review persistence composition
-  review/
-    desk.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
-    drafter.py        model-proposed rubrics an authorized reviewer accepts or rewrites; never writes the DB
-  learning/
-    dataset.py        freeze / load / project the immutable corpora; holds no release authority
-    objective.py      framework-neutral: which accepted cases GEPA may optimize, hold as controls, or exclude
-    optimizer.py      the one offline entry: role identities, budget, Objective Plan, GEPA, terminal state
-    evaluate.py       run both arms over a frozen corpus and return evidence; decides no state
-    taxonomy_metric.py  pure four-axis taxonomy comparison used by the existing case metric
-    ledger.py / profile.py  the learning plane's own rows, its bundle's epoch, and the release profile
-  release/
-    candidate.py      admit a Prompt candidate: derive its Program identity, re-derive the Objective Plan
-    canary.py         deterministic one-arm assignment and durable trip/close control
-    runtime.py        image candidate lineage/availability and startup Canary reconciliation
-  triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback
-  program/            SemanticJudge, artifact/registry, seed instructions, chat transport, artifact_tool
-  delivery.py / control.py  cards, control commands
-  delivery_contracts.py  what one send attempt proved: the `commit_phase` vocabulary both adapters carry
-  pipeline/
-    admission.py      the atomic Deduper transaction and raw-queue consumer
-    receiver.py / recovery.py  live OpenNews ingest and official-history recovery
-    triage.py / triage_audit.py  SemanticJudge route, policy persistence, execution audit
-    triage_route.py   the route's typed vocabulary: arm selection, inputs, attempts, outcome
-    delivery.py       one-attempt reader-card delivery consumer
-    maintenance.py    instrument snapshot, retention, broker snapshot, two handoff repairs
-    root.py / runtime.py  Workers composition and the NewsDatabasePort/stop mechanics
-  storage/
-    events.py / decisions.py  material facts/evidence and verdict/delivery ledgers
-    feed.py / operations.py   bounded public reads and ingest/retention operations
-    market.py                 the market read model: Items + typed facts, grouped and paged
-    feed_sql.py / query_specs.py  production Feed SQL and its audited bound statements
-    trade_projection.py       News-owned point-in-time handoff queried by App for Trading
-    learning.py / root.py     learning persistence and the concrete repository composition
-  search.py           pure News Feed search planning over the instrument identity catalogue
-  eval/               provider-hits Deduper+Gate replay only
+  the News capability. OpenNews ingest and the broker envelope; the one source
+  classifier that splits editorial frames from market observations; the Event
+  pipeline (Deduper and its atomic admission transaction, Gate, Triage,
+  Deliverer, Janitor, recovery); the native DSPy Program with its artifact
+  registry, seed instructions and chat transport; ReviewDesk and the offline
+  learning and release planes; instrument/quote/reaction review; the three
+  market parsers, the notification loop and the chain wallet tape; and every
+  `news_*` statement behind a named repository method in `storage/`.
+  `similarity.py` stays in the package root because relocating it waits on an
+  approved identity migration.
 
 tracefold.trading
-  signal_lane.py      the one deep module: `advance()`, Source -> Case -> Signal
-  contracts.py        App-facing values plus the Source/Case/Decision vocabulary
-  execution_contracts.py  engine-neutral Signal/OperatorIntent/Observation transport values
-  admission.py        the one place a Source is admitted, and its closed reason set
-  sources.py          one projected OI row -> one typed Source, plus the one supported-venue table
-  policy.py           `source_native_oi_smart_money_long_v5`: pure, long-only, frozen evidence
-  market_context.py   the price window a Case is frozen against
-  storage/            Case/Signal/current reads plus active execution transport/state behind one repository
+  the disabled-by-default Alpha/Signal capability. `signal_lane.py` is the one
+  deep module (`advance()`: Source -> Case -> Signal); beside it are the
+  App-facing contracts, the one admission with its closed reason set, the OI
+  source projection, the frozen long-only policy, the price window a Case is
+  frozen against, and `trading_*` storage behind one repository.
 
 tracefold.integrations
   provider and external-system adapters: OpenNews, RabbitMQ, Feishu, Telegram,
@@ -468,6 +428,12 @@ tracefold.app
   modules; HTTP routes and exact schemas are owned by feed/event/review/status
   resource modules under `app/http/`.
 ```
+
+This map names top-level packages only. A per-file inventory here is a second
+copy of the tree that drifts the moment a module is added, and the rules that
+actually constrain the layout — allowed import edges, who may own SQL, which
+consumer families may reach a private collaborator — are executable in
+`tests/architecture/test_backend_boundaries.py`.
 
 Each business package root is its stable public Python interface:
 `tracefold.news` and `tracefold.trading` export only value and port contracts.
@@ -662,18 +628,23 @@ process-readiness failure.
 
 ## Workers task set
 
-The Workers root TaskGroup contains exactly: `workers-probe` (loopback
-health/readiness/metrics), the News consumer tasks when News is enabled
-(`news-receiver`, `news-recovery`, `news-deduper`, `news-triage`,
-`news-deliverer`, `news-janitor`), the bounded polling loops
-(`news-instruments`, and with venues enabled `news-quotes`,
-`news-reactions`), `news-chain-tape` when the wallet tape is enabled,
-the one Signal loop when Trading is enabled
-(`trading-signal-lane`), and `workers-control` (singleton
-lock, heartbeat, runtime row). There is no acquisition clock, projection
-coordinator, model arbiter, stream ingester, identity backfill, or universe
-sync task. The polling loops read public catalogues and prices on code-owned
-cadences. Their database admission is explicit per capability: instrument
+`tracefold/app/workers/task_contract.py` is the source of truth for this set:
+it declares every business task, the capability each answers for, and whether an
+unexpected error inside it is root fatal or one faulted capability beside
+healthy ones. The root TaskGroup adds `workers-probe` (loopback
+health/readiness/metrics) and `workers-control` (singleton lock, heartbeat,
+runtime row) around what that module returns, which today is: the News consumer
+tasks when News is enabled (`news-receiver`, `news-recovery`, `news-deduper`,
+`news-janitor` — the foundational four — plus `news-triage` and
+`news-deliverer`), the bounded polling loops (`news-instruments`, and with
+venues enabled `news-quotes` and `news-reactions`), `market-notifications` when
+the market notification loop is composed, `news-chain-tape` when the wallet tape
+is enabled, and the one Signal loop when Trading is enabled
+(`trading-signal-lane`). A new optional loop joins by returning one more
+`WorkerTask` with its own capability name; nothing else changes. There is no
+acquisition clock, projection coordinator, model arbiter, stream ingester,
+identity backfill, or universe sync task. The polling loops read public
+catalogues and prices on code-owned cadences. Their database admission is explicit per capability: instrument
 snapshots use the four-slot News lane; current Quotes and the wallet tape use
 ordinary business admission; Janitor, Event Reactions and Trading share the
 one-slot heavy admission. None creates another pool or worker.
@@ -709,14 +680,15 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
           or listing Event; the suffix affects broker scheduling only
   -> q:news.triage [prefetch = news.triage.concurrency, handled concurrently] Triage:
        SemanticJudge.judge(TriageContext) -> current EventSemantics with nested
-          NewsTaxonomyV1 + TradeRelevanceV1
-       -> deterministic SemanticNormalizer -> ReaderCard.v2
-       -> deterministic VerdictAssembler -> one atomic SemanticJudgment
-          (verdict + editorial envelope + trace/runtime identities); normally two
+          TradeRelevanceV1
+       -> deterministic _normalize_and_validate_semantics -> Taxonomy (NewsTaxonomyV1)
+       -> ReaderCard.v2
+       -> deterministic _assemble -> one atomic SemanticJudgment
+          (verdict + editorial envelope + trace/runtime identities); normally three
        serial provider calls through explicit Predictor-local LMs/token caps
        (ReaderCard.v2 optionally has a dedicated primary endpoint); JSONAdapter
-       may make one format fallback per Predictor (at most four calls per route),
-       and primary failure restarts the full fallback route (at most eight calls) -> final storyline key
+       may make one format fallback per Predictor (at most six calls per route),
+       and primary failure restarts the full fallback route (at most twelve calls) -> final storyline key
        from the verdict (written back) -> model-origin decide() or the structured
        lane's typed DecisionResult -> current verdict row
        (news_judgment_v2 marker, judgment origin/hash, model editorial when applicable,
@@ -1172,8 +1144,10 @@ generation. Its **Depth** is the amount of behavior hidden behind the single
 hot-path `judge()` method, not the number of internal Predictor calls.
 
 Inside the Module, the fixed Program graph is
-`EventSemantics -> deterministic SemanticNormalizer -> ReaderCard ->
-deterministic VerdictAssembler`.
+`EventSemantics -> deterministic _normalize_and_validate_semantics -> Taxonomy
+-> ReaderCard -> deterministic _assemble`. The two deterministic steps are
+private functions in `tracefold/news/program/module.py`, not classes: they spend
+no provider call and have no state to own.
 `EventSemantics` judges novelty, grounded entities, direction, scope,
 magnitude and audience without writing reader copy, and emits one nested typed
 `TradeRelevanceV1`: impact breadth, tradability, surprise, development delta,
@@ -1213,8 +1187,10 @@ per Predictor (`event_semantics`, `taxonomy`, `reader_card`), and
 `program_sha256` is the canonical hash of exactly those
 three values. The stable root is
 `32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a`.
-Issue #117 changes the EventSemantics instruction and typed output while
-preserving the same two-Predictor graph and exact two-call common-success path.
+Issue #117 changed the EventSemantics instruction and typed output while
+preserving the then two-Predictor graph and its two-call common-success path;
+#501 added the taxonomy Predictor beside them, which is why the ordinary path is
+three calls today.
 
 **Program identity has two halves, and they have two authors.**
 `program_sha256` addresses the write-set a human or GEPA may edit.
@@ -1222,9 +1198,11 @@ preserving the same two-Predictor graph and exact two-call common-success path.
 `tracefold/news/program/identity.py` — addresses everything the code decides
 about a model call: exact DSPy/LiteLLM/transitive-GEPA versions, public Signature
 dumps, actual `dspy.JSONAdapter` renders for the schema, JSON-object and
-prompt-only capability paths, both typed output contracts, model-visible input
+prompt-only capability paths, the typed output contracts, model-visible input
 shapes, the four model slots, retry/fallback/error transitions, route deadline,
-2/4/8 physical-call ceilings, token ceilings, normalization/assembly surface
+the 2/6/12 per-Predictor/per-route/per-judgment physical-call ceilings
+(`PROGRAM_PREDICTOR_MAX_CALLS` / `PROGRAM_ROUTE_MAX_CALLS` /
+`PROGRAM_JUDGMENT_MAX_CALLS`), token ceilings, normalization/assembly surface
 and the breaker. It is computed from those values rather than declared
 beside them, so a change to any of them moves the identity whether or not anyone
 remembers to say so. One contract test
@@ -1246,7 +1224,7 @@ the behavior.
 
 `program_sha256` is behavior identity and nothing else. It no longer contains
 parent lineage, optimization cost, trajectory or teacher endpoint, so two runs
-that reach the same two instructions are the same running Program however much
+that reach the same three instructions are the same running Program however much
 they cost and whoever launched them. Lineage is a property of the candidate
 (`ProposalReceipt.program_parent_sha256` and `program_candidate_sha256`), and
 since #202 it is *derived* at registration by re-applying the patch rather than
@@ -1515,7 +1493,7 @@ and `max_tokens` truncation is terminal without another format call. The
 code-owned 20-second deadline
 applies to the whole route, not to each call. If primary still fails, fallback
 restarts the full Program with its own route deadline; the complete chain
-therefore makes at most eight visible provider attempts. Client-side
+therefore makes at most twelve visible provider attempts. Client-side
 cache and hidden provider retries are disabled so the trace count equals real
 attempts. Missing or invalid `novelty` fails closed; the genesis deleted
 pre-current Program traces. Market frames never reach the Program because they
@@ -1563,8 +1541,8 @@ cannot truthfully be rebound to the refreshed snapshot: a failed re-ask uses
 the deterministic degraded fallback over the refreshed Gate facts, with no
 selected Program execution; a second evidence change before persistence raises
 `news_event_evidence_changed` for durable retry.
-The re-ask is a separate Program execution: the ordinary rare case is four
-provider calls total, while each execution independently retains the eight-call,
+The re-ask is a separate Program execution: the ordinary rare case is six
+provider calls total, while each execution independently retains the twelve-call,
 two-route ceiling. All work from both executions remains in audit and cost
 telemetry even when the first result is superseded or the second fails.
 `news_verdicts` atomically stores the current marker and origin, presentation
@@ -1806,20 +1784,14 @@ source authority stays outside model target, score and feedback. No
 taxonomy-specific Dataset, table, shadow Program,
 registration, evaluator, or release lifecycle exists.
 
-Issue #129 first starts the immutable `program_v1` learning epoch at migration
-deployment time. Corrective migration `0293` preserves that history and appends
-`program_v2` after fixing the semantic retry state machine. Issue #132 migration
-`0294` preserves both prior rows and appends `program_v3` for the expert quality
-baseline and semantic normalization. Issue #134 migration `0295` appends
-`program_v4`; `0298` appends `program_v5` for candidate-conditioned ToldContext.
-Issue #160 migration `0301` hard-renames persisted `priority` to
-`queue_priority`, adds atomic editorial/runtime-manifest judgment identity, and
-appends `program_v6` for factory v4/executable v4/policy v10. All earlier reviews, datasets, recordings,
-reports and release receipts remain readable audit evidence, but they are
-promotion-ineligible and cannot seed the current Program. Evidence
-accumulation starts from zero: Event reviews and acceptance receipts must be
-created after the current epoch, and eligible verdicts must match the exact
-stable Program bundle.
+Epoch rows `program_v1`-`program_v9` were each opened by a hand-written
+migration and remain append-only audit history; [Migrations](MIGRATIONS.md)
+records which revision opened which. The invariant that outlives them: earlier
+reviews, datasets, recordings, reports and release receipts stay readable audit
+evidence, but they are promotion-ineligible and cannot seed the current Program.
+Evidence accumulation starts from zero at every epoch — Event reviews and
+acceptance receipts must be created after the current epoch, and eligible
+verdicts must match the exact stable Program bundle.
 
 `CandidateEvaluator` is a deep Module whose Interface freezes accepted
 current-bundle / `news_review_v6` evidence, compares Stable with exactly one registered Prompt candidate,
@@ -2078,178 +2050,24 @@ provider-hits Deduper+Gate regression; `tracefold news why <event_id>` prints a
 single production chain. The retired single-label evaluator, policy-only
 corpus gate, label-copy UI and `news_event_labels` table no longer exist.
 
-Before the #449 baseline squash, Git history began at
-`20260818_0275_baseline` and carried the following hard-cut chronology. These
-files and their role bootstrap are recovery evidence only; they are not part of
-the current Alembic tree. `20260818_0276_review_49_hard_cut`
-drops the retired title-translation, DEX discovery, token profile, token
-image, and Radar-era checkpoint tables. `20260818_0277_gmgn_lane_removal`
-drops the whole GMGN lane: the social evidence tables (`raw_frames`, `events`,
-`event_entities`, `enriched_events`, `collector_pending_items`,
-`event_anchor_backfill_jobs`), token identity and registry tables
-(`token_evidence`, `token_intents`, `token_intent_lookup_keys`,
-`token_intent_evidence`, `token_intent_resolutions`, `registry_assets`,
-`asset_identity_evidence`, `asset_identity_current`, `us_equity_symbols`),
-DEX/CEX market data tables (`market_ticks` with its default partition,
-`market_tick_current`, `price_feeds`, `cex_tokens`), the persisted live
-broadcast journal (`persisted_live_events`), `provider_circuit_state`, and the
-News market-mark table (`news_event_market_marks`), plus the
-`forbid_market_fact_update()` trigger function and the terminal-evidence rows
-of the dropped queues. `20260819_0278_macro_lane_removal` drops the whole Macro
-lane: the ten `macro_*` fact/derived/queue/frontier tables, the four general
-market observation tables (`market_instruments`, `market_observations`,
-`market_settlements`, `market_position_facts`), the durable queue
-terminal-evidence table (`queue_terminal_events`, whose only writers were the
-Macro repository and the projection frontier), and the
-`reject_macro_fact_mutation()` trigger function. Revisions `0279` through
-`0283` add listing admission, the consolidated instrument universe, the
-retired label-v1 foundation, and Price Review. The #112 hard cut is `0284`
-through `0290`: atomic fact/evidence snapshots, ReviewDesk v2 (including
-verified migration and removal of `news_event_labels`), content-addressed
-learning artifacts/recordings, durable canary control, and bounded
-learning-evidence retention with release-chain pinning, plus the production
-Workers evidence-append grant/lock repair and role-authentic audit. `0291`
-removes the local OpenNews Strategy allowlist. Issue #129's irreversible
-`0292` migration adds Program identity and per-Predictor recording fields,
-creates the append-only deployment-time `program_v1` epoch, and marks all
-earlier Prompt-era learning evidence audit-only. `0293` preserves that row and
-appends the corrected `program_v2` epoch, making `program_v1` evidence
-audit-only for current release decisions. `0294` preserves both earlier Program
-epochs and appends the expert-quality `program_v3` epoch, making `program_v2`
-evidence audit-only for current release decisions. `0295` preserves v1-v3 and
-appends `program_v4` with factory v2; `0298` preserves v1-v4 and appends
-`program_v5` with factory v3 on the artifact-v2 envelope.
-`0301` performs the #160 hard cut: `news_events.priority` becomes
-`queue_priority` with no alias; verdicts gain atomic editorial/scored/runtime-
-manifest identity; `program_v6` binds factory v4, executable v4, policy v10,
-review v4 and metric/compiler protocol v3; and older evidence becomes audit-only.
-`0303` preserves that history and appends the #162 `program_v7` epoch for
-factory v5/executable v5 after the Program/Learning package split; the v6
-baseline remains immutable audit evidence. `0304` carries the #193
-strategy-artifact hard cut into the database: it trips every armed or active
-canary, because the candidate it points at is unloadable in the new image, and
-records one migration receipt in the append-only learning ledger. It
-deliberately does not re-open `program_v7`. A serialization and identity change
-is not an evidence reset, so accepted `news_review_v4` truth stays eligible and
-the epoch row goes on naming the factory, schema and baseline root the epoch was
-opened with — the same way it already did across the #175 and #190 re-issues.
-`20260825_0305` carries the compile-record half of #193 the same way: it admits
-`compile_record` as a learning-artifact kind, keeps `compile_receipt` readable
-so existing rows stay audit history, and trips open canary activations because
-a candidate registered against the old chain names a receipt that no longer
-validates and can no longer be evaluated. It does not re-open `program_v7`
-either — how a compile is serialized says nothing about whether an accepted
-review is true.
-`20260828_0320` ends the practice these rows document (#314): it gives
-`news_learning_epochs` a `bundle_sha` and an `envelope_sha256`, relaxes
-`program_factory_id` to nullable, and lets a deployment open its own epoch. The
-append-only trigger remains the durable rewrite boundary. No migration appends
-an epoch row after this one.
+`20260831_0340` is the single Alembic root and the current-schema baseline
+(#449): a fresh PostgreSQL 18 database reaches the complete current schema in
+one step, an already-stamped database replays no baseline DDL, and the
+revisions before it live only in Git history and the pre-cut image. Since #314
+no migration appends a learning epoch row — the running deployment opens its own
+at the startup barrier described above.
 
-`20260827_0315` persists the #288 exact source-contract route and Event-kind
-hard cut, trips open canary activations, and records the factory-v6 to
-factory-v7 migration receipt. It neither rewrites nor appends the `program_v7`
-epoch row: all earlier rows and bundles remain immutable audit history. Because
-current acceptance is bound to the exact factory and Program bundle, prior
-factory evidence is audit-only and the factory-v7 cohort starts with zero
-eligible evidence.
-`20260828_0316` and `20260828_0317` build the retired Capital/Intent execution
-owner; [ADR 0002](adr/0002-trading-execution-owner-hard-cuts.md) records it.
-`20260828_0318` starts the single-instruction Program-v8 evidence epoch.
-`20260828_0319` starts the endpoint-capable-envelope Program-v9 evidence epoch.
-`20260828_0320` adds the News catalogue's immutable listing-validity events, and
-the retired owner's capability and replay ledgers with them.
-`20260828_0321` lets the running deployment open its computed-identity evidence epoch.
-`20260828_0322` adds the durable desired/edited/ambiguous lifecycle for in-place News delivery edits.
-`20260828_0323` adds the durable deleting/deleted/ambiguous lifecycle and five-venue evidence for confirmed
-untradeable single-name Telegram messages.
-`20260828_0324` closes the PostgreSQL `NULL`-truth gap in both delivery lifecycle shape constraints and rejects
-any preexisting partial edit or delete intent before replacing those constraints; #325 owns its evidence-preserving
-repair and roll-forward plan.
-`20260829_0325` replaces the retired Trading runner cluster with the single
-deterministic lane; `0326`, `0327` and `0329` are the retired execution owner's
-own cutovers, recorded in
-[ADR 0002](adr/0002-trading-execution-owner-hard-cuts.md).
-`20260829_0328` then restricts Review v5 taxonomy Gold to ordinary News and trips open canaries for the
-Program v7/taxonomy-v1 epoch hard cut.
-`20260831_0340` is the current-schema Alembic baseline and single root. The
-operator-authorized #449 hard cut first advanced the supported live
-database to the exact old terminal revision, then reused that identity with
-`down_revision = None`. A fresh PostgreSQL 18 database creates the complete
-current schema in one step; an already-stamped database does not replay the
-baseline or rewrite business data. Earlier revisions and role bootstrap logic
-live only in Git history and the pre-cut image. `20260901_0341` performs the
-#433-C Signal hard cut after the baseline; additive `20260901_0342` adds the
-append-only Trading notification delivery ledger; additive `20260901_0343` adds
-the current execution Runtime projection and bounded recovery indexes; and
-destructive `20260901_0344` restates the `news_verdicts` judgment CHECK for the
-News open-interest push cut; `20260901_0345` removes the stale execution Runtime
-constraint that rejected a safe transient pairing of independently observed
-flatness and unexpected exposure, with readiness still failing closed on
-unexpected exposure; additive `20260901_0346` lets a notification receipt
-outlive its provider's message id and carry a four-hour result; and destructive
-`20260901_0347` drops the twenty-two execution tables
-`0341` had made read-only, together with the thirteen functions only their
-triggers, defaults and CHECKs called; `20260902_0348` hard-cuts Runtime
-readiness and adds the profile-keyed current control projection; and additive
-`20260902_0349` adds the bounded Runtime-owned current account read
-projection; destructive `20260903_0359` drops the `0342` notification delivery
-ledger and the partial observation index that fed it, neither of which any
-production writer ever reached; additive `20260902_0350` pins the
-`pg_trgm` extension and admits the `title_similarity` retrieval reason into the
-`news_verdicts` told trace CHECK for the reader-history title-similarity band
-(#491); additive `20260902_0351` opens the judgment CHECK to program v9 and
-admits blind review drafts (#501); additive `20260903_0352` opens the same
-CHECK's model, OI and degraded branches to `news_triage_policy_v12` (#504); and
-`20260903_0353` replaces
-`trading_execution_string_array_valid`'s default-collation ordering with
-`COLLATE "C"`, so the observation CHECK orders `native_identity_references` the
-way `ExecutionObservationV1` sorts them and a fill that mixes upper-case Binance
-identities with lower-case `tf...` client order ids is no longer rejected;
-additive `20260903_0354` publishes each Runtime's executable `market_key`
-catalogue on `trading_execution_runtime_state.routes` (superseded by
-`20260904_0360`, which keeps only its size);
-destructive `20260903_0355` drops the six dead `trading_cases`
-columns and narrows the Case state and admission status/stage CHECKs to the
-values a writer can reach, refusing to run while a stored row still holds a
-retired one; destructive `20260903_0356` makes `account_slot` the execution
-identity and drops the profile activation ledger with the Decision Plane
-heartbeat (#520 PR-A); destructive `20260903_0357`
-makes the contract the only validator — every JSON-shape CHECK and the four
-`trading_*` functions behind them are gone, along with the unread
-`payload_digest` / `alpha_contract_sha256` / `evidence_sha256` digests, the
-`confirmation_identity` column and the five readiness booleans (#520 PR-C); and
-and additive `20260903_0358` opens the judgment CHECK's model, OI and degraded
-branches to `news_triage_policy_v13` (#523); `20260903_0359` drops the
-notification delivery ledger and the index that fed it (#528 PR-1); and
-destructive `20260904_0360` deletes the lane columns no rule reads — the Case's
-lease, attempt counter, empty supplemental keys and three restated policy
-identity columns, the admission ledger's write-only `release_revision`, and the
-Signal ledger's `alpha_metadata` — narrows the admission primary key to
-`(source_key)` with the rulebook moved into `evidence`, and replaces the Runtime
-projection's `routes` array with the `routes_count` every reader rendered (#537
-PR-3); and destructive `20260904_0361` deletes the Runtime identity ceremony —
-`runtime_release`, `config_sha256`, `runtime_revision`, `image_digest`,
-`credential_fingerprint` and `lifecycle_state` on the projection, and
-`runtime_release` on the observation ledger as a column and as a stored payload
-key (#537 PR-4); and `20260904_0362` deletes the two CHECKs that ordered a
-venue's clock against this host's — `news_oi_signals_available_clock_check`,
-which made a frame whose exchange clock ran a few hundred milliseconds ahead an
-unstorable row and a dead Workers process, and
-`news_market_liquidations_time_order`, which never fired only because the parser
-dropped such a frame before the ledger could see it (#544). `20260904_0363`
-rekeys the `news_review_task_source_v1` lateral to the evidence version the
-verdict actually judged (#548), and `20260905_0364` moves market observations
-onto `news_items` and its three typed ledgers, freeing the OI ledger from
-`news_events` (#553). `20260905_0364` is
-the current single head; each revision's own docstring carries its evidence, and
-`docs/MIGRATIONS.md` carries the operator sequence.
+Every new schema change is a normal linear, immutable, forward-only revision
+after that baseline. Exact-image replacement requires source, image, and live
+database to share the current head. Downgrade of an irreversible cut is a
+verified backup restore.
 
-Every new schema change is again a normal linear, immutable, forward-only
-revision after the baseline. Exact-image replacement requires source, image,
-and live database to share the current head. Downgrade of an irreversible cut
-is a verified backup restore. See [Migrations](MIGRATIONS.md) for the authoring
-and evidence contract.
+This document keeps no migration changelog. Each revision's own docstring
+carries its evidence, and [Migrations](MIGRATIONS.md) is the single place that
+names the head, the authoring and evidence contract, the operator sequence, and
+what each revision did. The chronology this section used to repeat had drifted
+two revisions behind the head and credited the market-observation cut to the
+wrong revision, which is what a second copy does.
 
 See [Public Contracts](CONTRACTS.md), [Operations](OPERATIONS.md), and
 [Frontend Architecture](FRONTEND.md) for the other current authority surfaces.
@@ -2779,7 +2597,8 @@ deduplicating it.
 ### What is stored
 
 `news_items` carries the observation itself: `market_kind`
-(`oi|liquidation|smart_money|unknown_market`), `market_source_strategy_id`,
+(`oi|liquidation|smart_money|unknown_market`, plus the derived `wallet` kind
+`0372` added), `market_source_strategy_id`,
 `market_parse_status` (`parsed|raw`), `market_parse_error`, and
 `provider_params`, the frame's own payload, which the old metadata whitelist
 dropped before persistence so no consumer could read `relatedAddress` or
@@ -2790,33 +2609,38 @@ so `news_items_market_parse_status_check` states the pair as one fact:
 `ix_news_items_market_observed` covers the market subset in reverse arrival
 order.
 
-Three typed tables hold the numbers, and they stay three tables — a shared
-supertable would need a column for every kind's semantics and a NULL for every
-other kind's:
+One typed table per kind holds the numbers, and they stay separate tables — a
+shared supertable would need a column for every kind's semantics and a NULL for
+every other kind's. `0365` created the first three; `0372` added
+`news_market_wallet_events` for the derived `wallet` kind on the same pattern:
 
 - `news_oi_signals` — one measurement per `(source_item_id, metric_version)`.
-  Migration `20260905_0364` dropped its `event_id` foreign key (the column
+  Migration `20260905_0365` dropped its `event_id` foreign key (the column
   remains as the opaque source identifier a frozen Trading Case resolves) and
   its `learning_epoch`, and added `provider`, `raw_instrument`,
   `received_at_ms`, `measurement_definition` and `historical`. It was reachable
   only through `news_events` before, so a recovery frame — which never reached
   Triage — produced no row at all, and a frame the title deduper merged into
-  another Event produced none either; `0364` reconstructs both populations from
+  another Event produced none either; `0365` reconstructs both populations from
   `news_event_members` and flags them `historical = true`.
 - `news_market_liquidations` — one row per Item, unique and cascade-owned.
-  `0364` deleted the venue allowlist that admitted `binance` and `hyperliquid`
+  `0365` deleted the venue allowlist that admitted `binance` and `hyperliquid`
   and refused everything else, which had discarded 13 of the 143 real
   liquidation reports in the retained window; renamed `venue` to nullable
   `source_venue`, the provider's own string stored as sent; and added
   `provider`, `raw_instrument`, `source_strategy_id` and `available_at_ms`.
   Supporting a venue's *information* is not the same claim as trading there.
-- `news_market_smart_money` — new in `0364`: one account, one action
+- `news_market_smart_money` — new in `0365`: one account, one action
   (`open|close`), one side (`long|short`), one instrument, the reported notional,
   the price and an optional realized PnL, with the same source-contract columns
   the other two carry.
 
-All three are cascade children of `news_items`, so a typed fact cannot outlive
-the record it was parsed from. Before `0364` the liquidation table had no
+- `news_market_wallet_events` — new in `0372` (#572 PR-2): one derived wallet
+  observation, `exit`, `crowding` or `digest`, written by the chain tape rather
+  than parsed from a provider frame.
+
+All four are cascade children of `news_items`, so a typed fact cannot outlive
+the record it was parsed from. Before `0365` the liquidation table had no
 foreign key at all and a purged Item left its liquidation behind as unreachable
 evidence; that revision deletes the orphans it cannot adopt.
 

@@ -897,9 +897,9 @@ OpenNews account Strategy WSS (whatever the account has enabled; no local allowl
      -> title/identity -> same-kind Event new|member -> Gate -> storyline key
      -> publish event.<family>.<queue_priority> for admitted Events
   -> q:news.triage Triage (prefetch news.triage.concurrency):
-     SemanticJudge.judge(TriageContext) -> EventSemantics.v2 + TradeRelevanceV1 -> SemanticNormalizer
-     -> ReaderCard.v2
-     -> deterministic assembler -> atomic SemanticJudgment/ScoredJudgment
+     SemanticJudge.judge(TriageContext) -> EventSemantics.v2 + TradeRelevanceV1
+     -> _normalize_and_validate_semantics -> Taxonomy -> ReaderCard.v2
+     -> _assemble -> atomic SemanticJudgment/ScoredJudgment
      -> policy-v13 decide() -> news_verdicts (editorial + runtime manifest)
      -> verdict.push (an escalate rides the same key at AMQP priority 5)
   -> q:news.deliver [SAC] Deliverer: one configured-provider attempt per Event (kind first)
@@ -1000,9 +1000,9 @@ Strategy off in the OpenNews account (#126).
 Model failure: Triage's sole Interface is
 `SemanticJudge.judge(TriageContext) -> SemanticJudgment`. The production
 Adapter runs the code-owned Program
-`EventSemantics.v2 -> deterministic SemanticNormalizer -> ReaderCard.v2 ->
-deterministic assembler`. The normalizer changes a stray non-negative
-`restates` value on `new_fact`/`progression` to `-1`, records both values on the
+`EventSemantics.v2 -> deterministic _normalize_and_validate_semantics ->
+ReaderCard.v2 -> deterministic _assemble`. The normalizer changes a stray
+non-negative `restates` value on `new_fact`/`progression` to `-1`, records both values on the
 EventSemantics trace, canonicalizes the nested `TradeRelevanceV1` sets, and
 spends no provider call. ReaderCard.v2 produces only `headline_zh` and
 `why_zh`; the assembled Verdict has no second title or action projection. Every
@@ -1816,11 +1816,11 @@ reports the same thing to Prometheus.
 
 ## Migrations
 
-Alembic has one root, baseline `20260831_0340`, and current head
-`20260905_0364`, which moves market observations onto `news_items` and its three
-typed ledgers (#553). A fresh PostgreSQL 18
-database applies the baseline and every
-revision after it in order; each revision's own docstring carries its evidence.
+Alembic has one root, baseline `20260831_0340`, and one head, named by
+[the migration guide](MIGRATIONS.md) rather than restated here — a head literal
+copied into four documents is four things to update and three of them go stale.
+A fresh PostgreSQL 18 database applies the baseline and every revision after it
+in order; each revision's own docstring carries its evidence.
 Four of them need an operator step before the upgrade runs: `20260901_0347`
 drops twenty-two read-only execution tables, `20260903_0355` drops the six
 dead `trading_cases` columns and refuses to run while any row still holds a
@@ -1829,7 +1829,7 @@ activation ledgers, and `20260903_0357` drops the JSON-shape CHECKs with the
 nine unread columns and their payload keys. All four archive to
 `~/.tracefold/backups/`
 first; [the migration guide](MIGRATIONS.md) carries the exact commands.
-`20260905_0364` needs no archive step, but it does need writers stopped: the OI
+`20260905_0365` needs no archive step, but it does need writers stopped: the OI
 ledger gains a unique key the old writer does not know and the liquidation table
 renames a column the old writer names, so run it inside the ordinary `make up`
 stop rather than against a live Workers process.
@@ -2052,8 +2052,9 @@ v5 after the #162 Program/Learning package split; v6 evidence remains audit-only
 armed or active canary whose candidate the new image cannot load, and appends
 one migration receipt to `news_learning_artifacts`. It leaves `program_v7`
 open on purpose — the artifact serialization and the Program root changed, the
-evidence did not — so accepted `news_review_v4` rows stay eligible and the
-epoch row goes on naming what the epoch was opened with. It is irreversible.
+evidence did not — so the reviews accepted under the rubric of the day stayed
+eligible and the epoch row goes on naming what the epoch was opened with. It is
+irreversible.
 `0305` is the #193 compile-record hard cut: it adds `compile_record` to the
 learning-artifact kind constraint while keeping `compile_receipt` in it, and
 trips every armed or active canary whose candidate was registered against the
@@ -2151,13 +2152,14 @@ retention metrics report deleted rows, batches, wall time, capped backlog
 sample, whether the sample hit its cap, and oldest eligible age. Each batch,
 band expiry, and learning-retention call uses a separate cold transaction.
 
-All three typed market ledgers are Item-owned children since migration
-`20260905_0364` (#553): `news_market_liquidations` and `news_market_smart_money`
+The typed market ledgers are Item-owned children since migration
+`20260905_0365` (#553): `news_market_liquidations` and `news_market_smart_money`
 have a unique `item_id` foreign key with `ON DELETE CASCADE`, and
-`news_oi_signals.source_item_id` already had one. Purging an Item therefore
-takes its typed fact with it, which is the point — a liquidation whose Item was
-gone used to survive as unreachable evidence, and `0364` deletes the orphans it
-cannot adopt.
+`news_oi_signals.source_item_id` already had one; `0372` added
+`news_market_wallet_events` on the same terms (#572 PR-2). Purging an Item
+therefore takes its typed fact with it, which is the point — a liquidation whose
+Item was gone used to survive as unreachable evidence, and `0365` deletes the
+orphans it cannot adopt.
 
 Market Items are exempt from the raw tier. `RAW_RETENTION_CANDIDATE_SQL` and its
 `DELETE` both carry a predicate that lets a row with a non-null `market_kind`
@@ -2237,7 +2239,10 @@ Live restore/audit procedure:
 
 1. Restore the PostgreSQL backup into an isolated database and migrate only to
    the image's recorded schema head; never set
-   `tracefold.learning_retention_purge` or issue manual DELETEs.
+   `tracefold.learning_retention_purge` or issue manual DELETEs. That setting is
+   the append-only bypass the `SECURITY DEFINER` function
+   `purge_news_learning_retention()` sets for itself, transaction-locally, and
+   it is the only sanctioned writer of it.
 2. Run `docker compose exec -T workers tracefold db audit --deep`; confirm migration head, exact News table
    set and role grants. Read `news_learning_retention_state` and retain its
    pre-restore snapshot for comparison.
