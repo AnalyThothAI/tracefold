@@ -26,7 +26,6 @@ _FAMILY_TEMPLATE: Final[dict[str, str]] = {
     "oi": "blue",
     "liquidation": "red",
     "smart_money": "turquoise",
-    "raw": "grey",
 }
 _TONE_TEMPLATE: Final[dict[str, str]] = {"bullish": "green", "bearish": "red"}
 

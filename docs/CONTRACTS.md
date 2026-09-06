@@ -689,10 +689,23 @@ every Event this code can open.
   is 400 `unsupported_query_param`. An identity no retained market Item has is
   404 `{"ok": false, "error": "news_market_item_not_found"}`.
 
+  Two `trigger_reason` values need their own sentence. `raw` stays in the wire
+  Literal and in `news_market_deliveries_reason_check` and no writer produces
+  it: the four unstructured cards production sent before #582 §3.2 are
+  receipts, and a receipt is not rewritten by a rule change — the same
+  treatment the retired News delivery lane's `followup` rows get below.
+  `action_change` is smart money's second card of a 24 h round and means
+  exactly one thing, the first `open → close` of that round, and is headed
+  `平仓`. That round starts at the first observation received for an
+  (account, instrument) group and runs 24 h on the host's receive clock,
+  never on provider event time; it yields at most two cards, both immediate,
+  and a change of position side is not a trigger.
+
   `parse_status`/`parse_error` and `notification_status`/`notification_reason`
   are two independent pairs on both market routes, never folded into one outcome
-  field: a raw card that was delivered and a parsed card that was not are both
-  ordinary results, and one combined column would have to misreport one of them.
+  field: a record the parser could not read and a parsed record no card spoke for
+  are both ordinary results, and one combined column would have to misreport one
+  of them.
   `parse_status` is `parsed` or `raw`, and `parse_error` is non-null exactly when
   it is `raw` — the database CHECK states that pair as one fact.
 
@@ -703,11 +716,15 @@ every Event this code can open.
   existed before the loop was enabled), or `merging` with the track's own reason
   — `merging_into_prepared_card`, `oi_change_below_followup_threshold`,
   `oi_anchor_zero_and_unchanged`, `liquidation_followup_window_open`,
-  `smart_money_followup_window_open`. `uncovered`
-  (`alert_round_ended_before_a_card`) is the one final answer without a send: the
-  alert round that held this observation ended before any card spoke for it, and
-  the card that opened the next round covers that round only. With an attempt it
-  is the card's state:
+  `smart_money_round_open`. Two final answers exist without a send. `uncovered`
+  (`alert_round_ended_before_a_card`) is one: the alert round that held this
+  observation ended before any card spoke for it, and the card that opened the
+  next round covers that round only. `not_alerted`
+  (`unstructured_record_not_alerted`) is the other: a record whose template no
+  parser could prove is stored, grouped and readable and is never a card, so it
+  has no notification track at all and nothing is holding it (#582 §3.2). The two
+  are distinguished by whether a track row exists, never by an empty reason
+  string. With an attempt it is the card's state:
   `pending`, `sending`, `sent`, `failed`, `unknown` or `unavailable`. `unknown`
   means this process could not read the provider's answer, so the card is never
   re-sent and is never reported as delivered; `unavailable` means no sender is

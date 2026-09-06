@@ -21,10 +21,13 @@ import pytest
 from tracefold.news.market_notifications import (
     LIQUIDATION_WINDOW_MS,
     OI_QUIET_RESET_MS,
+    REASON_MERGING,
     REASON_ROUND_CLOSED,
+    REASON_SMART_MONEY_ROUND,
+    REASON_UNSTRUCTURED,
     SEND_ATTEMPTS_MAX,
     SEND_RETRY_BACKOFF_MS,
-    SMART_MONEY_WINDOW_MS,
+    SMART_MONEY_ROUND_MS,
     IntentPlan,
     MarketObservation,
     MarketTrack,
@@ -184,8 +187,9 @@ class _Group:
         )
         self.uncovered.extend(observations)
         if turn.intent is not None:
-            # A new intent replaces an un-started one rather than joining it: at most one per group,
-            # and the observations of the card it replaces move to this one.
+            # At most one un-started card per group, and a turn that already has one produces no
+            # second intent: `decide_group` is told so through `has_open_intent`.
+            assert self.open_key is None
             self.open_intent = turn.intent
             self.open_key = delivery_key(identity.group_key, turn.intent.trigger_item_id, turn.intent.reason)
         self.track = replace(turn.track, open_delivery_key=self.open_key)
@@ -232,8 +236,10 @@ class _Group:
                 anchor_delivery_key=card.delivery_key,
                 anchor_oi_change_bps=anchor_bps,
                 anchor_direction=latest.direction or self.track.anchor_direction,
-                current_action=latest.action or self.track.current_action,
-                current_position_side=latest.position_side or self.track.current_position_side,
+                # `market_set_track_anchor` writes what the delivered card ended on, which is what
+                # the next smart-money turn reads to decide whether a Close is worth a second card.
+                anchor_action=latest.action or self.track.anchor_action,
+                anchor_position_side=latest.position_side or self.track.anchor_position_side,
             )
         return card
 
@@ -396,8 +402,12 @@ def test_a_liquidation_report_older_than_a_closed_window_is_never_swept_into_a_l
     assert group.track.round_started_at_ms == after
 
 
-def test_a_smart_money_action_change_still_carries_the_segment_it_ends() -> None:
-    """§4.4: an action change is not a new round -- the old segment's activity is on the same card."""
+def test_a_smart_money_closing_card_still_carries_the_reports_the_round_was_holding() -> None:
+    """The closing card is inside its round, so it speaks for everything that round still held.
+
+    A new round would have left the two suppressed opens uncovered; the round is the day, and the
+    close is the second card *of that day* (#582 §3.1).
+    """
 
     group = _Group()
     group.observe(wallet(at_ms=T0, action="open", side="long"))
@@ -562,82 +572,176 @@ def test_liquidation_sides_and_venues_are_separate_groups_and_never_suppress_eac
     assert group_identity(liquidation(at_ms=T0, venue=None)).venue_known is False
 
 
-# --- §4.4 smart money ---------------------------------------------------------------------------
+# --- #582 §3.1 smart money: one account, one instrument, one 24 h round ---------------------------
+#
+# Every case the Issue enumerates, driven through `decide_group` exactly as the loop drives it. The
+# round is measured on the host's receive clock, both of its cards are immediate, and the side never
+# decides anything.
 
 
-def test_smart_money_same_account_and_action_merges_into_one_followup_window() -> None:
+def test_the_first_observation_of_a_round_is_a_card_whatever_it_says() -> None:
+    """An account whose opening nobody observed still closes 49 positions (#582 §2.2)."""
+
+    opened = _Group()
+    opened.observe(wallet(at_ms=T0, action="open", side="long"))
+    first = opened.send(now_ms=T0)
+    assert first is not None and first.reason == "first"
+
+    closed = _Group()
+    closed.observe(wallet(at_ms=T0, action="close", side="short", item_id="sm-close-first"))
+    assert closed.due_at() == T0
+    card = closed.send(now_ms=T0)
+    assert card is not None and card.reason == "first"
+
+
+def test_the_first_open_to_close_of_a_round_is_the_rounds_one_further_card() -> None:
     group = _Group()
-    group.observe(wallet(at_ms=T0, item_id="sm-0"))
+    group.observe(wallet(at_ms=T0, action="open", side="long"))
     assert group.send(now_ms=T0) is not None
-    group.observe(wallet(at_ms=T0 + 10_000, item_id="sm-10"))
-    group.observe(wallet(at_ms=T0 + 20_000, item_id="sm-20"))
-    assert group.send(now_ms=T0 + 20_000) is None
-    followup = group.send(now_ms=T0 + SMART_MONEY_WINDOW_MS)
-    assert followup is not None
-    assert followup.covered == ("sm-10", "sm-20")
+
+    group.observe(wallet(at_ms=T0 + 600_000, action="close", side="long", item_id="sm-close"))
+    change = group.send(now_ms=T0 + 600_000)
+    assert change is not None
+    assert change.reason == "action_change"
+    assert change.covered == ("sm-close",)
 
 
-def test_smart_money_action_change_at_49_241_seconds_ends_the_segment_at_once() -> None:
-    """The Issue's own counterexample: the reader is told inside the window, not after it."""
+def test_after_the_closing_card_the_rest_of_the_round_only_updates_the_page() -> None:
+    """The Issue's own sequence: `close -> close` is 70 of the 126 measured records (#582 §1)."""
 
-    change_at = T0 + 49_241
     group = _Group()
-    group.observe(wallet(at_ms=T0, action="close", side="short", item_id="sm-close-0"))
+    group.observe(wallet(at_ms=T0, action="open", side="long"))
     assert group.send(now_ms=T0) is not None
-    group.observe(wallet(at_ms=T0 + 12_000, action="close", side="short", item_id="sm-close-12"))
-    assert group.send(now_ms=T0 + 12_000) is None
+    group.observe(wallet(at_ms=T0 + 60_000, action="close", side="long", item_id="sm-close"))
+    assert group.send(now_ms=T0 + 60_000) is not None
 
-    group.observe(wallet(at_ms=change_at, action="open", side="short", item_id="sm-open-49"))
-    card = group.send(now_ms=change_at)
-    assert card is not None
-    assert card.reason == "action_change"
-    # The old segment's un-notified activity rides on the same ordered summary as the new action.
-    assert card.covered == ("sm-close-12", "sm-open-49")
-    assert change_at - T0 < SMART_MONEY_WINDOW_MS
+    for offset, action in ((120_000, "close"), (180_000, "open")):
+        group.observe(wallet(at_ms=T0 + offset, action=action, side="long", item_id=f"sm-{offset}"))
+        assert group.send(now_ms=T0 + offset) is None
+        assert group.track is not None
+        assert group.track.pending_reason == REASON_SMART_MONEY_ROUND
 
 
-def test_smart_money_change_card_shows_the_change_count_and_the_first_and_last_action() -> None:
-    observations = [
-        wallet(at_ms=T0, action="close", side="short", item_id="a"),
-        wallet(at_ms=T0 + 10_000, action="open", side="short", item_id="b"),
-        wallet(at_ms=T0 + 20_000, action="open", side="long", item_id="c"),
-    ]
-    card = render_market_card(
-        track=group_identity(observations[0]),
-        reason="action_change",
-        observations=observations,
-        action_changes=2,
-    )
-    text = card["elements"][0]["content"]
-    assert "动作变化 2 次" in text
-    assert "首 平空" in text
-    assert "末 开多" in text
-    # A Close is a reported action, never a claim about the account's whole position.
-    assert "不代表账户已全部清仓" in text
+def test_a_direction_flip_inside_a_round_is_not_a_card() -> None:
+    """`open long -> open short` is a different position, not a change of intent about one (#582 §2.3)."""
+
+    group = _Group()
+    group.observe(wallet(at_ms=T0, action="open", side="long"))
+    assert group.send(now_ms=T0) is not None
+
+    group.observe(wallet(at_ms=T0 + 30_000, action="open", side="short", item_id="sm-flip"))
+    assert group.send(now_ms=T0 + 30_000) is None
+    assert group.track is not None and group.track.pending_reason == REASON_SMART_MONEY_ROUND
 
 
-def test_the_change_count_starts_from_what_the_last_delivered_card_ended_on() -> None:
-    """A segment that begins *at* the change has no transition inside it -- and still shows one.
+def test_a_round_lasts_twenty_four_hours_and_the_next_observation_opens_the_next_one() -> None:
+    group = _Group()
+    group.observe(wallet(at_ms=T0, action="open", side="long"))
+    assert group.send(now_ms=T0) is not None
+    assert group.track is not None and group.track.round_started_at_ms == T0
 
-    Counting only within the covered set reports zero for exactly the card whose subject is the
-    change, which is the one §4.4 requires the count on.
+    just_inside = T0 + SMART_MONEY_ROUND_MS - 1
+    group.observe(wallet(at_ms=just_inside, action="open", side="long", item_id="sm-inside"))
+    assert group.send(now_ms=just_inside) is None
+    assert group.track.round_started_at_ms == T0
+
+    at_the_boundary = T0 + SMART_MONEY_ROUND_MS
+    group.observe(wallet(at_ms=at_the_boundary, action="open", side="long", item_id="sm-next-round"))
+    card = group.send(now_ms=at_the_boundary)
+    assert card is not None and card.reason == "first"
+    assert group.track.round_started_at_ms == at_the_boundary
+    # The previous round's suppressed report is not swept onto the card that opens the next one.
+    assert card.covered == ("sm-next-round",)
+
+
+def test_the_round_is_measured_on_the_host_receive_stamp_and_never_on_provider_time() -> None:
+    """The two clocks are pulled apart in opposite directions, and only one of them decides.
+
+    A round bounds how often this process interrupts a reader, so it is measured on the stamp this
+    host wrote. The provider's own `event_at_ms` is a vendor clock that has already been observed
+    running ahead of ours (#544), and a rule that read it would let a mis-stamped frame either open a
+    round that is minutes old or suppress a real one for a day.
+
+    Both records here arrive 30 s apart on the host clock -- one round, so the second is held -- while
+    their event stamps are a day and a half apart in *opposite* directions from the first. Reading
+    the provider's time either way would have produced a card.
     """
 
-    covered = [wallet(at_ms=T0 + 10_000, action="open", side="short", item_id="b")]
-    assert action_changes(covered) == 0
-    assert action_changes(covered, since=("close", "short")) == 1
-
-    card = render_market_card(
-        track=replace(group_identity(covered[0]), anchor_action="close", anchor_position_side="short"),
-        reason="action_change",
-        observations=covered,
-        action_changes=action_changes(covered, since=("close", "short")),
+    group = _Group()
+    ahead = replace(
+        wallet(at_ms=T0, action="open", side="long", item_id="sm-open"),
+        event_at_ms=T0 + SMART_MONEY_ROUND_MS + 3_600_000,
     )
-    printed = card["elements"][0]["content"]
-    assert "动作变化 1 次" in printed
-    # "首" is where the timeline starts, which is what the last card ended on -- not the first record
-    # of a segment that begins at the change.
-    assert "首 平空 → 末 开空" in printed
+    group.observe(ahead)
+    assert group.send(now_ms=T0) is not None
+    assert group.track is not None and group.track.round_started_at_ms == T0
+
+    behind = replace(
+        wallet(at_ms=T0 + 30_000, action="open", side="long", item_id="sm-behind"),
+        event_at_ms=T0 - SMART_MONEY_ROUND_MS - 3_600_000,
+    )
+    group.observe(behind)
+
+    assert group.send(now_ms=T0 + 30_000) is None
+    assert group.track.round_started_at_ms == T0
+    assert group.track.pending_reason == REASON_SMART_MONEY_ROUND
+
+
+def test_a_new_round_is_a_first_card_whatever_the_action_is() -> None:
+    group = _Group()
+    group.observe(wallet(at_ms=T0, action="open", side="long"))
+    assert group.send(now_ms=T0) is not None
+
+    tomorrow = T0 + SMART_MONEY_ROUND_MS + 1_000
+    group.observe(wallet(at_ms=tomorrow, action="close", side="long", item_id="sm-tomorrow"))
+    card = group.send(now_ms=tomorrow)
+    assert card is not None and card.reason == "first"
+
+
+def test_a_first_card_nobody_received_leaves_the_next_observation_a_first_card_again() -> None:
+    group = _Group()
+    group.observe(wallet(at_ms=T0, action="open", side="long"))
+    assert group.send(now_ms=T0, outcome="failed") is not None
+    assert group.track is not None and group.track.anchor_state == ""
+
+    group.observe(wallet(at_ms=T0 + 30_000, action="close", side="long", item_id="sm-after-failure"))
+    card = group.send(now_ms=T0 + 30_000)
+    assert card is not None and card.reason == "first"
+
+
+def test_an_unknown_anchor_is_treated_as_a_reader_who_was_told() -> None:
+    """The provider may well have it, so the round is under way and its close is the second card."""
+
+    group = _Group()
+    group.observe(wallet(at_ms=T0, action="open", side="long"))
+    assert group.send(now_ms=T0, outcome="unknown") is not None
+    assert group.track is not None and group.track.anchor_state == "unknown"
+
+    group.observe(wallet(at_ms=T0 + 30_000, action="close", side="long", item_id="sm-close"))
+    card = group.send(now_ms=T0 + 30_000)
+    assert card is not None and card.reason == "action_change"
+
+
+def test_a_close_arriving_before_the_first_card_is_sent_merges_into_it() -> None:
+    """One un-started card per group, and it is never replaced (#582 §3.1).
+
+    The round has then had its close: the card's action line lists both, and no second card is issued
+    afterwards to say the same thing. That is the accepted outcome rather than a missed card.
+    """
+
+    group = _Group()
+    group.observe(wallet(at_ms=T0, action="open", side="long", item_id="sm-open"))
+    group.observe(wallet(at_ms=T0 + 5_000, action="close", side="long", item_id="sm-close"))
+    assert group.open_intent is not None and group.open_intent.reason == "first"
+
+    card = group.send(now_ms=T0 + 5_000)
+    assert card is not None
+    assert card.reason == "first"
+    assert card.covered == ("sm-open", "sm-close")
+    # The anchor now holds `close`, so the round is done interrupting the reader.
+    assert group.track is not None and group.track.anchor_action == "close"
+    group.observe(wallet(at_ms=T0 + 10_000, action="close", side="long", item_id="sm-close-again"))
+    assert group.send(now_ms=T0 + 10_000) is None
 
 
 def test_smart_money_accounts_never_suppress_one_another() -> None:
@@ -685,7 +789,7 @@ def test_a_reported_address_is_an_account_even_when_the_provider_sent_no_label()
     identity = group_identity(unlabelled)
     assert identity.account_verified is True
     assert identity.account_key == "0xabc"
-    # And a record with neither is genuinely unidentifiable, so it stays its own raw card.
+    # And a record with neither is genuinely unidentifiable, so it is an unstructured record.
     assert group_family(replace(unlabelled, account_address=None)) == "raw"
 
 
@@ -697,22 +801,92 @@ def test_smart_money_action_and_side_are_not_part_of_the_notification_group() ->
     assert close_short.group_key == open_short.group_key
 
 
-# --- §4.4 raw and unknown -----------------------------------------------------------------------
+def test_the_closing_card_is_headed_by_what_it_is() -> None:
+    """`平仓`, not the mechanism that noticed: the card exists because the account started closing."""
+
+    observations = [wallet(at_ms=T0, action="close", side="long")]
+    card = render_market_card(
+        track=replace(group_identity(observations[0]), anchor_action="open", anchor_position_side="long"),
+        reason="action_change",
+        observations=observations,
+        action_changes=1,
+    )
+    assert card["header"]["title"]["content"] == "聪明钱 · 平仓 · ETH"
 
 
-def test_a_withdraw_gets_its_own_card_outside_the_open_close_suppression() -> None:
+def test_smart_money_change_card_shows_the_change_count_and_the_first_and_last_action() -> None:
+    observations = [
+        wallet(at_ms=T0, action="close", side="short", item_id="a"),
+        wallet(at_ms=T0 + 10_000, action="open", side="short", item_id="b"),
+        wallet(at_ms=T0 + 20_000, action="open", side="long", item_id="c"),
+    ]
+    card = render_market_card(
+        track=group_identity(observations[0]),
+        reason="action_change",
+        observations=observations,
+        action_changes=2,
+    )
+    text = card["elements"][0]["content"]
+    assert "动作变化 2 次" in text
+    assert "首 平空" in text
+    assert "末 开多" in text
+    # A Close is a reported action, never a claim about the account's whole position.
+    assert "不代表账户已全部清仓" in text
+
+
+def test_the_change_count_starts_from_what_the_last_delivered_card_ended_on() -> None:
+    """A segment that begins *at* the change has no transition inside it -- and still shows one.
+
+    Counting only within the covered set reports zero for exactly the card whose subject is the
+    change, which is the one §4.4 requires the count on.
+    """
+
+    covered = [wallet(at_ms=T0 + 10_000, action="open", side="short", item_id="b")]
+    assert action_changes(covered) == 0
+    assert action_changes(covered, since=("close", "short")) == 1
+
+    card = render_market_card(
+        track=replace(group_identity(covered[0]), anchor_action="close", anchor_position_side="short"),
+        reason="action_change",
+        observations=covered,
+        action_changes=action_changes(covered, since=("close", "short")),
+    )
+    printed = card["elements"][0]["content"]
+    assert "动作变化 1 次" in printed
+    # "首" is where the timeline starts, which is what the last card ended on -- not the first record
+    # of a segment that begins at the change.
+    assert "首 平空 → 末 开空" in printed
+
+
+# --- #582 §3.2 unstructured records ---------------------------------------------------------------
+
+
+def test_an_unstructured_record_earns_no_card_at_all() -> None:
+    """A `Withdraw` is stored and readable, and it interrupts nobody (#582 §2.4).
+
+    It used to be the fourth rule branch, outside every suppression: production sent four such cards
+    and each of them was a sentence a reader could not act on. `decide_group` now decides nothing for
+    it -- no intent, and no track to keep the decision in.
+    """
+
     withdraw = raw_record(at_ms=T0 + 5_000, title="Machi Big Brother Withdraw 1.2M USDC")
     assert group_family(withdraw) == "raw"
 
-    suppressed = _Group()
-    suppressed.observe(wallet(at_ms=T0))
-    assert suppressed.send(now_ms=T0) is not None
+    identity = group_identity(withdraw)
+    turn = decide_group(None, identity, [withdraw], now_ms=T0 + 5_000, has_open_intent=False)
+    assert turn.intent is None
+    assert turn.track == identity
+    assert identity.group_key == f"raw|smart_money|{withdraw.item_id}"
 
-    unstructured = _Group()
-    unstructured.observe(withdraw)
-    card = unstructured.send(now_ms=T0 + 5_000)
-    assert card is not None
-    assert card.reason == "raw"
+
+@pytest.mark.parametrize("kind", ["oi", "liquidation", "smart_money", "unknown_market"])
+def test_no_market_kind_is_exempt_from_the_unstructured_rule(kind: str) -> None:
+    """OI and liquidation never produced a raw card in production; the rule is stated for all four."""
+
+    record = raw_record(at_ms=T0, title="a line no template matched", kind=kind)
+    identity = group_identity(record)
+    assert identity.family == "raw"
+    assert decide_group(None, identity, [record], now_ms=T0, has_open_intent=False).intent is None
 
 
 def test_two_unreadable_records_are_two_groups_and_never_share_one_unknown_bucket() -> None:
@@ -730,26 +904,6 @@ def test_an_unparsed_oi_line_is_raw_rather_than_an_oi_comparison() -> None:
 # --- §5.2 the card's header ----------------------------------------------------------------------
 
 
-def test_a_raw_card_with_no_instrument_has_no_dangling_separator_and_no_em_dash() -> None:
-    """The production header, verbatim: `市场原文· 原文 —`.
-
-    An unstructured report names no instrument -- that is what makes it unstructured -- and the header
-    answered a missing word with three pieces of punctuation: a separator with no space in front of it,
-    a qualifier hung off it, and `—` standing where a symbol would have been. Nothing is absent about a
-    raw card except the parse, and the header says so by leaving the part out (#553).
-    """
-
-    observation = raw_record(at_ms=T0, title="js-2 Withdraw USDC $160K")
-    card = render_market_card(track=group_identity(observation), reason="raw", observations=[observation])
-    title = card["header"]["title"]["content"]
-    assert title == "市场原文 · 原文"
-    assert "—" not in title
-    assert "· 原文" not in title.replace(" · 原文", "")
-    # And the facts line does not open with the separator the missing subject used to leave behind.
-    facts = card["elements"][0]["content"].splitlines()[-1]
-    assert not facts.startswith("·") and " ·  · " not in facts
-
-
 def test_a_card_header_names_the_family_then_the_qualifier_then_the_instrument() -> None:
     observations = [wallet(at_ms=T0, instrument="ETH")]
     track = group_identity(observations[0])
@@ -757,14 +911,6 @@ def test_a_card_header_names_the_family_then_the_qualifier_then_the_instrument()
     followup = render_market_card(track=track, reason="followup", observations=observations)
     assert first["header"]["title"]["content"] == "聪明钱 · ETH"
     assert followup["header"]["title"]["content"] == "聪明钱 · 跟进 · ETH"
-
-
-def test_a_raw_body_line_drops_a_market_kind_the_frame_never_carried() -> None:
-    observation = replace(raw_record(at_ms=T0, title="something new"), market_kind="", source_venue=None)
-    card = render_market_card(track=group_identity(observation), reason="raw", observations=[observation])
-    body = card["elements"][0]["content"]
-    assert "场所未知 · 未结构化，保留供应商原文" in body
-    assert " ·  · " not in body
 
 
 # --- §5.2 the card's numbers: what the report said, and what the market says ----------------------
@@ -1114,11 +1260,39 @@ def test_an_observation_a_closed_round_left_behind_is_not_called_merging() -> No
     assert (status, reason) == ("uncovered", REASON_ROUND_CLOSED)
 
 
-def test_a_raw_record_that_was_delivered_is_both_raw_and_sent() -> None:
-    """The two pairs are independent, which is the whole reason they are two pairs."""
+def test_a_raw_record_that_was_delivered_is_still_reported_as_sent() -> None:
+    """The two pairs are independent, which is the whole reason they are two pairs.
+
+    Four unstructured cards were delivered before #582 deleted the branch that prepared them. Their
+    Items still carry a delivery, and the page still reports what happened to it: a receipt is not
+    rewritten by a rule change, and the settled state is read before the track is consulted at all.
+    """
 
     status, _ = notification_status(
         notify_state="processed", delivery_state="sent", delivery_error=None, track_reason=None, round_closed=False
     )
     assert status == "sent"
     assert group_family(raw_record(at_ms=T0, title="Withdraw")) == "raw"
+
+
+def test_an_unstructured_record_with_no_track_is_not_alerted_rather_than_merging() -> None:
+    """`track_reason is None` is the read model's LEFT JOIN finding no track row (#582 §3.2).
+
+    `merging` would promise a card that is never coming, and `pending_reason = ''` is a different
+    thing entirely -- a real track whose group happens to be holding nothing at this instant.
+    """
+
+    assert notification_status(
+        notify_state="processed",
+        delivery_state=None,
+        delivery_error=None,
+        track_reason=None,
+        round_closed=False,
+    ) == ("not_alerted", REASON_UNSTRUCTURED)
+    assert notification_status(
+        notify_state="processed",
+        delivery_state=None,
+        delivery_error=None,
+        track_reason="",
+        round_closed=False,
+    ) == ("merging", REASON_MERGING)

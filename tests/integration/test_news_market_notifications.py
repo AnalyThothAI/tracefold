@@ -33,6 +33,8 @@ from tracefold.news.market_notifications import (
     OI_QUIET_RESET_MS,
     REASON_ROUND_CLOSED,
     REASON_SENDER_UNAVAILABLE,
+    REASON_SMART_MONEY_ROUND,
+    REASON_UNSTRUCTURED,
     SEND_ATTEMPTS_MAX,
     SEND_RETRY_BACKOFF_MS,
     MarketNotificationLoop,
@@ -843,35 +845,183 @@ def _liquidation_item(conn: Any, item_id: str, *, at_ms: int, side: str) -> None
         news.insert_market_liquidation(fact=fact, ingest_mode="live", now_ms=at_ms)
 
 
-def test_an_action_change_card_shows_the_change_even_when_its_segment_starts_at_it(conn: Any) -> None:
-    """§4.4's change count, through the real claim rather than through a hand-passed argument.
+def test_a_smart_money_round_sends_a_first_card_a_closing_card_and_no_third(conn: Any) -> None:
+    """#582 §3.1 through the real ledger: two cards a day for one account in one instrument.
 
-    The previous segment is delivered in full first, so the change card covers exactly one
-    observation and contains no transition of its own. The count comes from the anchor -- what the
-    last delivered card ended on -- which is the only place it can come from.
+    Every observation here is inside one 24 h round, and the sequence is the one production reports
+    -- opens, then closes, then more closes. The first card speaks for the round's opening, the
+    closing card is the first `open -> close` in it, and the closes after that update the page. Under
+    the 60 s window this replaces, these five records were five cards.
     """
 
     clock = _Clock()
     sender = _Sender()
     db = _Db(conn)
-    _wallet_item(conn, "sm-close", at_ms=NOW - 120_000, action="close", side="short")
+    _wallet_item(conn, "sm-open-1", at_ms=NOW - 7_200_000, action="open", side="long")
     asyncio.run(_loop(db, sender, clock=clock).advance())
     assert len(sender.cards) == 1
 
-    track = _rows(conn, "SELECT anchor_action, anchor_position_side, current_action FROM news_market_tracks")
-    assert track == [{"anchor_action": "close", "anchor_position_side": "short", "current_action": "close"}]
+    track = _rows(conn, "SELECT anchor_action, anchor_position_side, round_started_at_ms FROM news_market_tracks")
+    assert track == [{"anchor_action": "open", "anchor_position_side": "long", "round_started_at_ms": NOW - 7_200_000}]
 
-    # Well past the window, so this is a change card rather than a merged follow-up.
-    clock.advance(120_000)
-    _wallet_item(conn, "sm-open", at_ms=NOW - 60_000, action="open", side="short")
+    # A second open, hours later and still inside the round: the page moves, the reader is not
+    # interrupted a second time.
+    clock.advance(3_600_000)
+    _wallet_item(conn, "sm-open-2", at_ms=NOW - 3_600_000, action="open", side="long")
     asyncio.run(_loop(db, sender, clock=clock).advance())
+    assert len(sender.cards) == 1
+    held = _rows(conn, "SELECT pending_reason FROM news_market_tracks")
+    assert held == [{"pending_reason": REASON_SMART_MONEY_ROUND}]
+
+    # The account starts closing. That is the round's one further card.
+    clock.advance(1_800_000)
+    _wallet_item(conn, "sm-close-1", at_ms=NOW - 1_800_000, action="close", side="long")
+    asyncio.run(_loop(db, sender, clock=clock).advance())
+    assert len(sender.cards) == 2
 
     change = next(row for row in _deliveries(conn) if row["trigger_reason"] == "action_change")
-    assert change["covered_count"] == 1
+    assert change["covered_count"] == 2
     printed = change["card"]["elements"][0]["content"]
     assert "动作变化 1 次" in printed
-    assert "首 平空" in printed
-    assert "末 开空" in printed
+    assert "首 开多" in printed
+    assert "末 平多" in printed
+    assert change["card"]["header"]["title"]["content"].startswith("聪明钱 · 平仓")
+
+    # And the closes that follow it are page updates, whatever they say.
+    for offset, action in ((900_000, "close"), (600_000, "open")):
+        clock.advance(300_000)
+        _wallet_item(conn, f"sm-after-{offset}", at_ms=NOW - offset, action=action, side="long")
+        asyncio.run(_loop(db, sender, clock=clock).advance())
+    assert len(sender.cards) == 2
+    assert [row["trigger_reason"] for row in _deliveries(conn)] == ["first", "action_change"]
+    assert _rows(conn, "SELECT pending_reason FROM news_market_tracks") == [
+        {"pending_reason": REASON_SMART_MONEY_ROUND}
+    ]
+
+
+def test_a_close_that_arrives_before_the_first_card_is_sent_merges_into_it(conn: Any) -> None:
+    """One un-started card per group, and no second intent beside it (#582 §3.1).
+
+    The sender is unavailable while both records arrive, so the first card is still un-started when
+    the close reaches the loop. It joins that card rather than opening a second one, and the round
+    has then had its close: nothing more is prepared afterwards.
+    """
+
+    clock = _Clock()
+    sender = _Sender(available=False)
+    db = _Db(conn)
+    _wallet_item(conn, "sm-open", at_ms=NOW - 120_000, action="open", side="long")
+    asyncio.run(_loop(db, sender, clock=clock).advance())
+    _wallet_item(conn, "sm-close", at_ms=NOW - 60_000, action="close", side="long")
+    asyncio.run(_loop(db, sender, clock=clock).advance())
+
+    assert [row["trigger_reason"] for row in _deliveries(conn)] == ["first"]
+
+    sender.set_available(True)
+    clock.advance(1_000)
+    asyncio.run(_loop(db, sender, clock=clock).advance())
+
+    deliveries = _deliveries(conn)
+    assert [row["trigger_reason"] for row in deliveries] == ["first"]
+    assert deliveries[0]["covered_count"] == 2
+    assert deliveries[0]["state"] == "sent"
+    # The card printed both actions, and the anchor now holds the close.
+    printed = deliveries[0]["card"]["elements"][0]["content"]
+    assert "开多" in printed and "平多" in printed
+    assert _rows(conn, "SELECT anchor_action FROM news_market_tracks") == [{"anchor_action": "close"}]
+
+    # A close after it says nothing new, and no card is issued to repeat it.
+    clock.advance(1_000)
+    _wallet_item(conn, "sm-close-2", at_ms=NOW - 30_000, action="close", side="long")
+    asyncio.run(_loop(db, sender, clock=clock).advance())
+    assert [row["trigger_reason"] for row in _deliveries(conn)] == ["first"]
+
+
+def test_an_unstructured_record_is_processed_and_never_alerted(conn: Any) -> None:
+    """#582 §3.2 on the real tables: grouped, readable, no track, no delivery, no card.
+
+    The page's answer is `not_alerted` / `unstructured_record_not_alerted`, which the read model can
+    only give because the LEFT JOIN finds no track row at all. `merging` would have promised a card
+    that is never coming, and the four such cards production did send are why the branch is gone.
+    """
+
+    clock = _Clock()
+    sender = _Sender()
+    db = _Db(conn)
+    _raw_item(conn, "raw-withdraw", at_ms=NOW - 60_000, kind="smart_money", title="js-2 Withdraw $160,000 USDC")
+    _raw_item(conn, "raw-oi", at_ms=NOW - 50_000, kind="oi", title="a line no OI template matched")
+
+    turn = asyncio.run(_loop(db, sender, clock=clock).advance())
+
+    assert turn.observations == 2
+    assert turn.groups == 2
+    assert turn.intents == 0
+    assert sender.cards == []
+    assert _deliveries(conn) == []
+    assert _rows(conn, "SELECT group_key FROM news_market_tracks") == []
+
+    marked = _rows(
+        conn,
+        "SELECT item_id, market_notify_state, market_notify_group_key AS group_key,"
+        "       market_notify_delivery_key AS delivery_key"
+        "  FROM news_items ORDER BY item_id",
+    )
+    assert marked == [
+        {
+            "item_id": "raw-oi",
+            "market_notify_state": "processed",
+            "group_key": "raw|oi|raw-oi",
+            "delivery_key": None,
+        },
+        {
+            "item_id": "raw-withdraw",
+            "market_notify_state": "processed",
+            "group_key": "raw|smart_money|raw-withdraw",
+            "delivery_key": None,
+        },
+    ]
+
+    repos = repositories_for_connection(conn)
+    for item_id in ("raw-oi", "raw-withdraw"):
+        detail = repos.news.market_item(item_id=item_id)
+        assert detail is not None
+        assert (detail["notification_status"], detail["notification_reason"]) == (
+            "not_alerted",
+            REASON_UNSTRUCTURED,
+        )
+        assert detail["notification_delivery"] is None
+
+    # And a second turn changes nothing: the record is off the to-do list for good.
+    assert asyncio.run(_loop(db, sender, clock=clock).advance()).observations == 0
+
+
+def _raw_item(conn: Any, item_id: str, *, at_ms: int, kind: str, title: str) -> None:
+    """One admitted market record whose template no parser could prove."""
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.news.upsert_item(
+            item_id=item_id,
+            source_id="opennews",
+            source_item_key=item_id,
+            title=title,
+            raw_first_line=title,
+            description="",
+            canonical_url=None,
+            reporting_origin="opennews",
+            published_at_ms=at_ms,
+            observed_at_ms=at_ms,
+            provider_metadata_json="{}",
+            strategy_ids_json="[]",
+            ingest_mode="live",
+            trace_id="trace",
+            now_ms=at_ms,
+            market_kind=kind,
+            market_source_strategy_id="2026",
+            market_parse_status="raw",
+            market_parse_error="market_template_unmatched",
+            provider_params_json="{}",
+        )
 
 
 def _wallet_item(conn: Any, item_id: str, *, at_ms: int, action: str, side: str) -> None:

@@ -481,9 +481,9 @@ MARKET_TRACK_ATTEMPT_SQL = """
      WHERE group_key = %s
 """
 
-# `current_action` is deliberately not written here. It is the newest observation, and by the time a
-# card settles the loop may already have recorded a later one; overwriting it with what this card
-# covered would move the group's idea of "now" backwards.
+# What the delivered card ended on, and nothing about the newest observation: by the time a card
+# settles the loop may already have recorded a later one, and a column that mixed the two would move
+# the group's idea of what a reader has been told (#582 §3.1).
 MARKET_TRACK_ANCHOR_SQL = """
     UPDATE news_market_tracks
        SET anchor_state = %s,

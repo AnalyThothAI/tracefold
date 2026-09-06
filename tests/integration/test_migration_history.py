@@ -44,10 +44,11 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260906_0370"
+HEAD = "20260906_0371"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
+REPARSE = "20260906_0370"
 
 
 def _config():
@@ -129,6 +130,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260906_0370",
         "20260906_0369",
         "20260906_0368",
         "20260905_0367",
@@ -160,37 +162,38 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260901_0341",
         BASELINE,
     ]
-    assert revisions[0].down_revision == "20260906_0369"
-    assert revisions[1].down_revision == "20260906_0368"
-    assert revisions[2].down_revision == "20260905_0367"
-    assert revisions[3].down_revision == "20260905_0366"
-    assert revisions[4].down_revision == "20260905_0365"
-    assert revisions[5].down_revision == "20260905_0364"
-    assert revisions[6].down_revision == "20260904_0363"
-    assert revisions[7].down_revision == "20260904_0362"
-    assert revisions[8].down_revision == "20260904_0361"
-    assert revisions[9].down_revision == "20260904_0360"
-    assert revisions[10].down_revision == "20260903_0359"
-    assert revisions[11].down_revision == "20260903_0358"
-    assert revisions[12].down_revision == "20260903_0357"
-    assert revisions[13].down_revision == "20260903_0356"
-    assert revisions[14].down_revision == "20260903_0355"
-    assert revisions[15].down_revision == "20260903_0354"
-    assert revisions[16].down_revision == "20260903_0353"
-    assert revisions[17].down_revision == "20260903_0352"
-    assert revisions[18].down_revision == "20260902_0351"
-    assert revisions[19].down_revision == "20260902_0350"
-    assert revisions[20].down_revision == "20260902_0349"
-    assert revisions[21].down_revision == "20260902_0348"
-    assert revisions[22].down_revision == "20260901_0347"
-    assert revisions[23].down_revision == "20260901_0346"
-    assert revisions[24].down_revision == "20260901_0345"
-    assert revisions[25].down_revision == "20260901_0344"
-    assert revisions[26].down_revision == "20260901_0343"
-    assert revisions[27].down_revision == "20260901_0342"
-    assert revisions[28].down_revision == "20260901_0341"
-    assert revisions[29].down_revision == BASELINE
-    assert revisions[30].down_revision is None
+    assert revisions[0].down_revision == "20260906_0370"
+    assert revisions[1].down_revision == "20260906_0369"
+    assert revisions[2].down_revision == "20260906_0368"
+    assert revisions[3].down_revision == "20260905_0367"
+    assert revisions[4].down_revision == "20260905_0366"
+    assert revisions[5].down_revision == "20260905_0365"
+    assert revisions[6].down_revision == "20260905_0364"
+    assert revisions[7].down_revision == "20260904_0363"
+    assert revisions[8].down_revision == "20260904_0362"
+    assert revisions[9].down_revision == "20260904_0361"
+    assert revisions[10].down_revision == "20260904_0360"
+    assert revisions[11].down_revision == "20260903_0359"
+    assert revisions[12].down_revision == "20260903_0358"
+    assert revisions[13].down_revision == "20260903_0357"
+    assert revisions[14].down_revision == "20260903_0356"
+    assert revisions[15].down_revision == "20260903_0355"
+    assert revisions[16].down_revision == "20260903_0354"
+    assert revisions[17].down_revision == "20260903_0353"
+    assert revisions[18].down_revision == "20260903_0352"
+    assert revisions[19].down_revision == "20260902_0351"
+    assert revisions[20].down_revision == "20260902_0350"
+    assert revisions[21].down_revision == "20260902_0349"
+    assert revisions[22].down_revision == "20260902_0348"
+    assert revisions[23].down_revision == "20260901_0347"
+    assert revisions[24].down_revision == "20260901_0346"
+    assert revisions[25].down_revision == "20260901_0345"
+    assert revisions[26].down_revision == "20260901_0344"
+    assert revisions[27].down_revision == "20260901_0343"
+    assert revisions[28].down_revision == "20260901_0342"
+    assert revisions[29].down_revision == "20260901_0341"
+    assert revisions[30].down_revision == BASELINE
+    assert revisions[31].down_revision is None
     assert sorted(path.name for path in VERSIONS.glob("*.py")) == [
         "20260831_0340_baseline.py",
         "20260901_0341_trading_signal_hard_cut.py",
@@ -223,6 +226,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260906_0368_news_instrument_snapshot_state.py",
         "20260906_0369_news_market_wallet_tape.py",
         "20260906_0370_news_smart_money_reparse.py",
+        "20260906_0371_news_market_unstructured_not_alerted.py",
     ]
 
 
@@ -254,18 +258,19 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    # `20260906_0369` is now the first refusal the walk to base meets, and it is the head, so the walk
-    # stops before reversing anything: the smart-money facts it parses are the only structured record
-    # of those provider reports, and the reason it spends -- "no parser has been run against this
-    # frame" -- is false the moment it has run. `20260906_0369` is the refusal immediately behind it:
-    # it adds the wallet tape's fills, whose rows are the only record of what a followed wallet did.
-    # Then `20260906_0368`, whose `observed_at_ms` rename and state table cannot be undone without
-    # losing which venue last answered; `20260905_0367`'s `round_started_at_ms`; `20260905_0366`'s
-    # notification to-do list and delivery receipts; and `20260905_0365`'s market facts.
-    # `20260905_0364`'s dropped capability column, `20260904_0363`'s restored view and
+    # The head is now the first refusal the walk to base meets, so the walk stops before reversing
+    # anything: it deletes the alerting state of a rule that no longer exists, and re-creating those
+    # track rows would put groups back on a page as though a card were still coming for them.
+    # `20260906_0370` is the refusal immediately behind it -- the smart-money facts it parses are the
+    # only structured record of those provider reports, and the reason it spends is false the moment
+    # it has run -- then `20260906_0369`, whose wallet-tape fills are the only record of what a
+    # followed wallet did; `20260906_0368`, whose `observed_at_ms` rename and state table cannot be
+    # undone without losing which venue last answered; `20260905_0367`'s `round_started_at_ms`;
+    # `20260905_0366`'s notification to-do list and delivery receipts; and `20260905_0365`'s market
+    # facts. `20260905_0364`'s dropped capability column, `20260904_0363`'s restored view and
     # `20260904_0362`'s re-added CHECKs are all reversible and all behind those, as are the two
     # refusals that were in front before -- `20260904_0361` and `20260903_0357`.
-    with pytest.raises(RuntimeError, match="news_smart_money_reparse_downgrade_unsupported"):
+    with pytest.raises(RuntimeError, match="news_market_unstructured_not_alerted_downgrade_unsupported"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
 
@@ -1812,9 +1817,11 @@ def test_the_reparse_is_a_no_op_when_it_runs_again() -> None:
         ).fetchall()
 
         # Alembic will not replay a revision it has stamped, so the second run is asked for directly.
+        # The target is the reparse itself rather than the head: this is a claim about that one
+        # revision, and later revisions on top of it are not asked to be replayable.
         conn.execute("UPDATE alembic_version SET version_num = %(previous)s", {"previous": BEFORE_REPARSE})
         conn.commit()
-        command.upgrade(config, HEAD)
+        command.upgrade(config, REPARSE)
 
         assert [
             dict(row)
@@ -2207,6 +2214,76 @@ def test_the_alert_round_backfill_starts_each_group_at_its_last_send_attempt() -
             for row in conn.execute("SELECT group_key, round_started_at_ms FROM news_market_tracks").fetchall()
         }
         assert started == {"oi|sent": 1_700_000_000_000, "oi|never-sent": 0}
+    finally:
+        conn.close()
+
+
+def test_the_unstructured_cut_deletes_that_alerting_state_and_the_two_dead_columns() -> None:
+    """`20260906_0371` on the tracks production actually holds (#582 §3.2).
+
+    Three claims on one real database, because the revision makes three changes and each one can
+    fail on its own: the `raw` groups -- notification state for a rule that no longer exists -- are
+    gone, the tightened CHECK refuses the family that produced them, and the two columns whose only
+    reader was the deleted side-change rule are dropped. The groups that still alert are untouched,
+    including the anchor the remaining smart-money rule reads.
+    """
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260906_0370")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            for group_key, family, current_action in (
+                ("raw|smart_money|deadbeef", "raw", None),
+                ("raw|oi|c0ffee", "raw", None),
+                ("smart_money|address|0x4d3a|hyperliquid|ETH", "smart_money", "close"),
+                ("oi|opennews|binance|WIF|oi_signal_v1", "oi", None),
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO news_market_tracks (
+                      group_key, market_kind, family, last_observed_at_ms, last_observed_item_id,
+                      current_action, current_position_side, anchor_state, anchor_delivery_key,
+                      anchor_action, anchor_position_side, created_at_ms, updated_at_ms
+                    ) VALUES (%s, 'smart_money', %s, 1, 'item', %s, 'long', 'sent', 'key-' || %s,
+                              'open', 'long', 1, 1)
+                    """,
+                    (group_key, family, current_action, group_key),
+                )
+
+        command.upgrade(config, "head")
+
+        remaining = {
+            str(row["group_key"]): (str(row["family"]), str(row["anchor_action"]))
+            for row in conn.execute("SELECT group_key, family, anchor_action FROM news_market_tracks").fetchall()
+        }
+        assert remaining == {
+            "smart_money|address|0x4d3a|hyperliquid|ETH": ("smart_money", "open"),
+            "oi|opennews|binance|WIF|oi_signal_v1": ("oi", "open"),
+        }
+
+        columns = {
+            str(row["column_name"])
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns"
+                " WHERE table_schema = 'public' AND table_name = 'news_market_tracks'"
+            ).fetchall()
+        }
+        assert not {"current_action", "current_position_side"} & columns
+        # The column the remaining rule does read is still here.
+        assert "anchor_action" in columns
+
+        # And the family that produced those rows cannot come back by accident.
+        with pytest.raises(Exception, match="news_market_tracks_family_check"), conn.transaction():
+            conn.execute(
+                """
+                INSERT INTO news_market_tracks (
+                  group_key, market_kind, family, last_observed_at_ms, last_observed_item_id,
+                  created_at_ms, updated_at_ms
+                ) VALUES ('raw|smart_money|new', 'smart_money', 'raw', 1, 'item', 1, 1)
+                """
+            )
     finally:
         conn.close()
 

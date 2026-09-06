@@ -846,8 +846,8 @@
     },
     {
       "source": "market",
-      "id": "market-oi-action-change-billions",
-      "why": "an OI figure at billion scale and a direction word the map does not know",
+      "id": "market-oi-followup-billions",
+      "why": "an OI figure at billion scale and a direction word the map does not know. Its reason was recorded as `action_change`, which no OI card can carry -- the OI rule produces `first` and `followup` only -- so #582 corrected the input to `followup` and the header line with it. `followup` maps to 跟进 on the renderers this corpus was generated from and on the current tree alike, so the recorded bytes are still what those renderers wrote for these inputs.",
       "inputs": {
         "track": {
           "group_key": "oi|opennews|binance|BTC",
@@ -858,7 +858,7 @@
           "symbol": "BTC",
           "measurement_definition": "oi_signal_v1|opennews_oi_source_v1|300000"
         },
-        "reason": "action_change",
+        "reason": "followup",
         "observations": [
           {
             "item_id": "m1",
@@ -883,7 +883,7 @@
         "header": {
           "title": {
             "tag": "plain_text",
-            "content": "持仓异动 · 动作变化 · BTC"
+            "content": "持仓异动 · 跟进 · BTC"
           },
           "template": "blue"
         },
@@ -1180,61 +1180,6 @@
               {
                 "tag": "plain_text",
                 "content": "Tracefold 市场 · liquidation|opennews|hyp · r1"
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "source": "market",
-      "id": "market-raw-long-provider-text",
-      "why": "an unstructured report longer than the card holds, subject falling back to the raw instrument",
-      "inputs": {
-        "track": {
-          "group_key": "raw|smart_money|deadbeef",
-          "market_kind": "smart_money",
-          "family": "raw",
-          "provider": null,
-          "raw_instrument": "BTC-PERP"
-        },
-        "reason": "raw",
-        "observations": [
-          {
-            "item_id": "s1",
-            "market_kind": "smart_money",
-            "parse_status": "ok",
-            "title": "js-2 Open Long BTC $798.18K , Price $79,817.87  补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 ",
-            "event_at_ms": 1788539220000,
-            "received_at_ms": 1788539220000,
-            "provider": null
-          }
-        ],
-        "detail_url": null,
-        "action_changes": 0
-      },
-      "card": {
-        "config": {
-          "wide_screen_mode": true
-        },
-        "header": {
-          "title": {
-            "tag": "plain_text",
-            "content": "市场原文 · 原文 · BTC-PERP"
-          },
-          "template": "grey"
-        },
-        "elements": [
-          {
-            "tag": "markdown",
-            "content": "js-2 Open Long BTC $798.18K , Price $79,817.87 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充说明 补充…\n场所未知 · smart_money · 未结构化，保留供应商原文\nBTC-PERP · smart_money（1 条报道） · 00:27"
-          },
-          {
-            "tag": "note",
-            "elements": [
-              {
-                "tag": "plain_text",
-                "content": "Tracefold 市场 · raw|smart_money|deadbeef · s1"
               }
             ]
           }

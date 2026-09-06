@@ -405,6 +405,24 @@ applies it. `downgrade` is refused: the facts are the only structured record of
 those reports, and restoring `market_backfill_not_reparsed` would restate a claim
 that is false the moment the parser has run.
 
+`20260906_0371` deletes the notification state of a rule that no longer exists
+and the two columns whose only reader went with it (#582). An unstructured
+market record — one whose template no parser could prove — used to be the loop's
+fourth rule branch: its own group, its own track, and its own card outside every
+suppression rule. Production sent four such cards in the feature's whole life,
+and each interrupted a reader with a sentence nobody could act on, so the branch
+is gone; the record is still stored, still on the page, and now reads
+`not_alerted` / `unstructured_record_not_alerted`. The revision deletes those
+`family = 'raw'` track rows, tightens `news_market_tracks_family_check` to the
+three families that remain, and drops `current_action` / `current_position_side`
+— the newest observation, rewritten every turn for a smart-money side-change
+rule that #582 §3.1 replaces with a 24 h round measured against `anchor_action`.
+The observations and the delivery receipts are untouched: the first are facts and
+the second are evidence that a reader was told. Writers must be stopped, because
+code that still names the dropped columns fails against the new schema, and
+`make up` is that boundary. `downgrade` is refused: re-creating the deleted rows
+would put groups back on a page as though a card were still coming for them.
+
 ## Database development standard
 
 1. The deployment has one non-superuser application login, `tracefold`.
