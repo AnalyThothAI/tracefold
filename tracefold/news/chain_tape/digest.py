@@ -60,20 +60,32 @@ DIGEST_BAGS_MAX: Final = 8
 # satisfiable one; taking the identifier whole makes a misspelled handle as ungrounded as an invented
 # number, which is what it is.
 #
-# The sign is part of the figure. Half the numbers in this pack are returns and cash positions that can
-# fall either side of zero, so `-5.12%` and `+5.12%` are two different statements about the same window
-# and a grammar that read them as one would let a sign flip through unchallenged.
-_FIGURE = re.compile(r"0x[0-9A-Za-z]{2,}|[-\u2212+]?\d[\d,]*(?:\.\d+)?")
+# The sign is part of the figure, and so is the currency mark that comes between them. Half the numbers
+# in this pack are returns and cash positions that can fall either side of zero, so `-5.12%` and `+5.12%`
+# are two different statements about the same window -- and `card_format.money` writes a negative dollar
+# figure as `-$189,000.00`, sign first and mark second, so a grammar that started at the first digit
+# would read `净现金 $189,000.00` and `净现金 -$189,000.00` as the same figure. On the net cash recovery
+# line, the one dollar figure in this pack that is routinely negative, that is a $378,000 swing.
+_FIGURE = re.compile(r"0x[0-9A-Za-z]{2,}|[-\u2212+]?\$?\d[\d,]*(?:\.\d+)?")
 # `16:00-20:00` is a window, not a figure, and it is the one piece of text in the pack whose digits mean
 # nothing on their own. Left in, it would put `16`, `00` and `20` into the allowed set of every line
 # citing the window fact, and a fabricated `20 个地址` would ground against a clock. It is removed from
 # both sides -- the facts and the lines -- so a clock grounds nothing and is required to ground nothing.
 _CLOCK = re.compile(r"\d{1,2}:\d{2}")
 # Chinese numerals bypass the figure grammar entirely: `三个地址` states a count no fact can be checked
-# against. The instruction asks for Arabic digits, and a line that uses these anyway is not checkable, so
-# it is not kept. `兆` and the formal forms are deliberately absent -- these are the characters a model
-# writing ordinary Chinese would reach for.
-_CHINESE_NUMERALS = frozenset("零一二三四五六七八九十百千万亿两")
+# against. But these characters are also ordinary Chinese words -- 进一步, 一致, 一半, 十分, 百分比,
+# 两者, 统一, 第一 -- and a rule that fired on the character alone would thin almost every digest by a
+# sentence for the sake of the word `一`. What makes one of them a *figure* is the quantity context
+# around it: a measure word after it, or a totalling word in front. Both halves are required, so the
+# rule catches `二十五笔` and `共三笔` and leaves ordinary prose alone.
+_CN_NUMERAL = "零一二三四五六七八九十百千万亿两"
+_CHINESE_QUANTITY = re.compile(
+    rf"(?:共|合计|约)\s*[{_CN_NUMERAL}]|[{_CN_NUMERAL}]+\s*(?:个|笔|张|条|次|倍|成|位|家|万美元|美元|%)"
+)
+# What the instruction already forbids, made enforceable. A digest says what happened; a line that
+# forecasts, recommends or hedges about what comes next is not a figure that can be checked against a
+# fact, and no fact in the pack can license it. It is dropped like any other ungrounded line.
+_ADVICE = re.compile(r"建议|或将|后市|预计|看多|看空|应当|值得关注|可能继续")
 
 _UNKNOWN: Final = "未知"
 
@@ -473,9 +485,11 @@ def template_lines(pack: DigestPack) -> tuple[DigestLine, ...]:
 def ground(pack: DigestPack, lines: Sequence[DigestLine]) -> Grounding:
     """Keep the lines that stand on their own citations; drop the ones that do not.
 
-    Three conditions per line, all of them about the pack rather than about style: every id it cites has
-    to be a fact, every figure it states has to appear in one of the facts it cited, and it has to be
-    written in the digits the facts are written in.
+    Four conditions per line, and all of them are about the pack rather than about style: every id it
+    cites has to be a fact, every figure it states has to appear in one of the facts it cited, any count
+    it states has to be in the digits the facts are written in rather than in Chinese numerals, and it
+    has to be a statement about what happened rather than about what comes next -- no fact in this pack
+    licenses a forecast.
 
     It is per line rather than per answer, and that is a correctness decision as much as a product one.
     An all-or-nothing rule discards eight good sentences because a ninth rounded a figure, so with any
@@ -495,7 +509,7 @@ def ground(pack: DigestPack, lines: Sequence[DigestLine]) -> Grounding:
         if not text or not line.cites or len(cited) != len(line.cites):
             dropped += 1
             continue
-        if _CHINESE_NUMERALS.intersection(text):
+        if _CHINESE_QUANTITY.search(text) or _ADVICE.search(text):
             dropped += 1
             continue
         allowed: set[str] = set().union(*(_figures(fact.text) for fact in cited))
@@ -517,9 +531,16 @@ def _figures(text: str) -> set[str]:
 
 
 def _normalized_figure(value: str) -> str:
+    """`-$189,000.00` and `-189000.0` are one figure; `$189,000.00` is a different one entirely.
+
+    The currency mark and the separators are punctuation and go; the sign is the statement and stays.
+    A leading `+` is dropped because the pack writes `+1h` as a label rather than as a signed quantity,
+    and a flip is still caught either way -- the negative form is the one that has to survive.
+    """
+
     if value.lower().startswith("0x"):
         return value.lower()
-    digits = value.replace(",", "").replace("\u2212", "-").removeprefix("+")
+    digits = value.replace(",", "").replace("$", "").replace("\u2212", "-").removeprefix("+")
     if "." in digits:
         digits = digits.rstrip("0").rstrip(".")
     return digits or "0"

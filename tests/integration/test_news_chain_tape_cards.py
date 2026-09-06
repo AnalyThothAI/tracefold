@@ -736,6 +736,27 @@ def test_a_second_turn_inside_the_interval_writes_no_second_digest(conn) -> None
     assert len(_rows(conn, "SELECT item_id FROM news_market_wallet_events WHERE kind = 'digest'")) == 2
 
 
+def test_the_digest_attempt_marker_is_durable_monotonic_and_readable_without_a_digest_row(conn) -> None:
+    """The bound on the write-failure loop, against the real table it lives on.
+
+    It has to survive a database whose tape has never saved state (the marker upserts the row), it may
+    only advance (an out-of-order turn cannot reopen the interval), and `chain_tape_last_digest` has to
+    return it with no digest rows at all -- which is the only case it exists for.
+    """
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.news.chain_tape_mark_digest_attempt(now_ms=NOW)
+    with repos.transaction():
+        repos.news.chain_tape_mark_digest_attempt(now_ms=NOW - 3_600_000)
+
+    state = repos.news.chain_tape_last_digest(since_ms=NOW - 86_400_000)
+
+    assert state is not None
+    assert (state.attempted_at_ms, state.window_to_ms) == (NOW, 0)
+    assert _rows(conn, "SELECT item_id FROM news_market_wallet_events") == []
+
+
 def test_a_quiet_window_writes_no_digest_at_all(conn) -> None:
     """#572 §5.3's 空窗跳过, against the real tables rather than a stub."""
 

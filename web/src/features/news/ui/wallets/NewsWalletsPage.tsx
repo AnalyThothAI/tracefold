@@ -307,8 +307,9 @@ function CardRow({ card }: { card: NewsWalletCard }) {
         <tr className="news-wallets-lines" data-kind={card.kind}>
           <td colSpan={10}>
             <ol>
-              {lines.map((line) => (
-                <li key={line}>{line}</li>
+              {/* Position is the identity: two sentences of a digest may legitimately read the same. */}
+              {lines.map((line, index) => (
+                <li key={index}>{line}</li>
               ))}
             </ol>
           </td>

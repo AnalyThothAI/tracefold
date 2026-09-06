@@ -379,8 +379,9 @@ function DigestLines({ lines }: { lines?: readonly string[] | null }) {
     <>
       <small className="news-market-detail-label">摘要正文</small>
       <ol className="news-market-digest">
-        {lines.map((line) => (
-          <li key={line}>{line}</li>
+        {/* Position is the identity here: two sentences of a digest may legitimately read the same. */}
+        {lines.map((line, index) => (
+          <li key={index}>{line}</li>
         ))}
       </ol>
     </>

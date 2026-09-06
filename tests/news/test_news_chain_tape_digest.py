@@ -290,6 +290,45 @@ def test_a_sign_flip_is_a_different_figure_and_the_line_that_states_it_is_droppe
     assert ground(pack, (honest,)).lines == (honest,)
 
 
+def test_a_negative_dollar_figure_keeps_its_sign_through_the_currency_mark() -> None:
+    """`card_format.money` writes the sign outside the mark, so the grammar has to read across it.
+
+    A rule that started at the first digit would read `净现金 $189,000.00` and `净现金 -$189,000.00` as
+    the same figure -- a $378,000 swing on the net cash recovery line, which is the one dollar figure in
+    this pack that is routinely negative.
+    """
+
+    flow = _rows().flows[0]
+    pack = build_pack(
+        _rows(
+            flows=(
+                TokenWindowFlow(
+                    **{
+                        **_as_dict(flow),
+                        # Closed out, and it never got back what it put in: $229,000 in, $40,000 out.
+                        "lifetime_sell_raw": 10_000_000 * UNIT,
+                        "lifetime_buy_usd": Decimal("229000"),
+                        "lifetime_sell_usd": Decimal("40000"),
+                    }
+                ),
+            )
+        ),
+        window_from_ms=WINDOW_FROM,
+        window_to_ms=WINDOW_TO,
+        handles=HANDLES,
+        holding_costs={},
+    )
+    assert "净现金 -$189,000.00" in next(fact for fact in pack.facts if fact.id == "c1").text
+
+    honest = DigestLine(text="0xVantaa FSD 已清空，净现金 -$189,000.00", cites=("c1",))
+    dropped_sign = DigestLine(text="0xVantaa FSD 已清空，净现金 $189,000.00", cites=("c1",))
+    flipped = DigestLine(text="0xVantaa FSD 已清空，净现金 +$189,000.00", cites=("c1",))
+
+    assert ground(pack, (honest,)).lines == (honest,)
+    assert ground(pack, (dropped_sign,)).kept == 0
+    assert ground(pack, (flipped,)).kept == 0
+
+
 def test_a_clock_grounds_nothing_and_is_required_to_ground_nothing() -> None:
     """`17:20-21:20` is a window, not a figure, and its digits mean nothing on their own.
 
@@ -303,12 +342,46 @@ def test_a_clock_grounds_nothing_and_is_required_to_ground_nothing() -> None:
     assert ground(pack, (DigestLine(text="活跃名单地址 21 个", cites=("w0",)),)).kept == 0
 
 
-def test_a_line_written_in_chinese_numerals_is_not_checkable_and_is_dropped() -> None:
-    """`两个地址` states a count no fact can be compared against, so the line does not survive."""
+@pytest.mark.parametrize(
+    ("text", "kept"),
+    [
+        # A count in Chinese numerals is a figure no fact can be compared against.
+        ("窗口内有两个活跃地址", 0),
+        ("二十五笔买入", 0),
+        ("共三笔卖出", 0),
+        # And these are ordinary words. A rule that fired on the character alone would thin almost
+        # every digest by a sentence for the sake of `一`.
+        ("进一步观察这批地址", 1),
+        ("两者的口径并不相同", 1),
+        ("买卖口径一致", 1),
+    ],
+)
+def test_a_chinese_numeral_is_a_figure_only_where_it_counts_something(text: str, kept: int) -> None:
+    grounded = ground(_pack(), (DigestLine(text=text, cites=("w0",)),))
 
-    grounded = ground(_pack(), (DigestLine(text="窗口内有两个活跃地址", cites=("w0",)),))
+    assert (grounded.kept, grounded.dropped) == (kept, 1 - kept)
 
-    assert (grounded.kept, grounded.dropped) == (0, 1)
+
+@pytest.mark.parametrize(
+    ("text", "kept"),
+    [
+        ("后市或将继续走弱", 0),
+        ("建议关注这批地址", 0),
+        ("值得关注的是卖出增多", 0),
+        # What a digest is for: what happened, in the window's own figures.
+        ("窗口内活跃名单地址 2 个，代币 7 个", 1),
+    ],
+)
+def test_a_line_that_forecasts_or_recommends_is_dropped(text: str, kept: int) -> None:
+    """The instruction already forbids these; this is what makes it enforceable.
+
+    No fact in the pack can license a claim about what comes next, so a line making one is ungrounded
+    in exactly the way an invented number is.
+    """
+
+    grounded = ground(_pack(), (DigestLine(text=text, cites=("w0",)),))
+
+    assert (grounded.kept, grounded.dropped) == (kept, 1 - kept)
 
 
 def test_a_misspelled_handle_is_as_ungrounded_as_an_invented_number() -> None:

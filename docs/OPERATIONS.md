@@ -1720,9 +1720,10 @@ A third kind of wallet card, and the one place a model touches this flow. Every 
 tape's turn builds a fact pack in SQL — the window's totals, each roster wallet's buys and sells, the
 three separately-named cost bases per position that moved, the cards the rules opened, and what the
 price receipts said — and makes at most one structured call over it. The model writes at most eight
-short Chinese lines and cites the fact ids each line used. Reconciliation is **per line**: a line that
-states a figure its cited facts do not carry, cites an id that is not a fact, or writes its numbers in
-Chinese numerals is dropped on its own, and the rest of the answer stands. Only when fewer than three
+short Chinese lines and cites the fact ids each line used. Reconciliation is **per line**: a line is
+dropped on its own — and the rest of the answer stands — when it states a figure its cited facts do not
+carry (sign and currency mark included, so `-$189,000.00` and `$189,000.00` are two different figures),
+cites an id that is not a fact, counts something in Chinese numerals, or forecasts rather than reports. Only when fewer than three
 lines survive does the card fall back to the template — as it also does on a timeout, on a day at its
 call cap, and on a host with no model endpoint configured. The numbers are the same either way; they
 were computed before a call was weighed.

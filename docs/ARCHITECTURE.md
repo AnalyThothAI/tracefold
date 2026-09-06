@@ -3216,11 +3216,20 @@ answers to three questions and are never averaged into one "cost":
 
 Every fact carries an id. The model is shown the pack as text and returns at most eight short Chinese
 lines plus the fact ids each line stands on, and `ground` checks each line on its own: every id it cites
-has to be a fact, every figure it states has to appear in one of those facts, and it has to be written
-in Arabic digits. A "figure" is any number — sign included, because half this pack is returns and cash
-positions that fall either side of zero — or any `0x` identifier, compared after thousands separators
-are removed. Clock spans are excluded from both sides: `17:20–21:20` is a window, and leaving its digits
-in the allowed set would let a fabricated count ground against a clock.
+has to be a fact, every figure it states has to appear in one of those facts, any count it states has to
+be in Arabic digits, and it has to be about what happened rather than about what comes next.
+
+A "figure" is any number or any `0x` identifier, compared after thousands separators are removed. The
+sign and the currency mark are read together, because `card_format.money` writes a negative dollar
+figure as `-$189,000.00` — sign first, mark second — and a grammar that started at the first digit would
+read that and `$189,000.00` as the same number. On the net cash recovery line, the one dollar figure here
+that is routinely negative, that is a $378,000 swing. Clock spans are excluded from both sides:
+`17:20–21:20` is a window, and leaving its digits in the allowed set would let a fabricated count ground
+against a clock. Chinese numerals count as a figure only where they count something — a measure word
+after them or a totalling word in front — because `一` is also an ordinary word and a rule on the
+character alone would thin almost every digest for the sake of `进一步`. And a line carrying
+`建议`, `或将`, `后市`, `预计` and their kin is dropped like any other ungrounded line: no fact in this
+pack licenses a forecast, which is what makes the instruction's ban enforceable rather than advisory.
 
 Reconciliation is **per line rather than per answer**, and that is a correctness decision as much as a
 product one. All-or-nothing discards eight good sentences because a ninth rounded a figure, so with any
