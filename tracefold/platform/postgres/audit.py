@@ -3,14 +3,36 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from psycopg import sql
 
 from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.platform.validation import require_nonnegative_int
 
-LARGE_SEQ_SCAN_PLAN_ROWS = 10_000
+# A sequential scan is judged by the table rows one pass of it actually read, never by `Plan Rows`: that
+# is the planner's estimate of what the node would *output*, and a filter that discards 50,000 rows to
+# return none has a `Plan Rows` in the hundreds (#570 A1). Per pass, not per plan: a nested loop that
+# scans a 20-row table 1,000 times reads 20,000 rows in total and no large table even once.
+LARGE_SEQ_SCAN_ROWS = 10_000
+
+# Declared scanned-row ceilings a read may claim, in the three shapes this repository has. They are the
+# operator's bound on how much table a statement may touch, not a measurement: an owner tightens one when
+# real numbers arrive, and a read that outgrows its claim is reported by `db query-audit --analyze`
+# rather than failing anything that serves. `docs/OPERATIONS.md` argues each of the three against the
+# only production figures there are, which are #570's (#570 A1).
+#
+# The same number as LARGE_SEQ_SCAN_ROWS on purpose: an indexed lookup that touches as much table as
+# this repository already calls a large read is not the lookup it claims to be.
+INDEXED_ROW_SCAN_BUDGET = 10_000
+# ~7.5x the widest pass #570 measured, the status pipeline's 13,273-row Evidence scan. These reads are
+# bounded by a time window rather than a row cap, so there is no cap to derive a ceiling from.
+BOUNDED_WINDOW_SCAN_BUDGET = 100_000
+# A loose first ceiling, not a derived one. `news_market_groups` caps its window at
+# MARKET_WINDOW_ROW_CAP and would justify ~30,000, but `news_market_sources` and
+# `news_market_delivery_summary` materialise the whole 168 h window with no row cap and had no ceiling
+# at all before this. Tighten or derive it when #570 A3/A4 bound those two reads.
+MARKET_WINDOW_SCAN_BUDGET = 500_000
 
 APPLICATION_ROLE = "tracefold"
 BOOTSTRAP_ROLE = "tracefold_app"
@@ -21,8 +43,6 @@ RETIRED_APPLICATION_ROLES = (
     "tracefold_nautilus",
 )
 
-AmplificationBasis = Literal["returned_rows", "aggregate_input"]
-
 
 @dataclass(frozen=True, slots=True)
 class ReadQuerySpec:
@@ -31,8 +51,12 @@ class ReadQuerySpec:
     name: str
     sql: str
     params: Any = ()
-    amplification_basis: AmplificationBasis = "returned_rows"
     max_read_return_amplification: float | None = None
+    # How many table rows this read may touch, whatever shape its plan takes. Amplification alone cannot
+    # bound a statement that folds: a `count(*)` over the whole history returns one row and reads
+    # everything, and dividing what it read by what it folded is 1 by construction. Every spec declares
+    # this so the fold can never become an exemption (#570 A1).
+    max_scanned_rows: int | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -41,6 +65,8 @@ class ReadQuerySpec:
             raise ValueError(f"query audit SQL must not be empty: {self.name}")
         if self.max_read_return_amplification is not None and self.max_read_return_amplification <= 0:
             raise ValueError(f"query audit amplification budget must be positive: {self.name}")
+        if self.max_scanned_rows is not None and self.max_scanned_rows <= 0:
+            raise ValueError(f"query audit scanned-rows budget must be positive: {self.name}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +85,9 @@ class QueryAuditCatalog:
         missing_budgets = [query.name for query in self.queries if query.max_read_return_amplification is None]
         if missing_budgets:
             raise ValueError(f"query audit amplification budget missing: {', '.join(missing_budgets)}")
+        missing_scan_budgets = [query.name for query in self.queries if query.max_scanned_rows is None]
+        if missing_scan_budgets:
+            raise ValueError(f"query audit scanned-rows budget missing: {', '.join(missing_scan_budgets)}")
 
 
 NEWS_TABLES = (
@@ -126,6 +155,8 @@ def postgres_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             sql=str(template["sql"]),
             params=template["params"],
             max_read_return_amplification=4.0,
+            # One row out of a one-row table. Anything above this is not the migration pointer.
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         )
         for template in _POSTGRES_QUERY_TEMPLATES
     )
@@ -391,7 +422,7 @@ class PostgresQueryAudit:
             "engine": "postgresql",
             "analyze": bool(analyze),
             "thresholds": {
-                "large_seq_scan_plan_rows": LARGE_SEQ_SCAN_PLAN_ROWS,
+                "large_seq_scan_rows": LARGE_SEQ_SCAN_ROWS,
                 "temp_blocks": 0,
             },
             "route_coverage": {
@@ -407,22 +438,19 @@ class PostgresQueryAudit:
         prefix = "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)" if analyze else "EXPLAIN (FORMAT JSON)"
         try:
             budget = query.max_read_return_amplification
+            scan_budget = query.max_scanned_rows
             if budget is None:  # pragma: no cover - QueryAuditCatalog rejects this at composition
                 raise RuntimeError("query_audit_amplification_budget_missing")
+            if scan_budget is None:  # pragma: no cover - QueryAuditCatalog rejects this at composition
+                raise RuntimeError("query_audit_scanned_rows_budget_missing")
             rows = self.conn.execute(f"{prefix} {query.sql}", query.params).fetchall()
             plan = _json_plan(rows)
-            metrics = (
-                _plan_metrics(
-                    plan,
-                    amplification_basis=query.amplification_basis,
-                )
-                if analyze
-                else None
-            )
+            metrics = _plan_metrics(plan) if analyze else None
             violations = (
                 _plan_violations(
                     metrics,
                     max_read_return_amplification=budget,
+                    max_scanned_rows=scan_budget,
                 )
                 if metrics is not None
                 else []
@@ -434,6 +462,7 @@ class PostgresQueryAudit:
                 "metrics": metrics,
                 "budget": {
                     "max_read_return_amplification": budget,
+                    "max_scanned_rows": scan_budget,
                 },
                 "violations": violations,
             }
@@ -531,11 +560,28 @@ def _json_plan(rows: list[Any]) -> Any:
     return value
 
 
-def _plan_metrics(
-    plan_payload: Any,
-    *,
-    amplification_basis: str = "returned_rows",
-) -> dict[str, Any]:
+def _plan_metrics(plan_payload: Any) -> dict[str, Any]:
+    """Fold one `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` plan into separately named evidence.
+
+    Rows scanned and rows produced are different measurements and are reported as different keys
+    (#570 A1). A node's `Actual Rows` is what it *handed upward* after its own filter; the rows it read
+    to get there are that plus every row it discarded -- `Rows Removed by Filter`, an index recheck --
+    and each of those is a per-loop average, so the loop count multiplies both. A filtered scan that
+    reads 50,000 rows and returns none used to be recorded as zero rows read.
+
+    The amplification denominator comes from the plan, not from a per-query flag, and it folds only when
+    the whole statement folded: an ungrouped aggregate emits exactly one row, so a plan that returned any
+    other number did not fold, and an aggregate inside it is one column of that result rather than the
+    result. A statement that returned exactly one row read everything it read to produce that row, so an
+    ungrouped aggregate's input is the only honest denominator there -- asking a bounded `count(*)` to
+    return as many rows as it counted is a threshold no correct aggregate can meet.
+
+    Amplification cannot bound a folding read by itself: dividing what a `count(*)` scanned by what it
+    folded is 1 whatever it scanned. The sequential-scan rule catches only the sequential shape, so the
+    spec's own `max_scanned_rows` is what bounds the rest, and `_plan_violations` checks it on every
+    statement whether it folded or not.
+    """
+
     statement = _plan_statement(plan_payload)
     root = statement.get("Plan")
     if not isinstance(root, dict):
@@ -544,84 +590,120 @@ def _plan_metrics(
             "execution_time_ms": None,
             "planning_time_ms": None,
             "returned_rows": 0,
-            "read_rows": 0,
-            "amplification_basis": amplification_basis,
+            "scanned_rows": 0,
+            "scan_output_rows": 0,
+            "discarded_rows": 0,
+            "amplification_basis": "returned_rows",
             "amplification_basis_rows": 0,
             "read_return_amplification": 0.0,
+            "shared_hit_blocks": 0,
+            "shared_read_blocks": 0,
             "temp_read_blocks": 0,
             "temp_written_blocks": 0,
             "large_seq_scans": [],
         }
     nodes = list(_walk_plan_nodes(root))
-    returned_rows = _executed_rows(root)
+    returned_rows = _output_rows(root)
     relation_scans = [
         node for node in nodes if node.get("Relation Name") and "Scan" in str(node.get("Node Type") or "")
     ]
-    read_rows = sum(_executed_rows(node) for node in relation_scans)
-    basis_rows = _amplification_basis_rows(
-        root,
-        nodes,
-        amplification_basis=amplification_basis,
-    )
-    denominator = max(1, basis_rows)
-    amplification = read_rows / denominator
+    scan_output_rows = sum(_output_rows(node) for node in relation_scans)
+    scanned_rows = sum(_scanned_rows(node) for node in relation_scans)
+    basis, basis_rows = _amplification_basis(nodes, returned_rows=returned_rows)
+    amplification = scanned_rows / max(1, basis_rows)
     large_seq_scans = [
         {
             "relation": str(node.get("Relation Name") or ""),
-            "plan_rows": int(node.get("Plan Rows") or 0),
-            "actual_rows": _executed_rows(node),
+            # The threshold is a claim about the table, so it is measured on one pass. The total the
+            # plan spent on it is reported beside it as work, not folded into the judgement.
+            "scanned_rows_per_loop": _scanned_rows_per_loop(node),
+            "scanned_rows": _scanned_rows(node),
+            "returned_rows": _output_rows(node),
+            "discarded_rows": _scanned_rows(node) - _output_rows(node),
+            "loops": _loops(node),
         }
         for node in nodes
-        if str(node.get("Node Type") or "") == "Seq Scan"
-        and int(node.get("Plan Rows") or 0) >= LARGE_SEQ_SCAN_PLAN_ROWS
+        if str(node.get("Node Type") or "") == "Seq Scan" and _scanned_rows_per_loop(node) >= LARGE_SEQ_SCAN_ROWS
     ]
     return {
         "plan_json_valid": True,
         "execution_time_ms": _optional_float(statement.get("Execution Time")),
         "planning_time_ms": _optional_float(statement.get("Planning Time")),
         "returned_rows": returned_rows,
-        "read_rows": read_rows,
-        "amplification_basis": amplification_basis,
+        "scanned_rows": scanned_rows,
+        "scan_output_rows": scan_output_rows,
+        "discarded_rows": scanned_rows - scan_output_rows,
+        "amplification_basis": basis,
         "amplification_basis_rows": basis_rows,
         "read_return_amplification": round(amplification, 6),
+        # Buffer counters are cumulative over each node's children, so only the root is read; summing the
+        # tree would count the same block once per ancestor.
+        "shared_hit_blocks": int(root.get("Shared Hit Blocks") or 0),
+        "shared_read_blocks": int(root.get("Shared Read Blocks") or 0),
         "temp_read_blocks": int(root.get("Temp Read Blocks") or 0),
         "temp_written_blocks": int(root.get("Temp Written Blocks") or 0),
         "large_seq_scans": large_seq_scans,
     }
 
 
-def _amplification_basis_rows(
-    root: dict[str, Any],
-    nodes: list[dict[str, Any]],
-    *,
-    amplification_basis: str,
-) -> int:
-    returned_rows = _executed_rows(root)
-    if amplification_basis == "returned_rows":
-        return returned_rows
-    if amplification_basis != "aggregate_input":
-        raise ValueError(f"unsupported amplification basis: {amplification_basis}")
-    aggregate_input_rows = max(
+def _amplification_basis(nodes: list[dict[str, Any]], *, returned_rows: int) -> tuple[str, int]:
+    """Name the rows the statement's own result is built from, and how the plan said so.
+
+    An ungrouped aggregate emits exactly one row. A statement that returned any other number of rows --
+    fifty, or none -- therefore did not fold, whatever aggregates its plan contains. A page read carrying
+    `(SELECT count(*) FROM observations) AS scanned` is the case that matters: the subquery reads the
+    whole window and the page returns a handful of groups, and taking the subquery's input as the
+    denominator would divide the window by itself and report a bounded read.
+
+    Zero is the same case and not a smaller one. A filter that matches nothing still reads the window --
+    `news_market_groups` on a group key that no observation carries is #570 A3's shape exactly, and
+    `news_review_market` reaches it through a subquery -- and a plan that discards 25,000 rows to return
+    none beside a `count(*)` over 500,000 is the most amplified read there is, not a folded one.
+    """
+
+    if returned_rows != 1:
+        return "returned_rows", returned_rows
+    folded_input_rows = max(
         (
-            sum(_executed_rows(child) for child in node.get("Plans") or () if isinstance(child, dict))
+            sum(_output_rows(child) for child in node.get("Plans") or () if isinstance(child, dict))
             for node in nodes
-            if "Aggregate" in str(node.get("Node Type") or "")
+            if _folds_to_one_row(node)
         ),
         default=0,
     )
-    return aggregate_input_rows or returned_rows
+    if folded_input_rows > returned_rows:
+        return "aggregate_input", folded_input_rows
+    return "returned_rows", returned_rows
+
+
+def _folds_to_one_row(node: dict[str, Any]) -> bool:
+    """A scalar aggregate: one row out per group, and there is exactly one group.
+
+    A grouped aggregate is excluded on purpose. Its result grows with the data it reads, so the rows it
+    returns remain the denominator that can catch a group-by over a whole table.
+
+    An `InitPlan`/`SubPlan` aggregate is *not* excluded, because in a statement that returned at most one
+    row it is the result rather than a column beside it: every aggregate in `news_status_delivery`'s plan
+    is an `InitPlan`, and the statement is nothing but those aggregates. The caller's one-row test is
+    what separates that from a page read whose subquery counts a whole window.
+    """
+
+    return "Aggregate" in str(node.get("Node Type") or "") and not node.get("Group Key")
 
 
 def _plan_violations(
     metrics: dict[str, Any],
     *,
     max_read_return_amplification: float,
+    max_scanned_rows: int,
 ) -> list[str]:
     violations: list[str] = []
     if not bool(metrics["plan_json_valid"]):
         violations.append("plan_json_missing")
     if metrics["large_seq_scans"]:
         violations.append("unexpected_large_table_seq_scan")
+    if int(metrics["scanned_rows"]) > int(max_scanned_rows):
+        violations.append("scanned_rows_budget_exceeded")
     if int(metrics["temp_read_blocks"]) or int(metrics["temp_written_blocks"]):
         violations.append("temp_spill")
     if float(metrics["read_return_amplification"]) > max_read_return_amplification:
@@ -644,8 +726,46 @@ def _walk_plan_nodes(node: dict[str, Any]) -> Iterator[dict[str, Any]]:
             yield from _walk_plan_nodes(child)
 
 
-def _executed_rows(node: dict[str, Any]) -> int:
-    return int(node.get("Actual Rows") or 0) * int(node.get("Actual Loops") or 0)
+# Every row a scan reads and then throws away, named by the plan key that reports it. Both are per-loop
+# averages, like `Actual Rows` itself, so the loop count multiplies them the same way. `Rows Removed by
+# Join Filter` is not here: PostgreSQL reports it on join nodes, which count candidate pairs rather than
+# table rows, and the rows those pairs were built from are already counted at the scans below them.
+_DISCARDED_ROW_KEYS = (
+    "Rows Removed by Filter",
+    "Rows Removed by Index Recheck",
+)
+
+
+def _loops(node: dict[str, Any]) -> int:
+    return int(float(node.get("Actual Loops") or 0))
+
+
+def _output_rows(node: dict[str, Any]) -> int:
+    """The rows this node handed upward, over every loop of it."""
+
+    return round(_per_loop(node, "Actual Rows") * _loops(node))
+
+
+def _scanned_rows(node: dict[str, Any]) -> int:
+    """The rows this node read, over every loop: what it returned plus what it discarded."""
+
+    return round(_scanned_per_loop(node) * _loops(node))
+
+
+def _scanned_rows_per_loop(node: dict[str, Any]) -> int:
+    """The rows one pass of this node read. How large the table is, rather than how often it was read."""
+
+    return round(_scanned_per_loop(node))
+
+
+def _scanned_per_loop(node: dict[str, Any]) -> float:
+    return _per_loop(node, "Actual Rows") + sum(_per_loop(node, key) for key in _DISCARDED_ROW_KEYS)
+
+
+def _per_loop(node: dict[str, Any], key: str) -> float:
+    """One per-loop plan counter. PostgreSQL 18 reports fractional averages, so this stays a float."""
+
+    return float(node.get(key) or 0)
 
 
 def _optional_float(value: Any) -> float | None:

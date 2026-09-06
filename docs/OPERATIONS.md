@@ -2032,13 +2032,19 @@ assigned to a bounded read-query family (`/readyz`, `/api/status`,
 `/api/news/*`; `/healthz`, `/metrics`, and `/api/bootstrap`
 are declared no-SQL) and checks that every query can be planned. `uv run
 tracefold db query-audit --analyze` executes those read-only queries with JSON
-`EXPLAIN (ANALYZE, BUFFERS)` and fails on an estimated large-table sequential
-scan, any temporary read/write blocks, or read/return amplification above the
-budget declared by that production query. An empty development database proves only SQL and route coverage;
+`EXPLAIN (ANALYZE, BUFFERS)` and fails on a large-table sequential
+scan, more scanned rows than that query declared it may touch, any temporary
+read/write blocks, or read/return amplification above the budget declared by
+that production query. An empty development database proves only SQL and route coverage;
 production-scale plans need a production-sized database. Each runtime owner
 supplies the same bound statement builder used by its serving read; the App
 layer only composes those specs with route coverage, so an audit-only SQL
-approximation is not accepted.
+approximation is not accepted. `/api/news/status` is the worked example: the
+eleven statements `status_snapshot` executes are eleven named specs holding the
+same constants the production read executes, and a contract test drives that read
+against a recording connection so SQL and bound parameters both have to match
+(#570 A2). The instrument, asset-usage and price reads the HTTP route composes
+after the snapshot are still unregistered.
 
 `tracefold db audit` is the online fast path. It uses catalog/statistics
 row estimates plus O(1) migration, schema, role/grant, PostgreSQL-major,
@@ -2048,10 +2054,65 @@ it does not issue exact `COUNT(*)`
 against every business table. `tracefold db audit --deep` adds those
 exact counts and is reserved for offline migration/restore evidence.
 
-Read/return amplification uses the root result-row count for hot page queries, and each query spec owns its
-budget. The two bounded News search count specs use aggregate-input amplification because their production contract deliberately returns one
-aggregate row after scanning the same 168-hour AssetSearch or TextSearch predicate as the first page; the
-catalog rejects that basis for every other query.
+Rows scanned and rows returned are separate measurements in the report, and a
+scan is judged on the first (#570 A1). A node's `Actual Rows` is what it handed
+upward after its own filter; `scanned_rows` adds what it discarded -- `Rows
+Removed by Filter` and an index recheck -- with the loop count multiplying each
+per-loop average. (`Rows Removed by Join Filter` is not counted: PostgreSQL
+reports it on join nodes, which count candidate pairs rather than table rows, and
+the rows those pairs were built from are already counted at the scans below.)
+`large_seq_scans` names a sequential scan by the table rows *one pass* of it
+actually read, never by `Plan Rows`: that is the planner's estimate of node
+*output*, so a filter discarding 50,000 rows to return none has a `Plan Rows` in
+the hundreds and used to be recorded as zero rows read. Per pass, because the
+threshold is a claim about the table: a nested loop that scans a 20-row table a
+thousand times has read no large table, and its 20,000-row total is reported as
+`scanned_rows` beside `scanned_rows_per_loop` and `loops` rather than folded into
+the judgement. `discarded_rows`, `scan_output_rows`, root
+`shared_hit_blocks`/`shared_read_blocks` (root only, because buffer counters are
+cumulative over children) and execution time are reported beside them.
+
+Read/return amplification divides those scanned rows by the rows the statement's
+own result is built from, and each query spec owns its budget. The denominator
+comes from the plan, not from a per-query flag, and it folds only when the whole
+statement folded. A statement that returned more than one row multiplied
+something per row, so its returned rows stay the denominator however many
+aggregates its plan contains: a page carrying `(SELECT count(*) FROM
+observations)` beside fifty collapsed groups would otherwise divide the window by
+itself and report a bounded read. Zero rows is the same case, not a smaller one --
+an ungrouped aggregate emits exactly one row, so a result of none did not come
+from one, and a group filter that matches nothing still reads the whole window.
+A statement that returned exactly one row read everything it read to produce that
+row, so an ungrouped aggregate's input is the honest denominator there -- asking a
+bounded `count(*)` to return as many rows as it counted is a threshold no correct
+aggregate can meet. A grouped aggregate keeps the rows it returns, because that
+result grows with what it read.
+
+Amplification cannot bound a folding read by itself: what a `count(*)` scanned
+divided by what it folded is 1 whatever it scanned. The sequential-scan rule does
+not cover for it either -- it catches an unbounded read only when that read is a
+sequential scan of at least 10,000 rows in one pass, and a `count(*)` over a
+million rows reached by an index path trips neither rule. So every spec declares
+`max_scanned_rows`, the rows that read may touch whatever shape its plan takes,
+and exceeding it is `scanned_rows_budget_exceeded`. Composition refuses a spec
+that omits it, so the fold can never become an exemption. These ceilings are
+declared bounds rather than measurements: an owner tightens one as real numbers
+arrive, and a read that outgrows its claim is reported by `db query-audit
+--analyze` for an operator to look at rather than failing anything that serves.
+
+The three ceilings in use, and what each is measured against. The only production
+figures available are #570's, so they are the only thing these are argued from:
+
+| ceiling | reads | argument |
+| --- | --- | --- |
+| `INDEXED_ROW_SCAN_BUDGET` 10,000 | 22 single-row and small indexed lookups | The same number as `LARGE_SEQ_SCAN_ROWS`, deliberately: this repository already calls 10,000 table rows in one pass a large read, so an indexed lookup that touches that many is not the lookup it claims to be. The widest table these reach is `news_market_instruments`, ~16,500 rows in #570's snapshot, and they reach it by index. |
+| `BOUNDED_WINDOW_SCAN_BUDGET` 100,000 | 46 windowed page, funnel and aggregate reads | ~7.5x the widest pass #570 measured on production: the status pipeline's Evidence scan, 13,273 rows actual against 61 estimated. These are bounded by a time window rather than a row cap, so there is no cap to derive from; the margin is for growth within the window, not a claim that 100,000 is safe. |
+| `MARKET_WINDOW_SCAN_BUDGET` 500,000 | `news_market_groups`, `news_market_sources`, `news_market_delivery_summary` | `news_market_groups` caps its materialised window at `MARKET_WINDOW_ROW_CAP` 5,000 and joins it five ways, so a cap-derived ceiling would be ~30,000. The other two have no row cap at all: `news_market_sources` materialises the entire 168 h window, and `news_market_delivery_summary` aggregates the same window over `news_market_deliveries`. 500,000 is therefore a loose first ceiling -- ~500x the 977 observations #570 measured -- and its only claim is that two uncapped reads now have a ceiling where they had none. Tighten it, or derive it from a cap, when #570 A3/A4 bound those reads. |
+
+None of these ceilings is exercised by the empty-schema catalog test: an empty
+database scans nothing, so `db query-audit --analyze` there proves SQL and route
+coverage and nothing about volume. Only the real-PostgreSQL guard test builds
+tables large enough to cross one.
 
 Use ad hoc `EXPLAIN (ANALYZE, BUFFERS)` only on a representative bounded
 query. Since `ANALYZE` executes mutating SQL, wrap `INSERT`, `UPDATE`, `DELETE`,

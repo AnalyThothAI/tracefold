@@ -10,7 +10,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 from psycopg_pool import PoolTimeout
 
-from tracefold.platform.postgres.audit import ReadQuerySpec
+from tracefold.platform.postgres.audit import INDEXED_ROW_SCAN_BUDGET, ReadQuerySpec
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 WORKERS_RUNTIME_STALE_AFTER_MS = 15_000
@@ -247,6 +247,7 @@ def workers_runtime_read_query() -> ReadQuerySpec:
              WHERE singleton_key
         """,
         max_read_return_amplification=4.0,
+        max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
     )
 
 

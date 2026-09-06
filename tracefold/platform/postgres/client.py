@@ -221,32 +221,3 @@ def postgres_health_check(conn: Any, *, expected_migration_version: str | None =
                 "original_detail": str(exc),
             }
         return {"ok": False, "probe": "postgres_liveness", "error": type(exc).__name__, "detail": str(exc)}
-
-
-def postgres_liveness_check(conn: Any) -> dict[str, object]:
-    """Probe only whether PostgreSQL can serve a trivial query.
-
-    Schema compatibility is a startup invariant. Runtime readiness uses this
-    deliberately smaller probe so it does not re-read migration state for
-    every request.
-    """
-    try:
-        row = conn.execute("SELECT 1 AS ok").fetchone()
-        if row is None or int(row["ok"]) != 1:
-            conn.rollback()
-            return {"ok": False, "probe": "postgres_liveness", "detail": "missing_select_result"}
-        conn.commit()
-        return {"ok": True, "probe": "postgres_liveness"}
-    except Exception as exc:
-        try:
-            conn.rollback()
-        except Exception as rollback_exc:
-            return {
-                "ok": False,
-                "probe": "postgres_liveness",
-                "error": type(rollback_exc).__name__,
-                "detail": str(rollback_exc),
-                "original_error": type(exc).__name__,
-                "original_detail": str(exc),
-            }
-        return {"ok": False, "probe": "postgres_liveness", "error": type(exc).__name__, "detail": str(exc)}

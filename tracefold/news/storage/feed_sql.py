@@ -88,6 +88,203 @@ STATUS_LEARNING_RETENTION_SQL: Final = """
      WHERE singleton
 """
 
+# Every statement `/api/news/status` executes, in one place. The query audit registers these exact
+# constants, so the page and its plan evidence cannot be two different queries: the audit used to carry
+# a `count(news_verdicts)` sketch while the route ran the correlated latest-Evidence subquery, the
+# percentile aggregates and the funnel beside it, and a passing audit said nothing about either (#570 A2).
+# One bounded Event cohort, projected into the two editorial source-contract funnels.
+STATUS_SOURCE_CONTRACTS_SQL: Final = """
+    SELECT e.event_kind, count(*) AS received,
+           count(*) FILTER (WHERE COALESCE(v.has_verdict, false)) AS verdict
+      FROM news_events e
+      LEFT JOIN LATERAL (
+        SELECT bool_or(true) AS has_verdict
+         FROM news_verdicts
+         WHERE event_id = e.event_id AND stage = 'triage'
+           AND judgment_contract_version = 'news_judgment_v2'
+      ) v ON true
+     WHERE e.opened_at_ms >= %s
+       AND EXISTS (
+         SELECT 1 FROM news_event_evidence_snapshots evidence
+          WHERE evidence.event_id = e.event_id
+            AND evidence.evidence_version = (
+              SELECT max(latest.evidence_version) FROM news_event_evidence_snapshots latest
+               WHERE latest.event_id = e.event_id
+            )
+            AND evidence.provenance = 'observed'
+            AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+       )
+     GROUP BY e.event_kind
+"""
+
+STATUS_PIPELINE_SQL: Final = """
+    WITH event_counts AS (
+      SELECT
+        count(*) FILTER (WHERE opened_at_ms >= %s) AS events_1h,
+        count(*) AS events_24h,
+        count(*) FILTER (WHERE admission = 'candidate') AS candidates_24h
+        FROM news_events current_event
+       WHERE current_event.opened_at_ms >= %s
+         AND EXISTS (
+           SELECT 1 FROM news_event_evidence_snapshots evidence
+            WHERE evidence.event_id = current_event.event_id
+              AND evidence.evidence_version = (
+                SELECT max(latest.evidence_version) FROM news_event_evidence_snapshots latest
+                 WHERE latest.event_id = current_event.event_id
+              )
+              AND evidence.provenance = 'observed'
+              AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+         )
+    ), verdict_counts AS (
+      SELECT
+        -- Two denominators on purpose. The funnel is the reader's view — 收到 ⊇ 送审 ⊇ 模型判断
+        -- ⊇ 决定推送 ⊇ 已送达, subtracted band by band by the console — and a telemetry judgment
+        -- is a judgment and its push is a card the reader received, so both count here or the
+        -- containment breaks at one end or the other. Model health is a different question and
+        -- gets its own denominator below: ~190 arithmetic judgments a day, never degraded,
+        -- would otherwise dilute the degraded share and make the model look healthier than it is.
+        count(*) AS triage_24h,
+        count(*) FILTER (
+          WHERE judgment_origin IN ('model', 'degraded')
+        ) AS model_triage_24h,
+        count(*) FILTER (WHERE degraded) AS triage_degraded_24h,
+        count(*) FILTER (WHERE final_decision IN ('push','escalate')) AS decided_push_24h,
+        count(*) FILTER (WHERE final_decision = 'throttled') AS throttled_24h,
+        -- #221: generated stored columns preserve the status values without decompressing the 26 MB
+        -- daily TOAST corpus. One aggregate pass then replaces the old ten verdict scans.
+        percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms)
+          FILTER (WHERE latency_ms IS NOT NULL) AS triage_p50_ms,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)
+          FILTER (WHERE latency_ms IS NOT NULL) AS triage_p95_ms,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY queue_lag_ms)
+          FILTER (WHERE queue_lag_ms IS NOT NULL) AS queue_lag_p95_ms,
+        count(*) FILTER (WHERE reasked_after_told_change) AS reasked_24h
+        FROM news_verdicts
+       WHERE stage = 'triage' AND created_at_ms >= %s
+         AND judgment_contract_version = 'news_judgment_v2'
+    )
+    SELECT event_counts.events_1h, event_counts.events_24h, event_counts.candidates_24h,
+           verdict_counts.triage_24h, verdict_counts.model_triage_24h,
+           verdict_counts.triage_degraded_24h, verdict_counts.decided_push_24h,
+           verdict_counts.throttled_24h, verdict_counts.triage_p50_ms,
+           verdict_counts.triage_p95_ms, verdict_counts.queue_lag_p95_ms,
+           verdict_counts.reasked_24h
+      FROM event_counts CROSS JOIN verdict_counts
+"""
+
+STATUS_DELIVERY_SQL: Final = """
+    SELECT
+      (SELECT count(*) FROM news_deliveries d
+         JOIN news_events e ON e.event_id = d.event_id
+        WHERE d.state = 'sent' AND d.settled_at_ms >= %s) AS sent_24h,
+      (SELECT count(*) FROM news_deliveries d
+         JOIN news_events e ON e.event_id = d.event_id
+        WHERE d.state = 'sent' AND d.settled_at_ms >= %s) AS sent_1h,
+      (SELECT count(*) FROM news_deliveries d
+         JOIN news_events e ON e.event_id = d.event_id
+        WHERE d.state = 'terminal' AND d.settled_at_ms >= %s) AS terminal_24h,
+      (SELECT d.error_code FROM news_deliveries d
+         JOIN news_events e ON e.event_id = d.event_id
+        WHERE d.state = 'terminal'
+        ORDER BY d.settled_at_ms DESC NULLS LAST LIMIT 1) AS last_error_code,
+      (SELECT percentile_cont(0.5)
+         WITHIN GROUP (ORDER BY (d.settled_at_ms - i.observed_at_ms)::double precision)
+         FROM news_deliveries d JOIN news_events e ON e.event_id = d.event_id
+         JOIN news_items i ON i.item_id = e.leader_item_id
+        WHERE d.state = 'sent' AND d.kind = 'first' AND d.settled_at_ms >= %s) AS e2e_p50_ms,
+      (SELECT percentile_cont(0.95)
+         WITHIN GROUP (ORDER BY (d.settled_at_ms - i.observed_at_ms)::double precision)
+         FROM news_deliveries d JOIN news_events e ON e.event_id = d.event_id
+         JOIN news_items i ON i.item_id = e.leader_item_id
+        WHERE d.state = 'sent' AND d.kind = 'first' AND d.settled_at_ms >= %s) AS e2e_p95_ms
+"""
+
+# The four funnel statements. `_funnel_24h` folds their rows into the named reasons a reader sees.
+STATUS_FUNNEL_SUPPRESSED_SQL: Final = f"""
+    SELECT admission, count(*) AS n FROM news_events current_event
+     WHERE current_event.opened_at_ms >= %s AND admission NOT IN ({ADMITTED_SQL})
+       AND EXISTS (
+         SELECT 1 FROM news_event_evidence_snapshots evidence
+          WHERE evidence.event_id = current_event.event_id
+            AND evidence.evidence_version = (
+              SELECT max(latest.evidence_version) FROM news_event_evidence_snapshots latest
+               WHERE latest.event_id = current_event.event_id
+            )
+            AND evidence.provenance = 'observed'
+            AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+       )
+     GROUP BY admission ORDER BY n DESC
+"""  # noqa: S608
+
+# One pass over the last 24 h of Triage verdicts; the four named maps are folded from it in Python.
+STATUS_FUNNEL_VERDICTS_SQL: Final = """
+    SELECT final_decision, COALESCE(override_rule, 'unknown') AS rule,
+           COALESCE(throttled_by, 'unknown') AS key, degraded, COALESCE(error_code, 'unknown') AS code,
+           count(*) AS n
+     FROM news_verdicts
+     WHERE stage = 'triage' AND created_at_ms >= %s
+       AND judgment_contract_version = 'news_judgment_v2'
+     GROUP BY 1, 2, 3, 4, 5
+"""
+
+STATUS_FUNNEL_REVIEWS_SQL: Final = """
+    WITH current_epoch AS (
+      SELECT epoch.starts_at_ms
+        FROM news_review_active_agent_v1 active
+        JOIN news_learning_epochs epoch ON epoch.bundle_sha = active.stable_sha
+       ORDER BY active.created_at_ms DESC
+       LIMIT 1
+    )
+    SELECT count(*) FILTER (WHERE j.should_push IN ('must_push', 'should_push')) AS n,
+           count(*) FILTER (
+             WHERE j.subject_kind = 'external_miss'
+               AND j.should_push IN ('must_push', 'should_push')
+           ) AS external
+      FROM news_review_records_v1 acceptance
+      JOIN news_review_records_v1 j ON j.review_id = acceptance.accepts_review_id
+      JOIN current_epoch ON true
+     WHERE acceptance.review_kind = 'acceptance'
+       AND acceptance.release_eligible AND j.release_eligible
+       AND acceptance.created_at_ms >= greatest(%s, current_epoch.starts_at_ms)
+       AND j.created_at_ms >= current_epoch.starts_at_ms
+"""
+
+STATUS_FUNNEL_TOTALS_SQL: Final = f"""
+    SELECT count(*) AS events,
+           count(*) FILTER (WHERE admission IN ({ADMITTED_SQL})) AS admitted,
+           count(*) FILTER (
+             WHERE admission IN ({ADMITTED_SQL})
+               AND EXISTS (
+                 SELECT 1 FROM news_verdicts v
+                  WHERE v.event_id = current_event.event_id AND v.stage = 'triage'
+                    AND v.judgment_contract_version = 'news_judgment_v2'
+               )
+           ) AS triaged,
+           count(*) FILTER (
+             WHERE admission IN ({ADMITTED_SQL})
+               AND EXISTS (
+                 SELECT 1 FROM news_verdicts v
+                  WHERE v.event_id = current_event.event_id AND v.stage = 'triage'
+                    AND v.judgment_contract_version = 'news_judgment_v2'
+               )
+               AND EXISTS (
+                 SELECT 1 FROM news_deliveries d
+                  WHERE d.event_id = current_event.event_id AND d.kind = 'first' AND d.state = 'sent'
+               )
+           ) AS delivered
+      FROM news_events current_event WHERE current_event.opened_at_ms >= %s
+       AND EXISTS (
+         SELECT 1 FROM news_event_evidence_snapshots evidence
+          WHERE evidence.event_id = current_event.event_id
+            AND evidence.evidence_version = (
+              SELECT max(latest.evidence_version) FROM news_event_evidence_snapshots latest
+               WHERE latest.event_id = current_event.event_id
+            )
+            AND evidence.provenance = 'observed'
+            AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+       )
+"""  # noqa: S608
+
 
 def feed_page_sql(where_sql: str) -> str:
     """Build the production page statement from one already-bound predicate list.
