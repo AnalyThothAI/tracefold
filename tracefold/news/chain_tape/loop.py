@@ -45,7 +45,6 @@ from .classify import TRANSFER_TOPIC, CashLeg, classify_receipt, usd_face_value
 from .contracts import (
     BLOCK_COMPLETE_TX_INDEX,
     CHAIN_TAPE_NAME,
-    STABLE_CASH_TOKEN,
     ClassifiedFill,
     RosterSnapshot,
     TapeCursor,
@@ -846,7 +845,6 @@ __all__ = [
     "POLL_INTERVAL_SECONDS",
     "RECEIPTS_PER_TURN_MAX",
     "ROSTER_REFRESH_MS",
-    "STABLE_CASH_TOKEN",
     "ChainLogPort",
     "ChainTapeDatabasePort",
     "ChainTapeLoop",

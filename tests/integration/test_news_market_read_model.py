@@ -16,7 +16,7 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.liquidations import parse_liquidation
-from tracefold.news.market_notifications import (
+from tracefold.news.market_contracts import (
     REASON_HISTORICAL,
     REASON_MERGING,
     REASON_UNPROCESSED,

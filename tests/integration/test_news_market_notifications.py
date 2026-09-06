@@ -32,12 +32,14 @@ from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news import card_format as fmt
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.liquidations import parse_liquidation
-from tracefold.news.market_notifications import (
-    OI_QUIET_RESET_MS,
+from tracefold.news.market_contracts import (
     REASON_ROUND_CLOSED,
     REASON_SENDER_UNAVAILABLE,
     REASON_SMART_MONEY_ROUND,
     REASON_UNSTRUCTURED,
+)
+from tracefold.news.market_notifications import (
+    OI_QUIET_RESET_MS,
     SEND_ATTEMPTS_MAX,
     SEND_RETRY_BACKOFF_MS,
     MarketNotificationLoop,

@@ -35,11 +35,22 @@ import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
+from functools import partial
 from typing import Any, Final, Literal, Protocol
 from urllib.parse import urlsplit
 
 from .delivery_contracts import COMMIT_PHASE_NOT_SENT
 from .feishu_card import feishu_card
+from .market_contracts import (
+    MARKET_TRACK_FIELDS,
+    REASON_LIQUIDATION_WINDOW,
+    REASON_MERGING,
+    REASON_OI_BELOW_THRESHOLD,
+    REASON_OI_ZERO_UNCHANGED,
+    REASON_SEND_INTERRUPTED,
+    REASON_SENDER_UNAVAILABLE,
+    REASON_SMART_MONEY_ROUND,
+)
 from .market_review.pricing import QUOTE_READ_TIMEOUT_SECONDS, parse_price
 from .reader_card import (
     ReaderCard,
@@ -110,63 +121,14 @@ DELIVERY_STATES: Final[tuple[DeliveryState, ...]] = (
     "unknown",
     "unavailable",
 )
-# The Item's own processing marker. `pending` is the take predicate, `historical` is the backlog and
-# the recovery frames that are readable but never alerted, `processed` is everything the loop has
-# grouped -- whether or not a card ever covered it.
-NOTIFY_STATE_PENDING: Final = "pending"
-NOTIFY_STATE_HISTORICAL: Final = "historical"
-NOTIFY_STATE_PROCESSED: Final = "processed"
-NOTIFY_STATES: Final[tuple[str, ...]] = (
-    NOTIFY_STATE_PENDING,
-    NOTIFY_STATE_HISTORICAL,
-    NOTIFY_STATE_PROCESSED,
-)
-
-# What the page says when no attempt has been made. These are reasons, not verdicts: every one of
-# them names the rule that is currently holding the observation, so "why was I not told" has an
-# answer that does not require reading this file.
-REASON_UNPROCESSED: Final = "awaiting_market_loop"
-REASON_HISTORICAL: Final = "historical_not_alerted"
-REASON_MERGING: Final = "merging_into_prepared_card"
-REASON_OI_BELOW_THRESHOLD: Final = "oi_change_below_followup_threshold"
-REASON_OI_ZERO_UNCHANGED: Final = "oi_anchor_zero_and_unchanged"
-REASON_LIQUIDATION_WINDOW: Final = "liquidation_followup_window_open"
-REASON_SMART_MONEY_ROUND: Final = "smart_money_round_open"
-REASON_SENDER_UNAVAILABLE: Final = "market_sender_unavailable"
-REASON_SEND_INTERRUPTED: Final = "market_send_interrupted"
-# The one reason that is final without a send: the round this observation was held in ended before a
-# card spoke for it, and the card that opened the next round covers that round only. Saying `merging`
-# here would promise a card that is never coming (#562 PR-F).
-REASON_ROUND_CLOSED: Final = "alert_round_ended_before_a_card"
-# The other final answer without a send, and the whole of what happens to an unstructured record: it
-# is recorded, it is readable, and no rule is holding it because no rule ever will (#582 §3.2). The
-# read model tells it apart by having no track row at all, which is what `track_reason is None` says.
-REASON_UNSTRUCTURED: Final = "unstructured_record_not_alerted"
-
 __all__ = [
     "BACKLOG_BATCH_MAX",
     "CARD_METRIC_LINES_MAX",
     "DELIVERY_STATES",
     "DETAIL_BUTTON_LABEL",
     "LIQUIDATION_WINDOW_MS",
-    "MARKET_TRACK_FIELDS",
-    "NOTIFY_STATES",
-    "NOTIFY_STATE_HISTORICAL",
-    "NOTIFY_STATE_PENDING",
-    "NOTIFY_STATE_PROCESSED",
     "OI_FOLLOWUP_MULTIPLE",
     "OI_QUIET_RESET_MS",
-    "REASON_HISTORICAL",
-    "REASON_LIQUIDATION_WINDOW",
-    "REASON_MERGING",
-    "REASON_OI_BELOW_THRESHOLD",
-    "REASON_OI_ZERO_UNCHANGED",
-    "REASON_ROUND_CLOSED",
-    "REASON_SENDER_UNAVAILABLE",
-    "REASON_SEND_INTERRUPTED",
-    "REASON_SMART_MONEY_ROUND",
-    "REASON_UNPROCESSED",
-    "REASON_UNSTRUCTURED",
     "SENDS_PER_TURN_MAX",
     "SEND_ATTEMPTS_MAX",
     "SEND_RETRY_BACKOFF_MS",
@@ -192,7 +154,6 @@ __all__ = [
     "group_identity",
     "market_detail_url",
     "market_reader_card",
-    "notification_status",
     "quote_symbols",
     "render_market_card",
     "retry_delay_ms",
@@ -924,47 +885,6 @@ def _window_end(track: MarketTrack, window_ms: int) -> int | None:
     return int(track.anchor_attempt_at_ms) + window_ms
 
 
-def notification_status(
-    *,
-    notify_state: str,
-    delivery_state: str | None,
-    delivery_error: str | None,
-    track_reason: str | None,
-    round_closed: bool,
-) -> tuple[str, str]:
-    """What the page says about one observation: an independent status and its reason.
-
-    Never folded into `parse_status`. A record whose template was never proved and a parsed record no
-    card spoke for are both ordinary outcomes, and the two pairs answer two different questions (§6).
-
-    `track_reason is None` is the read model's LEFT JOIN finding no track row at all, which happens
-    for exactly one thing: an unstructured record, grouped and marked processed and deliberately
-    given no alerting state (#582 §3.2). It is not `pending_reason = ''` -- that is a real track whose
-    group is holding nothing at this instant -- and the two must not be conflated.
-
-    `round_closed` is the read model's own comparison -- no card claimed this observation, and the
-    alert round it belonged to started before it. There is no attempt to report and no rule still
-    holding it: it is a recorded fact no card ever spoke for, which is a fourth answer rather than a
-    variety of `merging` (#562 PR-F).
-    """
-
-    if delivery_state:
-        # A settled card carries its own error or nothing at all. Borrowing the track's live holding
-        # reason here would print `liquidation_followup_window_open` beside a card that was delivered
-        # ten minutes ago -- the reason the *group* is currently merging, attached to an observation
-        # whose own outcome is already known.
-        return delivery_state, str(delivery_error or "")
-    if notify_state == NOTIFY_STATE_PENDING:
-        return "unprocessed", REASON_UNPROCESSED
-    if notify_state == NOTIFY_STATE_HISTORICAL:
-        return "historical", REASON_HISTORICAL
-    if track_reason is None:
-        return "not_alerted", REASON_UNSTRUCTURED
-    if round_closed:
-        return "uncovered", REASON_ROUND_CLOSED
-    return "merging", str(track_reason or REASON_MERGING)
-
-
 # --- the card (§5.2): one bounded summary, and a link to everything it summarises ---
 #
 # Facts only. The words a family is written in, the order of its lines and the characters a figure
@@ -1431,7 +1351,10 @@ class MarketNotificationLoop:
             # together or not at all. A notification failure rolls back none of the facts, because
             # none of the facts are written here (§4.1.3).
             intents += int(
-                await self.db.tx("news_market_notify_group", _group_turn(self, identity, observations, stamp))
+                await self.db.tx(
+                    "news_market_notify_group",
+                    partial(self._process_group, identity=identity, observations=observations, now_ms=stamp),
+                )
             )
         turn = await self._drain_due()
         return replace(turn, observations=len(backlog), groups=len(grouped), intents=intents)
@@ -1503,16 +1426,24 @@ class MarketNotificationLoop:
         for _ in range(SENDS_PER_TURN_MAX):
             stamp = self._clock()
             if not self.sender.available:
-                held = int(await self.db.tx("news_market_notify_hold", _hold_unavailable(stamp)))
+                held = int(await self.db.tx("news_market_notify_hold", partial(_hold_unavailable, now_ms=stamp)))
                 return replace(turn, held_unavailable=held)
-            due = await self.db.tx("news_market_notify_due", _due_card(self, stamp))
+            due = await self.db.tx("news_market_notify_due", partial(self._due, now_ms=stamp))
             if due is None:
                 return turn
             # Between the two transactions on purpose: the card is quoted with no database
             # transaction of this loop's open, and whatever the reads answer, the claim below runs.
             quotes, news_pushed, news_total = await self._display_reads(due, stamp)
             claimed = await self.db.tx(
-                "news_market_notify_claim", _claim_due(self, due, quotes, news_pushed, news_total, stamp)
+                "news_market_notify_claim",
+                partial(
+                    self._claim,
+                    due=due,
+                    quotes=quotes,
+                    news_pushed=news_pushed,
+                    news_total=news_total,
+                    now_ms=stamp,
+                ),
             )
             if claimed is None:
                 # Another process claimed this card between the read and the compare-and-set. Nothing
@@ -1523,7 +1454,10 @@ class MarketNotificationLoop:
             # fairly with ordinary News, and a slow provider never holds a database slot.
             outcome = await self._send(claimed)
             settled = self._clock()
-            await self.db.tx("news_market_notify_settle", _settle_send(self, claimed, outcome, settled))
+            await self.db.tx(
+                "news_market_notify_settle",
+                partial(self._settle, claimed=claimed, outcome=outcome, now_ms=settled),
+            )
             turn = replace(
                 turn,
                 sent=turn.sent + (1 if outcome.state == "sent" else 0),
@@ -1768,34 +1702,12 @@ class MarketNotificationLoop:
         return len(swept)
 
 
-# The database ports take one synchronous callable over the repositories. These build them: bound
-# closures rather than lambdas with default arguments, so the types survive.
+# The database ports take one synchronous callable over the repositories. Every other pass is one of
+# this loop's own methods, bound with `partial`; this one is a statement with no method behind it.
 
 
-def _group_turn(
-    loop: MarketNotificationLoop,
-    identity: MarketTrack,
-    observations: Sequence[MarketObservation],
-    now_ms: int,
-) -> Callable[[Any], int]:
-    def run(repos: Any) -> int:
-        return loop._process_group(repos, identity, observations, now_ms)
-
-    return run
-
-
-def _hold_unavailable(now_ms: int) -> Callable[[Any], int]:
-    def run(repos: Any) -> int:
-        return int(repos.news.market_hold_unavailable(reason=REASON_SENDER_UNAVAILABLE, now_ms=now_ms))
-
-    return run
-
-
-def _due_card(loop: MarketNotificationLoop, now_ms: int) -> Callable[[Any], DueCard | None]:
-    def run(repos: Any) -> DueCard | None:
-        return loop._due(repos, now_ms)
-
-    return run
+def _hold_unavailable(repos: Any, *, now_ms: int) -> int:
+    return int(repos.news.market_hold_unavailable(reason=REASON_SENDER_UNAVAILABLE, now_ms=now_ms))
 
 
 def _display_answer[T](task: asyncio.Future[T], absent: T) -> T:
@@ -1804,29 +1716,6 @@ def _display_answer[T](task: asyncio.Future[T], absent: T) -> T:
     if task.cancelled() or task.exception() is not None:
         return absent
     return task.result()
-
-
-def _claim_due(
-    loop: MarketNotificationLoop,
-    due: DueCard,
-    quotes: Sequence[ReaderCardQuote],
-    news_pushed: Sequence[ReaderCardHeadline],
-    news_total: int,
-    now_ms: int,
-) -> Callable[[Any], ClaimedCard | None]:
-    def run(repos: Any) -> ClaimedCard | None:
-        return loop._claim(repos, due, quotes, news_pushed, news_total, now_ms)
-
-    return run
-
-
-def _settle_send(
-    loop: MarketNotificationLoop, claimed: ClaimedCard, outcome: SendOutcome, now_ms: int
-) -> Callable[[Any], None]:
-    def run(repos: Any) -> None:
-        loop._settle(repos, claimed, outcome, now_ms)
-
-    return run
 
 
 def action_changes(
@@ -1848,38 +1737,6 @@ def action_changes(
             changes += 1
         previous_action, previous_side = observation.action, observation.position_side
     return changes
-
-
-# The track's own columns, named once. The upsert statement, the row reader and the row writer all
-# build from this tuple, so a column added to `MarketTrack` cannot reach one of them and miss another.
-MARKET_TRACK_FIELDS: Final[tuple[str, ...]] = (
-    "group_key",
-    "market_kind",
-    "family",
-    "provider",
-    "source_venue",
-    "venue_known",
-    "raw_instrument",
-    "symbol",
-    "measurement_definition",
-    "liquidated_position_side",
-    "account_key",
-    "account_verified",
-    "trader_label",
-    "last_observed_at_ms",
-    "last_observed_item_id",
-    "anchor_state",
-    "anchor_delivery_key",
-    "anchor_attempt_at_ms",
-    "anchor_oi_change_bps",
-    "anchor_direction",
-    "anchor_action",
-    "anchor_position_side",
-    "open_delivery_key",
-    "next_due_at_ms",
-    "pending_reason",
-    "round_started_at_ms",
-)
 
 
 def _track_from_row(row: Mapping[str, Any]) -> MarketTrack:

@@ -7,7 +7,8 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from tracefold.news.market_review.storage import InstrumentsRepository, PriceRepository
+from tracefold.news.market_review.instrument_storage import InstrumentsRepository
+from tracefold.news.market_review.storage import PriceRepository
 from tracefold.news.search import NewsSearchPlan, compile_news_search
 from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.postgres.client import (

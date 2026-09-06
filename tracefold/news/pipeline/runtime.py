@@ -7,7 +7,8 @@ import contextlib
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from tracefold.news.market_review.storage import InstrumentsRepository, PriceRepository
+from tracefold.news.market_review.instrument_storage import InstrumentsRepository
+from tracefold.news.market_review.storage import PriceRepository
 from tracefold.news.storage.root import NewsRepository
 
 

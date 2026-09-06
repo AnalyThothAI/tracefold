@@ -10,7 +10,9 @@ from tracefold.platform.postgres.audit import (
 )
 
 from ..market_contracts import MARKET_NEWS_PUSHED_MAX, MARKET_NEWS_WINDOW_MS, MARKET_WINDOW_ROW_CAP
-from ..market_review.pricing import REACTION_METRIC_VERSION
+from ..market_review.instrument_storage import SEARCH_EVENT_SYMBOLS_SQL, SEARCH_IDENTITY_SQL
+from ..market_review.pricing import REACTION_DUE_BATCH, REACTION_METRIC_VERSION
+from ..market_review.quote_storage import DUE_REACTIONS_SQL
 from ..review.desk import review_read_statements
 from ..source_contracts import MARKET_KINDS
 from .chain_tape import (
@@ -26,10 +28,11 @@ from .decisions import (
     MARKET_NEWS_TOTAL_SQL,
     UNPUBLISHED_VERDICT_CANDIDATES_SQL,
 )
-from .events import UNPUBLISHED_EVENT_CANDIDATES_SQL
+from .events import BAND_CANDIDATES_SQL, UNPUBLISHED_EVENT_CANDIDATES_SQL
 from .feed_sql import (
     ASSET_SEARCH_PREDICATE,
     EDITORIAL_EVENT_CARD_SQL,
+    EVENT_MEMBERS_SQL,
     EVENT_VERDICTS_SQL,
     STATUS_DELIVERY_SQL,
     STATUS_FUNNEL_REVIEWS_SQL,
@@ -65,6 +68,7 @@ from .operations import (
 def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
     day_ago = int(now_ms) - 24 * 3600_000
     hour_ago = int(now_ms) - 3600_000
+    four_hours_ago = int(now_ms) - 4 * 3600_000
     week_ago = int(now_ms) - 168 * 3600_000
     raw_cutoff = int(now_ms) - 30 * 24 * 3600_000
     judged_cutoff = int(now_ms) - 365 * 24 * 3600_000
@@ -102,28 +106,14 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         ReadQuerySpec(
             name="news_search_identity",
-            sql="""
-                SELECT base_symbol, priority
-                  FROM (
-                    SELECT base_symbol, 0 AS priority FROM news_symbol_aliases WHERE alias = %s
-                    UNION ALL
-                    SELECT DISTINCT base_symbol, 1 AS priority FROM news_symbol_aliases WHERE base_symbol = %s
-                    UNION ALL
-                    SELECT DISTINCT base_symbol, 1 AS priority FROM news_market_instruments
-                     WHERE status = 'trading' AND base_symbol = %s
-                    UNION ALL
-                    SELECT DISTINCT base_symbol, 2 AS priority FROM news_market_instruments
-                     WHERE status = 'trading' AND venue_symbol = %s
-                  ) matches
-                 ORDER BY priority, base_symbol
-            """,
+            sql=SEARCH_IDENTITY_SQL,
             params=("BTC", "BTC", "BTC", "BTC"),
             max_read_return_amplification=8.0,
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
             name="news_search_event_symbols",
-            sql="SELECT alias FROM news_symbol_aliases WHERE base_symbol = %s ORDER BY alias",
+            sql=SEARCH_EVENT_SYMBOLS_SQL,
             params=("BTC",),
             max_read_return_amplification=8.0,
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
@@ -192,12 +182,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         ReadQuerySpec(
             name="news_event_members",
-            sql="""
-                SELECT m.item_id, m.match_kind, i.title FROM news_event_members m
-                  JOIN news_events event ON event.event_id = m.event_id
-                  JOIN news_items i ON i.item_id = m.item_id
-                 WHERE m.event_id = %s ORDER BY m.joined_at_ms, m.item_id
-            """,
+            sql=EVENT_MEMBERS_SQL,
             params=("event",),
             max_read_return_amplification=8.0,
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
@@ -210,27 +195,9 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
-            name="news_storyline_status",
-            sql="""
-                SELECT count(*) AS pushed
-                  FROM news_verdicts v JOIN news_events e ON e.event_id = v.event_id
-                 WHERE v.stage = 'triage' AND v.final_decision IN ('push', 'escalate')
-                   AND v.judgment_contract_version = 'news_judgment_v2'
-                   AND e.storyline_key = %s AND v.created_at_ms >= %s
-            """,
-            params=("topic:rates", day_ago),
-            max_read_return_amplification=20.0,
-            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
             name="news_band_lookup",
-            sql="""
-                SELECT DISTINCT b.event_id FROM news_event_bands b
-                  JOIN unnest(%s::smallint[], %s::text[]) AS q(band_index, band_key)
-                    ON q.band_index = b.band_index AND q.band_key = b.band_key
-                 WHERE b.dedupe_family = %s AND b.expires_at_ms > %s
-            """,
-            params=([0, 1], ["a", "b"], "general", now_ms),
+            sql=BAND_CANDIDATES_SQL,
+            params=([0, 1], ["a", "b"], "general", now_ms, "news"),
             max_read_return_amplification=20.0,
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),
@@ -475,18 +442,8 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         ReadQuerySpec(
             name="news_reaction_due_scan",
-            sql="""
-                SELECT a.event_id, a.symbol, a.opened_at_ms
-                  FROM news_event_assets a
-                  JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
-                  LEFT JOIN news_event_reactions r
-                    ON r.event_id = a.event_id AND r.symbol = a.symbol AND r.metric_version = %s
-                 WHERE a.opened_at_ms <= %s
-                   AND (r.state IS NULL OR r.state IN ('pending', 'partial'))
-                 ORDER BY a.opened_at_ms
-                 LIMIT 100
-            """,
-            params=(REACTION_METRIC_VERSION, hour_ago),
+            sql=DUE_REACTIONS_SQL,
+            params=(REACTION_METRIC_VERSION, hour_ago, four_hours_ago, REACTION_DUE_BATCH),
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),

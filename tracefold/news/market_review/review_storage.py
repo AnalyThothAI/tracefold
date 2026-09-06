@@ -10,6 +10,7 @@ from typing import Any, Final
 
 # S608 exemptions below compose fixed cohort/CTE fragments selected by code; all runtime values stay bound.
 from ..outcome import decision_zh, direction_zh, magnitude_zh, override_rule_zh, throttled_by_zh
+from ..row_values import optional_int
 from ..similarity import similarity
 from ..taxonomy import event_family_zh
 from .pricing import (
@@ -19,7 +20,7 @@ from .pricing import (
     median_bps,
     quote_freshness,
 )
-from .projections import _coverage_rows, _optional_int, _reaction_public
+from .projections import _coverage_rows, _reaction_public
 
 _REVIEW_DISCOVERY_MAX_HOURS: Final = 168
 
@@ -274,11 +275,11 @@ class ReviewStorage:
                 "throttled_by_zh": throttled_by_zh(data.get("throttled_by")),
                 "direction": data.get("direction"),
                 "direction_zh": direction_zh(data.get("direction")),
-                "magnitude": _optional_int(data.get("magnitude")),
-                "magnitude_zh": magnitude_zh(_optional_int(data.get("magnitude"))),
+                "magnitude": optional_int(data.get("magnitude")),
+                "magnitude_zh": magnitude_zh(optional_int(data.get("magnitude"))),
                 "event_family": data.get("event_family"),
                 "event_family_zh": event_family_zh(data.get("event_family")),
-                "return_1h_bps": _optional_int(data.get("bps_1h")),
+                "return_1h_bps": optional_int(data.get("bps_1h")),
                 "return_4h_bps": median_bps(
                     [
                         int(asset["return_4h_bps"])
@@ -382,13 +383,13 @@ class ReviewStorage:
                 quote_freshness(
                     measured_at_ms=now_ms,
                     received_at_ms=received_at_ms,
-                    source_at_ms=_optional_int(entry.get("source_at_ms")),
+                    source_at_ms=optional_int(entry.get("source_at_ms")),
                 )
                 for entry in entries
             ]
             source_ages = [item.source_age_ms for item in freshness if item.source_age_ms is not None]
             source_times = [
-                value for entry in entries if (value := _optional_int(entry.get("source_at_ms"))) is not None
+                value for entry in entries if (value := optional_int(entry.get("source_at_ms"))) is not None
             ]
             sources.append(
                 {

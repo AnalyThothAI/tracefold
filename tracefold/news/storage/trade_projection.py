@@ -85,15 +85,6 @@ class TradeInstrumentProjectionRow(TypedDict):
     observed_at_ms: int
 
 
-class TradeEvidenceCollectionHealthRow(TypedDict):
-    """Blind-safe collector state and source denominator for one future batch."""
-
-    connected: bool
-    last_frame_at_ms: int | None
-    last_error_code: str | None
-    expected_source_count: int
-
-
 class TradeFixedWindowOiSourceRow(TypedDict):
     """Complete News-owned OI source identity for one fixed acceptance window."""
 
@@ -107,43 +98,6 @@ class TradeFixedWindowOiSourceRow(TypedDict):
 
 class TradeProjectionStorage:
     conn: Any
-
-    def trade_evidence_collection_health(
-        self,
-        *,
-        start_observed_at_ms: int,
-        end_observed_at_ms: int,
-        available_at_or_before_ms: int,
-        source_venues: tuple[str, ...],
-    ) -> TradeEvidenceCollectionHealthRow:
-        """News-owned raw collector and denominator facts for blind-safe Trading health."""
-
-        row = self.conn.execute(
-            """
-            SELECT ingest.connected, ingest.last_frame_at_ms, ingest.last_error_code,
-                   (SELECT count(*)
-                      FROM news_oi_signals signal
-                     WHERE NOT signal.historical
-                       AND signal.observed_at_ms >= %(start)s
-                       AND signal.observed_at_ms < %(end)s
-                       AND signal.available_at_ms <= %(available)s
-                       AND signal.source_venue = ANY(%(venues)s)) AS expected_source_count
-              FROM news_ingest_state ingest
-             WHERE ingest.singleton_key = 'opennews'
-            """,
-            {
-                "start": int(start_observed_at_ms),
-                "end": int(end_observed_at_ms),
-                "available": int(available_at_or_before_ms),
-                "venues": list(source_venues),
-            },
-        ).fetchone()
-        return TradeEvidenceCollectionHealthRow(
-            connected=False if row is None else bool(row["connected"]),
-            last_frame_at_ms=None if row is None else row["last_frame_at_ms"],
-            last_error_code="collector_state_missing" if row is None else row["last_error_code"],
-            expected_source_count=0 if row is None else int(row["expected_source_count"]),
-        )
 
     def trade_candidate_oi_rows(
         self,
@@ -389,35 +343,6 @@ class TradeProjectionStorage:
                     normalized_base,
                 ),
             ).fetchall()
-        return [
-            TradeInstrumentProjectionRow(
-                venue=row["venue"],
-                venue_symbol=row["venue_symbol"],
-                base_symbol=row["base_symbol"],
-                instrument_class=row["instrument_class"],
-                quote_asset=row["quote_asset"],
-                status=row["status"],
-                observed_at_ms=row["observed_at_ms"],
-            )
-            for row in rows
-        ]
-
-    def trade_execution_instruments(self) -> list[TradeInstrumentProjectionRow]:
-        """All active Binance USD-M rows for the cold capability-snapshot command.
-
-        Crypto classification deliberately crosses the App seam instead of filtering here: every
-        provider candidate must receive an included row or a named mechanical exclusion.
-        """
-
-        rows = self.conn.execute(
-            """
-            SELECT venue, venue_symbol, base_symbol, instrument_class, quote_asset, status, observed_at_ms
-              FROM news_market_instruments
-             WHERE venue = 'binance.perp'
-               AND status = 'trading'
-             ORDER BY venue_symbol, base_symbol
-            """
-        ).fetchall()
         return [
             TradeInstrumentProjectionRow(
                 venue=row["venue"],

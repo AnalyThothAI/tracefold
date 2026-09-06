@@ -22,7 +22,7 @@ from tracefold.news import MARKET_KINDS, MARKET_PAGE_MAX, MARKET_WINDOW_DEFAULT_
 
 # Read from the owning module, not from the News package surface: the notification vocabulary belongs
 # to the rules that write it, and `tracefold.app` forwards the strings without ever naming one.
-from tracefold.news.market_notifications import REASON_UNPROCESSED
+from tracefold.news.market_contracts import REASON_UNPROCESSED
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 

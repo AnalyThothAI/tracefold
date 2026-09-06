@@ -18,13 +18,16 @@ from dataclasses import dataclass, replace
 
 import pytest
 
-from tracefold.news.market_notifications import (
-    LIQUIDATION_WINDOW_MS,
-    OI_QUIET_RESET_MS,
+from tracefold.news.market_contracts import (
     REASON_MERGING,
     REASON_ROUND_CLOSED,
     REASON_SMART_MONEY_ROUND,
     REASON_UNSTRUCTURED,
+    notification_status,
+)
+from tracefold.news.market_notifications import (
+    LIQUIDATION_WINDOW_MS,
+    OI_QUIET_RESET_MS,
     SEND_ATTEMPTS_MAX,
     SEND_RETRY_BACKOFF_MS,
     SMART_MONEY_ROUND_MS,
@@ -38,7 +41,6 @@ from tracefold.news.market_notifications import (
     group_family,
     group_identity,
     market_detail_url,
-    notification_status,
     quote_symbols,
     render_market_card,
     retry_delay_ms,

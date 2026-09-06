@@ -47,6 +47,7 @@ from ..wallet_contracts import (
     DIGEST_KIND,
     OUTCOME_GIVE_UP_MS,
     WALLET_OUTCOME_HORIZONS,
+    OutcomeHorizon,
     WalletCheck,
     WalletEvent,
     WalletOutcome,
@@ -496,7 +497,7 @@ class DueOutcomeRow(TypedDict):
     """One price receipt this turn may take: which card, which horizon, and which token to price."""
 
     delivery_key: str
-    horizon: str
+    horizon: OutcomeHorizon
     token: str
     expired: bool
 
