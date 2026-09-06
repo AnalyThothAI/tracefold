@@ -738,8 +738,6 @@ def admit_item(
     text_override: str | None = None,
     instrument_classes: Mapping[str, str] | None = None,
     append_evidence: bool = True,
-    _fact_unit: FactUnit | None = None,
-    _source_contract: SourceContract | None = None,
     _prepared: _PreparedAdmission | None = None,
     _near_match: _NearMatch | None = None,
     _near_match_prepared: bool = False,
@@ -758,12 +756,8 @@ def admit_item(
             watchlist_symbols=watchlist_symbols,
             text_override=text_override,
             instrument_classes=instrument_classes,
-            fact_units=None if _fact_unit is None else (_fact_unit,),
-            source_contracts=(
-                (_source_contract,)
-                if _source_contract is not None
-                else (classify_source_contract(event.provider_metadata),)
-            ),
+            fact_units=None,
+            source_contracts=(classify_source_contract(event.provider_metadata),),
         )
         if frame.market is not None:
             # A market frame opens no Event, so there is nothing for this function to admit. Callers

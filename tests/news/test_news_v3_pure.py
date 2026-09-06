@@ -25,7 +25,7 @@ from tracefold.news.delivery import (
 from tracefold.news.eval.replay import replay_hits
 from tracefold.news.events.facts import FactUnit, extract_fact_units
 from tracefold.news.events.gate import GateInput, evaluate_gate, gate_lexicon_flags, grounded_assets
-from tracefold.news.events.minhash import BANDS, band_keys, estimate_jaccard, minhash_signature
+from tracefold.news.events.minhash import BANDS, band_keys, minhash_signature
 from tracefold.news.events.storyline import (
     NO_STORYLINE_KEY,
     STORYLINE_REGISTRY_SHA256,
@@ -281,7 +281,6 @@ def test_minhash_bands_agree_for_near_duplicates_and_differ_for_unrelated() -> N
     assert len(ka) == BANDS
     assert any(x == y for x, y in zip(ka, kb, strict=True))
     assert not any(x == y for x, y in zip(ka, kc, strict=True))
-    assert estimate_jaccard(minhash_signature(a), minhash_signature(a)) == 1.0
 
 
 # ---------------------------------------------------------------- gate

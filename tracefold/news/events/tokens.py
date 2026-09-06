@@ -6,7 +6,6 @@ from typing import Final
 
 import regex
 
-TOKENIZER_VERSION: Final = "news_tokens_v1"
 MAX_TOKENS: Final = 256
 
 _WORD_RE = regex.compile(r"[\p{L}\p{N}]+(?:['_-][\p{L}\p{N}]+)*")
@@ -112,4 +111,4 @@ def jaccard(a: frozenset[str], b: frozenset[str]) -> float:
     return inter / len(a | b)
 
 
-__all__ = ["MAX_TOKENS", "TOKENIZER_VERSION", "comparison_tokens", "jaccard"]
+__all__ = ["MAX_TOKENS", "comparison_tokens", "jaccard"]

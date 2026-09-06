@@ -6,17 +6,14 @@ about Story rows, Push delivery state, PostgreSQL, or provider transports.
 
 from __future__ import annotations
 
-import hashlib
 import re
 import unicodedata
-from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Final, Literal
 
 import regex
 
 EXACT_ATOM_IDENTITY_VERSION: Final = "news_exact_atom_identity_v1"
-NEWS_PUSH_ADMISSION_POLICY_VERSION: Final = "news_push_exact_atom_admission_v1"
 OPENNEWS_EXACT_ATOM_HORIZON_MS: Final = 12 * 60 * 60_000
 MAX_COMPARISON_CHARS: Final = 500
 
@@ -75,26 +72,6 @@ _TRADITIONAL_TO_SIMPLIFIED = str.maketrans(
         )
     }
 )
-
-
-@dataclass(frozen=True, slots=True)
-class NewsExactAtomIdentity:
-    comparison_title: str
-    comparison_fingerprint: str
-    dedupe_family: DedupeFamily
-    duplicate_window_ms: int
-    identity_version: str = EXACT_ATOM_IDENTITY_VERSION
-
-
-def describe_exact_atom(title: str) -> NewsExactAtomIdentity:
-    comparison = comparison_title(title)
-    family_name = dedupe_family(comparison)
-    return NewsExactAtomIdentity(
-        comparison_title=comparison,
-        comparison_fingerprint=hashlib.sha256(comparison.encode("utf-8")).hexdigest(),
-        dedupe_family=family_name,
-        duplicate_window_ms=min(dedupe_window_ms(family_name), OPENNEWS_EXACT_ATOM_HORIZON_MS),
-    )
 
 
 def comparison_title(title: str) -> str:
@@ -170,12 +147,9 @@ def _currency_kind(symbol: str | None) -> str | None:
 
 __all__ = [
     "EXACT_ATOM_IDENTITY_VERSION",
-    "NEWS_PUSH_ADMISSION_POLICY_VERSION",
     "DedupeFamily",
-    "NewsExactAtomIdentity",
     "comparison_title",
     "decimal_text",
     "dedupe_family",
     "dedupe_window_ms",
-    "describe_exact_atom",
 ]
