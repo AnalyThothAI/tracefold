@@ -1,4 +1,5 @@
 import { routeReferrerFromState } from "@shared/routing/routeReferrer";
+import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
 import { RouteBackLink } from "@shared/ui/RouteBackLink";
 import { useEffect, useMemo, useState } from "react";
@@ -13,7 +14,7 @@ import {
   type NewsFeedFilters,
 } from "../../api/newsQueries";
 import { parseSymbolLane } from "../../model/symbolLanes";
-import { NewsPageHeader, NewsPageShell } from "../chrome/NewsChrome";
+import { NewsPageHeader } from "../chrome/NewsChrome";
 import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
 
 import { NewsSymbolEvents } from "./NewsSymbolEvents";
@@ -93,7 +94,7 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
   );
 
   return (
-    <NewsPageShell archetype="scan" className="news-symbol-shell" label={`代币 ${normalized}`}>
+    <PageShell archetype="scan" className="news-symbol-shell" label={`代币 ${normalized}`}>
       {/*
        * The way back (#256). The artifact draws it in the frame; it lives on the page here because what
        * makes it correct — which page the reader left, and the filters they left it with — is route state,
@@ -164,7 +165,7 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
           rows={rows}
         />
       </div>
-    </NewsPageShell>
+    </PageShell>
   );
 }
 

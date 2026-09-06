@@ -1,4 +1,7 @@
-import { useCockpitStatusQuery } from "@features/cockpit/api/useCockpitStatusQuery";
+import {
+  COCKPIT_STATUS_REFETCH_MS,
+  useCockpitStatusQuery,
+} from "@features/cockpit/api/useCockpitStatusQuery";
 import {
   NEWS_FEED_REFETCH_MS,
   NEWS_QUOTES_REFETCH_MS,
@@ -58,7 +61,7 @@ describe("query hook category contracts", () => {
       useObservedQuery: () => useTradingStatusWithToken("token"),
     },
     {
-      interval: 12_000,
+      interval: COCKPIT_STATUS_REFETCH_MS,
       key: queryKeys.status(),
       name: "cockpit runtime status",
       useObservedQuery: () => useCockpitStatusQuery({ token: "token" }),

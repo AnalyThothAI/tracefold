@@ -1,4 +1,6 @@
 import { Card } from "@shared/ui/Card";
+import { EmptyNote } from "@shared/ui/EmptyNote";
+import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
 import { useSearchParams } from "react-router-dom";
 
@@ -11,7 +13,6 @@ import { caseFigures, caseReasonRows } from "../model/tradingCases";
 import { caseClock, ledgerSentence } from "../model/tradingLabels";
 
 import { TradingCaseDetail } from "./TradingCaseDetail";
-import { TradingEmptyNote, TradingShell } from "./TradingChrome";
 import { TradingControls } from "./TradingControls";
 import { TradingExecutionTable } from "./TradingExecutionTable";
 import { TradingRisk } from "./TradingRisk";
@@ -82,7 +83,7 @@ export function TradingPage({ token }: { token: string }) {
   );
 
   return (
-    <TradingShell label="可操作交易台">
+    <PageShell archetype="scan" className="trading-shell" label="可操作交易台">
       <header className="trading-page-header">
         <div className="trading-heading-copy">
           <h1>Trading Desk</h1>
@@ -117,7 +118,7 @@ export function TradingPage({ token }: { token: string }) {
               {selectedCase ? (
                 <TradingCaseDetail item={selectedCase} />
               ) : (
-                <TradingEmptyNote>
+                <EmptyNote className="trading-empty-note">
                   {casesQuery.isPending || casesQuery.isError
                     ? ledgerSentence({
                         failed: casesQuery.isError,
@@ -125,7 +126,7 @@ export function TradingPage({ token }: { token: string }) {
                         subject: "Case",
                       })
                     : `这个案例不在当前 ${casesQuery.data?.window_hours ?? "—"} 小时窗口。`}
-                </TradingEmptyNote>
+                </EmptyNote>
               )}
             </section>
           ) : null}
@@ -189,6 +190,6 @@ export function TradingPage({ token }: { token: string }) {
           </Card>
         </div>
       </PageState.Stale>
-    </TradingShell>
+    </PageShell>
   );
 }

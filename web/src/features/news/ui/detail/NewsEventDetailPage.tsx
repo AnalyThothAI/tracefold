@@ -1,8 +1,10 @@
 import { newsPath, newsSymbolPath } from "@shared/routing/paths";
 import { useRouteReferrer } from "@shared/routing/routeReferrer";
 import { Card } from "@shared/ui/Card";
+import { EmptyNote } from "@shared/ui/EmptyNote";
 import { FactGrid } from "@shared/ui/FactGrid";
 import { KeyValue, KeyValueRow } from "@shared/ui/KeyValue";
+import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
 import { RouteBackLink } from "@shared/ui/RouteBackLink";
 import { ArrowRight, ExternalLink } from "lucide-react";
@@ -30,7 +32,7 @@ import {
   validExternalUrl,
 } from "../../model/newsLabels";
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
-import { NewsEmptyNote, NewsPageShell, NewsTechnical } from "../chrome/NewsChrome";
+import { NewsTechnical } from "../chrome/NewsChrome";
 import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
 import { NewsKindBadge } from "../chrome/NewsKindBadge";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
@@ -59,7 +61,7 @@ export function NewsEventDetailPage({ eventId, token }: { eventId: string; token
     (quotesQuery.data?.quotes ?? []).map((quote) => [quote.requested_symbol, quote]),
   );
   return (
-    <NewsPageShell archetype="case" className="news-detail-shell" label="新闻事件详情">
+    <PageShell archetype="case" className="news-detail-shell" label="新闻事件详情">
       <header className="news-detail-toolbar">
         <RouteBackLink
           ariaLabel="返回新闻事件流"
@@ -79,7 +81,7 @@ export function NewsEventDetailPage({ eventId, token }: { eventId: string; token
           <EventDocument detail={detail} quotes={quotes} />
         </NewsQuoteReadState>
       ) : null}
-    </NewsPageShell>
+    </PageShell>
   );
 }
 
@@ -223,7 +225,7 @@ function ReviewSummary({ detail }: { detail: NewsEventDetail }) {
           {accepted.note ? <small>{accepted.note}</small> : null}
         </div>
       ) : (
-        <NewsEmptyNote>还没有经过接受的人工复盘；这里不会用 1H 涨跌代替判断。</NewsEmptyNote>
+        <EmptyNote>还没有经过接受的人工复盘；这里不会用 1H 涨跌代替判断。</EmptyNote>
       )}
     </Card>
   );
@@ -246,7 +248,7 @@ function EventReactions({
   const primaryReactions = reactions.filter((reaction) => reaction.is_primary);
   const nonPrimaryCount = reactions.length - primaryReactions.length;
   if (!reactions.length && !aggregate) {
-    return <NewsEmptyNote>还没有可用的事件后反应。</NewsEmptyNote>;
+    return <EmptyNote>还没有可用的事件后反应。</EmptyNote>;
   }
   return (
     <div className="news-detail-reactions">
@@ -395,7 +397,7 @@ function SymbolNormalization({ groups }: { groups: NewsSymbolNormalization[] }) 
 }
 
 function MemberList({ members }: { members: NewsEventMember[] }) {
-  if (!members.length) return <NewsEmptyNote>没有成员记录。</NewsEmptyNote>;
+  if (!members.length) return <EmptyNote>没有成员记录。</EmptyNote>;
   return (
     <ol className="news-member-list">
       {members.map((member) => {

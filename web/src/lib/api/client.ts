@@ -1,4 +1,3 @@
-import { env } from "@lib/env/env";
 import type { ApiResponse, BootstrapData } from "@lib/types";
 
 export type RequestOptions = {
@@ -57,7 +56,12 @@ async function requestApi<T>(
   path: string,
   options: RequestOptions & { method: "GET" | "POST" },
 ): Promise<ApiResponse<T>> {
-  const url = new URL(path, env.apiBaseUrl);
+  /*
+   * Same origin, always: the console is served by the API process itself. `vite.config.ts` proxies `/api`
+   * to the dev server's backend, so development crosses no origin either, and #589 PR-5 deleted the
+   * `VITE_API_BASE_URL` switch that nothing set.
+   */
+  const url = new URL(path, window.location.origin);
   for (const [key, value] of Object.entries(options.params ?? {})) {
     if (value !== null && value !== undefined && value !== "") {
       url.searchParams.set(key, String(value));

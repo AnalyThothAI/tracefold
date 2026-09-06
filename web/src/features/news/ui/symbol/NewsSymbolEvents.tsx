@@ -1,7 +1,9 @@
 import { newsEventPath } from "@shared/routing/paths";
 import { ActionButton } from "@shared/ui/ActionButton";
 import { Card } from "@shared/ui/Card";
+import { EmptyNote } from "@shared/ui/EmptyNote";
 import * as PageState from "@shared/ui/PageState";
+import { SourceLine } from "@shared/ui/SourceLine";
 import { Link } from "react-router-dom";
 
 import type { NewsFeedEvent } from "../../api/newsQueries";
@@ -12,12 +14,10 @@ import {
   symbolLaneLabel,
   type NewsSymbolLane,
 } from "../../model/symbolLanes";
-import { NewsEmptyNote } from "../chrome/NewsChrome";
 import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
 import { NewsKindBadge } from "../chrome/NewsKindBadge";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
 import { NewsReactionValue } from "../chrome/NewsQuoteValue";
-import { NewsSourceLine } from "../chrome/NewsSourceLine";
 
 /**
  * Every persisted Event kind for this name on one clock.
@@ -82,10 +82,10 @@ export function NewsSymbolEvents({
         <PageState.Loading label="正在读取这个代币的事件" layout="panel" rows={4} />
       ) : null}
       {!error && !loading && rows.length === 0 ? (
-        <NewsEmptyNote>这个窗口里没有关于这个代币的事件。</NewsEmptyNote>
+        <EmptyNote>这个窗口里没有关于这个代币的事件。</EmptyNote>
       ) : null}
       {!error && rows.length > 0 && shown.length === 0 ? (
-        <NewsEmptyNote>已加载的事件里没有这个类型的。</NewsEmptyNote>
+        <EmptyNote>已加载的事件里没有这个类型的。</EmptyNote>
       ) : null}
 
       {!error && shown.length > 0 ? (
@@ -112,7 +112,7 @@ export function NewsSymbolEvents({
         </div>
       ) : null}
 
-      <NewsSourceLine
+      <SourceLine
         note="类型页签在已加载的这批里筛，计数与它筛的是同一批——feed 没有 lane 参数，服务端计数会描述另一个窗口"
         path="GET /api/news/feed?symbol={base}&hours=24"
       />

@@ -28,7 +28,9 @@ def test_frontend_dist_is_served_without_interfering_with_api(tmp_path):
 
     with TestClient(app) as client:
         home = client.get("/")
-        app_route = client.get("/app")
+        # `/app` and `/app/*` went with #589 PR-5: the SPA has no `app` route, so the mount answered 200
+        # with the console's own "404 Not Found" surface. An unrouted path is a 404 like any other.
+        retired_app_routes = [client.get(path) for path in ("/app", "/app/news")]
         token_route = client.get("/token/CexToken/cex_token%3AZEC")  # GMGN lane retired (#50)
         retired_signal_lab_route = client.get("/signal-lab")
         news_route = client.get("/news")
@@ -44,7 +46,7 @@ def test_frontend_dist_is_served_without_interfering_with_api(tmp_path):
     assert home.status_code == 200
     assert "text/html" in home.headers["content-type"]
     assert home.headers["cache-control"] == "no-cache, max-age=0, must-revalidate"
-    assert app_route.status_code == 200
+    assert all(response.status_code == 404 for response in retired_app_routes)
     assert token_route.status_code == 404
     assert retired_signal_lab_route.status_code == 404
     assert news_route.status_code == 200

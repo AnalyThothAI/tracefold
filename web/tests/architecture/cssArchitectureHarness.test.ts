@@ -14,6 +14,37 @@ const appLayerOrder =
 const globalStylesDir = join(srcRoot, "styles");
 const existingGlobalUtilityClasses = new Set(["lucide", "sr-only"]);
 
+/*
+ * The design system's semantic colour axes. Every one is defined once, on `:root`, in the one global token
+ * owner; a component consumes the token and never re-derives the shade. #589 PR-5 folded the standalone
+ * `designSystemContract` and `cssResponsiveContract` files in here — same guarantees, one CSS walker.
+ */
+const semanticColorTokens = [
+  "--surface-canvas",
+  "--surface-panel",
+  "--text-primary",
+  "--text-muted",
+  "--border-subtle",
+  "--accent-primary",
+  "--dir-bullish",
+  "--dir-bearish",
+  "--signal-done",
+  "--signal-caution",
+  "--signal-alert",
+  "--signal-info",
+  "--signal-neutral",
+  "--focus-ring",
+];
+
+/* The cascade layers the application owns. Anything else in `src` is a third party's or unlayered. */
+const appLayers = new Set([
+  "app.base",
+  "app.primitives",
+  "app.shell",
+  "app.features",
+  "app.overrides",
+]);
+
 const featureClassPrefixes: Record<string, string[]> = {
   cockpit: ["brand", "brand-", "center-column", "cockpit-", "searchbar", "topbar", "topbar-"],
   news: ["news-"],
@@ -386,6 +417,50 @@ describe("CSS architecture harness", () => {
     ).toEqual([]);
   });
 
+  it("defines each semantic colour axis once, on :root, in one global token owner", () => {
+    const sites = new Map<string, { path: string; selector: string }[]>();
+
+    for (const path of collectFiles(srcRoot).filter(isCssFile)) {
+      for (const declaration of cssDeclarations(readFileSync(path, "utf8"))) {
+        if (!declaration.property.startsWith("--")) continue;
+        const site = { path: relativeToSrc(path), selector: declaration.selector };
+        sites.set(declaration.property, [...(sites.get(declaration.property) ?? []), site]);
+      }
+    }
+
+    const owners = new Set<string>();
+    for (const token of semanticColorTokens) {
+      const declarations = sites.get(token) ?? [];
+      expect(declarations, token).toHaveLength(1);
+      expect(
+        declarations[0]?.selector.split(",").map((selector) => selector.trim()),
+        token,
+      ).toContain(":root");
+      owners.add(declarations[0]?.path ?? "");
+    }
+
+    expect([...owners]).toHaveLength(1);
+    expect([...owners][0]?.startsWith("styles/")).toBe(true);
+  });
+
+  it("requires every app-owned side-effect stylesheet to declare its cascade layer", () => {
+    const offenders = collectFiles(srcRoot)
+      .filter(isSideEffectCssFile)
+      .filter((path) => {
+        const css = readFileSync(path, "utf8");
+        if (declaresAppLayer(css)) return false;
+        // The Tailwind entry is the one unlayered sheet: it imports the framework, which brings its own
+        // `theme`/`base`/`components`/`utilities` layers named in the global order.
+        return !(isGlobalStyleFile(path) && cssAtImports(css).includes("tailwindcss"));
+      })
+      .map(
+        (path) =>
+          `${relativeToSrc(path)} is unlayered; app-owned side-effect CSS must name an app cascade layer.`,
+      );
+
+    expect(offenders).toEqual([]);
+  });
+
   it("keeps side-effect class names from being shared across feature roots", () => {
     const rootsByClassName = new Map<string, Set<string>>();
 
@@ -427,6 +502,7 @@ type CssRule = {
 type CssDeclaration = {
   line: number;
   property: string;
+  selector: string;
   value: string;
 };
 
@@ -503,10 +579,26 @@ function cssDeclarations(css: string): CssDeclaration[] {
     declarations.push({
       line: declaration.source?.start?.line ?? 1,
       property: declaration.prop,
+      selector: declaration.parent?.type === "rule" ? declaration.parent.selector : "",
       value: declaration.value,
     });
   });
   return declarations;
+}
+
+function declaresAppLayer(css: string): boolean {
+  let declared = false;
+  postcss.parse(css).walkAtRules("layer", (rule) => {
+    if (
+      rule.params
+        .split(",")
+        .map((name) => name.trim())
+        .some((name) => appLayers.has(name))
+    ) {
+      declared = true;
+    }
+  });
+  return declared;
 }
 
 function globalTokenOwner(): string {

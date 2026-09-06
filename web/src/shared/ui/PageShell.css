@@ -1,0 +1,29 @@
+@layer app.primitives {
+  .page-shell {
+    display: grid;
+    align-content: start;
+    gap: 12px;
+    width: 100%;
+    max-width: 1340px;
+    margin: 0 auto;
+    padding: 16px 16px 48px;
+  }
+
+  /* One document, read left to right: a case is centred at a reading measure, not stretched to the frame. */
+  .page-shell[data-page-archetype="case"] {
+    max-width: 1000px;
+  }
+
+  /* Grid items default to `min-width: auto`, so a wide child (a metric row scrolling on a phone) would push
+     the whole panel past the viewport instead of scrolling inside itself. */
+  .page-shell > * {
+    min-width: 0;
+  }
+
+  @media (max-width: 767px) {
+    .page-shell {
+      gap: 9px;
+      padding: 12px 12px calc(16px + env(safe-area-inset-bottom, 0px));
+    }
+  }
+}

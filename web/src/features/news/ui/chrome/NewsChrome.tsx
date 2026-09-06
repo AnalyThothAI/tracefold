@@ -1,37 +1,12 @@
-import { cn } from "@lib/utils";
 import type { ReactNode } from "react";
 
 import "./newsChrome.css";
 
-/**
- * The frame every News route shares. Each route owns its own content and its own stylesheet; this owns the
- * reading measure, the heading block, the folded technical-evidence disclosure and the "nothing here"
- * sentence, so the four routes cannot drift apart on the parts a reader recognises as "the same console".
- *
- * The archetype sets the measure and nothing else: `scan` is a wide list surface, `case` is one document and
- * is centred at a reading width rather than hugging the frame.
+/*
+ * The News-owned parts of the frame every News route shares: the heading block, the measured-at stamp and
+ * the folded technical-evidence disclosure. The measure the route sits in and its "nothing here" sentence
+ * are the console's, not News's — `@shared/ui/PageShell` and `@shared/ui/EmptyNote` since #589 PR-5.
  */
-export function NewsPageShell({
-  archetype,
-  children,
-  className,
-  label,
-}: {
-  archetype: "case" | "scan";
-  children: ReactNode;
-  className: string;
-  label: string;
-}) {
-  return (
-    <section
-      aria-label={label}
-      className={cn("news-panel", className)}
-      data-page-archetype={archetype}
-    >
-      {children}
-    </section>
-  );
-}
 
 /**
  * Title and subtitle share a baseline rather than stacking: the subtitle is a caption on the title, not a
@@ -72,8 +47,4 @@ export function NewsTechnical({ children, summary }: { children: ReactNode; summ
       <div>{children}</div>
     </details>
   );
-}
-
-export function NewsEmptyNote({ children }: { children: ReactNode }) {
-  return <p className="news-empty-note">{children}</p>;
 }

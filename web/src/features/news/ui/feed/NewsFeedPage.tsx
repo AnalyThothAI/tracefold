@@ -1,6 +1,7 @@
 import { useMediaQuery } from "@shared/hooks/useMediaQuery";
 import { newsFeedIdentity } from "@shared/query/queryKeys";
 import { ActionButton } from "@shared/ui/ActionButton";
+import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -22,7 +23,7 @@ import {
 import { newsFeedGroups } from "../../model/feedGroups";
 import { absoluteTime, formatCount, hoursLabel, outcomeTabLabel } from "../../model/newsLabels";
 import { useAnchoredEventFeed } from "../../state/useAnchoredEventFeed";
-import { NewsPageHeader, NewsPageShell, NewsPageStamp } from "../chrome/NewsChrome";
+import { NewsPageHeader, NewsPageStamp } from "../chrome/NewsChrome";
 import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
 import { NewsEventDrawer } from "../detail/NewsEventDrawer";
 
@@ -100,7 +101,7 @@ export function NewsFeedPage({ token }: { token: string }) {
   };
 
   return (
-    <NewsPageShell archetype="scan" className="news-feed-shell" label="新闻事件流">
+    <PageShell archetype="scan" className="news-feed-shell" label="新闻事件流">
       {/*
        * The pipeline health pill used to sit here. It is the topbar lamp now (#207), present after every
        * successful health read because it is also the status-page door. Two health controls on one screen
@@ -239,7 +240,7 @@ export function NewsFeedPage({ token }: { token: string }) {
         restoreFocusTo={drawerTriggerRef.current}
         token={token}
       />
-    </NewsPageShell>
+    </PageShell>
   );
 }
 

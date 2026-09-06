@@ -60,7 +60,7 @@ const routeCases: RouteCase[] = [
       );
       expect(fullyVisibleRows).toBeGreaterThanOrEqual(2);
     },
-    nestedOverflowSelectors: [".news-panel", ".news-event-list", ".news-event-row"],
+    nestedOverflowSelectors: [".page-shell", ".news-event-list", ".news-event-row"],
     lastMeaningfulSelector: ".news-event-row",
   },
   {
@@ -86,7 +86,7 @@ const routeCases: RouteCase[] = [
       await expect(page.getByRole("heading", { name: "市场标记" })).toHaveCount(0);
     },
     nestedOverflowSelectors: [
-      ".news-panel",
+      ".page-shell",
       ".news-detail-hero",
       ".news-timeline",
       ".news-detail-grid",

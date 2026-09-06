@@ -372,7 +372,7 @@ exit releases the lock.
 ## HTTP
 
 The service exposes `/healthz`, `/readyz`, `/metrics`, static frontend assets
-(the console routes `/`, `/app`, `/app/*`, `/news`, `/news/*`, `/trading`), and `/api/*`.
+(the console routes `/`, `/news`, `/news/*`, `/trading`), and `/api/*`.
 There is no WebSocket endpoint.
 
 - `/healthz` is process liveness.
@@ -412,7 +412,9 @@ wallet reads `/api/news/wallets` and `/api/news/wallets/cards` — plus `/health
 `/api/target-posts`, `/api/target-social-timeline`, `/api/live-market`,
 `/api/token-images/*`, `/api/token-radar`, `/api/stocks-radar`) are not
 registered and answer the ordinary `404`; there is no alias, redirect, or
-feature flag.
+feature flag. The retired console mounts `/app` and `/app/*` (#589 PR-5) answer
+the same `404`: the SPA has no `app` route, so serving `index.html` there
+returned the console's own "404 Not Found" screen under a `200`.
 
 ### News
 

@@ -1,4 +1,6 @@
 import { Card } from "@shared/ui/Card";
+import { EmptyNote } from "@shared/ui/EmptyNote";
+import { SourceLine } from "@shared/ui/SourceLine";
 
 import type { TradingExecutionRow } from "../api/tradingQueries";
 import {
@@ -10,7 +12,7 @@ import {
   signalDispositionLabel,
 } from "../model/tradingLabels";
 
-import { TradingEmptyNote, TradingLedgerNote, TradingSourceLine } from "./TradingChrome";
+import { TradingLedgerNote } from "./TradingChrome";
 
 /**
  * CONFIRM: one row per entry, every cell a field `GET /api/trading/executions` already folded (#528).
@@ -112,9 +114,11 @@ export function TradingExecutionTable({
         <TradingLedgerNote failed={failed} pending={pending} subject="执行" />
       )}
       {rows.length && !complete ? (
-        <TradingEmptyNote>本窗口已截断；未列出的入场不能解释为没有发生。</TradingEmptyNote>
+        <EmptyNote className="trading-empty-note">
+          本窗口已截断；未列出的入场不能解释为没有发生。
+        </EmptyNote>
       ) : null}
-      <TradingSourceLine path="GET /api/trading/executions → executions[]" />
+      <SourceLine path="GET /api/trading/executions → executions[]" />
     </Card>
   );
 }

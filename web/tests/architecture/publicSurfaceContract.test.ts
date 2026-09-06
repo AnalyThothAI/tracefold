@@ -1,14 +1,15 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import { APP_NAVIGATION_GROUPS } from "@features/cockpit/ui/appNavigation";
 import * as apiClient from "@lib/api/client";
 import { createAppRouteObjects } from "@routes/router";
 import { describe, expect, it } from "vitest";
 
-const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
-
+/*
+ * The browser half of the public surface, and only that half. The `/api/*` path list, the one write
+ * operation and every other operation's read-only shape belong to `tests/contract/test_openapi_drift.py`,
+ * which regenerates the document from the live FastAPI app instead of re-reading the committed copy: a
+ * second reader of `docs/generated/openapi.json` can only ever repeat what the generator already proved,
+ * and it repeated it out of date (#589 PR-5).
+ */
 describe("public browser surface", () => {
   it("exposes only the maintained SPA routes and navigation destinations", () => {
     expect(collectRoutePaths(createAppRouteObjects()).sort()).toEqual([
@@ -32,54 +33,6 @@ describe("public browser surface", () => {
     expect(navigation.flatMap((item) => item.children ?? [])).toEqual([]);
   });
 
-  it("keeps one exact browser command write and every other API operation read-only", () => {
-    const document = JSON.parse(
-      readFileSync(join(webRoot, "../docs/generated/openapi.json"), "utf8"),
-    ) as { paths?: Record<string, Record<string, unknown>> };
-    const paths = document.paths ?? {};
-    const apiPaths = Object.keys(paths)
-      .filter((path) => path.startsWith("/api/"))
-      .sort();
-
-    // #537 PR-5 deleted three GET routes nothing in the browser called: the Signal list and the two
-    // raw execution projections, all three of them shapes over ledgers `/api/trading/executions`
-    // already reads folded. #553 PR-1 added the two market reads: OI frames, liquidations, smart money
-    // and unknown market sources are stored facts, not Events, so the feed cannot serve them. #572 PR-3
-    // added the two wallet reads: the market list publishes a wallet observation like any other kind,
-    // and these two answer what the tape itself is doing -- its roster, its ingest position, and the
-    // +1h/+4h receipt of every card its rules opened.
-    expect(apiPaths).toEqual([
-      "/api/bootstrap",
-      "/api/news/events/{event_id}",
-      "/api/news/feed",
-      "/api/news/market",
-      "/api/news/market/{item_id}",
-      "/api/news/quotes",
-      "/api/news/status",
-      "/api/news/symbols/{base}",
-      "/api/news/wallets",
-      "/api/news/wallets/cards",
-      "/api/status",
-      "/api/trading/cases",
-      "/api/trading/execution/commands",
-      "/api/trading/executions",
-      "/api/trading/gate",
-      "/api/trading/gate/{event_id}",
-      "/api/trading/status",
-    ]);
-
-    const operations = apiPaths.flatMap((path) =>
-      Object.keys(paths[path] ?? {})
-        .filter((method) => HTTP_METHODS.has(method))
-        .map((method) => `${method.toUpperCase()} ${path}`),
-    );
-    expect(operations.filter((operation) => !operation.startsWith("GET "))).toEqual([
-      "POST /api/trading/execution/commands",
-    ]);
-    // The Command path is the one write and only a write now, so the operation count is the path count.
-    expect(operations).toHaveLength(apiPaths.length);
-  });
-
   it("keeps the runtime API facade to GET plus the one POST transport", () => {
     expect(Object.keys(apiClient)).toEqual(
       expect.arrayContaining(["getApi", "postApi", "getBootstrap", "getAuthToken", "setAuthToken"]),
@@ -89,8 +42,6 @@ describe("public browser surface", () => {
     expect(apiClient).not.toHaveProperty("deleteApi");
   });
 });
-
-const HTTP_METHODS = new Set(["get", "post", "put", "patch", "delete"]);
 
 function collectRoutePaths(routes: ReturnType<typeof createAppRouteObjects>): string[] {
   return routes.flatMap((route) => [
