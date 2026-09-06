@@ -118,7 +118,14 @@ def percent_from_bps(bps: int | None) -> str:
 
 
 def usd_compact(value: int | None) -> str:
-    """A whole-dollar figure at reading scale: `6.59M`, `278.62M`, `1.04B`, or the digits below 1K."""
+    """A whole-dollar figure at reading scale: `6.59M`, `278.62M`, `1.04B`, or the digits below 1K.
+
+    The card's *only* compact money, and it belongs to the OI value line alone. An open-interest
+    total is a magnitude -- its last six digits say nothing a reader acts on -- so it is rounded to
+    three significant places on purpose. Every other dollar figure a card prints is `money`'s:
+    exact, separated, unrounded above the cent. Nothing chooses between the two at render time; the
+    line decides, once, here (#562).
+    """
 
     if value is None:
         return UNKNOWN_FIGURE
@@ -129,33 +136,30 @@ def usd_compact(value: int | None) -> str:
     return str(amount)
 
 
-def decimal_text(value: str | None) -> str:
-    """An exact decimal string with its trailing zeros dropped; never re-parsed and never rounded.
+def money(value: object) -> str:
+    """A dollar figure on a card: `$200,840.00`, `$0.193528`, `-$412.75`, or `""` for none.
 
-    The provider's own reported figure reaches the reader unchanged in magnitude. Turning `1000000`
-    into `1.00M` here would silently claim a precision the report does not have.
+    The one exact-money rule, and the only one a card's monetary figures may use. The digits are
+    `price`'s, so a smart-money notional, a liquidation's largest reported amount, a report's own
+    price and its realised PNL are written exactly like the quote line beside them and like the News
+    card's `$74,553.10`. The first structured smart-money card in production read `开多 $200840`
+    three lines above `行情 ARB $0.1938`, which asked one reader to read two number systems on one
+    card (#562).
+
+    The sign goes outside the currency mark: `$-412.75` reads as a price of minus-dollars, and a
+    reader scanning a PNL needs the sign where a sign goes. `price` answers only for a positive
+    figure, so the magnitude is what it is asked.
+
+    `""` when there is no figure to print -- absent, zero, unparseable, or too large to quantize --
+    and the caller drops the entry rather than printing a currency mark with nothing after it.
     """
 
-    if not value:
+    text = str(value if value is not None else "").strip()
+    negative = text.startswith("-")
+    digits = price(text[1:] if negative else text)
+    if not digits:
         return ""
-    text = str(value)
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    return text
-
-
-def signed_usd(value: str | None) -> str:
-    """`$3120.5`, `-$412.75`: the provider's own figure, with the sign outside the currency mark.
-
-    `$-412.75` reads as a price of minus-dollars; a reader scanning a PNL column needs the sign where
-    a sign goes. The digits are `decimal_text`'s -- exact, unrounded, unseparated -- because this
-    renders what a report said, not what a market is quoting.
-    """
-
-    text = decimal_text(value)
-    if not text:
-        return ""
-    return f"-${text[1:]}" if text.startswith("-") else f"${text}"
+    return f"-${digits}" if negative else f"${digits}"
 
 
 def clip(value: object, limit: int) -> str:
@@ -182,9 +186,8 @@ __all__ = [
     "change",
     "clip",
     "clock",
-    "decimal_text",
+    "money",
     "percent_from_bps",
     "price",
-    "signed_usd",
     "usd_compact",
 ]

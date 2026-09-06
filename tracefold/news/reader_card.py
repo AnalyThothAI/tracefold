@@ -73,9 +73,11 @@ UNTRADEABLE_NOTICE_ZH: Final = "未找到可交易标的"
 
 # Two prices can appear on one market card and they are different claims. `来源报告价` is the number
 # inside the provider's own report -- the price it says the liquidation or the account action happened
-# at, exact and unrounded. `行情` is what the market is quoting now, read fresh from the same quote
-# snapshots the News card reads. Distinct labels and distinct number shapes, because a reader who
-# takes one for the other has been told the market moved when only the report was old (#562 §3).
+# at. `行情` is what the market is quoting now, read fresh from the same quote snapshots the News
+# card reads. Separate lines and distinct labels, because a reader who takes one for the other has
+# been told the market moved when only the report was old (#562 §3). One number shape, though: both
+# are `card_format.money`, so the only difference a reader sees between the two lines is the
+# difference between the two claims.
 _REPORTED_PRICE_PREFIX: Final = "来源报告价 "
 _PNL_PREFIX: Final = "已实现 PNL "
 # NewsLiquid's own two published percentages, in its own terms. `Whale Long Profit` is that
@@ -88,6 +90,9 @@ _WHALE_PROFIT_PREFIX: Final = "鲸鱼多头盈利 "
 _WHALE_RATIO_PREFIX: Final = "鲸鱼持仓/OI "
 
 _LIQUIDATION_NOTE: Final = "各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。"
+# What a `平` on this card does and does not mean (#553 §4.4). It is printed only by a card that
+# printed a Close: on an open-only card it explained a word that is not there, which is how a caveat
+# stops being read on the cards that do need it.
 _SMART_MONEY_NOTE: Final = "Close 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。"
 _SMART_MONEY_UNVERIFIED: Final = "（来源标签，非已核实地址）"
 _RAW_NOTE: Final = "未结构化，保留供应商原文"
@@ -181,6 +186,17 @@ class ReaderCardMarket:
     action_changes: int = 0
     opened_action: ReaderCardAction = ReaderCardAction()
     latest_action: ReaderCardAction = ReaderCardAction()
+
+    def reports_close(self) -> bool:
+        """Whether a Close is among the actions this card actually printed.
+
+        `actions` is the action line itself; the timeline's two ends are read only when the card
+        printed them, which is when the account changed action at all. An action the card did not
+        show cannot be the one a caveat below it is about.
+        """
+
+        timeline = (self.opened_action, self.latest_action) if self.action_changes else ()
+        return any(entry.action == "close" for entry in (*self.actions, *timeline))
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,7 +360,7 @@ class ReaderCard:
             side = market.side or ""
             return [
                 f"{venue} · {SIDE_ZH.get(side, side)}单被强平 {self.facts.report_count} 笔 · {span}",
-                f"最大单笔来源报告金额 ${market.notional}" if market.notional else "",
+                f"最大单笔来源报告金额 {largest}" if (largest := fmt.money(market.notional)) else "",
                 self._reported_line(),
                 quote,
                 _LIQUIDATION_NOTE,
@@ -365,14 +381,12 @@ class ReaderCard:
                 f"{account}{verified} · {venue} · {span}",
                 change_line,
                 " · ".join(
-                    f"{entry.label} ${fmt.decimal_text(entry.notional)}"
-                    if fmt.decimal_text(entry.notional)
-                    else entry.label
+                    f"{entry.label} {notional}" if (notional := fmt.money(entry.notional)) else entry.label
                     for entry in market.actions
                 ),
                 self._reported_line(),
                 quote,
-                _SMART_MONEY_NOTE,
+                _SMART_MONEY_NOTE if market.reports_close() else "",
             ]
         return [
             fmt.clip(self.lead, RAW_TEXT_MAX),
@@ -380,12 +394,17 @@ class ReaderCard:
         ]
 
     def _reported_line(self) -> str:
-        """`来源报告价 $3120.5 · 已实现 PNL -$412.75`, or nothing when the report carried neither."""
+        """`来源报告价 $3,120.50 · 已实现 PNL -$412.75`, or nothing when the report carried neither.
+
+        Both figures are `card_format.money`'s, the same rule the quote line under them uses: these
+        two lines sit one above the other and are read against each other, so they cannot be written
+        in two number systems.
+        """
 
         market = self.market
         parts = [
-            f"{_REPORTED_PRICE_PREFIX}${text}" if (text := fmt.decimal_text(market.reported_price)) else "",
-            f"{_PNL_PREFIX}{pnl}" if (pnl := fmt.signed_usd(market.pnl)) else "",
+            f"{_REPORTED_PRICE_PREFIX}{text}" if (text := fmt.money(market.reported_price)) else "",
+            f"{_PNL_PREFIX}{pnl}" if (pnl := fmt.money(market.pnl)) else "",
         ]
         return " · ".join(part for part in parts if part)
 

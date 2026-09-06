@@ -819,9 +819,40 @@ def test_a_liquidation_card_separates_the_reported_price_from_the_live_quote() -
     lines = _body(card).splitlines()
     assert lines[2] == "来源报告价 $0.14215"
     assert lines[3] == "行情 DOGE $0.14198 24h -3.20%"
-    # The report's own figure is exact and unrounded; the quote is the console's own rendering. The
-    # two are never the same characters, so neither can be read as the other.
+    # One money rule for both lines, so what differs between them is the two claims and nothing else:
+    # the report's own price is not the quote's, and neither can be read as the other.
     assert "$0.14215" not in lines[3]
+
+
+def test_the_largest_reported_amount_is_the_largest_number_not_the_largest_string() -> None:
+    """`980000` beside `1000000`: the pair that made a card understate its own biggest report by 2%.
+
+    `max` over the reported text answered `980000`, because `"9" > "1"` is the right answer about
+    characters and the wrong one about money. The amounts are compared through
+    `MarketObservation.notional_amount`, and the text a reader sees is still the report's own.
+    """
+
+    observations = [
+        liquidation(at_ms=T0, notional="1200.500", item_id="p1"),
+        liquidation(at_ms=T0 + 1_000, notional="980000", item_id="p2"),
+        liquidation(at_ms=T0 + 2_000, notional="1000000.00", item_id="p3"),
+    ]
+    body = _body(render_market_card(track=group_identity(observations[0]), reason="first", observations=observations))
+
+    assert "最大单笔来源报告金额 $1,000,000.00" in body
+    assert "980,000" not in body and "1,200.50" not in body
+
+
+def test_a_group_whose_reports_carried_no_amount_prints_no_largest_line() -> None:
+    """An unreadable or absent figure cannot win the comparison, and leaves the line out entirely."""
+
+    observations = [
+        replace(liquidation(at_ms=T0, item_id="q1"), notional_usd=None),
+        replace(liquidation(at_ms=T0 + 1_000, item_id="q2"), notional_usd="not-an-amount"),
+    ]
+    body = _body(render_market_card(track=group_identity(observations[0]), reason="first", observations=observations))
+
+    assert "最大单笔来源报告金额" not in body
 
 
 def test_a_smart_money_card_carries_the_reported_price_its_pnl_and_the_quote() -> None:
@@ -833,7 +864,7 @@ def test_a_smart_money_card_carries_the_reported_price_its_pnl_and_the_quote() -
         quotes=[_fresh("ETH", "3125.4", 0.42)],
     )
     lines = _body(card).splitlines()
-    assert lines[2] == "来源报告价 $3120.5 · 已实现 PNL -$412.75"
+    assert lines[2] == "来源报告价 $3,120.50 · 已实现 PNL -$412.75"
     assert lines[3] == "行情 ETH $3,125.40 24h +0.42%"
 
 
@@ -882,7 +913,7 @@ def test_the_newest_report_is_the_one_the_card_prices() -> None:
         replace(wallet(at_ms=T0 + 10_000, item_id="b"), price="3120.5"),
     ]
     body = _body(render_market_card(track=group_identity(observations[0]), reason="first", observations=observations))
-    assert "来源报告价 $3120.5" in body and "3000" not in body
+    assert "来源报告价 $3,120.50" in body and "3000" not in body
 
 
 @pytest.mark.parametrize(

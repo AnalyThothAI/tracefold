@@ -333,7 +333,7 @@
         "elements": [
           {
             "tag": "markdown",
-            "content": "binance · 多单被强平 1 笔 · 03:18\n最大单笔来源报告金额 $412530\n来源报告价 $0.2181\n行情 DOGE $0.1998 24h -3.20%\n各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。\nDOGE · opennews liquidation（1 条报道） · 03:18"
+            "content": "binance · 多单被强平 1 笔 · 03:18\n最大单笔来源报告金额 $412,530.00\n来源报告价 $0.2181\n行情 DOGE $0.1998 24h -3.20%\n各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。\nDOGE · opennews liquidation（1 条报道） · 03:18"
           },
           {
             "tag": "action",
@@ -429,7 +429,7 @@
         "elements": [
           {
             "tag": "markdown",
-            "content": "Machi Big Brother · hyperliquid · 03:18\n动作变化 1 次 · 首 开多 → 末 平多\n平多 $1250000\n来源报告价 $3120.5 · 已实现 PNL -$412.75\n行情 ETH $3,125.40 日内 +0.42%\nClose 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。\nETH · opennews smart_money（1 条报道） · 03:18"
+            "content": "Machi Big Brother · hyperliquid · 03:18\n动作变化 1 次 · 首 开多 → 末 平多\n平多 $1,250,000.00\n来源报告价 $3,120.50 · 已实现 PNL -$412.75\n行情 ETH $3,125.40 日内 +0.42%\nClose 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。\nETH · opennews smart_money（1 条报道） · 03:18"
           },
           {
             "tag": "action",
@@ -517,7 +517,7 @@
         "elements": [
           {
             "tag": "markdown",
-            "content": "Machi Big Brother · hyperliquid · 03:18\n平多 $1250000\n来源报告价 $3120.5 · 已实现 PNL -$412.75\nClose 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。\nETH · opennews smart_money（1 条报道） · 03:18"
+            "content": "Machi Big Brother · hyperliquid · 03:18\n平多 $1,250,000.00\n来源报告价 $3,120.50 · 已实现 PNL -$412.75\nClose 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。\nETH · opennews smart_money（1 条报道） · 03:18"
           },
           {
             "tag": "action",
@@ -613,7 +613,7 @@
         "elements": [
           {
             "tag": "markdown",
-            "content": "Machi Big Brother · hyperliquid · 03:18\n平多 $1250000\n来源报告价 $3180.25 · 已实现 PNL $128500.4\n行情 ETH $3,125.40 日内 +0.42%\nClose 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。\nETH · opennews smart_money（1 条报道） · 03:18"
+            "content": "Machi Big Brother · hyperliquid · 03:18\n平多 $1,250,000.00\n来源报告价 $3,180.25 · 已实现 PNL $128,500.40\n行情 ETH $3,125.40 日内 +0.42%\nClose 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。\nETH · opennews smart_money（1 条报道） · 03:18"
           },
           {
             "tag": "action",

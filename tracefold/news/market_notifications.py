@@ -33,13 +33,13 @@ import hashlib
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from decimal import Decimal
 from typing import Any, Final, Literal, Protocol
 from urllib.parse import urlsplit
 
-from . import card_format as fmt
 from .delivery_contracts import COMMIT_PHASE_NOT_SENT
 from .feishu_card import feishu_card
-from .market_review.pricing import QUOTE_READ_TIMEOUT_SECONDS
+from .market_review.pricing import QUOTE_READ_TIMEOUT_SECONDS, parse_price
 from .reader_card import (
     ReaderCard,
     ReaderCardAction,
@@ -212,6 +212,18 @@ class MarketObservation:
     action: str | None = None
     position_side: str | None = None
     pnl_usd: str | None = None
+
+    def notional_amount(self) -> Decimal | None:
+        """The reported notional as a number, or None when the report carried none it could be.
+
+        The fields above are the storage projection's own text, which is what a card prints and what
+        a JSON fixture round-trips; this is the one place that text becomes a quantity, so no caller
+        writes a second conversion and none of them compares money as characters. `parse_price` is
+        deliberately the same parse `card_format.money` renders through -- a figure the card could
+        not print cannot win a comparison between reports either.
+        """
+
+        return parse_price(self.notional_usd)
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> MarketObservation:
@@ -913,6 +925,22 @@ def market_reader_card(
     )
 
 
+def _largest_notional(observations: Sequence[MarketObservation]) -> str:
+    """The biggest amount any covered report stated, compared as a number and printed as it was.
+
+    `max` over the text answered `980000` for a group that also reported `1000000`, because `"9" >
+    "1"` is the right answer about characters and the wrong one about money -- the three-report
+    liquidation in `reader_card_branch_cards.json` is exactly that group, and its card understated
+    its own largest report by 2%. The comparison is `notional_amount`; what reaches the card is
+    still the report's own text, so the number a reader sees is the one that was reported.
+    """
+
+    amounts = [
+        (amount, item.notional_usd or "") for item in observations if (amount := item.notional_amount()) is not None
+    ]
+    return max(amounts, key=lambda pair: pair[0])[1] if amounts else ""
+
+
 def _reader_market(
     *,
     track: MarketTrack,
@@ -928,7 +956,7 @@ def _reader_market(
         oi_change_bps=latest.oi_change_bps,
         oi_value_usd=latest.oi_value_usd,
         side=track.liquidated_position_side,
-        notional=max((fmt.decimal_text(item.notional_usd) for item in observations), default=""),
+        notional=_largest_notional(observations),
         whale_long_profit_bps=latest.whale_long_profit_bps,
         whale_oi_ratio_bps=latest.whale_oi_ratio_bps,
         # The newest report's own numbers, matching the event time the card is stamped with. An
