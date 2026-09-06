@@ -163,10 +163,11 @@ def _liquidation_corpus(rng: random.Random) -> list[_Record]:
 def _smart_money_corpus(rng: random.Random) -> list[_Record]:
     """Bursty per account, and with the drift this Strategy really produces.
 
-    Bursty because the Issue's own counterexample is: one account reported closing a short and opening
-    one 49.241 s later. An account filling a position in three prints inside a minute is one subject
-    doing one thing, which is the case the 60 s window exists for. `Withdraw` has no Open/Close to
-    compare and stays its own raw card.
+    Bursty because that is what the source does: an account fills a position in three prints inside a
+    minute, and production's own 4-day sample is 126 records for one account across eleven tokens at
+    about a print a minute (#582 §1). A burst is one subject doing one thing, and after #582 a whole
+    day of it is one round. `Withdraw` has no Open/Close to read and is an unstructured record, which
+    is now stored and never notified.
     """
 
     records: list[_Record] = []
@@ -415,9 +416,11 @@ class _Kind:
     first: int = 0
     followup: int = 0
     action_change: int = 0
-    raw: int = 0
     merged: int = 0
     still_merging: int = 0
+    # An unstructured record: grouped, marked processed, and deliberately given no track and no card
+    # (#582 §3.2). Counting these as `still_merging` would report a queue that does not exist.
+    not_alerted: int = 0
     # Held by a rule in a round that ended before any card spoke for it. Not `still_merging`: no card
     # is coming for these, and counting them as merging would report a queue that does not exist
     # (#562 PR-F).
@@ -432,7 +435,7 @@ class _Kind:
 
     @property
     def cards(self) -> int:
-        return self.first + self.followup + self.action_change + self.raw
+        return self.first + self.followup + self.action_change
 
     @property
     def quoted_share(self) -> str:
@@ -522,10 +525,15 @@ def _report(connection: Any, corpus: list[_Record]) -> dict[str, _Kind]:
         "  LEFT JOIN news_market_tracks t ON t.group_key = i.market_notify_group_key"
         " WHERE i.market_notify_state = 'processed'"
     ).fetchall():
-        entry = report[families[str(row["group_key"])]]
+        # No track row is the unstructured answer, which is exactly how the read model tells it apart
+        # from a group that is holding an observation for a card (#582 §3.2).
+        family = families.get(str(row["group_key"]), "raw")
+        entry = report[family]
         entry.records += 1
         if row["delivery_key"] is None:
-            if bool(row["round_closed"]):
+            if family == "raw":
+                entry.not_alerted += 1
+            elif bool(row["round_closed"]):
                 entry.round_closed += 1
             else:
                 entry.still_merging += 1
@@ -541,7 +549,7 @@ def _report(connection: Any, corpus: list[_Record]) -> dict[str, _Kind]:
         if str(row["state"]) in {"sent", "failed", "unknown"}:
             setattr(entry, str(row["state"]), getattr(entry, str(row["state"])) + 1)
         latency = int(row["first_attempt_at_ms"]) - arrivals[str(row["trigger_item_id"])]
-        bucket = entry.first_latency_ms if str(row["trigger_reason"]) in {"first", "raw"} else entry.followup_latency_ms
+        bucket = entry.first_latency_ms if str(row["trigger_reason"]) == "first" else entry.followup_latency_ms
         bucket.append(latency)
     return report
 
@@ -554,14 +562,14 @@ def test_the_replay_reports_every_kind_at_raw_record_granularity(replay: dict[st
     """The report itself, printed so a reviewer reads the numbers the PR body quotes."""
 
     lines = [
-        "kind records first followup action_change raw merged still_merging round_closed "
+        "kind records first followup action_change merged still_merging round_closed not_alerted "
         "sent failed unknown cards quoted quoted_share first_p50_ms followup_p50_ms"
     ]
     for kind in ("oi", "liquidation", "smart_money", "raw"):
         entry = replay[kind]
         lines.append(
-            f"{kind} {entry.records} {entry.first} {entry.followup} {entry.action_change} {entry.raw} "
-            f"{entry.merged} {entry.still_merging} {entry.round_closed} "
+            f"{kind} {entry.records} {entry.first} {entry.followup} {entry.action_change} "
+            f"{entry.merged} {entry.still_merging} {entry.round_closed} {entry.not_alerted} "
             f"{entry.sent} {entry.failed} {entry.unknown} "
             f"{entry.cards} {entry.quoted} {entry.quoted_share} "
             f"{_p50(entry.first_latency_ms)} {_p50(entry.followup_latency_ms)}"
@@ -583,7 +591,8 @@ def test_the_quote_line_reaches_the_cards_whose_symbol_is_priced_and_no_others(r
     assert 0 < quoted < sum(entry.cards for entry in replay.values())
     for kind in ("oi", "liquidation", "smart_money"):
         assert replay[kind].quoted > 0, kind
-    assert replay["raw"].quoted == 0
+    # An unstructured record has no card to quote, which is the whole of #582 §3.2.
+    assert replay["raw"].cards == 0
 
 
 def test_every_record_is_accounted_for_exactly_once(replay: dict[str, _Kind]) -> None:
@@ -597,9 +606,24 @@ def test_every_record_is_accounted_for_exactly_once(replay: dict[str, _Kind]) ->
     assert sum(entry.records for entry in replay.values()) == 624
     for kind, entry in replay.items():
         covered = entry.cards + entry.merged
-        assert covered + entry.still_merging + entry.round_closed == entry.records, kind
-    # The number the PR body quotes, pinned so the prose cannot drift from the run.
-    assert sum(entry.cards for entry in replay.values()) == 246
+        assert covered + entry.still_merging + entry.round_closed + entry.not_alerted == entry.records, kind
+    # The number the PR body quotes, pinned so the prose cannot drift from the run. #582 moved it
+    # from 246 to 174, and the 72 cards it removes are exactly two deliberate changes measured on
+    # this same corpus (the merge base is `967918369`):
+    #
+    #   smart money  84 -> 20  (8 first + 59 followup + 17 action_change became 18 first + 2 close)
+    #   raw           8 ->  0  (one card per unreadable record became none at all)
+    #   ---------------------
+    #   removed      64 +  8 = 72
+    #
+    # The 60 s follow-up window closed as the next fill arrived, so the 59 follow-ups were the rule
+    # firing at the source's own cadence; the 24 h round allows at most two cards per (account,
+    # instrument) day. OI and liquidation keep all 90 and 64 of their cards: neither rule changed.
+    assert sum(entry.cards for entry in replay.values()) == 174
+    assert replay["oi"].cards == 90
+    assert replay["liquidation"].cards == 64
+    assert replay["smart_money"].cards == 20
+    assert replay["raw"].cards == 0
 
 
 def test_the_rules_reduce_records_to_fewer_cards(replay: dict[str, _Kind]) -> None:
@@ -611,13 +635,14 @@ def test_the_rules_reduce_records_to_fewer_cards(replay: dict[str, _Kind]) -> No
         assert entry.cards < entry.records, kind
         # A card speaks for more than one record on average, and never for an implausible crowd.
         assert 1.0 < entry.records / entry.cards < 25.0, kind
-    # Unparsable drift is one card per record by construction: it has no group to merge into.
-    assert replay["raw"].cards == replay["raw"].records
+    # Unparsable drift reaches no reader at all: every one of those records is stored and not alerted.
+    assert replay["raw"].cards == 0
     assert replay["raw"].merged == 0
+    assert replay["raw"].not_alerted == replay["raw"].records > 0
 
 
 def test_a_first_card_waits_only_for_the_loop_tick(replay: dict[str, _Kind]) -> None:
-    for kind in ("oi", "liquidation", "smart_money", "raw"):
+    for kind in ("oi", "liquidation", "smart_money"):
         latencies = replay[kind].first_latency_ms
         assert latencies, kind
         assert _p50(latencies) <= TICK_MS, kind

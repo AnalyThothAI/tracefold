@@ -454,8 +454,6 @@
 | `account_key` | `TEXT` | True | `None` |
 | `account_verified` | `BOOLEAN` | False | `false` |
 | `trader_label` | `TEXT` | True | `None` |
-| `current_action` | `TEXT` | True | `None` |
-| `current_position_side` | `TEXT` | True | `None` |
 | `last_observed_at_ms` | `BIGINT` | False | `None` |
 | `last_observed_item_id` | `TEXT` | False | `None` |
 | `anchor_state` | `TEXT` | False | `''::text` |

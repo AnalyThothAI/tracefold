@@ -1729,10 +1729,10 @@ def test_an_open_interest_card_keeps_its_family_mark_its_event_time_and_its_own_
     process happened to send, and the console link is the card's own button rather than a source.
     """
 
-    text = _sent_text(_fixture_market_card("market-oi-action-change-billions"))
+    text = _sent_text(_fixture_market_card("market-oi-followup-billions"))
 
     assert text == (
-        "🔵 <b>持仓异动 · 动作变化 · BTC</b>\n\n"
+        "🔵 <b>持仓异动 · 跟进 · BTC</b>\n\n"
         "sideways 0% · 01:00\n"
         "OI $12.40B · binance · oi_signal_v1|opennews_oi_source_v1|300000\n\n"
         "事件时间  01:00\n"
@@ -1764,7 +1764,7 @@ def test_a_smart_money_card_keeps_its_turquoise_mark_and_its_action_timeline() -
     text = _sent_text(_fixture_market_card("market-smart-money-action-change-six-reports"))
 
     assert text == (
-        "💠 <b>聪明钱 · 动作变化</b>\n\n"
+        "💠 <b>聪明钱 · 平仓</b>\n\n"
         "js-2（来源标签，非已核实地址） · hyperliquid · 10:00–10:42\n"
         "动作变化 3 次 · 首 平空 → 末 开空\n"
         "开多 $160,180.00 · 开多 · 平多 $7,500.25 · 开空 $1,000,000.00\n"
@@ -1789,20 +1789,6 @@ def test_a_smart_money_card_that_reported_no_close_carries_no_close_caveat() -> 
     assert "Close" not in text and "清仓" not in text
 
 
-def test_a_raw_card_carries_the_providers_own_text_and_no_judgment() -> None:
-    text = _sent_text(_fixture_market_card("market-raw-long-provider-text"))
-
-    assert text.startswith("⚪ <b>市场原文 · 原文 · BTC-PERP</b>\n\njs-2 Open Long BTC $798.18K , Price $79,817.87 ")
-    assert text.endswith(
-        "场所未知 · smart_money · 未结构化，保留供应商原文\n\n"
-        "事件时间  00:27\n"
-        "推送时间  17:27\n"
-        "🔗 <b>来源</b>  smart_money · 1 条报道"
-    )
-    assert "🧭" not in text
-    assert "暂无" not in text
-
-
 @pytest.mark.parametrize(
     ("detail_url", "linked"),
     [
@@ -1819,7 +1805,7 @@ def test_a_raw_card_carries_the_providers_own_text_and_no_judgment() -> None:
 )
 def test_a_market_cards_console_button_keeps_the_origin_the_operator_configured(detail_url: str, linked: bool) -> None:
     card = replace(
-        _fixture_market_card("market-oi-action-change-billions"),
+        _fixture_market_card("market-oi-followup-billions"),
         link=ReaderCardLink(url=detail_url, label="打开明细"),
     )
 
@@ -1840,7 +1826,7 @@ def test_a_market_card_shows_the_market_number_its_model_carries() -> None:
 
     from tracefold.news.reader_card import ReaderCardQuote
 
-    fixture = _fixture_market_card("market-oi-action-change-billions")
+    fixture = _fixture_market_card("market-oi-followup-billions")
     card = replace(
         fixture,
         quotes=(
@@ -1855,7 +1841,7 @@ def test_a_market_card_shows_the_market_number_its_model_carries() -> None:
     text = _sent_text(card)
 
     assert text == (
-        "🔵 <b>持仓异动 · 动作变化 · BTC</b>\n\n"
+        "🔵 <b>持仓异动 · 跟进 · BTC</b>\n\n"
         "sideways 0% · 01:00\n"
         "OI $12.40B · binance · oi_signal_v1|opennews_oi_source_v1|300000\n"
         "行情 BTC $74,553.10 24h +7.91%\n"

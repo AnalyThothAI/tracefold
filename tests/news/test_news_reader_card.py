@@ -4,7 +4,7 @@ Two claims, both about characters rather than structure:
 
 * **Nothing a reader sees moved, except where this branch says it does.** Every card in
   `reader_card_production_cards.json` is a card production actually sent, with the inputs that
-  produced it. The News first card and all four market families are rebuilt through `ReaderCard` and
+  produced it. The News first card and all three market families are rebuilt through `ReaderCard` and
   the Feishu serializer and compared as JSON values -- key order is PostgreSQL's, since the frozen
   snapshot is `jsonb`, so a canonical dump is the byte comparison that means anything here. #562
   PR-G is the first change to move a sent card's characters, and `DELIBERATE_CHANGES` is the whole
@@ -19,11 +19,16 @@ Two claims, both about characters rather than structure:
   one surface without the other fails both.
 
 The fixture separates two things that are easy to blur. `card` is what this repository renders for
-those inputs and is asserted for all 48. `sent_card` is the JSON the provider received; it matches
-`card` for the 16 cards sent by today's code, and differs for 32 older market cards in exactly two
+those inputs and is asserted for all 46. `sent_card` is the JSON the provider received; it matches
+`card` for the 16 cards sent by today's code, and differs for 30 older market cards in exactly two
 already-shipped ways -- the #553 header-separator fix, and the same change's rule that a relative
 `/news/market/<id>` is not a link a Feishu client can follow, so no button is offered. Their markdown
 body, which is everything the reader reads, is asserted identical to what was sent.
+
+The two unstructured cards production sent are no longer in the corpus. #582 §3.2 deleted the branch
+that prepared them -- an unstructured record is stored, readable and never a card -- so there is no
+renderer left to rebuild them with, and a fixture asserting a card this repository cannot produce
+would be asserting the fixture to itself. Their delivery rows stay in production as receipts.
 """
 
 from __future__ import annotations
@@ -54,17 +59,20 @@ QUOTED_CARDS: Final[dict[str, Any]] = json.loads(
 MONEY_FORMAT: Final[dict[str, Any]] = json.loads((FIXTURES / "card_money_format.json").read_text(encoding="utf-8"))
 
 
-# Every line #562 PR-G changes about a card already written down, by the entry that carries it. The
-# two corpora keyed here are records -- `sent_card` is what a provider received, and every branch
-# `card` is what the renderers on 7b9628ca0 wrote -- so neither is edited; what this branch renders
-# differently is named here instead, one whole line at a time, and any other difference still fails.
-# An empty replacement is a line this branch no longer prints.
+# Every line this repository now changes about a card already written down, by the entry that carries
+# it. The two corpora keyed here are records -- `sent_card` is what a provider received, and every
+# branch `card` is what the renderers on 7b9628ca0 wrote -- so neither is edited; what this branch
+# renders differently is named here instead, one whole line at a time, and any other difference still
+# fails. The header title is one such line. An empty replacement is a line this branch no longer
+# prints.
 #
-# Three reasons, and no fourth: the money rule (a market card's dollar figures are the quote line's
+# Four reasons, and no fifth: the money rule (a market card's dollar figures are the quote line's
 # formatter, so a reader is not asked to read `开多 $200840` three lines above `行情 ARB $0.1938`),
-# the Close caveat (printed by a card that printed a Close), and the largest reported amount (chosen
+# the Close caveat (printed by a card that printed a Close), the largest reported amount (chosen
 # as a number: the three-report liquidation also reported `1000000`, and `max` over the text
-# answered `980000` because `"9" > "1"`).
+# answered `980000` because `"9" > "1"`), and the closing card's own qualifier -- `action_change` is
+# smart money's second card of a round and it has exactly one meaning, so it is headed `平仓` rather
+# than by the mechanism that noticed (#582 §3.1).
 DELIBERATE_CHANGES: Final[dict[str, tuple[tuple[str, str], ...]]] = {
     "26f40a0bf365ddeb483e7b5c34dd7aef": (("最大单笔来源报告金额 $1000000", "最大单笔来源报告金额 $1,000,000.00"),),
     "21ba1086b3635b00637114f76d8d79ce": (("最大单笔来源报告金额 $743120", "最大单笔来源报告金额 $743,120.00"),),
@@ -73,6 +81,7 @@ DELIBERATE_CHANGES: Final[dict[str, tuple[tuple[str, str], ...]]] = {
             "开多 $160180 · 开多 · 平多 $7500.25 · 开空 $1000000",
             "开多 $160,180.00 · 开多 · 平多 $7,500.25 · 开空 $1,000,000.00",
         ),
+        ("聪明钱 · 动作变化", "聪明钱 · 平仓"),
     ),
     "market-smart-money-verified-address": (
         ("开空 $2500000 · 平空 $1250000", "开空 $2,500,000.00 · 平空 $1,250,000.00"),
@@ -92,14 +101,12 @@ def _canonical(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
-# Every market card whose figures this repository writes. The `raw` family is excluded because it
-# writes none: its body is the provider's own sentence, `js-2 Open Long BTC $798.18K` and all, quoted
-# rather than formatted -- rewriting a number inside quoted text would change what the source said.
+# Every market card whose figures this repository writes, which is every market card there is.
 FORMATTED_MARKET_CARDS: Final[list[dict[str, Any]]] = [
     entry
     for corpus in (PRODUCTION_CARDS, BRANCH_CARDS["entries"], QUOTED_CARDS["entries"])
     for entry in corpus
-    if entry["source"] == "market" and entry["inputs"]["track"]["family"] != "raw"
+    if entry["source"] == "market"
 ]
 
 
@@ -115,14 +122,20 @@ def _as_this_branch_renders(entry: dict[str, Any], recorded: dict[str, Any]) -> 
     if not changes:
         return recorded
     card = json.loads(json.dumps(recorded))
-    for element in card["elements"]:
-        if element["tag"] != "markdown":
+    title = card["header"]["title"]
+    for before, after in changes:
+        if title["content"] == before:
+            # A header is rewritten, never dropped: a card with no header is not a card.
+            assert after, entry["id"]
+            title["content"] = after
             continue
-        lines = element["content"].split("\n")
-        for before, after in changes:
+        for element in card["elements"]:
+            if element["tag"] != "markdown":
+                continue
+            lines = element["content"].split("\n")
             index = lines.index(before)
             lines[index : index + 1] = [after] if after else []
-        element["content"] = "\n".join(lines)
+            element["content"] = "\n".join(lines)
     return card
 
 
@@ -171,10 +184,9 @@ def test_the_corpus_covers_both_renderers_and_says_which_cards_are_whole_matches
         ("news", None, None),
         ("market", "oi", "first"),
         ("market", "liquidation", "first"),
-        ("market", "smart_money", "raw"),
     }
     whole = [entry for entry in PRODUCTION_CARDS if entry["reproduces_sent_card"]]
-    assert len(PRODUCTION_CARDS) == 48
+    assert len(PRODUCTION_CARDS) == 46
     assert len(whole) == 16
     assert {entry["source"] for entry in whole} == {"news", "market"}
     for entry in whole:
@@ -187,14 +199,13 @@ def test_the_corpus_covers_both_renderers_and_says_which_cards_are_whole_matches
     ids=lambda entry: entry["id"][:12],
 )
 def test_a_card_sent_before_the_553_fix_differs_only_where_that_fix_changed_it(entry: dict[str, Any]) -> None:
-    """The 32 older market cards, held to the two named differences and byte-equal everywhere else.
+    """The 30 older market cards, held to the two named differences and byte-equal everywhere else.
 
     #553 changed exactly two things about a market card. The header gained its separator: the old join
-    wrote `持仓异动 FLOCK` and `市场原文· 原文 —`, where a missing space, the qualifier's own separator
-    and a `—` standing in for an instrument that was never going to be named were three pieces of
-    punctuation doing a word's job. And a relative `/news/market/<id>` stopped being offered as a
-    button, because no Feishu or Telegram client can follow one — the note line carries the item id
-    instead, which is what an operator needs to reach the same page.
+    wrote `持仓异动 FLOCK`, a family and an instrument with no separator between them. And a relative
+    `/news/market/<id>` stopped being offered as a button, because no Feishu or Telegram client can
+    follow one — the note line carries the item id instead, which is what an operator needs to reach
+    the same page.
 
     Asserting "the template matches and the tags differ" would have passed for a card that had lost a
     line. This states each difference and requires everything else to be identical.
@@ -205,12 +216,7 @@ def test_a_card_sent_before_the_553_fix_differs_only_where_that_fix_changed_it(e
 
     rebuilt_title = rebuilt["header"]["title"]["content"]
     sent_title = sent["header"]["title"]["content"]
-    if sent_title.endswith(" —"):
-        # A raw report names no instrument. The old header printed the placeholder and swallowed the
-        # space before the qualifier's separator; both are gone, and nothing else about it moved.
-        assert sent_title == f"{rebuilt_title.replace(' · ', '· ', 1)} —"
-    else:
-        assert rebuilt_title.replace(" · ", " ") == sent_title
+    assert rebuilt_title.replace(" · ", " ") == sent_title
     assert rebuilt["header"]["template"] == sent["header"]["template"]
     assert rebuilt["config"] == sent["config"]
 
@@ -236,7 +242,7 @@ def test_a_card_sent_before_the_553_fix_differs_only_where_that_fix_changed_it(e
 def test_a_card_branch_production_did_not_exercise_renders_as_it_did_before(entry: dict[str, Any]) -> None:
     """The same claim as the production corpus, for the branches that corpus never reached.
 
-    Every sent market card is a single-observation `first` or `raw`, so the smart-money account line,
+    Every sent market card is a single-observation `first`, so the smart-money account line,
     its action timeline, the last-four bound on that line, a spanned clock range, the escalation
     qualifier and both degraded News shapes had no byte coverage at all — and #562 PR-C edits exactly
     those. Each expected card here was written by the renderers on `main` at the commit this branch is
@@ -253,7 +259,7 @@ def test_the_branch_corpus_names_the_base_it_was_generated_from_and_covers_what_
     # What this repository writes for those inputs, which the test above ties to the record plus the
     # named changes; asserting the record here would only restate the fixture to itself.
     lines = {entry["id"]: _body(_render(entry)) for entry in BRANCH_CARDS["entries"]}
-    assert len(lines) == len(BRANCH_CARDS["entries"]) == 17
+    assert len(lines) == len(BRANCH_CARDS["entries"]) == 16
     # The action line is bounded at four even though the card covers six reports (#553 §5.2).
     six = lines["market-smart-money-action-change-six-reports"]
     assert "动作变化 3 次 · 首 平空 → 末 开空" in six
@@ -328,7 +334,7 @@ def test_the_two_older_corpora_are_untouched_by_the_market_quote() -> None:
         for entry in corpus
         if entry["source"] == "market"
     ]
-    assert len(market) == 46
+    assert len(market) == 43
     for entry in market:
         assert "quotes" not in entry["inputs"]
         for row in entry["inputs"]["observations"]:
@@ -350,9 +356,9 @@ def test_every_named_change_belongs_to_a_card_and_is_the_only_one_this_branch_ma
     assert set(DELIBERATE_CHANGES) <= set(recorded)
     assert len(DELIBERATE_CHANGES) == 6
     for entry_id, changes in DELIBERATE_CHANGES.items():
-        before = _body(recorded[entry_id])
-        after = _body(_as_this_branch_renders({"id": entry_id}, recorded[entry_id]))
-        assert after != before
+        rebuilt = _as_this_branch_renders({"id": entry_id}, recorded[entry_id])
+        assert _canonical(rebuilt) != _canonical(recorded[entry_id])
+        before, after = _body(recorded[entry_id]), _body(rebuilt)
         assert len(after.split("\n")) == len(before.split("\n")) - sum(1 for _, line in changes if not line)
     # And the money invariant reaches the three families that carry a formatted figure at all.
     assert len(FORMATTED_MARKET_CARDS) == 50

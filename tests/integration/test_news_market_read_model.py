@@ -16,7 +16,12 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.liquidations import parse_liquidation
-from tracefold.news.market_notifications import REASON_HISTORICAL, REASON_UNPROCESSED
+from tracefold.news.market_notifications import (
+    REASON_HISTORICAL,
+    REASON_MERGING,
+    REASON_UNPROCESSED,
+    REASON_UNSTRUCTURED,
+)
 from tracefold.news.oi_signals import measurement_definition, oi_source_contract
 from tracefold.news.smart_money import parse_smart_money
 from tracefold.news.source_contracts import MARKET_PROVIDER
@@ -194,6 +199,53 @@ def test_every_group_reports_parse_and_notification_state_as_two_independent_pai
     # reconnection look like a market event, so it is history at admission rather than a to-do. Note
     # that its *parse* pair is identical to the live OI record's: neither pair follows the other.
     assert notification_pairs["oi-recovered"] == ("historical", REASON_HISTORICAL)
+
+
+def test_a_processed_unstructured_record_is_not_alerted_rather_than_merging(conn) -> None:
+    """#582 §3.2. The loop groups it, marks it processed, and writes no track for it.
+
+    The page must tell those two apart, and the only thing that distinguishes them is whether a track
+    row exists at all: `merging` promises a card that is being prepared, and for an unstructured
+    record none ever will be. The contrast is written on one database -- a parsed OI observation whose
+    group has a track holding nothing at this instant reads `merging`, and the raw record beside it
+    reads `not_alerted`.
+    """
+
+    repos = repositories_for_connection(conn)
+    news = repos.news
+    with repos.transaction():
+        _item(news, "raw-withdraw", kind="smart_money", at_ms=NOW, parsed=False, strategy_id="2026")
+        news.market_mark_processed(item_ids=["raw-withdraw"], group_key="raw|smart_money|raw-withdraw")
+        _item(news, "oi-merging", kind="oi", at_ms=NOW + 1)
+        _oi(news, "oi-merging", venue="binance", symbol="BTC", at_ms=NOW + 1)
+        oi_group = "oi|opennews|binance|BTC|" + str(
+            measurement_definition(oi_source_contract({"strategies": [{"id": "1019"}]}))
+        )
+        news.market_mark_processed(item_ids=["oi-merging"], group_key=oi_group)
+        conn.execute(
+            """
+            INSERT INTO news_market_tracks (
+              group_key, market_kind, family, last_observed_at_ms, last_observed_item_id,
+              pending_reason, round_started_at_ms, created_at_ms, updated_at_ms
+            ) VALUES (%s, 'oi', 'oi', %s, 'oi-merging', '', %s, %s, %s)
+            """,
+            (oi_group, NOW + 1, NOW + 1, NOW, NOW),
+        )
+
+    pairs = {
+        group["latest"]["item_id"]: (group["notification_status"], group["notification_reason"])
+        for group in _groups(news)
+    }
+    assert pairs == {
+        "raw-withdraw": ("not_alerted", REASON_UNSTRUCTURED),
+        "oi-merging": ("merging", REASON_MERGING),
+    }
+
+    detail = news.market_item(item_id="raw-withdraw")
+    assert detail is not None
+    assert (detail["notification_status"], detail["notification_reason"]) == ("not_alerted", REASON_UNSTRUCTURED)
+    assert detail["notification_delivery"] is None
+    assert detail["notify_group_key"] == "raw|smart_money|raw-withdraw"
 
 
 def test_an_unparsed_record_is_its_own_group_and_never_merges_with_another_unknown(conn) -> None:

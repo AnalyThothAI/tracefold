@@ -1074,22 +1074,37 @@ def test_every_measured_venue_and_both_liquidation_strategies_store_a_typed_fact
     conn.commit()
 
 
+# The provider record id is written down per case rather than derived from the text. `hash()` is
+# salted per process, so `9_530_000 + abs(hash(text)) % 1000` gave three ids that were distinct in
+# most runs and collided in some -- and every case of this module shares one database, so the second
+# insert of a colliding pair hit `news_market_smart_money_item_key` and failed the run rather than
+# the assertion (#584, main run 34011915731). A test id is an input; it is not a place for entropy.
 @pytest.mark.parametrize(
-    ("text", "expected"),
+    ("hit_id", "text", "expected"),
     [
-        ("js-2 Open Long SOL $482,113.55 , Price $137.01", ("open", "long", None)),
-        ("js-2 Close Short SOL $482,113.55 , Price $137.01 , PNL -$8,204.10", ("close", "short", "-8204.10")),
-        ("js-2 Close Long SOL $482,113.55 , Price $137.01 , PNL +$1,204.10", ("close", "long", "1204.10")),
+        (9_530_001, "js-2 Open Long SOL $482,113.55 , Price $137.01", ("open", "long", None)),
+        (
+            9_530_002,
+            "js-2 Close Short SOL $482,113.55 , Price $137.01 , PNL -$8,204.10",
+            ("close", "short", "-8204.10"),
+        ),
+        (
+            9_530_003,
+            "js-2 Close Long SOL $482,113.55 , Price $137.01 , PNL +$1,204.10",
+            ("close", "long", "1204.10"),
+        ),
     ],
 )
-def test_smart_money_open_close_and_pnl_reports_are_typed_with_their_address(conn, text: str, expected: Any) -> None:
+def test_smart_money_open_close_and_pnl_reports_are_typed_with_their_address(
+    conn, hit_id: int, text: str, expected: Any
+) -> None:
     repos = repositories_for_connection(conn)
     action, side, pnl = expected
     address = "0x" + "9" * 40
     result = _admit_market_frame(
         repos,
         _market_frame(
-            hit_id=9_530_000 + abs(hash(text)) % 1000,
+            hit_id=hit_id,
             text=text,
             strategy_id=2026,
             strategy_name="聪明钱监控",
@@ -1130,8 +1145,12 @@ def test_smart_money_open_close_and_pnl_reports_are_typed_with_their_address(con
     conn.commit()
 
 
-def test_a_withdraw_report_is_stored_as_a_raw_card_and_stays_visible(conn) -> None:
-    """The measured 2026 sample that is not a position report at all. It is still account activity."""
+def test_a_withdraw_report_is_stored_as_a_raw_record_and_stays_visible(conn) -> None:
+    """The measured 2026 sample that is not a position report at all. It is still account activity.
+
+    Admission stores it and the page reads it, which is unchanged by #582 §3.2: what that deleted is
+    the *card* an unstructured record used to earn, never the record itself.
+    """
 
     repos = repositories_for_connection(conn)
     result = _admit_market_frame(

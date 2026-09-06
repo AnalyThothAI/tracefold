@@ -2833,7 +2833,7 @@ is one multiplier defined in `liquidations.py` and read from there by
 `smart_money.py`. The smart-money parser refused the suffix until #553, on a
 comment that called it unmeasured: the provider writes `$798.18K` and `$2.21M`
 routinely, only 8 of the 113 distinct titles in the retained window parsed, and
-every other report went out as its own raw card outside the account grouping.
+every other report was an unstructured record outside the account grouping.
 An abbreviated *price* is still refused — the provider spells prices in full,
 so one is a drifted template rather than a figure to pick a multiplier for.
 
@@ -2883,22 +2883,27 @@ it.
 
 `/api/news/market` and `/api/news/market/{item_id}` are the whole reader surface;
 `docs/CONTRACTS.md` pins their grammar. `notification_status` is reported beside
-`parse_status` and never folded into it: a raw card that was delivered and a
-parsed card that was not are both ordinary outcomes, and one combined column
-would have to misreport one of them.
+`parse_status` and never folded into it: a record the parser could not read and a
+parsed record no card spoke for are both ordinary outcomes, and one combined
+column would have to misreport one of them.
 
 ### The market notification loop
 
 One loop, one tick, one card at a time (#553 PR-2). `tracefold/news/market_notifications.py`
-holds three direct rule branches — OI, liquidation, smart money — and a fourth
-that prints the provider's own line when no template could be proved. There is no
+holds three direct rule branches — OI, liquidation, smart money. There is no
 Policy object, no Strategy registry, no per-symbol task or timer and no model: an
 abstraction over three branches would need a consumer this repository does not
-have.
+have. A record whose template no parser could prove is not a fourth branch: it is
+marked processed with its own group key and given no track, no intent and no
+card, and the page reports it `not_alerted` /
+`unstructured_record_not_alerted`. It used to be a card outside every suppression
+rule, and the four such cards production sent — two `Deposit` lines and two BTC
+opens the parser has since learned to read — are the whole of what that idea
+produced (#582 §3.2).
 
 Two durable states, each answering one question. `news_market_tracks` answers
 *when is this group worth interrupting a reader again* — the last observation,
-the anchor the last delivered card covered, the current action, the next due
+the anchor the last delivered card covered, the round it is in, the next due
 time. `news_market_deliveries` answers *what happened to one card* — a stable
 `delivery_key` derived from the group, the trigger Item and the reason, the
 snapshot frozen at the first attempt, the attempts, and the receipt or the error.
@@ -2909,7 +2914,8 @@ card speak for" is answered by the Items themselves.
 A card speaks for one alert round and no further back.
 `news_market_tracks.round_started_at_ms` is where the group's current round began
 on the host's receive clock — the observation that opened a first card after the
-4 h OI quiet reset, or the first report of the current 60 s follow-up window —
+4 h OI quiet reset, the first report of the current 60 s liquidation follow-up
+window, or the first smart-money observation of the current 24 h round —
 and `market_adopt_unclaimed` never reaches below it. Without that bound the first
 production MARSCOIN card covered an OI observation held below the follow-up
 threshold six hours earlier together with the one that opened the new round, and
@@ -2984,8 +2990,7 @@ reported amount, a reported price, a PNL, a quote — is `card_format.money`,
 exact to the cent with thousands separators and the sign outside the currency
 mark. The single exception is the OI *value* line, which is `usd_compact`
 (`$1.20B`) because an open-interest total is a magnitude whose last six digits
-say nothing a reader acts on. A `raw` card formats nothing at all: its body is
-the provider's own sentence, quoted. A liquidation group's largest reported
+say nothing a reader acts on. A liquidation group's largest reported
 amount is chosen by comparing the reports as numbers —
 `MarketObservation.notional_amount` is the one place that text becomes a
 quantity — because `max` over the stored text answered `980000` for a group that

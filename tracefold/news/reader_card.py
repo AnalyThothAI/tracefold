@@ -25,7 +25,7 @@ from typing import Any, Final, Literal
 from . import card_format as fmt
 from .outcome import DIRECTION_ZH, MAGNITUDE_ZH, NOVELTY_ZH
 
-CardFamily = Literal["news", "oi", "liquidation", "smart_money", "raw"]
+CardFamily = Literal["news", "oi", "liquidation", "smart_money"]
 # The model's own judgment about the news, and `none` for a card that carries no judgment at all --
 # a degraded News card or any market card. A channel maps `family + tone` to its colour or icon.
 CardTone = Literal["bullish", "bearish", "neutral", "unclear", "none"]
@@ -35,15 +35,11 @@ TITLE_MAX: Final = 100
 # How many assets one card names, on the facts line and on the quote line alike. A card is a summary;
 # the fifth asset is on the page it links to.
 CARD_ASSETS_MAX: Final = 4
-# The provider's own line on an unstructured card. The rest is on the detail page.
-RAW_TEXT_MAX: Final = 220
-
 # The family's word, for the families whose card is not headed by its own headline.
 FAMILY_TITLE: Final[dict[str, str]] = {
     "oi": "持仓异动",
     "liquidation": "强平",
     "smart_money": "聪明钱",
-    "raw": "市场原文",
 }
 # OI's own direction vocabulary. Deliberately not the verdict's `DIRECTION_ZH`: an open-interest
 # change rises or falls, it is not bullish or bearish, and a market card claims no judgment.
@@ -95,7 +91,6 @@ _LIQUIDATION_NOTE: Final = "各来源报告金额不相加：没有可信底层�
 # stops being read on the cards that do need it.
 _SMART_MONEY_NOTE: Final = "Close 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。"
 _SMART_MONEY_UNVERIFIED: Final = "（来源标签，非已核实地址）"
-_RAW_NOTE: Final = "未结构化，保留供应商原文"
 
 _NOTE_PREFIX: Final[dict[str, str]] = {"news": "Tracefold", "market": "Tracefold 市场"}
 _NOTE_ID_MAX: Final[dict[str, int]] = {"news": 8, "market": 24}
@@ -243,10 +238,11 @@ class ReaderCard:
         A News card is headed by its own headline, with the escalation qualifier in front of it. A
         market card is headed by the family, the qualifier that applies, and the instrument when one
         is known -- every part optional except the family, and the separator belonging to the join
-        rather than to any one part. The first raw smart-money cards in production were headed
-        `市场原文· 原文 —`: an unstructured report names no instrument, and the missing space, the
-        qualifier's own separator and the `—` placeholder were three pieces of punctuation standing
-        in for a word that was never going to be there (#553). An absent field is absent.
+        rather than to any one part. Production headed its first unstructured cards
+        `市场原文· 原文 —`: that report named no instrument, and the missing space, the qualifier's
+        own separator and the `—` placeholder were three pieces of punctuation standing in for a word
+        that was never going to be there (#553). An absent field is absent -- a smart-money card whose
+        instrument the parser did not normalize is headed `聪明钱` and nothing else.
         """
 
         if self.header.family == "news":
@@ -388,10 +384,10 @@ class ReaderCard:
                 quote,
                 _SMART_MONEY_NOTE if market.reports_close() else "",
             ]
-        return [
-            fmt.clip(self.lead, RAW_TEXT_MAX),
-            " · ".join(part for part in (venue, market.kind, _RAW_NOTE) if part),
-        ]
+        # Every family that has market lines is above. A News card has none and never asks: its body
+        # is its own lead and facts line, and a market family that stopped existing prints nothing
+        # rather than a line about a card that is not being sent (#582 §3.2).
+        return []
 
     def _reported_line(self) -> str:
         """`来源报告价 $3,120.50 · 已实现 PNL -$412.75`, or nothing when the report carried neither.
@@ -495,7 +491,6 @@ __all__ = [
     "NOVELTY_ZH",
     "OI_DIRECTION_ZH",
     "QUOTE_LINE_PREFIX",
-    "RAW_TEXT_MAX",
     "SIDE_ZH",
     "TITLE_MAX",
     "UNTRADEABLE_NOTICE_ZH",

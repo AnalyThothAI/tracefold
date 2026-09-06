@@ -2,13 +2,14 @@
 
 Everything #553 §4 asks for is a direct branch here. There is no Policy object, no Strategy registry,
 no per-symbol task or timer, no model: OI, liquidation and smart money are three known shapes with
-three written rules, and a fourth branch prints the provider's own line when nothing could be proved.
-An abstraction over three branches would need a consumer this repository does not have.
+three written rules. An abstraction over three branches would need a consumer this repository does
+not have. A record whose template could not be proved is not a fourth rule: it is stored, grouped and
+readable, and no card is ever prepared for it (#582 §3.2).
 
 Two durable states, each with one owner (§5.1):
 
 * `news_market_tracks` answers *when is this group worth interrupting a reader again* -- the last
-  observation, the anchor the last card actually covered, the current action, the next due time.
+  observation, the anchor the last card actually covered, the round it is in, the next due time.
 * `news_market_deliveries` answers *what happened to one card* -- a stable `delivery_key`, the frozen
   snapshot, the attempts, the receipt or the error.
 
@@ -69,10 +70,15 @@ OI_QUIET_RESET_MS: Final = 4 * 60 * 60_000
 # A follow-up needs the absolute change to reach twice the anchor's -- the observation the last card
 # covered, never a running high-water mark.
 OI_FOLLOWUP_MULTIPLE: Final = 2
-# Liquidation and smart-money follow-ups share one window, anchored at the start of the last send
-# attempt so a stream of new reports cannot push it further away.
+# A liquidation follow-up waits out one window, anchored at the start of the last send attempt so a
+# stream of new reports cannot push it further away.
 LIQUIDATION_WINDOW_MS: Final = 60_000
-SMART_MONEY_WINDOW_MS: Final = 60_000
+# One smart-money round is a day of one account's activity in one instrument. Source 2026 reports a
+# line per fill at about one a minute, so a window the length of that cadence closed just as the next
+# fill arrived and every record became its own card -- 17 cards in three hours, every one of them
+# covering a single report (#582 §1). A round is not a window to wait out: both of its cards are
+# immediate, and what the round bounds is how often the same account can interrupt a reader.
+SMART_MONEY_ROUND_MS: Final = 24 * 60 * 60_000
 
 # A provably-not-sent retryable failure is retried on the same intent: at most three real attempts,
 # waiting these gaps in PostgreSQL rather than holding the send entry.
@@ -82,10 +88,15 @@ SEND_ATTEMPTS_MAX: Final = 3
 # How much of one card stays bounded. The full timeline is always on the detail page.
 CARD_METRIC_LINES_MAX: Final = 4
 
+# `raw` is a classification of a record, not a card family: an unstructured record is stored and
+# readable and is never notified (#582 §3.2).
 MarketFamily = Literal["oi", "liquidation", "smart_money", "raw"]
-TriggerReason = Literal["first", "followup", "action_change", "raw"]
+# What this loop can write. `news_market_deliveries_reason_check` and the API's own Literal still
+# accept `raw`, because the four cards production sent under that reason are receipts and a receipt
+# is not rewritten by a rule change.
+TriggerReason = Literal["first", "followup", "action_change"]
 DeliveryState = Literal["pending", "sending", "sent", "failed", "unknown", "unavailable"]
-TRIGGER_REASONS: Final[tuple[TriggerReason, ...]] = ("first", "followup", "action_change", "raw")
+TRIGGER_REASONS: Final[tuple[TriggerReason, ...]] = ("first", "followup", "action_change")
 DELIVERY_STATES: Final[tuple[DeliveryState, ...]] = (
     "pending",
     "sending",
@@ -115,13 +126,17 @@ REASON_MERGING: Final = "merging_into_prepared_card"
 REASON_OI_BELOW_THRESHOLD: Final = "oi_change_below_followup_threshold"
 REASON_OI_ZERO_UNCHANGED: Final = "oi_anchor_zero_and_unchanged"
 REASON_LIQUIDATION_WINDOW: Final = "liquidation_followup_window_open"
-REASON_SMART_MONEY_WINDOW: Final = "smart_money_followup_window_open"
+REASON_SMART_MONEY_ROUND: Final = "smart_money_round_open"
 REASON_SENDER_UNAVAILABLE: Final = "market_sender_unavailable"
 REASON_SEND_INTERRUPTED: Final = "market_send_interrupted"
 # The one reason that is final without a send: the round this observation was held in ended before a
 # card spoke for it, and the card that opened the next round covers that round only. Saying `merging`
 # here would promise a card that is never coming (#562 PR-F).
 REASON_ROUND_CLOSED: Final = "alert_round_ended_before_a_card"
+# The other final answer without a send, and the whole of what happens to an unstructured record: it
+# is recorded, it is readable, and no rule is holding it because no rule ever will (#582 §3.2). The
+# read model tells it apart by having no track row at all, which is what `track_reason is None` says.
+REASON_UNSTRUCTURED: Final = "unstructured_record_not_alerted"
 
 __all__ = [
     "BACKLOG_BATCH_MAX",
@@ -144,12 +159,13 @@ __all__ = [
     "REASON_ROUND_CLOSED",
     "REASON_SENDER_UNAVAILABLE",
     "REASON_SEND_INTERRUPTED",
-    "REASON_SMART_MONEY_WINDOW",
+    "REASON_SMART_MONEY_ROUND",
     "REASON_UNPROCESSED",
+    "REASON_UNSTRUCTURED",
     "SENDS_PER_TURN_MAX",
     "SEND_ATTEMPTS_MAX",
     "SEND_RETRY_BACKOFF_MS",
-    "SMART_MONEY_WINDOW_MS",
+    "SMART_MONEY_ROUND_MS",
     "TICK_SECONDS",
     "TRIGGER_REASONS",
     "ClaimedCard",
@@ -281,8 +297,6 @@ class MarketTrack:
     account_key: str | None = None
     account_verified: bool = False
     trader_label: str | None = None
-    current_action: str | None = None
-    current_position_side: str | None = None
     last_observed_at_ms: int = 0
     last_observed_item_id: str = ""
     anchor_state: str = ""
@@ -290,10 +304,11 @@ class MarketTrack:
     anchor_attempt_at_ms: int | None = None
     anchor_oi_change_bps: int | None = None
     anchor_direction: str | None = None
-    # What the last delivered card ended on, which is where the next card's action timeline starts.
-    # Not `current_action`: that is the newest observation, written every turn, and by the time a
-    # change card is claimed it already holds the new action -- so counting changes against it would
-    # report zero for exactly the card whose subject is the change (§4.4).
+    # What the last delivered card ended on, which is where the next card's action timeline starts,
+    # and -- for smart money -- the whole of what decides whether a Close is worth a second card this
+    # round. The newest observation is deliberately *not* kept beside it: a column written every turn
+    # already holds the new action by the time a card is claimed, so counting changes against it
+    # reported zero for exactly the card whose subject is the change (§4.4, #582 §3.1).
     anchor_action: str | None = None
     anchor_position_side: str | None = None
     open_delivery_key: str | None = None
@@ -321,8 +336,9 @@ class IntentPlan:
 class GroupTurn:
     """What one group's turn decided: its new track, and at most one new intent.
 
-    An intent here can also *replace* the group's un-started one, which is how an action change ends
-    a merging segment without waiting out the window it was merging into (§4.4).
+    An intent is only ever produced for a group that has none: while an un-started card exists every
+    observation merges into it, whatever the observation is, so nothing here replaces or discards a
+    card (§4.5, #582 §3.1).
     """
 
     track: MarketTrack
@@ -450,15 +466,13 @@ def group_identity(observation: MarketObservation) -> MarketTrack:
             account_verified=verified,
             trader_label=observation.trader_label,
         )
+    # An unstructured record is its own group and never becomes a track row. What the loop needs
+    # from it is the group key the page already keys it by -- `raw|<kind>|<item_id>` -- so the
+    # identity is returned and nothing is ever persisted from it (#582 §3.2).
     return MarketTrack(
         group_key="|".join(("raw", observation.market_kind, observation.item_id)),
         market_kind=observation.market_kind,
         family="raw",
-        provider=observation.provider,
-        source_venue=venue,
-        venue_known=venue is not None,
-        raw_instrument=observation.raw_instrument,
-        symbol=observation.symbol,
     )
 
 
@@ -517,9 +531,13 @@ def decide_group(
     """One group's turn: the new track state, and at most one new un-started card.
 
     `has_open_intent` is the whole of the "at most one un-started intent" rule (§4.5). While one
-    exists, every new observation merges into it -- the loop assigns them its `delivery_key` -- and no
-    second "first" card is invented. What the arriving records can still do is pull that card's due
-    time forward, which is how an action change ends a merging segment without waiting out a window.
+    exists, every new observation merges into it -- the loop assigns them its `delivery_key` -- and
+    no second card is invented and no existing one is replaced. What a record can still change is the
+    track: the round it belongs to, and the reason the page gives for holding it.
+
+    An unstructured record has no branch here at all. It is stored, it is on the page, and no card is
+    ever prepared for it, so there is nothing for a rule to decide and no track to keep: the loop
+    marks it processed and returns before this (#582 §3.2).
     """
 
     if not observations:
@@ -531,7 +549,7 @@ def decide_group(
         return _decide_liquidation(current, observations, now_ms=now_ms, has_open_intent=has_open_intent)
     if identity.family == "smart_money":
         return _decide_smart_money(current, observations, now_ms=now_ms, has_open_intent=has_open_intent)
-    return _decide_raw(current, observations, now_ms=now_ms, has_open_intent=has_open_intent)
+    return GroupTurn(track=current)
 
 
 def _carry(track: MarketTrack | None, identity: MarketTrack) -> MarketTrack:
@@ -550,8 +568,6 @@ def _carry(track: MarketTrack | None, identity: MarketTrack) -> MarketTrack:
         anchor_direction=track.anchor_direction,
         anchor_action=track.anchor_action,
         anchor_position_side=track.anchor_position_side,
-        current_action=track.current_action,
-        current_position_side=track.current_position_side,
         open_delivery_key=track.open_delivery_key,
         next_due_at_ms=track.next_due_at_ms,
         pending_reason=track.pending_reason,
@@ -683,90 +699,65 @@ def _decide_smart_money(
     now_ms: int,
     has_open_intent: bool,
 ) -> GroupTurn:
-    """§4.4. One account's stream, merged while it keeps doing the same thing.
+    """#582 §3.1. One account, one instrument, one day: at most a first card and a closing card.
 
-    A change of action or side ends the merging segment at once: the reader is told that the account
-    that was closing shorts is now opening them, without waiting out the 60 s window the previous
-    reports were merging into. Accounts never suppress one another -- they are different groups.
+    Source 2026 reports one line per fill, about one a minute, so the 60 s follow-up window this
+    replaces closed exactly as the next fill arrived: every record earned its own card, 11 TAO fills
+    became 10 cards, and none of them covered more than one report. Lengthening that window would
+    have delayed the reader without changing the shape; the shape is that a stream of fills by one
+    account in one instrument is *one* subject for a day.
+
+    So the round is the rule, and both of its cards are immediate. The first observation of a round
+    is a card whatever it says -- an account whose opening was never observed still closes 49
+    positions, and the reader is owed that. The one further card is the first `open -> close` of the
+    round, because "the account that was building this position has started closing it" is the change
+    worth a second interruption. Everything else updates the page and nothing more.
+
+    The side is deliberately not a trigger. Long to short is a different position, not a change of
+    intent about one, and treating it as a card is what made a drifting account report all day.
     """
 
-    changed = False
-    change_trigger = observations[0].item_id
+    intent: IntentPlan | None = None
+    reason = ""
+    round_start = track.round_started_at_ms
+    anchor_action = track.anchor_action
     for observation in observations:
+        # The host's own receive clock, never the provider's event time: a round bounds how often
+        # this process interrupts a reader, and a vendor stamp cannot be allowed to decide that.
+        new_round = round_start == 0 or observation.received_at_ms - round_start >= SMART_MONEY_ROUND_MS
         track = _observed(track, observation)
-        if track.current_action is not None and (
-            observation.action != track.current_action or observation.position_side != track.current_position_side
-        ):
-            if not changed:
-                change_trigger = observation.item_id
-            changed = True
-        track = replace(track, current_action=observation.action, current_position_side=observation.position_side)
-    if has_open_intent and not changed:
-        return GroupTurn(track=replace(track, pending_reason=REASON_MERGING))
-    if changed:
-        # The un-notified activity of the old segment and the new action belong on one ordered
-        # summary. When a card was already merging that segment this *replaces* it rather than
-        # arriving beside it: still one un-started card per group, and it says what it actually is.
-        # The loop discards the card it replaces -- never attempted, so it told nobody.
-        return GroupTurn(
-            track=replace(track, pending_reason=REASON_MERGING, next_due_at_ms=now_ms),
-            intent=IntentPlan("action_change", change_trigger, now_ms),
-        )
-    window_end = _window_end(track, SMART_MONEY_WINDOW_MS)
-    trigger = observations[0].item_id
-    reason: TriggerReason = "first" if track.anchor_state == "" else "followup"
-    # The same-action segment's own window is its round, exactly as liquidation's is. An action
-    # change is *not* a new round: the old segment's un-notified activity belongs on the change card
-    # with the new action, which is what §4.4 asks for, so the branch above moves nothing.
-    round_start = observations[0].received_at_ms
-    if window_end is None or now_ms >= window_end:
-        return GroupTurn(
-            track=replace(track, pending_reason=REASON_MERGING, next_due_at_ms=now_ms, round_started_at_ms=round_start),
-            intent=IntentPlan(reason, trigger, now_ms),
-        )
+        if new_round:
+            round_start = observation.received_at_ms
+            # A new round starts with a card whatever the action is, and its own state is a clean
+            # slate: nothing has been delivered *for this round* yet.
+            anchor_action = None
+        if has_open_intent or intent is not None:
+            # One un-started card per group, and it is never replaced. A close that arrives before
+            # the first card of the round has been sent rides on that card -- its action line lists
+            # both -- and the round has then had its close. That is the accepted outcome; no second
+            # card is issued afterwards to say the same thing (#582 §3.1).
+            reason = REASON_MERGING
+            continue
+        if new_round or track.anchor_state == "":
+            # `anchor_state == ""` is "nobody has been told about this group", which is also where a
+            # failed send leaves it: a card that failed told no one, so the next observation opens a
+            # first card rather than a follow-up to a card nobody saw.
+            intent = IntentPlan("first", observation.item_id, now_ms)
+            continue
+        if anchor_action == "open" and observation.action == "close":
+            # The one further card of the round. After it the anchor holds `close`, so the rest of
+            # the day's closes update the page instead of repeating it.
+            intent = IntentPlan("action_change", observation.item_id, now_ms)
+            continue
+        reason = REASON_SMART_MONEY_ROUND
     return GroupTurn(
         track=replace(
             track,
-            pending_reason=REASON_SMART_MONEY_WINDOW,
-            next_due_at_ms=window_end,
+            pending_reason=reason if intent is None else REASON_MERGING,
+            next_due_at_ms=now_ms if intent is not None else track.next_due_at_ms,
             round_started_at_ms=round_start,
         ),
-        intent=IntentPlan(reason, trigger, window_end),
-    )
-
-
-def _decide_raw(
-    track: MarketTrack,
-    observations: Sequence[MarketObservation],
-    *,
-    now_ms: int,
-    has_open_intent: bool,
-) -> GroupTurn:
-    """A record whose template could not be proved gets its own card, outside every suppression rule.
-
-    A `Withdraw`, a new provider action word or a drifted format is exactly the thing a reader most
-    needs to see, and the Open/Close window would swallow it. The group is the record itself, so one
-    record is one card and two unreadable records never merge into one (§4.4, §4.1.6).
-
-    That group key -- `raw|<kind>|<item_id>` -- is why there is no anchor test here. One record is the
-    whole group, so a group whose card has already been attempted never comes back with a second
-    observation to decide about, and the `anchor_state` arm that used to stand beside `has_open_intent`
-    could not be reached by any record the provider can send (#562 §5 row 13).
-    """
-
-    for observation in observations:
-        track = _observed(track, observation)
-    if has_open_intent:
-        return GroupTurn(track=replace(track, pending_reason=REASON_MERGING))
-    return GroupTurn(
-        track=replace(
-            track,
-            pending_reason=REASON_MERGING,
-            next_due_at_ms=now_ms,
-            # One record is the whole group, so its round starts and ends at itself.
-            round_started_at_ms=observations[0].received_at_ms,
-        ),
-        intent=IntentPlan("raw", observations[0].item_id, now_ms),
+        intent=intent,
     )
 
 
@@ -794,8 +785,13 @@ def notification_status(
 ) -> tuple[str, str]:
     """What the page says about one observation: an independent status and its reason.
 
-    Never folded into `parse_status`. A raw card that was delivered and a parsed card that was not are
-    both ordinary outcomes, and the two pairs answer two different questions (§6).
+    Never folded into `parse_status`. A record whose template was never proved and a parsed record no
+    card spoke for are both ordinary outcomes, and the two pairs answer two different questions (§6).
+
+    `track_reason is None` is the read model's LEFT JOIN finding no track row at all, which happens
+    for exactly one thing: an unstructured record, grouped and marked processed and deliberately
+    given no alerting state (#582 §3.2). It is not `pending_reason = ''` -- that is a real track whose
+    group is holding nothing at this instant -- and the two must not be conflated.
 
     `round_closed` is the read model's own comparison -- no card claimed this observation, and the
     alert round it belonged to started before it. There is no attempt to report and no rule still
@@ -813,6 +809,8 @@ def notification_status(
         return "unprocessed", REASON_UNPROCESSED
     if notify_state == NOTIFY_STATE_HISTORICAL:
         return "historical", REASON_HISTORICAL
+    if track_reason is None:
+        return "not_alerted", REASON_UNSTRUCTURED
     if round_closed:
         return "uncovered", REASON_ROUND_CLOSED
     return "merging", str(track_reason or REASON_MERGING)
@@ -825,11 +823,13 @@ def notification_status(
 # PR-A), so a reader cannot be shown the same number two ways on two cards.
 
 DETAIL_BUTTON_LABEL: Final = "打开明细"
+# What the qualifier says about *why* this card exists. `action_change` is smart money's second card
+# of a round and it has exactly one meaning -- the account that was opening has started closing -- so
+# it says 平仓 rather than naming the mechanism that noticed (#582 §3.1).
 _REASON_TITLE: Final[dict[str, str]] = {
     "first": "",
     "followup": "跟进",
-    "action_change": "动作变化",
-    "raw": "原文",
+    "action_change": "平仓",
 }
 
 
@@ -1214,6 +1214,17 @@ class MarketNotificationLoop:
         self, repos: Any, identity: MarketTrack, observations: Sequence[MarketObservation], now_ms: int
     ) -> int:
         news = repos.news
+        if identity.family == "raw":
+            # A record whose template could not be proved is stored, grouped and readable, and that
+            # is the whole of it: no track, no intent, no card. It used to be the fourth rule branch
+            # and bypassed every suppression -- a `Deposit` line went out on its own card the moment
+            # it arrived -- and the four such cards production sent are the entire history of the
+            # idea. The group key is still written so the page keys it the same way the read model
+            # does, and the absent track is what tells the page nothing is holding it (#582 §3.2).
+            news.market_mark_processed(
+                item_ids=[observation.item_id for observation in observations], group_key=identity.group_key
+            )
+            return 0
         row = news.market_track(group_key=identity.group_key, for_update=True)
         track = _track_from_row(row) if row is not None else None
         # The un-started intent is read from the deliveries themselves rather than from the track's
@@ -1226,13 +1237,11 @@ class MarketNotificationLoop:
         )
         created = 0
         if turn.intent is not None:
+            # A group that already has an un-started card produces no intent at all: every branch of
+            # `decide_group` is told so through `has_open_intent` and merges into the card that
+            # exists. So an intent here is always the group's only one, and no card is ever discarded
+            # to make room for another (#582 §3.1).
             key = delivery_key(identity.group_key, turn.intent.trigger_item_id, turn.intent.reason)
-            if open_key is not None and open_key != key:
-                # The card this one replaces has never been attempted, so it told nobody and is
-                # discarded rather than settled. Its observations lose their pointer with it -- the
-                # foreign key is `ON DELETE SET NULL` -- and are adopted by the new card below.
-                news.market_discard_delivery(delivery_key=open_key)
-                open_key = None
             if news.market_open_delivery(
                 delivery_key=key,
                 group_key=identity.group_key,
@@ -1557,8 +1566,6 @@ MARKET_TRACK_FIELDS: Final[tuple[str, ...]] = (
     "account_key",
     "account_verified",
     "trader_label",
-    "current_action",
-    "current_position_side",
     "last_observed_at_ms",
     "last_observed_item_id",
     "anchor_state",
