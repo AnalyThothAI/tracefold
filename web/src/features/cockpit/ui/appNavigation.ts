@@ -1,5 +1,10 @@
-import { newsMarketPath, newsPath, tradingPath } from "@shared/routing/paths";
-import { EventStreamIcon, TelemetryPulseIcon, TradeFlowIcon } from "@shared/ui/icons";
+import { newsMarketPath, newsPath, newsWalletsPath, tradingPath } from "@shared/routing/paths";
+import {
+  EventStreamIcon,
+  TelemetryPulseIcon,
+  TradeFlowIcon,
+  WhaleShareIcon,
+} from "@shared/ui/icons";
 import type { LucideIcon } from "lucide-react";
 
 export type AppNavigationItem = {
@@ -68,6 +73,18 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
         isActive: (pathname) => pathname === "/news/market",
         label: "市场事实",
         to: newsMarketPath(),
+      },
+      {
+        /*
+         * Its own destination rather than a filter on 市场事实 (#572 PR-3). The market list answers "what
+         * observations arrived, of every kind"; this one answers "what is the tape doing" — a roster, an
+         * ingest position and a receipt table that have no counterpart on any other market kind. No count:
+         * the page's own tiles state the day in full the moment it opens.
+         */
+        icon: WhaleShareIcon,
+        isActive: (pathname) => pathname === "/news/wallets",
+        label: "链上钱包",
+        to: newsWalletsPath(),
       },
       {
         /*

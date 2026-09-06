@@ -31,6 +31,18 @@ from ..chain_tape.contracts import (
     RosterSnapshot,
     TapeCursor,
 )
+from ..chain_tape.digest import (
+    DIGEST_CARDS_MAX,
+    DIGEST_COSTS_MAX,
+    DIGEST_KIND,
+    DIGEST_WALLETS_MAX,
+    DigestCardRow,
+    DigestOutcomeRow,
+    DigestWindowRows,
+    LastDigest,
+    TokenWindowFlow,
+    WalletWindowActivity,
+)
 from ..chain_tape.rules import CrowdingBuyer, PreviousCrowding, PreviousExit
 from ..wallet_contracts import (
     OUTCOME_GIVE_UP_MS,
@@ -58,7 +70,7 @@ INSERT INTO news_market_wallet_fills (
 ON CONFLICT (chain_id, tx_hash, log_index) DO NOTHING
 """
 
-_TAPE_STATE_SQL: Final = """
+WALLET_TAPE_STATE_SQL: Final = """
 SELECT high_water_block, high_water_tx_index, roster_version,
        last_outcome, last_error, last_success_at_ms, updated_at_ms,
        ignored_inbound_total, unknown_total,
@@ -262,6 +274,209 @@ SELECT d.delivery_key, d.settled_at_ms, e.token
 """
 
 
+# --- the four-hourly digest (#572 PR-3) -----------------------------------------------------------
+#
+# Five statements, six times a day. They are deliberately not one query: the digest states five
+# different kinds of fact -- the window's totals, what each wallet did, what each position costs, what
+# the rules sent and what the receipts came back with -- and a single joined statement would have to
+# fan one of them out across the others and then de-duplicate it in Python.
+
+# Where the last digest ended, and how many model calls the last day has already spent. Bounded to the
+# last day on purpose: a digest older than that starts a fresh window anyway, and the model-call budget
+# is a rolling day, so a scan of the whole retention would answer a question nobody asked.
+_LAST_DIGEST_SQL: Final = """
+SELECT max(window_to_ms) AS window_to_ms,
+       count(*) FILTER (WHERE (evidence ->> 'model_called') = 'true') AS model_calls
+  FROM news_market_wallet_events
+ WHERE kind = 'digest' AND window_to_ms >= %(since_ms)s
+"""
+
+# The window's own totals, and the chain the facts came from. A digest with no chain id has nothing to
+# be a digest about, which is the same condition `DigestWindowRows.is_empty` reports.
+_DIGEST_TOTALS_SQL: Final = """
+SELECT count(DISTINCT token) AS tokens,
+       max(chain_id) AS chain_id,
+       count(*) FILTER (WHERE kind <> 'transfer_out' AND usd IS NULL) AS unpriced
+  FROM news_market_wallet_fills
+ WHERE event_at_ms >= %(from_ms)s AND event_at_ms < %(to_ms)s
+"""
+
+_DIGEST_ACTIVITY_SQL: Final = """
+SELECT wallet,
+       count(*) FILTER (WHERE kind = 'buy') AS buys,
+       COALESCE(sum(usd) FILTER (WHERE kind = 'buy'), 0) AS buy_usd,
+       count(*) FILTER (WHERE kind = 'sell') AS sells,
+       COALESCE(sum(usd) FILTER (WHERE kind = 'sell'), 0) AS sell_usd,
+       count(*) FILTER (WHERE kind = 'transfer_out') AS transfers_out,
+       count(*) FILTER (WHERE kind <> 'transfer_out' AND usd IS NULL) AS unpriced,
+       COALESCE(sum(usd), 0) AS window_usd
+  FROM news_market_wallet_fills
+ WHERE event_at_ms >= %(from_ms)s AND event_at_ms < %(to_ms)s
+ GROUP BY wallet
+ ORDER BY window_usd DESC, wallet
+ LIMIT %(limit)s
+"""
+
+# The three cost bases are computed from these sums and nowhere else. The window halves answer "what
+# did this position do in the last four hours"; the unfiltered halves are every fill still retained for
+# the pair, which is what a net cash recovery line has to be measured against.
+_DIGEST_FLOWS_SQL: Final = """
+WITH active AS (
+  SELECT DISTINCT wallet, token
+    FROM news_market_wallet_fills
+   WHERE event_at_ms >= %(from_ms)s AND event_at_ms < %(to_ms)s
+     AND kind IN ('buy', 'sell')
+)
+SELECT f.wallet, f.token,
+       COALESCE(max(f.token_symbol), '') AS token_symbol,
+       max(f.token_decimals) AS token_decimals,
+       COALESCE(sum(f.usd) FILTER (
+         WHERE f.kind = 'buy' AND f.event_at_ms >= %(from_ms)s AND f.event_at_ms < %(to_ms)s), 0)
+         AS window_buy_usd,
+       COALESCE(sum(f.amount_raw) FILTER (
+         WHERE f.kind = 'buy' AND f.event_at_ms >= %(from_ms)s AND f.event_at_ms < %(to_ms)s), 0)
+         AS window_buy_raw,
+       COALESCE(sum(f.usd) FILTER (
+         WHERE f.kind = 'sell' AND f.event_at_ms >= %(from_ms)s AND f.event_at_ms < %(to_ms)s), 0)
+         AS window_sell_usd,
+       COALESCE(sum(f.usd) FILTER (WHERE f.kind = 'buy'), 0) AS lifetime_buy_usd,
+       COALESCE(sum(f.usd) FILTER (WHERE f.kind = 'sell'), 0) AS lifetime_sell_usd,
+       COALESCE(sum(f.amount_raw) FILTER (WHERE f.kind = 'buy'), 0) AS lifetime_buy_raw,
+       COALESCE(sum(f.amount_raw) FILTER (WHERE f.kind = 'sell'), 0) AS lifetime_sell_raw,
+       COALESCE(sum(f.amount_raw) FILTER (WHERE f.kind = 'transfer_out'), 0) AS lifetime_out_raw,
+       COALESCE(sum(f.usd) FILTER (
+         WHERE f.event_at_ms >= %(from_ms)s AND f.event_at_ms < %(to_ms)s), 0) AS window_usd
+  FROM news_market_wallet_fills f
+  JOIN active a ON a.wallet = f.wallet AND a.token = f.token
+ GROUP BY f.wallet, f.token
+ ORDER BY window_usd DESC, f.wallet, f.token
+ LIMIT %(limit)s
+"""
+
+_DIGEST_CARDS_SQL: Final = """
+SELECT e.kind, e.handle, COALESCE(e.token_symbol, '') AS token_symbol, e.ratio_bps, e.basis,
+       e.peer_wallets, e.usd, e.position_usd, e.tone,
+       COALESCE(d.state = 'sent', false) AS sent
+  FROM news_market_wallet_events e
+  LEFT JOIN news_items i ON i.item_id = e.item_id
+  LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
+ WHERE e.event_at_ms >= %(from_ms)s AND e.event_at_ms < %(to_ms)s AND e.kind <> 'digest'
+ ORDER BY e.event_at_ms
+ LIMIT %(limit)s
+"""
+
+# What the price receipts that landed in this window said, against the price the card itself printed.
+# `percentile_cont` skips the rows nothing could price, so `priced` is the honest denominator of the
+# median beside it.
+_DIGEST_OUTCOMES_SQL: Final = """
+WITH receipts AS (
+  SELECT o.horizon, o.price, COALESCE(e.mark_price, e.entry_price) AS reference
+    FROM news_market_wallet_outcomes o
+    JOIN news_market_deliveries d ON d.delivery_key = o.delivery_key
+    JOIN news_market_wallet_events e ON e.item_id = d.trigger_item_id
+   WHERE o.at_ms >= %(from_ms)s AND o.at_ms < %(to_ms)s
+)
+SELECT horizon,
+       count(*) AS receipts,
+       count(*) FILTER (WHERE price IS NOT NULL) AS priced,
+       percentile_cont(0.5) WITHIN GROUP (
+         ORDER BY CASE WHEN price IS NOT NULL AND reference IS NOT NULL AND reference > 0
+                       THEN (price / reference - 1) * 10000 END) AS median_bps
+  FROM receipts
+ GROUP BY horizon
+ ORDER BY horizon
+"""
+
+
+# --- the console read models (#572 PR-3) ----------------------------------------------------------
+#
+# `/api/news/wallets` is four bounded statements and `/api/news/wallets/cards` is one. Each of them
+# starts at a typed fact table on an indexed field and joins to the Item only where the Item is what is
+# being asked about, which is #570 A3's shape.
+
+WALLET_ROSTER_ROWS_SQL: Final = """
+SELECT roster_version, taken_at_ms, wallet, handle, followers, realized_pnl,
+       closed_trades, win_rate, profit_factor, open_cost, rank_quality, rank_whale, provider
+  FROM news_market_wallet_roster
+ WHERE roster_version = (SELECT max(roster_version) FROM news_market_wallet_roster)
+ ORDER BY COALESCE(rank_quality, 1000000), COALESCE(rank_whale, 1000000), wallet
+"""
+
+WALLET_FILLS_BY_KIND_SQL: Final = """
+SELECT kind,
+       count(*) AS fills,
+       COALESCE(sum(usd), 0)::text AS usd,
+       -- The same predicate the calibration query in OPERATIONS.md uses: a movement with no swap has
+       -- no cash leg by construction, so counting it as unpriced would report the tape's own
+       -- classification as a pricing failure.
+       count(*) FILTER (WHERE kind <> 'transfer_out' AND usd IS NULL) AS unpriced,
+       count(DISTINCT wallet) AS wallets,
+       count(DISTINCT token) AS tokens
+  FROM news_market_wallet_fills
+ WHERE event_at_ms >= %(from_ms)s
+ GROUP BY kind
+ ORDER BY kind
+"""
+
+WALLET_CARDS_BY_KIND_SQL: Final = """
+SELECT e.kind,
+       count(*) AS cards,
+       count(*) FILTER (WHERE d.state = 'sent') AS sent,
+       max(e.event_at_ms) AS last_event_at_ms
+  FROM news_market_wallet_events e
+  LEFT JOIN news_items i ON i.item_id = e.item_id
+  LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
+ WHERE e.event_at_ms >= %(from_ms)s
+ GROUP BY e.kind
+ ORDER BY e.kind
+"""
+
+# One page of cards with their receipts. The return is computed against the price the card itself
+# printed -- the chain's mark at the moment it fired, or the lead's entry for a crowding window -- and
+# clamped, because these pools print prices spanning thirty orders of magnitude and an unclamped ratio
+# of two of them does not fit the integer it crosses the wire as.
+WALLET_CARDS_SQL: Final = """
+WITH cards AS (
+  SELECT e.item_id, e.kind, e.handle, e.wallet, e.token, e.token_symbol, e.tone,
+         e.ratio_bps, e.basis, e.closed, e.peer_wallets, e.premium_bps,
+         e.usd, e.position_usd, e.entry_price, e.mark_price, e.evidence,
+         e.event_at_ms, e.window_from_ms, e.window_to_ms,
+         COALESCE(e.mark_price, e.entry_price) AS reference_price,
+         i.market_notify_delivery_key AS delivery_key
+    FROM news_market_wallet_events e
+    LEFT JOIN news_items i ON i.item_id = e.item_id
+   WHERE e.event_at_ms >= %(from_ms)s AND e.event_at_ms < %(to_ms)s
+   ORDER BY e.event_at_ms DESC
+   LIMIT %(limit)s
+)
+SELECT c.item_id, c.kind, c.handle, c.wallet, c.token, c.token_symbol, c.tone,
+       c.ratio_bps, c.basis, c.closed, c.peer_wallets, c.premium_bps,
+       c.usd::text AS usd, c.position_usd::text AS position_usd,
+       c.entry_price::text AS entry_price, c.mark_price::text AS mark_price,
+       c.event_at_ms, c.window_from_ms, c.window_to_ms,
+       c.delivery_key, d.state AS delivery_state, d.settled_at_ms,
+       o1.source AS outcome_1h_source,
+       CASE WHEN o1.price IS NOT NULL AND c.reference_price > 0
+            THEN LEAST(10000000, GREATEST(-10000000,
+                 round((o1.price / c.reference_price - 1) * 10000)))::integer END AS return_1h_bps,
+       o4.source AS outcome_4h_source,
+       CASE WHEN o4.price IS NOT NULL AND c.reference_price > 0
+            THEN LEAST(10000000, GREATEST(-10000000,
+                 round((o4.price / c.reference_price - 1) * 10000)))::integer END AS return_4h_bps,
+       CASE WHEN c.kind = 'digest' THEN (
+              SELECT jsonb_agg(line ->> 'text' ORDER BY ord)
+                FROM jsonb_array_elements(c.evidence -> 'lines') WITH ORDINALITY AS t(line, ord)
+            ) END AS digest_lines,
+       CASE WHEN c.kind = 'digest'
+            THEN COALESCE((c.evidence ->> 'model_used') = 'true', false) END AS digest_model_used
+  FROM cards c
+  LEFT JOIN news_market_deliveries d ON d.delivery_key = c.delivery_key
+  LEFT JOIN news_market_wallet_outcomes o1 ON o1.delivery_key = c.delivery_key AND o1.horizon = '1h'
+  LEFT JOIN news_market_wallet_outcomes o4 ON o4.delivery_key = c.delivery_key AND o4.horizon = '4h'
+ ORDER BY c.event_at_ms DESC
+"""
+
+
 class DueOutcomeRow(TypedDict):
     """One price receipt this turn may take: which card, which horizon, and which token to price."""
 
@@ -337,7 +552,7 @@ class ChainTapeStorage:
 
     # ------------------------------------------------------------------ ingest position
     def chain_tape_state(self) -> ChainTapeStateRow | None:
-        row = self.conn.execute(_TAPE_STATE_SQL, (TAPE_STATE_ID,)).fetchone()
+        row = self.conn.execute(WALLET_TAPE_STATE_SQL, (TAPE_STATE_ID,)).fetchone()
         if row is None:
             return None
         return ChainTapeStateRow(
@@ -574,6 +789,184 @@ class ChainTapeStorage:
         )
         return bool(cursor.rowcount)
 
+    # ------------------------------------------------------------------ the digest (PR-3)
+    def chain_tape_last_digest(self, *, since_ms: int) -> LastDigest | None:
+        """Where the last digest ended and what the rolling day has already spent on the model.
+
+        `None` means "no digest in the last day", which is also the answer the caller wants when one
+        is older than that: the window it would have to cover is capped at a day anyway, and a day
+        with no digest in it has spent nothing.
+        """
+
+        row = self.conn.execute(_LAST_DIGEST_SQL, {"since_ms": int(since_ms)}).fetchone()
+        if row is None or row["window_to_ms"] is None:
+            return None
+        return LastDigest(
+            window_to_ms=int(row["window_to_ms"]),
+            model_calls_last_day=int(row["model_calls"] or 0),
+        )
+
+    def chain_tape_digest_window(self, *, from_ms: int, to_ms: int) -> DigestWindowRows:
+        """Everything one digest states, read in one checkout and computed by nothing but SQL."""
+
+        window = {"from_ms": int(from_ms), "to_ms": int(to_ms)}
+        totals = self.conn.execute(_DIGEST_TOTALS_SQL, window).fetchone()
+        chain_id = 0 if totals is None or totals["chain_id"] is None else int(totals["chain_id"])
+        activity = tuple(
+            WalletWindowActivity(
+                wallet=str(row["wallet"]),
+                buys=int(row["buys"] or 0),
+                buy_usd=Decimal(row["buy_usd"] or 0),
+                sells=int(row["sells"] or 0),
+                sell_usd=Decimal(row["sell_usd"] or 0),
+                transfers_out=int(row["transfers_out"] or 0),
+                unpriced=int(row["unpriced"] or 0),
+            )
+            for row in self.conn.execute(_DIGEST_ACTIVITY_SQL, {**window, "limit": DIGEST_WALLETS_MAX}).fetchall()
+        )
+        flows = tuple(
+            TokenWindowFlow(
+                wallet=str(row["wallet"]),
+                token=str(row["token"]),
+                token_symbol=str(row["token_symbol"] or ""),
+                token_decimals=None if row["token_decimals"] is None else int(row["token_decimals"]),
+                window_buy_usd=Decimal(row["window_buy_usd"] or 0),
+                window_buy_raw=int(row["window_buy_raw"] or 0),
+                window_sell_usd=Decimal(row["window_sell_usd"] or 0),
+                lifetime_buy_usd=Decimal(row["lifetime_buy_usd"] or 0),
+                lifetime_sell_usd=Decimal(row["lifetime_sell_usd"] or 0),
+                lifetime_buy_raw=int(row["lifetime_buy_raw"] or 0),
+                lifetime_sell_raw=int(row["lifetime_sell_raw"] or 0),
+                lifetime_out_raw=int(row["lifetime_out_raw"] or 0),
+            )
+            for row in self.conn.execute(_DIGEST_FLOWS_SQL, {**window, "limit": DIGEST_COSTS_MAX}).fetchall()
+        )
+        cards = tuple(
+            DigestCardRow(
+                kind=str(row["kind"]),
+                handle=str(row["handle"] or ""),
+                symbol=str(row["token_symbol"] or ""),
+                ratio_bps=None if row["ratio_bps"] is None else int(row["ratio_bps"]),
+                basis=None if row["basis"] is None else str(row["basis"]),
+                peer_wallets=int(row["peer_wallets"] or 0),
+                usd=None if row["usd"] is None else Decimal(row["usd"]),
+                position_usd=None if row["position_usd"] is None else Decimal(row["position_usd"]),
+                tone=str(row["tone"] or ""),
+                sent=bool(row["sent"]),
+            )
+            for row in self.conn.execute(_DIGEST_CARDS_SQL, {**window, "limit": DIGEST_CARDS_MAX}).fetchall()
+        )
+        outcomes = tuple(
+            DigestOutcomeRow(
+                horizon=str(row["horizon"]),
+                receipts=int(row["receipts"] or 0),
+                priced=int(row["priced"] or 0),
+                median_bps=None if row["median_bps"] is None else round(float(row["median_bps"])),
+            )
+            for row in self.conn.execute(_DIGEST_OUTCOMES_SQL, window).fetchall()
+        )
+        return DigestWindowRows(
+            chain_id=chain_id,
+            activity=activity,
+            flows=flows,
+            cards=cards,
+            outcomes=outcomes,
+            tokens=0 if totals is None else int(totals["tokens"] or 0),
+            unpriced=0 if totals is None else int(totals["unpriced"] or 0),
+        )
+
+    # ------------------------------------------------------------------ the console page (PR-3)
+    def chain_tape_roster_rows(self) -> list[dict[str, Any]]:
+        """The current roster version as the page publishes it: who is followed, and why."""
+
+        return [
+            {
+                "roster_version": int(row["roster_version"]),
+                "taken_at_ms": int(row["taken_at_ms"]),
+                "wallet": str(row["wallet"]),
+                "handle": str(row["handle"] or ""),
+                "followers": int(row["followers"] or 0),
+                "realized_pnl": float(row["realized_pnl"] or 0.0),
+                "closed_trades": int(row["closed_trades"] or 0),
+                "win_rate": float(row["win_rate"] or 0.0),
+                "profit_factor": None if row["profit_factor"] is None else float(row["profit_factor"]),
+                "open_cost": float(row["open_cost"] or 0.0),
+                "rank_quality": None if row["rank_quality"] is None else int(row["rank_quality"]),
+                "rank_whale": None if row["rank_whale"] is None else int(row["rank_whale"]),
+                "provider": str(row["provider"] or ROSTER_PROVIDER),
+            }
+            for row in self.conn.execute(WALLET_ROSTER_ROWS_SQL).fetchall()
+        ]
+
+    def chain_tape_fill_totals(self, *, from_ms: int) -> list[dict[str, Any]]:
+        """What the tape stored in the window, per kind. `unpriced` is the share nothing could price."""
+
+        return [
+            {
+                "kind": str(row["kind"]),
+                "fills": int(row["fills"] or 0),
+                "usd": str(row["usd"] or "0"),
+                "unpriced": int(row["unpriced"] or 0),
+                "wallets": int(row["wallets"] or 0),
+                "tokens": int(row["tokens"] or 0),
+            }
+            for row in self.conn.execute(WALLET_FILLS_BY_KIND_SQL, {"from_ms": int(from_ms)}).fetchall()
+        ]
+
+    def chain_tape_card_totals(self, *, from_ms: int) -> list[dict[str, Any]]:
+        """What the rules opened in the window, per kind, and how much of it a reader received."""
+
+        return [
+            {
+                "kind": str(row["kind"]),
+                "cards": int(row["cards"] or 0),
+                "sent": int(row["sent"] or 0),
+                "last_event_at_ms": None if row["last_event_at_ms"] is None else int(row["last_event_at_ms"]),
+            }
+            for row in self.conn.execute(WALLET_CARDS_BY_KIND_SQL, {"from_ms": int(from_ms)}).fetchall()
+        ]
+
+    def chain_tape_cards(self, *, from_ms: int, to_ms: int, limit: int) -> list[dict[str, Any]]:
+        """One bounded page of wallet cards, each beside the two price receipts taken for it."""
+
+        rows = self.conn.execute(
+            WALLET_CARDS_SQL,
+            {"from_ms": int(from_ms), "to_ms": int(to_ms), "limit": max(1, int(limit))},
+        ).fetchall()
+        return [
+            {
+                "item_id": str(row["item_id"]),
+                "kind": str(row["kind"]),
+                "handle": str(row["handle"] or ""),
+                "wallet": str(row["wallet"] or ""),
+                "token": str(row["token"] or ""),
+                "token_symbol": None if row["token_symbol"] is None else str(row["token_symbol"]),
+                "tone": str(row["tone"] or ""),
+                "ratio_bps": None if row["ratio_bps"] is None else int(row["ratio_bps"]),
+                "basis": None if row["basis"] is None else str(row["basis"]),
+                "closed": bool(row["closed"]),
+                "peer_wallets": int(row["peer_wallets"] or 0),
+                "premium_bps": None if row["premium_bps"] is None else int(row["premium_bps"]),
+                "usd": None if row["usd"] is None else str(row["usd"]),
+                "position_usd": None if row["position_usd"] is None else str(row["position_usd"]),
+                "entry_price": None if row["entry_price"] is None else str(row["entry_price"]),
+                "mark_price": None if row["mark_price"] is None else str(row["mark_price"]),
+                "event_at_ms": int(row["event_at_ms"]),
+                "window_from_ms": int(row["window_from_ms"]),
+                "window_to_ms": int(row["window_to_ms"]),
+                "delivery_key": None if row["delivery_key"] is None else str(row["delivery_key"]),
+                "delivery_state": None if row["delivery_state"] is None else str(row["delivery_state"]),
+                "settled_at_ms": None if row["settled_at_ms"] is None else int(row["settled_at_ms"]),
+                "outcome_1h_source": None if row["outcome_1h_source"] is None else str(row["outcome_1h_source"]),
+                "return_1h_bps": None if row["return_1h_bps"] is None else int(row["return_1h_bps"]),
+                "outcome_4h_source": None if row["outcome_4h_source"] is None else str(row["outcome_4h_source"]),
+                "return_4h_bps": None if row["return_4h_bps"] is None else int(row["return_4h_bps"]),
+                "digest_lines": None if row["digest_lines"] is None else [str(line) for line in row["digest_lines"]],
+                "digest_model_used": None if row["digest_model_used"] is None else bool(row["digest_model_used"]),
+            }
+            for row in rows
+        ]
+
     # ------------------------------------------------------------------ roster
     def chain_tape_current_roster(self) -> RosterSnapshot | None:
         rows = self.conn.execute(_CURRENT_ROSTER_SQL).fetchall()
@@ -662,4 +1055,15 @@ def _unit_price(usd: Any, amount_raw: Any, decimals: Any) -> Decimal | None:
     return Decimal(usd) / quantity
 
 
-__all__ = ["TAPE_STATE_ID", "ChainTapeStateRow", "ChainTapeStorage", "DueOutcomeRow"]
+__all__ = [
+    "DIGEST_KIND",
+    "TAPE_STATE_ID",
+    "WALLET_CARDS_BY_KIND_SQL",
+    "WALLET_CARDS_SQL",
+    "WALLET_FILLS_BY_KIND_SQL",
+    "WALLET_ROSTER_ROWS_SQL",
+    "WALLET_TAPE_STATE_SQL",
+    "ChainTapeStateRow",
+    "ChainTapeStorage",
+    "DueOutcomeRow",
+]

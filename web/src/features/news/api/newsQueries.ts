@@ -53,6 +53,16 @@ export type NewsMarketItem = NewsSchemas["NewsMarketItemData"];
 export type NewsMarketKind = NewsMarketObservation["market_kind"];
 export type NewsMarketParseStatus = NewsMarketObservation["parse_status"];
 export type NewsSymbolContract = NewsSchemas["NewsSymbolContractData"];
+export type NewsWallets = NewsSchemas["NewsWalletsData"];
+export type NewsWalletRoster = NewsSchemas["NewsWalletRosterData"];
+export type NewsWalletRosterMember = NewsSchemas["NewsWalletRosterMemberData"];
+export type NewsWalletTapeState = NewsSchemas["NewsWalletTapeStateData"];
+export type NewsWalletFillTotal = NewsSchemas["NewsWalletFillTotalData"];
+export type NewsWalletCardTotal = NewsSchemas["NewsWalletCardTotalData"];
+export type NewsWalletCards = NewsSchemas["NewsWalletCardsData"];
+export type NewsWalletCard = NewsSchemas["NewsWalletCardData"];
+export type NewsWalletCardKind = NewsWalletCard["kind"];
+export type NewsWalletFillKind = NewsWalletFillTotal["kind"];
 
 export type NewsFeedOutcome = NewsOutcomeGroup;
 export type NewsFeedDirection = "bullish" | "bearish" | "neutral";
@@ -121,6 +131,15 @@ export const NEWS_MARKET_PAGE_SIZE = 50;
  * one group anyway, so a faster poll re-renders the same collapsed rows.
  */
 export const NEWS_MARKET_REFETCH_MS = 10_000;
+/**
+ * The wallet tape's own page (#572 PR-3). Same 10 s as the market list and for the same reason: the tape
+ * turns every two seconds but a card is a rule firing, which is tens of times a day.
+ */
+export const NEWS_WALLETS_REFETCH_MS = 10_000;
+/** The closed window vocabulary `/api/news/wallets/cards` accepts. */
+export const NEWS_WALLET_CARD_WINDOWS = ["24h", "72h", "7d"] as const;
+export type NewsWalletCardWindow = (typeof NEWS_WALLET_CARD_WINDOWS)[number];
+export const NEWS_WALLET_CARDS_PAGE_SIZE = 100;
 
 const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: string | null) =>
   (
@@ -268,6 +287,50 @@ export const useNewsMarketItemWithToken = (token: string, itemId: string | null)
         })
       ).data,
     staleTime: 60_000,
+  });
+
+/**
+ * The tape's roster, its ingest position and one day of counts (#572 PR-3).
+ *
+ * One read for the whole header: the four statements behind it are the same window, so the tiles and the
+ * roster under them cannot disagree about what the day held.
+ */
+export const useNewsWalletsWithToken = (token: string) =>
+  useQuery({
+    enabled: Boolean(token),
+    queryKey: queryKeys.newsWallets(),
+    queryFn: async () =>
+      (
+        await getApi<NewsWallets>("/api/news/wallets", {
+          etagKey: "news-wallets",
+          token,
+        })
+      ).data,
+    refetchInterval: NEWS_WALLETS_REFETCH_MS,
+    staleTime: 2_000,
+  });
+
+/**
+ * The cards the tape opened in one window, each beside its +1h/+4h price receipt.
+ *
+ * Its own query rather than a field of the one above, so a slow card table cannot hold the header and a
+ * window change re-requests only the table. The window is a closed server vocabulary, so it is part of
+ * the key.
+ */
+export const useNewsWalletCardsWithToken = (token: string, window: NewsWalletCardWindow) =>
+  useQuery({
+    enabled: Boolean(token),
+    queryKey: queryKeys.newsWalletCards(window),
+    queryFn: async () =>
+      (
+        await getApi<NewsWalletCards>("/api/news/wallets/cards", {
+          etagKey: `news-wallet-cards:${window}`,
+          params: { limit: NEWS_WALLET_CARDS_PAGE_SIZE, window },
+          token,
+        })
+      ).data,
+    refetchInterval: NEWS_WALLETS_REFETCH_MS,
+    staleTime: 2_000,
   });
 
 export const useNewsEventWithToken = (token: string, eventId?: string | null) =>

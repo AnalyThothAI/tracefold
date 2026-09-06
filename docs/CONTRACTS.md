@@ -401,11 +401,12 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 | Family | Routes | Source of data |
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
-| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, market observations read straight from `news_items` and their typed facts, one observation with its group timeline, four-layer status, bounded quotes, and one symbol's identity |
+| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/wallets`, `/api/news/wallets/cards` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, market observations read straight from `news_items` and their typed facts, one observation with its group timeline, four-layer status, bounded quotes, one symbol's identity, and the chain wallet tape's own state — its roster, its ingest position, and every card it opened with the price receipt taken after it |
 | Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/executions`, `/api/trading/gate`, `/api/trading/gate/{event_id}`, `POST /api/trading/execution/commands` | one owner per question the console asks: current execution/account readiness, frozen Case decisions, the folded per-entry execution table with its Command ledger, and the Source-admission ledger. Five GETs and one bounded POST append. #537 PR-5 deleted `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections — three more public shapes over the ledgers `/api/trading/executions` already reads folded, none of them called by any browser surface, and all three still readable through `tracefold trading signals \| observations \| commands` |
 
 The public API is exactly these routes — including the two #553 PR-1 market
-reads `/api/news/market` and `/api/news/market/{item_id}` — plus `/healthz`,
+reads `/api/news/market` and `/api/news/market/{item_id}` and the two #572 PR-3
+wallet reads `/api/news/wallets` and `/api/news/wallets/cards` — plus `/healthz`,
 `/readyz`, and `/metrics`. The retired GMGN-lane routes (`/ws`, `/api/recent`,
 `/api/events/by-ids`, `/api/search`, `/api/search/inspect`, `/api/token-case`,
 `/api/target-posts`, `/api/target-social-timeline`, `/api/live-market`,
@@ -663,9 +664,12 @@ every Event this code can open.
   `wallet_position_usd`, `wallet_entry_price`, `wallet_mark_price`,
   `wallet_peer_wallets`, `wallet_peer_usd`, `wallet_premium_bps`,
   `wallet_liquidity_usd`, `wallet_tx_hash`, `wallet_block_number`,
-  `wallet_closed`, `wallet_crowding_item_id`, `wallet_window_from_ms` — every one
+  `wallet_closed`, `wallet_crowding_item_id`, `wallet_digest_lines`,
+  `wallet_window_from_ms` — every one
   of them absent on the four provider kinds, and the quantities and dollar
-  figures crossing as exact text for the same reason the provider's do),
+  figures crossing as exact text for the same reason the provider's do;
+  `wallet_kind` is `exit`, `crowding` or `digest`, and `wallet_digest_lines` is
+  present on a digest alone, carrying the sentences it was sent with, in order),
   `notification_status`, `notification_reason`, `notify_group_key` and
   `delivery_key`. The last two are the notification
   loop's own record of what it decided: the group it assigned the observation to
@@ -689,6 +693,68 @@ every Event this code can open.
 
   "Not pushed" is not a filter and never becomes one: whether a card was sent is
   reported per group and is not a precondition for reading the observation.
+- `GET /api/news/wallets` returns the chain wallet tape's own state (#572 PR-3):
+  `roster`, `tape`, `fills[]`, `cards[]`, `window_from_ms` and `window_to_ms`.
+  It takes no parameter but `token`; any other is 400
+  `unsupported_query_param`. The window is fixed at the last 24 h on the chain's
+  own clock, because the four figures a reader opens this page for describe a
+  day and a control that disagreed with the card table below it would be two
+  answers to one question.
+
+  `roster` is the current version only — an earlier version is evidence a card
+  carries, not a page a reader browses — as `roster_version`, `taken_at_ms`,
+  `provider` and `members[]`, each member carrying `wallet`, `handle`,
+  `followers`, `realized_pnl`, `closed_trades`, `win_rate`, `profit_factor`,
+  `open_cost`, `rank_quality`, `rank_whale` and `provider`. The two ranks are
+  two lists — 质量榜 by realized P&L and profit factor, 大户榜 by open cost — and
+  `null` on one means that list did not select this wallet, which is not rank 0.
+  A tape that has never refreshed publishes version `0` with no members rather
+  than `null`.
+
+  `tape` is one row or `null` when the task has never run: `high_water_block`,
+  `high_water_tx_index`, `roster_version`, `last_outcome`, `last_error`,
+  `last_success_at_ms`, `updated_at_ms`, `ignored_inbound_total`,
+  `unknown_total`, `noise_through_block` and `noise_through_tx_index`.
+  `last_outcome` and `last_error` are the loop's own open strings and are
+  printed as written.
+
+  `fills[]` is one row per stored kind (`buy`, `sell`, `transfer_out`) with
+  `fills`, `usd` (exact text), `unpriced`, `wallets` and `tokens`; `cards[]` is
+  one row per card kind (`exit`, `crowding`, `digest`) with `cards`, `sent` and
+  `last_event_at_ms`. A kind nothing happened for is absent rather than zeroed —
+  unlike the market surface's `sources[]`, these are counts of what the tape did
+  rather than a per-source inventory a reader is owed either way.
+- `GET /api/news/wallets/cards?window=...&limit=...` returns one bounded window
+  of the cards the tape's rules opened, newest first (#572 PR-3). `window` is
+  the closed set `24h|72h|7d`, default `24h`; anything else is 400
+  `news_wallets_window_invalid` (`field: window`). `limit` is 1..200, default
+  100; outside that range FastAPI returns 422. Any other query parameter is 400
+  `unsupported_query_param`.
+
+  `data` is `cards[]`, `window`, `window_from_ms`, `window_to_ms` and `limit`.
+  Each card carries `item_id`, `kind` (`exit|crowding|digest`), `handle`,
+  `wallet`, `token`, `token_symbol`, `tone`, `ratio_bps`, `basis`
+  (`chain_balance|site_reported`), `closed`, `peer_wallets`, `premium_bps`,
+  `usd`, `position_usd`, `entry_price`, `mark_price`, `event_at_ms`,
+  `window_from_ms`, `window_to_ms`, `delivery_key`, `delivery_state`,
+  `settled_at_ms`, `outcome_1h_source`, `return_1h_bps`, `outcome_4h_source`,
+  `return_4h_bps`, and — on a digest alone — `digest_lines` and
+  `digest_model_used`. Every card is published whether or not it was sent:
+  "was a reader told" is reported per row and is never a filter, exactly as on
+  the market list.
+
+  The two return figures are #572 §11's effect receipt and are not a gate:
+  nothing in the code reads them. They are integer basis points against the
+  price the card itself printed — the chain's mark at the moment it fired, or
+  the lead's entry for a crowding window — clamped to ±10,000,000 bps because
+  these pools print prices spanning thirty orders of magnitude. `null` with
+  `outcome_*_source` of `unavailable` is "we looked and nothing could price it";
+  `null` with no source is "that horizon has not arrived", which is the absence
+  of a receipt row rather than a zero.
+
+  `item_id` is the Item's own identity, so every row links to
+  `/api/news/market/{item_id}`, which stays the single place one observation is
+  read in full.
 - `GET /api/news/market/{item_id}` returns one observation in full: the
   `observation` above, the stored `provider_params` payload, `description`,
   `raw_first_line`, `notification_status`, `notification_reason`,
@@ -835,8 +901,9 @@ codes, delivery errors, event types, directions, magnitudes, storyline
 themes); a new rule or error code lands there in the same change, so no
 surface renders a bare key.
 
-`/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market` and
-`/api/news/market/{item_id}` emit strong ETags and honor `If-None-Match`;
+`/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`,
+`/api/news/market/{item_id}`, `/api/news/wallets` and
+`/api/news/wallets/cards` emit strong ETags and honor `If-None-Match`;
 `/api/news/status` uses a weak ETag that ignores `measured_at_ms`. All News
 routes require the operator token — a bearer header or a `token` query
 parameter on a read — and answer `401` without one or with a wrong one.

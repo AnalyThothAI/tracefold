@@ -130,6 +130,12 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         # other — the list carries a group's newest member, the Item carries its whole timeline.
         "/api/news/market": ("get", "ApiEnvelope_NewsMarketData_"),
         "/api/news/market/{item_id}": ("get", "ApiEnvelope_NewsMarketItemData_"),
+        # #572 PR-3: the wallet tape's own state. Two response types for the same reason the market
+        # pair has two — the header read answers "who is followed and where is the tape", the card
+        # read answers "what did the rules open and what was it worth after", and neither contains
+        # the other.
+        "/api/news/wallets": ("get", "ApiEnvelope_NewsWalletsData_"),
+        "/api/news/wallets/cards": ("get", "ApiEnvelope_NewsWalletCardsData_"),
     }
 
     assert {path for path in schema["paths"] if path.startswith("/api/news/")} == set(expected)

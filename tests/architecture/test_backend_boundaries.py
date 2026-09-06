@@ -76,6 +76,11 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # Post-delivery relationship verification is a content-addressed model adapter composed by App.
         # It cannot change admission or the semantic Program and is scheduled only after send settlement.
         "tracefold.news.program.progression_review",
+        # #572 PR-3's wallet digest is the same shape: one Signature, its own identity, bound by the
+        # composition root to the reader-card endpoint. It reads a fact pack the tape already computed
+        # and can change no threshold, no roster and no card -- only the wording of a summary that is
+        # written either way.
+        "tracefold.news.program.chain_tape_digest",
         "tracefold.news.artifact_identity",
         "tracefold.news.learning.contracts",
         "tracefold.news.learning.evaluate",

@@ -19,6 +19,10 @@ import type {
   NewsMarketItem,
   NewsMarketObservation,
   NewsMarketSource,
+  NewsWalletCard,
+  NewsWalletCards,
+  NewsWalletRosterMember,
+  NewsWallets,
 } from "@features/news/api/newsQueries";
 
 export const NEWS_NOW_MS = 1_779_000_000_000;
@@ -668,6 +672,156 @@ export function newsMarketFixture(overrides: Partial<NewsMarket> = {}): NewsMark
         sent: 3,
       }),
     ],
+    ...overrides,
+  };
+}
+
+/**
+ * The chain wallet tape's own page (#572 PR-3): one roster version, the tape's position, and the two
+ * windowed counts the header tiles are built from.
+ */
+export function newsWalletRosterMemberFixture(
+  overrides: Partial<NewsWalletRosterMember> = {},
+): NewsWalletRosterMember {
+  return {
+    closed_trades: 46,
+    followers: 123_456,
+    handle: "0xVantaa",
+    open_cost: 220_000,
+    profit_factor: 1.6,
+    provider: "robinhoodtrenches",
+    rank_quality: 1,
+    rank_whale: null,
+    realized_pnl: 510_000,
+    wallet: "0x69326e48f68500fb6cf3b3a7da640737b9cc347b",
+    win_rate: 0.44,
+    ...overrides,
+  };
+}
+
+export function newsWalletsFixture(overrides: Partial<NewsWallets> = {}): NewsWallets {
+  return {
+    cards: [
+      { cards: 4, kind: "exit", last_event_at_ms: NEWS_NOW_MS - 90_000, sent: 3 },
+      { cards: 1, kind: "crowding", last_event_at_ms: NEWS_NOW_MS - 600_000, sent: 1 },
+      { cards: 6, kind: "digest", last_event_at_ms: NEWS_NOW_MS - 1_200_000, sent: 6 },
+    ],
+    fills: [
+      { fills: 62, kind: "buy", tokens: 31, unpriced: 2, usd: "394120.55", wallets: 18 },
+      { fills: 44, kind: "sell", tokens: 22, unpriced: 1, usd: "309002.10", wallets: 14 },
+      { fills: 9, kind: "transfer_out", tokens: 6, unpriced: 9, usd: "0", wallets: 5 },
+    ],
+    roster: {
+      members: [
+        newsWalletRosterMemberFixture(),
+        newsWalletRosterMemberFixture({
+          followers: 84_000,
+          handle: "smol_intern",
+          rank_quality: null,
+          rank_whale: 2,
+          realized_pnl: -22_100,
+          wallet: "0x2222222222222222222222222222222222222222",
+        }),
+      ],
+      provider: "robinhoodtrenches",
+      roster_version: 3,
+      taken_at_ms: NEWS_NOW_MS - 1_800_000,
+    },
+    tape: {
+      high_water_block: 55_432_960,
+      high_water_tx_index: 2_147_483_647,
+      ignored_inbound_total: 14,
+      last_error: null,
+      last_outcome: "success",
+      last_success_at_ms: NEWS_NOW_MS - 2_000,
+      noise_through_block: 55_432_990,
+      noise_through_tx_index: 6,
+      roster_version: 3,
+      unknown_total: 1,
+      updated_at_ms: NEWS_NOW_MS - 2_000,
+    },
+    window_from_ms: NEWS_NOW_MS - 24 * 3_600_000,
+    window_to_ms: NEWS_NOW_MS,
+    ...overrides,
+  };
+}
+
+export function newsWalletCardFixture(overrides: Partial<NewsWalletCard> = {}): NewsWalletCard {
+  return {
+    basis: "chain_balance",
+    closed: true,
+    delivery_key: "wallet-delivery-1",
+    delivery_state: "sent",
+    digest_lines: null,
+    digest_model_used: null,
+    entry_price: "0.0018",
+    event_at_ms: NEWS_NOW_MS - 90_000,
+    handle: "0xVantaa",
+    item_id: "a".repeat(64),
+    kind: "exit",
+    mark_price: "0.0025",
+    outcome_1h_source: "dexscreener",
+    outcome_4h_source: null,
+    peer_wallets: 0,
+    position_usd: "23531.60",
+    premium_bps: null,
+    ratio_bps: 10_000,
+    return_1h_bps: -512,
+    return_4h_bps: null,
+    settled_at_ms: NEWS_NOW_MS - 88_000,
+    token: "0x8de9018c1bb82884245f06dede9fe2bebabd1e18",
+    token_symbol: "FSD",
+    tone: "",
+    usd: "23531.60",
+    wallet: "0x69326e48f68500fb6cf3b3a7da640737b9cc347b",
+    window_from_ms: NEWS_NOW_MS - 90_000,
+    window_to_ms: NEWS_NOW_MS - 90_000,
+    ...overrides,
+  };
+}
+
+export function newsWalletCardsFixture(overrides: Partial<NewsWalletCards> = {}): NewsWalletCards {
+  return {
+    cards: [
+      newsWalletCardFixture(),
+      newsWalletCardFixture({
+        basis: null,
+        closed: false,
+        delivery_state: "sent",
+        item_id: "b".repeat(64),
+        kind: "crowding",
+        peer_wallets: 3,
+        premium_bps: 5_400,
+        ratio_bps: null,
+        return_1h_bps: 1_730,
+        return_4h_bps: null,
+        token_symbol: "MADETEST",
+        tone: "late",
+        usd: "5400.00",
+      }),
+      // The digest carries its own sentences and says who wrote them; every other kind carries neither.
+      newsWalletCardFixture({
+        basis: null,
+        closed: false,
+        digest_lines: ["合计买入 62 笔 $394,120.55，卖出 44 笔 $309,002.10", "窗口内退出卡 4 张"],
+        digest_model_used: true,
+        handle: "",
+        item_id: "c".repeat(64),
+        kind: "digest",
+        outcome_1h_source: "unavailable",
+        position_usd: null,
+        ratio_bps: null,
+        return_1h_bps: null,
+        token: "",
+        token_symbol: null,
+        usd: null,
+        wallet: "",
+      }),
+    ],
+    limit: 100,
+    window: "24h",
+    window_from_ms: NEWS_NOW_MS - 24 * 3_600_000,
+    window_to_ms: NEWS_NOW_MS,
     ...overrides,
   };
 }

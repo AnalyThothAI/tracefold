@@ -369,6 +369,98 @@
         "title": "ApiEnvelope[NewsSymbolData]",
         "type": "object"
       },
+      "ApiEnvelope_NewsWalletCardsData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsWalletCardsData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[NewsWalletCardsData]",
+        "type": "object"
+      },
+      "ApiEnvelope_NewsWalletsData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsWalletsData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[NewsWalletsData]",
+        "type": "object"
+      },
       "ApiEnvelope_StatusData_": {
         "additionalProperties": false,
         "properties": {
@@ -3519,6 +3611,20 @@
             ],
             "title": "Wallet Crowding Item Id"
           },
+          "wallet_digest_lines": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Digest Lines"
+          },
           "wallet_entry_price": {
             "anyOf": [
               {
@@ -3557,7 +3663,8 @@
               {
                 "enum": [
                   "exit",
-                  "crowding"
+                  "crowding",
+                  "digest"
                 ],
                 "type": "string"
               },
@@ -5867,6 +5974,661 @@
         "title": "NewsVerdictData",
         "type": "object"
       },
+      "NewsWalletCardData": {
+        "additionalProperties": false,
+        "description": "One card the tape opened, with the two price receipts taken after it was sent.\n\n`return_1h_bps` / `return_4h_bps` are measured against the price the card itself printed -- the\nchain's mark at the moment it fired, or the lead's entry for a crowding window -- and are absent\nwhere the card carried no price to measure against or nothing could price the token. They are\n#572 \u00a711's receipt, not a gate: nothing in the code reads them.",
+        "properties": {
+          "basis": {
+            "anyOf": [
+              {
+                "enum": [
+                  "chain_balance",
+                  "site_reported"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Basis"
+          },
+          "closed": {
+            "default": false,
+            "title": "Closed",
+            "type": "boolean"
+          },
+          "delivery_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Key"
+          },
+          "delivery_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pending",
+                  "sending",
+                  "sent",
+                  "failed",
+                  "unknown",
+                  "unavailable"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery State"
+          },
+          "digest_lines": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Digest Lines"
+          },
+          "digest_model_used": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Digest Model Used"
+          },
+          "entry_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Price"
+          },
+          "event_at_ms": {
+            "title": "Event At Ms",
+            "type": "integer"
+          },
+          "handle": {
+            "default": "",
+            "title": "Handle",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "exit",
+              "crowding",
+              "digest"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "mark_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mark Price"
+          },
+          "outcome_1h_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome 1H Source"
+          },
+          "outcome_4h_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome 4H Source"
+          },
+          "peer_wallets": {
+            "default": 0,
+            "title": "Peer Wallets",
+            "type": "integer"
+          },
+          "position_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position Usd"
+          },
+          "premium_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Premium Bps"
+          },
+          "ratio_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ratio Bps"
+          },
+          "return_1h_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return 1H Bps"
+          },
+          "return_4h_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return 4H Bps"
+          },
+          "settled_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settled At Ms"
+          },
+          "token": {
+            "default": "",
+            "title": "Token",
+            "type": "string"
+          },
+          "token_symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Symbol"
+          },
+          "tone": {
+            "default": "",
+            "title": "Tone",
+            "type": "string"
+          },
+          "usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usd"
+          },
+          "wallet": {
+            "default": "",
+            "title": "Wallet",
+            "type": "string"
+          },
+          "window_from_ms": {
+            "title": "Window From Ms",
+            "type": "integer"
+          },
+          "window_to_ms": {
+            "title": "Window To Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "item_id",
+          "kind",
+          "event_at_ms",
+          "window_from_ms",
+          "window_to_ms"
+        ],
+        "title": "NewsWalletCardData",
+        "type": "object"
+      },
+      "NewsWalletCardTotalData": {
+        "additionalProperties": false,
+        "description": "What the rules opened in the window, per kind, and how much of it reached a reader.",
+        "properties": {
+          "cards": {
+            "default": 0,
+            "title": "Cards",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "exit",
+              "crowding",
+              "digest"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_event_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Event At Ms"
+          },
+          "sent": {
+            "default": 0,
+            "title": "Sent",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "NewsWalletCardTotalData",
+        "type": "object"
+      },
+      "NewsWalletCardsData": {
+        "additionalProperties": false,
+        "description": "One bounded page of cards, newest first, inside the window the caller asked for.",
+        "properties": {
+          "cards": {
+            "items": {
+              "$ref": "#/components/schemas/NewsWalletCardData"
+            },
+            "title": "Cards",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "window": {
+            "title": "Window",
+            "type": "string"
+          },
+          "window_from_ms": {
+            "title": "Window From Ms",
+            "type": "integer"
+          },
+          "window_to_ms": {
+            "title": "Window To Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cards",
+          "window",
+          "window_from_ms",
+          "window_to_ms",
+          "limit"
+        ],
+        "title": "NewsWalletCardsData",
+        "type": "object"
+      },
+      "NewsWalletFillTotalData": {
+        "additionalProperties": false,
+        "description": "What the tape stored in the window, per kind.\n\n`unpriced` counts trades whose cash leg was not the pinned stablecoin, so it is always zero on\n`transfer_out`: a movement with no swap has no cash leg at all, and calling it unpriced would report\nthe tape's own classification as a pricing failure.",
+        "properties": {
+          "fills": {
+            "default": 0,
+            "title": "Fills",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "buy",
+              "sell",
+              "transfer_out"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "tokens": {
+            "default": 0,
+            "title": "Tokens",
+            "type": "integer"
+          },
+          "unpriced": {
+            "default": 0,
+            "title": "Unpriced",
+            "type": "integer"
+          },
+          "usd": {
+            "default": "0",
+            "title": "Usd",
+            "type": "string"
+          },
+          "wallets": {
+            "default": 0,
+            "title": "Wallets",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "NewsWalletFillTotalData",
+        "type": "object"
+      },
+      "NewsWalletRosterData": {
+        "additionalProperties": false,
+        "description": "The roster as one version: when it was taken, and who was on it.",
+        "properties": {
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/NewsWalletRosterMemberData"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "roster_version": {
+            "default": 0,
+            "title": "Roster Version",
+            "type": "integer"
+          },
+          "taken_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Taken At Ms"
+          }
+        },
+        "required": [
+          "members"
+        ],
+        "title": "NewsWalletRosterData",
+        "type": "object"
+      },
+      "NewsWalletRosterMemberData": {
+        "additionalProperties": false,
+        "description": "One followed wallet in the current roster version, and the two ranks that put it there.\n\nA member can hold both ranks and can hold either alone; `null` means \"this list did not select\nthis wallet\", which is not the same as rank 0. Win rate is recorded and is deliberately not a\nselection criterion (#572 \u00a73.2).",
+        "properties": {
+          "closed_trades": {
+            "default": 0,
+            "title": "Closed Trades",
+            "type": "integer"
+          },
+          "followers": {
+            "default": 0,
+            "title": "Followers",
+            "type": "integer"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          },
+          "open_cost": {
+            "default": 0.0,
+            "title": "Open Cost",
+            "type": "number"
+          },
+          "profit_factor": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profit Factor"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "rank_quality": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank Quality"
+          },
+          "rank_whale": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank Whale"
+          },
+          "realized_pnl": {
+            "default": 0.0,
+            "title": "Realized Pnl",
+            "type": "number"
+          },
+          "wallet": {
+            "title": "Wallet",
+            "type": "string"
+          },
+          "win_rate": {
+            "default": 0.0,
+            "title": "Win Rate",
+            "type": "number"
+          }
+        },
+        "required": [
+          "wallet",
+          "handle",
+          "provider"
+        ],
+        "title": "NewsWalletRosterMemberData",
+        "type": "object"
+      },
+      "NewsWalletTapeStateData": {
+        "additionalProperties": false,
+        "description": "Where the tape has read to, and what its last turn did there.\n\n`noise_through_block` is the second position and never lags: it is how far the two discard counters\nhave been taken, so a movement is counted once however many times the overlap re-offers it.",
+        "properties": {
+          "high_water_block": {
+            "default": 0,
+            "title": "High Water Block",
+            "type": "integer"
+          },
+          "high_water_tx_index": {
+            "default": 0,
+            "title": "High Water Tx Index",
+            "type": "integer"
+          },
+          "ignored_inbound_total": {
+            "default": 0,
+            "title": "Ignored Inbound Total",
+            "type": "integer"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "last_outcome": {
+            "default": "",
+            "title": "Last Outcome",
+            "type": "string"
+          },
+          "last_success_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At Ms"
+          },
+          "noise_through_block": {
+            "default": 0,
+            "title": "Noise Through Block",
+            "type": "integer"
+          },
+          "noise_through_tx_index": {
+            "default": 0,
+            "title": "Noise Through Tx Index",
+            "type": "integer"
+          },
+          "roster_version": {
+            "default": 0,
+            "title": "Roster Version",
+            "type": "integer"
+          },
+          "unknown_total": {
+            "default": 0,
+            "title": "Unknown Total",
+            "type": "integer"
+          },
+          "updated_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At Ms"
+          }
+        },
+        "title": "NewsWalletTapeStateData",
+        "type": "object"
+      },
+      "NewsWalletsData": {
+        "additionalProperties": false,
+        "description": "The page's header and roster: one roster version, one tape position, two windowed counts.",
+        "properties": {
+          "cards": {
+            "items": {
+              "$ref": "#/components/schemas/NewsWalletCardTotalData"
+            },
+            "title": "Cards",
+            "type": "array"
+          },
+          "fills": {
+            "items": {
+              "$ref": "#/components/schemas/NewsWalletFillTotalData"
+            },
+            "title": "Fills",
+            "type": "array"
+          },
+          "roster": {
+            "$ref": "#/components/schemas/NewsWalletRosterData"
+          },
+          "tape": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsWalletTapeStateData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "window_from_ms": {
+            "title": "Window From Ms",
+            "type": "integer"
+          },
+          "window_to_ms": {
+            "title": "Window To Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "roster",
+          "fills",
+          "cards",
+          "window_from_ms",
+          "window_to_ms"
+        ],
+        "title": "NewsWalletsData",
+        "type": "object"
+      },
       "ReadinessData": {
         "additionalProperties": false,
         "properties": {
@@ -7935,6 +8697,85 @@
           }
         },
         "summary": "Get News Symbol",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/news/wallets": {
+      "get": {
+        "description": "The tape's own state: its roster, its position, and one day of what it stored and sent.\n\nFour bounded statements and no parameters. The roster is the current version only -- an earlier\nversion is evidence a card carries, not a page a reader browses -- and the two count blocks are\nthe last 24 hours on the chain's own clock.",
+        "operationId": "get_news_wallets_api_news_wallets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsWalletsData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get News Wallets",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/news/wallets/cards": {
+      "get": {
+        "description": "Cards the tape opened in the window, newest first, each beside its two price receipts.\n\nEvery card is published, sent or not: whether a reader was told is reported per row and is never a\nfilter. A digest carries its own sentences and says whether the model wrote them, which is the one\nthing a reader of this page cannot get from the card itself.",
+        "operationId": "get_news_wallet_cards_api_news_wallets_cards_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "window",
+            "required": false,
+            "schema": {
+              "default": "24h",
+              "maxLength": 8,
+              "title": "Window",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsWalletCardsData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get News Wallet Cards",
         "tags": [
           "api"
         ]

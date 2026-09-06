@@ -53,6 +53,10 @@ WALLET_QUALIFIER: Final[dict[str, str]] = {
     "exit_closed": "清仓",
     "crowding": "拥挤",
     "crowding_late": "拥挤 · 跟风偏晚",
+    # The four-hourly summary (#572 PR-3). It is a wallet card because it is about the same roster on
+    # the same chain, and it is its own qualifier because its subject is a window rather than a
+    # movement -- a reader must be able to tell "something just happened" from "here is the period".
+    "digest": "摘要",
 }
 # Where an exit's denominator came from, in four characters. Not a warning and not a confidence score:
 # `链上余额` is `balanceOf` at the block before the sell, `持仓推算` is the provider's reported bag plus
@@ -255,6 +259,9 @@ class ReaderCardWallet:
     followers: int = 0
     symbol: str = ""
     token: str = ""
+    # Digest: the sentences themselves, already written and already grounded against the fact pack
+    # they came from. The card renders them and composes nothing -- a digest line is the whole line.
+    lines: tuple[str, ...] = ()
     # Exit: what left, what was held before it, and what share of it that was.
     quantity: str = ""
     balance_before: str = ""
@@ -282,7 +289,7 @@ class ReaderCardWallet:
             return WALLET_QUALIFIER["exit_closed" if self.closed else "exit"]
         if self.kind == "crowding":
             return WALLET_QUALIFIER["crowding_late" if self.late else "crowding"]
-        return ""
+        return WALLET_QUALIFIER.get(self.kind, "")
 
 
 @dataclass(frozen=True, slots=True)
@@ -494,6 +501,11 @@ class ReaderCard:
         """
 
         wallet = self.wallet
+        if wallet.kind == "digest":
+            # The one wallet card with no subject of its own. Its lines were written from a fact pack
+            # this process computed, so they are printed as they are: composing a header out of a
+            # window that has no wallet and no token would print the separators and nothing else.
+            return [f"名单钱包 · {span}", *wallet.lines, _WALLET_NOTE]
         who = f"{wallet.handle or fmt.UNKNOWN_ACCOUNT}{_followers(wallet.followers)}"
         subject = wallet.symbol or wallet.token[:10]
         if wallet.kind == "crowding":

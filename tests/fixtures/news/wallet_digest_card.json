@@ -1,0 +1,41 @@
+{
+  "config": {
+    "wide_screen_mode": true
+  },
+  "elements": [
+    {
+      "content": "名单钱包 · 01:13–05:13\n0xVantaa 买入 1 笔 $12,340.50，卖出 1 笔 $23,531.60\n窗口内活跃名单地址 1 个，代币 1 个\n名单为原站统计所选，历史样本很短；卡片只陈述链上成交，不构成建议。\nrobinhood_chain wallet（1 条报道） · 05:13",
+      "tag": "markdown"
+    },
+    {
+      "actions": [
+        {
+          "tag": "button",
+          "text": {
+            "content": "打开明细",
+            "tag": "plain_text"
+          },
+          "type": "default",
+          "url": "https://tracefold-win.big9er.com/news/market/af4b9dd0649584aa294ed65fc6224b8eaa2a581bbd5794836e7dcafa1f7201b8"
+        }
+      ],
+      "tag": "action"
+    },
+    {
+      "elements": [
+        {
+          "content": "Tracefold 市场 · wallet|digest|robinhood_",
+          "tag": "plain_text"
+        }
+      ],
+      "tag": "note"
+    }
+  ],
+  "header": {
+    "template": "orange",
+    "title": {
+      "content": "链上钱包 · 摘要",
+      "tag": "plain_text"
+    }
+  }
+}

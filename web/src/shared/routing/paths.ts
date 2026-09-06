@@ -19,6 +19,15 @@ export function newsMarketPath(): string {
 }
 
 /**
+ * 链上钱包 (#572 PR-3). The wallet tape's own surface: its roster, its ingest position, the cards its
+ * rules opened and what those cards were worth an hour and four hours later. A single wallet observation
+ * is still read on the market detail page — this one answers what the tape is doing, not what one card said.
+ */
+export function newsWalletsPath(): string {
+  return "/news/wallets";
+}
+
+/**
  * The token page (#207 PR-W1). Every `base_symbol` on the console routes here, including one the universe
  * has never listed — the endpoint answers `known: false` rather than 404, so a struck-through chip is a
  * link like any other.

@@ -1572,6 +1572,9 @@ it touches is public and unauthenticated, so nothing here is a secret and
 | `news.chain_tape.rules.crowding_min_usd` | `1000` | how much each of them must have put in inside that window to be counted |
 | `news.chain_tape.rules.crowding_premium_late_bps` | `3000` | the median follower entry premium over the lead at which the card is marked `late` |
 | `news.chain_tape.rules.trigger_max_age_s` | `600` | how far a fill's block time may lag the moment this host read it and still fire a rule. This is what keeps a backfill from sending cards |
+| `news.chain_tape.digest.enabled` | `true` | whether the four-hourly summary is written at all. Off means no digest; the exit and crowding cards are unaffected |
+| `news.chain_tape.digest.interval_s` | `14400` | how often a digest is due. A window with no activity in it is skipped rather than carded |
+| `news.chain_tape.digest.max_calls_per_day` | `24` | the ceiling on *model* calls, not on digests. Past it the digest is still written, from the deterministic template. `0` means "never call the model" |
 | `news.chain_tape.retention_days` | `90` | how long a fill is kept. The Janitor deletes at most 500 expired fills per turn on its existing heavy slot |
 
 The roster union is the topic array on every `eth_getLogs` call, so raising the
@@ -1710,6 +1713,50 @@ SELECT to_char(to_timestamp(e.event_at_ms / 1000) AT TIME ZONE 'UTC', 'YYYY-MM-D
  GROUP BY 1, 2, 3
  ORDER BY 1 DESC, 2, 3;
 ```
+
+### The four-hourly digest (#572 PR-3)
+
+A third kind of wallet card, and the one place a model touches this flow. Every `digest.interval_s` the
+tape's turn builds a fact pack in SQL — the window's totals, each roster wallet's buys and sells, the
+three separately-named cost bases per position that moved, the cards the rules opened, and what the
+price receipts said — and makes at most one structured call over it. The model writes at most eight
+short Chinese lines and cites the fact ids each line used; a line stating any figure its cited facts do
+not carry drops the **whole** answer, and the card goes out with the template's sentences instead. Same
+for a timeout, a day at its call cap, and a host with no model endpoint configured. The numbers are the
+same either way — they were computed before a call was weighed.
+
+The digest is skipped entirely for a window with no fills and no cards in it. At the default interval
+that is six digests a day at most, against a 24-call ceiling, so the cap is a bound on the endpoint
+rather than something an operator should expect to hit.
+
+How much of the last week's digests carried the model's wording, and how often reconciliation sent the
+template instead:
+
+```sql
+SELECT to_char(to_timestamp(e.event_at_ms / 1000) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+       count(*) AS digests,
+       count(*) FILTER (WHERE e.evidence ->> 'model_called' = 'true') AS model_called,
+       count(*) FILTER (WHERE e.evidence ->> 'model_used' = 'true') AS model_used,
+       count(*) FILTER (WHERE e.evidence ->> 'model_called' = 'true'
+                          AND e.evidence ->> 'model_used' <> 'true') AS grounding_fallbacks,
+       count(*) FILTER (WHERE d.state = 'sent') AS sent
+  FROM news_market_wallet_events e
+  LEFT JOIN news_items i ON i.item_id = e.item_id
+  LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
+ WHERE e.kind = 'digest'
+   AND e.event_at_ms >= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - 7 * 86400000
+ GROUP BY 1
+ ORDER BY 1 DESC;
+```
+
+`model_called` above `model_used` is the reconciliation failing: the model answered and stated a figure
+the facts it cited did not carry. A rising gap is a prompt problem, never a data problem — the digest a
+reader received is still every number this database holds. The pack the model was shown is on the row:
+`evidence -> 'facts'` is the exact list of `{id, text}` it saw, and `evidence ->> 'pack_sha256'` is its
+digest, so a disputed line can be checked against what was actually in front of the model.
+
+The console reads the same rows at `/news/wallets`, where a digest row prints its own sentences and says
+whether the model or the template wrote them.
 
 The effect receipt #572 §11 asks for — each sent card beside what its token did
 one and four hours later. It is a receipt, not a gate: nothing in the code reads

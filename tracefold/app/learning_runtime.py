@@ -16,6 +16,11 @@ from tracefold.news.program.artifact import (
     ProgramStrategyArtifactV1,
     load_stable_program_artifact,
 )
+from tracefold.news.program.chain_tape_digest import (
+    CHAIN_TAPE_DIGEST_MAX_TOKENS,
+    CHAIN_TAPE_DIGEST_TIMEOUT_SECONDS,
+    ChainTapeDigestProgram,
+)
 from tracefold.news.program.contracts import SemanticJudge
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
 from tracefold.news.program.lm import AuditedConfiguredLM, RuntimeModelIdentity
@@ -246,6 +251,32 @@ class NewsProgramRuntimeComposition:
             lm_type=lm_type,
         )
         return ProgressionReviewProgram(lm)
+
+    def chain_tape_digest(
+        self,
+        *,
+        lm_type: Any = dspy.LM,
+    ) -> ChainTapeDigestProgram | None:
+        """Bind the wallet tape's four-hourly summary to the reader-card endpoint (#572 §5.4).
+
+        The reader card's, not the event-semantics one, because the digest writes reader-facing Chinese
+        copy and that is the slot an operator points at the model chosen for exactly that. `None` when
+        no Program is configured, which the tape reads as "render the template" rather than as a fault:
+        the digest is computed either way and only its wording depends on this.
+        """
+
+        if not self.program_configured:
+            return None
+        lm = _configured_program_lm(
+            self.reader_card_primary,
+            timeout=CHAIN_TAPE_DIGEST_TIMEOUT_SECONDS,
+            max_tokens=CHAIN_TAPE_DIGEST_MAX_TOKENS,
+            predictor="chain_tape_digest",
+            route="primary",
+            model_binding="chain_tape_digest.primary",
+            lm_type=lm_type,
+        )
+        return ChainTapeDigestProgram(lm)
 
 
 def compose_news_program_runtime(settings: Any) -> NewsProgramRuntimeComposition:

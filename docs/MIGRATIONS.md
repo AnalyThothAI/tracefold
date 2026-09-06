@@ -449,6 +449,28 @@ card a reader received, and one card can speak for several observations.
 the fills they were derived from expire on a 90-day retention the derived rows do
 not share.
 
+`20260906_0373` admits the tape's four-hourly digest as a third kind of wallet
+observation (#572 PR-3). One `ALTER TABLE` on `news_market_wallet_events` carries
+three CHECK replacements — the kind vocabulary gains `digest`, the identity
+predicate stops assuming every observation has a subject address, and the window
+predicate states the digest's own rule beside the one it already had — and two
+indexes follow it.
+
+The identity predicate is where the digest differs in substance. An `exit` and a
+`crowding` observation are about a wallet and a token and must carry both; a
+digest is about four hours of a whole roster and carries neither, and it says so
+with two empty strings. The zero address would be a claim about an address, and
+two more nullable columns would express one kind's absence in the schema of every
+other kind, so the predicate now states the difference: a digest must have both
+empty, and every other kind must have both as real addresses. The two indexes are
+the two reads PR-3 adds — `ix_news_market_wallet_events_event_at` for the console
+page's time window, and a partial `ix_news_market_wallet_events_digest` for "when
+did the last digest end", six rows a day against thousands of cards. Neither
+question is a prefix of the table's two existing indexes, which lead with `wallet`
+and with `token`. `downgrade` is refused: a narrower kind vocabulary would leave
+digest rows the CHECK rejects, and dropping them would delete summaries readers
+were sent.
+
 ## Database development standard
 
 1. The deployment has one non-superuser application login, `tracefold`.

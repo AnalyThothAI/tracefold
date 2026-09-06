@@ -174,6 +174,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/news/wallets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get News Wallets
+         * @description The tape's own state: its roster, its position, and one day of what it stored and sent.
+         *
+         *     Four bounded statements and no parameters. The roster is the current version only -- an earlier
+         *     version is evidence a card carries, not a page a reader browses -- and the two count blocks are
+         *     the last 24 hours on the chain's own clock.
+         */
+        get: operations["get_news_wallets_api_news_wallets_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/news/wallets/cards": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get News Wallet Cards
+         * @description Cards the tape opened in the window, newest first, each beside its two price receipts.
+         *
+         *     Every card is published, sent or not: whether a reader was told is reported per row and is never a
+         *     filter. A digest carries its own sentences and says whether the model wrote them, which is the one
+         *     thing a reader of this page cannot get from the card itself.
+         */
+        get: operations["get_news_wallet_cards_api_news_wallets_cards_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/status": {
         parameters: {
             query?: never;
@@ -427,6 +475,26 @@ export interface components {
         /** ApiEnvelope[NewsSymbolData] */
         ApiEnvelope_NewsSymbolData_: {
             data?: components["schemas"]["NewsSymbolData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[NewsWalletCardsData] */
+        ApiEnvelope_NewsWalletCardsData_: {
+            data?: components["schemas"]["NewsWalletCardsData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[NewsWalletsData] */
+        ApiEnvelope_NewsWalletsData_: {
+            data?: components["schemas"]["NewsWalletsData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -1556,6 +1624,8 @@ export interface components {
             wallet_closed?: boolean | null;
             /** Wallet Crowding Item Id */
             wallet_crowding_item_id?: string | null;
+            /** Wallet Digest Lines */
+            wallet_digest_lines?: string[] | null;
             /** Wallet Entry Price */
             wallet_entry_price?: string | null;
             /** Wallet Followers */
@@ -1563,7 +1633,7 @@ export interface components {
             /** Wallet Handle */
             wallet_handle?: string | null;
             /** Wallet Kind */
-            wallet_kind?: ("exit" | "crowding") | null;
+            wallet_kind?: ("exit" | "crowding" | "digest") | null;
             /** Wallet Liquidity Usd */
             wallet_liquidity_usd?: string | null;
             /** Wallet Mark Price */
@@ -2458,6 +2528,308 @@ export interface components {
             throttled_by?: string | null;
             verdict: components["schemas"]["NewsPresentationVerdictData"];
         };
+        /**
+         * NewsWalletCardData
+         * @description One card the tape opened, with the two price receipts taken after it was sent.
+         *
+         *     `return_1h_bps` / `return_4h_bps` are measured against the price the card itself printed -- the
+         *     chain's mark at the moment it fired, or the lead's entry for a crowding window -- and are absent
+         *     where the card carried no price to measure against or nothing could price the token. They are
+         *     #572 §11's receipt, not a gate: nothing in the code reads them.
+         */
+        NewsWalletCardData: {
+            /** Basis */
+            basis?: ("chain_balance" | "site_reported") | null;
+            /**
+             * Closed
+             * @default false
+             */
+            closed: boolean;
+            /** Delivery Key */
+            delivery_key?: string | null;
+            /** Delivery State */
+            delivery_state?: ("pending" | "sending" | "sent" | "failed" | "unknown" | "unavailable") | null;
+            /** Digest Lines */
+            digest_lines?: string[] | null;
+            /** Digest Model Used */
+            digest_model_used?: boolean | null;
+            /** Entry Price */
+            entry_price?: string | null;
+            /** Event At Ms */
+            event_at_ms: number;
+            /**
+             * Handle
+             * @default
+             */
+            handle: string;
+            /** Item Id */
+            item_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "exit" | "crowding" | "digest";
+            /** Mark Price */
+            mark_price?: string | null;
+            /** Outcome 1H Source */
+            outcome_1h_source?: string | null;
+            /** Outcome 4H Source */
+            outcome_4h_source?: string | null;
+            /**
+             * Peer Wallets
+             * @default 0
+             */
+            peer_wallets: number;
+            /** Position Usd */
+            position_usd?: string | null;
+            /** Premium Bps */
+            premium_bps?: number | null;
+            /** Ratio Bps */
+            ratio_bps?: number | null;
+            /** Return 1H Bps */
+            return_1h_bps?: number | null;
+            /** Return 4H Bps */
+            return_4h_bps?: number | null;
+            /** Settled At Ms */
+            settled_at_ms?: number | null;
+            /**
+             * Token
+             * @default
+             */
+            token: string;
+            /** Token Symbol */
+            token_symbol?: string | null;
+            /**
+             * Tone
+             * @default
+             */
+            tone: string;
+            /** Usd */
+            usd?: string | null;
+            /**
+             * Wallet
+             * @default
+             */
+            wallet: string;
+            /** Window From Ms */
+            window_from_ms: number;
+            /** Window To Ms */
+            window_to_ms: number;
+        };
+        /**
+         * NewsWalletCardTotalData
+         * @description What the rules opened in the window, per kind, and how much of it reached a reader.
+         */
+        NewsWalletCardTotalData: {
+            /**
+             * Cards
+             * @default 0
+             */
+            cards: number;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "exit" | "crowding" | "digest";
+            /** Last Event At Ms */
+            last_event_at_ms?: number | null;
+            /**
+             * Sent
+             * @default 0
+             */
+            sent: number;
+        };
+        /**
+         * NewsWalletCardsData
+         * @description One bounded page of cards, newest first, inside the window the caller asked for.
+         */
+        NewsWalletCardsData: {
+            /** Cards */
+            cards: components["schemas"]["NewsWalletCardData"][];
+            /** Limit */
+            limit: number;
+            /** Window */
+            window: string;
+            /** Window From Ms */
+            window_from_ms: number;
+            /** Window To Ms */
+            window_to_ms: number;
+        };
+        /**
+         * NewsWalletFillTotalData
+         * @description What the tape stored in the window, per kind.
+         *
+         *     `unpriced` counts trades whose cash leg was not the pinned stablecoin, so it is always zero on
+         *     `transfer_out`: a movement with no swap has no cash leg at all, and calling it unpriced would report
+         *     the tape's own classification as a pricing failure.
+         */
+        NewsWalletFillTotalData: {
+            /**
+             * Fills
+             * @default 0
+             */
+            fills: number;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "buy" | "sell" | "transfer_out";
+            /**
+             * Tokens
+             * @default 0
+             */
+            tokens: number;
+            /**
+             * Unpriced
+             * @default 0
+             */
+            unpriced: number;
+            /**
+             * Usd
+             * @default 0
+             */
+            usd: string;
+            /**
+             * Wallets
+             * @default 0
+             */
+            wallets: number;
+        };
+        /**
+         * NewsWalletRosterData
+         * @description The roster as one version: when it was taken, and who was on it.
+         */
+        NewsWalletRosterData: {
+            /** Members */
+            members: components["schemas"]["NewsWalletRosterMemberData"][];
+            /** Provider */
+            provider?: string | null;
+            /**
+             * Roster Version
+             * @default 0
+             */
+            roster_version: number;
+            /** Taken At Ms */
+            taken_at_ms?: number | null;
+        };
+        /**
+         * NewsWalletRosterMemberData
+         * @description One followed wallet in the current roster version, and the two ranks that put it there.
+         *
+         *     A member can hold both ranks and can hold either alone; `null` means "this list did not select
+         *     this wallet", which is not the same as rank 0. Win rate is recorded and is deliberately not a
+         *     selection criterion (#572 §3.2).
+         */
+        NewsWalletRosterMemberData: {
+            /**
+             * Closed Trades
+             * @default 0
+             */
+            closed_trades: number;
+            /**
+             * Followers
+             * @default 0
+             */
+            followers: number;
+            /** Handle */
+            handle: string;
+            /**
+             * Open Cost
+             * @default 0
+             */
+            open_cost: number;
+            /** Profit Factor */
+            profit_factor?: number | null;
+            /** Provider */
+            provider: string;
+            /** Rank Quality */
+            rank_quality?: number | null;
+            /** Rank Whale */
+            rank_whale?: number | null;
+            /**
+             * Realized Pnl
+             * @default 0
+             */
+            realized_pnl: number;
+            /** Wallet */
+            wallet: string;
+            /**
+             * Win Rate
+             * @default 0
+             */
+            win_rate: number;
+        };
+        /**
+         * NewsWalletTapeStateData
+         * @description Where the tape has read to, and what its last turn did there.
+         *
+         *     `noise_through_block` is the second position and never lags: it is how far the two discard counters
+         *     have been taken, so a movement is counted once however many times the overlap re-offers it.
+         */
+        NewsWalletTapeStateData: {
+            /**
+             * High Water Block
+             * @default 0
+             */
+            high_water_block: number;
+            /**
+             * High Water Tx Index
+             * @default 0
+             */
+            high_water_tx_index: number;
+            /**
+             * Ignored Inbound Total
+             * @default 0
+             */
+            ignored_inbound_total: number;
+            /** Last Error */
+            last_error?: string | null;
+            /**
+             * Last Outcome
+             * @default
+             */
+            last_outcome: string;
+            /** Last Success At Ms */
+            last_success_at_ms?: number | null;
+            /**
+             * Noise Through Block
+             * @default 0
+             */
+            noise_through_block: number;
+            /**
+             * Noise Through Tx Index
+             * @default 0
+             */
+            noise_through_tx_index: number;
+            /**
+             * Roster Version
+             * @default 0
+             */
+            roster_version: number;
+            /**
+             * Unknown Total
+             * @default 0
+             */
+            unknown_total: number;
+            /** Updated At Ms */
+            updated_at_ms?: number | null;
+        };
+        /**
+         * NewsWalletsData
+         * @description The page's header and roster: one roster version, one tape position, two windowed counts.
+         */
+        NewsWalletsData: {
+            /** Cards */
+            cards: components["schemas"]["NewsWalletCardTotalData"][];
+            /** Fills */
+            fills: components["schemas"]["NewsWalletFillTotalData"][];
+            roster: components["schemas"]["NewsWalletRosterData"];
+            tape?: components["schemas"]["NewsWalletTapeStateData"] | null;
+            /** Window From Ms */
+            window_from_ms: number;
+            /** Window To Ms */
+            window_to_ms: number;
+        };
         /** ReadinessData */
         ReadinessData: {
             /** Composition */
@@ -3267,6 +3639,58 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_NewsSymbolData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_news_wallets_api_news_wallets_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_NewsWalletsData_"];
+                };
+            };
+        };
+    };
+    get_news_wallet_cards_api_news_wallets_cards_get: {
+        parameters: {
+            query?: {
+                window?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_NewsWalletCardsData_"];
                 };
             };
             /** @description Validation Error */

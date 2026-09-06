@@ -92,6 +92,7 @@ class MarketObservationRow(TypedDict):
     wallet_block_number: int | None
     wallet_closed: bool | None
     wallet_crowding_item_id: str | None
+    wallet_digest_lines: list[str] | None
     wallet_window_from_ms: int | None
     # Reported beside `parse_status`, never folded into it (#553 §6). An observation with no attempt
     # says which rule is holding it; one with an attempt says what the send did.
@@ -212,6 +213,13 @@ _OBSERVATIONS_SQL = f"""
            e.closed AS wallet_closed,
            e.window_from_ms AS wallet_window_from_ms,
            e.evidence ->> 'crowding_item_id' AS wallet_crowding_item_id,
+           -- The digest's sentences, in the order they were written (#572 PR-3). They live in the
+           -- observation's own evidence rather than in a column of their own: the row already carries
+           -- the fact pack they were grounded against, and a card is the only thing that reads them.
+           CASE WHEN e.kind = 'digest' THEN (
+                  SELECT jsonb_agg(line ->> 'text' ORDER BY ord)
+                    FROM jsonb_array_elements(e.evidence -> 'lines') WITH ORDINALITY AS digest(line, ord)
+                ) END AS wallet_digest_lines,
            i.market_notify_state AS notify_state,
            i.market_notify_group_key AS notify_group_key,
            i.market_notify_delivery_key AS delivery_key,
@@ -310,6 +318,7 @@ _OBSERVATION_KEYS: Final[tuple[str, ...]] = (
     "wallet_block_number",
     "wallet_closed",
     "wallet_crowding_item_id",
+    "wallet_digest_lines",
     "wallet_window_from_ms",
     "notify_group_key",
     "delivery_key",

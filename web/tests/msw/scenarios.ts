@@ -7,6 +7,8 @@ import {
   newsMarketObservationFixture,
   newsStatusFixture,
   newsSymbolFixture,
+  newsWalletCardsFixture,
+  newsWalletsFixture,
 } from "@tests/fixtures/newsFixture";
 import {
   tradingCasesForUnderlying,
@@ -58,6 +60,15 @@ export function mockAppRoutes(apiMock: ApiMock) {
       return ok(
         newsMarketItemFixture({ observation: newsMarketObservationFixture({ item_id: itemId }) }),
       );
+    }
+    /*
+     * #572 PR-3: the wallet tape's own two reads. The card list answers the window it was asked for,
+     * because the window is a real request — a mock that ignored it would let a browser-side slice pass.
+     */
+    if (path === "/api/news/wallets") return ok(newsWalletsFixture());
+    if (path === "/api/news/wallets/cards") {
+      const window = param("window") ?? "24h";
+      return ok(newsWalletCardsFixture({ window }));
     }
     if (path === "/api/news/quotes") return ok({ measured_at_ms: 0, quotes: [] });
     if (path.startsWith("/api/news/events/")) return ok(newsEventDetailFixture());

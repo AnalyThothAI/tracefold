@@ -55,7 +55,7 @@ class NewsMarketObservationData(ExactApiSchema):
     # The chain wallet family (#572 PR-2). Derived by this process from chain logs rather than reported
     # by a provider, which is why none of these has a counterpart on the four provider kinds. The
     # quantities and dollar figures cross as exact text for the same reason the provider's do.
-    wallet_kind: Literal["exit", "crowding"] | None = None
+    wallet_kind: Literal["exit", "crowding", "digest"] | None = None
     wallet_address: str | None = None
     wallet_handle: str | None = None
     wallet_followers: int | None = None
@@ -78,6 +78,10 @@ class NewsMarketObservationData(ExactApiSchema):
     wallet_block_number: int | None = None
     wallet_closed: bool | None = None
     wallet_crowding_item_id: str | None = None
+    # The digest's own sentences, in order (#572 PR-3). Absent on every other kind, including the two
+    # wallet kinds that are about one movement: those carry figures, and this carries the copy that
+    # was written from them.
+    wallet_digest_lines: list[str] | None = None
     # The second independent pair. With no attempt this says which rule is holding the observation --
     # `historical`, `merging`, `unprocessed` -- or that none is, because the alert round it belonged
     # to ended before a card spoke for it (`uncovered`). With an attempt it says what the send did.

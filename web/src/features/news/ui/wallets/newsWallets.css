@@ -1,0 +1,146 @@
+@layer app.features {
+  /* The same reading measure as 市场事实: two tables of figures, wide but not unbounded. */
+  .news-panel.news-wallets-shell {
+    max-width: 1240px;
+  }
+
+  .news-wallets-body {
+    display: grid;
+    gap: 12px;
+  }
+
+  .news-wallets-panel {
+    min-width: 0;
+    overflow: hidden;
+    border-radius: var(--radius-lg);
+    background: var(--surface-panel);
+    box-shadow: var(--ring-panel);
+  }
+
+  .news-wallets-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 41px;
+    padding: 5px 10px;
+  }
+
+  .news-wallets-toolbar > b {
+    color: var(--text-primary);
+    font-size: var(--font-size-meta);
+    font-weight: 660;
+  }
+
+  .news-wallets-toolbar > small {
+    overflow: hidden;
+    color: var(--text-subtle);
+    font: 500 var(--font-size-mono-meta)/1 var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* One meaning per state, the way the market page's kind chips work: a lit chip is the window in force. */
+  .news-wallets-windows {
+    display: inline-flex;
+    gap: 2px;
+    min-width: 0;
+    padding: 3px;
+    border-radius: var(--radius-lg);
+    background: var(--surface-slot);
+  }
+
+  .news-wallets-window {
+    display: inline-flex;
+    align-items: center;
+    min-height: 25px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    background: transparent;
+    font: 500 var(--font-size-meta)/1 var(--font-mono);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .news-wallets-window[data-active] {
+    color: var(--text-primary);
+    background: var(--surface-panel);
+    box-shadow: var(--ring-panel);
+  }
+
+  /* Wide tables scroll inside their own panel rather than widening the page. */
+  .news-wallets-scroll {
+    overflow-x: auto;
+  }
+
+  .news-wallets-table {
+    width: 100%;
+    border-collapse: collapse;
+    white-space: nowrap;
+  }
+
+  .news-wallets-table th,
+  .news-wallets-table td {
+    padding: 6px 10px;
+    text-align: right;
+  }
+
+  .news-wallets-table thead th {
+    color: var(--text-faint);
+    background: var(--surface-raised);
+    font: 700 var(--font-size-eyebrow)/1.4 var(--font-mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .news-wallets-table tbody td {
+    color: var(--text-secondary);
+    font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The row's own subject, on the left and in the reading font: everything else is a figure. */
+  .news-wallets-table th[scope="row"],
+  .news-wallets-table thead th:first-child,
+  .news-wallets-table tbody td:first-child,
+  .news-wallets-table tbody td:nth-child(2),
+  .news-wallets-table tbody td:nth-child(3),
+  .news-wallets-table tbody td:nth-child(4) {
+    text-align: left;
+  }
+
+  .news-wallets-table th[scope="row"] {
+    color: var(--text-primary);
+    font: 620 var(--font-size-meta)/1.5 var(--font-sans);
+  }
+
+  .news-wallets-table tbody tr + tr th,
+  .news-wallets-table tbody tr + tr td {
+    border-top: 1px solid var(--signal-neutral-border);
+  }
+
+  .news-wallets-kind {
+    color: var(--text-primary);
+    font: 620 var(--font-size-mono-meta)/1.5 var(--font-mono);
+    text-decoration: none;
+  }
+
+  .news-wallets-kind:hover {
+    text-decoration: underline;
+  }
+
+  /*
+   * Red up, green down — the mainland convention the quote line already uses, and applied here for the
+   * same reason: these are the market's own answers, not a judgment this console made.
+   */
+  .news-wallets-table td[data-tone="up"] {
+    color: var(--dir-bullish);
+  }
+
+  .news-wallets-table td[data-tone="down"] {
+    color: var(--dir-bearish);
+  }
+}

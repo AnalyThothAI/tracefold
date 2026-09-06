@@ -11,6 +11,8 @@ import {
   newsQuoteFixture,
   newsStatusFixture,
   newsSymbolFixture,
+  newsWalletCardsFixture,
+  newsWalletsFixture,
 } from "@tests/fixtures/newsFixture";
 import {
   TRADING_NOW_MS,
@@ -80,6 +82,18 @@ export async function installMockApi(
       return fulfill(
         route,
         newsMarketItemFixture({ observation: newsMarketObservationFixture({ item_id: itemId }) }),
+      );
+    }
+    /*
+     * #572 PR-3: the wallet tape's own page. Answered here rather than left to 404 for the same reason
+     * `/api/trading/status` is — an unhandled-request assertion on a route that never asks costs nothing,
+     * and one that does is a real failure.
+     */
+    if (path === "/api/news/wallets") return fulfill(route, newsWalletsFixture());
+    if (path === "/api/news/wallets/cards") {
+      return fulfill(
+        route,
+        newsWalletCardsFixture({ window: url.searchParams.get("window") ?? "24h" }),
       );
     }
     if (path === "/api/news/quotes") return fulfill(route, newsQuotesData(url));

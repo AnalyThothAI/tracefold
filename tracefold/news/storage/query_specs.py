@@ -13,6 +13,14 @@ from ..market_contracts import MARKET_NEWS_PUSHED_MAX, MARKET_NEWS_WINDOW_MS, MA
 from ..market_review.pricing import REACTION_METRIC_VERSION
 from ..review.desk import review_read_statements
 from ..source_contracts import MARKET_KINDS
+from .chain_tape import (
+    TAPE_STATE_ID,
+    WALLET_CARDS_BY_KIND_SQL,
+    WALLET_CARDS_SQL,
+    WALLET_FILLS_BY_KIND_SQL,
+    WALLET_ROSTER_ROWS_SQL,
+    WALLET_TAPE_STATE_SQL,
+)
 from .decisions import (
     MARKET_NEWS_PUSHED_SQL,
     MARKET_NEWS_TOTAL_SQL,
@@ -362,6 +370,44 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             name="news_market_notify_backlog",
             sql=MARKET_NOTIFY_BACKLOG_SQL,
             params=(100,),
+            max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        ),
+        # #572 PR-3. The wallet console page's five statements, exactly as the two routes execute them.
+        # They are registered because they are public reads over a table the tape appends to every two
+        # seconds -- the one place in this flow where growth reaches a reader rather than a log line.
+        ReadQuerySpec(
+            name="news_wallet_roster",
+            sql=WALLET_ROSTER_ROWS_SQL,
+            params=(),
+            max_read_return_amplification=8.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_wallet_tape_state",
+            sql=WALLET_TAPE_STATE_SQL,
+            params=(TAPE_STATE_ID,),
+            max_read_return_amplification=4.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_wallet_fill_totals",
+            sql=WALLET_FILLS_BY_KIND_SQL,
+            params={"from_ms": day_ago},
+            max_read_return_amplification=100.0,
+            max_scanned_rows=MARKET_WINDOW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_wallet_card_totals",
+            sql=WALLET_CARDS_BY_KIND_SQL,
+            params={"from_ms": day_ago},
+            max_read_return_amplification=100.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_wallet_cards",
+            sql=WALLET_CARDS_SQL,
+            params={"from_ms": day_ago, "to_ms": int(now_ms), "limit": 100},
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),

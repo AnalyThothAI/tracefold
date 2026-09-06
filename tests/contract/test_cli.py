@@ -385,6 +385,13 @@ class CliTests(unittest.TestCase):
                     "crowding_premium_late_bps": 3000,
                     "trigger_max_age_s": 600,
                 },
+                # #572 PR-3. Two runtime numbers and a switch; `max_calls_per_day` bounds the model, not
+                # the digest -- past it the summary is still written, from its own fact pack.
+                "digest": {
+                    "enabled": True,
+                    "interval_s": 14_400,
+                    "max_calls_per_day": 24,
+                },
                 "retention_days": 90,
             },
         )

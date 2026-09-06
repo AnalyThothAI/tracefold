@@ -33,9 +33,10 @@ from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.chain_tape.contracts import ClassifiedFill, RosterMember
 from tracefold.news.chain_tape.derive import WalletCardDeriver
+from tracefold.news.chain_tape.digest_writer import WalletDigestWriter
 from tracefold.news.chain_tape.rules import WalletRules
 from tracefold.news.market_notifications import MarketNotificationLoop
-from tracefold.news.wallet_contracts import OUTCOME_GIVE_UP_MS, OUTCOME_PRICE_MIN
+from tracefold.news.wallet_contracts import OUTCOME_GIVE_UP_MS, OUTCOME_PRICE_MIN, DigestLine
 
 pytestmark = pytest.mark.integration
 
@@ -44,6 +45,8 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "chain_tape"
 # `TRACEFOLD_RECORD_WALLET_CARD=1`, and read the diff: this file is the wallet family's rendered
 # contract, and a change to it is a change to what a reader sees.
 EXIT_CARD = Path(__file__).resolve().parents[1] / "fixtures" / "news" / "wallet_exit_card.json"
+# The digest a reader receives, byte for byte. `TRACEFOLD_RECORD_WALLET_CARD=1` rewrites both.
+DIGEST_CARD = Path(__file__).resolve().parents[1] / "fixtures" / "news" / "wallet_digest_card.json"
 
 CHAIN_ID = 4663
 NOW = 1_788_642_800_000
@@ -251,6 +254,14 @@ def _seed(conn: Any, members: Sequence[RosterMember], fills: Sequence[Classified
     repos = repositories_for_connection(conn)
     with repos.transaction():
         repos.news.chain_tape_store_roster(list(members), now_ms=NOW - 3_600_000)
+        repos.news.chain_tape_record_fills(list(fills))
+
+
+def _seed_fills(conn: Any, fills: Sequence[ClassifiedFill]) -> None:
+    """More fills, later, with the roster left exactly as it is."""
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
         repos.news.chain_tape_record_fills(list(fills))
 
 
@@ -537,6 +548,296 @@ def test_a_wallet_item_reads_back_through_the_market_read_model(conn) -> None:
     assert detail["group_key"].startswith(f"wallet|exit|robinhood_chain|{SELL_WALLET}|{FSD}|")
     timeline = repositories_for_connection(conn).news.market_group_timeline(group_key=detail["group_key"])
     assert [row["item_id"] for row in timeline] == [item_id]
+
+
+class _Digest:
+    """A model that answers with two grounded lines, and counts how often it was asked."""
+
+    def __init__(self, lines: Sequence[DigestLine] | None = None) -> None:
+        self.lines = tuple(lines or ())
+        self.calls = 0
+        self.packs: list[str] = []
+
+    async def summarize(self, *, facts_json: str) -> Sequence[DigestLine]:
+        self.calls += 1
+        self.packs.append(facts_json)
+        return self.lines
+
+
+def _digest_writer(db: _Db, clock: _Clock, program: Any = None, *, site: Any = None) -> WalletDigestWriter:
+    return WalletDigestWriter(db=db, program=program, bags=site, interval_s=14_400, clock=clock)
+
+
+def test_a_due_window_becomes_a_digest_item_and_a_feishu_card(conn) -> None:
+    """#572 PR-3 end to end on real PostgreSQL: window rows in, one `wallet` Item out, one card sent.
+
+    The model answers with two lines whose every figure is in the facts it cites, so the card carries
+    the model's wording -- and the row records that it did, beside the pack the wording was checked
+    against.
+    """
+
+    clock = _Clock()
+    db, site = _Db(conn), _Site()
+    seller = _member(SELL_WALLET, handle="0xVantaa")
+    site.bags_by_handle["0xVantaa"] = (
+        _Bag(token=FSD, symbol="FSD", amount=4.0, avg_price=0.0018, cost_usd=16_900.0, opened_at_ms=NOW - 7_200_000),
+    )
+    fills = [
+        _fill(
+            wallet=SELL_WALLET,
+            token=FSD,
+            kind="buy",
+            amount_raw=8 * UNIT,
+            usd="12340.50",
+            event_at_ms=NOW - 3 * 3_600_000,
+            received_at_ms=NOW - 3 * 3_600_000,
+            tx_hash="0x" + "ab" * 32,
+        ),
+        _fill(
+            wallet=SELL_WALLET,
+            token=FSD,
+            kind="sell",
+            amount_raw=4 * UNIT,
+            usd=SALE_USD,
+            event_at_ms=NOW - 2 * 3_600_000,
+            received_at_ms=NOW - 2 * 3_600_000,
+            tx_hash=SELL_TX,
+        ),
+    ]
+    _seed(conn, [seller], fills)
+    program = _Digest(
+        (
+            DigestLine(text="0xVantaa 买入 1 笔 $12,340.50，卖出 1 笔 $23,531.60", cites=("a1",)),
+            DigestLine(text="窗口内活跃名单地址 1 个，代币 1 个", cites=("w0",)),
+        )
+    )
+    errors: list[str] = []
+
+    result = asyncio.run(_digest_writer(db, clock, program, site=site).take_digest(roster=_roster(conn), errors=errors))
+
+    assert errors == []
+    assert (result.digests, result.model_called, result.model_used) == (1, True, True)
+    assert program.calls == 1
+    # The pack the model saw is deterministic text built from the rows above, and the three cost bases
+    # #572 §5.3 names separately are all in it.
+    assert "观察期买入均价" in program.packs[0] and "净现金回收线" in program.packs[0]
+
+    event = _rows(conn, "SELECT * FROM news_market_wallet_events WHERE kind = 'digest'")[0]
+    # A digest names no wallet and no token: the schema admits the empty pair for this kind alone.
+    assert (event["wallet"], event["token"]) == ("", "")
+    assert event["evidence"]["model_used"] is True
+    assert len(event["evidence"]["pack_sha256"]) == 64
+    assert [line["text"] for line in event["evidence"]["lines"]] == [line.text for line in program.lines]
+    item = _rows(conn, "SELECT market_kind, market_notify_state FROM news_items")[0]
+    assert (item["market_kind"], item["market_notify_state"]) == ("wallet", "pending")
+
+    sender = _Sender()
+    turn = asyncio.run(MarketNotificationLoop(db=db, sender=sender, console_base_url=CONSOLE, clock=clock).advance())
+
+    assert (turn.groups, turn.intents, turn.sent) == (1, 1, 1)
+    card = sender.cards[0]
+    if os.environ.get("TRACEFOLD_RECORD_WALLET_CARD"):  # pragma: no cover - recording aid
+        DIGEST_CARD.write_text(json.dumps(card, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    assert card == json.loads(DIGEST_CARD.read_text(encoding="utf-8"))
+    delivery = _rows(conn, "SELECT market_kind, state FROM news_market_deliveries")[0]
+    assert (delivery["market_kind"], delivery["state"]) == ("wallet", "sent")
+
+
+def test_an_ungrounded_answer_sends_the_template_instead(conn) -> None:
+    """The F2P #572 §5.4 asks for: one invented figure and the reader gets the computed sentences.
+
+    The model is asked -- the row records that -- and its whole answer is dropped, because a model that
+    invented one number has said nothing about what its other lines are worth.
+    """
+
+    clock = _Clock()
+    db, site = _Db(conn), _Site()
+    seller = _member(SELL_WALLET, handle="0xVantaa")
+    _seed(
+        conn,
+        [seller],
+        [
+            _fill(
+                wallet=SELL_WALLET,
+                token=FSD,
+                kind="buy",
+                amount_raw=8 * UNIT,
+                usd="12340.50",
+                event_at_ms=NOW - 3 * 3_600_000,
+                received_at_ms=NOW - 3 * 3_600_000,
+                tx_hash="0x" + "ab" * 32,
+            )
+        ],
+    )
+    program = _Digest((DigestLine(text="0xVantaa 买入 1 笔 $99,999.00", cites=("a1",)),))
+    errors: list[str] = []
+
+    result = asyncio.run(_digest_writer(db, clock, program, site=site).take_digest(roster=_roster(conn), errors=errors))
+
+    assert (result.digests, result.model_called, result.model_used) == (1, True, False)
+    event = _rows(conn, "SELECT evidence FROM news_market_wallet_events WHERE kind = 'digest'")[0]
+    assert event["evidence"]["model_used"] is False
+    lines = [line["text"] for line in event["evidence"]["lines"]]
+    assert "$99,999.00" not in " ".join(lines)
+    assert any("合计买入 1 笔 $12,340.50" in line for line in lines)
+
+
+def test_a_second_turn_inside_the_interval_writes_no_second_digest(conn) -> None:
+    """Due-time is the whole schedule: the loop offers every turn and the writer answers "not yet"."""
+
+    clock = _Clock()
+    db, site = _Db(conn), _Site()
+    seller = _member(SELL_WALLET, handle="0xVantaa")
+    _seed(
+        conn,
+        [seller],
+        [
+            _fill(
+                wallet=SELL_WALLET,
+                token=FSD,
+                kind="buy",
+                amount_raw=8 * UNIT,
+                usd="12340.50",
+                event_at_ms=NOW - 3 * 3_600_000,
+                received_at_ms=NOW - 3 * 3_600_000,
+                tx_hash="0x" + "ab" * 32,
+            )
+        ],
+    )
+    program = _Digest()
+    writer = _digest_writer(db, clock, program, site=site)
+    errors: list[str] = []
+
+    assert asyncio.run(writer.take_digest(roster=_roster(conn), errors=errors)).digests == 1
+    clock.advance(3_600_000)
+    assert asyncio.run(writer.take_digest(roster=_roster(conn), errors=errors)).digests == 0
+
+    # Four more hours, and a movement inside them: the next window is due *and* has something to say.
+    clock.advance(3 * 3_600_000 + 1_000)
+    _seed_fills(
+        conn,
+        [
+            _fill(
+                wallet=SELL_WALLET,
+                token=FSD,
+                kind="sell",
+                amount_raw=2 * UNIT,
+                usd="3100",
+                event_at_ms=NOW + 3_600_000,
+                received_at_ms=NOW + 3_600_000,
+                tx_hash="0x" + "cd" * 32,
+            )
+        ],
+    )
+    assert asyncio.run(writer.take_digest(roster=_roster(conn), errors=errors)).digests == 1
+    assert len(_rows(conn, "SELECT item_id FROM news_market_wallet_events WHERE kind = 'digest'")) == 2
+
+
+def test_a_quiet_window_writes_no_digest_at_all(conn) -> None:
+    """#572 §5.3's 空窗跳过, against the real tables rather than a stub."""
+
+    clock = _Clock()
+    db = _Db(conn)
+    _seed(conn, [_member(SELL_WALLET, handle="0xVantaa")], [])
+    program = _Digest()
+    errors: list[str] = []
+
+    result = asyncio.run(_digest_writer(db, clock, program).take_digest(roster=_roster(conn), errors=errors))
+
+    assert (result.digests, program.calls) == (0, 0)
+    assert _rows(conn, "SELECT item_id FROM news_items") == []
+
+
+def test_a_day_at_the_call_cap_still_writes_the_digest_from_the_template(conn) -> None:
+    """The cap is on the endpoint, not on the summary: the facts were computed before a call was weighed."""
+
+    clock = _Clock()
+    db, site = _Db(conn), _Site()
+    _seed(
+        conn,
+        [_member(SELL_WALLET, handle="0xVantaa")],
+        [
+            _fill(
+                wallet=SELL_WALLET,
+                token=FSD,
+                kind="buy",
+                amount_raw=8 * UNIT,
+                usd="12340.50",
+                event_at_ms=NOW - 3 * 3_600_000,
+                received_at_ms=NOW - 3 * 3_600_000,
+                tx_hash="0x" + "ab" * 32,
+            )
+        ],
+    )
+    program = _Digest((DigestLine(text="窗口内活跃名单地址 1 个，代币 1 个", cites=("w0",)),))
+    writer = WalletDigestWriter(
+        db=db,
+        program=program,
+        bags=site,
+        interval_s=14_400,
+        max_calls_per_day=1,
+        clock=clock,
+    )
+    errors: list[str] = []
+
+    assert asyncio.run(writer.take_digest(roster=_roster(conn), errors=errors)).model_called is True
+    clock.advance(4 * 3_600_000 + 1_000)
+    _seed_fills(
+        conn,
+        [
+            _fill(
+                wallet=SELL_WALLET,
+                token=FSD,
+                kind="sell",
+                amount_raw=2 * UNIT,
+                usd="3100",
+                event_at_ms=NOW + 3_600_000,
+                received_at_ms=NOW + 3_600_000,
+                tx_hash="0x" + "cd" * 32,
+            )
+        ],
+    )
+    second = asyncio.run(writer.take_digest(roster=_roster(conn), errors=errors))
+
+    # The second window is due and is written, and the model is never asked: one call is what the day
+    # had left.
+    assert (second.digests, second.model_called, program.calls) == (1, False, 1)
+
+
+def test_a_digest_reads_back_through_the_wallets_console_read_model(conn) -> None:
+    """The page's own read: the digest's sentences and whether the model wrote them."""
+
+    clock = _Clock()
+    db, site = _Db(conn), _Site()
+    _seed(
+        conn,
+        [_member(SELL_WALLET, handle="0xVantaa")],
+        [
+            _fill(
+                wallet=SELL_WALLET,
+                token=FSD,
+                kind="buy",
+                amount_raw=8 * UNIT,
+                usd="12340.50",
+                event_at_ms=NOW - 3 * 3_600_000,
+                received_at_ms=NOW - 3 * 3_600_000,
+                tx_hash="0x" + "ab" * 32,
+            )
+        ],
+    )
+    program = _Digest((DigestLine(text="窗口内活跃名单地址 1 个，代币 1 个", cites=("w0",)),))
+    asyncio.run(_digest_writer(db, clock, program, site=site).take_digest(roster=_roster(conn), errors=[]))
+
+    repos = repositories_for_connection(conn)
+    cards = repos.news.chain_tape_cards(from_ms=NOW - 86_400_000, to_ms=NOW + 60_000, limit=50)
+    fills = repos.news.chain_tape_fill_totals(from_ms=NOW - 86_400_000)
+    roster = repos.news.chain_tape_roster_rows()
+
+    assert [card["kind"] for card in cards] == ["digest"]
+    assert cards[0]["digest_lines"] == ["窗口内活跃名单地址 1 个，代币 1 个"]
+    assert cards[0]["digest_model_used"] is True
+    assert [(row["kind"], row["fills"]) for row in fills] == [("buy", 1)]
+    assert [row["handle"] for row in roster] == ["0xVantaa"]
 
 
 def test_a_horizon_nothing_can_price_stays_due_briefly_and_is_then_recorded_unavailable(conn) -> None:

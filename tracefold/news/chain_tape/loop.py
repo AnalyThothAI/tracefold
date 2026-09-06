@@ -101,6 +101,16 @@ class WalletCardPort(Protocol):
     async def take_outcomes(self, errors: list[str]) -> Any: ...
 
 
+class WalletDigestPort(Protocol):
+    """The four-hourly digest, as a protocol for the same reason the card rules are one (#572 PR-3).
+
+    It sits on the same import edge -- it reaches the admission path -- and it owns its own due time,
+    so the loop's whole contribution is offering it every turn and letting it answer "not yet".
+    """
+
+    async def take_digest(self, *, roster: RosterSnapshot, errors: list[str]) -> Any: ...
+
+
 class ChainLogPort(Protocol):
     """The read-only chain access one turn needs. The adapter lives in `tracefold.integrations`."""
 
@@ -179,6 +189,7 @@ class ChainTapeLoop:
         receipts_per_turn_max: int = RECEIPTS_PER_TURN_MAX,
         telemetry: NewsExternalDataTelemetryPort | None = None,
         deriver: WalletCardPort | None = None,
+        digest: WalletDigestPort | None = None,
     ) -> None:
         self.db = db
         self.chain = chain
@@ -192,6 +203,9 @@ class ChainTapeLoop:
         # The rules half of the turn (#572 PR-2). Absent means store-only, which is what every test that
         # is about ingestion alone constructs.
         self.deriver = deriver
+        # The digest half (#572 PR-3). Absent means no digest at all, which is what a tape with no
+        # configured summary interval is: the cards are unaffected either way.
+        self.digest = digest
         self.last_result: dict[str, Any] | None = None
         self.last_error: str | None = None
         self._roster: RosterSnapshot | None = None
@@ -330,6 +344,12 @@ class ChainTapeLoop:
         # facts this database does not hold.
         if self.deriver is not None and not self._store_refused:
             await self._derive(fills, roster=roster, result=result, errors=errors)
+        if self.digest is not None and not self._store_refused:
+            # After the cards, and for the same reason: a digest is built from committed rows, and its
+            # own window read would otherwise describe a state this database does not hold.
+            summary = await self.digest.take_digest(roster=roster, errors=errors)
+            result["digests"] = summary.digests
+            result["digest_model_used"] = bool(summary.model_used)
         self._record_turn(
             started,
             "partial" if errors else "success",
@@ -761,6 +781,10 @@ def _empty_result() -> dict[str, Any]:
         "crowding_cards": 0,
         "outcomes": 0,
         "outcomes_unavailable": 0,
+        # The PR-3 half. A turn that was not due for a digest reports zero, which is the ordinary
+        # answer for all but six turns a day.
+        "digests": 0,
+        "digest_model_used": False,
     }
 
 
@@ -829,4 +853,5 @@ __all__ = [
     "ChainTapeRepositories",
     "RosterProviderPort",
     "WalletCardPort",
+    "WalletDigestPort",
 ]

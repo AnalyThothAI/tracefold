@@ -3193,6 +3193,61 @@ never banked keeps occupying the budget. That is a different fact from a horizon
 that has not arrived; the absence of a row is what "not yet" means. Nothing in
 the code reads these numbers; they are #572 §11's evidence, not a gate.
 
+### The wallet digest (#572 PR-3)
+
+Every four hours the tape writes one more `wallet` observation, and its subject is the window rather
+than a movement: `kind = 'digest'`, no wallet and no token, and a `segment_key` that is the window's own
+start — so every digest is its own notification group and every digest is a first card. It goes out
+through `_decide_wallet`, `ReaderCard` family `wallet` and the same Feishu serializer the exit and
+crowding cards use; nothing about the send path is new.
+
+**The program computes and the model writes sentences.** `chain_tape/digest.py` builds a deterministic
+fact pack from PostgreSQL alone: the window's totals, what each roster wallet bought and sold, the cards
+the rules opened and whether a reader received them, what the price receipts came back saying, and — per
+position that moved — the three cost bases #572 §5.3 insists on naming separately. They are three
+answers to three questions and are never averaged into one "cost":
+
+- **观察期买入均价** is this window's buy dollars over this window's bought quantity;
+- **剩余持仓成本** is the provider's own moving-average price for the remaining bag, or `未知` when the
+  provider was not asked (the number of handles asked about per digest is bounded) or did not answer;
+- **净现金回收线** is cumulative buy dollars minus cumulative sell dollars over what is still held, from
+  this database's own fills within retention. It can be negative — a wallet that has already taken more
+  out than it put in owes nothing back — and a position with nothing left states its net cash instead.
+
+Every fact carries an id. The model is shown the pack as text and returns at most eight short Chinese
+lines plus the fact ids each line stands on; `ground` drops the **whole** answer unless every figure in
+every line appears in the facts that line cited, where "figure" is any number or any `0x` identifier,
+compared after thousands separators are removed. A dropped answer, a timeout, a day already at
+`digest.max_calls_per_day`, and an unconfigured model endpoint all end in the same place:
+`template_lines`, which is the pack's own leading facts as its own sentences. The stored row records
+which happened — `model_called`, `model_used`, the pack's `sha256`, and the whole fact pack in
+`evidence`, so "what did the model see" is answerable from the row rather than from a reconstruction.
+
+The extension gate's `derived_work` contract for this flow (#572 §5.1) is met exactly as declared: the
+authority is the PostgreSQL fact pack, an empty window is skipped rather than carded, a backlog is one
+window capped at a day, a timeout or a failed reconciliation falls back to the template, the batch key
+is the period window, and the ceiling is 24 model calls a day. The model decides no threshold, no
+roster, no card, and not whether the digest is sent.
+
+Two placements are deliberate. The Signature lives in `news/program/chain_tape_digest.py`, beside
+`progression_review` and shaped like it — one Predictor, its own ledger, its own identity hash, and
+outside the release envelope GEPA optimises, because it answers no editorial question and shares no
+artifact instruction. And the call happens between two database checkouts and inside neither: the pack
+is read, the connection released, the call made, and a short transaction writes the result, which is
+#570's boundary 11 for a News task that talks to somebody else's server.
+
+### The wallet console page (#572 PR-3)
+
+`/api/news/wallets` and `/api/news/wallets/cards` are two narrow reads over the tables the market
+surface already joins from the other side, and they answer the question that surface cannot: what the
+*tape* is doing. The first publishes the current roster version with both ranks, the tape's ingest
+position and last turn, and one day of fills and cards counted per kind. The second publishes one
+bounded window of cards — every one of them, sent or not — each beside the +1h and +4h price receipt
+taken for it, measured against the price the card itself printed and clamped, because these pools print
+prices spanning thirty orders of magnitude. Neither read asks anything of the editorial pipeline, of
+Trading or of a model. A single observation is still read in full at `/api/news/market/{item_id}`, which
+every row links to.
+
 ### Retention
 
 A market Item lives on the `news.retention.judged_days` tier whatever happened
