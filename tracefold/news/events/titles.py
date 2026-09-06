@@ -9,7 +9,6 @@ from typing import Final
 
 from .identity import comparison_title
 
-TITLE_NORMALIZATION_VERSION: Final = "news_title_norm_v2"
 MAX_TITLE_CHARS: Final = 500
 MIN_CONTENT_TOKENS: Final = 3
 
@@ -114,7 +113,6 @@ def description_after_title(text: str, *, limit: int = 600) -> str:
 __all__ = [
     "MAX_TITLE_CHARS",
     "MIN_CONTENT_TOKENS",
-    "TITLE_NORMALIZATION_VERSION",
     "ExtractedTitle",
     "description_after_title",
     "extract_title",
