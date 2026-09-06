@@ -22,6 +22,7 @@ from tracefold.news.release.canary import (
     parse_canary_control,
 )
 from tracefold.news.release.runtime import CandidateRuntimeFact, reconcile_canary_startup
+from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.client import create_pool
 
 pytestmark = pytest.mark.integration
@@ -307,7 +308,7 @@ def test_worker_startup_persists_unrunnable_candidate_trip_before_consumption(co
         statement_timeout_seconds=5.0,
     )
     pool.wait(timeout=5.0)
-    database = WorkerDatabase(worker_pool=pool, telemetry=None)
+    database = WorkerDatabase(worker_pool=pool, telemetry=TelemetryRegistry())
     try:
         facts = {
             candidate_sha: CandidateRuntimeFact(

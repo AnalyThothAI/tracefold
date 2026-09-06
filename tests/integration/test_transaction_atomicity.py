@@ -7,6 +7,7 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
 from tracefold.app.worker_database import WorkerDatabase
+from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres import client
 from tracefold.platform.postgres.client import create_pool
 
@@ -14,7 +15,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_d
 
 
 def _worker_pool_bundle(pool: Any) -> WorkerDatabase:
-    return WorkerDatabase(worker_pool=pool)
+    return WorkerDatabase(worker_pool=pool, telemetry=TelemetryRegistry())
 
 
 def test_worker_session_explicit_transaction_rolls_back_all_statements() -> None:

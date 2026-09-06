@@ -262,9 +262,12 @@ def _components(
     *,
     due_turns: tuple[tuple[str, Any, float], ...],
 ) -> Any:
+    from tracefold.platform.observability import TelemetryRegistry
+
     return workers_module._Components(
         news_pipeline=_TurnPipeline(due_turns),
         news_bus=None,
+        telemetry=TelemetryRegistry(),
     )
 
 

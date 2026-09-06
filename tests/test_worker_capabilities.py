@@ -67,7 +67,7 @@ def _delayed_native_failure(delay_seconds: float) -> None:
 @pytest.mark.parametrize("capability_type", [FiniteOperations])
 def test_native_completion_finishes_before_thread_wrapper_watchdog(capability_type: type[Any]) -> None:
     async def scenario() -> None:
-        capability = capability_type()
+        capability = capability_type(telemetry=TelemetryRegistry())
         try:
             with pytest.raises(_ExpectedNativeFailure, match="native_failure"):
                 await capability.run(
@@ -179,7 +179,7 @@ def test_finite_permits_follow_underlying_futures_after_callers_time_out() -> No
 
 def test_finite_awaits_durable_fence_before_submitting_thread_work() -> None:
     async def scenario() -> None:
-        capability = FiniteOperations()
+        capability = FiniteOperations(telemetry=TelemetryRegistry())
         events: list[str] = []
 
         async def persist_fence() -> None:
@@ -205,17 +205,6 @@ def test_finite_awaits_durable_fence_before_submitting_thread_work() -> None:
             capability.close()
 
     asyncio.run(scenario())
-
-
-def test_story_projection_diagnostics_are_bounded_labelled_gauges() -> None:
-    telemetry = TelemetryRegistry()
-
-    telemetry.set_news_story_projection_value("candidate_pair_count", 7)
-    telemetry.set_news_story_projection_value("event_family_general", 3)
-
-    rendered = telemetry.render_prometheus_text()
-    assert 'tracefold_news_story_projection_value{measure="candidate_pair_count"} 7.0' in rendered
-    assert 'tracefold_news_story_projection_value{measure="event_family_general"} 3.0' in rendered
 
 
 def test_external_data_metrics_use_bounded_labels_and_a_live_success_age(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -309,7 +298,7 @@ def test_finite_does_not_submit_when_durable_fence_fails() -> None:
         pass
 
     async def scenario() -> None:
-        capability = FiniteOperations()
+        capability = FiniteOperations(telemetry=TelemetryRegistry())
         submitted = False
 
         async def reject_fence() -> None:
@@ -344,7 +333,7 @@ def test_finite_does_not_submit_when_durable_fence_fails() -> None:
 
 def test_database_has_two_business_slots_and_an_independent_control_slot() -> None:
     async def scenario() -> None:
-        database = WorkerDatabase(worker_pool=object(), telemetry=None)
+        database = WorkerDatabase(worker_pool=object(), telemetry=TelemetryRegistry())
         release = Event()
         both_started = Event()
         submitted = 0
@@ -422,7 +411,7 @@ def test_coincident_heavy_database_operations_do_not_jointly_fill_both_business_
     fact_operation: str,
 ) -> None:
     async def scenario() -> None:
-        database = WorkerDatabase(worker_pool=object(), telemetry=None)
+        database = WorkerDatabase(worker_pool=object(), telemetry=TelemetryRegistry())
         heavy = database.heavy_business()
         release_first = Event()
         first_submitted = asyncio.Event()
@@ -481,7 +470,7 @@ def test_hung_heavy_database_operation_keeps_bulkhead_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def scenario() -> None:
-        database = WorkerDatabase(worker_pool=object(), telemetry=None)
+        database = WorkerDatabase(worker_pool=object(), telemetry=TelemetryRegistry())
         heavy = database.heavy_business()
         release = Event()
         first_started = Event()
@@ -552,7 +541,7 @@ def test_database_native_transaction_timeout_precedes_outer_overrun(
         pass
 
     async def scenario() -> None:
-        database = WorkerDatabase(worker_pool=object(), telemetry=None)
+        database = WorkerDatabase(worker_pool=object(), telemetry=TelemetryRegistry())
 
         def native_timeout() -> None:
             time.sleep(0.02)

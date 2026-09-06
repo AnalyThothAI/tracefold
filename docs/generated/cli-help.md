@@ -895,10 +895,9 @@ options:
 ## `ops validate-projections`
 
 ```
-usage: tracefold ops validate-projections [-h] [--sample SAMPLE]
+usage: tracefold ops validate-projections [-h]
 
 options:
-  -h, --help       show this help message and exit
-  --sample SAMPLE
+  -h, --help  show this help message and exit
 
 ```

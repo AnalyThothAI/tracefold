@@ -17,6 +17,7 @@ from tracefold.app.cli.parser import build_parser
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.resources import candidates as candidate_programs
 from tracefold.news.program.runtime import PROGRAM_PRIMARY_BREAKER_FAILURES, PROGRAM_VERSION
+from tracefold.platform.config.models import LlmRequestConfig
 
 
 def test_run_is_the_only_candidate_generating_route_and_dataset_baseline_is_gone() -> None:
@@ -96,12 +97,14 @@ def test_draft_reviews_routes_the_qwen_thinking_alias_through_the_primary_cli_en
         # Operator configs may persist the provider-qualified spelling while
         # the documented CLI keeps the direct alias unqualified.
         news_triage_model="openai/qwen3.8-27b",
-        request=None,
+        # Every real endpoint model carries a request envelope; the fake carries the same default
+        # one rather than a `None` no `Settings` can produce (#589 P-F15).
+        request=LlmRequestConfig(),
         news_compiler_reflection=SimpleNamespace(
             configured=True,
             api_key="reflection-key",
             base_url="https://reflection.test/v1",
-            request=None,
+            request=LlmRequestConfig(),
         ),
         news_triage_fallback=SimpleNamespace(configured=False),
     )

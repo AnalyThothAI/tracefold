@@ -38,11 +38,13 @@ if TYPE_CHECKING:
 class _Components:
     news_pipeline: NewsPipeline | None
     news_bus: RabbitMQBus | None
+    # Composition is handed the process registry and never invents one, so this is not optional
+    # either -- every capability wired below measures itself through it (#589 P-F14).
+    telemetry: TelemetryRegistry
     runtime_manifest_sha: str | None = None
     market_notifications: MarketNotificationLoop | None = None
     chain_tape: ChainTapeComposition | None = None
     signal_lane: SignalLane | None = None
-    telemetry: TelemetryRegistry | None = None
     capabilities: CapabilityStates = field(default_factory=CapabilityStates)
 
 
