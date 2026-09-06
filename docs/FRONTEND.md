@@ -173,6 +173,12 @@ the route components into the eager shell chunk.
   for, how many attempts it took, and which provider answered — because "sent"
   without them cannot be checked against the timeline beside it.
 
+  Five kinds share that strip. Four of them are provider frames; `wallet` is not
+  (#572 PR-2) — the chain tape derives it from the fills of the followed wallets,
+  so it is always `parsed`, always `robinhood_chain`, and its `wallet_*` fields
+  are absent on every other kind. The console has no page of its own for it yet;
+  it appears in the market list and the market detail like any other kind.
+
   `raw` is a shape, not a failure. An `unknown_market` source has no parser at
   all, and its record is retained with its provider line and its stated reason —
   which is why the per-kind strip puts `raw` beside `parsed` rather than under

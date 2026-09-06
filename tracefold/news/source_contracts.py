@@ -8,8 +8,14 @@ where it is the *only* thing that is enough.
 Two vocabularies live here and they are not the same list (#553). ``EventKind`` names what an
 editorial Event can be: `news` and `listing`, the two families that reach the model policy, the
 storyline and the reader card. ``MarketKind`` names what a market observation is: `oi`,
-`liquidation`, `smart_money` and `unknown_market`, which are persisted as typed facts beside their
-Item and never become an Event at all. A frame is one or the other, never both.
+`liquidation`, `smart_money`, `unknown_market` and `wallet`, which are persisted as typed facts beside
+their Item and never become an Event at all. A frame is one or the other, never both.
+
+`wallet` is the one kind that is not a provider frame at all (#572 PR-2). It is derived by this process
+from chain logs the wallet tape already stored, so it has no Strategy id and no source-contract family:
+the classifier below can never produce it, and the tape's rules open its Item directly. Everything
+downstream of that Item -- the notification loop, the card, the delivery ledger, the detail page,
+retention -- treats it exactly like the four the provider sends.
 
 Market families are keyed on the provider's Strategy id alone. The four-tuple binding they used to
 carry made a *display name* load-bearing: when the provider renamed `Large-scale liquidation`, every
@@ -34,11 +40,11 @@ SourceContractFamily = Literal[
     "unknown_market",
 ]
 EventKind = Literal["news", "listing"]
-MarketKind = Literal["oi", "liquidation", "smart_money", "unknown_market"]
+MarketKind = Literal["oi", "liquidation", "smart_money", "unknown_market", "wallet"]
 
 EVENT_KINDS: Final[tuple[EventKind, ...]] = ("news", "listing")
 EVENT_SOURCE_CONTRACT_FAMILIES: Final[tuple[SourceContractFamily, ...]] = ("news_v1", "listing_v1")
-MARKET_KINDS: Final[tuple[MarketKind, ...]] = ("oi", "liquidation", "smart_money", "unknown_market")
+MARKET_KINDS: Final[tuple[MarketKind, ...]] = ("oi", "liquidation", "smart_money", "unknown_market", "wallet")
 MARKET_SOURCE_CONTRACT_FAMILIES: Final[tuple[SourceContractFamily, ...]] = (
     "oi_v1",
     "liquidation_v1",

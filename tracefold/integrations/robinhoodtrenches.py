@@ -6,12 +6,22 @@ site is deliberately **not** used for is fills. Its `tape` endpoint is missing a
 closes its own ledger reports (#572 §3.1), so trades come from chain logs and only the roster comes from
 here.
 
-Two endpoints, both unauthenticated:
+Four endpoints, all unauthenticated:
 
 * `GET /api/traders?window=7d&stocks=false` -- one row per tracked address with `closed_trades`,
   `realized_pnl`, `win_rate`, `open_cost` and the handle.
 * `GET /api/trader/{handle}?stocks=false` -- the per-trader document, whose `stats.profit_factor` is the
   quality criterion and exists on no other endpoint. It is keyed by handle: an address returns `404`.
+* the same document's open positions (#572 PR-2): `amount`, `avg_price`, `cost_usd` and `opened_ts` per
+  token. This is the *context* a card carries -- what the wallet paid and when it opened -- and the
+  fallback denominator for an exit whose block has already left the RPC's ten-minute state window. It is
+  never the trigger: triggers come from chain logs, because the site's own tape is missing about two
+  thirds of the closes its ledger reports (#572 §3.1).
+* `GET /api/tokens` -- the current `mark` and pool `liquidity` per token, which is what prices a position
+  and what a crowding card reports as depth.
+
+The last two are read on demand and cached for `CONTEXT_CACHE_SECONDS`, because a burst of fills in one
+token would otherwise ask the same small site the same question once per fill.
 
 Calls are paced at least `PACE_SECONDS` apart because this is somebody's small public site, and the
 caller only asks for a per-trader document when the list row already passed the closed-trade floor.
@@ -33,6 +43,10 @@ from tracefold.integrations.http_bounds import ResponseTooLarge, read_bounded
 ROBINHOODTRENCHES_BASE_URL: Final = "https://robinhoodtrenches.com"
 # Deliberate courtesy floor between two calls to one small site. Not a rate limit it published.
 PACE_SECONDS: Final = 0.25
+
+# How long a bag list or a token mark is reused. Card context, not a trigger: a minute-old entry price
+# is the same entry price, and the alternative is one request per fill against somebody's small site.
+CONTEXT_CACHE_SECONDS: Final = 60.0
 
 _CONNECT_TIMEOUT_SECONDS: Final = 5.0
 _READ_TIMEOUT_SECONDS: Final = 15.0
@@ -72,6 +86,33 @@ class TraderStats:
     profit_factor: float | None
 
 
+@dataclass(frozen=True, slots=True)
+class TraderBag:
+    """One open position as the site reports it: what the wallet holds, paid and when it opened.
+
+    `token` is the pool/token address where the site publishes one, and `""` where it publishes only a
+    symbol -- the caller matches on whichever it has, and a bag it cannot match to a chain address
+    simply does not become card context.
+    """
+
+    token: str
+    symbol: str
+    amount: float
+    avg_price: float
+    cost_usd: float
+    opened_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class TokenMark:
+    """The site's current price and pool depth for one token."""
+
+    token: str
+    symbol: str
+    mark: float | None
+    liquidity: float | None
+
+
 class RobinhoodTrenchesClient:
     """One paced, bounded, read-only session against the roster provider."""
 
@@ -93,6 +134,9 @@ class RobinhoodTrenchesClient:
         )
         self._next_call_at = 0.0
         self._last_bytes = 0
+        self.context_cache_seconds = max(0.0, float(CONTEXT_CACHE_SECONDS))
+        self._bags: dict[str, tuple[float, tuple[TraderBag, ...]]] = {}
+        self._marks: tuple[float, dict[str, TokenMark]] | None = None
 
     @property
     def last_response_bytes(self) -> int:
@@ -135,6 +179,46 @@ class RobinhoodTrenchesClient:
             realized_pnl=_float(stats.get("realized_pnl")),
             profit_factor=_optional_float(stats.get("profit_factor")),
         )
+
+    async def bags(self, handle: str) -> tuple[TraderBag, ...]:
+        """One trader's open positions, cached briefly. Raises `RosterProviderError` when the site fails.
+
+        The failure is deliberately *not* flattened into an empty tuple. An empty tuple is the site
+        saying this wallet holds nothing, which the exit rule reads as a genuine full exit; a site that
+        did not answer says nothing at all. Making the two the same value is how a rate-limited request
+        during a partial sell becomes a `清仓` card, so the distinction is the adapter's to keep and the
+        caller's to act on.
+
+        A handle the site does not know is `()` -- that is an answer, not a failure.
+        """
+
+        name = str(handle or "").strip()
+        if not name:
+            return ()
+        cached = self._bags.get(name)
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < self.context_cache_seconds:
+            return cached[1]
+        payload = await self._get(f"/api/trader/{name}", {"stocks": "false"}, missing_is_none=True)
+        rows = _bag_rows(payload)
+        self._bags[name] = (now, rows)
+        return rows
+
+    async def marks(self) -> Mapping[str, TokenMark]:
+        """The site's current mark and liquidity per token, cached briefly.
+
+        Raises like `bags`. A mark is display context -- an absent one costs a card a line and sends the
+        position value to the price this very trade printed -- so the caller treats a failure as no
+        marks; it is still the caller's decision rather than one this adapter makes for it.
+        """
+
+        now = time.monotonic()
+        if self._marks is not None and now - self._marks[0] < self.context_cache_seconds:
+            return self._marks[1]
+        payload = await self._get("/api/tokens", {"stocks": "false"})
+        marks = _mark_rows(payload)
+        self._marks = (now, marks)
+        return marks
 
     async def _get(
         self,
@@ -197,6 +281,69 @@ def _candidate(item: Any) -> RosterCandidate | None:
     )
 
 
+def _bag_rows(payload: Any) -> tuple[TraderBag, ...]:
+    """The `bags` array of a trader document, as the recorded 2026-09-06 answer publishes it.
+
+    One key, not a search over plausible ones. A guess that silently matched nothing would make every
+    wallet look like it holds no position, which is the exact input the exit rule reads as a full exit.
+    The recorded document is pinned in `tests/fixtures/chain_tape/trader_document.json`, so a shape
+    change is a failing test rather than a card that quietly stops carrying its context.
+    """
+
+    if not isinstance(payload, Mapping):
+        return ()
+    rows = payload.get("bags")
+    if not isinstance(rows, list):
+        return ()
+    return tuple(bag for item in rows if (bag := _bag(item)) is not None)
+
+
+def _bag(item: Any) -> TraderBag | None:
+    if not isinstance(item, Mapping):
+        return None
+    amount = _float(item.get("amount"))
+    if amount <= 0:
+        return None
+    return TraderBag(
+        token=_token_address(item),
+        symbol=str(item.get("symbol") or "").strip(),
+        amount=amount,
+        avg_price=_float(item.get("avg_price")),
+        cost_usd=_float(item.get("cost_usd")),
+        # The site publishes seconds; every stamp inside Tracefold is milliseconds.
+        opened_at_ms=_int(item.get("opened_ts")) * 1000,
+    )
+
+
+def _mark_rows(payload: Any) -> dict[str, TokenMark]:
+    """`/api/tokens` answers a bare array of token rows; the recorded answer is the pinned shape."""
+
+    if not isinstance(payload, list):
+        return {}
+    rows = payload
+    marks: dict[str, TokenMark] = {}
+    for item in rows:
+        if not isinstance(item, Mapping):
+            continue
+        token = _token_address(item)
+        if not token:
+            continue
+        marks[token] = TokenMark(
+            token=token,
+            symbol=str(item.get("symbol") or "").strip(),
+            mark=_optional_float(item.get("mark")),
+            liquidity=_optional_float(item.get("liquidity")),
+        )
+    return marks
+
+
+def _token_address(item: Mapping[str, Any]) -> str:
+    """The row's `token`, normalized, or `""` when it is not an address this chain can carry."""
+
+    value = str(item.get("token") or "").strip().lower()
+    return value if value.startswith("0x") and len(value) == 42 else ""
+
+
 def _int(value: Any) -> int:
     try:
         return int(float(value))
@@ -221,10 +368,13 @@ def _optional_float(value: Any) -> float | None:
 
 
 __all__ = [
+    "CONTEXT_CACHE_SECONDS",
     "PACE_SECONDS",
     "ROBINHOODTRENCHES_BASE_URL",
     "RobinhoodTrenchesClient",
     "RosterCandidate",
     "RosterProviderError",
+    "TokenMark",
+    "TraderBag",
     "TraderStats",
 ]

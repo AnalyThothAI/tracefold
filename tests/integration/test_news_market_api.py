@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import replace
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -19,10 +21,13 @@ from fastapi.testclient import TestClient
 
 from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
 from tracefold.app.http.app import create_app
+from tracefold.app.http.schemas.market import NewsMarketObservationData
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.market_notifications import REASON_UNPROCESSED
 from tracefold.news.opennews import parse_opennews_message
-from tracefold.news.pipeline.admission import admit_frame
+from tracefold.news.pipeline.admission import admit_frame, admit_market_item, prepare_wallet_observation
+from tracefold.news.storage.market import _OBSERVATION_KEYS, INTERNAL_OBSERVATION_KEYS
+from tracefold.news.wallet_contracts import WalletEvent
 from tracefold.platform.config.models import NewsSettings, Settings
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
@@ -387,3 +392,121 @@ def test_the_market_payload_matches_the_published_openapi_component(app, conn) -
     assert set(group) == set(component["properties"])
     assert json.loads(json.dumps(group)) == group
     assert int(time.time() * 1000) > 0
+
+
+# --- the fifth kind, and the invariant that publishes it (#572 PR-2) -------------------------------
+
+SMOKE_LIQUIDATION = "BTC Large Short Liquidation 4.55M at $118000"
+
+
+def _admit_wallet_exit(conn: Any, *, at_ms: int) -> str:
+    """One derived wallet observation, through the same admission the tape uses."""
+
+    event = WalletEvent(
+        item_id="",
+        kind="exit",
+        chain_id=4663,
+        wallet="0x69326e48f68500fb6cf3b3a7da640737b9cc347b",
+        handle="0xVantaa",
+        followers=21_792,
+        token="0x8de9018c1bb82884245f06dede9fe2bebabd1e18",
+        token_symbol="FSD",
+        token_decimals=18,
+        roster_version=1,
+        window_from_ms=at_ms,
+        window_to_ms=at_ms,
+        segment_key=str(at_ms),
+        event_at_ms=at_ms,
+        received_at_ms=at_ms,
+        title="0xVantaa 清仓 FSD",
+        ratio_bps=10_000,
+        basis="chain_balance",
+        quantity_raw=9_412_641_983_109_562_000_000_000,
+        balance_before_raw=9_412_641_983_109_562_000_000_000,
+        usd=Decimal("23531.60"),
+        position_usd=Decimal("23531.60"),
+        closed=True,
+        tx_hash="0x5c10c3cf9b3a5ef265de9ea87e0b4c787583ef11823ea233fde27528ab9ac5f0",
+        block_number=55_432_994,
+        evidence={"basis": "chain_balance"},
+    )
+    from tracefold.news.pipeline.admission import wallet_item_id
+
+    prepared = prepare_wallet_observation(replace(event, item_id=wallet_item_id(event)))
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        admit_market_item(repos, prepared, ingest_mode="live", trace_id="market-api-wallet", now_ms=at_ms)
+    conn.commit()
+    return prepared.item_id
+
+
+def test_the_smokes_own_observation_and_a_wallet_one_both_answer_two_hundred(app, conn) -> None:
+    """The browser smoke's exact frame, plus the kind this PR adds, through the real HTTP app.
+
+    This is the test that was missing when `/api/news/market` started answering 500. The storage layer
+    was right, the fake-repository contract tests were right, and the surface a reader actually opens
+    was broken -- because the read model serves one projection to two consumers and only one response
+    path narrowed it to the published fields. Both kinds are here because the failure needed neither:
+    an internal column on *any* observation is an extra key on *every* list response.
+    """
+
+    liquidation_item = _admit(
+        conn,
+        _frame(
+            record_id=7_760_001,
+            text=SMOKE_LIQUIDATION,
+            strategy_id=2000,
+            strategy_name="实时清算",
+            source_type="market",
+            at_ms=NOW,
+        ),
+        at_ms=NOW,
+    )
+    wallet_item = _admit_wallet_exit(conn, at_ms=NOW + 1)
+
+    with TestClient(app) as client:
+        listing = client.get(f"/api/news/market?from_ms={NOW - 1}&to_ms={NOW + 2}", headers=AUTH)
+        liquidation_detail = client.get(f"/api/news/market/{liquidation_item}", headers=AUTH)
+        wallet_detail = client.get(f"/api/news/market/{wallet_item}", headers=AUTH)
+
+    assert listing.status_code == 200, listing.text
+    body = listing.json()["data"]
+    kinds = {group["market_kind"]: group for group in body["groups"]}
+    assert set(kinds) == {"liquidation", "wallet"}
+    assert kinds["liquidation"]["latest"]["title"] == SMOKE_LIQUIDATION
+    assert kinds["wallet"]["latest"]["provider"] == "robinhood_chain"
+    assert kinds["wallet"]["latest"]["wallet_basis"] == "chain_balance"
+    assert kinds["wallet"]["latest"]["wallet_closed"] is True
+    # Every kind keeps a summary row, whether or not it reported anything.
+    assert [source["market_kind"] for source in body["sources"]] == [
+        "oi",
+        "liquidation",
+        "smart_money",
+        "unknown_market",
+        "wallet",
+    ]
+
+    assert liquidation_detail.status_code == 200, liquidation_detail.text
+    assert wallet_detail.status_code == 200, wallet_detail.text
+    detail = wallet_detail.json()["data"]
+    assert detail["observation"]["market_kind"] == "wallet"
+    assert detail["observation"]["symbol"] == "FSD"
+    # The detail's own timeline is an observation list too, and it publishes the same shape.
+    assert [row["item_id"] for row in detail["timeline"]] == [wallet_item]
+
+
+def test_every_projected_observation_column_is_published_or_declared_internal() -> None:
+    """The invariant whose absence turned one removed field into a 500 on the whole market surface.
+
+    `ExactApiSchema` forbids an unknown key, so a column this read model projects has exactly two
+    honest fates: it is a published field, or it is named in `INTERNAL_OBSERVATION_KEYS` because the
+    notification loop reads it and a reader does not. There is no third one, and "nobody noticed"
+    was what the third one looked like.
+    """
+
+    projected = (set(_OBSERVATION_KEYS) | {"notification_status", "notification_reason"}) - INTERNAL_OBSERVATION_KEYS
+
+    assert projected == set(NewsMarketObservationData.model_fields)
+    # Not vacuous: the internal set names a column the projection really carries.
+    assert set(_OBSERVATION_KEYS) >= INTERNAL_OBSERVATION_KEYS
+    assert INTERNAL_OBSERVATION_KEYS.isdisjoint(NewsMarketObservationData.model_fields)

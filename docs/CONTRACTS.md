@@ -435,14 +435,25 @@ and it resolves into **two disjoint vocabularies** (#553):
 
 - `EVENT_KINDS` is `news|listing`. These are the only frames that open a News
   Event, and `news_events.event_kind` holds exactly one of the two.
-- `MARKET_KINDS` is `oi|liquidation|smart_money|unknown_market`. These are
-  persisted as `news_items` rows carrying `market_kind`,
+- `MARKET_KINDS` is `oi|liquidation|smart_money|unknown_market|wallet`. These
+  are persisted as `news_items` rows carrying `market_kind`,
   `market_source_strategy_id`, `market_parse_status` (`parsed|raw`),
   `market_parse_error` and the frame's own `provider_params`, together with one
-  typed fact row in `news_oi_signals`, `news_market_liquidations` or
-  `news_market_smart_money`, in a single transaction. They open no Event, take
-  no admission, pass no Gate, storyline, evidence snapshot, verdict, model call
-  or delivery, and they are read back by `/api/news/market` from those facts.
+  typed fact row in `news_oi_signals`, `news_market_liquidations`,
+  `news_market_smart_money` or `news_market_wallet_events`, in a single
+  transaction. They open no Event, take no admission, pass no Gate, storyline,
+  evidence snapshot, verdict, model call or delivery, and they are read back by
+  `/api/news/market` from those facts.
+
+  `wallet` is the one kind the classifier can never produce (#572 PR-2). It is
+  not a provider frame at all: the chain tape derives it from
+  `news_market_wallet_fills` and opens the Item itself, through the same
+  `admit_market_item` transaction, with `provider = 'robinhood_chain'` and no
+  Strategy id. Its typed row carries `kind` (`exit|crowding`), the wallet, the
+  token, the roster version it was following, the window, the numbers the card
+  shows and the fill identities in `evidence`. Everything downstream — the
+  notification loop, the card, the delivery ledger, the detail route, retention
+  — treats it exactly like the four the provider sends.
 
 A frame is one or the other, never both. The market families key on the
 provider's **Strategy id alone** — `1019` OI, `2000` and `2083` liquidation,
@@ -599,7 +610,8 @@ every Event this code can open.
   does.
 
   `kind` is a comma-separated, duplicate-free subset of the closed set
-  `oi|liquidation|smart_money|unknown_market`; absent or empty means all four.
+  `oi|liquidation|smart_money|unknown_market|wallet`; absent or empty means every
+  kind.
   Any other value is 400 `news_market_kind_invalid` (`field: kind`). `from_ms`
   and `to_ms` are absolute epoch milliseconds (`>= 0`): an absent `to_ms` is the
   request's wall clock and an absent `from_ms` is `to_ms` minus the 72 h
@@ -623,8 +635,10 @@ every Event this code can open.
   is computed in SQL: OI is provider, venue, native instrument and measurement
   definition; liquidation replaces the definition with the liquidated side;
   smart money is provider, Strategy id, trader label, account address, venue,
-  native instrument, action and position side. An observation with no typed fact
-  is its own group (`raw|<market_kind>|<item_id>`), so unknown never merges with
+  native instrument, action and position side; a wallet observation is its kind,
+  provider, the selling wallet (exits only), the token and the position segment
+  or crowding window the rules assigned it. An observation with no typed fact is
+  its own group (`raw|<market_kind>|<item_id>`), so unknown never merges with
   unknown.
 
   `data` is `groups[]`, `next_cursor`, `sources[]` and `filters`
@@ -642,8 +656,18 @@ every Event this code can open.
   `direction`, `oi_change_bps`, `oi_value_usd`, `whale_long_profit_bps`,
   `whale_oi_ratio_bps`, `liquidated_position_side`, `forced_order_side`,
   `notional_usd`, `price`, `trader_label`, `account_address`, `action`,
-  `position_side`, `pnl_usd`, `notification_status`, `notification_reason`,
-  `notify_group_key` and `delivery_key`. The last two are the notification
+  `position_side`, `pnl_usd`, the `wallet_*` block (`wallet_kind`,
+  `wallet_address`, `wallet_handle`, `wallet_followers`, `wallet_token`,
+  `wallet_segment_key`, `wallet_tone`, `wallet_ratio_bps`, `wallet_basis`,
+  `wallet_quantity`, `wallet_balance_before`, `wallet_usd`,
+  `wallet_position_usd`, `wallet_entry_price`, `wallet_mark_price`,
+  `wallet_peer_wallets`, `wallet_peer_usd`, `wallet_premium_bps`,
+  `wallet_liquidity_usd`, `wallet_tx_hash`, `wallet_block_number`,
+  `wallet_closed`, `wallet_crowding_item_id`, `wallet_window_from_ms` — every one
+  of them absent on the four provider kinds, and the quantities and dollar
+  figures crossing as exact text for the same reason the provider's do),
+  `notification_status`, `notification_reason`, `notify_group_key` and
+  `delivery_key`. The last two are the notification
   loop's own record of what it decided: the group it assigned the observation to
   and the card that spoke for it. `notify_group_key` is deliberately not the
   display `group_key` above — a smart-money display run breaks when the account

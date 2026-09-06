@@ -26,7 +26,7 @@ from . import card_format as fmt
 from .market_contracts import MARKET_NEWS_PUSHED_MAX, MARKET_NEWS_WINDOW_MS
 from .outcome import DIRECTION_ZH, MAGNITUDE_ZH, NOVELTY_ZH
 
-CardFamily = Literal["news", "oi", "liquidation", "smart_money"]
+CardFamily = Literal["news", "oi", "liquidation", "smart_money", "wallet"]
 # The model's own judgment about the news, and `none` for a card that carries no judgment at all --
 # a degraded News card or any market card. A channel maps `family + tone` to its colour or icon.
 CardTone = Literal["bullish", "bearish", "neutral", "unclear", "none"]
@@ -42,7 +42,23 @@ FAMILY_TITLE: Final[dict[str, str]] = {
     "oi": "持仓异动",
     "liquidation": "强平",
     "smart_money": "聪明钱",
+    "wallet": "链上钱包",
 }
+# The wallet family's own qualifier, decided by what the observation is rather than by why the card
+# fired. A reader scanning a channel needs "this wallet got out" and "several wallets got in" to be
+# distinguishable in the header, and the follow-up qualifier the other families use answers a different
+# question -- the family's line already says which movement this is (#572 PR-2).
+WALLET_QUALIFIER: Final[dict[str, str]] = {
+    "exit": "减仓",
+    "exit_closed": "清仓",
+    "crowding": "拥挤",
+    "crowding_late": "拥挤 · 跟风偏晚",
+}
+# Where an exit's denominator came from, in four characters. Not a warning and not a confidence score:
+# `链上余额` is `balanceOf` at the block before the sell, `持仓推算` is the provider's reported bag plus
+# the amount just sold. A reader is owed the difference and nothing more alarming than the difference
+# (#572 決策更新).
+WALLET_BASIS_ZH: Final[dict[str, str]] = {"chain_balance": "链上余额", "site_reported": "持仓推算"}
 # OI's own direction vocabulary. Deliberately not the verdict's `DIRECTION_ZH`: an open-interest
 # change rises or falls, it is not bullish or bearish, and a market card claims no judgment.
 OI_DIRECTION_ZH: Final[dict[str, str]] = {"rise": "上升", "fall": "下降"}
@@ -104,6 +120,10 @@ _LIQUIDATION_NOTE: Final = "各来源报告金额不相加：没有可信底层�
 # stops being read on the cards that do need it.
 _SMART_MONEY_NOTE: Final = "Close 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。"
 _SMART_MONEY_UNVERIFIED: Final = "（来源标签，非已核实地址）"
+# What a wallet card's caveat says, and it is about the roster rather than about the trade: the list is
+# hand-curated by the provider and ranked on seven days of its own ledger, which is a short history in a
+# nine-day-old chain (#572 §10).
+_WALLET_NOTE: Final = "名单为原站统计所选，历史样本很短；卡片只陈述链上成交，不构成建议。"
 
 _NOTE_PREFIX: Final[dict[str, str]] = {"news": "Tracefold", "market": "Tracefold 市场"}
 _NOTE_ID_MAX: Final[dict[str, int]] = {"news": 8, "market": 24}
@@ -222,6 +242,50 @@ class ReaderCardMarket:
 
 
 @dataclass(frozen=True, slots=True)
+class ReaderCardWallet:
+    """The chain wallet family's own facts (#572 PR-2). Every one of them was computed, not reported.
+
+    Both kinds share this shape because they share a subject -- a wallet, a token, a window and a set of
+    numbers -- and the fields each kind does not use are simply absent, which is how every other family
+    here already handles a fact its report did not carry.
+    """
+
+    kind: str = ""
+    handle: str = ""
+    followers: int = 0
+    symbol: str = ""
+    token: str = ""
+    # Exit: what left, what was held before it, and what share of it that was.
+    quantity: str = ""
+    balance_before: str = ""
+    ratio_bps: int | None = None
+    basis: str = ""
+    usd: str = ""
+    position_usd: str = ""
+    entry_price: str = ""
+    mark_price: str = ""
+    # Exit: other roster wallets that bought this token in the cascade window. Crowding: the window's
+    # buyers and what they put in.
+    peer_wallets: int = 0
+    peer_usd: str = ""
+    premium_bps: int | None = None
+    liquidity_usd: str = ""
+    tx_hash: str = ""
+    block_number: int | None = None
+    closed: bool = False
+    late: bool = False
+    # The crowding card this exit follows on from, when the same token had one recently.
+    crowding_id: str = ""
+
+    def qualifier(self) -> str:
+        if self.kind == "exit":
+            return WALLET_QUALIFIER["exit_closed" if self.closed else "exit"]
+        if self.kind == "crowding":
+            return WALLET_QUALIFIER["crowding_late" if self.late else "crowding"]
+        return ""
+
+
+@dataclass(frozen=True, slots=True)
 class ReaderCardLink:
     url: str
     label: str
@@ -252,6 +316,7 @@ class ReaderCard:
     facts: ReaderCardFacts = field(default_factory=ReaderCardFacts)
     quotes: tuple[ReaderCardQuote, ...] = ()
     market: ReaderCardMarket = field(default_factory=ReaderCardMarket)
+    wallet: ReaderCardWallet = field(default_factory=ReaderCardWallet)
     link: ReaderCardLink | None = None
     note: ReaderCardNote = field(default_factory=ReaderCardNote)
     times: ReaderCardTimes = field(default_factory=ReaderCardTimes)
@@ -275,14 +340,12 @@ class ReaderCard:
         if self.header.family == "news":
             text = f"{self.header.qualifier} {self.header.subject}" if self.header.qualifier else self.header.subject
         else:
+            # A wallet card's qualifier is what the observation *is*, not why the card fired: the
+            # header has to distinguish "this wallet got out" from "several wallets got in" before a
+            # reader opens anything.
+            qualifier = self.wallet.qualifier() if self.header.family == "wallet" else self.header.qualifier
             text = " · ".join(
-                part
-                for part in (
-                    FAMILY_TITLE.get(self.header.family, "市场"),
-                    self.header.qualifier,
-                    self.header.subject,
-                )
-                if part
+                part for part in (FAMILY_TITLE.get(self.header.family, "市场"), qualifier, self.header.subject) if part
             )
         return text[:TITLE_MAX]
 
@@ -411,10 +474,73 @@ class ReaderCard:
                 quote,
                 _SMART_MONEY_NOTE if market.reports_close() else "",
             ]
+        if self.header.family == "wallet":
+            return self._wallet_lines(span, quote)
         # Every family that has market lines is above. A News card has none and never asks: its body
         # is its own lead and facts line, and a market family that stopped existing prints nothing
         # rather than a line about a card that is not being sent (#582 §3.2).
         return []
+
+    def _wallet_lines(self, span: str, quote: str) -> list[str]:
+        """The chain wallet family's lines: who, what moved, at what size, and the evidence.
+
+        The order is the order a reader asks in. Who and when; what the movement was; how big the
+        position it came out of was, and on which denominator; what it cost and what it is worth now;
+        who else was in it; and finally the transaction, so the whole card is checkable on chain.
+
+        Every line is assembled from parts that may be absent and joined with the empty ones dropped,
+        which is the same rule the three other market families follow: a fact nobody could establish
+        costs its own words, never a blank line and never a placeholder.
+        """
+
+        wallet = self.wallet
+        who = f"{wallet.handle or fmt.UNKNOWN_ACCOUNT}{_followers(wallet.followers)}"
+        subject = wallet.symbol or wallet.token[:10]
+        if wallet.kind == "crowding":
+            total = fmt.money(wallet.peer_usd)
+            entry = fmt.money(wallet.entry_price)
+            liquidity = fmt.money(wallet.liquidity_usd)
+            premium = fmt.percent_from_bps(wallet.premium_bps) if wallet.premium_bps is not None else ""
+            return [
+                f"{wallet.peer_wallets} 个名单地址买入 · {subject} · {span}",
+                _joined(
+                    f"合计买入 {total}" if total else "",
+                    f"粉丝合计 {wallet.followers:,}" if wallet.followers else "",
+                ),
+                _joined(f"领头 {who}", f"进场 {entry}" if entry else ""),
+                f"跟随进场溢价中位 {premium}" if premium else "",
+                f"池子流动性 {liquidity}" if liquidity else "",
+                quote,
+                _WALLET_NOTE,
+            ]
+        quantity = fmt.price(wallet.quantity)
+        action = "清仓" if wallet.closed else f"减仓 {fmt.percent_from_bps(wallet.ratio_bps)}"
+        before = fmt.price(wallet.balance_before)
+        value = fmt.money(wallet.position_usd)
+        entry = fmt.money(wallet.entry_price)
+        mark = fmt.money(wallet.mark_price)
+        peers = fmt.money(wallet.peer_usd)
+        return [
+            f"{who} · {subject} · {span}",
+            _joined(
+                f"{action} {quantity} {wallet.symbol}".strip() if quantity else action,
+                fmt.money(wallet.usd),
+            ),
+            _joined(
+                f"卖前持仓 {before}" if before else "",
+                f"约 {value}" if value else "",
+                f"口径 {WALLET_BASIS_ZH.get(wallet.basis, wallet.basis)}" if wallet.basis else "",
+            ),
+            _joined(f"进场均价 {entry}" if entry else "", f"现价 {mark}" if mark else ""),
+            f"窗口内其他名单买入 {wallet.peer_wallets} 个地址 {peers}" if wallet.peer_wallets and peers else "",
+            _joined(
+                f"tx {wallet.tx_hash[:10]}" if wallet.tx_hash else "",
+                f"区块 {wallet.block_number:,}" if wallet.block_number else "",
+                f"关联拥挤卡 {wallet.crowding_id[:8]}" if wallet.crowding_id else "",
+            ),
+            quote,
+            _WALLET_NOTE,
+        ]
 
     def _reported_line(self) -> str:
         """`来源报告价 $3,120.50 · 已实现 PNL -$412.75`, or nothing when the report carried neither.
@@ -481,6 +607,21 @@ class ReaderCard:
         last = self.times.event_at_ms
         first = self.times.span_from_ms if self.times.span_from_ms is not None else last
         return fmt.clock(first) if first == last else f"{fmt.clock(first)}–{fmt.clock(last)}"
+
+
+def _joined(*parts: str) -> str:
+    """The card's own separator, with the parts nobody could fill dropped rather than printed empty."""
+
+    return " · ".join(part for part in parts if part)
+
+
+def _followers(count: int) -> str:
+    """The follower count in the card's own brackets, or nothing when the provider publishes none."""
+
+    followers = int(count or 0)
+    if followers <= 0:
+        return ""
+    return f"（{followers / 10_000:.1f} 万粉丝）" if followers >= 10_000 else f"（{followers:,} 粉丝）"
 
 
 def reader_quotes(quotes: Sequence[Mapping[str, Any]]) -> tuple[ReaderCardQuote, ...]:
@@ -573,6 +714,8 @@ __all__ = [
     "SIDE_ZH",
     "TITLE_MAX",
     "UNTRADEABLE_NOTICE_ZH",
+    "WALLET_BASIS_ZH",
+    "WALLET_QUALIFIER",
     "CardFamily",
     "CardTone",
     "ReaderCard",
@@ -585,6 +728,7 @@ __all__ = [
     "ReaderCardNote",
     "ReaderCardQuote",
     "ReaderCardTimes",
+    "ReaderCardWallet",
     "quote_line",
     "reader_news",
     "reader_quotes",

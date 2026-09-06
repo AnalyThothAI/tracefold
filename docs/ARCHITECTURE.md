@@ -157,6 +157,9 @@ evidence rather than executable configuration.
 | Roster wallet Transfer logs | News Chain Tape | `durable_event` | Robinhood Chain public JSON-RPC `eth_getLogs`; the chain is the authority | REST polling | `news-chain-tape`; 2 s when enabled | `news_market_wallet_fills` via classification; calibration counts, later wallet rules |
 | Wallet fill classification | News Chain Tape | `derived_work` | the same transaction receipt, plus the stablecoin cash leg inside it | REST on planned demand | `news-chain-tape`; per discovered transaction | `news_market_wallet_fills`; the same consumers |
 | Tracked-trader roster | News Chain Tape | `latest_state` | robinhoodtrenches `/api/traders` and `/api/trader/{handle}` | REST polling | `news-chain-tape`; 1 h | `news_market_wallet_roster`; the topic filter above, and every fill's pinned version |
+| Wallet exit verification | News Chain Tape | `derived_work` | public JSON-RPC `balanceOf` at the block before the sell; the provider's reported bag where that state is gone | REST on planned demand | `news-chain-tape`; per live sell of a roster wallet | `news_market_wallet_checks`; the exit rule and the card's basis label |
+| Wallet card context | News Chain Tape | `latest_state` | robinhoodtrenches `/api/trader/{handle}` bags and `/api/tokens` marks | REST polling | `news-chain-tape`; on demand, cached 60 s | not persisted; a card's entry price, position value and pool depth |
+| Wallet card price receipt | News Chain Tape | `derived_work` | DexScreener's deepest Robinhood Chain pool, then the provider's own `mark` | REST on planned demand | `news-chain-tape`; +1 h and +4 h after a card was sent | `news_market_wallet_outcomes`; #572 §11's effect receipt |
 | Nautilus OI Runtime | Trading execution | `capital_truth` | `TradeSignalV1`, authenticated `OperatorIntentV1`, Nautilus Cache/Portfolio, Binance | bounded PostgreSQL transport; CLI and console ingress are durable before acknowledgement | profile-gated `tracefold nautilus` | append-only `ExecutionObservationV1` plus one current durable Runtime generation; disabled by default |
 
 The runtime limits behind that inventory are code-owned safety policy. `shared`
@@ -190,6 +193,9 @@ does not apply.
 | Roster wallet Transfer logs | 2 s when enabled | tip plus a 30-block (~3 s) overlap | block range | the roster union: 40 addresses as configured, each list capped at 200 by the settings model | 2 `eth_getLogs`/turn; at most 100,000 blocks/turn | serial | adapter-owned 10 s read / 5 s connect | bounded block-range catch-up; the durable position stops one overlap short of the block read / overlapping re-reads collapse on the chain's identity / no | an RPC failure ends the turn with the classified position unchanged; the next turn re-reads the same range |
 | Wallet fill classification | one discovered transaction | same turn as its log | `tx_hash` | 20 receipts/turn; the rest stay pending. The classified position lags one overlap, so each movement's receipt is fetched about three times at the default 2 s cadence and the effective provider load is roughly three times that cap | 1 receipt + 1 block header per transaction, plus at most 2 cached `eth_call` per fill | serial | adapter-owned 10 s read | pending transactions carry to the next turn / per-token metadata cached for the process / no | an unanswered receipt stops that turn's remaining transactions and stores nothing for them; after `MISSING_RECEIPT_ATTEMPTS` turns that transaction is banked as one `unknown` and is never asked for again while the log window still offers it, so one movement is either a stored fill or one count and never both |
 | Tracked-trader roster | 1 h | <=1 h | roster version | the site's published addresses; 40 selected | 1 list call plus 1 per address past the closed-trade floor, paced >=0.25 s apart | serial | adapter-owned 15 s read / 5 s connect | no / an unchanged list re-stamps its version / yes | a site failure keeps the previous version and the tape keeps following it |
+| Wallet exit verification | one live sell of a roster wallet | the public node holds ~6,100 blocks (~10 min) of state | fill identity | 12 derived observations/turn | 1 `eth_call` per sell | serial | adapter-owned 10 s read | no / a re-read writes the same check row / no | a pruned block or a refusal is `None`, not a balance of zero: the rule falls back to the reported bag and the card prints `site_reported` |
+| Wallet card context | on demand while deriving | cached 60 s | handle for bags; whole market for marks | one handle per exit; one market snapshot per turn | 1 bags call per uncached handle, 1 marks call per turn, paced >=0.25 s apart with the roster | serial | adapter-owned 15 s read / 5 s connect | no / the cache coalesces a burst in one token / yes | any failure costs the card one line and never the card |
+| Wallet card price receipt | +1 h and +4 h after a send; taken on the tape's own turn | recorded within a day of the horizon or banked `unavailable` | `delivery_key` + horizon | 4 receipts/turn | 1 DexScreener call per receipt, then at most 1 shared marks call | serial | adapter-owned 8 s read / 5 s connect | yes / a due receipt is retried each turn / no | an unanswered horizon stays due for 24 h and is then recorded as `unavailable`, which is a row rather than a silence |
 | Nautilus OI Runtime | active only for `paper|live`; 0.5 s current heartbeat; complete private proof every 5 s and immediately on ambiguity/flatten; Nautilus native in-flight/open/position checks at 2/5/5 s | command/Signal TTL; account clock <10 s and complete reconciliation <15 s, both derived from the one 5 s period; public heartbeat stale after 5 s | account slot advisory lock | Commands and Signals share one count-and-byte bound; Commands admit and execute first | one Binance USD-M account | one account-slot writer | Runtime-owned | bounded anti-join replay / deterministic client IDs / fail closed | disabled starts no node; control state survives restarts and only a Command moves it; unowned exposure or lost singleton halts |
 
 Workers exposes one bounded Prometheus vocabulary at the existing telemetry
@@ -3066,11 +3072,11 @@ or cohort identity on the candidate.
 
 ### The wallet tape (#572 PR-1)
 
-Robinhood Chain's tracked wallets are the market plane's second provider, and in
-PR-1 they are **store-only**: `news-chain-tape` writes what a followed wallet
-did and stops. No `news_items` row, no `market_kind`, no card, no notification
-— the first week of real on-chain counts is what calibrates the thresholds in
-#572 §6.4, and a rule written before those counts exist would be a guess.
+Robinhood Chain's tracked wallets are the market plane's second provider.
+PR-1 is the ingestion half: `news-chain-tape` writes what a followed wallet did
+and nothing else — no `news_items` row, no card, no notification. The rules that
+turn those fills into something a reader receives are PR-2's, below, and they
+read this ledger rather than the chain.
 
 Trades come from chain logs, not from the provider's own tape. The site's tape
 is missing about two thirds of the closes its own ledger reports, while one
@@ -3114,6 +3120,78 @@ counted rather than stored, as
 monotonic total on the state row. Retention deletes fills older than
 `news.chain_tape.retention_days` on the Janitor's existing heavy slot, and only
 while the tape is enabled; it is not a task of its own.
+
+### Wallet cards (#572 PR-2)
+
+PR-1's fills are the input to two rules, and the rules run inside the same
+`news-chain-tape` turn, immediately after that turn's fills commit. What comes
+out is an ordinary market Item — `market_kind = 'wallet'`,
+`market_notify_state = 'pending'` — written by the same `admit_market_item`
+transaction OI, liquidation and smart money go through, plus one
+`news_market_wallet_events` row beside it. There is no second admission path, no
+second notification loop and no second card renderer: `_decide_wallet` is the
+fifth branch of the loop #553 built, and the card is a `ReaderCard` with family
+`wallet` that Feishu serialises with the serializer it already had.
+
+An **exit** is a roster wallet selling more than `rules.exit_ratio_bps` of what
+it held, or selling the last of it, out of a position worth
+`rules.exit_min_position_usd` — or worth `rules.exit_cascade_min_usd` while at
+least one other roster wallet bought the same token inside
+`rules.exit_cascade_window_s`. The cascade arm is the one the event study argued
+for: after a followed wallet sells, other followed wallets stop buying and the
+price drifts down (#572 §3.2). A **crowding** card is `rules.crowding_n` roster
+wallets each putting `rules.crowding_min_usd` into the same token inside
+`rules.crowding_window_s`, each of them opening the position in that window; it
+carries the lead, the median follower's entry premium and the tone `late` when
+that premium reaches `rules.crowding_premium_late_bps`, because the measured
+median follow-on entry was +54% over the leader and the median outcome from
+there was negative.
+
+Both rules suppress before an Item exists, which is why `_decide_wallet` has no
+window and no anchor comparison of its own: an exit that did not clear its
+thresholds was never written down, so holding the ones that did would be a second
+threshold on numbers that already passed the first. What the branch keeps is the
+one rule every family shares — at most one un-started card per group — and the
+group key carries the segment or window the rules assigned, so the follow-ups
+they do allow (an exit ratio crossing 50% or 100%, a crowding count doubling)
+land beside the card they follow.
+
+Three positions are worth reading before the thresholds are next touched, and
+all three come from #572's 2026-09-06 decision to close the loop rather than
+wait a calibration week:
+
+- **Freshness is the only suppression outside the rules.** A fill whose block
+  time lags the moment this host read it by more than `rules.trigger_max_age_s`
+  is history — which is exactly what the 24-hour backfill the tape was seeded
+  with is. It gives the cascade and crowding rules their window and can never
+  send a card. Two stamps already on every fill answer this; there is no flag.
+- **Verification degrades rather than blocking, but it does not invent.** The
+  denominator of an exit is `balanceOf` at the block before the sell where the
+  public node still holds that state; the provider's reported bag plus the amount
+  just sold where it does not; and the sale itself where the provider answers that
+  the wallet holds none of that token, which is a genuine full exit. The card
+  prints which in four characters, and `news_market_wallet_checks` records every
+  attempt including the failures — that table is the evidence for how often each
+  basis is used. Where *neither* authority answered there is no fourth tier: the
+  sell produces no card and no check row, because "the site says no position" and
+  "the site said nothing" are different facts and only the first one is evidence.
+- **Every other external answer is optional.** A mark, a bag, a pool depth, a
+  DexScreener price: each costs its own line and nothing else. A wallet card asks
+  the quote read model for nothing at all, because a Robinhood Chain token is in
+  no venue catalogue this repository holds and the read would spend itself
+  learning that.
+
+`news_market_wallet_outcomes` is the receipt: the token's price one and four
+hours after a card was sent, taken as bounded due work on the same turn, from
+DexScreener's deepest Robinhood Chain pool and falling back to the provider's own
+`mark`. It is keyed on `delivery_key` rather than on an Item because the subject
+is the card a reader received. The budget is split evenly across the horizons, so
+a backlog on one cannot starve the other, and a horizon nothing could price
+within a fifteen-minute grace is recorded as `unavailable` — both because a price
+read hours late does not answer the horizon's question, and because a row that is
+never banked keeps occupying the budget. That is a different fact from a horizon
+that has not arrived; the absence of a row is what "not yet" means. Nothing in
+the code reads these numbers; they are #572 §11's evidence, not a gate.
 
 ### Retention
 

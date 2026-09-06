@@ -111,6 +111,7 @@ export const NEWS_MARKET_KINDS = [
   "liquidation",
   "smart_money",
   "unknown_market",
+  "wallet",
 ] as const satisfies readonly NewsMarketKind[];
 /** `/api/news/market` accepts at most 100 groups per page. */
 export const NEWS_MARKET_PAGE_SIZE = 50;

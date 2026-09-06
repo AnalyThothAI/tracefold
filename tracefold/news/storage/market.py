@@ -67,6 +67,32 @@ class MarketObservationRow(TypedDict):
     action: str | None
     position_side: str | None
     pnl_usd: str | None
+    # The chain wallet family (#572 PR-2): what the tape derived, in the fields a card and the detail
+    # page read. Every quantity crosses as exact text for the same reason the provider's do.
+    wallet_kind: str | None
+    wallet_address: str | None
+    wallet_handle: str | None
+    wallet_followers: int | None
+    wallet_token: str | None
+    wallet_segment_key: str | None
+    wallet_tone: str | None
+    wallet_ratio_bps: int | None
+    wallet_basis: str | None
+    wallet_quantity: str | None
+    wallet_balance_before: str | None
+    wallet_usd: str | None
+    wallet_position_usd: str | None
+    wallet_entry_price: str | None
+    wallet_mark_price: str | None
+    wallet_peer_wallets: int | None
+    wallet_peer_usd: str | None
+    wallet_premium_bps: int | None
+    wallet_liquidity_usd: str | None
+    wallet_tx_hash: str | None
+    wallet_block_number: int | None
+    wallet_closed: bool | None
+    wallet_crowding_item_id: str | None
+    wallet_window_from_ms: int | None
     # Reported beside `parse_status`, never folded into it (#553 §6). An observation with no attempt
     # says which rule is holding it; one with an attempt says what the send did.
     notification_status: str
@@ -134,10 +160,13 @@ _OBSERVATIONS_SQL = f"""
            i.published_at_ms AS event_at_ms,
            i.observed_at_ms AS received_at_ms,
            COALESCE(o.available_at_ms, l.available_at_ms, w.available_at_ms) AS available_at_ms,
-           COALESCE(o.provider, l.provider, w.provider) AS provider,
+           -- Per row, never an implied constant. #553 stored the provider on every market fact
+           -- precisely so a second one could not merge into the first's groups; `wallet` is that
+           -- second provider, and it is the chain rather than OpenNews (#572 §5.2).
+           COALESCE(o.provider, l.provider, w.provider, e.provider) AS provider,
            COALESCE(o.source_venue, l.source_venue, w.source_venue) AS source_venue,
-           COALESCE(o.raw_instrument, l.raw_instrument, w.raw_instrument) AS raw_instrument,
-           COALESCE(o.symbol, l.symbol, w.symbol) AS symbol,
+           COALESCE(o.raw_instrument, l.raw_instrument, w.raw_instrument, e.token) AS raw_instrument,
+           COALESCE(o.symbol, l.symbol, w.symbol, e.token_symbol) AS symbol,
            o.measurement_definition,
            o.direction,
            o.oi_change_bps,
@@ -153,6 +182,36 @@ _OBSERVATIONS_SQL = f"""
            w.action,
            w.position_side,
            w.pnl_usd::text AS pnl_usd,
+           e.kind AS wallet_kind,
+           e.wallet AS wallet_address,
+           e.handle AS wallet_handle,
+           e.followers AS wallet_followers,
+           e.token AS wallet_token,
+           e.segment_key AS wallet_segment_key,
+           e.tone AS wallet_tone,
+           e.ratio_bps AS wallet_ratio_bps,
+           e.basis AS wallet_basis,
+           -- The chain's own integers, scaled by the token's own decimals for a reader and carried as
+           -- text for the same reason every other figure here is: a JSON number would round a quantity
+           -- the ledger holds exactly, and nothing downstream computes with these.
+           CASE WHEN e.quantity_raw IS NULL OR e.token_decimals IS NULL THEN NULL
+                ELSE (e.quantity_raw / power(10::numeric, e.token_decimals))::text END AS wallet_quantity,
+           CASE WHEN e.balance_before_raw IS NULL OR e.token_decimals IS NULL THEN NULL
+                ELSE (e.balance_before_raw / power(10::numeric, e.token_decimals))::text
+           END AS wallet_balance_before,
+           e.usd::text AS wallet_usd,
+           e.position_usd::text AS wallet_position_usd,
+           e.entry_price::text AS wallet_entry_price,
+           e.mark_price::text AS wallet_mark_price,
+           e.peer_wallets AS wallet_peer_wallets,
+           e.peer_usd::text AS wallet_peer_usd,
+           e.premium_bps AS wallet_premium_bps,
+           e.liquidity_usd::text AS wallet_liquidity_usd,
+           e.tx_hash AS wallet_tx_hash,
+           e.block_number AS wallet_block_number,
+           e.closed AS wallet_closed,
+           e.window_from_ms AS wallet_window_from_ms,
+           e.evidence ->> 'crowding_item_id' AS wallet_crowding_item_id,
            i.market_notify_state AS notify_state,
            i.market_notify_group_key AS notify_group_key,
            i.market_notify_delivery_key AS delivery_key,
@@ -176,6 +235,13 @@ _OBSERVATIONS_SQL = f"""
                'smart_money|' || w.provider || '|' || w.source_strategy_id || '|' || w.trader_label
                      || '|' || COALESCE(w.account_address, '') || '|' || COALESCE(w.source_venue, '')
                      || '|' || w.raw_instrument || '|' || w.action || '|' || w.position_side
+             WHEN e.item_id IS NOT NULL THEN
+               -- The same key `group_identity` builds: the kind, the provider, the subject (a wallet
+               -- for an exit, the token alone for a crowding window) and the segment the rules put it
+               -- in. The page and the loop must never disagree about which card a card follows.
+               'wallet|' || e.kind || '|' || e.provider || '|'
+                     || CASE WHEN e.kind = 'exit' THEN e.wallet ELSE '' END
+                     || '|' || e.token || '|' || e.segment_key
              ELSE 'raw|' || i.market_kind || '|' || i.item_id
            END AS group_key
       FROM news_items i
@@ -184,6 +250,7 @@ _OBSERVATIONS_SQL = f"""
             AND o.metric_version = '{OI_METRIC_VERSION}'
       LEFT JOIN news_market_liquidations l ON l.item_id = i.item_id
       LEFT JOIN news_market_smart_money w ON w.item_id = i.item_id
+      LEFT JOIN news_market_wallet_events e ON e.item_id = i.item_id
       LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
       LEFT JOIN news_market_tracks t ON t.group_key = i.market_notify_group_key
 """  # noqa: S608 -- the only interpolation is the code-owned `OI_METRIC_VERSION` literal
@@ -220,9 +287,44 @@ _OBSERVATION_KEYS: Final[tuple[str, ...]] = (
     "action",
     "position_side",
     "pnl_usd",
+    "wallet_kind",
+    "wallet_address",
+    "wallet_handle",
+    "wallet_followers",
+    "wallet_token",
+    "wallet_segment_key",
+    "wallet_tone",
+    "wallet_ratio_bps",
+    "wallet_basis",
+    "wallet_quantity",
+    "wallet_balance_before",
+    "wallet_usd",
+    "wallet_position_usd",
+    "wallet_entry_price",
+    "wallet_mark_price",
+    "wallet_peer_wallets",
+    "wallet_peer_usd",
+    "wallet_premium_bps",
+    "wallet_liquidity_usd",
+    "wallet_tx_hash",
+    "wallet_block_number",
+    "wallet_closed",
+    "wallet_crowding_item_id",
+    "wallet_window_from_ms",
     "notify_group_key",
     "delivery_key",
 )
+
+# The projected columns this read model serves to its *other* consumer and not to the public API. The
+# notification loop reads the same projection as the HTTP routes -- one query, so a card and a page can
+# never disagree about a record -- and it needs one column a reader has no use for: a crowding
+# observation stands for a window several wallets opened positions in, and its card's span is that
+# window rather than the single instant its Item is stamped with (#572 PR-2).
+#
+# It is a named set rather than an accident. `ExactApiSchema` forbids an unknown key, so a column that
+# is neither published nor declared here turns every list response into a 500 -- which is exactly what
+# happened when this column was taken off the public schema and left in the projection.
+INTERNAL_OBSERVATION_KEYS: Final[frozenset[str]] = frozenset({"wallet_window_from_ms"})
 
 MARKET_GROUPS_SQL = f"""
     WITH observations AS MATERIALIZED (
@@ -914,6 +1016,11 @@ def _observation(row: Any) -> MarketObservationRow:
 
     values: dict[str, Any] = {key: row[key] for key in _OBSERVATION_KEYS}
     values["historical"] = bool(values["historical"])
+    # A LEFT JOIN answers NULL for every Item that is not a wallet observation, and NULL is the honest
+    # answer there: "this observation has no such fact" is not the same as "this exit did not close a
+    # position". Only a real wallet row is coerced to the flag it is.
+    if values["wallet_closed"] is not None:
+        values["wallet_closed"] = bool(values["wallet_closed"])
     values["event_at_ms"] = int(values["event_at_ms"])
     values["received_at_ms"] = int(values["received_at_ms"])
     status, reason = notification_status(
@@ -930,6 +1037,7 @@ def _observation(row: Any) -> MarketObservationRow:
 
 
 __all__ = [
+    "INTERNAL_OBSERVATION_KEYS",
     "MARKET_GROUPS_SQL",
     "MARKET_ITEM_SQL",
     "MARKET_SOURCES_SQL",

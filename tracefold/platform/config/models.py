@@ -436,6 +436,52 @@ class NewsChainTapeRosterSettings(BaseModel):
         return self
 
 
+class NewsChainTapeRulesSettings(BaseModel):
+    """When a followed wallet's movement becomes a card: #572 §6.4's medium tier, as runtime values.
+
+    The numbers were computed from the provider's own seven-day close ledger and project about 25-40
+    cards a day, which is the same order as the 50-60 key News cards a reader already gets. They are
+    thresholds an operator moves, never a contract: #572 §11 asks for the receipt that says whether the
+    projection held, and the receipt is the point of shipping them rather than guessing again.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    exit_ratio_bps: int = 3000
+    exit_min_position_usd: float = 20_000.0
+    exit_cascade_window_s: int = 7200
+    exit_cascade_min_usd: float = 5_000.0
+    crowding_n: int = 3
+    crowding_window_s: int = 900
+    crowding_min_usd: float = 1_000.0
+    crowding_premium_late_bps: int = 3000
+    trigger_max_age_s: int = 600
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> NewsChainTapeRulesSettings:
+        if not 0 <= self.exit_ratio_bps < 10_000:
+            # Ten thousand would be "sold more than everything", which no sell can clear.
+            raise ValueError("news_chain_tape_rules_exit_ratio_invalid")
+        if not 0.0 <= self.exit_min_position_usd <= 1e12 or not 0.0 <= self.exit_cascade_min_usd <= 1e12:
+            raise ValueError("news_chain_tape_rules_exit_size_invalid")
+        if not 0 <= self.exit_cascade_window_s <= 86_400:
+            raise ValueError("news_chain_tape_rules_exit_cascade_window_invalid")
+        if not 2 <= self.crowding_n <= 40:
+            # One wallet is not a crowd, and the roster itself is capped at 40 addresses.
+            raise ValueError("news_chain_tape_rules_crowding_n_invalid")
+        if not 60 <= self.crowding_window_s <= 86_400:
+            raise ValueError("news_chain_tape_rules_crowding_window_invalid")
+        if not 0.0 <= self.crowding_min_usd <= 1e12:
+            raise ValueError("news_chain_tape_rules_crowding_size_invalid")
+        if not 0 <= self.crowding_premium_late_bps <= 1_000_000:
+            raise ValueError("news_chain_tape_rules_crowding_premium_invalid")
+        # A fill older than this on the host's own receive clock is history, and the 24-hour backfill is
+        # exactly that. Zero would mean nothing ever fires; a day would mean the backfill fires.
+        if not 1 <= self.trigger_max_age_s <= 3600:
+            raise ValueError("news_chain_tape_rules_trigger_age_invalid")
+        return self
+
+
 class NewsChainTapeSettings(BaseModel):
     """The Robinhood Chain wallet tape (#572 PR-1): read-only, disabled by default, store-only.
 
@@ -450,6 +496,7 @@ class NewsChainTapeSettings(BaseModel):
     poll_interval_s: float = 2.0
     roster_provider_url: str = "https://robinhoodtrenches.com"
     roster: NewsChainTapeRosterSettings = Field(default_factory=NewsChainTapeRosterSettings)
+    rules: NewsChainTapeRulesSettings = Field(default_factory=NewsChainTapeRulesSettings)
     retention_days: int = 90
 
     @field_validator("rpc_url", "roster_provider_url", mode="before")

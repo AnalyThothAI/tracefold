@@ -19,9 +19,10 @@ describe("market kind filter state", () => {
   });
 
   it("treats a filter that narrows nothing as the absence of one", () => {
-    // All four is the default window. Sending it would report `filters.kind` back as a narrowing the
-    // reader never made, and would split the cache key from the unfiltered page showing the same rows.
-    expect(parseMarketKinds("oi,liquidation,smart_money,unknown_market")).toEqual([]);
+    // Every kind the server serves is the default window. Sending it would report `filters.kind` back
+    // as a narrowing the reader never made, and would split the cache key from the unfiltered page
+    // showing the same rows.
+    expect(parseMarketKinds("oi,liquidation,smart_money,unknown_market,wallet")).toEqual([]);
     expect(parseMarketKinds("")).toEqual([]);
     expect(parseMarketKinds(null)).toEqual([]);
   });
@@ -30,7 +31,9 @@ describe("market kind filter state", () => {
     expect(toggleMarketKind([], "liquidation")).toEqual(["liquidation"]);
     expect(toggleMarketKind(["liquidation"], "oi")).toEqual(["oi", "liquidation"]);
     expect(toggleMarketKind(["oi", "liquidation"], "oi")).toEqual(["liquidation"]);
-    expect(toggleMarketKind(["oi", "liquidation", "smart_money"], "unknown_market")).toEqual([]);
+    expect(
+      toggleMarketKind(["oi", "liquidation", "smart_money", "unknown_market"], "wallet"),
+    ).toEqual([]);
 
     expect(nextMarketParams(["oi", "liquidation"]).toString()).toBe("kind=oi%2Cliquidation");
     expect(nextMarketParams([]).toString()).toBe("");

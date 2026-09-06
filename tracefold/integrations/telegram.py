@@ -74,6 +74,7 @@ _FAMILY_ICON: Final[dict[str, str]] = {
     "oi": "🔵",
     "liquidation": "🔴",
     "smart_money": "💠",
+    "wallet": "🟠",
 }
 # An escalated News card is marked by its escalation rather than by its direction: it is the one
 # thing the reader is meant to see first, and the card model already carries the mark as a qualifier.

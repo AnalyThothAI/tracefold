@@ -10,12 +10,14 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 
+from tracefold.integrations.dexscreener import DexScreenerClient, DexScreenerError
 from tracefold.integrations.robinhood_chain import (
     CHAIN_RPC_USER_AGENT,
     ROBINHOOD_CHAIN_ID,
@@ -28,6 +30,7 @@ from tracefold.integrations.robinhoodtrenches import (
 )
 from tracefold.news.chain_tape.classify import TRANSFER_TOPIC
 from tracefold.news.chain_tape.evm import address_topic
+from tracefold.news.chain_tape.rules import ratio_bps
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "chain_tape"
 
@@ -35,6 +38,9 @@ SELL_TX = "0x5c10c3cf9b3a5ef265de9ea87e0b4c787583ef11823ea233fde27528ab9ac5f0"
 SELL_WALLET = "0x69326e48f68500fb6cf3b3a7da640737b9cc347b"
 STABLE = "0x5fc5360d0400a0fd4f2af552add042d716f1d168"
 FSD = "0x8de9018c1bb82884245f06dede9fe2bebabd1e18"
+# The block before the recorded sell, and the `balanceOf` selector the exit rule reads it with.
+FSD_BALANCE_BLOCK = hex(55_432_993)
+_BALANCE_OF = "0x70a08231"
 
 
 def _fixture(name: str) -> Any:
@@ -51,6 +57,7 @@ def _rpc_transport(seen: list[dict[str, Any]] | None = None) -> httpx.MockTransp
     logs = _fixture("getlogs_window.json")
     blocks = _fixture("block_headers.json")
     tokens = _fixture("token_metadata.json")
+    balances = _fixture("balance_of_fsd.json")
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
@@ -73,6 +80,11 @@ def _rpc_transport(seen: list[dict[str, Any]] | None = None) -> httpx.MockTransp
             return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": header})
         if method == "eth_call":
             call = body["params"][0]
+            if str(call["data"]).startswith(_BALANCE_OF):
+                # A historical state read. The public node answers it inside its ~10-minute window and
+                # refuses it outside, which is exactly the two branches the exit rule has to handle.
+                block = str(body["params"][1])
+                return httpx.Response(200, json=balances["result" if block == FSD_BALANCE_BLOCK else "pruned"])
             entry = tokens.get(str(call["to"]).lower())
             if entry is None:
                 return httpx.Response(
@@ -193,6 +205,35 @@ def test_a_contract_that_reverts_is_a_token_with_no_readable_metadata() -> None:
     assert (token.symbol, token.decimals) == (None, None)
 
 
+def test_the_recorded_balance_at_the_block_before_the_sell_is_the_exit_denominator() -> None:
+    """#572 §3.3's measured case: the wallet held exactly what it sold, so the sample is a 100% exit.
+
+    The number is the recorded `eth_call` answer, as a raw integer in the token's own units -- the same
+    integer the ratio is computed from, never a float of it.
+    """
+
+    async def work(client: RobinhoodChainClient) -> Any:
+        return await client.balance_of(FSD, SELL_WALLET, block_number=55_432_993)
+
+    held = asyncio.run(_with(_chain(), work))
+
+    assert held == 9_412_641_983_109_562_000_000_000
+    assert ratio_bps(balance_before_raw=held, quantity_raw=held) == 10_000
+
+
+def test_a_block_outside_the_nodes_state_window_is_unknown_rather_than_zero() -> None:
+    """`-32000 metadata is not found` is a fact about the endpoint, and it is not a balance of nothing.
+
+    This is the branch that makes the whole relaxed verification honest: `None` here is what sends the
+    exit rule to the provider's reported bag and puts `site_reported` on the card (#572 決策更新).
+    """
+
+    async def work(client: RobinhoodChainClient) -> Any:
+        return await client.balance_of(FSD, SELL_WALLET, block_number=55_420_000)
+
+    assert asyncio.run(_with(_chain(), work)) is None
+
+
 @pytest.mark.parametrize(
     ("status", "code"),
     [(403, "chain_rpc_blocked"), (429, "chain_rpc_rate_limited"), (500, "chain_rpc_http_error")],
@@ -290,6 +331,175 @@ def _roster(seen: list[httpx.Request] | None = None, *, pace_seconds: float = 0.
         transport=_roster_transport(seen),
         pace_seconds=pace_seconds,
     )
+
+
+def _site_transport(*, fail_with: int | None = None) -> httpx.MockTransport:
+    """Replay the recorded 2026-09-06 answers for the two card-context endpoints."""
+
+    document = _fixture("trader_document.json")
+    tokens = _fixture("tokens_marks.json")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if fail_with is not None:
+            return httpx.Response(fail_with)
+        if request.url.path == "/api/tokens":
+            return httpx.Response(200, json=tokens)
+        if request.url.path.startswith("/api/trader/"):
+            return httpx.Response(200, json=document)
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    return httpx.MockTransport(handler)
+
+
+def _site(**kwargs: Any) -> RobinhoodTrenchesClient:
+    return RobinhoodTrenchesClient(base_url="https://site.test", pace_seconds=0.0, transport=_site_transport(**kwargs))
+
+
+def test_the_recorded_trader_document_decodes_into_the_bags_a_card_carries() -> None:
+    """The exit rule's fallback denominator and the card's entry price come out of this one answer."""
+
+    async def work(client: RobinhoodTrenchesClient) -> Any:
+        return await client.bags("0xVantaa")
+
+    bags = asyncio.run(_with(_site(), work))
+
+    assert len(bags) == 6
+    first = bags[0]
+    assert first.token == "0x9d7fba82efaa70823e93ada9b35ee4fbe3c61e18"
+    assert first.symbol == "LFG"
+    assert first.amount == 22_282_890.591637544
+    assert first.avg_price == 3.0286641592777497e-05
+    assert first.cost_usd == 674.873921
+    # The site publishes seconds; every stamp inside Tracefold is milliseconds.
+    assert first.opened_at_ms == 1_788_636_462_000
+
+
+def test_the_recorded_token_list_decodes_into_the_mark_and_the_pool_depth() -> None:
+    """A row the site could not price answers `None`, which is not a mark of zero."""
+
+    async def work(client: RobinhoodTrenchesClient) -> Any:
+        return await client.marks()
+
+    marks = asyncio.run(_with(_site(), work))
+
+    slink = marks["0xfa89ed9d12bf74add8253ddfaa426c4d8a0fa603"]
+    assert (slink.symbol, slink.mark, slink.liquidity) == ("SLINK", 0.0003781, 49973.0)
+    unpriced = marks["0x5b234bcf67f6725fbe01b9bfb2bc9db095589c56"]
+    assert (unpriced.mark, unpriced.liquidity) == (None, None)
+
+
+def test_a_site_that_did_not_answer_is_not_a_wallet_that_holds_nothing() -> None:
+    """The distinction the exit rule's third tier depends on: a failure raises, it is never `()`.
+
+    Flattening this into an empty tuple is how a rate-limited request during a partial sell becomes a
+    full-exit card -- "the site says no position" and "the site said nothing" have to be different
+    values for the caller to be able to decline.
+    """
+
+    async def work(client: RobinhoodTrenchesClient) -> Any:
+        return await client.bags("0xVantaa")
+
+    with pytest.raises(RosterProviderError) as failure:
+        asyncio.run(_with(_site(fail_with=429), work))
+
+    assert failure.value.code == "roster_rate_limited"
+
+
+def test_bags_and_marks_are_cached_so_a_burst_in_one_token_is_one_request() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/api/tokens":
+            return httpx.Response(200, json=_fixture("tokens_marks.json"))
+        return httpx.Response(200, json=_fixture("trader_document.json"))
+
+    client = RobinhoodTrenchesClient(
+        base_url="https://site.test", pace_seconds=0.0, transport=httpx.MockTransport(handler)
+    )
+
+    async def work(session: RobinhoodTrenchesClient) -> None:
+        for _ in range(3):
+            await session.bags("0xVantaa")
+            await session.marks()
+
+    asyncio.run(_with(client, work))
+
+    assert calls == ["/api/trader/0xVantaa", "/api/tokens"]
+
+
+# --------------------------------------------------------------------------- the price feed
+def _dexscreener(*, status: int = 200) -> DexScreenerClient:
+    document = _fixture("dexscreener_fsd_tokens.json")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if status != 200:
+            return httpx.Response(status)
+        assert request.url.path.endswith(f"/latest/dex/tokens/{FSD}")
+        return httpx.Response(200, json=document)
+
+    return DexScreenerClient(base_url="https://dex.test", transport=httpx.MockTransport(handler))
+
+
+def test_the_recorded_dexscreener_answer_is_priced_by_the_deepest_robinhood_pool() -> None:
+    """Twenty real pools for one token, spanning 1.088e-4 to 2.94e-27, and depth is what decides.
+
+    This is the recorded 2026-09-06 answer for FSD. The deepest pool holds $78,696.52 and prints
+    0.0001088; the thinnest print in the same document is twenty-three orders of magnitude away. Taking
+    the first pair, or the highest price, or any pair at all without ranking by depth, answers a number
+    that is not the token's price -- and that number would be a card's receipt.
+    """
+
+    async def work(client: DexScreenerClient) -> Any:
+        return await client.token_price(FSD)
+
+    assert asyncio.run(_with(_dexscreener(), work)) == Decimal("0.0001088")
+
+
+def test_a_pool_on_another_chain_never_prices_a_robinhood_token() -> None:
+    """Same symbol, different chain, far more liquidity: still not this token's price."""
+
+    document = json.loads(json.dumps(_fixture("dexscreener_fsd_tokens.json")))
+    document["pairs"].insert(
+        0,
+        {
+            "chainId": "ethereum",
+            "pairAddress": "0x" + "ee" * 32,
+            "priceUsd": "12.5",
+            "liquidity": {"usd": 90_000_000.0},
+        },
+    )
+    client = DexScreenerClient(
+        base_url="https://dex.test",
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=document)),
+    )
+
+    async def work(session: DexScreenerClient) -> Any:
+        return await session.token_price(FSD)
+
+    assert asyncio.run(_with(client, work)) == Decimal("0.0001088")
+
+
+def test_a_token_dexscreener_does_not_index_is_an_answer_and_not_a_failure() -> None:
+    client = DexScreenerClient(
+        base_url="https://dex.test",
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"pairs": None})),
+    )
+
+    async def work(session: DexScreenerClient) -> Any:
+        return await session.token_price(FSD)
+
+    assert asyncio.run(_with(client, work)) is None
+
+
+def test_the_price_feed_has_the_same_bounded_failure_vocabulary_as_the_others() -> None:
+    async def work(client: DexScreenerClient) -> Any:
+        return await client.token_price(FSD)
+
+    with pytest.raises(DexScreenerError) as failure:
+        asyncio.run(_with(_dexscreener(status=429), work))
+
+    assert failure.value.code == "dexscreener_rate_limited"
 
 
 def test_the_tracked_list_decodes_into_the_fields_the_roster_rules_read() -> None:

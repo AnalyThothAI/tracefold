@@ -358,8 +358,9 @@ class CliTests(unittest.TestCase):
         )
         self.assertIs(news["policy"]["restatement_drop"], True)
         self.assertEqual(news["retention"], {"raw_days": 30, "judged_days": 365})
-        # #572 PR-1: two public unauthenticated endpoints and four list rules, printed in full because
-        # none of it is a secret and an operator reading a week of tape counts needs the exact list.
+        # #572: two public unauthenticated endpoints, four list rules and nine card thresholds, printed
+        # in full because none of it is a secret and an operator reading a week of tape counts -- or
+        # deciding whether the medium tier is too loud -- needs the exact numbers.
         self.assertEqual(
             news["chain_tape"],
             {
@@ -372,6 +373,17 @@ class CliTests(unittest.TestCase):
                     "min_profit_factor": 1.2,
                     "top_quality": 20,
                     "top_whale_by_open_cost": 20,
+                },
+                "rules": {
+                    "exit_ratio_bps": 3000,
+                    "exit_min_position_usd": 20_000.0,
+                    "exit_cascade_window_s": 7200,
+                    "exit_cascade_min_usd": 5_000.0,
+                    "crowding_n": 3,
+                    "crowding_window_s": 900,
+                    "crowding_min_usd": 1_000.0,
+                    "crowding_premium_late_bps": 3000,
+                    "trigger_max_age_s": 600,
                 },
                 "retention_days": 90,
             },

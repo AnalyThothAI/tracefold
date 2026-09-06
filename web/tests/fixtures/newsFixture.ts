@@ -655,6 +655,18 @@ export function newsMarketFixture(overrides: Partial<NewsMarket> = {}): NewsMark
         raw: 2,
         received: 2,
       }),
+      // #572 PR-2. Derived by the chain tape from the fills of the followed wallets rather than
+      // reported by a provider, so it is always `parsed` and never `raw`.
+      newsMarketSourceFixture({
+        groups: 3,
+        last_received_at_ms: NEWS_NOW_MS - 90_000,
+        market_kind: "wallet",
+        merged: 0,
+        parsed: 3,
+        raw: 0,
+        received: 3,
+        sent: 3,
+      }),
     ],
     ...overrides,
   };

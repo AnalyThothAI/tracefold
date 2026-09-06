@@ -13,7 +13,7 @@ from pydantic import Field
 
 from .common import ExactApiSchema
 
-MarketKindLiteral = Literal["oi", "liquidation", "smart_money", "unknown_market"]
+MarketKindLiteral = Literal["oi", "liquidation", "smart_money", "unknown_market", "wallet"]
 
 
 class NewsMarketObservationData(ExactApiSchema):
@@ -52,6 +52,32 @@ class NewsMarketObservationData(ExactApiSchema):
     action: str | None = None
     position_side: str | None = None
     pnl_usd: str | None = None
+    # The chain wallet family (#572 PR-2). Derived by this process from chain logs rather than reported
+    # by a provider, which is why none of these has a counterpart on the four provider kinds. The
+    # quantities and dollar figures cross as exact text for the same reason the provider's do.
+    wallet_kind: Literal["exit", "crowding"] | None = None
+    wallet_address: str | None = None
+    wallet_handle: str | None = None
+    wallet_followers: int | None = None
+    wallet_token: str | None = None
+    wallet_segment_key: str | None = None
+    wallet_tone: str | None = None
+    wallet_ratio_bps: int | None = None
+    wallet_basis: Literal["chain_balance", "site_reported"] | None = None
+    wallet_quantity: str | None = None
+    wallet_balance_before: str | None = None
+    wallet_usd: str | None = None
+    wallet_position_usd: str | None = None
+    wallet_entry_price: str | None = None
+    wallet_mark_price: str | None = None
+    wallet_peer_wallets: int | None = None
+    wallet_peer_usd: str | None = None
+    wallet_premium_bps: int | None = None
+    wallet_liquidity_usd: str | None = None
+    wallet_tx_hash: str | None = None
+    wallet_block_number: int | None = None
+    wallet_closed: bool | None = None
+    wallet_crowding_item_id: str | None = None
     # The second independent pair. With no attempt this says which rule is holding the observation --
     # `historical`, `merging`, `unprocessed` -- or that none is, because the alert round it belonged
     # to ended before a card spoke for it (`uncovered`). With an attempt it says what the send did.

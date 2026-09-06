@@ -11,6 +11,7 @@ import base64
 import binascii
 import re
 import time
+from collections.abc import Mapping
 from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Query, Request
@@ -85,7 +86,7 @@ def get_news_market(
             limit=int(limit) + 1,
         )
         sources = repos.news.market_sources(from_ms=window_from, to_ms=window_to)
-    page = groups[: int(limit)]
+    page = [_group_view(group) for group in groups[: int(limit)]]
     next_cursor = None
     if len(groups) > int(limit):
         # The next page starts below the *oldest* member of the last run returned. Anchoring on the
@@ -129,10 +130,11 @@ def get_news_market_item(request: Request, item_id: str) -> Response:
     runtime = _authenticated_runtime(request)
     with runtime.repositories() as repos:
         detail = repos.news.market_item(item_id=normalized)
-        timeline = [] if detail is None else repos.news.market_group_timeline(group_key=str(detail["group_key"]))
+        rows = [] if detail is None else repos.news.market_group_timeline(group_key=str(detail["group_key"]))
     if detail is None:
         return _json({"ok": False, "error": "news_market_item_not_found"}, status_code=404)
-    observation = {key: value for key, value in detail.items() if key in _OBSERVATION_FIELDS}
+    timeline = [_observation_view(row) for row in rows]
+    observation = _observation_view(detail)
     return _etagged(
         {
             "observation": observation,
@@ -152,6 +154,29 @@ def get_news_market_item(request: Request, item_id: str) -> Response:
 
 _OBSERVATION_FIELDS: Final = frozenset(market_schemas.NewsMarketObservationData.model_fields)
 _DELIVERY_FIELDS: Final = frozenset(market_schemas.NewsMarketDeliveryData.model_fields) - {"receipt_provider"}
+
+
+def _observation_view(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One observation in the published shape, on every path that publishes one.
+
+    The read model serves two consumers from one projection -- these routes and the notification loop --
+    so it carries a column the loop needs and a reader does not (`INTERNAL_OBSERVATION_KEYS`), and the
+    detail read adds the three provider-payload columns only that page wants. `ExactApiSchema` forbids
+    an unknown key, so *every* response that carries an observation has to narrow to the published
+    fields, not just the one that happened to.
+
+    It did not, and the cost was the whole surface: an internal column left in the projection turned
+    `/api/news/market` and the detail's timeline into 500s while the detail's own observation, the one
+    path that already narrowed, kept working.
+    """
+
+    return {key: value for key, value in row.items() if key in _OBSERVATION_FIELDS}
+
+
+def _group_view(group: Mapping[str, Any]) -> dict[str, Any]:
+    """One collapsed run, with its newest member narrowed to the published observation shape."""
+
+    return {**group, "latest": _observation_view(group["latest"])}
 
 
 def _delivery(row: dict[str, Any] | None) -> dict[str, Any] | None:

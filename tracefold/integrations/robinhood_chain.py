@@ -49,6 +49,7 @@ _MAX_BYTES: Final = 32 * 1024 * 1024
 
 _SYMBOL_SELECTOR: Final = "0x95d89b41"
 _DECIMALS_SELECTOR: Final = "0x313ce567"
+_BALANCE_OF_SELECTOR: Final = "0x70a08231"
 
 
 class ChainRpcError(RuntimeError):
@@ -215,6 +216,42 @@ class RobinhoodChainClient:
         resolved = ChainToken(address=normalized, symbol=symbol, decimals=decimals)
         self._tokens[normalized] = resolved
         return resolved
+
+    async def balance_of(self, token: str, wallet: str, *, block_number: int) -> int | None:
+        """`balanceOf(wallet)` on one ERC-20 at one historical block, or `None` when the node cannot say.
+
+        This is the one call in this adapter that asks for *state*, and the public endpoint keeps about
+        6,100 blocks of it -- roughly ten minutes (#572 §3.3). Beyond that window the node answers
+        `-32000 metadata is not found`, which is a fact about the endpoint rather than a fault: it comes
+        back as `None`, and the caller falls back to the provider's own reported bag and says so on the
+        card. A revert is `None` for the same reason.
+
+        The block is `latest`-relative only in the sense that the caller chose it: the sell rule asks at
+        `block_number - 1`, so the answer is the balance the wallet held immediately before the trade.
+        """
+
+        holder = normalize_address(wallet)
+        contract = normalize_address(token)
+        if not holder or not contract:
+            raise ValueError("chain_address_invalid")
+        data = _BALANCE_OF_SELECTOR + holder[2:].rjust(64, "0")
+        try:
+            result = await self._call("eth_call", [{"to": contract, "data": data}, hex(max(0, int(block_number)))])
+        except ChainRpcError as exc:
+            if exc.rpc_code is None:
+                raise
+            # An RPC-level error here is the node declining to answer for this block -- pruned state or
+            # an execution revert. Both are "we do not know", never "the balance was zero".
+            return None
+        if not isinstance(result, str):
+            return None
+        word = result.strip()
+        if not word.startswith("0x") or len(word) < 3:
+            return None
+        try:
+            return int(word[2:], 16)
+        except ValueError:
+            return None
 
     async def _maybe_call(self, address: str, selector: str) -> str | None:
         try:

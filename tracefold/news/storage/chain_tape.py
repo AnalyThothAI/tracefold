@@ -31,6 +31,15 @@ from ..chain_tape.contracts import (
     RosterSnapshot,
     TapeCursor,
 )
+from ..chain_tape.rules import CrowdingBuyer, PreviousCrowding, PreviousExit
+from ..wallet_contracts import (
+    OUTCOME_GIVE_UP_MS,
+    WALLET_OUTCOME_HORIZONS,
+    WalletCheck,
+    WalletEvent,
+    WalletOutcome,
+)
+from .sql_values import _dumps
 
 TAPE_STATE_ID: Final = "chain_tape"
 
@@ -124,6 +133,142 @@ DELETE FROM news_market_wallet_fills
         ORDER BY event_at_ms
         LIMIT %s))
 """
+
+
+# --- the derived observations, their checks and their receipts (#572 PR-2) -------------------------
+#
+# Every read below starts at a typed fact table on an indexed field and a time window, and joins to the
+# Item only where the Item is what is being asked about. That is #570 A3's shape, and it is why none of
+# these restates the read model's `group_key` string.
+
+_INSERT_WALLET_EVENT_SQL: Final = """
+INSERT INTO news_market_wallet_events (
+    item_id, kind, provider, chain_id, wallet, handle, followers, token, token_symbol, token_decimals,
+    roster_version, window_from_ms, window_to_ms, segment_key, tone, ratio_bps, basis,
+    quantity_raw, balance_before_raw, usd, position_usd, entry_price, mark_price,
+    peer_wallets, peer_usd, premium_bps, liquidity_usd, tx_hash, block_number, closed, evidence,
+    event_at_ms, received_at_ms, created_at_ms
+) VALUES (
+    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+    %s, %s, %s, %s, %s, %s, %s,
+    %s, %s, %s, %s, %s, %s,
+    %s, %s, %s, %s, %s, %s, %s, %s::jsonb,
+    %s, %s, %s
+)
+ON CONFLICT (item_id) DO NOTHING
+"""
+
+# One row per sell fill, on the fill's own chain identity, and the *first* answer is the one kept. The
+# log overlap re-offers the same movement for a few seconds, and by the second offer the block has
+# usually left the node's state window -- so an update would quietly rewrite a card's audit row from
+# `chain_balance` to `site_reported` and disagree with the card that was already sent.
+_INSERT_WALLET_CHECK_SQL: Final = """
+INSERT INTO news_market_wallet_checks (
+    chain_id, tx_hash, log_index, basis, q_before_raw, q_sell_raw, ratio_bps, block_hash,
+    checked_at_ms, error
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (chain_id, tx_hash, log_index) DO NOTHING
+"""
+
+_LAST_EXIT_SQL: Final = """
+SELECT segment_key, ratio_bps, closed
+  FROM news_market_wallet_events
+ WHERE kind = 'exit' AND chain_id = %s AND wallet = %s AND token = %s
+ ORDER BY event_at_ms DESC, item_id DESC
+ LIMIT 1
+"""
+
+_LAST_CROWDING_SQL: Final = """
+SELECT window_from_ms, window_to_ms, peer_wallets
+  FROM news_market_wallet_events
+ WHERE kind = 'crowding' AND chain_id = %s AND token = %s
+ ORDER BY event_at_ms DESC, item_id DESC
+ LIMIT 1
+"""
+
+# The crowding card an exit in the same token can point back at: the reader who was told three wallets
+# were piling in is the reader who should be told the lead just got out.
+_RECENT_CROWDING_ITEM_SQL: Final = """
+SELECT item_id
+  FROM news_market_wallet_events
+ WHERE kind = 'crowding' AND chain_id = %s AND token = %s AND event_at_ms >= %s
+ ORDER BY event_at_ms DESC, item_id DESC
+ LIMIT 1
+"""
+
+# The exit rule's cascade arm: other roster wallets that bought this token in the window before the sell.
+_CASCADE_BUYS_SQL: Final = """
+SELECT count(DISTINCT wallet) AS wallets, COALESCE(sum(usd), 0) AS usd
+  FROM news_market_wallet_fills
+ WHERE chain_id = %s AND token = %s AND kind = 'buy'
+   AND wallet <> %s
+   AND event_at_ms >= %s AND event_at_ms <= %s
+"""
+
+# The crowding rule's window: who *opened* a position in this token inside it, and for how much.
+#
+# The scan is bounded to the window itself, and both halves have an index that can serve them:
+# `ix_news_market_wallet_fills_token_event_at` for the window, and PR-1's
+# `(wallet, token, event_at_ms DESC)` for the "was this wallet already holding" anti-join. Which one
+# the planner actually picks is its business -- on a small table either is cheap, and on a large one
+# the point is that neither half degrades into a scan of the token's whole retained history, which is
+# what finding each wallet's first buy without a lower bound would have cost.
+_CROWDING_BUYERS_SQL: Final = """
+WITH window_buys AS (
+  SELECT wallet, event_at_ms, usd, amount_raw, token_decimals
+    FROM news_market_wallet_fills
+   WHERE chain_id = %(chain_id)s AND token = %(token)s AND kind = 'buy'
+     AND event_at_ms >= %(from_ms)s AND event_at_ms <= %(to_ms)s
+), firsts AS (
+  SELECT DISTINCT ON (wallet)
+         wallet, event_at_ms AS first_at_ms, usd AS first_usd,
+         amount_raw AS first_amount_raw, token_decimals AS first_decimals
+    FROM window_buys
+   ORDER BY wallet, event_at_ms, usd
+)
+SELECT f.wallet, f.first_at_ms, f.first_usd, f.first_amount_raw, f.first_decimals,
+       COALESCE(sum(b.usd), 0) AS window_usd
+  FROM firsts f
+  JOIN window_buys b ON b.wallet = f.wallet
+ WHERE NOT EXISTS (
+   SELECT 1 FROM news_market_wallet_fills held
+    WHERE held.chain_id = %(chain_id)s AND held.token = %(token)s AND held.kind = 'buy'
+      AND held.wallet = f.wallet AND held.event_at_ms < %(from_ms)s)
+ GROUP BY f.wallet, f.first_at_ms, f.first_usd, f.first_amount_raw, f.first_decimals
+ ORDER BY f.first_at_ms, f.wallet
+"""
+
+_INSERT_OUTCOME_SQL: Final = """
+INSERT INTO news_market_wallet_outcomes (delivery_key, horizon, price, at_ms, source)
+VALUES (%s, %s, %s, %s, %s)
+ON CONFLICT (delivery_key, horizon) DO NOTHING
+"""
+
+# Due price receipts: a sent wallet card whose horizon has passed and which has no row yet. The card's
+# own settle time is the anchor, because the subject of a receipt is what the reader was told and when.
+_DUE_OUTCOMES_SQL: Final = """
+SELECT d.delivery_key, d.settled_at_ms, e.token
+  FROM news_market_deliveries d
+  JOIN news_market_wallet_events e ON e.item_id = d.trigger_item_id
+  LEFT JOIN news_market_wallet_outcomes o
+         ON o.delivery_key = d.delivery_key AND o.horizon = %(horizon)s
+ WHERE d.market_kind = 'wallet'
+   AND d.state = 'sent'
+   AND d.settled_at_ms IS NOT NULL
+   AND d.settled_at_ms + %(horizon_ms)s <= %(now_ms)s
+   AND o.delivery_key IS NULL
+ ORDER BY d.settled_at_ms
+ LIMIT %(limit)s
+"""
+
+
+class DueOutcomeRow(TypedDict):
+    """One price receipt this turn may take: which card, which horizon, and which token to price."""
+
+    delivery_key: str
+    horizon: str
+    token: str
+    expired: bool
 
 
 class ChainTapeStateRow(TypedDict):
@@ -248,6 +393,187 @@ class ChainTapeStorage:
             ),
         )
 
+    # ------------------------------------------------------------------ derived observations (PR-2)
+    def chain_tape_record_check(self, check: WalletCheck) -> None:
+        """Record one verification attempt against one sell, whatever it proved. First answer wins."""
+
+        self.conn.execute(
+            _INSERT_WALLET_CHECK_SQL,
+            (
+                int(check.chain_id),
+                str(check.tx_hash),
+                int(check.log_index),
+                str(check.basis),
+                None if check.q_before_raw is None else Decimal(int(check.q_before_raw)),
+                Decimal(int(check.q_sell_raw)),
+                None if check.ratio_bps is None else int(check.ratio_bps),
+                str(check.block_hash or ""),
+                int(check.checked_at_ms),
+                check.error,
+            ),
+        )
+
+    def chain_tape_insert_wallet_event(self, event: WalletEvent) -> bool:
+        """Write one derived observation beside its Item; return whether the row was new.
+
+        Idempotent on the Item's identity, so a turn that is replayed writes one row. The Item itself is
+        written by `admit_market_item`, in the same transaction as this and by the same rule the other
+        market kinds follow -- there is no second admission path.
+        """
+
+        cursor = self.conn.execute(
+            _INSERT_WALLET_EVENT_SQL,
+            (
+                str(event.item_id),
+                str(event.kind),
+                str(event.provider),
+                int(event.chain_id),
+                str(event.wallet),
+                str(event.handle or ""),
+                int(event.followers or 0),
+                str(event.token),
+                event.token_symbol,
+                None if event.token_decimals is None else int(event.token_decimals),
+                int(event.roster_version),
+                int(event.window_from_ms),
+                int(event.window_to_ms),
+                str(event.segment_key),
+                str(event.tone or ""),
+                None if event.ratio_bps is None else int(event.ratio_bps),
+                event.basis,
+                None if event.quantity_raw is None else Decimal(int(event.quantity_raw)),
+                None if event.balance_before_raw is None else Decimal(int(event.balance_before_raw)),
+                event.usd,
+                event.position_usd,
+                event.entry_price,
+                event.mark_price,
+                int(event.peer_wallets or 0),
+                event.peer_usd,
+                None if event.premium_bps is None else int(event.premium_bps),
+                event.liquidity_usd,
+                event.tx_hash,
+                None if event.block_number is None else int(event.block_number),
+                bool(event.closed),
+                _dumps(dict(event.evidence or {})),
+                int(event.event_at_ms),
+                int(event.received_at_ms),
+                int(event.received_at_ms),
+            ),
+        )
+        return bool(cursor.rowcount)
+
+    def chain_tape_last_exit(self, *, chain_id: int, wallet: str, token: str) -> PreviousExit | None:
+        """The last exit card for this wallet and token, which is what decides segment and follow-up."""
+
+        row = self.conn.execute(_LAST_EXIT_SQL, (int(chain_id), str(wallet), str(token))).fetchone()
+        if row is None:
+            return None
+        return PreviousExit(
+            segment_key=str(row["segment_key"]),
+            ratio_bps=int(row["ratio_bps"] or 0),
+            closed=bool(row["closed"]),
+        )
+
+    def chain_tape_last_crowding(self, *, chain_id: int, token: str) -> PreviousCrowding | None:
+        """The last crowding card for this token: its window, and how many wallets it counted."""
+
+        row = self.conn.execute(_LAST_CROWDING_SQL, (int(chain_id), str(token))).fetchone()
+        if row is None:
+            return None
+        return PreviousCrowding(
+            window_from_ms=int(row["window_from_ms"]),
+            window_to_ms=int(row["window_to_ms"]),
+            buyers=int(row["peer_wallets"] or 0),
+        )
+
+    def chain_tape_recent_crowding_item(self, *, chain_id: int, token: str, since_ms: int) -> str | None:
+        """The crowding card an exit in the same token should point back at, if there is a recent one."""
+
+        row = self.conn.execute(_RECENT_CROWDING_ITEM_SQL, (int(chain_id), str(token), int(since_ms))).fetchone()
+        return None if row is None else str(row["item_id"])
+
+    def chain_tape_cascade_buys(
+        self, *, chain_id: int, token: str, exclude_wallet: str, from_ms: int, to_ms: int
+    ) -> tuple[int, Decimal]:
+        """How many *other* roster wallets bought this token in the window, and for how much."""
+
+        row = self.conn.execute(
+            _CASCADE_BUYS_SQL, (int(chain_id), str(token), str(exclude_wallet), int(from_ms), int(to_ms))
+        ).fetchone()
+        if row is None:
+            return 0, Decimal(0)
+        return int(row["wallets"] or 0), Decimal(row["usd"] or 0)
+
+    def chain_tape_crowding_buyers(
+        self, *, chain_id: int, token: str, from_ms: int, to_ms: int
+    ) -> tuple[CrowdingBuyer, ...]:
+        """The wallets that opened a position in this token inside the window, with their entry price.
+
+        The price is the wallet's first buy in dollars over its quantity in the token's own units -- the
+        two numbers already on the fill. A fill the cash leg could not price, or a token that answered no
+        `decimals`, carries no price and simply does not contribute to the premium median.
+        """
+
+        rows = self.conn.execute(
+            _CROWDING_BUYERS_SQL,
+            {"chain_id": int(chain_id), "token": str(token), "from_ms": int(from_ms), "to_ms": int(to_ms)},
+        ).fetchall()
+        return tuple(
+            CrowdingBuyer(
+                wallet=str(row["wallet"]),
+                first_at_ms=int(row["first_at_ms"]),
+                usd=Decimal(row["window_usd"] or 0),
+                price=_unit_price(row["first_usd"], row["first_amount_raw"], row["first_decimals"]),
+            )
+            for row in rows
+        )
+
+    # ------------------------------------------------------------------ price receipts (PR-2)
+    def chain_tape_due_outcomes(self, *, now_ms: int, limit: int) -> list[DueOutcomeRow]:
+        """Sent wallet cards whose horizon has passed and which have no receipt yet, oldest first.
+
+        The budget is split evenly across the horizons rather than taken first-come. A single query
+        ordered by send time would hand every slot to the older horizon whenever there is a backlog on
+        it, and the newer one would never be reached -- so a token nothing can price would not merely
+        be late, it would hold the four-hour receipts of every card behind it.
+        """
+
+        share = max(1, int(limit) // max(1, len(WALLET_OUTCOME_HORIZONS)))
+        due: list[DueOutcomeRow] = []
+        for horizon, horizon_ms in WALLET_OUTCOME_HORIZONS:
+            rows = self.conn.execute(
+                _DUE_OUTCOMES_SQL,
+                {"horizon": horizon, "horizon_ms": int(horizon_ms), "now_ms": int(now_ms), "limit": share},
+            ).fetchall()
+            due.extend(
+                DueOutcomeRow(
+                    delivery_key=str(row["delivery_key"]),
+                    horizon=horizon,
+                    token=str(row["token"]),
+                    # A horizon that is more than the grace period late is banked as `unavailable`: a
+                    # price read long after the mark is not that mark's price, and a row that is never
+                    # banked occupies the budget for as long as it stays unpriceable.
+                    expired=int(now_ms) - (int(row["settled_at_ms"]) + int(horizon_ms)) >= OUTCOME_GIVE_UP_MS,
+                )
+                for row in rows
+            )
+        return due
+
+    def chain_tape_record_outcome(self, outcome: WalletOutcome) -> bool:
+        """Write one price receipt. First writer wins: a receipt is about one instant, not the latest."""
+
+        cursor = self.conn.execute(
+            _INSERT_OUTCOME_SQL,
+            (
+                str(outcome.delivery_key),
+                str(outcome.horizon),
+                outcome.price,
+                int(outcome.at_ms),
+                str(outcome.source),
+            ),
+        )
+        return bool(cursor.rowcount)
+
     # ------------------------------------------------------------------ roster
     def chain_tape_current_roster(self) -> RosterSnapshot | None:
         rows = self.conn.execute(_CURRENT_ROSTER_SQL).fetchall()
@@ -321,4 +647,19 @@ class ChainTapeStorage:
         return RosterSnapshot(roster_version=version, taken_at_ms=int(now_ms), members=tuple(members))
 
 
-__all__ = ["TAPE_STATE_ID", "ChainTapeStateRow", "ChainTapeStorage"]
+def _unit_price(usd: Any, amount_raw: Any, decimals: Any) -> Decimal | None:
+    """One fill's dollars per token, or `None` when the fill carried no price to divide.
+
+    Decimal throughout: the numerator is a stored `numeric` and the denominator is a raw integer scaled
+    by the token's own decimals, and a float division of an 18-decimal quantity is not the same number.
+    """
+
+    if usd is None or amount_raw is None or decimals is None:
+        return None
+    quantity = Decimal(int(amount_raw)) / (Decimal(10) ** int(decimals))
+    if quantity <= 0:
+        return None
+    return Decimal(usd) / quantity
+
+
+__all__ = ["TAPE_STATE_ID", "ChainTapeStateRow", "ChainTapeStorage", "DueOutcomeRow"]
