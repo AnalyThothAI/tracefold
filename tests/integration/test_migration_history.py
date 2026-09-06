@@ -1944,3 +1944,41 @@ def test_the_market_notification_marker_separates_the_pre_enable_backlog_from_li
         assert replayed["market_notify_state"] == "historical"
     finally:
         conn.close()
+
+
+def test_the_alert_round_backfill_starts_each_group_at_its_last_send_attempt() -> None:
+    """`20260905_0367` on groups that already exist, which is every group in production.
+
+    The round start bounds what the next card adopts, so the value the upgrade leaves behind decides
+    which observations the first card after the deploy speaks for. The last send attempt is the
+    newest moment a group is known to have interrupted a reader: what came before it was either on
+    that card or held in a round that has ended. A group that has never sent keeps 0, so its first
+    card still speaks for everything it holds (#562 PR-F).
+    """
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260905_0366")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            for group_key, attempt_at_ms in (("oi|sent", 1_700_000_000_000), ("oi|never-sent", None)):
+                conn.execute(
+                    """
+                    INSERT INTO news_market_tracks (
+                      group_key, market_kind, family, last_observed_at_ms, last_observed_item_id,
+                      anchor_attempt_at_ms, created_at_ms, updated_at_ms
+                    ) VALUES (%s, 'oi', 'oi', 1, 'item', %s, 1, 1)
+                    """,
+                    (group_key, attempt_at_ms),
+                )
+
+        command.upgrade(config, "head")
+
+        started = {
+            str(row["group_key"]): int(row["round_started_at_ms"])
+            for row in conn.execute("SELECT group_key, round_started_at_ms FROM news_market_tracks").fetchall()
+        }
+        assert started == {"oi|sent": 1_700_000_000_000, "oi|never-sent": 0}
+    finally:
+        conn.close()
