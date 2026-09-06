@@ -418,6 +418,10 @@ class _Kind:
     raw: int = 0
     merged: int = 0
     still_merging: int = 0
+    # Held by a rule in a round that ended before any card spoke for it. Not `still_merging`: no card
+    # is coming for these, and counting them as merging would report a queue that does not exist
+    # (#562 PR-F).
+    round_closed: int = 0
     sent: int = 0
     failed: int = 0
     unknown: int = 0
@@ -512,13 +516,19 @@ def _report(connection: Any, corpus: list[_Record]) -> dict[str, _Kind]:
     }
     report: dict[str, _Kind] = {name: _Kind() for name in ("oi", "liquidation", "smart_money", "raw")}
     for row in connection.execute(
-        "SELECT market_notify_group_key AS group_key, market_notify_delivery_key AS delivery_key"
-        "  FROM news_items WHERE market_notify_state = 'processed'"
+        "SELECT i.market_notify_group_key AS group_key, i.market_notify_delivery_key AS delivery_key,"
+        "       COALESCE(i.observed_at_ms < t.round_started_at_ms, false) AS round_closed"
+        "  FROM news_items i"
+        "  LEFT JOIN news_market_tracks t ON t.group_key = i.market_notify_group_key"
+        " WHERE i.market_notify_state = 'processed'"
     ).fetchall():
         entry = report[families[str(row["group_key"])]]
         entry.records += 1
         if row["delivery_key"] is None:
-            entry.still_merging += 1
+            if bool(row["round_closed"]):
+                entry.round_closed += 1
+            else:
+                entry.still_merging += 1
     for row in connection.execute(
         "SELECT group_key, trigger_reason, trigger_item_id, state, covered_count, first_attempt_at_ms, card"
         "  FROM news_market_deliveries"
@@ -544,14 +554,15 @@ def test_the_replay_reports_every_kind_at_raw_record_granularity(replay: dict[st
     """The report itself, printed so a reviewer reads the numbers the PR body quotes."""
 
     lines = [
-        "kind records first followup action_change raw merged still_merging "
+        "kind records first followup action_change raw merged still_merging round_closed "
         "sent failed unknown cards quoted quoted_share first_p50_ms followup_p50_ms"
     ]
     for kind in ("oi", "liquidation", "smart_money", "raw"):
         entry = replay[kind]
         lines.append(
             f"{kind} {entry.records} {entry.first} {entry.followup} {entry.action_change} {entry.raw} "
-            f"{entry.merged} {entry.still_merging} {entry.sent} {entry.failed} {entry.unknown} "
+            f"{entry.merged} {entry.still_merging} {entry.round_closed} "
+            f"{entry.sent} {entry.failed} {entry.unknown} "
             f"{entry.cards} {entry.quoted} {entry.quoted_share} "
             f"{_p50(entry.first_latency_ms)} {_p50(entry.followup_latency_ms)}"
         )
@@ -586,7 +597,7 @@ def test_every_record_is_accounted_for_exactly_once(replay: dict[str, _Kind]) ->
     assert sum(entry.records for entry in replay.values()) == 624
     for kind, entry in replay.items():
         covered = entry.cards + entry.merged
-        assert covered + entry.still_merging == entry.records, kind
+        assert covered + entry.still_merging + entry.round_closed == entry.records, kind
     # The number the PR body quotes, pinned so the prose cannot drift from the run.
     assert sum(entry.cards for entry in replay.values()) == 246
 

@@ -703,7 +703,11 @@ every Event this code can open.
   existed before the loop was enabled), or `merging` with the track's own reason
   — `merging_into_prepared_card`, `oi_change_below_followup_threshold`,
   `oi_anchor_zero_and_unchanged`, `liquidation_followup_window_open`,
-  `smart_money_followup_window_open`. With an attempt it is the card's state:
+  `smart_money_followup_window_open`. `uncovered`
+  (`alert_round_ended_before_a_card`) is the one final answer without a send: the
+  alert round that held this observation ended before any card spoke for it, and
+  the card that opened the next round covers that round only. With an attempt it
+  is the card's state:
   `pending`, `sending`, `sent`, `failed`, `unknown` or `unavailable`. `unknown`
   means this process could not read the provider's answer, so the card is never
   re-sent and is never reported as delivered; `unavailable` means no sender is

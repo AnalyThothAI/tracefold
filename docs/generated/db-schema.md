@@ -463,6 +463,7 @@
 | `pending_reason` | `TEXT` | False | `''::text` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `round_started_at_ms` | `BIGINT` | False | `0` |
 
 ## `news_model_recordings`
 

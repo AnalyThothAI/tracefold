@@ -53,7 +53,8 @@ class NewsMarketObservationData(ExactApiSchema):
     position_side: str | None = None
     pnl_usd: str | None = None
     # The second independent pair. With no attempt this says which rule is holding the observation --
-    # `historical`, `merging`, `unprocessed` -- and with one it says what the send did.
+    # `historical`, `merging`, `unprocessed` -- or that none is, because the alert round it belonged
+    # to ended before a card spoke for it (`uncovered`). With an attempt it says what the send did.
     notification_status: str
     notification_reason: str
     # The notification group the loop assigned this observation to, and the card that spoke for it.

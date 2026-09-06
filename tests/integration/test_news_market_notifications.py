@@ -27,8 +27,11 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.news import card_format as fmt
 from tracefold.news.liquidations import parse_liquidation
 from tracefold.news.market_notifications import (
+    OI_QUIET_RESET_MS,
+    REASON_ROUND_CLOSED,
     REASON_SENDER_UNAVAILABLE,
     SEND_ATTEMPTS_MAX,
     SEND_RETRY_BACKOFF_MS,
@@ -552,6 +555,82 @@ def test_new_observations_merge_into_an_un_started_card_and_a_frozen_one_refuses
 
 
 # --- what each send answer durably means ---------------------------------------------------------
+
+
+def test_a_new_alert_round_covers_only_itself_and_the_held_observation_stays_on_the_page(conn: Any) -> None:
+    """The production MARSCOIN card, through the real tables (#562 PR-F).
+
+    A first card, an observation held below the follow-up threshold, four quiet hours, and the
+    observation that opens the next round. That card covered both and printed a six-hour span; it now
+    covers its own round only, and the held observation keeps saying on the page that no card ever
+    spoke for it rather than claiming to be merging into one that is never coming.
+    """
+
+    start = NOW - OI_QUIET_RESET_MS - 3_600_000
+    clock = _Clock(start)
+    sender = _Sender()
+    db = _Db(conn)
+    repos = repositories_for_connection(conn)
+
+    _oi_item(conn, "oi-round1", at_ms=start, change_bps=600)
+    asyncio.run(_loop(db, sender, clock=clock).advance())
+
+    held_at = start + 60_000
+    clock.at_ms = held_at
+    _oi_item(conn, "oi-held", at_ms=held_at, change_bps=610)
+    asyncio.run(_loop(db, sender, clock=clock).advance())
+    # 6.1 % is not twice 6 %: no second card, and the observation is left with no card of its own.
+    assert len(_deliveries(conn)) == 1
+
+    opened_at = held_at + OI_QUIET_RESET_MS
+    clock.at_ms = opened_at
+    _oi_item(conn, "oi-round2", at_ms=opened_at, change_bps=620)
+    asyncio.run(_loop(db, sender, clock=clock).advance())
+
+    deliveries = _deliveries(conn)
+    assert len(deliveries) == 2
+    second = deliveries[-1]
+    assert second["state"] == "sent"
+    assert second["trigger_reason"] == "first"
+    # Exactly the adopted set, and a span that is one moment rather than six hours.
+    assert second["covered_count"] == 1
+    assert second["covered_from_ms"] == opened_at
+    assert second["covered_to_ms"] == opened_at
+    printed = second["card"]["elements"][0]["content"]
+    assert fmt.clock(opened_at) in printed
+    assert fmt.clock(held_at) not in printed
+    covered = _rows(
+        conn,
+        "SELECT item_id FROM news_items WHERE market_notify_delivery_key = %s",
+        (second["delivery_key"],),
+    )
+    assert [row["item_id"] for row in covered] == ["oi-round2"]
+
+    held = repos.news.market_item(item_id="oi-held")
+    assert held is not None
+    assert held["delivery_key"] is None
+    assert (held["notification_status"], held["notification_reason"]) == ("uncovered", REASON_ROUND_CLOSED)
+
+    # The round that is open still merges everything it holds: a follow-up inside it speaks for the
+    # observation it held as well as the one that triggered it.
+    inside_at = opened_at + 60_000
+    clock.at_ms = inside_at
+    _oi_item(conn, "oi-inside", at_ms=inside_at, change_bps=630)
+    asyncio.run(_loop(db, sender, clock=clock).advance())
+    triggered_at = inside_at + 60_000
+    clock.at_ms = triggered_at
+    _oi_item(conn, "oi-doubled", at_ms=triggered_at, change_bps=1_300)
+    asyncio.run(_loop(db, sender, clock=clock).advance())
+
+    followup = _deliveries(conn)[-1]
+    assert followup["trigger_reason"] == "followup"
+    assert followup["covered_count"] == 2
+    assert followup["covered_from_ms"] == inside_at
+    # ... and the observation from the round that ended is still nobody's, two cards later.
+    still_held = repos.news.market_item(item_id="oi-held")
+    assert still_held is not None
+    assert still_held["delivery_key"] is None
+    assert still_held["notification_status"] == "uncovered"
 
 
 def test_a_retryable_provably_not_sent_failure_retries_the_same_card_at_most_three_times(conn: Any) -> None:

@@ -160,6 +160,11 @@ _OBSERVATIONS_SQL = f"""
            d.error AS delivery_error,
            d.trigger_item_id AS delivery_trigger_item_id,
            t.pending_reason AS track_reason,
+           -- No card claimed this observation and its group has moved on to a later round: nothing
+           -- is holding it and nothing will cover it. The comparison lives here because the round
+           -- start is the track's, and the track is already joined (#562 PR-F).
+           COALESCE(i.market_notify_delivery_key IS NULL AND i.observed_at_ms < t.round_started_at_ms, false)
+             AS round_closed,
            CASE
              WHEN o.source_item_id IS NOT NULL THEN
                'oi|' || o.provider || '|' || COALESCE(o.source_venue, '') || '|'
@@ -359,12 +364,19 @@ MARKET_OPEN_DELIVERY_SQL = """
     RETURNING delivery_key
 """
 
+# The lower bound is the group's current alert round, and it is what stops a card from speaking for a
+# round that ended before it. Without it, an observation a rule held hours ago -- an OI change under
+# the follow-up threshold, then four quiet hours -- is swept into whatever card comes next, which is
+# how the first production MARSCOIN card came to cover `01:20-07:34` (#562 PR-F). The partial index
+# `ix_news_items_market_notify_unclaimed (market_notify_group_key, observed_at_ms)` serves exactly
+# this predicate.
 MARKET_ADOPT_UNCLAIMED_SQL = """
     UPDATE news_items
        SET market_notify_delivery_key = %s
      WHERE market_notify_group_key = %s
        AND market_notify_delivery_key IS NULL
        AND market_notify_state = 'processed'
+       AND observed_at_ms >= %s
 """
 
 # Named rather than starred: this one is on a public route, and a star over a base relation is how a
@@ -411,11 +423,15 @@ MARKET_DELIVERY_ITEM_IDS_SQL = f"""
      LIMIT {MARKET_TIMELINE_MAX}
 """  # noqa: S608 -- interpolates only this module's own timeline cap
 
+# Deliberately uncapped, unlike the detail page's timeline. This is the set the card *is*: its report
+# count, its span and the anchor the next alert is measured against all come from these rows, and a
+# `LIMIT 200` here would have reported the 200th oldest observation as the newest one the card
+# covered. The set is bounded by the alert round it belongs to, and the card's own line cap bounds
+# what is rendered from it (#562 PR-F).
 MARKET_DELIVERY_OBSERVATIONS_SQL = f"""
     SELECT * FROM ({_OBSERVATIONS_SQL} WHERE i.market_notify_delivery_key = %s) AS covered
      ORDER BY covered.received_at_ms ASC, covered.item_id ASC
-     LIMIT {MARKET_TIMELINE_MAX}
-"""  # noqa: S608 -- interpolates only this module's own projection and timeline cap
+"""  # noqa: S608 -- interpolates only this module's own projection
 
 # The snapshot is frozen on the first attempt only. A retry is the same card being sent again after a
 # failure that provably delivered nothing, and re-rendering it would change what the reader is told
@@ -703,10 +719,15 @@ class MarketStorage:
         ).fetchone()
         return row is not None
 
-    def market_adopt_unclaimed(self, *, group_key: str, delivery_key: str) -> int:
-        """Hand every observation of this group that no card has spoken for yet to this one."""
+    def market_adopt_unclaimed(self, *, group_key: str, delivery_key: str, min_received_at_ms: int) -> int:
+        """Hand this card every observation of the group's current round that none has spoken for.
 
-        cursor = self.conn.execute(MARKET_ADOPT_UNCLAIMED_SQL, (delivery_key, group_key))
+        `min_received_at_ms` is where that round started. Observations below it were held by a rule
+        in a round that has since ended: they were never told to anyone, they are shown on the page
+        as exactly that, and they are not folded into a card about something else (#562 PR-F).
+        """
+
+        cursor = self.conn.execute(MARKET_ADOPT_UNCLAIMED_SQL, (delivery_key, group_key, int(min_received_at_ms)))
         return int(cursor.rowcount or 0)
 
     def market_due_delivery(self, *, now_ms: int) -> dict[str, Any] | None:
@@ -900,6 +921,7 @@ def _observation(row: Any) -> MarketObservationRow:
         delivery_state=None if row["delivery_state"] is None else str(row["delivery_state"]),
         delivery_error=None if row["delivery_error"] is None else str(row["delivery_error"]),
         track_reason=None if row["track_reason"] is None else str(row["track_reason"]),
+        round_closed=bool(row["round_closed"]),
     )
     values["notification_status"] = status
     values["notification_reason"] = reason
