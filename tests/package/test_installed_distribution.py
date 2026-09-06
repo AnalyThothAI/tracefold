@@ -185,6 +185,25 @@ def _sdist_members(sdist: Path) -> list[str]:
         return [name.removeprefix(prefix) for name in archive.getnames() if name.startswith(prefix)]
 
 
+def _tracked_migration_filenames() -> list[str]:
+    """The Alembic revisions git tracks in the checkout, read rather than restated.
+
+    A literal filename ledger costs one edit per migration and only proves that someone updated
+    the ledger. Deriving the expected set from the tracked tree keeps the same failure — a
+    revision dropped from the wheel, or an extra file the build picked up — at zero edits.
+    """
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "--", "tracefold/platform/postgres/alembic/versions/*.py"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout
+    names = sorted(Path(name).name for name in listed.split("\0") if name)
+    assert names, "the checkout tracks no Alembic revision files"
+    return names
+
+
 def test_wheel_ships_the_flat_package_and_no_src_prefix(built_distribution: BuiltDistribution) -> None:
     members = _wheel_members(built_distribution.wheel)
     dist_info = f"{DISTRIBUTION_NAME}-{DISTRIBUTION_VERSION}.dist-info/"
@@ -201,42 +220,14 @@ def test_wheel_ships_the_packaged_resources_the_runtime_reads(built_distribution
 
     assert f"{alembic}env.py" in members
     assert f"{alembic}current_schema_20260831_0340.sql" in members
-    assert sorted(name for name in members if name.startswith(f"{alembic}versions/") and name.endswith(".py")) == [
-        f"{alembic}versions/20260831_0340_baseline.py",
-        f"{alembic}versions/20260901_0341_trading_signal_hard_cut.py",
-        f"{alembic}versions/20260901_0342_trading_notification_deliveries.py",
-        f"{alembic}versions/20260901_0343_trading_execution_runtime_state.py",
-        f"{alembic}versions/20260901_0344_news_oi_push_cut.py",
-        f"{alembic}versions/20260901_0345_trading_runtime_exposure_race.py",
-        f"{alembic}versions/20260901_0346_trading_notification_result.py",
-        f"{alembic}versions/20260901_0347_drop_retired_trading_tables.py",
-        f"{alembic}versions/20260902_0348_trading_runtime_control_state.py",
-        f"{alembic}versions/20260902_0349_trading_account_projection.py",
-        f"{alembic}versions/20260902_0350_news_reader_history_title_similarity.py",
-        f"{alembic}versions/20260902_0351_news_program_v9_judgment_check.py",
-        f"{alembic}versions/20260903_0352_news_policy_v12_judgment_check.py",
-        f"{alembic}versions/20260903_0353_trading_execution_reference_collation.py",
-        f"{alembic}versions/20260903_0354_trading_execution_runtime_routes.py",
-        f"{alembic}versions/20260903_0355_trading_case_dead_columns.py",
-        f"{alembic}versions/20260903_0356_trading_account_slot_identity.py",
-        f"{alembic}versions/20260903_0357_trading_pydantic_only_validation.py",
-        f"{alembic}versions/20260903_0358_news_policy_v13_judgment_check.py",
-        f"{alembic}versions/20260903_0359_drop_trading_notification_deliveries.py",
-        f"{alembic}versions/20260904_0360_trading_lane_gate_cut.py",
-        f"{alembic}versions/20260904_0361_trading_runtime_identity_cut.py",
-        f"{alembic}versions/20260904_0362_news_oi_clock_check_cut.py",
-        f"{alembic}versions/20260904_0363_news_review_task_source_judged_evidence.py",
-        f"{alembic}versions/20260905_0364_workers_runtime_capabilities.py",
-        f"{alembic}versions/20260905_0365_news_market_facts_at_admission.py",
-        f"{alembic}versions/20260905_0366_news_market_notification_tracks.py",
-        f"{alembic}versions/20260905_0367_news_market_alert_round_start.py",
-        f"{alembic}versions/20260906_0368_news_instrument_snapshot_state.py",
-        f"{alembic}versions/20260906_0369_news_market_wallet_tape.py",
-        f"{alembic}versions/20260906_0370_news_smart_money_reparse.py",
-        f"{alembic}versions/20260906_0371_news_market_unstructured_not_alerted.py",
-        f"{alembic}versions/20260906_0372_news_market_wallet_cards.py",
-        f"{alembic}versions/20260906_0373_news_market_wallet_digest.py",
-    ]
+    assert (
+        sorted(
+            name.removeprefix(f"{alembic}versions/")
+            for name in members
+            if name.startswith(f"{alembic}versions/") and name.endswith(".py")
+        )
+        == _tracked_migration_filenames()
+    )
     assert f"{DISTRIBUTION_NAME}/news/program/resources/registry.json" in members
     # #509: the storyline registry is package data the Gate and Triage read on every Event, so a wheel
     # that dropped it would fail at the first key rather than at import.
@@ -283,7 +274,7 @@ def test_installed_distribution_reads_its_own_program_artifact(isolated_probe: d
 def test_installed_distribution_carries_the_alembic_tree(isolated_probe: dict[str, object]) -> None:
     assert isolated_probe["alembic_env_py"] is True
     assert isolated_probe["alembic_baseline_sql"] is True
-    assert isolated_probe["alembic_revisions"] == 34
+    assert isolated_probe["alembic_revisions"] == len(_tracked_migration_filenames())
 
 
 @pytest.mark.parametrize("entrypoint", ["console-script", "python-m"])

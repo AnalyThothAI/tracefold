@@ -57,7 +57,9 @@ def _readable_files_outside_the_archive() -> tuple[tuple[Path, str], ...]:
 
 def test_the_repository_root_holds_exactly_one_production_package() -> None:
     assert (ROOT / PACKAGE / "__init__.py").is_file()
-    assert not (ROOT / LEGACY_PARENT).exists()
+    # Tracked files, not `Path.exists()`: a stale `src/**/__pycache__` left by an older checkout
+    # survives `git checkout` and would turn this red without a single tracked file under `src/`.
+    assert [path.as_posix() for path in _tracked_files() if path.as_posix().startswith(f"{LEGACY_PARENT}/")] == []
 
 
 def test_no_current_path_still_names_the_legacy_package_root() -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -117,6 +118,24 @@ def _trading_sources() -> list[Path]:
 
 def _service_sources() -> list[Path]:
     return sorted(path for path in SRC.rglob("*.py") if "__pycache__" not in path.parts)
+
+
+def _tracked_source_paths() -> frozenset[str]:
+    """Paths under `tracefold/` that git tracks, as posix strings relative to it.
+
+    A deleted module is proved gone by the tracked tree, not by `Path.exists()`: a stale
+    `__pycache__/` survives `git checkout` and `git clean` is not part of anyone's loop, so the
+    filesystem answer turns red on a clean checkout for a directory nothing tracks any more. This
+    is the pattern `tests/architecture/test_research_notebooks.py` already uses.
+    """
+
+    listed = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "-z", "--", "tracefold"],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout
+    return frozenset(name.removeprefix("tracefold/") for name in listed.split("\0") if name)
 
 
 def test_signal_path_manifest_is_complete_and_every_trading_module_is_classified() -> None:
@@ -248,7 +267,8 @@ def test_legacy_execution_cluster_is_deleted_without_forwarders() -> None:
         "integrations/nautilus/messages.py",
         "integrations/nautilus/execution_adapter.py",
     )
-    assert [relative for relative in retired if (SRC / relative).exists()] == []
+    tracked = _tracked_source_paths()
+    assert [relative for relative in retired if relative in tracked] == []
 
 
 def test_research_left_the_service_package_without_a_forwarder() -> None:
@@ -266,8 +286,9 @@ def test_research_left_the_service_package_without_a_forwarder() -> None:
         "integrations/venues/open_interest_history.py",
         "app/cli/commands/trading_research.py",
     )
-    assert [relative for relative in moved if (SRC / relative).exists()] == []
-    assert not (SRC / "trading/research").exists()
+    tracked = _tracked_source_paths()
+    assert [relative for relative in moved if relative in tracked] == []
+    assert [relative for relative in tracked if relative.startswith("trading/research/")] == []
 
     retired_names = ("trading.research", "open_interest_history", "trading_research")
     offenders = [

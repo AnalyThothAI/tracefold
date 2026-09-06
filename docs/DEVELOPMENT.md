@@ -170,7 +170,7 @@ their corrections remain in #319.
 | `make test-scheduled` | non-gating production-duration diagnostics | real code-owned timeout envelopes on a fixed runner | merge evidence and the broad hermetic checkpoint |
 | `make test-visual` | explicit visual diagnostics | four viewport projects and screenshot baselines | required per-PR evidence |
 | `make test-all` | local complete-suite convenience | all Python lanes and frontend | exact-HEAD CI or fail-closed evidence claims |
-| `make test-ci` | optional complete local preflight for declared high-risk changes | every fixed owner surface, run serially with native reports and fail-closed resources/outcomes | routine local changes, merge/release authorization, `live`, visual/live/scheduled diagnostics, missing declared resources, skip/xfail/xpass/rerun/maxfail |
+| `make test-ci` | optional complete local preflight for declared high-risk changes | every fixed owner surface, run serially with native reports and fail-closed resources/outcomes | routine local changes, merge/release authorization, visual/scheduled diagnostics, missing declared resources, skip/xfail/xpass/rerun/maxfail |
 
 Prefer behavior at a maintained public or persistence seam. Do not preserve
 tests that assert private file layout, source text, mock call choreography, or
@@ -289,9 +289,11 @@ The following evidence rules apply at every level:
 6. **No pseudo-green.** Required runs reject unexpected skip, xfail, xpass,
    rerun, `--maxfail`, rerun plugins, and catch-and-continue behavior. Golden
    or snapshot outputs are checked for drift; a required run may not silently
-   update them and continue green. Provider/live diagnostics are deselected by
-   the explicit `not live and not scheduled` expression; this exclusion is
-   visible in the canonical commands and never represents required green.
+   update them and continue green. Production-duration diagnostics are
+   deselected by the explicit `not scheduled` expression; this exclusion is
+   visible in the canonical commands and never represents required green. There
+   is no provider/`live` marker: a test that would call an external provider API
+   is not written, not marked and not deselected.
 7. **Acceptance-test changes.** When the same PR changes an existing
    acceptance test, its verification section classifies the change as a
    product-contract change, a test defect, or a fixture repair and links the

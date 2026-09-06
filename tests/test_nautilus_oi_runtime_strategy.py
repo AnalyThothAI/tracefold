@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -1274,15 +1276,74 @@ def test_account_projection_accepts_quote_newer_than_the_separate_private_accoun
     assert snapshot.positions[0].mark_price == "10000.5"
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_SOURCE_ROOT = _REPO_ROOT / "tracefold"
+_RUNTIME_PACKAGE = _SOURCE_ROOT / "integrations" / "nautilus" / "oi_runtime"
+
+
+def _imported_modules(path: Path) -> set[str]:
+    """Every module this file names, at any depth, with relative imports resolved.
+
+    The import graph, not the source text: a lowercased `in source` scan reads a docstring, a
+    comment and a local variable as violations, and cannot tell `from x import psycopg` from the
+    word appearing in prose. This is the pattern `tests/architecture/test_refactor_boundaries.py`
+    uses for the same question.
+    """
+
+    package = list(path.resolve().relative_to(_REPO_ROOT).with_suffix("").parts[:-1])
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0:
+                modules.add(str(node.module or ""))
+                continue
+            base = package[: len(package) - node.level + 1]
+            modules.add(".".join([*base, *(str(node.module).split(".") if node.module else [])]))
+    return modules
+
+
 def test_callback_module_has_no_postgres_or_telegram_io() -> None:
-    import inspect
+    """The Nautilus callback thread runs the Strategy; a driver or a notifier there blocks the venue."""
 
-    from tracefold.integrations.nautilus.oi_runtime import strategy
+    imported = _imported_modules(_RUNTIME_PACKAGE / "strategy.py")
+    forbidden = sorted(
+        module
+        for module in imported
+        if module.split(".")[0] in {"psycopg", "psycopg_pool", "telegram"}
+        or "repositories" in module.split(".")
+        or "telegram" in module.split(".")
+    )
+    assert forbidden == []
 
-    source = inspect.getsource(strategy).lower()
-    assert "psycopg" not in source
-    assert "repositories" not in source
-    assert "telegram" not in source
+
+# Preserved from the deleted `tests/architecture/test_nautilus_runtime_owner_matrix.py`: everything
+# else in that module restated the current wiring line by line, but this one boundary has no other
+# owner. Nautilus 1.231 exposes no public route to these reports, so exactly one module reaches into
+# the adapter's privates and an upgrade has exactly one place to break.
+_PRIVATE_NAUTILUS_ATTRIBUTES = (
+    "_clients",
+    "_active_symbols_cache",
+    "_get_binance_position_status_reports",
+    "_build_active_symbols",
+    "_parse_order_status_reports",
+    "_fetch_algo_orders",
+    "_parse_algo_order_report",
+)
+
+
+def test_private_nautilus_adapter_access_has_one_compatibility_seam() -> None:
+    compat = _RUNTIME_PACKAGE / "nautilus_1231_binance_compat.py"
+    violations = [
+        f"{path.relative_to(_SOURCE_ROOT).as_posix()}:{node.lineno}:{node.attr}"
+        for path in sorted(_SOURCE_ROOT.rglob("*.py"))
+        if path != compat and "__pycache__" not in path.parts
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
+        if isinstance(node, ast.Attribute) and node.attr in _PRIVATE_NAUTILUS_ATTRIBUTES
+    ]
+    assert violations == []
 
 
 def _cold_position(context: SimpleNamespace, *, quantity: str = "0.05") -> PositionId:

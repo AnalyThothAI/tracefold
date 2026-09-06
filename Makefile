@@ -82,9 +82,9 @@ POSTGRES_READ_ONLY_PSQL = docker compose exec -T postgres sh -eu -c \
 
 TRACEFOLD_TEST_RESULT_DIR ?= artifacts/test-results
 QUALITY_TEST_SELECTION := tests/architecture tests/contract -m "(architecture or contract) and not external_codegen and not slow and not scheduled"
-FAST_TEST_SELECTION := tests -m "not integration and not deploy and not e2e and not golden and not live and not slow and not scheduled and not external_codegen and not package"
-CI_QUALITY_SELECTION := tests/architecture tests/contract -m "not live and not slow and not scheduled and not external_codegen"
-CI_PYTHON_HERMETIC_SELECTION := tests -m "not architecture and not contract and not integration and not deploy and not e2e and not golden and not live and not slow and not scheduled and not external_codegen"
+FAST_TEST_SELECTION := tests -m "not integration and not deploy and not e2e and not golden and not slow and not scheduled and not external_codegen and not package"
+CI_QUALITY_SELECTION := tests/architecture tests/contract -m "not slow and not scheduled and not external_codegen"
+CI_PYTHON_HERMETIC_SELECTION := tests -m "not architecture and not contract and not integration and not deploy and not e2e and not golden and not slow and not scheduled and not external_codegen"
 CI_POSTGRES_BEHAVIOR_SELECTION := tests/integration -m "integration and not migration and not slow and not scheduled"
 CI_MIGRATION_SELECTION := tests/integration -m "migration and not slow and not scheduled"
 CI_RUNTIME_BROKER_SELECTION := tests/golden \
@@ -92,15 +92,15 @@ CI_RUNTIME_BROKER_SELECTION := tests/golden \
 	tests/integration/test_news_durable_event_plane.py \
 	tests/integration/test_workers_runtime_v2.py \
 	tests/test_workers_probe.py \
-	-m "(golden or slow) and not live and not scheduled"
+	-m "(golden or slow) and not scheduled"
 CI_DEPLOY_E2E_SELECTION := tests/deploy tests/e2e \
 	tests/integration/test_news_status_scale.py \
 	tests/integration/test_news_v3_price_scale.py \
-	-m "(deploy or e2e or slow) and not live and not scheduled"
+	-m "(deploy or e2e or slow) and not scheduled"
 CI_TEST_INTEGRITY_SELECTION := tests/contract/test_hook_installer.py \
 	tests/slow/test_frontend_harness_fail_closed.py \
 	tests/slow/test_required_pytest_fail_closed.py \
-	-m "slow and not live and not scheduled"
+	-m "slow and not scheduled"
 CI_FRONTEND_PYTHON_SELECTION := tests/contract/test_openapi_codegen.py -m external_codegen
 
 TRACEFOLD_COVERAGE_DIR ?= artifacts/coverage
@@ -120,7 +120,7 @@ PYTEST_ADDOPTS= PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_HYPOTHESIS_PROFILE=ci
 	--junitxml="$(TRACEFOLD_TEST_RESULT_DIR)/$(2)" --durations=50
 endef
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status status-app logs down runtime-build _runtime-build-locked runtime-up _runtime-up-locked runtime-restart runtime-down runtime-logs runtime-status preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness mutation mutation-sentinel ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-broker ci-deploy-e2e ci-test-integrity ci-frontend test-property test-slow test-scheduled postgres-restore-drill test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health serve workers serve-shell workers-shell clean test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status status-app logs down runtime-build _runtime-build-locked runtime-up _runtime-up-locked runtime-restart runtime-down runtime-logs runtime-status preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness mutation mutation-sentinel ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-broker ci-deploy-e2e ci-test-integrity ci-frontend test-slow test-scheduled postgres-restore-drill test-browser-smoke test-visual check check-static init config db-migrate db-health serve workers serve-shell workers-shell test-integration test-deploy test-e2e test-golden regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -142,7 +142,8 @@ test: test-fast ## broad hermetic checkpoint (alias for test-fast); not a per-ed
 test-fast: ## broad hermetic final checkpoint; no external resources; not per-edit
 	@uv run python -m pytest $(FAST_TEST_SELECTION)
 
-test-all: test-frontend ## local convenience: every Python lane plus frontend; not verification evidence
+test-all: ## local convenience: every Python lane plus frontend; not verification evidence
+	@cd web && npm run typecheck && npm run lint && npm run test:unit && npm run format:check && npm run build
 	@uv run python -m pytest
 
 test-results-prepare:
@@ -166,11 +167,38 @@ ci-python-hermetic:
 	@$(call RUN_REQUIRED_PYTEST,$(CI_PYTHON_HERMETIC_SELECTION),junit-python-hermetic.xml)
 	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-python-hermetic.xml"
 
+# `docs/generated/db-schema.md` is introspected from a real database, so `make check-static` — which
+# owns every other generated-artifact drift check — cannot run it. `ci-postgres-behavior` is the
+# lane that already has a PostgreSQL. The check builds its own scratch database and drops it again,
+# so it never reads whatever state a test left in the shared one.
+define CHECK_GENERATED_DB_SCHEMA_PY
+import os
+import subprocess
+import sys
+
+from tests.postgres_test_utils import (
+    temporary_unmigrated_postgres_database,
+    test_postgres_dsn,
+    upgrade_test_head,
+)
+
+with temporary_unmigrated_postgres_database(test_postgres_dsn()) as dsn:
+    upgrade_test_head(dsn)
+    completed = subprocess.run(
+        [sys.executable, "scripts/regen_db_schema.py", "--check"],
+        env={**os.environ, "TRACEFOLD_TEST_POSTGRES_DSN": dsn},
+        check=False,
+    )
+sys.exit(completed.returncode)
+endef
+export CHECK_GENERATED_DB_SCHEMA_PY
+
 ci-postgres-behavior:
 	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
 	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-postgres-behavior.xml"
 	@$(call RUN_REQUIRED_PYTEST,$(CI_POSTGRES_BEHAVIOR_SELECTION),junit-postgres-behavior.xml)
 	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-postgres-behavior.xml"
+	@uv run python -c "$$CHECK_GENERATED_DB_SCHEMA_PY"
 
 ci-migration:
 	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
@@ -321,9 +349,6 @@ mutation-sentinel: ## prove the mutation harness executes mutated code, without 
 		uv sync --locked --group mutation; \
 		uv run --no-sync python scripts/mutation_sentinel.py
 
-test-property: ## bounded pure properties (TRACEFOLD_HYPOTHESIS_PROFILE=nightly for extended runs)
-	@uv run python -m pytest -m property
-
 test-slow: ## real-process Workers runtime tests bounded by wall-clock deadlines
 	@uv run python -m pytest -m "slow and not scheduled"
 
@@ -332,9 +357,6 @@ test-scheduled: ## production-duration diagnostics; explicitly outside merge evi
 
 postgres-restore-drill: ## isolated production-image dump/restore/migrate/audit/smoke evidence
 	@uv run python -m tracefold.app.restore_storage
-
-test-frontend: ## frontend type, architecture, unit/component tests, format, and production build
-	@cd web && npm run typecheck && npm run lint && npm run test:unit && npm run format:check && npm run build
 
 test-browser-smoke: ## one real FastAPI static/bootstrap/bearer/news path in Chromium
 	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
@@ -347,12 +369,6 @@ test-browser-smoke: ## one real FastAPI static/bootstrap/bearer/news path in Chr
 
 test-visual: ## explicit four-viewport Playwright interaction/screenshot diagnostics
 	@npm --prefix web run test:e2e
-
-lint: ## run ruff
-	@uv run python -m ruff check .
-
-compile: ## compile Python files
-	@uv run python -m compileall tracefold tests
 
 check-static: ## run hermetic static and generated drift checks without pytest
 	@uv run ruff check .
@@ -378,15 +394,6 @@ test-e2e: ## run only tests/e2e/ (running service boundary)
 
 test-golden: ## run the real RabbitMQ -> Workers -> PostgreSQL -> HTTP golden path
 	@uv run python -m pytest tests/golden -m golden
-
-test-architecture: ## run only semantic architecture contracts
-	@uv run python -m pytest tests/architecture -m architecture
-
-test-contract: ## run only tests/contract/
-	@uv run python -m pytest tests/contract -m "contract and not external_codegen"
-
-test-external-codegen: ## run release-only Node-backed generated contract checks
-	@uv run python -m pytest -m external_codegen
 
 regen-contract: ## regenerate openapi.json + web/src/lib/types/openapi.ts
 	@uv run python scripts/regen_openapi.py
@@ -874,10 +881,6 @@ serve-shell: preflight ## open a shell in the Serve container
 
 workers-shell: preflight ## open a shell in the Workers container
 	@docker compose exec workers /bin/sh
-
-clean: ## remove local test/cache artifacts
-	@rm -rf .pytest_cache .ruff_cache __pycache__
-	@find tracefold tests -type d -name __pycache__ -prune -exec rm -rf {} +
 
 .PHONY: docs-generated docs-db-schema docs-cli-help docs-rabbitmq-definitions
 

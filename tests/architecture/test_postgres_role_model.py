@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -10,6 +11,18 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
+
+
+def _tracked(*paths: str) -> list[str]:
+    """Which of these paths git still tracks. `Path.exists()` would also see build residue."""
+
+    listed = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "-z", "--", *paths],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout
+    return [name for name in listed.split("\0") if name]
 
 
 def test_fresh_init_creates_one_application_login_and_disables_bootstrap_login() -> None:
@@ -41,8 +54,13 @@ def test_role_specific_authority_and_offline_role_manager_are_absent() -> None:
         if path.is_file() and path.suffix in {".py", ".sql", ".sh"}
     )
 
-    assert not (ROOT / "tracefold/platform/postgres/alembic/runtime_roles.sql").exists()
-    assert not (ROOT / "tracefold/platform/postgres/runtime_roles.py").exists()
+    assert (
+        _tracked(
+            "tracefold/platform/postgres/alembic/runtime_roles.sql",
+            "tracefold/platform/postgres/runtime_roles.py",
+        )
+        == []
+    )
     assert not re.search(r"\b(?:CREATE|ALTER|SET) ROLE tracefold_(?:owner|serve|workers|nautilus)\b", current_sources)
     assert not re.search(r"postgres_(?:serve|workers|migrate|nautilus)_password", current_sources)
     assert "postgres --single" not in _read("Makefile")

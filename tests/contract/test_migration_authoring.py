@@ -50,3 +50,21 @@ def test_new_revision_generation_requires_operational_evidence(tmp_path: Path) -
 
     assert "use the verified backup-restore path" in revision
     assert "TODO(exact major, family, and digest)" in revision
+
+
+def test_the_event_identity_token_python_hashes_is_the_one_the_migrations_wrote() -> None:
+    """Preserved from the deleted `tests/architecture/test_news_current_contract_hard_cut.py`.
+
+    That module pinned `EVENT_IDENTITY_VERSION` to a literal, which only proved someone had updated
+    the literal. The fact worth holding is agreement: `news_market_facts_at_admission` computed
+    `event_id` in SQL with the same token `tracefold.news.pipeline.admission` hashes in Python, so a
+    silent bump here would re-identify every future Event away from the rows already stored.
+    """
+
+    from tracefold.news.models import EVENT_IDENTITY_VERSION
+
+    versions = ROOT / "tracefold/platform/postgres/alembic/versions"
+    writers = sorted(path for path in versions.glob("*.py") if "event_identity_v" in path.read_text(encoding="utf-8"))
+    assert writers, "no migration computes an event identity; delete this check with the last one"
+    for path in writers:
+        assert f"'{EVENT_IDENTITY_VERSION}'" in path.read_text(encoding="utf-8"), path.name
