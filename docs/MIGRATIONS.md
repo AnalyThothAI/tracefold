@@ -336,12 +336,20 @@ updates across 16 493 rows and 1.82 GB of WAL for it. The new
 `news_market_instrument_snapshot_state` holds that fact once per venue, seeded in
 this revision from `max(last_seen_ms)` per venue so the console reports the same
 instant across the cutover, and the column that stays on the row is renamed
-`observed_at_ms` — the same name and now the same value as the newest listing
-event for that contract.
+`observed_at_ms`, together with the NOT NULL constraint that still carried the
+old column's name. From this revision on, a row and the listing event written
+beside it carry the same observation time; the rows that already exist keep the
+stamp their last full refresh left, which is a real observation of that contract
+and is never later than its identity's. They are deliberately not backfilled —
+rewriting all 16 493 to make the two exactly equal today would cost the whole-table
+rewrite this revision exists to stop.
 
-Writers must be stopped: the previous writer names `last_seen_ms` and this one
-names `observed_at_ms` and the new table, so neither runs against the other's
-schema, and `make up`'s stop is the boundary this revision needs. `downgrade` is
+Writers and readers must both be stopped: the previous writer names `last_seen_ms`
+and this one names `observed_at_ms` and the new table, so neither runs against the
+other's schema, and the previous-revision reader is the more visible half — Serve's
+`universe_summary()` selects `max(last_seen_ms)`, so a Serve process left running
+across this revision fails the whole `/api/news/status` route. `make up` stops Serve
+as well as Workers before migrating, which is the boundary this revision needs. `downgrade` is
 refused: the old name would come back meaning something narrower than it used to,
 and a reader computing `max(last_seen_ms)` would report the last catalogue change
 as the last catalogue refresh.

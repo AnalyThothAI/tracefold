@@ -2051,5 +2051,24 @@ def test_the_catalogue_freshness_answer_survives_the_move_off_the_row() -> None:
             "ETH": ("trading", 1_787_003_600_000),
             "AAPL": ("trading", 1_787_001_800_000),
         }
+        # `RENAME COLUMN` does not rename the constraints that depend on the column, and PostgreSQL 18
+        # catalogues NOT NULL as a named constraint — so the rename has to carry
+        # `news_market_instruments_last_seen_ms_not_null` with it, or `\d news_market_instruments`
+        # keeps showing the old name on a column that no longer has it.
+        residue = [
+            str(row["conname"])
+            for row in conn.execute(
+                "SELECT conname FROM pg_constraint"
+                " WHERE conrelid = 'public.news_market_instruments'::regclass AND conname LIKE %s",
+                ("%last_seen_ms%",),
+            ).fetchall()
+        ]
+        assert residue == []
+        renamed = conn.execute(
+            "SELECT conname FROM pg_constraint"
+            " WHERE conrelid = 'public.news_market_instruments'::regclass"
+            "   AND conname = 'news_market_instruments_observed_at_ms_not_null'"
+        ).fetchone()
+        assert renamed is not None
     finally:
         conn.close()

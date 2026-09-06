@@ -69,9 +69,12 @@ class OiTradeProjectionRow(TypedDict):
 class TradeInstrumentProjectionRow(TypedDict):
     """One exactly-listed native crypto perpetual for one underlying.
 
-    ``observed_at_ms`` is when this identity was observed, which is the listing event that produced it — the
-    same fact under both branches below. It is not "the last refresh that saw this contract": since #570 A11 an
-    unchanged catalogue writes no row, so a refresh that changes nothing moves nothing here."""
+    ``observed_at_ms`` is when the catalogue last wrote this row, which is not "the last refresh that saw this
+    contract": since #570 A11 an unchanged catalogue writes no row, so a refresh that changes nothing moves
+    nothing here. For every row written from `20260905_0367` onwards that is the observation time of the listing
+    event written beside it, the same fact the replay branch below reads from the event ledger. Rows that predate
+    the revision keep the stamp their last full refresh left and are not backfilled — a real observation of the
+    contract, never later than its identity's, and replaced by a true one the next time the contract changes."""
 
     venue: str
     venue_symbol: str
