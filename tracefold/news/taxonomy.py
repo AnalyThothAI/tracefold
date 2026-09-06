@@ -275,49 +275,69 @@ EVENT_FAMILY_DEFINITIONS: Final[dict[str, str]] = {
 }
 CHANGE_STATE_DEFINITIONS: Final[dict[str, str]] = {
     "announced": "an actor publicly declares a new decision or change that is not yet live or in force",
-    "scheduled": "the evidence fixes a specific future time for the change",
-    "effective": "the change is live, completed or legally in force",
+    "scheduled": (
+        "the evidence fixes a specific future date or time for the change; an approximate or hedged horizon is not one"
+    ),
+    "effective": (
+        "the change is live, completed or legally in force, including wording such as 'is live', 'now "
+        "available' or 'has recovered to', whoever says it"
+    ),
     "reported": (
         "a published measurement or completed-period result: price, yield, index, flow, inventory, PMI or a "
-        "financial result; never merely because an outlet reported the event"
+        "financial result; never merely because an outlet reported the event, and never for a strike, "
+        "outage, attack or transfer that is still under way"
     ),
     "updated": "an already-known fact receives a material new term, correction, denial or status without moving state",
     "delayed": "a previously declared change is postponed",
     "cancelled": "a previously declared change is withdrawn",
     "recalled": "a shipped product or service is recalled",
-    "unknown": "the bounded evidence cannot support one state",
+    "unknown": (
+        "the bounded evidence cannot support one state, including analysis, opinion, a forecast or "
+        "marketing copy that declares no change of its own"
+    ),
 }
 ASSERTION_STATUS_DEFINITIONS: Final[dict[str, str]] = {
     "confirmed": (
         "the bounded evidence directly states an observable datum or live state, or is itself an authoritative "
-        "filing or issuer statement"
+        "filing, an unrelayed first-party statement or an official statistics agency's release"
     ),
     "claimed": (
         "truth depends on an identified actor's assertion, denial, intention or an attributed report such as "
-        "'according to' or 'says', without independent confirmation"
+        "'according to', 'says', '据…' or a trailing agency credit, including a private data vendor's own "
+        "series, without independent confirmation"
     ),
     "rumor": "anonymous, unverified or explicitly speculative sourcing",
-    "conflicted": "material sources inside the bounded evidence disagree",
+    "conflicted": (
+        "material sources inside the bounded evidence disagree, including a bundle that contradicts its own "
+        "timeline or figures"
+    ),
     "unknown": "the bounded evidence does not support a stronger value",
 }
 
 
 class TaxonomyPrecedenceRule(NamedTuple):
-    """One calibration rule that decides between labels a reviewer or model confuses."""
+    """One calibration rule that decides between the labels or subject codes a reviewer or model confuses."""
 
-    axis: Literal["event_family", "change_state", "assertion_status"]
+    axis: Literal["subject_codes", "event_family", "change_state", "assertion_status"]
     labels: frozenset[str]
     rule: str
 
 
 TAXONOMY_PRECEDENCE_RULES: Final[tuple[TaxonomyPrecedenceRule, ...]] = (
     TaxonomyPrecedenceRule(
+        "subject_codes",
+        frozenset({"medtop:04000000"}),
+        "medtop:04000000 is never listed beside one of its descendants, and never chosen instead of one: "
+        "when a specific code such as medtop:20000178 fits the subject, write that code alone, and keep the "
+        "broad parent for evidence no specific code covers.",
+    ),
+    TaxonomyPrecedenceRule(
         "change_state",
         frozenset({"reported", "effective"}),
         "reported is narrow: use it for a published measurement or completed-period result, not merely because "
-        "an outlet reported an event. A non-measurement change that is explicitly live, completed or in force is "
-        "effective: an attack, outage, exploit or on-chain transfer that is under way is effective, whoever "
-        "reported it.",
+        "an outlet reported an event, and never while the event itself is still running. A non-measurement "
+        "change that is explicitly live, completed or in force is effective: a strike, attack, outage, exploit "
+        "or on-chain transfer that is under way is effective, whoever reported it.",
     ),
     TaxonomyPrecedenceRule(
         "change_state",
@@ -329,14 +349,23 @@ TAXONOMY_PRECEDENCE_RULES: Final[tuple[TaxonomyPrecedenceRule, ...]] = (
     TaxonomyPrecedenceRule(
         "change_state",
         frozenset({"scheduled", "announced"}),
-        "Use scheduled only when the evidence fixes a future time. Otherwise a declared change that is not "
-        "yet live is announced.",
+        "Use scheduled only when the evidence fixes a specific future date or time. A hedged or approximate "
+        "horizon - 'late September', 'in the coming weeks', '预计', '或将' - is not a fixed time, and a "
+        "declared change that is not yet live is announced.",
     ),
     TaxonomyPrecedenceRule(
         "change_state",
         frozenset({"announced", "effective"}),
         "announced is a declaration that is not yet live; effective requires the evidence to say the change is "
-        "live, completed or in force.",
+        "live, completed or in force. Wording that describes the current state - 'is live', 'now available', "
+        "'has resumed', 'has recovered to' - is effective even when it is phrased as a party's statement.",
+    ),
+    TaxonomyPrecedenceRule(
+        "change_state",
+        frozenset({"announced", "unknown"}),
+        "Analysis, opinion, a price target, a forecast and brand marketing copy declare no change of their "
+        "own: use unknown, not announced. announced needs an actor inside the evidence declaring a decision "
+        "or a change.",
     ),
     TaxonomyPrecedenceRule(
         "change_state",
@@ -350,8 +379,11 @@ TAXONOMY_PRECEDENCE_RULES: Final[tuple[TaxonomyPrecedenceRule, ...]] = (
         "confirmed does not require a recognized source_authority: use it when the bounded evidence directly "
         "states an observable datum or live state without attribution-dependent or speculative wording. Use "
         "claimed when truth depends on an identified actor's assertion, denial, intention or an attributed "
-        "report such as 'according to' or 'says'. Unknown source authority alone never changes a direct "
-        "observation from confirmed to claimed.",
+        "report such as 'according to' or 'says'. The attribution marker decides it: '据…', a trailing agency "
+        "credit such as '- IFX' and a hedged '或将' are claimed, and so is a private data vendor's own series "
+        "(Mysteel, 金联创, 隆众); an unrelayed first-party self-statement and an official statistics agency's "
+        "release are confirmed. Unknown source authority alone never changes a direct observation from "
+        "confirmed to claimed: a settlement price from an unrecognized source is still confirmed.",
     ),
     TaxonomyPrecedenceRule(
         "assertion_status",
@@ -362,8 +394,9 @@ TAXONOMY_PRECEDENCE_RULES: Final[tuple[TaxonomyPrecedenceRule, ...]] = (
     TaxonomyPrecedenceRule(
         "assertion_status",
         frozenset({"conflicted", "unknown", "confirmed", "claimed"}),
-        "When a single evidence bundle materially contradicts itself, use conflicted; when the fragment cannot "
-        "distinguish any stronger state, use unknown rather than guessing.",
+        "When a single evidence bundle materially contradicts itself, use conflicted - a timeline or a figure "
+        "the bundle states two ways; when the fragment cannot distinguish any stronger state, use unknown "
+        "rather than guessing.",
     ),
     TaxonomyPrecedenceRule(
         "event_family",
@@ -404,6 +437,18 @@ _TAXONOMY_BOUNDARY_EXAMPLES: Final[tuple[str, ...]] = (
     "confirmed: the outage is live and the operator states it directly.",
     "A company cuts its own full-year guidance and the report notes investor concern -> guidance_outlook / "
     "announced / confirmed: a declaration is announced, and the concern is commentary, not a second state.",
+    "A US CPI print carried with gate.grounded_assets BTC and a $COIN cashtag -> medtop:20000370 only: "
+    "grounded_assets, tickers, provider coin tags and strategy IDs are routing evidence, not subjects.",
+    "An ETF net-flow figure -> medtop:20000385, and a wallet-to-wallet transfer -> medtop:20001279; "
+    "medtop:20000186 is for trading or price activity in an identified stock, not for a fund flow, an index "
+    "close or on-chain movement.",
+    "A partnership recap or a signed letter of intent -> no medtop:20000196: a commercial contract needs an "
+    "explicit award, signature or executed agreement in the evidence.",
+    "A digest of five unrelated headlines with no dominant subject -> subject_codes empty: abstaining beats "
+    "three codes picked off the list.",
+    "A protocol launching its own token -> medtop:20001279 beside the specific business code, here "
+    "medtop:20000205; an ordinary corporate story does not take medtop:20001279 merely because a crypto "
+    "exchange or outlet carried it.",
 )
 
 
@@ -460,6 +505,22 @@ def precedence_rules_for(axis: str, expected: str, predicted: str) -> tuple[str,
         for rule in TAXONOMY_PRECEDENCE_RULES
         if rule.axis == axis and expected in rule.labels and predicted in rule.labels
     )
+
+
+def subject_code_precedence_rules(missing: Sequence[str], extra: Sequence[str]) -> tuple[str, ...]:
+    """The subject-code rules covering one set miss between accepted and predicted codes.
+
+    Subjects confuse along a relation rather than inside a small label set, so they cannot be matched the
+    way the three label axes are: the codebook rules on the broad parent standing where one of its own
+    descendants belongs, and says nothing about two peers that simply differ. The rule therefore fires on
+    that relation in either direction, and a peer-versus-peer miss carries the missing and extra codes
+    alone.
+    """
+
+    codes = frozenset(missing) | frozenset(extra)
+    if "medtop:04000000" not in codes or not any(code.startswith("medtop:2000") for code in codes):
+        return ()
+    return tuple(rule.rule for rule in TAXONOMY_PRECEDENCE_RULES if rule.axis == "subject_codes")
 
 
 def taxonomy_definition(axis: str, label: str) -> str:
@@ -784,6 +845,7 @@ __all__ = [
     "render_taxonomy_seed_instruction",
     "source_authority",
     "source_authority_from_evidence",
+    "subject_code_precedence_rules",
     "taxonomy_definition",
     "taxonomy_public",
 ]

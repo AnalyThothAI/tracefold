@@ -18,7 +18,7 @@ independent connected-fact clusters are scored, the result is
 - Source-authority classifier: `news_source_authority_v3`, registry SHA
   `9aa960aa5ff29d08b4a0223c5a745ac767f9161f7862885818d2d0035917da50`.
 - Production Program: `news_semantic_program_v9`, Program SHA
-  `1ba5a6d9920f0c800c2258805619286d3be323cdd857497f3afc6c300d0e2e6d`.
+  `32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a`.
 - Review contract: `news_review_v6`.
 - The model emits `subject_codes`, `event_family`, `change_state`, and
   `assertion_status`. Code derives `source_authority` only from the structured
@@ -52,7 +52,13 @@ the 2026-09-02 post-mortem of #456 found reviewer batches diverging on
 `announced`/`effective`/`reported` and `confirmed`/`claimed` precisely where the
 seed and the reviewer prose had drifted apart. Repairing a confused boundary
 means editing the constant, which moves the seed, the Program identity and the
-metric feedback together.
+metric feedback together. #567 is that repair carried out once: the twelve rules
+the #534 and #548 reviewers had been adjudicating five batches by — the
+subject-code boundaries, the limits on `unknown`, `effective`, `reported` and
+`scheduled`, and the attribution markers that decide `claimed` — are now in those
+constants rather than in a session log, so the drafters, the reviewer and the
+metric read one text, and the epoch that opens on deployment leaves the previous
+epoch's 1020 accepted Gold reviews as audit history.
 
 `event_family` answers "what happened"; a filing is a source container, never
 automatically an event family. `change_state` is orthogonal to family.

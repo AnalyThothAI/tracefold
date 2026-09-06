@@ -218,3 +218,68 @@ def test_calibration_reports_kappa_and_subject_set_f1_per_contract_cluster() -> 
     assert receipt["kappa"]["event_family"] == 0.0
     assert receipt["kappa"]["change_state"] == 1.0
     assert receipt["subject_mean_set_f1"] == 1.0
+
+
+def test_feedback_quotes_the_rules_the_534_and_548_reviewers_adjudicated_by() -> None:
+    """#567: the three confusions five review batches kept resolving by hand now quote a codebook rule.
+
+    Reviewers turned 16 drafted `announced` into `unknown` on commentary, moved a running event from
+    `reported` to `effective`, and lifted an unattributed first-party statement from `claimed` to
+    `confirmed`. Until this Issue none of the three had a rule the seed or the reflection model could
+    read, so the feedback carried definitions only and the same edit was made again in the next batch.
+    """
+
+    commentary = compare_taxonomy(_gold(change_state="unknown"), _prediction(change_state="announced"))
+    running = compare_taxonomy(_gold(change_state="effective"), _prediction(change_state="reported"))
+    first_party = compare_taxonomy(_gold(assertion_status="confirmed"), _prediction(assertion_status="claimed"))
+
+    assert (
+        "rule (change_state): Analysis, opinion, a price target, a forecast and brand marketing copy declare "
+        "no change of their own: use unknown, not announced." in commentary.feedback
+    )
+    assert (
+        "rule (change_state): reported is narrow: use it for a published measurement or completed-period "
+        "result, not merely because an outlet reported an event, and never while the event itself is still "
+        "running." in running.feedback
+    )
+    assert "a strike, attack, outage, exploit or on-chain transfer that is under way is effective" in running.feedback
+    assert (
+        "The attribution marker decides it: '据…', a trailing agency credit such as '- IFX' and a hedged "
+        "'或将' are claimed, and so is a private data vendor's own series (Mysteel, 金联创, 隆众); an "
+        "unrelayed first-party self-statement and an official statistics agency's release are confirmed."
+        in first_party.feedback
+    )
+    # #567 rule 12: the codebook already said it, and drafters downgraded anyway, so the counter-example is
+    # in the same rule the feedback quotes.
+    assert (
+        "Unknown source authority alone never changes a direct observation from confirmed to claimed: a "
+        "settlement price from an unrecognized source is still confirmed." in first_party.feedback
+    )
+
+
+def test_a_subject_code_parent_child_miss_quotes_the_codebook_rule_once() -> None:
+    """#567 rule 1: the broad parent answered where a descendant was expected is a code confusion, not noise.
+
+    `ModelTaxonomyV1` already refuses the two together, which is why 11 blind drafts across the two rounds
+    were rejected outright; what the metric never said is which of the two to keep when only one may be
+    written. Subject codes are an axis like the other three, so the rule is quoted the same way — and once,
+    however many code pairs the miss spans.
+    """
+
+    comparison = compare_taxonomy(
+        _gold(subject_codes=["medtop:20000178", "medtop:20000180"]),
+        _prediction(subject_codes=["medtop:04000000"]),
+    )
+
+    assert comparison.feedback.count("rule (subject_codes): medtop:04000000 is never listed beside one of its") == 1
+    assert (
+        "rule (subject_codes): medtop:04000000 is never listed beside one of its descendants, and never "
+        "chosen instead of one: when a specific code such as medtop:20000178 fits the subject, write that "
+        "code alone, and keep the broad parent for evidence no specific code covers." in comparison.feedback
+    )
+    # Two descendants of one another's peers are an ordinary set miss, not a parent/child confusion.
+    peers = compare_taxonomy(
+        _gold(subject_codes=["medtop:20000178"]),
+        _prediction(subject_codes=["medtop:20000180"]),
+    )
+    assert "rule (subject_codes)" not in peers.feedback
