@@ -36,10 +36,6 @@ TITLE_MAX: Final = 100
 # How many assets one card names, on the facts line and on the quote line alike. A card is a summary;
 # the fifth asset is on the page it links to.
 CARD_ASSETS_MAX: Final = 4
-# One already-pushed News headline, on an OI card that is about the same instrument. Shorter than the
-# card's own title bound because these lines are context under the card's subject, not its subject:
-# four lines of full headlines would make the OI numbers the smaller half of their own card (#582).
-NEWS_HEADLINE_MAX: Final = 40
 
 # The family's word, for the families whose card is not headed by its own headline.
 FAMILY_TITLE: Final[dict[str, str]] = {
@@ -97,6 +93,10 @@ _WHALE_RATIO_PREFIX: Final = "鲸鱼持仓/OI "
 # headline on this line reads as "you have seen this" and an unpushed one would be a lie.
 _NEWS_PREFIX: Final = f"相关新闻 {MARKET_NEWS_WINDOW_MS // 3_600_000}h"
 _NEWS_HEADLINE_MARK: Final = "· "
+# One already-pushed headline's width. Shorter than the card's own title bound because these lines
+# are context under the card's subject, not its subject: four lines of full headlines would make the
+# OI numbers the smaller half of their own card (#582 §3.3).
+NEWS_HEADLINE_MAX: Final = 40
 
 _LIQUIDATION_NOTE: Final = "各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。"
 # What a `平` on this card does and does not mean (#553 §4.4). It is printed only by a card that
