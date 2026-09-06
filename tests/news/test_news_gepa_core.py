@@ -128,7 +128,7 @@ def test_metric_feedback_quotes_the_codebook_definitions_and_the_matching_preced
 
     feedback = _DspyTaxonomyMetric()(gold, prediction).feedback
 
-    assert "change_state: expected=effective (the change is live, completed or legally in force)" in feedback
+    assert "change_state: expected=effective (the change is live, completed or legally in force," in feedback
     assert "predicted=reported (a published measurement" in feedback
     assert "rule (change_state): reported is narrow" in feedback
     assert "rule (assertion_status): confirmed does not require a recognized source_authority" in feedback

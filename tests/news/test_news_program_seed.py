@@ -230,7 +230,7 @@ def test_the_taxonomy_seed_names_the_state_a_running_event_is_in() -> None:
 
     taxonomy = seed_instruction("taxonomy")
     assert "never merely because an outlet reported the event" in taxonomy
-    assert "an attack, outage, exploit or on-chain transfer that is under way is effective" in taxonomy
+    assert "attack, outage, exploit or on-chain transfer that is under way is effective" in taxonomy
     assert "A party's statement, accusation, threat or guidance is announced." in taxonomy
     for example in (
         "air defenses are engaging incoming missiles right now -> geopolitical_conflict / effective / claimed",
@@ -238,3 +238,71 @@ def test_the_taxonomy_seed_names_the_state_a_running_event_is_in() -> None:
         "cuts its own full-year guidance",
     ):
         assert example in taxonomy, example
+
+
+def test_the_taxonomy_seed_carries_the_rules_the_534_and_548_reviewers_used() -> None:
+    """#567: five review batches were adjudicated by rules the codebook never wrote down.
+
+    Two GEPA rounds ended NO_OP against Gold whose κ was 0.64 on `change_state` and 0.65 on
+    `assertion_status`, because the drafters, the reviewers and the metric were reading a codebook that
+    stopped short of the twelve boundaries the reviewers kept redrawing by hand. They are constants now, so
+    the rendered seed carries them byte for byte and this is the text the provider is sent.
+    """
+
+    taxonomy = seed_instruction("taxonomy")
+
+    for subject_rule in (
+        # 1: 11 blind drafts across the two rounds were rejected outright for listing both.
+        "- subject_codes: medtop:04000000 is never listed beside one of its descendants, and never chosen "
+        "instead of one: when a specific code such as medtop:20000178 fits the subject, write that code "
+        "alone, and keep the broad parent for evidence no specific code covers.",
+        # 2: routing evidence is not a subject.
+        "- A US CPI print carried with gate.grounded_assets BTC and a $COIN cashtag -> medtop:20000370 only: "
+        "grounded_assets, tickers, provider coin tags and strategy IDs are routing evidence, not subjects.",
+        # 3: medtop:20000186 was deleted more than 30 times across the two rounds.
+        "- An ETF net-flow figure -> medtop:20000385, and a wallet-to-wallet transfer -> medtop:20001279; "
+        "medtop:20000186 is for trading or price activity in an identified stock, not for a fund flow, an "
+        "index close or on-chain movement.",
+        # 4: a contract needs a contract.
+        "- A partnership recap or a signed letter of intent -> no medtop:20000196: a commercial contract "
+        "needs an explicit award, signature or executed agreement in the evidence.",
+        # 5: the honest abstention the schema already allows.
+        "- A digest of five unrelated headlines with no dominant subject -> subject_codes empty: abstaining "
+        "beats three codes picked off the list.",
+        # 6: the venue is not the subject.
+        "- A protocol launching its own token -> medtop:20001279 beside the specific business code, here "
+        "medtop:20000205; an ordinary corporate story does not take medtop:20001279 merely because a crypto "
+        "exchange or outlet carried it.",
+    ):
+        assert subject_rule in taxonomy, subject_rule
+
+    for state_rule in (
+        # 7: held-out batch 1 turned 16 drafted `announced` into `unknown`.
+        "- change_state: Analysis, opinion, a price target, a forecast and brand marketing copy declare no "
+        "change of their own: use unknown, not announced. announced needs an actor inside the evidence "
+        "declaring a decision or a change.",
+        # 8: current-state wording survives being quoted.
+        "Wording that describes the current state - 'is live', 'now available', 'has resumed', 'has "
+        "recovered to' - is effective even when it is phrased as a party's statement.",
+        # 9: the #504 audit's 20 % source of misused `reported`.
+        "not merely because an outlet reported an event, and never while the event itself is still running",
+        "never merely because an outlet reported the event, and never for a strike, outage, attack or "
+        "transfer that is still under way",
+        # 10: a horizon is not a time.
+        "A hedged or approximate horizon - 'late September', 'in the coming weeks', '预计', '或将' - is not "
+        "a fixed time",
+    ):
+        assert state_rule in taxonomy, state_rule
+
+    for assertion_rule in (
+        # 11: the markers the reviewers actually read, and the vendors they refused to treat as observers.
+        "The attribution marker decides it: '据…', a trailing agency credit such as '- IFX' and a hedged "
+        "'或将' are claimed, and so is a private data vendor's own series (Mysteel, 金联创, 隆众); an "
+        "unrelayed first-party self-statement and an official statistics agency's release are confirmed.",
+        "material sources inside the bounded evidence disagree, including a bundle that contradicts its own "
+        "timeline or figures",
+        # 12: the codebook said it and the drafters downgraded anyway, so it now ends in a counter-example.
+        "Unknown source authority alone never changes a direct observation from confirmed to claimed: a "
+        "settlement price from an unrecognized source is still confirmed.",
+    ):
+        assert assertion_rule in taxonomy, assertion_rule

@@ -1206,7 +1206,7 @@ holds `schema_version` `news_program_strategy_artifact_v1` and one instruction
 per Predictor (`event_semantics`, `taxonomy`, `reader_card`), and
 `program_sha256` is the canonical hash of exactly those
 three values. The stable root is
-`63e5b438f7419e02621e419f3a3ad9860dfcc54bf2eea86c0896bcc04ebb4c64`.
+`32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a`.
 Issue #117 changes the EventSemantics instruction and typed output while
 preserving the same two-Predictor graph and exact two-call common-success path.
 
@@ -1223,7 +1223,12 @@ and the breaker. It is computed from those values rather than declared
 beside them, so a change to any of them moves the identity whether or not anyone
 remembers to say so. One contract test
 (`tests/contract/test_program_release_identity.py`) pins it, and re-pinning that
-line is the signature on an identity migration.
+line is the signature on an identity migration. #567 is one such migration and it
+is the codebook's: the taxonomy instruction is rendered from
+`tracefold/news/taxonomy.py`, so writing down the rules two rounds of Gold review
+had been applying by hand moved the Program root, the envelope and therefore the
+bundle together, which opens a new learning epoch and retires the previous one's
+accepted Gold to audit.
 
 This replaced a declared `factory_id` literal, which had the failure mode every
 hand-maintained version has: not that somebody picks the wrong string, but that

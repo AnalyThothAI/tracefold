@@ -21,16 +21,18 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "d039a67c7e114617345ca2defeac983ac2e1284e9827f59e8dc7a63497e29b9c"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "a1871900e08426bce34c733ee1ebd0a5d5f1b499d01a9d89485444d81904bf3d"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
 # #501 re-pins it over three instructions: taxonomy left EventSemantics for its own Predictor. #522 moves
 # all three at once: the escalate tier and the ReaderCard length/why rules are seed text, and the taxonomy
 # instruction is rendered from the codebook constants that gained the running-event counter-examples.
-NEWS_PREDICTOR_INSTRUCTION_SHA256 = "3237188e41645240416f72ff741fd6d3990de6965c76592f04048d7c055aa2ba"
+# #567 moves only the taxonomy instruction: the twelve rules the #534 and #548 reviewers adjudicated by are
+# now codebook constants, so the drafters, the reviewers and the metric's feedback read one text.
+NEWS_PREDICTOR_INSTRUCTION_SHA256 = "3325a07b458e6834f88ce3d001c8583ef3e64928c96baeddfd6bbeb7565c4c62"
 
-NEWS_STABLE_PROGRAM_SHA256 = "1ba5a6d9920f0c800c2258805619286d3be323cdd857497f3afc6c300d0e2e6d"
+NEWS_STABLE_PROGRAM_SHA256 = "32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a"
 
 # #437 changes Gold projection. It remains release evidence after #453 moves taxonomy Gold into the one
 # development Objective and Metric: a behavior edit must visibly re-pin this name. v7 (#501) carries the

@@ -16,6 +16,7 @@ from ..taxonomy import (
     ModelTaxonomyV1,
     NewsTaxonomyV1,
     precedence_rules_for,
+    subject_code_precedence_rules,
     taxonomy_definition,
 )
 
@@ -98,6 +99,9 @@ def compare_taxonomy(
         )
     if extra:
         feedback.append("extra subjects: " + ", ".join(f"{code} ({IPTC_SUBJECT_LABELS_EN[code]})" for code in extra))
+    # #567: subject codes are an axis like the other three, so the codebook rule written for a code miss —
+    # the broad parent answered where one of its descendants was expected — is quoted the same way.
+    feedback.extend(f"rule (subject_codes): {rule}" for rule in subject_code_precedence_rules(missing, extra))
     for axis in wrong_axes:
         expected_label = str(getattr(accepted, axis))
         predicted_label = str(getattr(observed, axis))
