@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any
+from typing import Any, Final
 
 # S608 exemptions below interpolate only the module-owned venue-priority expression; all values stay bound.
 from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
+from ..row_values import optional_float, optional_int
 from .instruments import REFERENCE_VENUES, normalize_symbol
 from .pricing import (
     QUOTE_SOURCE_GROUP_MAX,
@@ -26,12 +27,49 @@ from .pricing import (
 )
 from .projections import (
     _aggregate_public,
-    _optional_float,
-    _optional_int,
     _reaction_public,
     _unavailable_quote,
     _unlisted_quote,
 )
+
+# The due-work scan, named so the query audit plans the statement this method executes rather than a
+# hand-copied look-alike of it (#589 L-F1).
+DUE_REACTIONS_SQL: Final = """
+            SELECT a.event_id, a.symbol, a.opened_at_ms AS anchor_at_ms,
+                   r.state, r.venue, r.venue_symbol, r.instrument_class,
+                   r.p0, r.p0_at_ms, r.p1, r.p1_at_ms,
+                   -- Whether the model called this asset a primary, read once here and stored on the row:
+                   -- the review's event-level sample is the median over primaries, and re-deriving it from
+                   -- verdict JSONB per request does not fit the 720 h budget (#88 §14).
+                   COALESCE((
+                     SELECT bool_or(replace(upper(x ->> 'symbol'), 'XYZ-', '') = a.symbol)
+                       FROM (
+                         SELECT v.verdict FROM news_verdicts v
+                         WHERE v.event_id = a.event_id AND v.stage = 'triage'
+                           AND v.judgment_contract_version = 'news_judgment_v2'
+                          ORDER BY v.created_at_ms DESC LIMIT 1
+                       ) t, LATERAL jsonb_array_elements(COALESCE(t.verdict -> 'assets', '[]'::jsonb)) x
+                      WHERE x ->> 'role' = 'primary'
+                   ), false) AS is_primary
+              FROM news_event_assets a
+              JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
+              -- A lateral probe on the primary key, not a hash join: the scan walks Event-assets oldest
+              -- first and stops at the limit, so it must never read the whole Reaction table to do it.
+              LEFT JOIN LATERAL (
+                SELECT r.state, r.venue, r.venue_symbol, r.instrument_class,
+                       r.p0, r.p0_at_ms, r.p1, r.p1_at_ms, r.unavailable_reason
+                  FROM news_event_reactions r
+                 WHERE r.event_id = a.event_id AND r.symbol = a.symbol AND r.metric_version = %s
+              ) r ON true
+             WHERE a.opened_at_ms <= %s
+               AND (r.state IS NULL OR r.state IN ('pending', 'partial'))
+               AND (
+                 r.state IS DISTINCT FROM 'partial'
+                 OR (a.opened_at_ms <= %s AND r.unavailable_reason IS NULL)
+               )
+             ORDER BY a.opened_at_ms
+             LIMIT %s
+"""
 
 
 class QuoteStorage:
@@ -258,13 +296,13 @@ class QuoteStorage:
                 out.append(_unavailable_quote(symbol, instrument))
                 continue
             received_at_ms = int(snapshot["received_at_ms"])
-            source_at_ms = _optional_int(entry.get("source_at_ms"))
+            source_at_ms = optional_int(entry.get("source_at_ms"))
             freshness = quote_freshness(
                 measured_at_ms=now_ms,
                 received_at_ms=received_at_ms,
                 source_at_ms=source_at_ms,
             )
-            reference_at_ms = _optional_int(entry.get("reference_at_ms"))
+            reference_at_ms = optional_int(entry.get("reference_at_ms"))
             reference_age_ms, reference_is_fresh = reference_freshness(
                 measured_at_ms=now_ms,
                 reference_at_ms=reference_at_ms,
@@ -281,7 +319,7 @@ class QuoteStorage:
                     "price": str(entry.get("price")),
                     "price_kind": str(entry.get("price_kind") or instrument.price_kind),
                     "price_kind_zh": price_kind_zh(entry.get("price_kind") or instrument.price_kind),
-                    "change_pct": _optional_float(entry.get("change_pct")) if reference_is_fresh else None,
+                    "change_pct": optional_float(entry.get("change_pct")) if reference_is_fresh else None,
                     "change_basis": entry.get("change_basis"),
                     "change_basis_zh": change_basis_zh(entry.get("change_basis")),
                     "source_at_ms": source_at_ms,
@@ -309,42 +347,7 @@ class QuoteStorage:
 
         stamp = int(now_ms)
         rows = self.conn.execute(
-            """
-            SELECT a.event_id, a.symbol, a.opened_at_ms AS anchor_at_ms,
-                   r.state, r.venue, r.venue_symbol, r.instrument_class,
-                   r.p0, r.p0_at_ms, r.p1, r.p1_at_ms,
-                   -- Whether the model called this asset a primary, read once here and stored on the row:
-                   -- the review's event-level sample is the median over primaries, and re-deriving it from
-                   -- verdict JSONB per request does not fit the 720 h budget (#88 §14).
-                   COALESCE((
-                     SELECT bool_or(replace(upper(x ->> 'symbol'), 'XYZ-', '') = a.symbol)
-                       FROM (
-                         SELECT v.verdict FROM news_verdicts v
-                         WHERE v.event_id = a.event_id AND v.stage = 'triage'
-                           AND v.judgment_contract_version = 'news_judgment_v2'
-                          ORDER BY v.created_at_ms DESC LIMIT 1
-                       ) t, LATERAL jsonb_array_elements(COALESCE(t.verdict -> 'assets', '[]'::jsonb)) x
-                      WHERE x ->> 'role' = 'primary'
-                   ), false) AS is_primary
-              FROM news_event_assets a
-              JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
-              -- A lateral probe on the primary key, not a hash join: the scan walks Event-assets oldest
-              -- first and stops at the limit, so it must never read the whole Reaction table to do it.
-              LEFT JOIN LATERAL (
-                SELECT r.state, r.venue, r.venue_symbol, r.instrument_class,
-                       r.p0, r.p0_at_ms, r.p1, r.p1_at_ms, r.unavailable_reason
-                  FROM news_event_reactions r
-                 WHERE r.event_id = a.event_id AND r.symbol = a.symbol AND r.metric_version = %s
-              ) r ON true
-             WHERE a.opened_at_ms <= %s
-               AND (r.state IS NULL OR r.state IN ('pending', 'partial'))
-               AND (
-                 r.state IS DISTINCT FROM 'partial'
-                 OR (a.opened_at_ms <= %s AND r.unavailable_reason IS NULL)
-               )
-             ORDER BY a.opened_at_ms
-             LIMIT %s
-            """,
+            DUE_REACTIONS_SQL,
             (REACTION_METRIC_VERSION, stamp - 3_600_000, stamp - 14_400_000, int(limit)),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -425,13 +428,13 @@ class QuoteStorage:
                 str(row.get("instrument_class") or "unknown"),
                 int(row["anchor_at_ms"]),
                 row.get("p0"),
-                _optional_int(row.get("p0_at_ms")),
+                optional_int(row.get("p0_at_ms")),
                 row.get("p1"),
-                _optional_int(row.get("p1_at_ms")),
+                optional_int(row.get("p1_at_ms")),
                 row.get("p4"),
-                _optional_int(row.get("p4_at_ms")),
-                _optional_int(row.get("return_1h_bps")),
-                _optional_int(row.get("return_4h_bps")),
+                optional_int(row.get("p4_at_ms")),
+                optional_int(row.get("return_1h_bps")),
+                optional_int(row.get("return_4h_bps")),
                 bool(row.get("is_primary")),
                 str(row["state"]),
                 row.get("unavailable_reason"),
@@ -440,33 +443,20 @@ class QuoteStorage:
             ),
         )
 
-    def event_reactions(self, event_id: str, *, metric_version: str | None = None) -> list[dict[str, Any]]:
+    def event_reactions(self, event_id: str) -> list[dict[str, Any]]:
         """Every per-asset Reaction for one Event, with the raw closes the returns were computed from."""
 
-        if metric_version is None:
-            rows = self.conn.execute(
-                """
-                SELECT symbol, metric_version, venue, venue_symbol, instrument_class, anchor_at_ms,
-                       p0, p0_at_ms, p1, p1_at_ms, p4, p4_at_ms, return_1h_bps, return_4h_bps,
-                       is_primary, state, unavailable_reason, updated_at_ms
-                  FROM news_event_reactions
-                 WHERE event_id = %s
-                 ORDER BY symbol, metric_version
-                """,
-                (str(event_id),),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                """
-                SELECT symbol, metric_version, venue, venue_symbol, instrument_class, anchor_at_ms,
-                       p0, p0_at_ms, p1, p1_at_ms, p4, p4_at_ms, return_1h_bps, return_4h_bps,
-                       is_primary, state, unavailable_reason, updated_at_ms
-                  FROM news_event_reactions
-                 WHERE event_id = %s AND metric_version = %s
-                 ORDER BY symbol
-                """,
-                (str(event_id), str(metric_version)),
-            ).fetchall()
+        rows = self.conn.execute(
+            """
+            SELECT symbol, metric_version, venue, venue_symbol, instrument_class, anchor_at_ms,
+                   p0, p0_at_ms, p1, p1_at_ms, p4, p4_at_ms, return_1h_bps, return_4h_bps,
+                   is_primary, state, unavailable_reason, updated_at_ms
+              FROM news_event_reactions
+             WHERE event_id = %s
+             ORDER BY symbol, metric_version
+            """,
+            (str(event_id),),
+        ).fetchall()
         return [_reaction_public(dict(row)) for row in rows]
 
     def event_reaction_aggregates(self, event_ids: Sequence[str], *, now_ms: int) -> dict[str, dict[str, Any]]:

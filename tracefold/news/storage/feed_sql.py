@@ -75,6 +75,12 @@ EVENT_VERDICTS_SQL: Final = """
      WHERE event_id = %s AND judgment_contract_version = 'news_judgment_v2'
      ORDER BY created_at_ms
 """
+EVENT_MEMBERS_SQL: Final = """
+            SELECT m.item_id, m.joined_at_ms, m.match_kind, m.jaccard_estimate, i.title, i.canonical_url,
+                   i.reporting_origin, i.published_at_ms, i.provenance, i.description, m.fact_id, m.fact_text
+              FROM news_event_members m JOIN news_items i ON i.item_id = m.item_id
+             WHERE m.event_id = %s ORDER BY m.joined_at_ms, m.item_id
+"""
 STATUS_INGEST_SQL: Final = """
     SELECT connected, last_frame_at_ms, last_publish_at_ms, last_error_code, broker_snapshot
       FROM news_ingest_state
@@ -372,6 +378,7 @@ __all__ = [
     "EDITORIAL_EVENT_CARD_SQL",
     "EDITORIAL_EVENT_SQL",
     "EVENT_KIND_SQL",
+    "EVENT_MEMBERS_SQL",
     "EVENT_VERDICTS_SQL",
     "OUTCOME_GROUP_SQL",
     "STATUS_INGEST_SQL",

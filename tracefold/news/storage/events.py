@@ -28,6 +28,27 @@ UNPUBLISHED_EVENT_CANDIDATES_SQL = f"""
        )
      ORDER BY e.opened_at_ms LIMIT %s
 """  # noqa: S608
+BAND_CANDIDATES_SQL = """
+            WITH hits AS (
+              SELECT DISTINCT b.event_id
+                FROM news_event_bands b
+                JOIN unnest(%s::smallint[], %s::text[]) AS q(band_index, band_key)
+                  ON q.band_index = b.band_index AND q.band_key = b.band_key
+               WHERE b.dedupe_family = %s AND b.expires_at_ms > %s
+            )
+            SELECT e.event_id, e.comparison_title, e.leader_title, e.opened_at_ms, e.grounded_assets
+              FROM news_events e JOIN hits ON hits.event_id = e.event_id
+             WHERE e.event_kind = %s
+               AND (
+                 SELECT s.provenance = 'observed'
+                    AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+                   FROM news_event_evidence_snapshots s
+                  WHERE s.event_id = e.event_id
+                  ORDER BY s.evidence_version DESC LIMIT 1
+               )
+             ORDER BY e.opened_at_ms ASC
+             LIMIT 25
+"""
 _EVENT_HANDOFF_STATE_SQL = f"""
     WITH pending AS MATERIALIZED (
       SELECT e.opened_at_ms
@@ -450,27 +471,7 @@ class EventStorage:
         if not pairs:
             return []
         rows = self.conn.execute(
-            """
-            WITH hits AS (
-              SELECT DISTINCT b.event_id
-                FROM news_event_bands b
-                JOIN unnest(%s::smallint[], %s::text[]) AS q(band_index, band_key)
-                  ON q.band_index = b.band_index AND q.band_key = b.band_key
-               WHERE b.dedupe_family = %s AND b.expires_at_ms > %s
-            )
-            SELECT e.event_id, e.comparison_title, e.leader_title, e.opened_at_ms, e.grounded_assets
-              FROM news_events e JOIN hits ON hits.event_id = e.event_id
-             WHERE e.event_kind = %s
-               AND (
-                 SELECT s.provenance = 'observed'
-                    AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-                   FROM news_event_evidence_snapshots s
-                  WHERE s.event_id = e.event_id
-                  ORDER BY s.evidence_version DESC LIMIT 1
-               )
-             ORDER BY e.opened_at_ms ASC
-             LIMIT 25
-            """,
+            BAND_CANDIDATES_SQL,
             (
                 [p[0] for p in pairs],
                 [p[1] for p in pairs],

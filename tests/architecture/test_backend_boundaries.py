@@ -84,6 +84,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.artifact_identity",
         "tracefold.news.learning.contracts",
         "tracefold.news.learning.evaluate",
+        "tracefold.news.market_review.instrument_storage",
         "tracefold.news.market_review.storage",
         "tracefold.news.storage.query_specs",
         "tracefold.news.program.contracts",
@@ -182,6 +183,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.market_review.loops",
         # The database composition adapter constructs narrow callback views from the concrete
         # repositories; no business package imports the App adapter in return.
+        "tracefold.news.market_review.instrument_storage",
         "tracefold.news.market_review.storage",
         "tracefold.news.program.contracts",
         "tracefold.news.storage.root",

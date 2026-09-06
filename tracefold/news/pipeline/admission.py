@@ -6,8 +6,9 @@ import asyncio
 import hashlib
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Any, ClassVar, Literal, cast
 
 from .. import liquidations, oi_signals, smart_money
@@ -340,7 +341,7 @@ def _prepare_frame(
                     window_ms=dedupe_window_ms(family_name),
                     shareable=shareable,
                     band_keys=keys,
-                    strong_facts=_strong_facts(title, gate.grounded_assets),
+                    strong_facts=strong_facts(title, gate.grounded_assets),
                     storyline_key=storyline,
                     context_line=(
                         f"[{gate.asset_class}/{family_name}/{engine_type}] " + " ".join(gate.grounded_assets)
@@ -669,7 +670,9 @@ def admit_frame(
     )
 
 
-def _strong_facts(title: str, grounded: Sequence[str]) -> tuple[set[str], set[str]]:
+def strong_facts(title: str, grounded: Sequence[str]) -> tuple[set[str], set[str]]:
+    """The tickers and the multi-digit numbers one title asserts. Two Events may only merge when these agree."""
+
     tickers = set(_TICKER_RE.findall(title)) | {g.upper().replace("XYZ-", "") for g in grounded}
     numbers = {
         m.group(0).replace(",", "").replace(" ", "").lower()
@@ -701,24 +704,56 @@ def _load_near_candidates(repos: Any, prepared: _PreparedAdmission, *, now_ms: i
     )
 
 
+def select_near_duplicate[T](
+    tokens: frozenset[str],
+    mine: tuple[set[str], set[str]],
+    candidates: Iterable[tuple[T, frozenset[str], Callable[[], tuple[set[str], set[str]]]]],
+) -> tuple[T, float] | None:
+    """The one near-duplicate scan: the closest compatible candidate at or above the threshold.
+
+    Candidates are `(what to return, that candidate's comparison tokens, its strong facts on demand)`.
+    The facts are a callable because asking for them costs two regular-expression passes over a title
+    and only a candidate that is already the closest so far can win.
+
+    The replay in `news/eval/replay.py` measures the deployed Deduper, so it must run this scan rather
+    than a second copy of it: the copy it used to hold reached in for the private helpers around it,
+    which is exactly how a measurement drifts away from the mechanism it claims to measure (#589 L-F2).
+    """
+
+    best: T | None = None
+    best_j = 0.0
+    for identity, candidate_tokens, candidate_facts in candidates:
+        estimate = jaccard(tokens, candidate_tokens)
+        if estimate >= NEAR_DUPLICATE_THRESHOLD and estimate > best_j and _compatible(mine, candidate_facts()):
+            best, best_j = identity, estimate
+    return None if best is None else (best, best_j)
+
+
 def _select_near_match(prepared: _PreparedAdmission, candidates: Sequence[Mapping[str, Any]]) -> _NearMatch | None:
     """Choose a compatible near duplicate after the database read has returned."""
 
-    best_id, best_j = None, 0.0
-    for candidate in candidates:
-        candidate_tokens = comparison_tokens(str(candidate["comparison_title"]))
-        estimate = jaccard(prepared.tokens, candidate_tokens)
-        if estimate >= NEAR_DUPLICATE_THRESHOLD and estimate > best_j:
-            theirs = _strong_facts(
-                str(candidate["leader_title"]),
-                list(candidate.get("grounded_assets") or []),
+    chosen = select_near_duplicate(
+        prepared.tokens,
+        prepared.strong_facts,
+        (
+            (
+                str(candidate["event_id"]),
+                comparison_tokens(str(candidate["comparison_title"])),
+                partial(
+                    strong_facts,
+                    str(candidate["leader_title"]),
+                    list(candidate.get("grounded_assets") or []),
+                ),
             )
-            if _compatible(prepared.strong_facts, theirs):
-                best_id, best_j = str(candidate["event_id"]), estimate
-    return None if best_id is None else _NearMatch(event_id=best_id, jaccard_estimate=round(best_j, 4))
+            for candidate in candidates
+        ),
+    )
+    return None if chosen is None else _NearMatch(event_id=chosen[0], jaccard_estimate=round(chosen[1], 4))
 
 
-def _engine_type(metadata: Mapping[str, Any]) -> str:
+def engine_type(metadata: Mapping[str, Any]) -> str:
+    """The provider's own engine label, or `unknown` for anything this repository does not name."""
+
     strategies = metadata.get("strategies") or []
     engine = ""
     if strategies and isinstance(strategies[0], Mapping):
@@ -1305,9 +1340,12 @@ __all__ = [
     "admit_frame",
     "admit_item",
     "admit_market_item",
+    "engine_type",
     "item_identity",
     "prepare_wallet_observation",
     "publish_event",
+    "select_near_duplicate",
+    "strong_facts",
     "wallet_item_id",
     "wallet_record_key",
 ]

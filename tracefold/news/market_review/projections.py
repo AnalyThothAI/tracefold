@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from ..row_values import optional_int
 from .instruments import normalize_symbol
 from .pricing import (
     REACTION_METRIC_VERSION,
@@ -118,19 +119,19 @@ def _reaction_public(row: Mapping[str, Any]) -> dict[str, Any]:
         "instrument_class": str(row.get("instrument_class") or "unknown"),
         "anchor_at_ms": int(row["anchor_at_ms"]),
         "p0": None if row.get("p0") is None else str(row["p0"]),
-        "p0_at_ms": _optional_int(row.get("p0_at_ms")),
+        "p0_at_ms": optional_int(row.get("p0_at_ms")),
         "p1": None if row.get("p1") is None else str(row["p1"]),
-        "p1_at_ms": _optional_int(row.get("p1_at_ms")),
+        "p1_at_ms": optional_int(row.get("p1_at_ms")),
         "p4": None if row.get("p4") is None else str(row["p4"]),
-        "p4_at_ms": _optional_int(row.get("p4_at_ms")),
-        "return_1h_bps": _optional_int(row.get("return_1h_bps")),
-        "return_4h_bps": _optional_int(row.get("return_4h_bps")),
+        "p4_at_ms": optional_int(row.get("p4_at_ms")),
+        "return_1h_bps": optional_int(row.get("return_1h_bps")),
+        "return_4h_bps": optional_int(row.get("return_4h_bps")),
         "is_primary": bool(row.get("is_primary")),
         "state": state,
         "state_zh": reaction_state_zh(state),
         "unavailable_reason": reason,
         "unavailable_reason_zh": reaction_reason_zh(reason),
-        "updated_at_ms": _optional_int(row.get("updated_at_ms")),
+        "updated_at_ms": optional_int(row.get("updated_at_ms")),
     }
 
 
@@ -175,21 +176,3 @@ def _aggregate_public(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
         "unavailable_reason_zh": reaction_reason_zh(reason),
         "metric_version": REACTION_METRIC_VERSION,
     }
-
-
-def _optional_int(value: Any) -> int | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _optional_float(value: Any) -> float | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None

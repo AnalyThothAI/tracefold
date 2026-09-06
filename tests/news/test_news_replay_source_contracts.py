@@ -64,6 +64,7 @@ def test_replay_counts_only_editorial_events_and_never_merges_across_event_kind(
             ),
         ],
         watchlist_symbols=frozenset(),
+        instrument_classes=None,
     )
 
     assert report["counts"]["events"] == 1
@@ -98,7 +99,7 @@ def test_replay_dedupes_one_provider_record_within_each_kind_only(reverse: bool)
     )
     ordered = [oi, news] if reverse else [news, oi]
 
-    report = replay_hits([*ordered, news], watchlist_symbols=frozenset())
+    report = replay_hits([*ordered, news], watchlist_symbols=frozenset(), instrument_classes=None)
 
     assert report["counts"]["items"] == 1
     assert report["counts"]["events"] == 1
@@ -132,6 +133,7 @@ def test_a_renamed_market_strategy_is_still_a_market_observation_in_either_order
     report = replay_hits(
         [liquidation, renamed_oi] if reverse else [renamed_oi, liquidation],
         watchlist_symbols=frozenset(),
+        instrument_classes=None,
     )
 
     assert report["counts"].get("events", 0) == 0
@@ -152,6 +154,7 @@ def test_an_unknown_market_strategy_is_an_observation_rather_than_an_unsupported
             )
         ],
         watchlist_symbols=frozenset(),
+        instrument_classes=None,
     )
 
     assert report["counts"].get("events", 0) == 0

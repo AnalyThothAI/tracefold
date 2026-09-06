@@ -26,8 +26,12 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Final, TypedDict
 
-from ..market_contracts import MARKET_TIMELINE_MAX, MARKET_WINDOW_ROW_CAP
-from ..market_notifications import MARKET_TRACK_FIELDS, notification_status
+from ..market_contracts import (
+    MARKET_TIMELINE_MAX,
+    MARKET_TRACK_FIELDS,
+    MARKET_WINDOW_ROW_CAP,
+    notification_status,
+)
 from ..oi_contracts import OI_METRIC_VERSION
 from ..source_contracts import MARKET_KINDS
 from ..wallet_contracts import DIGEST_KIND

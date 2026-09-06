@@ -21,10 +21,9 @@ import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any, Final
 
-from ..bus import DeferError, TransientError
 from ..pipeline.admission import admit_market_item, prepare_wallet_observation, wallet_item_id
 from ..telemetry import (
     NewsExternalDataProviderOutcome,
@@ -50,13 +49,12 @@ from .digest import (
     template_lines,
     window_hours,
 )
+from .tape_io import FAILED, TapePasses, bag_for, tape_decimal
 
 _DB_READ_TIMEOUT_SECONDS: Final = 8.0
 _DB_WRITE_TIMEOUT_SECONDS: Final = 10.0
 
 SITE_SOURCE: Final[NewsExternalDataSource] = "robinhoodtrenches"
-
-_FAILED: Final = object()
 
 log = logging.getLogger("tracefold.news.chain_tape")
 
@@ -84,13 +82,18 @@ class _Lines:
     dropped: int = 0
 
 
-class WalletDigestWriter:
+class WalletDigestWriter(TapePasses):
     """One digest per due window, written as an ordinary `wallet` Item the existing loop sends.
 
     Its own object rather than more methods on the deriver: the deriver's turn is per fill and runs
     every two seconds, and this one runs six times a day over a window. What they share is the tape's
     turn, which is where `ChainTapeLoop` calls both.
     """
+
+    _read_timeout_seconds = _DB_READ_TIMEOUT_SECONDS
+    _write_timeout_seconds = _DB_WRITE_TIMEOUT_SECONDS
+    _failure_stage = "digest"
+    _failure_label = "digest"
 
     def __init__(
         self,
@@ -120,7 +123,7 @@ class WalletDigestWriter:
             lambda repos: repos.news.chain_tape_last_digest(since_ms=now - DAY_MS),
             errors,
         )
-        if state is _FAILED:
+        if state is FAILED:
             return DigestResult()
         last: LastDigest | None = state
         window_to = now
@@ -145,7 +148,7 @@ class WalletDigestWriter:
             lambda repos: repos.news.chain_tape_digest_window(from_ms=window_from, to_ms=window_to),
             errors,
         )
-        if rows is _FAILED or rows.is_empty():
+        if rows is FAILED or rows.is_empty():
             # A quiet four hours is not a card. #572 §5.3 says so in one word -- 空窗跳过 -- and the
             # cost of ignoring it would be six identical "nothing happened" cards a day.
             return DigestResult()
@@ -186,7 +189,7 @@ class WalletDigestWriter:
             ),
             errors,
         )
-        if written is _FAILED or not written:
+        if written is FAILED or not written:
             return DigestResult()
         return DigestResult(
             digests=1,
@@ -283,59 +286,12 @@ class WalletDigestWriter:
                 CHAIN_TAPE_NAME, source, outcome, time.perf_counter() - started
             )
 
-    async def _read(self, name: str, fn: Callable[[Any], Any], errors: list[str]) -> Any:
-        try:
-            return await self.db.read(name, fn, timeout_seconds=_DB_READ_TIMEOUT_SECONDS)
-        except (TransientError, DeferError) as exc:
-            errors.append(f"db:{type(exc).__name__}")
-            return _FAILED
-        except Exception as exc:  # deliberately everything; see `_absorb`
-            return self._absorb(name, exc, errors)
-
-    async def _write(self, name: str, fn: Callable[[Any], Any], errors: list[str]) -> Any:
-        try:
-            return await self.db.tx(name, fn, timeout_seconds=_DB_WRITE_TIMEOUT_SECONDS)
-        except (TransientError, DeferError) as exc:
-            errors.append(f"db:{type(exc).__name__}")
-            return _FAILED
-        except Exception as exc:  # deliberately everything; see `_absorb`
-            return self._absorb(name, exc, errors)
-
-    def _absorb(self, name: str, exc: BaseException, errors: list[str]) -> Any:
-        """Record a digest failure the port did not translate, and end this pass rather than the tape.
-
-        The same rule the card rules follow, and for the same reason: a single derived row PostgreSQL
-        will not accept would otherwise stop the chain tape on every turn, for ever, because the window
-        that produced it is still there to be read again. The reason reaches the tape's own state row
-        through `errors`, the turn is `partial`, and the traceback is logged.
-        """
-
-        log.exception("chain tape digest failed: %s", name)
-        errors.append(f"digest:{name}:{type(exc).__name__}")
-        return _FAILED
-
 
 def _bag_cost(bags: Sequence[Any], *, token: str, symbol: str | None) -> Decimal | None:
     """The provider's moving-average price for one position, by address and then by symbol."""
 
-    for bag in bags:
-        if str(getattr(bag, "token", "") or "").lower() == token:
-            return _decimal(getattr(bag, "avg_price", None))
-    if symbol:
-        for bag in bags:
-            if str(getattr(bag, "symbol", "") or "").upper() == symbol.upper():
-                return _decimal(getattr(bag, "avg_price", None))
-    return None
-
-
-def _decimal(value: Any) -> Decimal | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        parsed = Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        return None
-    return parsed if parsed.is_finite() and parsed > 0 else None
+    bag = bag_for(bags, token=token, symbol=symbol)
+    return None if bag is None else tape_decimal(getattr(bag, "avg_price", None), allow_zero=False)
 
 
 def _digest_event(

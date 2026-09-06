@@ -17,7 +17,6 @@ CHAIN_TAPE_PROVIDER: Final = "robinhood_chain"
 ROSTER_PROVIDER: Final = "robinhoodtrenches"
 
 FillKind = Literal["buy", "sell", "transfer_out"]
-FILL_KINDS: Final[tuple[FillKind, ...]] = ("buy", "sell", "transfer_out")
 
 # Uniswap V3's `Swap(address,address,int256,int256,uint160,uint128,int24)` and V4's
 # `Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)`. Their presence in the same
@@ -146,12 +145,9 @@ __all__ = [
     "BLOCK_COMPLETE_TX_INDEX",
     "CHAIN_TAPE_NAME",
     "CHAIN_TAPE_PROVIDER",
-    "FILL_KINDS",
     "ROSTER_PROVIDER",
     "STABLE_CASH_TOKEN",
     "SWAP_TOPICS",
-    "UNISWAP_V3_SWAP_TOPIC",
-    "UNISWAP_V4_SWAP_TOPIC",
     "USD_SOURCE_STABLE_CASH_LEG",
     "ClassifiedFill",
     "FillKind",

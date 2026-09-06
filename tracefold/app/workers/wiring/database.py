@@ -20,8 +20,9 @@ from tracefold.app.repository_session import RepositorySession
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.news.bus import DeferError, TransientError
 from tracefold.news.chain_tape.loop import ChainTapeRepositories
+from tracefold.news.market_review.instrument_storage import InstrumentsRepository
 from tracefold.news.market_review.loops import PriceRepositories
-from tracefold.news.market_review.storage import InstrumentsRepository, PriceRepository
+from tracefold.news.market_review.storage import PriceRepository
 from tracefold.news.pipeline.runtime import NewsRepositories
 from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun

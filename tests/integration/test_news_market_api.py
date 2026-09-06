@@ -24,7 +24,7 @@ from tracefold.app.http.app import create_app
 from tracefold.app.http.schemas.market import NewsMarketObservationData
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.chain_tape.contracts import ClassifiedFill, RosterMember, TapeCursor
-from tracefold.news.market_notifications import REASON_UNPROCESSED
+from tracefold.news.market_contracts import REASON_UNPROCESSED
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame, admit_market_item, prepare_wallet_observation
 from tracefold.news.storage.market import _OBSERVATION_KEYS, INTERNAL_OBSERVATION_KEYS

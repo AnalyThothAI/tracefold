@@ -11,7 +11,8 @@ from psycopg_pool import PoolClosed, PoolTimeout
 
 from tracefold.app.repository_session import NewsSearchPlan, RepositorySession, repositories_for_connection
 from tracefold.app.workers.runtime import WorkersRuntimeRepository
-from tracefold.news.market_review.storage import InstrumentsRepository, PriceRepository
+from tracefold.news.market_review.instrument_storage import InstrumentsRepository
+from tracefold.news.market_review.storage import PriceRepository
 from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.client import create_pool, postgres_health_check, with_password_from_file

@@ -17,6 +17,7 @@ from ..outcome import (
     novelty_zh,
     scope_zh,
 )
+from ..row_values import optional_float, optional_int
 from ..search import NewsSearchPlan
 from ..source_contracts import (
     EVENT_KINDS,
@@ -29,6 +30,7 @@ from ..timeline import event_timeline
 from .feed_sql import (
     ASSET_SEARCH_PREDICATE,
     EDITORIAL_EVENT_SQL,
+    EVENT_MEMBERS_SQL,
     EVENT_VERDICTS_SQL,
     OUTCOME_GROUP_SQL,
     STATUS_DELIVERY_SQL,
@@ -183,12 +185,7 @@ class FeedStorage:
         if card is None:
             return None
         members = self.conn.execute(
-            """
-            SELECT m.item_id, m.joined_at_ms, m.match_kind, m.jaccard_estimate, i.title, i.canonical_url,
-                   i.reporting_origin, i.published_at_ms, i.provenance, i.description, m.fact_id, m.fact_text
-              FROM news_event_members m JOIN news_items i ON i.item_id = m.item_id
-             WHERE m.event_id = %s ORDER BY m.joined_at_ms, m.item_id
-            """,
+            EVENT_MEMBERS_SQL,
             (event_id,),
         ).fetchall()
         verdicts = self.conn.execute(EVENT_VERDICTS_SQL, (event_id,)).fetchall()
@@ -630,7 +627,7 @@ def _triage_summary(
         return None
     v: Mapping[str, Any] = verdict or {}
     direction = v.get("direction")
-    magnitude = _optional_int(v.get("magnitude"))
+    magnitude = optional_int(v.get("magnitude"))
     scope = v.get("scope")
     summary = {
         "final_decision": final_decision,
@@ -652,7 +649,7 @@ def _triage_summary(
         "scope": scope,
         "novelty": novelty,
         "audience": audience,
-        "confidence": _optional_float(v.get("confidence")),
+        "confidence": optional_float(v.get("confidence")),
         "taxonomy": taxonomy_public(taxonomy) if taxonomy is not None else None,
         "relevance": dict(relevance) if relevance is not None else None,
         "why_zh": v.get("why_zh"),
@@ -683,24 +680,6 @@ def _triage_assets(value: Any) -> list[dict[str, str | None]]:
             }
         )
     return out
-
-
-def _optional_int(value: Any) -> int | None:
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _optional_float(value: Any) -> float | None:
-    try:
-        return float(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _optional_bool(value: Any) -> bool | None:
-    return bool(value) if isinstance(value, bool) else None
 
 
 def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:

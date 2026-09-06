@@ -8,6 +8,7 @@ from __future__ import annotations
 import collections
 import hashlib
 from collections.abc import Mapping, Sequence
+from functools import partial
 from typing import Any, cast
 
 from ..events.gate import GateInput, evaluate_gate
@@ -15,22 +16,32 @@ from ..events.identity import dedupe_family, dedupe_window_ms
 from ..events.minhash import band_keys, minhash_signature
 from ..events.storyline import preliminary_storyline_key
 from ..events.titles import extract_title
-from ..events.tokens import comparison_tokens, jaccard
+from ..events.tokens import comparison_tokens
 from ..models import EngineType
 from ..opennews import parse_opennews_message
-from ..pipeline.admission import NEAR_DUPLICATE_THRESHOLD, _compatible, _engine_type, _strong_facts
+from ..pipeline.admission import engine_type, select_near_duplicate, strong_facts
 from ..source_contracts import classify_source_contract, source_contract_admission
+
+
+def _stored_facts(event: Mapping[str, Any]) -> tuple[set[str], set[str]]:
+    """The strong facts this replay already computed for one open Event, read back for the shared scan."""
+
+    return cast(tuple[set[str], set[str]], event["facts"])
 
 
 def replay_hits(
     hits: Sequence[Mapping[str, Any]],
     *,
     watchlist_symbols: frozenset[str],
-    instrument_classes: Mapping[str, str] | None = None,
+    instrument_classes: Mapping[str, str] | None,
 ) -> dict[str, Any]:
-    """``instrument_classes`` is what the live Gate reads to tell a stock headline from a coin one (#89). Leave it
-    out and the replay silently exercises the fallback instead of the deployed behaviour — which is why the CLI
-    loads it from the universe when a database is reachable."""
+    """``instrument_classes`` is what the live Gate reads to tell a stock headline from a coin one (#89).
+
+    It has no default: passing ``None`` exercises the fallback rather than the deployed behaviour, and a
+    replay that measured the fallback by omission would report a Gate nothing runs. Every caller says
+    which of the two it is asking for — the CLI loads the map from the universe when a database is
+    reachable and passes ``None`` with ``instruments_error`` when it is not.
+    """
 
     seen_items: set[str] = set()
     seen_contracts: set[tuple[str, str]] = set()
@@ -71,7 +82,7 @@ def replay_hits(
         gate = evaluate_gate(
             GateInput(
                 title=title,
-                engine_type=cast(EngineType, _engine_type(metadata)),
+                engine_type=cast(EngineType, engine_type(metadata)),
                 provider_score=float(score) if isinstance(score, (int, float)) else None,
                 coins=coins,
                 ingest_mode="live",
@@ -90,20 +101,20 @@ def replay_hits(
                 counts["exact_members"] += 1
                 continue
             keys = band_keys(minhash_signature(tokens))
-            mine = _strong_facts(title, gate.grounded_assets)
-            best, best_j = None, 0.0
             candidate_ids: set[int] = set()
             for i, key in enumerate(keys):
                 candidate_ids.update(band_index[(i, key, dedupe_family_name, event_kind)])
-            for idx in candidate_ids:
-                cand = events[idx]
-                if cand["opened_at_ms"] + window <= published:
-                    continue
-                j = jaccard(tokens, cand["tokens"])
-                if j >= NEAR_DUPLICATE_THRESHOLD and j > best_j and _compatible(mine, cand["facts"]):
-                    best, best_j = idx, j
-            if best is not None:
-                events[best]["members"] += 1
+            chosen = select_near_duplicate(
+                tokens,
+                strong_facts(title, gate.grounded_assets),
+                (
+                    (idx, events[idx]["tokens"], partial(_stored_facts, events[idx]))
+                    for idx in candidate_ids
+                    if events[idx]["opened_at_ms"] + window > published
+                ),
+            )
+            if chosen is not None:
+                events[chosen[0]]["members"] += 1
                 counts["near_members"] += 1
                 continue
         else:
@@ -115,7 +126,7 @@ def replay_hits(
                 "dedupe_family": dedupe_family_name,
                 "opened_at_ms": published,
                 "tokens": tokens,
-                "facts": _strong_facts(title, gate.grounded_assets),
+                "facts": strong_facts(title, gate.grounded_assets),
                 "members": 1,
                 "admission": admission,
                 "event_kind": event_kind,

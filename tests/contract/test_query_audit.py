@@ -10,7 +10,10 @@ from typing import Any
 import pytest
 
 from tracefold.app.query_audit import PUBLIC_ROUTE_QUERY_COVERAGE, query_audit_catalog
-from tracefold.news.storage import feed_sql
+from tracefold.news.market_review import instrument_storage, quote_storage
+from tracefold.news.market_review.quote_storage import QuoteStorage
+from tracefold.news.storage import events, feed_sql
+from tracefold.news.storage.events import EventStorage
 from tracefold.news.storage.feed import FeedStorage
 from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.postgres.audit import (
@@ -35,7 +38,6 @@ _NEWS_QUERY_NAMES = (
     "news_event_asset_projection",
     "news_event_members",
     "news_event_verdicts",
-    "news_storyline_status",
     "news_band_lookup",
     "news_status_ingest",
     "news_status_incidents_open",
@@ -375,6 +377,46 @@ def test_status_audit_reads_its_sql_from_the_production_module_only():
         "STATUS_LEARNING_RETENTION_SQL",
     }
     assert all(getattr(feed_sql, name) for name in referenced)
+
+
+def _executed_constants(owner: type, method_name: str) -> set[str | None]:
+    """The names one method hands to `.execute(...)`; `None` stands for an inline literal."""
+
+    module = ast.parse(Path(inspect.getfile(owner)).read_text(encoding="utf-8"))
+    owner_node = next(node for node in module.body if isinstance(node, ast.ClassDef) and node.name == owner.__name__)
+    method = next(node for node in owner_node.body if isinstance(node, ast.FunctionDef) and node.name == method_name)
+    return {
+        call.args[0].id if isinstance(call.args[0], ast.Name) else None
+        for call in ast.walk(method)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "execute"
+    }
+
+
+def test_news_audit_plans_the_statements_the_deduper_reaction_and_detail_reads_execute():
+    """#589 L-F1. Five audited News reads carried a hand-written restatement of a production query.
+
+    The copies had drifted, which is the whole defect: the member spec named three columns where the
+    Event-detail route returns twelve, and the band spec was the bare band lookup without the Event join
+    or the evidence-provenance filter the Deduper's candidate read plans. A copy that drifts certifies a
+    plan production never runs, while the plan it does run goes uncertified. Every one of these is now
+    the module constant its own read executes, so an edit moves the read and its audit together.
+    """
+
+    audited = {query.name: query.sql for query in query_audit_catalog(now_ms=0).queries}
+
+    assert audited["news_search_identity"] == instrument_storage.SEARCH_IDENTITY_SQL
+    assert audited["news_search_event_symbols"] == instrument_storage.SEARCH_EVENT_SYMBOLS_SQL
+    assert audited["news_event_members"] == feed_sql.EVENT_MEMBERS_SQL
+    assert audited["news_band_lookup"] == events.BAND_CANDIDATES_SQL
+    assert audited["news_reaction_due_scan"] == quote_storage.DUE_REACTIONS_SQL
+    # Not vacuous about the drift that motivated this: the audited member read returns the whole card.
+    assert "i.canonical_url" in audited["news_event_members"]
+    assert "news_event_evidence_snapshots" in audited["news_band_lookup"]
+
+    # And the constants are the ones the production methods execute, by AST rather than by text.
+    assert "EVENT_MEMBERS_SQL" in _executed_constants(FeedStorage, "event_detail")
+    assert _executed_constants(EventStorage, "find_band_candidates") == {"BAND_CANDIDATES_SQL"}
+    assert _executed_constants(QuoteStorage, "due_reactions") == {"DUE_REACTIONS_SQL"}
 
 
 def test_query_audit_covers_every_public_openapi_route():

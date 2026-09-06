@@ -23,21 +23,17 @@ wait a calibration week:
 
 from __future__ import annotations
 
-import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any, Final, Protocol
 
-from ..bus import DeferError, TransientError
 from ..pipeline.admission import admit_market_item, prepare_wallet_observation, wallet_item_id
 from ..telemetry import NewsExternalDataSource, NewsExternalDataTelemetryPort
 from ..wallet_contracts import (
     OUTCOME_PRICE_MIN,
     OUTCOME_UNAVAILABLE,
-    WALLET_OUTCOME_HORIZONS,
-    OutcomeHorizon,
     WalletBalance,
     WalletCheck,
     WalletEvent,
@@ -45,6 +41,7 @@ from ..wallet_contracts import (
 )
 from .contracts import CHAIN_TAPE_NAME, ClassifiedFill, RosterMember, RosterSnapshot
 from .rules import CrowdingCard, ExitCard, WalletRules, decide_crowding, decide_exit, is_live, ratio_bps
+from .tape_io import FAILED, TapePasses, bag_for, tape_decimal
 
 CHAIN_SOURCE: Final[NewsExternalDataSource] = "robinhood_rpc"
 SITE_SOURCE: Final[NewsExternalDataSource] = "robinhoodtrenches"
@@ -60,10 +57,6 @@ _DB_WRITE_TIMEOUT_SECONDS: Final = 10.0
 
 # What the provider's own price feed is called on a receipt row, when DexScreener could not answer.
 SITE_PRICE_SOURCE: Final = "robinhoodtrenches_mark"
-
-_FAILED: Final = object()
-
-log = logging.getLogger("tracefold.news.chain_tape")
 
 
 class BalancePort(Protocol):
@@ -108,12 +101,17 @@ class _Plan:
     events: list[WalletEvent] = field(default_factory=list)
 
 
-class WalletCardDeriver:
+class WalletCardDeriver(TapePasses):
     """The rules half of the tape: fills in, observations and receipts out.
 
     Its own object rather than more methods on the loop, because it has its own ports (the site's context
     endpoints, a price feed) and its own bounded turn. The loop owns when it runs; this owns what it does.
     """
+
+    _read_timeout_seconds = _DB_READ_TIMEOUT_SECONDS
+    _write_timeout_seconds = _DB_WRITE_TIMEOUT_SECONDS
+    _failure_stage = "derive"
+    _failure_label = "derivation"
 
     def __init__(
         self,
@@ -218,11 +216,11 @@ class WalletCardDeriver:
         position_usd = _position_value(balance.q_before_raw, fill.token_decimals, mark)
         # `bags` is not None past the guard above: `_balance` returns None exactly when the site did
         # not answer, and that case has already returned.
-        bag = _bag_for(bags or (), token=fill.token, symbol=fill.token_symbol)
+        bag = bag_for(bags or (), token=fill.token, symbol=fill.token_symbol)
         if position_usd is None and bag is not None:
             # No price anywhere. What the wallet paid is still a size, and it is the provider's own
             # number rather than one this process invented.
-            position_usd = _decimal(bag.cost_usd)
+            position_usd = tape_decimal(bag.cost_usd)
         window_from = fill.event_at_ms - self.rules.exit_cascade_window_ms
         context = await self._read(
             "news_chain_tape_exit_context",
@@ -241,7 +239,7 @@ class WalletCardDeriver:
             ),
             errors,
         )
-        if context is _FAILED:
+        if context is FAILED:
             return
         (cascade_wallets, cascade_usd), previous, crowding_item = context
         card = decide_exit(
@@ -262,7 +260,7 @@ class WalletCardDeriver:
                 member=member,
                 card=card,
                 mark=mark,
-                entry_price=None if bag is None else _decimal(bag.avg_price),
+                entry_price=None if bag is None else tape_decimal(bag.avg_price),
                 crowding_item_id=crowding_item,
             )
         )
@@ -289,12 +287,12 @@ class WalletCardDeriver:
             lambda: self.chain.balance_of(fill.token, fill.wallet, block_number=max(0, fill.block_number - 1)),
             errors,
         )
-        if answer is not _FAILED and isinstance(answer, int):
+        if answer is not FAILED and isinstance(answer, int):
             return WalletBalance(q_before_raw=int(answer), basis="chain_balance", block_hash=fill.block_hash)
         if bags is None:
             return None
-        reason = "rpc_state_unavailable" if answer is not _FAILED else "rpc_call_failed"
-        bag = _bag_for(bags, token=fill.token, symbol=fill.token_symbol)
+        reason = "rpc_state_unavailable" if answer is not FAILED else "rpc_call_failed"
+        bag = bag_for(bags, token=fill.token, symbol=fill.token_symbol)
         remaining = _raw_amount(None if bag is None else bag.amount, fill.token_decimals)
         if remaining is not None:
             # What the provider says is left, plus what just left: the position as it stood before this
@@ -335,7 +333,7 @@ class WalletCardDeriver:
             ),
             errors,
         )
-        if context is _FAILED:
+        if context is FAILED:
             return
         buyers, previous = context
         card = decide_crowding(buyers=tuple(buyers), window_from_ms=window_from, previous=previous, rules=self.rules)
@@ -363,7 +361,7 @@ class WalletCardDeriver:
             lambda repos: repos.news.chain_tape_due_outcomes(now_ms=stamp, limit=OUTCOMES_PER_TURN_MAX),
             errors,
         )
-        if due is _FAILED or not due:
+        if due is FAILED or not due:
             return DeriveResult()
         marks: Mapping[str, Any] | None = None
         written: list[WalletOutcome] = []
@@ -391,7 +389,7 @@ class WalletCardDeriver:
             written.append(
                 WalletOutcome(
                     delivery_key=str(row["delivery_key"]),
-                    horizon=_horizon(str(row["horizon"])),
+                    horizon=row["horizon"],
                     price=price,
                     at_ms=stamp,
                     source=source if price is not None else OUTCOME_UNAVAILABLE,
@@ -404,7 +402,7 @@ class WalletCardDeriver:
             lambda repos: sum(int(repos.news.chain_tape_record_outcome(row)) for row in written),
             errors,
         )
-        if stored is _FAILED:
+        if stored is FAILED:
             return DeriveResult()
         return DeriveResult(
             outcomes=sum(1 for row in written if row.price is not None),
@@ -426,11 +424,11 @@ class WalletCardDeriver:
         """
 
         answer = await self._call(SITE_SOURCE, lambda: self.site.bags(handle), errors)
-        return None if answer is _FAILED else tuple(answer or ())
+        return None if answer is FAILED else tuple(answer or ())
 
     async def _marks(self, errors: list[str]) -> Mapping[str, Any]:
         answer = await self._call(SITE_SOURCE, self.site.marks, errors)
-        return {} if answer is _FAILED or answer is None else answer
+        return {} if answer is FAILED or answer is None else answer
 
     # ------------------------------------------------------------------ storage
     async def _commit(self, plan: _Plan, errors: list[str]) -> bool:
@@ -459,43 +457,7 @@ class WalletCardDeriver:
             return opened
 
         written = await self._write("news_chain_tape_wallet_cards", _write, errors)
-        return written is not _FAILED
-
-    async def _read(self, name: str, fn: Callable[[Any], Any], errors: list[str]) -> Any:
-        try:
-            return await self.db.read(name, fn, timeout_seconds=_DB_READ_TIMEOUT_SECONDS)
-        except (TransientError, DeferError) as exc:
-            errors.append(f"db:{type(exc).__name__}")
-            return _FAILED
-        except Exception as exc:  # deliberately everything; see `_absorb`
-            return self._absorb(name, exc, errors)
-
-    async def _write(self, name: str, fn: Callable[[Any], Any], errors: list[str]) -> Any:
-        try:
-            return await self.db.tx(name, fn, timeout_seconds=_DB_WRITE_TIMEOUT_SECONDS)
-        except (TransientError, DeferError) as exc:
-            errors.append(f"db:{type(exc).__name__}")
-            return _FAILED
-        except Exception as exc:  # deliberately everything; see `_absorb`
-            return self._absorb(name, exc, errors)
-
-    def _absorb(self, name: str, exc: BaseException, errors: list[str]) -> Any:
-        """Record a derivation failure the port did not translate, and end this pass rather than the tape.
-
-        The port turns an admission refusal and an overrun into the two News errors above; anything else
-        -- a constraint the driver refused, a shape a row could not take -- arrives here raw. The loop's
-        own contract is that the rules half cannot fault the ingestion half, and it has to hold for the
-        cases nobody enumerated as much as for the ones that were: a single derived row that PostgreSQL
-        will not accept would otherwise stop the chain tape, on every restart, for ever, because the row
-        that produced it is still there to be produced again.
-
-        It is recorded rather than swallowed. The reason reaches the tape's own state row through
-        `errors`, the turn is `partial`, and the traceback is logged.
-        """
-
-        log.exception("chain tape derivation failed: %s", name)
-        errors.append(f"derive:{name}:{type(exc).__name__}")
-        return _FAILED
+        return written is not FAILED
 
     async def _call(self, source: NewsExternalDataSource, call: Callable[[], Any], errors: list[str]) -> Any:
         """One bounded provider attempt, measured. A failure is this line's answer, never the turn's."""
@@ -510,7 +472,7 @@ class WalletCardDeriver:
                 self.telemetry.record_external_data_provider_call(
                     CHAIN_TAPE_NAME, source, "error", time.perf_counter() - started
                 )
-            return _FAILED
+            return FAILED
         if self.telemetry is not None:
             self.telemetry.record_external_data_provider_call(
                 CHAIN_TAPE_NAME, source, "success", time.perf_counter() - started
@@ -634,23 +596,10 @@ def _identified(event: WalletEvent) -> WalletEvent:
 # --- small conversions ------------------------------------------------------------------------------
 
 
-def _bag_for(bags: Sequence[Any], *, token: str, symbol: str | None) -> Any | None:
-    """The provider's bag for this token: by address where it publishes one, by symbol where it does not."""
-
-    for bag in bags:
-        if str(getattr(bag, "token", "") or "").lower() == token:
-            return bag
-    if symbol:
-        for bag in bags:
-            if str(getattr(bag, "symbol", "") or "").upper() == symbol.upper():
-                return bag
-    return None
-
-
 def _raw_amount(amount: Any, decimals: int | None) -> int | None:
     """A human quantity as the token's own raw integer, or `None` when it cannot be scaled exactly."""
 
-    value = _decimal(amount)
+    value = tape_decimal(amount)
     if value is None or decimals is None or value < 0:
         return None
     return int(value * (Decimal(10) ** int(decimals)))
@@ -672,28 +621,11 @@ def _implied_price(fill: ClassifiedFill) -> Decimal | None:
 
 
 def _mark(row: Any) -> Decimal | None:
-    return None if row is None else _decimal(getattr(row, "mark", None))
+    return None if row is None else tape_decimal(getattr(row, "mark", None))
 
 
 def _liquidity(row: Any) -> Decimal | None:
-    return None if row is None else _decimal(getattr(row, "liquidity", None))
-
-
-def _decimal(value: Any) -> Decimal | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        parsed = Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        return None
-    return parsed if parsed.is_finite() and parsed >= 0 else None
-
-
-def _horizon(value: str) -> OutcomeHorizon:
-    for horizon, _ in WALLET_OUTCOME_HORIZONS:
-        if horizon == value:
-            return horizon
-    raise ValueError("wallet_outcome_horizon_invalid")
+    return None if row is None else tape_decimal(getattr(row, "liquidity", None))
 
 
 __all__ = [
