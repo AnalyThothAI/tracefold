@@ -484,16 +484,23 @@ def test_a_receipt_the_node_cannot_produce_is_carried_and_then_given_up_on(conn:
         assert state["last_outcome"] == "partial"
     assert len(chain.receipt_calls) == 2
 
-    # Given up on after the bound, as one `unknown` rather than a stall.
+    # Given up on after the bound, as exactly one `unknown` rather than a stall.
     third = asyncio.run(loop.advance())
     assert third["unknown"] == 1
     state = _state(conn)
     assert state is not None
     assert state["unknown_total"] == 1
 
-    # And once it is available again the tape has moved on rather than being wedged.
+    # And it stays one outcome. Giving up is final while the window still offers the transaction, so a
+    # receipt that becomes readable again does not also store a fill for a movement already counted as
+    # unreadable. Three turns is already twice the wall time the overlap covers in chain time, so this
+    # costs a movement that was about to leave the window anyway.
     chain.withhold_receipts = set()
-    assert asyncio.run(loop.advance())["written"] in (0, 1)
+    assert asyncio.run(loop.advance())["written"] == 0
+    assert _fills(conn) == []
+    final = _state(conn)
+    assert final is not None
+    assert final["unknown_total"] == 1
 
 
 def test_a_wide_backlog_is_walked_in_bounded_ranges_rather_than_one_request(conn: Any) -> None:
@@ -611,18 +618,113 @@ def test_an_airdrop_is_counted_on_the_state_row_rather_than_stored(conn: Any) ->
     assert (state["ignored_inbound_total"], state["unknown_total"]) == (1, 0)
 
 
-def test_the_noise_counters_accumulate_across_turns(conn: Any) -> None:
+def test_one_movement_re_read_across_turns_is_counted_once(conn: Any) -> None:
+    """The counters count movements, not passes over them.
+
+    The classified position lags the head by the log overlap so the tip is re-read, which means one
+    airdrop is re-classified for several turns running. A fill collapses on its primary key; a count has
+    no key to collapse on, so `noise_through_*` is the key -- it only ever advances, and a movement is
+    counted only when it is strictly above it. Without that, a stream that is half noise reads as three
+    quarters noise and the week-one calibration in #572 §6 is wrong in the direction that matters.
+    """
+
     version = _seed_roster(conn, [SELL_WALLET])
     airdrop = _synthetic_receipt("airdrop_in", block_number=SELL_BLOCK, transaction_index=2)
     _seed_cursor(conn, block=SELL_BLOCK - 1, roster_version=version)
+    loop = _loop(conn, chain := _Chain([airdrop], head=SELL_BLOCK + 2), _Roster([]))
 
-    for offset in range(2):
-        chain = _Chain([airdrop], head=SELL_BLOCK + 2 + offset)
-        asyncio.run(_loop(conn, chain, _Roster([])).advance())
+    classified = 0
+    for turn in range(3):
+        chain.head = SELL_BLOCK + 2 + turn * 20  # the chain moves on; the overlap keeps re-offering it
+        classified += asyncio.run(loop.advance())["receipts"]
+
+    # It really was read on every turn -- this is not a test of the movement falling out of the window.
+    assert classified == 3
+    assert chain.receipt_calls.count(airdrop.transaction_hash) == 3
+    state = _state(conn)
+    assert state is not None
+    assert state["ignored_inbound_total"] == 1
+    assert state["noise_through_block"] == SELL_BLOCK
+    assert state["noise_through_tx_index"] == 2
+
+
+def test_a_second_movement_above_the_marker_is_still_counted(conn: Any) -> None:
+    """The marker suppresses re-counts, not counting."""
+
+    version = _seed_roster(conn, [SELL_WALLET])
+    first = _synthetic_receipt("airdrop_in", block_number=SELL_BLOCK, transaction_index=2)
+    _seed_cursor(conn, block=SELL_BLOCK - 1, roster_version=version)
+    asyncio.run(_loop(conn, _Chain([first], head=SELL_BLOCK + 2), _Roster([])).advance())
+
+    later = _synthetic_receipt("airdrop_in", block_number=SELL_BLOCK + 5, transaction_index=0)
+    asyncio.run(_loop(conn, _Chain([first, later], head=SELL_BLOCK + 7), _Roster([])).advance())
 
     state = _state(conn)
     assert state is not None
     assert state["ignored_inbound_total"] == 2
+    assert state["noise_through_block"] == SELL_BLOCK + 5
+
+
+class _Telemetry:
+    """Only the three measurements the loop takes."""
+
+    def __init__(self) -> None:
+        self.turns: list[tuple[str, str]] = []
+        self.skipped: list[str] = []
+        self.provider_calls: list[tuple[str, str]] = []
+
+    def record_external_data_turn(self, name: str, outcome: str, seconds: float, **_kwargs: Any) -> None:
+        del seconds
+        self.turns.append((name, outcome))
+
+    def record_external_data_provider_call(
+        self, name: str, source: str, outcome: str, seconds: float, **_kwargs: Any
+    ) -> None:
+        del seconds
+        self.provider_calls.append((source, outcome))
+
+    def record_external_data_skipped(self, name: str, reason: str) -> None:
+        del name
+        self.skipped.append(reason)
+
+
+def test_the_skip_counters_wait_for_a_committed_write(conn: Any) -> None:
+    """Two answers to one question must not disagree.
+
+    The state row's totals move only when the write commits. A refused write rolls the whole turn back
+    and the next one re-reads the same movements, so emitting the Prometheus counters anyway would leave
+    them ahead of the row by exactly the refused turns.
+    """
+
+    version = _seed_roster(conn, [SELL_WALLET])
+    airdrop = _synthetic_receipt("airdrop_in", block_number=SELL_BLOCK, transaction_index=2)
+    _seed_cursor(conn, block=SELL_BLOCK - 1, roster_version=version)
+    telemetry = _Telemetry()
+    db = _Db(conn)
+    db.fail_on = {"news_chain_tape_store": DeferError("db_admission_timeout")}
+    loop = ChainTapeLoop(
+        db=db,
+        chain=_Chain([airdrop], head=SELL_BLOCK + 2),
+        roster_provider=_Roster([]),
+        telemetry=telemetry,  # type: ignore[arg-type]
+    )
+
+    refused = asyncio.run(loop.advance())
+
+    assert refused["ignored_inbound"] == 1
+    assert telemetry.skipped == []
+    refused_state = _state(conn)
+    assert refused_state is not None
+    assert (refused_state["ignored_inbound_total"], refused_state["noise_through_block"]) == (0, 0)
+
+    # The same turn, committed: the row and the counter move together.
+    db.fail_on = {}
+    asyncio.run(loop.advance())
+
+    assert telemetry.skipped == ["airdrop_ignored"]
+    state = _state(conn)
+    assert state is not None
+    assert state["ignored_inbound_total"] == 1
 
 
 # --------------------------------------------------------------------------- database failures

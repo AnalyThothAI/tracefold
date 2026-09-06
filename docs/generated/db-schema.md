@@ -530,6 +530,8 @@
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `ignored_inbound_total` | `BIGINT` | False | `0` |
 | `unknown_total` | `BIGINT` | False | `0` |
+| `noise_through_block` | `BIGINT` | False | `0` |
+| `noise_through_tx_index` | `INTEGER` | False | `'-1'::integer` |
 
 ## `news_model_recordings`
 

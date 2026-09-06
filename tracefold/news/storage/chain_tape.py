@@ -52,7 +52,8 @@ ON CONFLICT (chain_id, tx_hash, log_index) DO NOTHING
 _TAPE_STATE_SQL: Final = """
 SELECT high_water_block, high_water_tx_index, roster_version,
        last_outcome, last_error, last_success_at_ms, updated_at_ms,
-       ignored_inbound_total, unknown_total
+       ignored_inbound_total, unknown_total,
+       noise_through_block, noise_through_tx_index
   FROM news_market_wallet_tape_state
  WHERE state_id = %s
 """
@@ -61,8 +62,9 @@ _SAVE_TAPE_STATE_SQL: Final = """
 INSERT INTO news_market_wallet_tape_state (
     state_id, high_water_block, high_water_tx_index, roster_version,
     last_outcome, last_error, last_success_at_ms, updated_at_ms,
-    ignored_inbound_total, unknown_total
-) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ignored_inbound_total, unknown_total,
+    noise_through_block, noise_through_tx_index
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (state_id) DO UPDATE SET
     high_water_block = EXCLUDED.high_water_block,
     high_water_tx_index = EXCLUDED.high_water_tx_index,
@@ -76,7 +78,19 @@ ON CONFLICT (state_id) DO UPDATE SET
     -- this stream is noise", because the answer is the rows that are not in it (#572 §6).
     ignored_inbound_total = news_market_wallet_tape_state.ignored_inbound_total
                             + EXCLUDED.ignored_inbound_total,
-    unknown_total = news_market_wallet_tape_state.unknown_total + EXCLUDED.unknown_total
+    unknown_total = news_market_wallet_tape_state.unknown_total + EXCLUDED.unknown_total,
+    -- The counted-through marker only ever advances. `high_water_*` lags the head by the log overlap so
+    -- the tip is re-read; this one must not, or the same movement would be counted again on every pass.
+    noise_through_block = GREATEST(news_market_wallet_tape_state.noise_through_block,
+                                   EXCLUDED.noise_through_block),
+    noise_through_tx_index = CASE
+        WHEN EXCLUDED.noise_through_block > news_market_wallet_tape_state.noise_through_block
+            THEN EXCLUDED.noise_through_tx_index
+        WHEN EXCLUDED.noise_through_block = news_market_wallet_tape_state.noise_through_block
+            THEN GREATEST(news_market_wallet_tape_state.noise_through_tx_index,
+                          EXCLUDED.noise_through_tx_index)
+        ELSE news_market_wallet_tape_state.noise_through_tx_index
+    END
 """
 
 _CURRENT_ROSTER_SQL: Final = """
@@ -124,6 +138,8 @@ class ChainTapeStateRow(TypedDict):
     updated_at_ms: int
     ignored_inbound_total: int
     unknown_total: int
+    noise_through_block: int
+    noise_through_tx_index: int
 
 
 class ChainTapeStorage:
@@ -189,6 +205,8 @@ class ChainTapeStorage:
             updated_at_ms=int(row["updated_at_ms"]),
             ignored_inbound_total=int(row["ignored_inbound_total"] or 0),
             unknown_total=int(row["unknown_total"] or 0),
+            noise_through_block=int(row["noise_through_block"] or 0),
+            noise_through_tx_index=int(row["noise_through_tx_index"]),
         )
 
     def chain_tape_save_state(
@@ -202,12 +220,14 @@ class ChainTapeStorage:
         succeeded: bool,
         ignored_inbound: int = 0,
         unknown: int = 0,
+        noise_cursor: TapeCursor | None = None,
     ) -> None:
         """Record the classified position, the turn's outcome, and what it read but did not store.
 
         `last_success_at_ms` only moves forward on a successful turn: a failed turn must be able to say
         "the tape has not advanced since" without the operator reconstructing it from logs. The two
-        noise counters add, because the question they answer is cumulative.
+        noise counters add, because the question they answer is cumulative, and `noise_cursor` is how
+        they stay counts of movements rather than of passes over them.
         """
 
         self.conn.execute(
@@ -223,6 +243,8 @@ class ChainTapeStorage:
                 int(now_ms),
                 max(0, int(ignored_inbound)),
                 max(0, int(unknown)),
+                0 if noise_cursor is None else max(0, int(noise_cursor.block_number)),
+                -1 if noise_cursor is None else max(-1, int(noise_cursor.transaction_index)),
             ),
         )
 

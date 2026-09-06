@@ -211,14 +211,12 @@ def test_provider_status_codes_become_one_bounded_vocabulary(status: int, code: 
     assert failure.value.status_code == status
 
 
-def test_an_oversized_answer_is_refused_while_it_is_being_read() -> None:
+def test_an_oversized_answer_is_refused_while_it_is_being_read(monkeypatch: pytest.MonkeyPatch) -> None:
     """The ceiling has to stop the read. Checking `response.content` measures what already arrived.
 
     Both endpoints are public and nothing in this repository controls how much they send back, so the
     bound is applied to the declared length first and then to the bytes as they stream in.
     """
-
-    from tracefold.integrations import robinhood_chain as adapter
 
     payload = b'{"jsonrpc":"2.0","id":1,"result":"0x1"}' + b" " * 4096
     transport = httpx.MockTransport(lambda _request: httpx.Response(200, content=payload))
@@ -230,14 +228,10 @@ def test_an_oversized_answer_is_refused_while_it_is_being_read() -> None:
     # Under the real ceiling this is an ordinary answer.
     assert asyncio.run(_with(client, work)) is None
 
-    original = adapter._MAX_BYTES
-    adapter._MAX_BYTES = 64
-    try:
-        client = RobinhoodChainClient(rpc_url="https://rpc.test", transport=transport)
-        with pytest.raises(ChainRpcError) as failure:
-            asyncio.run(_with(client, work))
-    finally:
-        adapter._MAX_BYTES = original
+    monkeypatch.setattr("tracefold.integrations.robinhood_chain._MAX_BYTES", 64)
+    client = RobinhoodChainClient(rpc_url="https://rpc.test", transport=transport)
+    with pytest.raises(ChainRpcError) as failure:
+        asyncio.run(_with(client, work))
 
     assert failure.value.code == "chain_rpc_payload_too_large"
 
@@ -253,22 +247,16 @@ def test_a_body_that_declares_itself_too_large_is_refused_before_it_is_read() ->
     refuse_declared_length(httpx.Response(200, content=b"{}"), max_bytes=1024)
 
 
-def test_an_oversized_roster_answer_is_refused_the_same_way() -> None:
-    from tracefold.integrations import robinhoodtrenches as adapter
-
+def test_an_oversized_roster_answer_is_refused_the_same_way(monkeypatch: pytest.MonkeyPatch) -> None:
     transport = httpx.MockTransport(lambda _request: httpx.Response(200, content=b"[]" + b" " * 4096))
 
     async def work(client: RobinhoodTrenchesClient) -> Any:
         return await client.traders()
 
-    original = adapter._MAX_BYTES
-    adapter._MAX_BYTES = 64
-    try:
-        client = RobinhoodTrenchesClient(base_url="https://trenches.test", transport=transport, pace_seconds=0.0)
-        with pytest.raises(RosterProviderError) as failure:
-            asyncio.run(_with(client, work))
-    finally:
-        adapter._MAX_BYTES = original
+    monkeypatch.setattr("tracefold.integrations.robinhoodtrenches._MAX_BYTES", 64)
+    client = RobinhoodTrenchesClient(base_url="https://trenches.test", transport=transport, pace_seconds=0.0)
+    with pytest.raises(RosterProviderError) as failure:
+        asyncio.run(_with(client, work))
 
     assert failure.value.code == "roster_payload_too_large"
 

@@ -65,6 +65,12 @@ POLL_INTERVAL_SECONDS: Final = 2.0
 # unknown. The public endpoint is load balanced, so a transaction that has just appeared in one
 # node's logs can legitimately 404 from another for a moment.
 MISSING_RECEIPT_ATTEMPTS: Final = 3
+# A transaction that has been given up on. It is counted once as unknown and not asked for again while
+# it remains in the log window, which is what makes one movement either a fill or a count and never
+# both. The cost is close to nothing: three turns at the default cadence is twice the wall time the
+# overlap covers in chain time, so a transaction that reaches this state was about to leave the window
+# anyway.
+_GIVEN_UP: Final = -1
 
 _DB_READ_TIMEOUT_SECONDS: Final = 5.0
 _DB_WRITE_TIMEOUT_SECONDS: Final = 10.0
@@ -170,6 +176,7 @@ class ChainTapeLoop:
         # Transactions the node could not produce a receipt for, and how many turns each has been
         # asked for. Bounded by the log window: an entry that stops being a candidate is dropped.
         self._missing_receipts: dict[str, int] = {}
+        self._store_refused = False
 
     async def aclose(self) -> None:
         """Release whatever the two provider ports hold. A port with nothing to release says so by
@@ -192,6 +199,7 @@ class ChainTapeLoop:
 
         started = time.perf_counter()
         self.last_error = None
+        self._store_refused = False
         errors: list[str] = []
         result = _empty_result()
         try:
@@ -212,6 +220,7 @@ class ChainTapeLoop:
         roster = self._roster
         wallets = tuple(roster.wallets) if roster is not None else ()
         cursor = _cursor_of(stored_state)
+        noise_cursor = _noise_cursor_of(stored_state)
         result["roster_version"] = 0 if roster is None else roster.roster_version
         result["wallets"] = len(wallets)
         if roster is None or not wallets:
@@ -226,24 +235,32 @@ class ChainTapeLoop:
         errors_before_chain = len(errors)
         head = await self._provider(CHAIN_SOURCE, self.chain.block_number, errors)
         if head is _FAILED:
-            return await self._end(started, result, cursor=cursor, roster=roster, errors=errors)
+            return await self._end(
+                started, result, cursor=cursor, noise_cursor=noise_cursor, roster=roster, errors=errors
+            )
 
         from_block, to_block, cursor = self._range(cursor, head=int(head))
         result["from_block"] = from_block
         result["to_block"] = to_block
         logs = await self._wallet_logs(wallets, from_block=from_block, to_block=to_block, errors=errors)
         if logs is None:
-            return await self._end(started, result, cursor=cursor, roster=roster, errors=errors)
+            return await self._end(
+                started, result, cursor=cursor, noise_cursor=noise_cursor, roster=roster, errors=errors
+            )
         result["logs"] = len(logs)
 
-        candidates = _transactions_after(logs, cursor)
+        discovered = _transactions_after(logs, cursor)
+        self._forget_missing_receipts_outside(discovered)
+        candidates = tuple(
+            position for position in discovered if self._missing_receipts.get(position.transaction_hash) != _GIVEN_UP
+        )
         result["candidates"] = len(candidates)
         taken = candidates[: self.receipts_per_turn_max]
         result["pending"] = len(candidates) - len(taken)
-        self._forget_missing_receipts_outside(candidates)
 
         fills: list[ClassifiedFill] = []
         classified_through = cursor
+        counted_through = noise_cursor
         for position in taken:
             outcome = await self._classify(position, wallets=wallets, roster=roster, errors=errors)
             if outcome is None:
@@ -251,10 +268,15 @@ class ChainTapeLoop:
                 # and the position this turn already classified is what is recorded.
                 break
             fills.extend(outcome.fills)
-            result["ignored_inbound"] += outcome.ignored_inbound
-            result["unknown"] += outcome.unknown
+            # A fill collapses on its primary key however many times the lagging position re-offers it.
+            # A count has no key to collapse on, so the marker is the key: what is at or below it has
+            # already been counted, and this pass only reports what is above it.
+            if noise_cursor.precedes(position.block_number, position.transaction_index):
+                result["ignored_inbound"] += outcome.ignored_inbound
+                result["unknown"] += outcome.unknown
             result["receipts"] += 1
             classified_through = TapeCursor(position.block_number, position.transaction_index)
+            counted_through = classified_through
         if result["receipts"] == len(candidates) and len(errors) == errors_before_chain:
             # The whole planned range is classified -- and the durable position deliberately stops one
             # overlap short of the head it was read to.
@@ -276,8 +298,17 @@ class ChainTapeLoop:
             outcome="partial" if errors else "success",
             errors=errors,
             counts=result,
+            # Un-lagged, always: the last movement this turn actually looked at. Nothing below it is
+            # ever counted again, whatever the classified position does.
+            noise_cursor=counted_through,
         )
-        self._record_turn(started, "partial" if errors else "success", result, errors)
+        self._record_turn(
+            started,
+            "partial" if errors else "success",
+            result,
+            errors,
+            stored=not self._store_refused,
+        )
         return result
 
     async def _end(
@@ -286,6 +317,7 @@ class ChainTapeLoop:
         result: dict[str, Any],
         *,
         cursor: TapeCursor,
+        noise_cursor: TapeCursor,
         roster: RosterSnapshot,
         errors: list[str],
     ) -> dict[str, Any]:
@@ -298,8 +330,9 @@ class ChainTapeLoop:
             outcome="error",
             errors=errors,
             counts=result,
+            noise_cursor=noise_cursor,
         )
-        self._record_turn(started, "error", result, errors)
+        self._record_turn(started, "error", result, errors, stored=not self._store_refused)
         return result
 
     # ------------------------------------------------------------------ roster
@@ -451,14 +484,19 @@ class ChainTapeLoop:
         would drop it for ever, because the position would advance past it. It is carried instead --
         the turn stops here and everything from this position stays pending -- and after a bounded
         number of turns it is recorded as one `unknown` so the tape cannot stall on it.
+
+        Giving up is final for as long as the log window still offers it. That is what keeps one
+        movement to one outcome: without it the lagging position would offer the transaction again, a
+        later receipt would store a fill, and the same movement would be both a stored trade and a
+        count of something that could not be read.
         """
 
         attempts = self._missing_receipts.get(position.transaction_hash, 0) + 1
-        self._missing_receipts[position.transaction_hash] = attempts
         if attempts < MISSING_RECEIPT_ATTEMPTS:
+            self._missing_receipts[position.transaction_hash] = attempts
             errors.append(f"{CHAIN_SOURCE}:receipt_missing")
             return None
-        self._missing_receipts.pop(position.transaction_hash, None)
+        self._missing_receipts[position.transaction_hash] = _GIVEN_UP
         return _Classified(fills=(), ignored_inbound=0, unknown=1)
 
     def _forget_missing_receipts_outside(self, candidates: Sequence[_Transaction]) -> None:
@@ -520,6 +558,7 @@ class ChainTapeLoop:
         outcome: str,
         errors: list[str],
         counts: dict[str, Any],
+        noise_cursor: TapeCursor,
     ) -> int:
         def _write(repos: Any) -> int:
             written = repos.news.chain_tape_record_fills(fills)
@@ -532,6 +571,7 @@ class ChainTapeLoop:
                 succeeded=not errors,
                 ignored_inbound=int(counts.get("ignored_inbound") or 0),
                 unknown=int(counts.get("unknown") or 0),
+                noise_cursor=noise_cursor,
             )
             return int(written)
 
@@ -539,8 +579,10 @@ class ChainTapeLoop:
             return await self.db.tx("news_chain_tape_store", _write, timeout_seconds=_DB_WRITE_TIMEOUT_SECONDS)
         except (TransientError, DeferError) as exc:
             # The lane refused or the write overran. Nothing committed, so the next turn re-reads the
-            # same range from the same position and writes the same rows.
+            # same range from the same position and writes the same rows -- and counts the same
+            # movements, which is why the skip counters wait for a committed write.
             errors.append(f"db:{type(exc).__name__}")
+            self._store_refused = True
             return 0
 
     # ------------------------------------------------------------------ provider and telemetry
@@ -586,6 +628,8 @@ class ChainTapeLoop:
         outcome: NewsExternalDataOutcome,
         result: dict[str, Any],
         errors: Sequence[str],
+        *,
+        stored: bool = True,
     ) -> None:
         """One turn's measurement, including what the turn deliberately did not store.
 
@@ -594,6 +638,11 @@ class ChainTapeLoop:
         chose not to persist, and without a counter the only evidence they existed would be their
         absence. They are also accumulated on the tape's own state row, because the week-one calibration
         in #572 §6 is answered in SQL and Prometheus cannot be joined to a fills table.
+
+        `stored` is why the two are not two answers. The state row's totals move only when the write
+        commits; a refused write rolls the whole turn back and the next one re-reads the same movements
+        and counts them again. Emitting the Prometheus counters anyway would make them disagree with
+        the row by exactly the refused turns, so they are emitted only when the row moved too.
         """
 
         self.last_result = dict(result)
@@ -607,6 +656,8 @@ class ChainTapeLoop:
             target_count=int(result.get("wallets") or 0),
             source_count=2,
         )
+        if not stored:
+            return
         skipped: tuple[tuple[NewsExternalDataSkipReason, int], ...] = (
             ("airdrop_ignored", int(result.get("ignored_inbound") or 0)),
             ("unclassified", int(result.get("unknown") or 0)),
@@ -669,6 +720,14 @@ def _cursor_of(state: Any) -> TapeCursor:
     if state is None:
         return TapeCursor(0, -1)
     return TapeCursor(int(state["high_water_block"]), int(state["high_water_tx_index"]))
+
+
+def _noise_cursor_of(state: Any) -> TapeCursor:
+    """How far the noise counts have been taken. Never lags, so nothing is counted twice."""
+
+    if state is None:
+        return TapeCursor(0, -1)
+    return TapeCursor(int(state["noise_through_block"]), int(state["noise_through_tx_index"]))
 
 
 def _transactions_after(logs: Sequence[Any], cursor: TapeCursor) -> tuple[_Transaction, ...]:

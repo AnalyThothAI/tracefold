@@ -220,6 +220,10 @@ def _wallet_roster() -> None:
 def _tape_state() -> None:
     """Exactly one row: how far the tape is classified, what the last turn did, and what it discarded.
 
+    Two positions, not one. `high_water_*` is what has been classified and lags the head by the log
+    overlap on purpose, so the tip is re-read. `noise_through_*` is what has been *counted* and never
+    lags, because a movement read three times is still one movement.
+
     A one-row table rather than a column on something else, because nothing else here has the same
     lifetime: the fills are a ledger, the roster is versioned, and this is the loop's own cursor.
     """
@@ -237,6 +241,8 @@ def _tape_state() -> None:
             updated_at_ms bigint NOT NULL,
             ignored_inbound_total bigint NOT NULL DEFAULT 0,
             unknown_total bigint NOT NULL DEFAULT 0,
+            noise_through_block bigint NOT NULL DEFAULT 0,
+            noise_through_tx_index integer NOT NULL DEFAULT -1,
             CONSTRAINT news_market_wallet_tape_state_pkey PRIMARY KEY (state_id),
             -- One tape, one row. The identity is a constant so a second row cannot be inserted by a
             -- writer that thought it was starting fresh.
@@ -244,6 +250,8 @@ def _tape_state() -> None:
                 CHECK (state_id = 'chain_tape'::text),
             CONSTRAINT news_market_wallet_tape_state_position_check
                 CHECK (high_water_block >= 0 AND high_water_tx_index >= -1 AND roster_version >= 0),
+            CONSTRAINT news_market_wallet_tape_state_noise_position_check
+                CHECK (noise_through_block >= 0 AND noise_through_tx_index >= -1),
             CONSTRAINT news_market_wallet_tape_state_outcome_check
                 CHECK (last_outcome = ANY (
                   ARRAY[''::text, 'success'::text, 'partial'::text, 'error'::text])),
@@ -253,6 +261,13 @@ def _tape_state() -> None:
             -- for, and a movement the receipt could not explain. They live here rather than only in
             -- Prometheus because "how much of this stream is noise" is a question #572 §6 answers in
             -- SQL beside the fills, and Prometheus cannot be joined to a table.
+            --
+            -- `noise_through_*` is why they are counts of movements rather than of passes. The
+            -- classified position deliberately lags the head by the log overlap, so one movement is
+            -- re-classified on several turns; a fill collapses on its primary key, but a count has no
+            -- key to collapse on. This marker only ever advances, and a movement is counted only when
+            -- it is strictly above it -- which is the same "exactly once" the fills get, expressed for
+            -- something that is not a row.
             CONSTRAINT news_market_wallet_tape_state_noise_check
                 CHECK (ignored_inbound_total >= 0 AND unknown_total >= 0)
         )

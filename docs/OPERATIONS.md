@@ -1618,20 +1618,32 @@ SELECT s.ignored_inbound_total,
 The same two counts are published as
 `tracefold_external_data_skipped_or_coalesced_total{name="chain_tape",reason="airdrop_ignored"}` and
 `…,reason="unclassified"`. The state row's totals are monotonic since the tape was first enabled and
-are never reset; the Prometheus counters restart with the process.
+are never reset; the Prometheus counters restart with the process. Both count *movements*, not passes
+over them — see `noise_through_block` below.
 
 The tape's own position and last turn are one row:
 
 ```sql
 SELECT high_water_block, high_water_tx_index, roster_version,
        last_outcome, last_error, last_success_at_ms,
-       ignored_inbound_total, unknown_total
+       ignored_inbound_total, unknown_total,
+       noise_through_block, noise_through_tx_index
   FROM news_market_wallet_tape_state;
 ```
 
 `high_water_block` trails the chain head by the 30-block overlap on purpose — about three seconds of
 chain. It is the position everything up to which is classified, not the position last read, and the
-gap is what lets a node that answered short be re-read on the next turn.
+gap is what lets a node that answered short be re-read on the next turn. The cost of that lag is that
+each movement's receipt is fetched about three times at the default 2 s cadence, so the effective
+provider load is roughly three times the declared 20-receipts-per-turn cap.
+
+`noise_through_block` / `noise_through_tx_index` is the second position and it never lags: it is how
+far the two noise counters have been taken. A fill re-read across turns collapses on its primary key,
+but a count has no key to collapse on, so a movement is added to `ignored_inbound_total` or
+`unknown_total` only when it is strictly above this marker. Expect `noise_through_block` to sit ahead
+of `high_water_block` by roughly the overlap; that gap is the feature, not a fault. Both totals move
+only when the turn's write commits, which is why the Prometheus counters are emitted on the same
+condition — otherwise the two would disagree by exactly the refused turns.
 
 `last_outcome = 'partial'` with a `last_error` naming `robinhood_rpc:*` or
 `robinhoodtrenches:*` is the expected shape of a provider hiccup: the position
