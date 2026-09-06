@@ -374,6 +374,37 @@ refused: the old name would come back meaning something narrower than it used to
 and a reader computing `max(last_seen_ms)` would report the last catalogue change
 as the last catalogue refresh.
 
+`20260906_0370` runs the production smart-money parser once over the records an
+earlier revision could only store unparsed (#562). `20260905_0365` marked every
+retained Strategy 2026 Item `raw / market_backfill_not_reparsed`, which was the
+honest state of a frame no parser had been run against; the parser now exists,
+and #560 taught it the provider's own `K`/`M`/`B` on every dollar figure. All 112
+of those Items are position reports the current parser reads: 111 gain a
+`news_market_smart_money` fact and become `parsed`, and one `Withdraw` line is
+left `raw` under `smart_money_template_unmatched`, which is the answer the parser
+actually gives rather than a claim that none was asked.
+
+It imports `parse_smart_money` rather than freezing a copy of the template the
+way `20260905_0365` froze the OI one. The two revisions are making opposite
+statements: `0365` reconstructed what the provider sent in 2026 and a later
+parser generation must not silently change that reconstruction, while this one
+is asked for exactly the answer today's parser gives, and a second copy of the
+regex here could disagree with the one every live frame goes through. The
+exception is named file by file in `tests/architecture/test_backend_boundaries.py`.
+
+A reparse is parse evidence, not a new observation (#553 §3.1). The provider
+stamps, the source identity and the stored title are untouched; the rebuilt facts
+take the rebuild moment as `available_at_ms`, because that is the first instant
+any consumer could read them; and `market_notify_state` is deliberately not
+written, so all 112 stay `historical` and no track, delivery or trade appears.
+The fact identity is recomputed with the production extractor, so a later replay
+of the same provider record collides with the row already there instead of
+writing a second one. It archives nothing, refuses nothing, needs no operator
+config step and touches no table the execution Runtime writes, so `make up` alone
+applies it. `downgrade` is refused: the facts are the only structured record of
+those reports, and restoring `market_backfill_not_reparsed` would restate a claim
+that is false the moment the parser has run.
+
 ## Database development standard
 
 1. The deployment has one non-superuser application login, `tracefold`.

@@ -44,6 +44,8 @@ def _item(
     parsed: bool = True,
     params: dict | None = None,
     ingest_mode: str = "live",
+    strategy_id: str = "1019",
+    parse_error: str = "unknown_market_source",
 ) -> None:
     news.upsert_item(
         item_id=item_id,
@@ -62,9 +64,9 @@ def _item(
         trace_id="trace",
         now_ms=at_ms,
         market_kind=kind,
-        market_source_strategy_id="1019",
+        market_source_strategy_id=strategy_id,
         market_parse_status="parsed" if parsed else "raw",
-        market_parse_error=None if parsed else "unknown_market_source",
+        market_parse_error=None if parsed else parse_error,
         provider_params_json="{}" if params is None else json.dumps(params),
     )
 
@@ -207,6 +209,72 @@ def test_an_unparsed_record_is_its_own_group_and_never_merges_with_another_unkno
 
     assert [group["observation_count"] for group in groups] == [1, 1]
     assert len({group["group_key"] for group in groups}) == 2
+
+
+def test_backfilled_smart_money_records_group_by_account_once_a_fact_names_one(conn) -> None:
+    """#562. The reader's view of the reparse: 112 one-record groups become account groups.
+
+    Without a typed fact an Item is keyed `raw|<kind>|<item_id>` -- one group per provider record,
+    which is deliberate, because §4.1 forbids merging records whose grouping fields are unknown. The
+    fact is what supplies those fields, so the same three reports collapse into the one account run
+    §4.4 describes as soon as the parser has been run against them.
+    """
+
+    repos = repositories_for_connection(conn)
+    news = repos.news
+    address = "0x" + "a" * 40
+    reports = (
+        ("wallet-run-1", "js-2 Open Long BTC $798.18K , Price $79,817.87"),
+        ("wallet-run-2", "js-2 Open Long BTC $1.20M , Price $79,900.00"),
+        ("wallet-run-3", "js-2 Open Long BTC $2.10M , Price $80,100.00"),
+    )
+    with repos.transaction():
+        for offset, (item_id, _) in enumerate(reports):
+            _item(
+                news,
+                item_id,
+                kind="smart_money",
+                at_ms=NOW + offset,
+                parsed=False,
+                strategy_id="2026",
+                parse_error="market_backfill_not_reparsed",
+                params={"relatedAddress": address},
+            )
+
+    before = _groups(news)
+    assert [group["observation_count"] for group in before] == [1, 1, 1]
+    assert {group["group_key"] for group in before} == {f"raw|smart_money|{item_id}" for item_id, _ in reports}
+
+    with repos.transaction():
+        for offset, (item_id, title) in enumerate(reports):
+            fact = parse_smart_money(
+                title,
+                item_id=item_id,
+                fact_id=f"fact-{item_id}",
+                source_strategy_id="2026",
+                provider_source="hyperliquid",
+                related_address=address,
+                event_at_ms=NOW + offset,
+                received_at_ms=NOW + offset,
+            )
+            assert fact is not None
+            news.insert_market_smart_money(fact=fact, ingest_mode="live", now_ms=NOW)
+        # Exactly what the revision writes beside each fact; the group key is a function of the fact,
+        # and the parse pair is the independent second answer the page shows (#553 §6).
+        conn.execute(
+            "UPDATE news_items SET market_parse_status = 'parsed', market_parse_error = NULL"
+            " WHERE market_kind = 'smart_money'"
+        )
+
+    after = _groups(news)
+
+    assert [group["observation_count"] for group in after] == [3]
+    group = after[0]
+    assert group["group_key"] == f"smart_money|{MARKET_PROVIDER}|2026|js-2|{address}|hyperliquid|BTC|open|long"
+    assert (group["first_event_at_ms"], group["last_event_at_ms"]) == (NOW, NOW + 2)
+    assert group["latest"]["item_id"] == "wallet-run-3"
+    assert (group["latest"]["parse_status"], group["latest"]["parse_error"]) == ("parsed", None)
+    assert group["latest"]["account_address"] == address
 
 
 def test_the_kind_filter_narrows_and_the_source_summary_always_names_all_four(conn) -> None:
