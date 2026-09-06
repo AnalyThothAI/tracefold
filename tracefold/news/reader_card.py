@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 
 from . import card_format as fmt
+from .market_contracts import MARKET_NEWS_PUSHED_MAX, MARKET_NEWS_WINDOW_MS
 from .outcome import DIRECTION_ZH, MAGNITUDE_ZH, NOVELTY_ZH
 
 CardFamily = Literal["news", "oi", "liquidation", "smart_money"]
@@ -35,6 +36,11 @@ TITLE_MAX: Final = 100
 # How many assets one card names, on the facts line and on the quote line alike. A card is a summary;
 # the fifth asset is on the page it links to.
 CARD_ASSETS_MAX: Final = 4
+# One already-pushed News headline, on an OI card that is about the same instrument. Shorter than the
+# card's own title bound because these lines are context under the card's subject, not its subject:
+# four lines of full headlines would make the OI numbers the smaller half of their own card (#582).
+NEWS_HEADLINE_MAX: Final = 40
+
 # The family's word, for the families whose card is not headed by its own headline.
 FAMILY_TITLE: Final[dict[str, str]] = {
     "oi": "持仓异动",
@@ -84,6 +90,13 @@ _WHALE_PROFIT_PREFIX: Final = "鲸鱼多头盈利 "
 # production frame this repository tests against). It is the provider's `Whale/OI Ratio`: two
 # quantities divided, said as such.
 _WHALE_RATIO_PREFIX: Final = "鲸鱼持仓/OI "
+# What the reader has already been told about this instrument, in the same window the port queried
+# (#582 §3.3). The window is printed from the constant the statements bound themselves with, so the
+# `48h` here and the numbers beside it are one claim. Titles only, and only of cards that were
+# actually pushed: an Event nobody was told about is counted in the total and never quoted, because a
+# headline on this line reads as "you have seen this" and an unpushed one would be a lie.
+_NEWS_PREFIX: Final = f"相关新闻 {MARKET_NEWS_WINDOW_MS // 3_600_000}h"
+_NEWS_HEADLINE_MARK: Final = "· "
 
 _LIQUIDATION_NOTE: Final = "各来源报告金额不相加：没有可信底层成交标识时只列报告数与最大单笔。"
 # What a `平` on this card does and does not mean (#553 §4.4). It is printed only by a card that
@@ -157,6 +170,14 @@ class ReaderCardAction:
 
 
 @dataclass(frozen=True, slots=True)
+class ReaderCardHeadline:
+    """One News card this reader already received, as the title they saw and when they saw it."""
+
+    headline: str = ""
+    at_ms: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class ReaderCardMarket:
     """The market families' own facts. Every field is what a provider reported, never a derived view."""
 
@@ -181,6 +202,12 @@ class ReaderCardMarket:
     action_changes: int = 0
     opened_action: ReaderCardAction = ReaderCardAction()
     latest_action: ReaderCardAction = ReaderCardAction()
+    # What News has already said about this instrument inside the card's own news window: the titles
+    # of the cards this reader received, and how many editorial Events named the instrument at all.
+    # Display-only, like the quote beside it, and absent is absent -- a card that could not be told
+    # carries the empty default and prints nothing rather than `已推 0 · 共 0` (#582 §3.3).
+    news_pushed: tuple[ReaderCardHeadline, ...] = ()
+    news_total: int = 0
 
     def reports_close(self) -> bool:
         """Whether a Close is among the actions this card actually printed.
@@ -351,7 +378,7 @@ class ReaderCard:
                 f"OI ${fmt.usd_compact(market.oi_value_usd)} · {venue} · "
                 f"{market.measurement or fmt.UNKNOWN_MEASUREMENT}"
             )
-            return [f"{head} · {span}" if span else head, detail, quote, self._whale_line()]
+            return [f"{head} · {span}" if span else head, detail, quote, self._whale_line(), *self._news_lines()]
         if self.header.family == "liquidation":
             side = market.side or ""
             return [
@@ -403,6 +430,33 @@ class ReaderCard:
             f"{_PNL_PREFIX}{pnl}" if (pnl := fmt.money(market.pnl)) else "",
         ]
         return " · ".join(part for part in parts if part)
+
+    def _news_lines(self) -> list[str]:
+        """`相关新闻 48h · 已推 2 · 共 5`, then one line per already-pushed headline. Or nothing.
+
+        The count line is printed only when the window held an editorial Event at all: `已推 0 · 共 0`
+        is four extra bytes to say that a token had no news, which is the ordinary case for most of
+        the 43 instruments a day's OI cards name (#582 §1). A total without any pushed card is a real
+        answer and does print -- "five Events, none of which you were told about" is exactly what a
+        reader of an OI card wants to know, and it is why the two numbers are separate.
+
+        The headlines are the cards the reader actually received, newest first, each clipped to
+        `NEWS_HEADLINE_MAX` with the time they were pushed. No link and no button: this line is
+        context on a card about an instrument, and a reader who wants the story opens the console.
+        """
+
+        market = self.market
+        if market.news_total <= 0:
+            return []
+        counts = f"{_NEWS_PREFIX} · 已推 {len(market.news_pushed)} · 共 {market.news_total}"
+        return [
+            counts,
+            *(
+                f"{_NEWS_HEADLINE_MARK}{fmt.clip(item.headline, NEWS_HEADLINE_MAX)} {fmt.clock(item.at_ms)}"
+                for item in market.news_pushed
+                if item.headline
+            ),
+        ]
 
     def _whale_line(self) -> str:
         """The OI frame's two whale percentages, each printed only if the frame carried it."""
@@ -456,6 +510,27 @@ def reader_quotes(quotes: Sequence[Mapping[str, Any]]) -> tuple[ReaderCardQuote,
     )
 
 
+def reader_news(payload: Mapping[str, Any]) -> tuple[tuple[ReaderCardHeadline, ...], int]:
+    """The News port's answer as card facts, bounded to what a card may print (#582 §3.3).
+
+    The twin of `reader_quotes`, for the same reason and in the same place: the loop reads a mapping
+    from a port and this is the one function that turns it into the card's own values, so no caller
+    has to know the read model's key names. Everything it cannot read is absent rather than wrong -- a
+    row without a title is dropped, a total that is not a number is zero -- because this line is
+    display and a broken read costs it and nothing else.
+    """
+
+    rows = payload.get("pushed")
+    pushed = tuple(
+        ReaderCardHeadline(headline=headline, at_ms=int(row.get("at_ms") or 0))
+        for row in (rows if isinstance(rows, Sequence) and not isinstance(rows, str | bytes) else ())
+        if isinstance(row, Mapping) and (headline := str(row.get("headline_zh") or "").strip())
+    )
+    total = payload.get("total")
+    counted = int(total) if isinstance(total, int) and not isinstance(total, bool) else 0
+    return pushed[:MARKET_NEWS_PUSHED_MAX], max(counted, 0)
+
+
 def quote_line(quotes: Sequence[ReaderCardQuote]) -> str:
     """The market's own number for the assets already named on the facts line, or nothing at all.
 
@@ -488,6 +563,7 @@ __all__ = [
     "ACTION_ZH",
     "CARD_ASSETS_MAX",
     "FAMILY_TITLE",
+    "NEWS_HEADLINE_MAX",
     "NOVELTY_ZH",
     "OI_DIRECTION_ZH",
     "QUOTE_LINE_PREFIX",
@@ -500,11 +576,13 @@ __all__ = [
     "ReaderCardAction",
     "ReaderCardFacts",
     "ReaderCardHeader",
+    "ReaderCardHeadline",
     "ReaderCardLink",
     "ReaderCardMarket",
     "ReaderCardNote",
     "ReaderCardQuote",
     "ReaderCardTimes",
     "quote_line",
+    "reader_news",
     "reader_quotes",
 ]

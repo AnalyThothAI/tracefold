@@ -46,11 +46,13 @@ from .reader_card import (
     ReaderCardAction,
     ReaderCardFacts,
     ReaderCardHeader,
+    ReaderCardHeadline,
     ReaderCardLink,
     ReaderCardMarket,
     ReaderCardNote,
     ReaderCardQuote,
     ReaderCardTimes,
+    reader_news,
     reader_quotes,
 )
 
@@ -879,6 +881,8 @@ def market_reader_card(
     detail_url: str | None = None,
     action_changes: int = 0,
     quotes: Sequence[ReaderCardQuote] = (),
+    news_pushed: Sequence[ReaderCardHeadline] = (),
+    news_total: int = 0,
 ) -> ReaderCard:
     """One intent's bounded summary, in facts.
 
@@ -892,6 +896,10 @@ def market_reader_card(
     the same function, and they are display-only: an empty sequence is the ordinary answer whenever
     the read was stale, unavailable or simply not attempted, and it costs the line and nothing else
     (#562 §2). The card model applies the fresh-only rule, so nothing here filters them.
+
+    `news_pushed` / `news_total` are the same kind of answer about the same instrument, from the News
+    plane rather than the price plane (#582 §3.3): the empty defaults are what a card carries when the
+    read failed, was cut off by its budget, or was never asked for -- which is every family but OI.
     """
 
     first, latest = observations[0], observations[-1]
@@ -918,7 +926,13 @@ def market_reader_card(
             report_count=len(observations),
         ),
         quotes=tuple(quotes),
-        market=_reader_market(track=track, observations=observations, action_changes=action_changes),
+        market=_reader_market(
+            track=track,
+            observations=observations,
+            action_changes=action_changes,
+            news_pushed=news_pushed,
+            news_total=news_total,
+        ),
         link=ReaderCardLink(url=link, label=DETAIL_BUTTON_LABEL) if link is not None else None,
         note=ReaderCardNote(id=track.group_key, detail_id=latest.item_id),
         times=ReaderCardTimes(event_at_ms=latest.event_at_ms, span_from_ms=first.event_at_ms),
@@ -946,6 +960,8 @@ def _reader_market(
     track: MarketTrack,
     observations: Sequence[MarketObservation],
     action_changes: int,
+    news_pushed: Sequence[ReaderCardHeadline] = (),
+    news_total: int = 0,
 ) -> ReaderCardMarket:
     first, latest = observations[0], observations[-1]
     return ReaderCardMarket(
@@ -979,6 +995,8 @@ def _reader_market(
             else ReaderCardAction(action=first.action, side=first.position_side)
         ),
         latest_action=ReaderCardAction(action=latest.action, side=latest.position_side),
+        news_pushed=tuple(news_pushed),
+        news_total=news_total,
     )
 
 
@@ -990,6 +1008,8 @@ def render_market_card(
     detail_url: str | None = None,
     action_changes: int = 0,
     quotes: Sequence[ReaderCardQuote] = (),
+    news_pushed: Sequence[ReaderCardHeadline] = (),
+    news_total: int = 0,
 ) -> dict[str, Any]:
     """The intent's `ReaderCard` in the wire shape the delivery ledger freezes and Feishu accepts.
 
@@ -1007,6 +1027,8 @@ def render_market_card(
             detail_url=detail_url,
             action_changes=action_changes,
             quotes=quotes,
+            news_pushed=news_pushed,
+            news_total=news_total,
         )
     )
 
@@ -1033,6 +1055,14 @@ class MarketNotificationDatabasePort(Protocol):
     # rows are the read model's own; `reader_quotes` turns them into this card's facts, exactly as
     # the News card does. Nothing here may write a quote, wait for one, or let one reach a decision.
     async def quotes_for_symbols(self, symbols: Sequence[str], *, now_ms: int) -> Sequence[Mapping[str, Any]]: ...
+
+    # What News has already told this reader about the same instrument, in the card's own 48 h window
+    # (#582 §3.3). A port for the same reason the quote is one: what the loop needs is *the pushed
+    # headlines and the Event count for this symbol*, and the composition site answers it out of the
+    # delivered-card ledger the reader-history bands already read. `{"pushed": [{"event_id",
+    # "headline_zh", "at_ms"}], "total": int}` -- at most three, newest first. Display only: nothing
+    # here may write, wait, or let an answer reach a notification decision.
+    async def pushed_news_for_symbol(self, symbol: str, *, now_ms: int) -> Mapping[str, Any]: ...
 
 
 class PreparedCardSender(Protocol):
@@ -1281,9 +1311,11 @@ class MarketNotificationLoop:
             if due is None:
                 return turn
             # Between the two transactions on purpose: the card is quoted with no database
-            # transaction of this loop's open, and whatever the read answers, the claim below runs.
-            quotes = await self._quotes(due, stamp)
-            claimed = await self.db.tx("news_market_notify_claim", _claim_due(self, due, quotes, stamp))
+            # transaction of this loop's open, and whatever the reads answer, the claim below runs.
+            quotes, news_pushed, news_total = await self._display_reads(due, stamp)
+            claimed = await self.db.tx(
+                "news_market_notify_claim", _claim_due(self, due, quotes, news_pushed, news_total, stamp)
+            )
             if claimed is None:
                 # Another process claimed this card between the read and the compare-and-set. Nothing
                 # was sent and no attempt was spent, and the *next* due card is still this turn's
@@ -1336,35 +1368,79 @@ class MarketNotificationLoop:
             frozen_card=dict(row["card"]) if attempts > 0 and row["card"] else None,
         )
 
-    async def _quotes(self, due: DueCard, now_ms: int) -> tuple[ReaderCardQuote, ...]:
-        """The card's assets at the market's own price, or nothing -- never a delay and never a retry.
+    async def _display_reads(
+        self, due: DueCard, now_ms: int
+    ) -> tuple[tuple[ReaderCardQuote, ...], tuple[ReaderCardHeadline, ...], int]:
+        """Everything display-only this card may carry, together, inside one budget.
 
-        A retry re-sends the card frozen at the first attempt, so it asks for nothing: re-quoting a
-        snapshot that will not be re-rendered would spend a read to change nothing, and the card
+        A retry re-sends the card frozen at the first attempt, so it asks for nothing: re-reading a
+        snapshot that will not be re-rendered would spend two reads to change nothing, and the card
         model a channel renders beside that snapshot must describe the same card the snapshot froze.
-        Every failure the port can have is the same answer as a stale quote -- no line -- because a
-        market card exists to tell a reader what a provider reported, and a price the console could
-        not produce is not a reason to withhold that (#562 §2).
+        Every failure either port can have is the same answer as a stale quote -- no line -- because a
+        market card exists to tell a reader what a provider reported, and a number the console could
+        not produce is not a reason to withhold that (#562 §2, #582 §3.3).
 
-        The deadline is applied *here* rather than trusted to the port. The composition site passes
-        the same budget to its own read, but "no card waits longer than this for a price" is the
-        loop's promise to the reader, and a port that honoured no budget at all would otherwise stall
-        the send lane for as long as it liked.
+        One deadline over both reads rather than one each: `QUOTE_READ_TIMEOUT_SECONDS` is the loop's
+        promise that *no card waits longer than this before being sent*, and two serial budgets would
+        quietly make that promise twice as long. They run concurrently under a single `wait_for`, each
+        already degrading to nothing on its own failure, so one plane being down costs its own line
+        and only the shared clock is shared.
+
+        The deadline is applied *here* rather than trusted to the ports. The composition site passes
+        the same budget to its own reads, but a port that honoured no budget at all would otherwise
+        stall the send lane for as long as it liked.
         """
 
         symbols = () if due.frozen_card is not None else quote_symbols(due.track, due.observations)
         if not symbols:
-            return ()
+            return (), (), 0
         try:
-            rows = await asyncio.wait_for(
-                self.db.quotes_for_symbols(symbols, now_ms=now_ms),
+            quotes, news = await asyncio.wait_for(
+                asyncio.gather(
+                    self._quotes(symbols, now_ms),
+                    self._news(due.track, symbols[0], now_ms),
+                ),
                 timeout=QUOTE_READ_TIMEOUT_SECONDS,
             )
+        except Exception:  # the shared deadline, or a port that failed before its own guard
+            return (), (), 0
+        return (quotes, *news)
+
+    async def _quotes(self, symbols: Sequence[str], now_ms: int) -> tuple[ReaderCardQuote, ...]:
+        """The card's assets at the market's own price, or nothing at all."""
+
+        try:
+            rows = await self.db.quotes_for_symbols(symbols, now_ms=now_ms)
         except Exception:  # display-only, exactly as News treats it: every failure is no line
             return ()
         return reader_quotes(rows)
 
-    def _claim(self, repos: Any, due: DueCard, quotes: Sequence[ReaderCardQuote], now_ms: int) -> ClaimedCard | None:
+    async def _news(self, track: MarketTrack, symbol: str, now_ms: int) -> tuple[tuple[ReaderCardHeadline, ...], int]:
+        """What News has already said about this instrument, for an OI card and no other.
+
+        OI is the family whose whole subject is a number about an instrument, and the reader's first
+        question about a number is whether anything happened. A liquidation or a smart-money card is
+        already about an event, and #582 §3.3 leaves them out deliberately rather than by omission --
+        adding one is this condition, and nothing else. A family that does not read spends no read.
+        """
+
+        if track.family != "oi":
+            return (), 0
+        try:
+            payload = await self.db.pushed_news_for_symbol(symbol, now_ms=now_ms)
+        except Exception:  # display-only: a News plane that cannot answer costs the line, not the card
+            return (), 0
+        return reader_news(payload)
+
+    def _claim(
+        self,
+        repos: Any,
+        due: DueCard,
+        quotes: Sequence[ReaderCardQuote],
+        news_pushed: Sequence[ReaderCardHeadline],
+        news_total: int,
+        now_ms: int,
+    ) -> ClaimedCard | None:
         """Freeze this card and claim the attempt. A retry keeps the snapshot it already froze.
 
         `market_begin_send` is the claim, and it compares against the attempt count and due time this
@@ -1383,13 +1459,16 @@ class MarketNotificationLoop:
             detail_url=market_detail_url(self.console_base_url, observations[-1].item_id),
             action_changes=action_changes(observations, since=(track.anchor_action, track.anchor_position_side)),
             quotes=quotes,
+            news_pushed=news_pushed,
+            news_total=news_total,
         )
         # The snapshot a retry sends is the one the first attempt froze, and `market_begin_send`
         # refuses to overwrite it. The card model beside it is built from the same observation set --
         # `market_adopt_unclaimed` hands new observations to the group's *un-started* card, so an
         # intent that has been attempted covers a fixed set -- and is what a channel that renders the
-        # model serializes for itself (#562 PR-C). A retry reads no quote at all, so the model it
-        # rebuilds carries the same (absent) quote line the frozen snapshot was rendered with.
+        # model serializes for itself (#562 PR-C). A retry reads nothing at all, so the model it
+        # rebuilds carries the same (absent) quote and news lines the frozen snapshot was rendered
+        # with.
         channel_payload = due.frozen_card or feishu_card(card)
         if not news.market_begin_send(
             delivery_key=due.delivery_key,
@@ -1512,10 +1591,15 @@ def _due_card(loop: MarketNotificationLoop, now_ms: int) -> Callable[[Any], DueC
 
 
 def _claim_due(
-    loop: MarketNotificationLoop, due: DueCard, quotes: Sequence[ReaderCardQuote], now_ms: int
+    loop: MarketNotificationLoop,
+    due: DueCard,
+    quotes: Sequence[ReaderCardQuote],
+    news_pushed: Sequence[ReaderCardHeadline],
+    news_total: int,
+    now_ms: int,
 ) -> Callable[[Any], ClaimedCard | None]:
     def run(repos: Any) -> ClaimedCard | None:
-        return loop._claim(repos, due, quotes, now_ms)
+        return loop._claim(repos, due, quotes, news_pushed, news_total, now_ms)
 
     return run
 

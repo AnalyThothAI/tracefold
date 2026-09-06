@@ -27,8 +27,17 @@ MARKET_WINDOW_MAX_MS: Final = 168 * 60 * 60_000
 MARKET_WINDOW_ROW_CAP: Final = 5_000
 # One group's expanded timeline on the detail page.
 MARKET_TIMELINE_MAX: Final = 200
+# How far back an OI card looks for News about its own instrument, and how many already-pushed
+# headlines it may print (#582 §3.3). Here rather than in either owner because both read them: the
+# two statements in `storage/decisions.py` bound their windows with the first and their LIMIT with
+# the second, and the card's own line prints the window it was queried with -- so the `48h` a reader
+# sees cannot drift from the window that produced the numbers beside it.
+MARKET_NEWS_WINDOW_MS: Final = 48 * 60 * 60_000
+MARKET_NEWS_PUSHED_MAX: Final = 3
 
 __all__ = [
+    "MARKET_NEWS_PUSHED_MAX",
+    "MARKET_NEWS_WINDOW_MS",
     "MARKET_PAGE_MAX",
     "MARKET_TIMELINE_MAX",
     "MARKET_WINDOW_DEFAULT_MS",

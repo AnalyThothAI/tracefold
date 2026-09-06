@@ -3002,6 +3002,27 @@ card that printed a Close, and by no other — on an open-only card it explained
 word that is not there, which is how a caveat stops being read on the cards that
 need it.
 
+An OI card also says what News the reader already has about the same instrument
+(#582 §3.3). It is the second display read and it works exactly like the first:
+`MarketNotificationDatabasePort.pushed_news_for_symbol` is the port, the Workers
+wiring satisfies it with `read_pushed_news` — the same News lane, the same
+`QUOTE_READ_TIMEOUT_SECONDS` budget, the same "any failure is no line"
+degradation — and both reads run concurrently under one `asyncio.wait_for`,
+because "no card waits longer than this before being sent" is one promise rather
+than one per read. The statements are `storage/decisions.py`'s, beside the
+reader-history projection they reuse: the delivered-card ledger with the same
+`first` / `sent` / not-deleted predicate and the same headline COALESCE, and the
+same `news_symbol_aliases` equivalence the targeted reader-history band resolves
+an asset with, so a story tagged `9988` counts for a `BABA` card. Two windows
+because there are two questions: `已推` counts by when the reader was interrupted
+(`news_deliveries.settled_at_ms` inside 48 h, at most three titles, newest first)
+and `共` counts how many editorial Events named the instrument at all
+(`news_event_assets.opened_at_ms` inside the same window, told or not). The card
+prints nothing when the total is zero, which is the ordinary answer for a token
+nothing was written about, and the whole block is at most four lines with no link
+and no button. Liquidation and smart money spend no read at all: `family == "oi"`
+is the condition, and it is the only thing that would have to change.
+
 The card's detail button needs an absolute URL or no button at all. A reader opens
 the card in Feishu or Telegram, where `/news/market/{item_id}` is not a link — the
 first real market card in production carried exactly that relative path and no
