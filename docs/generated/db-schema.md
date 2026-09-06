@@ -528,6 +528,8 @@
 | `last_error` | `TEXT` | True | `None` |
 | `last_success_at_ms` | `BIGINT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `ignored_inbound_total` | `BIGINT` | False | `0` |
+| `unknown_total` | `BIGINT` | False | `0` |
 
 ## `news_model_recordings`
 

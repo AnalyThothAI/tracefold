@@ -23,12 +23,14 @@ life while nothing else is.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
 import httpx
 
+from tracefold.integrations.http_bounds import ResponseTooLarge, read_bounded
 from tracefold.news.chain_tape.evm import normalize_address
 
 # The one chain this adapter speaks to. Carried on every stored fill so a second chain can never be
@@ -44,9 +46,6 @@ _CONNECT_TIMEOUT_SECONDS: Final = 5.0
 _READ_TIMEOUT_SECONDS: Final = 10.0
 # A 100,000-block log answer measured at ~1.5 MB. The ceiling is for a pathological response, not for that.
 _MAX_BYTES: Final = 32 * 1024 * 1024
-
-# `Transfer(address,address,uint256)`.
-TRANSFER_TOPIC: Final = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 
 _SYMBOL_SELECTOR: Final = "0x95d89b41"
 _DECIMALS_SELECTOR: Final = "0x313ce567"
@@ -81,10 +80,6 @@ class ChainLog:
     log_index: int
     removed: bool = False
 
-    @property
-    def topic0(self) -> str:
-        return self.topics[0] if self.topics else ""
-
 
 @dataclass(frozen=True, slots=True)
 class ChainReceipt:
@@ -96,10 +91,6 @@ class ChainReceipt:
     transaction_index: int
     status: int
     logs: tuple[ChainLog, ...]
-
-    @property
-    def succeeded(self) -> bool:
-        return self.status == 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,22 +229,24 @@ class RobinhoodChainClient:
     async def _call(self, method: str, params: list[Any]) -> Any:
         body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
         try:
-            response = await self._client.post(self.rpc_url, json=body)
+            async with self._client.stream("POST", self.rpc_url, json=body) as response:
+                if response.status_code in {401, 403, 451}:
+                    raise ChainRpcError("chain_rpc_blocked", status_code=response.status_code)
+                if response.status_code in {418, 429}:
+                    raise ChainRpcError("chain_rpc_rate_limited", status_code=response.status_code)
+                if response.status_code >= 400:
+                    raise ChainRpcError("chain_rpc_http_error", status_code=response.status_code)
+                # Streamed, so the ceiling stops the read rather than describing it afterwards.
+                raw = await read_bounded(response, max_bytes=_MAX_BYTES)
         except httpx.TimeoutException:
             raise ChainRpcError("chain_rpc_timeout") from None
+        except ResponseTooLarge:
+            raise ChainRpcError("chain_rpc_payload_too_large") from None
         except httpx.HTTPError:
             raise ChainRpcError("chain_rpc_transport_error") from None
-        self._last_bytes = len(response.content)
-        if response.status_code in {401, 403, 451}:
-            raise ChainRpcError("chain_rpc_blocked", status_code=response.status_code)
-        if response.status_code in {418, 429}:
-            raise ChainRpcError("chain_rpc_rate_limited", status_code=response.status_code)
-        if response.status_code >= 400:
-            raise ChainRpcError("chain_rpc_http_error", status_code=response.status_code)
-        if len(response.content) > _MAX_BYTES:
-            raise ChainRpcError("chain_rpc_payload_too_large")
+        self._last_bytes = len(raw)
         try:
-            payload = response.json()
+            payload = json.loads(raw)
         except ValueError:
             raise ChainRpcError("chain_rpc_payload_invalid") from None
         if not isinstance(payload, Mapping):
@@ -346,7 +339,6 @@ __all__ = [
     "CHAIN_RPC_USER_AGENT",
     "ROBINHOOD_CHAIN_ID",
     "ROBINHOOD_CHAIN_RPC_URL",
-    "TRANSFER_TOPIC",
     "ChainLog",
     "ChainReceipt",
     "ChainRpcError",

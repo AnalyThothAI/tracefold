@@ -13,8 +13,10 @@ from typing import Any
 import pytest
 
 from tracefold.app.workers.runtime import CHAIN_TAPE, CapabilityStates
+from tracefold.app.workers.task_contract import worker_business_tasks
 from tracefold.app.workers.wiring.chain_tape import (
     CHAIN_TAPE_TASK_NAME,
+    ChainTapeComposition,
     _wire_chain_tape,
     run_chain_tape,
 )
@@ -74,12 +76,14 @@ def test_the_flag_off_is_a_disabled_capability_and_no_task() -> None:
 def test_the_flag_on_builds_one_loop_and_reports_the_capability_running(no_proxy_environment: None) -> None:
     capabilities = CapabilityStates()
 
-    loop = _wire_chain_tape(
+    composed = _wire_chain_tape(
         settings=_settings(enabled=True, roster={"top_quality": 5, "top_whale_by_open_cost": 3}),
         db=object(),  # type: ignore[arg-type]
         capabilities=capabilities,
     )
 
+    assert isinstance(composed, ChainTapeComposition)
+    loop = composed.loop
     assert isinstance(loop, ChainTapeLoop)
     assert (loop.rules.top_quality, loop.rules.top_whale_by_open_cost) == (5, 3)
     assert loop.chain.chain_id == 4663
@@ -90,22 +94,59 @@ def test_the_flag_on_builds_one_loop_and_reports_the_capability_running(no_proxy
 def test_the_operators_endpoints_and_list_rules_reach_the_loop(no_proxy_environment: None) -> None:
     capabilities = CapabilityStates()
 
-    loop = _wire_chain_tape(
+    composed = _wire_chain_tape(
         settings=_settings(
             enabled=True,
             rpc_url="https://rpc.example/",
             roster_provider_url="https://roster.example/",
+            poll_interval_s=7.5,
             roster={"min_closed_trades": 3, "min_profit_factor": 2.5},
         ),
         db=object(),  # type: ignore[arg-type]
         capabilities=capabilities,
     )
 
-    assert loop is not None
+    assert composed is not None
+    loop = composed.loop
     assert loop.chain.rpc_url == "https://rpc.example"  # type: ignore[attr-defined]
     assert loop.roster_provider.base_url == "https://roster.example"  # type: ignore[attr-defined]
     assert (loop.rules.min_closed_trades, loop.rules.min_profit_factor) == (3, 2.5)
+    # The operator's cadence is a runtime parameter, not a decoration on a config page: it has to
+    # reach the thing that ticks the loop.
+    assert composed.poll_seconds == 7.5
     asyncio.run(loop.aclose())
+
+
+def test_the_configured_cadence_is_what_the_workers_task_actually_polls_with(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`news.chain_tape.poll_interval_s` used to be validated, printed and read by nothing."""
+
+    ticks: list[float] = []
+
+    class _Tape:
+        def __init__(self) -> None:
+            self.turns = 0
+
+        async def advance(self) -> dict[str, Any]:
+            self.turns += 1
+            return {}
+
+        async def aclose(self) -> None:
+            return None
+
+    async def _record(loop: Any, *, stop_event: asyncio.Event, poll_seconds: float) -> None:
+        ticks.append(poll_seconds)
+        del loop, stop_event
+
+    tape = ChainTapeComposition(loop=_Tape(), poll_seconds=11.0)  # type: ignore[arg-type]
+    tasks = worker_business_tasks(news_pipeline=None, signal_lane=None, chain_tape=tape)
+    task = next(item for item in tasks if item.name == CHAIN_TAPE_TASK_NAME)
+
+    monkeypatch.setattr("tracefold.app.workers.task_contract.run_chain_tape", _record)
+    asyncio.run(task.run(asyncio.Event()))
+
+    assert ticks == [11.0]
 
 
 def test_the_runner_ticks_until_the_stop_event_and_then_releases_the_adapters() -> None:

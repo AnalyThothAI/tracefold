@@ -1556,7 +1556,7 @@ prints all of it under `news.chain_tape`:
 | --- | --- | --- |
 | `news.chain_tape.enabled` | `false` | whether the task runs at all. Off means the `chain_tape` capability reports `disabled` and no provider is called |
 | `news.chain_tape.rpc_url` | `https://rpc.mainnet.chain.robinhood.com` | the read-only JSON-RPC endpoint. Rate-limited and documented as non-production |
-| `news.chain_tape.poll_interval_s` | `2.0` | the turn cadence. Blocks are ~0.1 s apart and the log window overlaps 30 of them |
+| `news.chain_tape.poll_interval_s` | `2.0` | the turn cadence Workers polls `advance()` with. Blocks are ~0.1 s apart and the log window overlaps 30 of them |
 | `news.chain_tape.roster_provider_url` | `https://robinhoodtrenches.com` | the site that publishes the tracked-trader list and its statistics |
 | `news.chain_tape.roster.min_closed_trades` | `10` | the closed-trade floor a wallet must clear to be considered for the quality list |
 | `news.chain_tape.roster.min_profit_factor` | `1.2` | the profit factor it must also clear. Win rate is deliberately not a criterion (#572 §3.2) |
@@ -1602,15 +1602,36 @@ SELECT count(*) AS trades,
   FROM news_market_wallet_fills
  WHERE kind <> 'transfer_out'
    AND event_at_ms >= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - 7 * 86400000;
+
+-- how much of the stream is noise: what the tape read and deliberately did not store, beside what it
+-- did. The fills table cannot answer this on its own, because the answer is the rows that are not in
+-- it, so the two counters are accumulated on the state row.
+SELECT s.ignored_inbound_total,
+       s.unknown_total,
+       (SELECT count(*) FROM news_market_wallet_fills) AS stored_fills,
+       round(100.0 * (s.ignored_inbound_total + s.unknown_total)
+             / nullif(s.ignored_inbound_total + s.unknown_total
+                      + (SELECT count(*) FROM news_market_wallet_fills), 0), 1) AS discarded_pct
+  FROM news_market_wallet_tape_state s;
 ```
+
+The same two counts are published as
+`tracefold_external_data_skipped_or_coalesced_total{name="chain_tape",reason="airdrop_ignored"}` and
+`…,reason="unclassified"`. The state row's totals are monotonic since the tape was first enabled and
+are never reset; the Prometheus counters restart with the process.
 
 The tape's own position and last turn are one row:
 
 ```sql
 SELECT high_water_block, high_water_tx_index, roster_version,
-       last_outcome, last_error, last_success_at_ms
+       last_outcome, last_error, last_success_at_ms,
+       ignored_inbound_total, unknown_total
   FROM news_market_wallet_tape_state;
 ```
+
+`high_water_block` trails the chain head by the 30-block overlap on purpose — about three seconds of
+chain. It is the position everything up to which is classified, not the position last read, and the
+gap is what lets a node that answered short be re-read on the next turn.
 
 `last_outcome = 'partial'` with a `last_error` naming `robinhood_rpc:*` or
 `robinhoodtrenches:*` is the expected shape of a provider hiccup: the position

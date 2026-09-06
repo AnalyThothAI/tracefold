@@ -26,7 +26,6 @@ FILL_KINDS: Final[tuple[FillKind, ...]] = ("buy", "sell", "transfer_out")
 # per leg while the wallet appears in exactly one leg (#572 §3.3).
 UNISWAP_V3_SWAP_TOPIC: Final = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
 UNISWAP_V4_SWAP_TOPIC: Final = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f"
-UNISWAP_V4_POOL_MANAGER: Final = "0x8366a39cc670b4001a1121b8f6a443a643e40951"
 SWAP_TOPICS: Final[frozenset[str]] = frozenset({UNISWAP_V3_SWAP_TOPIC, UNISWAP_V4_SWAP_TOPIC})
 
 # The stablecoin the routed trades settle in, pinned by full address after reading its own `symbol`,
@@ -36,7 +35,6 @@ SWAP_TOPICS: Final[frozenset[str]] = frozenset({UNISWAP_V3_SWAP_TOPIC, UNISWAP_V
 # stablecoin, so its face value is a dollar figure -- which is exactly what `usd_source` records, rather
 # than a claim that some price feed was consulted.
 STABLE_CASH_TOKEN: Final = "0x5fc5360d0400a0fd4f2af552add042d716f1d168"
-STABLE_CASH_SYMBOL: Final = "USDG"
 USD_SOURCE_STABLE_CASH_LEG: Final = "usdg_cash_leg"
 
 
@@ -50,6 +48,10 @@ class ClassifiedFill:
     `token_decimals` and `cash_decimals` are recorded beside the raw amounts rather than applied to
     them. A token that answers no `decimals()` still gets a faithful row; a reader that wants a human
     number divides, and a reader that wants to compare quantities does not.
+
+    `block_hash` is recorded as evidence, not as reorg handling. PR-1 does not detect a reorg: it drops
+    logs the node itself marks `removed`, and stores the hash the fill was read under so a PR-2
+    correction path can tell a row on the canonical chain from one that is not.
     """
 
     chain_id: int
@@ -146,11 +148,9 @@ __all__ = [
     "CHAIN_TAPE_PROVIDER",
     "FILL_KINDS",
     "ROSTER_PROVIDER",
-    "STABLE_CASH_SYMBOL",
     "STABLE_CASH_TOKEN",
     "SWAP_TOPICS",
     "UNISWAP_V3_SWAP_TOPIC",
-    "UNISWAP_V4_POOL_MANAGER",
     "UNISWAP_V4_SWAP_TOPIC",
     "USD_SOURCE_STABLE_CASH_LEG",
     "ClassifiedFill",

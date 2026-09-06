@@ -15,6 +15,13 @@ token, and where the cash went.
 * **A swap, but the wallet is neither end of the traded token's path**, or no cash leg reached the
   executor: the receipt does not say what happened. Outbound is stored as `transfer_out`, inbound is
   skipped, and both are counted as `unknown`.
+* **A swap, and the token the wallet moved is the pinned stablecoin.** That leg is the money, not the
+  position, so it is never a fill of its own. On a direct pool route -- one where the wallet trades with
+  the pool instead of through the executor -- the cash leg is a transfer to or from the wallet itself,
+  and reading it as a trade produced exactly the wrong answer: a `buy` of the stablecoin paid for in
+  the token being sold, and a `transfer_out` of the stablecoin used to buy. Both shapes are recorded
+  tests now. The stablecoin leg is skipped and *not* counted as noise, because the fill it belongs to is
+  either stored beside it or already counted as `unknown`.
 
 Two measured transactions anchor this, and both are recorded as fixtures:
 
@@ -47,22 +54,6 @@ from .contracts import (
 from .evm import normalize_address, topic_address, transfer_amount
 
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
-
-
-class LogLike(Protocol):
-    """One log, in the shape the RPC adapter decodes it into."""
-
-    @property
-    def address(self) -> str: ...
-
-    @property
-    def topics(self) -> tuple[str, ...]: ...
-
-    @property
-    def data(self) -> str: ...
-
-    @property
-    def log_index(self) -> int: ...
 
 
 class ReceiptLike(Protocol):
@@ -227,6 +218,9 @@ def classify_receipt(
         # the one kept: an outbound movement is the fact the exit rules in PR-2 are built on, and the
         # receiving side is visible in the same row's counterparty.
         wallet = transfer.sender if outbound else transfer.recipient
+        if swap and transfer.token == STABLE_CASH_TOKEN:
+            # The money side of somebody's trade, not a position of its own (see the module docstring).
+            continue
         kind, cash = _read(
             transfer,
             swap=swap,
@@ -295,7 +289,6 @@ def _read(
 __all__ = [
     "TRANSFER_TOPIC",
     "CashLeg",
-    "LogLike",
     "ReceiptClassification",
     "ReceiptLike",
     "TokenTransfer",

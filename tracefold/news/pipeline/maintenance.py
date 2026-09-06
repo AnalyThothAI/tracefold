@@ -218,6 +218,7 @@ class JanitorLoop:
         retention_raw_days: int = 30,
         retention_judged_days: int = 365,
         retention_chain_tape_days: int = 90,
+        chain_tape_enabled: bool = False,
         telemetry: NewsDurableEventTelemetryPort | None = None,
     ) -> None:
         # Two ports, because the retention sweep is a measured heavy transaction and the outbox catch-up is
@@ -232,8 +233,10 @@ class JanitorLoop:
         self.retention_raw_ms = int(retention_raw_days) * _DAY_MS
         self.retention_judged_ms = int(retention_judged_days) * _DAY_MS
         # The wallet tape keeps its own tier: its rows are chain movements, not Items, and they have no
-        # verdict or Event to inherit a lifetime from (#572 §5.5).
+        # verdict or Event to inherit a lifetime from (#572 §5.5). A tape that is not running has no
+        # rows arriving and nothing to expire, so its sweep is not scheduled at all.
         self.retention_chain_tape_ms = int(retention_chain_tape_days) * _DAY_MS
+        self.chain_tape_enabled = bool(chain_tape_enabled)
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
@@ -332,9 +335,13 @@ class JanitorLoop:
         """One bounded batch of expired wallet fills, on the same heavy slot the other sweeps use.
 
         Not a task of its own: a delete bounded by a batch size and run beside the sweeps that already
-        hold the one heavy permit cannot compete with them for it (#572 PR-1).
+        hold the one heavy permit cannot compete with them for it (#572 PR-1). A disabled tape is not
+        swept: no turn is writing fills, so a `DELETE` every sixty seconds would be work with a known
+        answer.
         """
 
+        if not self.chain_tape_enabled:
+            return
         cutoff_ms = stamp - self.retention_chain_tape_ms
         with contextlib.suppress(TransientError, DeferError):
             deleted = await self.cold_db.tx(

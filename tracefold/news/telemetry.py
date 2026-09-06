@@ -28,7 +28,15 @@ NewsExternalDataSource = Literal[
 ]
 NewsExternalDataOutcome = Literal["error", "partial", "success"]
 NewsExternalDataProviderOutcome = Literal["error", "success"]
-NewsExternalDataSkipReason = Literal["coalesced", "disabled", "no_work"]
+NewsExternalDataSkipReason = Literal[
+    # What the tape read and deliberately did not store: an inbound token nobody asked for, and a
+    # movement the receipt could not explain (#572 PR-1).
+    "airdrop_ignored",
+    "coalesced",
+    "disabled",
+    "no_work",
+    "unclassified",
+]
 NewsHandoffStage = Literal["event", "verdict"]
 NewsHandoffRepairOutcome = Literal["marker_pending", "published", "transient"]
 NewsRabbitQueue = Literal["news.deliver", "news.raw", "news.triage"]

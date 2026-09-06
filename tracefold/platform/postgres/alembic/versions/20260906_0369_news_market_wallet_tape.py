@@ -2,8 +2,8 @@
 
 Migration evidence:
 
-- category: three new tables with five indexes between them, no change to any existing table, column,
-  constraint or row
+- category: three new tables with six indexes between them -- three primary keys and three explicit
+  `CREATE INDEX`es -- and no change to any existing table, column, constraint or row
 - why_database_must_change: the tape's whole product is durable facts. `news_market_wallet_fills` is the
   ledger the exit and crowding rules in PR-2 read and the week-one calibration counts in #572 §6 are
   computed from; its identity is the chain's own `(chain_id, tx_hash, log_index)`, which is what makes a
@@ -33,9 +33,10 @@ Migration evidence:
   per 2.8 hours across 35 wallets (#572 §3.3), so the fills table is expected to reach the low tens of
   thousands of rows per week at the 90-day retention this PR configures; the roster holds 35-40 rows per
   version and the state table holds exactly one row for ever
-- estimated_bytes: single-digit megabytes at the projected week-one row counts, plus the two fill indexes
-- rewrite_or_index_build: nothing is rewritten -- no existing table is touched. Every index is built on
-  an empty table
+- estimated_bytes: single-digit megabytes at the projected week-one row counts, plus the fills' primary
+  key and its two explicit indexes
+- rewrite_or_index_build: nothing is rewritten -- no existing table is touched. All six indexes, the
+  three primary keys included, are built on empty tables
 - preflight_and_maintenance_boundary: none required. Nothing here changes a shape an already-running
   writer uses, so an old process keeps working unchanged; the `news-chain-tape` task is disabled by
   default and writes nothing until an operator sets `news.chain_tape.enabled`
@@ -217,7 +218,7 @@ def _wallet_roster() -> None:
 
 
 def _tape_state() -> None:
-    """Exactly one row: how far the tape is classified, and what the last turn did.
+    """Exactly one row: how far the tape is classified, what the last turn did, and what it discarded.
 
     A one-row table rather than a column on something else, because nothing else here has the same
     lifetime: the fills are a ledger, the roster is versioned, and this is the loop's own cursor.
@@ -234,6 +235,8 @@ def _tape_state() -> None:
             last_error text,
             last_success_at_ms bigint,
             updated_at_ms bigint NOT NULL,
+            ignored_inbound_total bigint NOT NULL DEFAULT 0,
+            unknown_total bigint NOT NULL DEFAULT 0,
             CONSTRAINT news_market_wallet_tape_state_pkey PRIMARY KEY (state_id),
             -- One tape, one row. The identity is a constant so a second row cannot be inserted by a
             -- writer that thought it was starting fresh.
@@ -245,7 +248,13 @@ def _tape_state() -> None:
                 CHECK (last_outcome = ANY (
                   ARRAY[''::text, 'success'::text, 'partial'::text, 'error'::text])),
             CONSTRAINT news_market_wallet_tape_state_clock_check
-                CHECK (updated_at_ms > 0 AND (last_success_at_ms IS NULL OR last_success_at_ms > 0))
+                CHECK (updated_at_ms > 0 AND (last_success_at_ms IS NULL OR last_success_at_ms > 0)),
+            -- Monotonic counts of what the tape read and did not store: an inbound token nobody asked
+            -- for, and a movement the receipt could not explain. They live here rather than only in
+            -- Prometheus because "how much of this stream is noise" is a question #572 §6 answers in
+            -- SQL beside the fills, and Prometheus cannot be joined to a table.
+            CONSTRAINT news_market_wallet_tape_state_noise_check
+                CHECK (ignored_inbound_total >= 0 AND unknown_total >= 0)
         )
         """
     )

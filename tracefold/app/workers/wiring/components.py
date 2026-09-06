@@ -20,11 +20,10 @@ from tracefold.app.workers.runtime import (
     TRADING_SIGNAL_LANE,
     CapabilityStates,
 )
-from tracefold.app.workers.wiring.chain_tape import _wire_chain_tape
+from tracefold.app.workers.wiring.chain_tape import ChainTapeComposition, _wire_chain_tape
 from tracefold.app.workers.wiring.news import _wire_news_pipeline
 from tracefold.app.workers.wiring.trading import _wire_signal_lane
 from tracefold.news.bus import BrokerBackpressure, BrokerUnavailable
-from tracefold.news.chain_tape import ChainTapeLoop
 from tracefold.news.market_notifications import MarketNotificationLoop
 from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.platform.config.models import Settings, news_push_availability
@@ -41,7 +40,7 @@ class _Components:
     news_bus: RabbitMQBus | None
     runtime_manifest_sha: str | None = None
     market_notifications: MarketNotificationLoop | None = None
-    chain_tape: ChainTapeLoop | None = None
+    chain_tape: ChainTapeComposition | None = None
     signal_lane: SignalLane | None = None
     telemetry: TelemetryRegistry | None = None
     capabilities: CapabilityStates = field(default_factory=CapabilityStates)
@@ -80,7 +79,7 @@ async def _wire_components(
     news_bus: RabbitMQBus | None = None
     runtime_manifest_sha: str | None = None
     market_notifications: MarketNotificationLoop | None = None
-    chain_tape: ChainTapeLoop | None = None
+    chain_tape: ChainTapeComposition | None = None
     if settings.news.enabled:
         news_bus, news_pipeline, market_notifications = await _wire_news_pipeline(
             settings=settings,

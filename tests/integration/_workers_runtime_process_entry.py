@@ -554,6 +554,7 @@ async def _main() -> None:
         # `worker_business_tasks`, and the real `chain_tape` capability. Only `advance()` is replaced,
         # because a program error inside it is the thing under test (#572 PR-1).
         from tracefold.app.workers.runtime import CHAIN_TAPE
+        from tracefold.app.workers.wiring.chain_tape import ChainTapeComposition
         from tracefold.news.chain_tape import ChainTapeLoop
 
         class _FailingChainTape(ChainTapeLoop):
@@ -579,7 +580,9 @@ async def _main() -> None:
             return None, _TurnPipeline((("news-deduper", _fact_writer(kwargs["db"]), 1.0),)), None
 
         workers_wiring._wire_news_pipeline = wire_chain_tape_fault
-        workers_wiring._wire_chain_tape = lambda **_kwargs: _FailingChainTape()
+        workers_wiring._wire_chain_tape = lambda **_kwargs: ChainTapeComposition(
+            loop=_FailingChainTape(), poll_seconds=0.2
+        )
     elif arguments.mode == "ingestion_task_fault":
         # Reception and admission are the information entry, not a capability to switch off. A program
         # error there must still end the process, so the container restart that has always healed it

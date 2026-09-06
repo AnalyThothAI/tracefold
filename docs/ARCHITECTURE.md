@@ -187,8 +187,8 @@ does not apply.
 | US reference instruments | 6 h; 15 m retry if no venue answers | latest directory | reference family | one directory snapshot | one family fetch | venue families serial | 20 s provider | no / yes / yes | failed reference source is omitted; it cannot remove crypto venue rows |
 | Event Reaction | 60 s; 1 h/4 h horizons; at most 20 chained turns | complete before candle history expires | instrument + merged time range | 100 due rows/turn | 32 merged requests/turn | 4 provider calls | no outer deadline / 8 s provider | yes / yes / no | transient no-answer stays due; terminal gap/expiry is persisted explicitly |
 | Trading Signal lane | App-owned poll, 2 s | source age <= configured admission window; Signal TTL = min(180 s, admission window) | underlying / durable source key | 1 Case freeze and 4 decisions/turn | source-native public bar calls serial | one | adapter-owned provider / 10 s PostgreSQL boundaries | bounded overlap / durable source idempotency / no | missing or uncertain evidence creates no Signal; Case+Signal commit atomically |
-| Roster wallet Transfer logs | 2 s when enabled | tip plus a 30-block (~3 s) overlap | block range | the roster union: 40 addresses as configured, each list capped at 200 by the settings model | 2 `eth_getLogs`/turn; at most 100,000 blocks/turn | serial | adapter-owned 10 s read / 5 s connect | bounded block-range catch-up / overlapping re-reads collapse on the chain's identity / no | an RPC failure ends the turn with the classified position unchanged; the next turn re-reads the same range |
-| Wallet fill classification | one discovered transaction | same turn as its log | `tx_hash` | 20 receipts/turn; the rest stay pending | 1 receipt + 1 block header + at most 2 cached `eth_call` per transaction | serial | adapter-owned 10 s read | pending transactions carry to the next turn / per-token metadata cached for the process / no | an unanswered receipt stops that turn's remaining transactions and stores nothing for them |
+| Roster wallet Transfer logs | 2 s when enabled | tip plus a 30-block (~3 s) overlap | block range | the roster union: 40 addresses as configured, each list capped at 200 by the settings model | 2 `eth_getLogs`/turn; at most 100,000 blocks/turn | serial | adapter-owned 10 s read / 5 s connect | bounded block-range catch-up; the durable position stops one overlap short of the block read / overlapping re-reads collapse on the chain's identity / no | an RPC failure ends the turn with the classified position unchanged; the next turn re-reads the same range |
+| Wallet fill classification | one discovered transaction | same turn as its log | `tx_hash` | 20 receipts/turn; the rest stay pending | 1 receipt + 1 block header per transaction, plus at most 2 cached `eth_call` per fill | serial | adapter-owned 10 s read | pending transactions carry to the next turn / per-token metadata cached for the process / no | an unanswered receipt stops that turn's remaining transactions and stores nothing for them |
 | Tracked-trader roster | 1 h | <=1 h | roster version | the site's published addresses; 40 selected | 1 list call plus 1 per address past the closed-trade floor, paced >=0.25 s apart | serial | adapter-owned 15 s read / 5 s connect | no / an unchanged list re-stamps its version / yes | a site failure keeps the previous version and the tape keeps following it |
 | Nautilus OI Runtime | active only for `paper|live`; 0.5 s current heartbeat; complete private proof every 5 s and immediately on ambiguity/flatten; Nautilus native in-flight/open/position checks at 2/5/5 s | command/Signal TTL; account clock <10 s and complete reconciliation <15 s, both derived from the one 5 s period; public heartbeat stale after 5 s | account slot advisory lock | Commands and Signals share one count-and-byte bound; Commands admit and execute first | one Binance USD-M account | one account-slot writer | Runtime-owned | bounded anti-join replay / deterministic client IDs / fail closed | disabled starts no node; control state survives restarts and only a Command moves it; unowned exposure or lost singleton halts |
 
@@ -3055,16 +3055,28 @@ Three durable shapes, three lifetimes:
 - `news_market_wallet_tape_state` is one row holding how far the tape has been
   classified, as a `(block, transaction index)` pair. A block number alone
   cannot say "half of this block is classified", and one block can hold more
-  roster transactions than a turn may fetch receipts for.
+  roster transactions than a turn may fetch receipts for. The position
+  deliberately stops one 30-block overlap short of the block the turn read to:
+  a mark set to the head would declare that block complete on the turn it was
+  first seen, and every re-fetched log from the overlap would then be filtered
+  out before a receipt was requested — which is the same as having no overlap.
+  Lagging it is what lets a tip that answered short be picked up next turn, and
+  the re-read costs nothing but one `ON CONFLICT DO NOTHING`. The row also
+  accumulates the two noise counters, because "how much of this stream is
+  noise" is answered by the rows that are *not* in the fills table.
 
 Classification reads one receipt: a swap in it plus the wallet at the origin of
 the traded token is a `sell`, a swap plus the wallet at the destination is a
 `buy`, and the money is the stablecoin transfer into the executor the trade was
 routed through — which matched the provider's own dollar figure on both measured
-transactions. An inbound transfer with no swap is an airdrop and is counted in
-telemetry rather than stored. Retention deletes fills older than
-`news.chain_tape.retention_days` on the Janitor's existing heavy slot; it is not
-a task of its own.
+transactions. The pinned stablecoin is never itself a traded leg: on a direct
+pool route the cash comes back to the wallet, and reading that as a position
+inverted the trade. An inbound transfer with no swap is an airdrop and is
+counted rather than stored, as
+`tracefold_external_data_skipped_or_coalesced_total{name="chain_tape"}` and as a
+monotonic total on the state row. Retention deletes fills older than
+`news.chain_tape.retention_days` on the Janitor's existing heavy slot, and only
+while the tape is enabled; it is not a task of its own.
 
 ### Retention
 

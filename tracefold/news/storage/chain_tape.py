@@ -51,7 +51,8 @@ ON CONFLICT (chain_id, tx_hash, log_index) DO NOTHING
 
 _TAPE_STATE_SQL: Final = """
 SELECT high_water_block, high_water_tx_index, roster_version,
-       last_outcome, last_error, last_success_at_ms, updated_at_ms
+       last_outcome, last_error, last_success_at_ms, updated_at_ms,
+       ignored_inbound_total, unknown_total
   FROM news_market_wallet_tape_state
  WHERE state_id = %s
 """
@@ -59,8 +60,9 @@ SELECT high_water_block, high_water_tx_index, roster_version,
 _SAVE_TAPE_STATE_SQL: Final = """
 INSERT INTO news_market_wallet_tape_state (
     state_id, high_water_block, high_water_tx_index, roster_version,
-    last_outcome, last_error, last_success_at_ms, updated_at_ms
-) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    last_outcome, last_error, last_success_at_ms, updated_at_ms,
+    ignored_inbound_total, unknown_total
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (state_id) DO UPDATE SET
     high_water_block = EXCLUDED.high_water_block,
     high_water_tx_index = EXCLUDED.high_water_tx_index,
@@ -69,7 +71,12 @@ ON CONFLICT (state_id) DO UPDATE SET
     last_error = EXCLUDED.last_error,
     last_success_at_ms = COALESCE(EXCLUDED.last_success_at_ms,
                                   news_market_wallet_tape_state.last_success_at_ms),
-    updated_at_ms = EXCLUDED.updated_at_ms
+    updated_at_ms = EXCLUDED.updated_at_ms,
+    -- Monotonic: what the tape read and chose not to store. The fills table cannot answer "how much of
+    -- this stream is noise", because the answer is the rows that are not in it (#572 §6).
+    ignored_inbound_total = news_market_wallet_tape_state.ignored_inbound_total
+                            + EXCLUDED.ignored_inbound_total,
+    unknown_total = news_market_wallet_tape_state.unknown_total + EXCLUDED.unknown_total
 """
 
 _CURRENT_ROSTER_SQL: Final = """
@@ -115,6 +122,8 @@ class ChainTapeStateRow(TypedDict):
     last_error: str | None
     last_success_at_ms: int | None
     updated_at_ms: int
+    ignored_inbound_total: int
+    unknown_total: int
 
 
 class ChainTapeStorage:
@@ -178,6 +187,8 @@ class ChainTapeStorage:
             last_error=None if row["last_error"] is None else str(row["last_error"]),
             last_success_at_ms=None if row["last_success_at_ms"] is None else int(row["last_success_at_ms"]),
             updated_at_ms=int(row["updated_at_ms"]),
+            ignored_inbound_total=int(row["ignored_inbound_total"] or 0),
+            unknown_total=int(row["unknown_total"] or 0),
         )
 
     def chain_tape_save_state(
@@ -189,11 +200,14 @@ class ChainTapeStorage:
         error: str | None,
         now_ms: int,
         succeeded: bool,
+        ignored_inbound: int = 0,
+        unknown: int = 0,
     ) -> None:
-        """Record the classified position and the turn's outcome as one row.
+        """Record the classified position, the turn's outcome, and what it read but did not store.
 
         `last_success_at_ms` only moves forward on a successful turn: a failed turn must be able to say
-        "the tape has not advanced since" without the operator reconstructing it from logs.
+        "the tape has not advanced since" without the operator reconstructing it from logs. The two
+        noise counters add, because the question they answer is cumulative.
         """
 
         self.conn.execute(
@@ -207,6 +221,8 @@ class ChainTapeStorage:
                 error,
                 int(now_ms) if succeeded else None,
                 int(now_ms),
+                max(0, int(ignored_inbound)),
+                max(0, int(unknown)),
             ),
         )
 

@@ -285,5 +285,119 @@
     }
    ]
   }
+ },
+ "direct_pool_sell": {
+  "note": "A sell straight against the pool: the wallet sends FSD and the stablecoin comes back to it, with no executor in between. The cash leg must never be read as a purchase of the stablecoin.",
+  "result": {
+   "blockHash": "0x0000000000000000000000000000000000000000000000000000000003506380",
+   "blockNumber": "0x3506380",
+   "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000006",
+   "transactionIndex": "0x4",
+   "status": "0x1",
+   "from": "0x69326e48f68500fb6cf3b3a7da640737b9cc347b",
+   "to": "0xc4f0172d6ac8dd294dd1137d047d5e1893760236",
+   "logs": [
+    {
+     "address": "0x8de9018c1bb82884245f06dede9fe2bebabd1e18",
+     "topics": [
+      "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+      "0x00000000000000000000000069326e48f68500fb6cf3b3a7da640737b9cc347b",
+      "0x000000000000000000000000c4f0172d6ac8dd294dd1137d047d5e1893760236"
+     ],
+     "data": "0x0000000000000000000000000000000000000000000001e7e4171bf4d3a00000",
+     "blockNumber": "0x3506380",
+     "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000006",
+     "transactionIndex": "0x4",
+     "blockHash": "0x0000000000000000000000000000000000000000000000000000000003506380",
+     "logIndex": "0x0",
+     "removed": false
+    },
+    {
+     "address": "0xc4f0172d6ac8dd294dd1137d047d5e1893760236",
+     "topics": [
+      "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
+     ],
+     "data": "0x",
+     "blockNumber": "0x3506380",
+     "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000006",
+     "transactionIndex": "0x4",
+     "blockHash": "0x0000000000000000000000000000000000000000000000000000000003506380",
+     "logIndex": "0x1",
+     "removed": false
+    },
+    {
+     "address": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+     "topics": [
+      "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+      "0x000000000000000000000000c4f0172d6ac8dd294dd1137d047d5e1893760236",
+      "0x00000000000000000000000069326e48f68500fb6cf3b3a7da640737b9cc347b"
+     ],
+     "data": "0x00000000000000000000000000000000000000000000000000000000d716d0f5",
+     "blockNumber": "0x3506380",
+     "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000006",
+     "transactionIndex": "0x4",
+     "blockHash": "0x0000000000000000000000000000000000000000000000000000000003506380",
+     "logIndex": "0x2",
+     "removed": false
+    }
+   ]
+  }
+ },
+ "direct_pool_buy": {
+  "note": "A buy straight against the pool: the wallet pays the stablecoin and the token comes back. The stablecoin leg is the money, and only the token leg is a fill.",
+  "result": {
+   "blockHash": "0x0000000000000000000000000000000000000000000000000000000003506381",
+   "blockNumber": "0x3506381",
+   "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000007",
+   "transactionIndex": "0x6",
+   "status": "0x1",
+   "from": "0x69326e48f68500fb6cf3b3a7da640737b9cc347b",
+   "to": "0xc4f0172d6ac8dd294dd1137d047d5e1893760236",
+   "logs": [
+    {
+     "address": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+     "topics": [
+      "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+      "0x00000000000000000000000069326e48f68500fb6cf3b3a7da640737b9cc347b",
+      "0x000000000000000000000000c4f0172d6ac8dd294dd1137d047d5e1893760236"
+     ],
+     "data": "0x000000000000000000000000000000000000000000000000000000003b3b96a0",
+     "blockNumber": "0x3506381",
+     "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000007",
+     "transactionIndex": "0x6",
+     "blockHash": "0x0000000000000000000000000000000000000000000000000000000003506381",
+     "logIndex": "0x0",
+     "removed": false
+    },
+    {
+     "address": "0xc4f0172d6ac8dd294dd1137d047d5e1893760236",
+     "topics": [
+      "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
+     ],
+     "data": "0x",
+     "blockNumber": "0x3506381",
+     "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000007",
+     "transactionIndex": "0x6",
+     "blockHash": "0x0000000000000000000000000000000000000000000000000000000003506381",
+     "logIndex": "0x1",
+     "removed": false
+    },
+    {
+     "address": "0x8de9018c1bb82884245f06dede9fe2bebabd1e18",
+     "topics": [
+      "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+      "0x000000000000000000000000c4f0172d6ac8dd294dd1137d047d5e1893760236",
+      "0x00000000000000000000000069326e48f68500fb6cf3b3a7da640737b9cc347b"
+     ],
+     "data": "0x000000000000000000000000000000000000000000023088b51c0faef9bf88a7",
+     "blockNumber": "0x3506381",
+     "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000007",
+     "transactionIndex": "0x6",
+     "blockHash": "0x0000000000000000000000000000000000000000000000000000000003506381",
+     "logIndex": "0x2",
+     "removed": false
+    }
+   ]
+  }
  }
 }

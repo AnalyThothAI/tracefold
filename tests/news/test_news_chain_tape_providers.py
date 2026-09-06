@@ -19,7 +19,6 @@ import pytest
 from tracefold.integrations.robinhood_chain import (
     CHAIN_RPC_USER_AGENT,
     ROBINHOOD_CHAIN_ID,
-    TRANSFER_TOPIC,
     ChainRpcError,
     RobinhoodChainClient,
 )
@@ -27,6 +26,7 @@ from tracefold.integrations.robinhoodtrenches import (
     RobinhoodTrenchesClient,
     RosterProviderError,
 )
+from tracefold.news.chain_tape.classify import TRANSFER_TOPIC
 from tracefold.news.chain_tape.evm import address_topic
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "chain_tape"
@@ -141,7 +141,7 @@ def test_a_receipt_decodes_with_every_log_the_route_emitted() -> None:
     receipt = asyncio.run(_with(_chain(), work))
 
     assert receipt is not None
-    assert receipt.succeeded is True
+    assert receipt.status == 1
     assert receipt.block_number == 55_432_994
     assert receipt.transaction_index == 7
     assert len(receipt.logs) == 50
@@ -209,6 +209,68 @@ def test_provider_status_codes_become_one_bounded_vocabulary(status: int, code: 
 
     assert failure.value.code == code
     assert failure.value.status_code == status
+
+
+def test_an_oversized_answer_is_refused_while_it_is_being_read() -> None:
+    """The ceiling has to stop the read. Checking `response.content` measures what already arrived.
+
+    Both endpoints are public and nothing in this repository controls how much they send back, so the
+    bound is applied to the declared length first and then to the bytes as they stream in.
+    """
+
+    from tracefold.integrations import robinhood_chain as adapter
+
+    payload = b'{"jsonrpc":"2.0","id":1,"result":"0x1"}' + b" " * 4096
+    transport = httpx.MockTransport(lambda _request: httpx.Response(200, content=payload))
+    client = RobinhoodChainClient(rpc_url="https://rpc.test", transport=transport)
+
+    async def work(chain: RobinhoodChainClient) -> None:
+        await chain.block_number()
+
+    # Under the real ceiling this is an ordinary answer.
+    assert asyncio.run(_with(client, work)) is None
+
+    original = adapter._MAX_BYTES
+    adapter._MAX_BYTES = 64
+    try:
+        client = RobinhoodChainClient(rpc_url="https://rpc.test", transport=transport)
+        with pytest.raises(ChainRpcError) as failure:
+            asyncio.run(_with(client, work))
+    finally:
+        adapter._MAX_BYTES = original
+
+    assert failure.value.code == "chain_rpc_payload_too_large"
+
+
+def test_a_body_that_declares_itself_too_large_is_refused_before_it_is_read() -> None:
+    from tracefold.integrations.http_bounds import ResponseTooLarge, refuse_declared_length
+
+    response = httpx.Response(200, headers={"content-length": "999999"}, content=b"")
+    with pytest.raises(ResponseTooLarge):
+        refuse_declared_length(response, max_bytes=1024)
+
+    # A chunked answer declares no length; the streaming bound is what covers it.
+    refuse_declared_length(httpx.Response(200, content=b"{}"), max_bytes=1024)
+
+
+def test_an_oversized_roster_answer_is_refused_the_same_way() -> None:
+    from tracefold.integrations import robinhoodtrenches as adapter
+
+    transport = httpx.MockTransport(lambda _request: httpx.Response(200, content=b"[]" + b" " * 4096))
+
+    async def work(client: RobinhoodTrenchesClient) -> Any:
+        return await client.traders()
+
+    original = adapter._MAX_BYTES
+    adapter._MAX_BYTES = 64
+    try:
+        client = RobinhoodTrenchesClient(base_url="https://trenches.test", transport=transport, pace_seconds=0.0)
+        with pytest.raises(RosterProviderError) as failure:
+            asyncio.run(_with(client, work))
+    finally:
+        adapter._MAX_BYTES = original
+
+    assert failure.value.code == "roster_payload_too_large"
 
 
 def test_the_chain_identity_is_carried_by_the_adapter() -> None:

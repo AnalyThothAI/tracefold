@@ -169,6 +169,8 @@ def test_a_receipt_of_another_wallets_trade_produces_nothing() -> None:
         ("sell_non_stable_cash_leg", (SELL_WALLET,), ("sell",), 0, 0),
         ("route_middle_hop", (SELL_WALLET,), ("transfer_out",), 0, 2),
         ("reverted", (SELL_WALLET,), (), 0, 0),
+        ("direct_pool_sell", (SELL_WALLET,), ("transfer_out",), 0, 1),
+        ("direct_pool_buy", (SELL_WALLET,), ("buy",), 0, 0),
     ],
 )
 def test_the_classification_table(
@@ -203,6 +205,64 @@ def test_a_pool_quoted_in_something_other_than_the_stablecoin_leaves_usd_null() 
     assert fill.cash_token == TSLA_TOKEN
     assert fill.cash_amount_raw == 4_328_537_395_523_139_000
     assert usd_face_value(CashLeg(TSLA_TOKEN, int(fill.cash_amount_raw or 0)), cash_decimals=18) == (None, None)
+
+
+def test_a_direct_pool_sell_never_reads_its_cash_leg_as_a_purchase_of_the_stablecoin() -> None:
+    """The wrong answer this rule exists to stop.
+
+    On a route with no executor the stablecoin comes back to the wallet itself, and the old rule read
+    that inbound leg as a `buy` of the stablecoin paid for in the token being sold -- the trade with
+    both sides inverted. The money leg is now never a fill, and the token leg says what can honestly be
+    said about a direct route: the wallet sent the token out, and no cash reached its counterparty.
+    """
+
+    outcome = _classify(_synthetic("direct_pool_sell"), (SELL_WALLET,))
+
+    assert [(fill.kind, fill.token) for fill in outcome.fills] == [("transfer_out", FSD)]
+    assert all(fill.token != STABLE_CASH_TOKEN for fill in outcome.fills)
+    assert outcome.unknown == 1
+
+
+def test_a_direct_pool_buy_stores_the_token_leg_and_not_the_stablecoin_it_paid_with() -> None:
+    """The mirror shape: the outbound stablecoin used to be a spurious `transfer_out` beside the buy."""
+
+    outcome = _classify(_synthetic("direct_pool_buy"), (SELL_WALLET,))
+
+    assert [(fill.kind, fill.token) for fill in outcome.fills] == [("buy", FSD)]
+    fill = outcome.fills[0]
+    assert fill.cash_token == STABLE_CASH_TOKEN
+    assert fill.cash_amount_raw == 993_760_928
+    assert outcome.unknown == 0
+
+
+def test_a_stablecoin_transfer_with_no_swap_is_still_an_ordinary_movement() -> None:
+    """The suppression is about the money leg of a trade, not about the token itself."""
+
+    receipt = _receipt(
+        {
+            "transactionHash": "0x" + "5" * 64,
+            "blockNumber": "0x1",
+            "blockHash": "0x" + "6" * 64,
+            "transactionIndex": "0x0",
+            "status": "0x1",
+            "logs": [
+                {
+                    "address": STABLE_CASH_TOKEN,
+                    "topics": [TRANSFER_TOPIC, _topic(SELL_WALLET), _topic(BUY_WALLET)],
+                    "data": "0x" + format(1_000_000, "064x"),
+                    "logIndex": "0x0",
+                }
+            ],
+        }
+    )
+
+    outcome = _classify(receipt, (SELL_WALLET,))
+
+    assert [(fill.kind, fill.token) for fill in outcome.fills] == [("transfer_out", STABLE_CASH_TOKEN)]
+
+
+def _topic(address: str) -> str:
+    return "0x" + address[2:].rjust(64, "0")
 
 
 def test_a_reverted_transaction_moves_nothing_and_counts_as_nothing() -> None:

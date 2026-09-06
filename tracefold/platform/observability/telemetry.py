@@ -31,7 +31,13 @@ ExternalDataSource = Literal[
 ]
 ExternalDataOutcome = Literal["error", "partial", "success"]
 ExternalDataProviderOutcome = Literal["error", "success"]
-ExternalDataSkipReason = Literal["coalesced", "disabled", "no_work"]
+ExternalDataSkipReason = Literal[
+    "airdrop_ignored",
+    "coalesced",
+    "disabled",
+    "no_work",
+    "unclassified",
+]
 NewsSearchMode = Literal["asset", "text"]
 NewsSearchResult = Literal["zero", "nonzero"]
 NewsHandoffStage = Literal["event", "verdict"]

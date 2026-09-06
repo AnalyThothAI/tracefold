@@ -20,6 +20,7 @@ caller only asks for a per-trader document when the list row already passed the 
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -27,8 +28,9 @@ from typing import Any, Final
 
 import httpx
 
+from tracefold.integrations.http_bounds import ResponseTooLarge, read_bounded
+
 ROBINHOODTRENCHES_BASE_URL: Final = "https://robinhoodtrenches.com"
-ROBINHOODTRENCHES_PROVIDER: Final = "robinhoodtrenches"
 # Deliberate courtesy floor between two calls to one small site. Not a rate limit it published.
 PACE_SECONDS: Final = 0.25
 
@@ -143,24 +145,27 @@ class RobinhoodTrenchesClient:
     ) -> Any:
         await self._pace()
         try:
-            response = await self._client.get(f"{self.base_url}{path}", params=dict(params))
+            async with self._client.stream("GET", f"{self.base_url}{path}", params=dict(params)) as response:
+                if missing_is_none and response.status_code == 404:
+                    self._last_bytes = 0
+                    return None
+                if response.status_code in {401, 403, 451}:
+                    raise RosterProviderError("roster_blocked", status_code=response.status_code)
+                if response.status_code in {418, 429}:
+                    raise RosterProviderError("roster_rate_limited", status_code=response.status_code)
+                if response.status_code >= 400:
+                    raise RosterProviderError("roster_http_error", status_code=response.status_code)
+                # Streamed, so the ceiling stops the read rather than describing it afterwards.
+                raw = await read_bounded(response, max_bytes=_MAX_BYTES)
         except httpx.TimeoutException:
             raise RosterProviderError("roster_timeout") from None
+        except ResponseTooLarge:
+            raise RosterProviderError("roster_payload_too_large") from None
         except httpx.HTTPError:
             raise RosterProviderError("roster_transport_error") from None
-        self._last_bytes = len(response.content)
-        if missing_is_none and response.status_code == 404:
-            return None
-        if response.status_code in {401, 403, 451}:
-            raise RosterProviderError("roster_blocked", status_code=response.status_code)
-        if response.status_code in {418, 429}:
-            raise RosterProviderError("roster_rate_limited", status_code=response.status_code)
-        if response.status_code >= 400:
-            raise RosterProviderError("roster_http_error", status_code=response.status_code)
-        if len(response.content) > _MAX_BYTES:
-            raise RosterProviderError("roster_payload_too_large")
+        self._last_bytes = len(raw)
         try:
-            return response.json()
+            return json.loads(raw)
         except ValueError:
             raise RosterProviderError("roster_payload_invalid") from None
 
@@ -218,7 +223,6 @@ def _optional_float(value: Any) -> float | None:
 __all__ = [
     "PACE_SECONDS",
     "ROBINHOODTRENCHES_BASE_URL",
-    "ROBINHOODTRENCHES_PROVIDER",
     "RobinhoodTrenchesClient",
     "RosterCandidate",
     "RosterProviderError",

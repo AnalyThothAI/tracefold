@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from dataclasses import dataclass
 
 from loguru import logger
 
@@ -29,13 +30,26 @@ from tracefold.platform.observability import TelemetryRegistry
 CHAIN_TAPE_TASK_NAME = "news-chain-tape"
 
 
+@dataclass(frozen=True, slots=True)
+class ChainTapeComposition:
+    """The composed tape and the tick the operator configured for it.
+
+    The cadence rides here rather than on the loop because the loop owns no clock: App polls it, exactly
+    as it polls the market notification loop and the Signal lane, and `news.chain_tape.poll_interval_s`
+    is what App polls it with.
+    """
+
+    loop: ChainTapeLoop
+    poll_seconds: float
+
+
 def _wire_chain_tape(
     *,
     settings: Settings,
     db: WorkerDatabase,
     capabilities: CapabilityStates,
     telemetry: TelemetryRegistry | None = None,
-) -> ChainTapeLoop | None:
+) -> ChainTapeComposition | None:
     """Build the tape loop, or record why there is none. Never raises for a configuration fact."""
 
     chain_tape = settings.news.chain_tape
@@ -55,7 +69,7 @@ def _wire_chain_tape(
         telemetry=telemetry,
     )
     capabilities.running(CHAIN_TAPE)
-    return loop
+    return ChainTapeComposition(loop=loop, poll_seconds=float(chain_tape.poll_interval_s))
 
 
 async def run_chain_tape(
@@ -87,4 +101,4 @@ async def run_chain_tape(
         await loop.aclose()
 
 
-__all__ = ["CHAIN_TAPE_TASK_NAME", "_wire_chain_tape", "run_chain_tape"]
+__all__ = ["CHAIN_TAPE_TASK_NAME", "ChainTapeComposition", "_wire_chain_tape", "run_chain_tape"]
