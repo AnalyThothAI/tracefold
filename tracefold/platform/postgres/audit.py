@@ -104,6 +104,7 @@ NEWS_TABLES = (
     "news_external_miss_snapshots",
     "news_market_instruments",
     "news_market_instrument_listing_events",
+    "news_market_instrument_snapshot_state",
     "news_symbol_aliases",
     "news_quote_snapshots",
     "news_event_reactions",

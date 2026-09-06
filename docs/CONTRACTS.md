@@ -755,7 +755,11 @@ every Event this code can open.
   the watchlist symbols, and `instruments` (the
   #75 universe summary: trading/delisted counts, base symbols, venues, last
   snapshot time, per-venue and per-class counts, `dangling_aliases`, and
-  `reference_symbols`). Every figure but the last two counts contracts on
+  `reference_symbols`). `last_snapshot_ms` is the most recent moment any venue
+  answered a complete catalogue, read from the per-venue snapshot state: since
+  #570 A11 a refresh that changes nothing writes no instrument row, so the
+  freshness answer is a fact about the refresh rather than about the newest
+  row. Every figure but the last two counts contracts on
   venues we poll; `reference_symbols` is the separate US listed-symbol
   directory (#91), which tells the Gate a ticker is a stock and is tradeable
   nowhere, so it is kept out of `trading`, `by_venue`, `by_class` and the

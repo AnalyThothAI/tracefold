@@ -208,6 +208,10 @@ class NewsReasonCountData(ExactApiSchema):
 class NewsInstrumentUniverse(ExactApiSchema):
     """#75: what the last venue snapshot holds. `last_snapshot_ms` is None until the first snapshot lands.
 
+    `last_snapshot_ms` is the most recent moment a venue answered a complete catalogue, whether or not that
+    catalogue had moved: since #570 A11 an unchanged refresh writes no instrument row, so this is read from the
+    per-venue snapshot state rather than from the newest row stamp. The number means what it always meant.
+
     `dangling_aliases` counts seed aliases pointing at a symbol no venue lists — each one is a provider tag that
     silently resolves to nothing, which is how `1810.HK -> XIAOMI` went unnoticed for a week (#89). It should be 0.
 
