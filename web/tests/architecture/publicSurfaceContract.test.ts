@@ -18,11 +18,17 @@ describe("public browser surface", () => {
       "news/market",
       "news/status",
       "news/symbols/:base",
+      "news/wallets",
       "trading",
     ]);
 
     const navigation = APP_NAVIGATION_GROUPS.flatMap((group) => group.items);
-    expect(navigation.map((item) => item.to)).toEqual(["/news", "/news/market", "/trading"]);
+    expect(navigation.map((item) => item.to)).toEqual([
+      "/news",
+      "/news/market",
+      "/news/wallets",
+      "/trading",
+    ]);
     expect(navigation.flatMap((item) => item.children ?? [])).toEqual([]);
   });
 
@@ -38,7 +44,10 @@ describe("public browser surface", () => {
     // #537 PR-5 deleted three GET routes nothing in the browser called: the Signal list and the two
     // raw execution projections, all three of them shapes over ledgers `/api/trading/executions`
     // already reads folded. #553 PR-1 added the two market reads: OI frames, liquidations, smart money
-    // and unknown market sources are stored facts, not Events, so the feed cannot serve them.
+    // and unknown market sources are stored facts, not Events, so the feed cannot serve them. #572 PR-3
+    // added the two wallet reads: the market list publishes a wallet observation like any other kind,
+    // and these two answer what the tape itself is doing -- its roster, its ingest position, and the
+    // +1h/+4h receipt of every card its rules opened.
     expect(apiPaths).toEqual([
       "/api/bootstrap",
       "/api/news/events/{event_id}",
@@ -48,6 +57,8 @@ describe("public browser surface", () => {
       "/api/news/quotes",
       "/api/news/status",
       "/api/news/symbols/{base}",
+      "/api/news/wallets",
+      "/api/news/wallets/cards",
       "/api/status",
       "/api/trading/cases",
       "/api/trading/execution/commands",

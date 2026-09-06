@@ -47,6 +47,11 @@ export const queryKeys = {
     ["news-market-history", kind, firstCursor] as const,
   // One expanded group's Item. Not polled: a stored provider payload cannot change.
   newsMarketItem: (itemId: string) => ["news-market-item", itemId] as const,
+  // #572 PR-3: the wallet tape's own page. Two keys because the two reads answer two questions on two
+  // rhythms — the header and roster move when the tape's turn does, the card table when a rule fires —
+  // and the window is part of the card key because every window is a real request.
+  newsWallets: () => ["news-wallets"] as const,
+  newsWalletCards: (window: string) => ["news-wallet-cards", window] as const,
   newsStatus: () => ["news-status"] as const,
   // #207 PR-W1: identity only, and identity does not change on a poll — the token page's Events, price and
   // rank window each keep their own key and their own rhythm.

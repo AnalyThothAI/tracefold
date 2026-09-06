@@ -11,5 +11,6 @@ export function Component() {
   if (base) return <NewsPage base={base} token={token} view="symbol" />;
   if (location.pathname === "/news/status") return <NewsPage token={token} view="status" />;
   if (location.pathname === "/news/market") return <NewsPage token={token} view="market" />;
+  if (location.pathname === "/news/wallets") return <NewsPage token={token} view="wallets" />;
   return <NewsPage token={token} view="feed" />;
 }

@@ -62,6 +62,15 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_market_item_covered",
         "news_market_group_timeline",
     ),
+    # #572 PR-3. The wallet tape's own page: four statements for the header and roster, one for the
+    # card table beside it. Every one of them is a read the route executes on every request.
+    "/api/news/wallets": (
+        "news_wallet_roster",
+        "news_wallet_tape_state",
+        "news_wallet_fill_totals",
+        "news_wallet_card_totals",
+    ),
+    "/api/news/wallets/cards": ("news_wallet_cards",),
     # Three reads per request, and all three are named: `is_tradeable` runs its own statement and a
     # manifest that omitted it would let `db query-audit --analyze` report full coverage of a public route
     # while never planning one of its queries.

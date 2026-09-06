@@ -310,6 +310,12 @@ function GroupDetail({ itemId, token }: { itemId: string; token: string }) {
   return (
     <div className="news-market-detail">
       <div className="news-market-detail-panel">
+        {/*
+         * A wallet digest has no provider line to show: nothing reported it, this process computed it
+         * from stored fills. What it has instead is the sentences it was sent with, and they are the
+         * first thing a reader who opened this row came for (#572 PR-3).
+         */}
+        <DigestLines lines={item.observation.wallet_digest_lines} />
         <small className="news-market-detail-label">供应商原文</small>
         <code className="news-market-raw">{item.raw_first_line || item.observation.title}</code>
         {item.description ? <p className="news-market-description">{item.description}</p> : null}
@@ -357,6 +363,28 @@ function GroupDetail({ itemId, token }: { itemId: string; token: string }) {
         </ol>
       </div>
     </div>
+  );
+}
+
+/**
+ * The lines a digest was sent with, in order.
+ *
+ * Rendered rather than only stored, because they are the whole content of that card: every other market
+ * kind's content is a number in a field, and a digest's is the sentences those numbers were written
+ * into. Absent on every other kind, including the two other wallet kinds.
+ */
+function DigestLines({ lines }: { lines?: readonly string[] | null }) {
+  if (!lines?.length) return null;
+  return (
+    <>
+      <small className="news-market-detail-label">摘要正文</small>
+      <ol className="news-market-digest">
+        {/* Position is the identity here: two sentences of a digest may legitimately read the same. */}
+        {lines.map((line, index) => (
+          <li key={index}>{line}</li>
+        ))}
+      </ol>
+    </>
   );
 }
 

@@ -590,11 +590,15 @@ def wallet_record_key(event: WalletEvent) -> str:
     An exit is the sell that triggered it -- one movement, one card, and a re-run of the same turn
     recomputes the same key. A crowding card is its token, its window and how many wallets it counted,
     so the doubling follow-up the rule allows is a different Item rather than a silent overwrite of the
-    card a reader already has.
+    card a reader already has. A digest is its window and nothing else: it names no wallet and no
+    token, and re-running a due turn must produce the same one Item rather than a second summary of
+    the same four hours (#572 PR-3).
     """
 
     if event.kind == "exit":
         return f"exit|{event.chain_id}|{event.wallet}|{event.token}|{event.tx_hash}"
+    if event.kind == "digest":
+        return f"digest|{event.chain_id}|{event.window_from_ms}"
     return f"crowding|{event.chain_id}|{event.token}|{event.window_from_ms}|{event.peer_wallets}"
 
 

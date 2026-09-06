@@ -23,9 +23,19 @@ WALLET_PROVIDER: Final = "robinhood_chain"
 # this is what keeps the chain's identity space and OpenNews's from overlapping.
 WALLET_SOURCE_ID: Final = "news-robinhood-chain"
 
-# What a derived wallet observation can be. Two rules, two kinds, and no third: a card a reader receives
-# is either "a followed wallet started getting out of this" or "several of them just got in at once".
-WalletEventKind = Literal["exit", "crowding"]
+# What a derived wallet observation can be. Two rules produce a card about one movement -- "a followed
+# wallet started getting out of this" or "several of them just got in at once" -- and the third kind is
+# the periodic digest (#572 §5.4), which is about the window rather than about any one movement: it names
+# no wallet and no token, and its subject is what the whole roster did in four hours.
+WalletEventKind = Literal["exit", "crowding", "digest"]
+# The digest's own kind value, as a constant rather than a literal repeated in five SQL statements and
+# three modules. It is a stored value, so the one place it is written down is the one place it can move.
+DIGEST_KIND: Final = "digest"
+# How many lines a digest may carry, and how few it may be reduced to and still be worth sending rather
+# than the deterministic template. They are here because the Program that produces the lines and the
+# tape that checks them both need the same two numbers, and neither may import the other.
+DIGEST_LINES_MAX: Final = 8
+DIGEST_LINES_MIN: Final = 3
 
 # Where the denominator of an exit ratio came from. `chain_balance` is `balanceOf` at the block before
 # the sell -- the chain's own answer, which the public node holds for about ten minutes. `site_reported`
@@ -53,6 +63,24 @@ OUTCOME_PRICE_MIN: Final = Decimal("1e-18")
 # banked as `unavailable` rather than retried into a figure that answers a different question -- and
 # banking it is also what stops an unpriceable token from occupying the turn's receipt budget for a day.
 OUTCOME_GIVE_UP_MS: Final = 15 * 60_000
+
+
+@dataclass(frozen=True, slots=True)
+class DigestLine:
+    """One line of a digest, and the fact ids it is allowed to have used.
+
+    The pair is the whole of the grounding contract (#572 §5.4): a line the model wrote may only state
+    figures that appear in the facts it cites, and a line the deterministic template wrote cites the one
+    fact it was rendered from. Both sides of the fallback therefore carry the same evidence, so "which
+    numbers is this sentence standing on" is answerable from the stored row rather than from the prompt.
+
+    It lives here rather than under `chain_tape` because the Program that produces it may not import the
+    tape (the tape's loop imports the admission path, and the Program is reached from the composition
+    root), and because the rendered lines are part of what a wallet observation carries.
+    """
+
+    text: str
+    cites: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +176,9 @@ class WalletOutcome:
 
 
 __all__ = [
+    "DIGEST_KIND",
+    "DIGEST_LINES_MAX",
+    "DIGEST_LINES_MIN",
     "OUTCOME_GIVE_UP_MS",
     "OUTCOME_PRICE_MIN",
     "OUTCOME_UNAVAILABLE",
@@ -155,6 +186,7 @@ __all__ = [
     "WALLET_PROVIDER",
     "WALLET_SOURCE_ID",
     "CheckBasis",
+    "DigestLine",
     "OutcomeHorizon",
     "WalletBalance",
     "WalletCheck",

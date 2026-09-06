@@ -22,6 +22,7 @@ const PAGE_TITLES: Array<[RegExp, string]> = [
   [/^\/news\/events\//, "事件详情"],
   [/^\/news\/status$/, "流水线状态"],
   [/^\/news\/market$/, "市场事实"],
+  [/^\/news\/wallets$/, "链上钱包"],
   [/^\/news$/, "事件流"],
   [/^\/trading$/, "Alpha 与执行"],
 ];
@@ -139,6 +140,12 @@ export function topbarFigures(pathname: string, newsStatus?: NewsStatus): Cockpi
    * own endpoint, or an invented number.
    */
   if (pathname === "/news/market") return [];
+
+  /*
+   * 链上钱包 carries none either, for the same reason (#572 PR-3): every figure it could show is read from
+   * `/api/news/wallets`, which is the page's own endpoint, and the page leads with exactly those tiles.
+   */
+  if (pathname === "/news/wallets") return [];
 
   if (pathname === "/news/status") {
     return [

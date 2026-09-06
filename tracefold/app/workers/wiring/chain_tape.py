@@ -11,6 +11,12 @@ protocols and never learns which endpoint answered.
 wallet's bags, a token's mark), because it is one site and one courtesy pacing budget; DexScreener is a
 third adapter and is used for one thing only -- the +1h/+4h price receipt after a card has already been
 sent.
+
+#572 PR-3 adds the four-hourly digest, and it is the one part of this flow a model touches. The
+Program is resolved from the same operator settings the editorial Program is -- the reader-card slot,
+because a digest is reader-facing Chinese copy -- and it is optional twice over: an unconfigured
+endpoint and a disabled `digest` block both leave the tape writing the deterministic summary it
+computed before any call was considered.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ from typing import Any
 
 from loguru import logger
 
+from tracefold.app.learning_runtime import compose_news_program_runtime
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.runtime import CHAIN_TAPE, CapabilityStates
 from tracefold.app.workers.wiring.database import WorkerChainTapeDatabase
@@ -32,6 +39,7 @@ from tracefold.integrations.robinhoodtrenches import RobinhoodTrenchesClient
 from tracefold.news.bus import now_ms
 from tracefold.news.chain_tape import ChainTapeLoop
 from tracefold.news.chain_tape.derive import WalletCardDeriver
+from tracefold.news.chain_tape.digest_writer import WalletDigestWriter
 from tracefold.news.chain_tape.loop import POLL_INTERVAL_SECONDS
 from tracefold.news.chain_tape.roster import RosterRules
 from tracefold.news.chain_tape.rules import WalletRules
@@ -92,9 +100,45 @@ def _wire_chain_tape(
             telemetry=telemetry,
             clock=now_ms,
         ),
+        digest=_wire_digest(settings, db=tape_db, site=site, telemetry=telemetry),
     )
     capabilities.running(CHAIN_TAPE)
     return ChainTapeComposition(loop=loop, poll_seconds=float(chain_tape.poll_interval_s))
+
+
+def _wire_digest(
+    settings: Settings,
+    *,
+    db: WorkerChainTapeDatabase,
+    site: RobinhoodTrenchesClient,
+    telemetry: TelemetryRegistry | None,
+) -> WalletDigestWriter | None:
+    """The four-hourly summary, with a model behind it when one is configured (#572 §5.4).
+
+    Two independent switches, and neither of them is a fault. `digest.enabled` off means no summary at
+    all; a Program that resolves to `None` -- no model endpoint configured on this host -- means the
+    summary is written from its own fact pack. The card rules are unaffected by either, which is the
+    whole point of keeping the model off the card path.
+
+    The same site session as the roster and the card context: the digest asks it for one thing, the
+    moving-average cost of a bounded number of positions, and it shares that client's pacing floor.
+    """
+
+    configured = settings.news.chain_tape.digest
+    if not configured.enabled:
+        return None
+    program = compose_news_program_runtime(settings).chain_tape_digest()
+    if program is None:
+        logger.info("chain tape digest has no configured model; summaries render from the fact pack")
+    return WalletDigestWriter(
+        db=db,
+        program=program,
+        bags=site,
+        interval_s=int(configured.interval_s),
+        max_calls_per_day=int(configured.max_calls_per_day),
+        telemetry=telemetry,
+        clock=now_ms,
+    )
 
 
 def _wallet_rules(configured: Any) -> WalletRules:

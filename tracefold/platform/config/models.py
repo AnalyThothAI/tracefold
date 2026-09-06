@@ -482,6 +482,32 @@ class NewsChainTapeRulesSettings(BaseModel):
         return self
 
 
+class NewsChainTapeDigestSettings(BaseModel):
+    """The four-hourly wallet summary (#572 §5.4), as two runtime numbers and nothing else.
+
+    `interval_s` is what "due" means; `max_calls_per_day` bounds the *model*, not the digest. A window
+    past the cap still gets a digest, rendered from the deterministic template that every other failure
+    path also lands on -- the endpoint is the one triage shares at concurrency one, and this is the
+    ceiling #572 §5.4 put on it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    interval_s: int = 14_400
+    max_calls_per_day: int = 24
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> NewsChainTapeDigestSettings:
+        # An hour is #572 §6.4's loud tier and a week is past the fills' own retention window.
+        if not 3_600 <= self.interval_s <= 604_800:
+            raise ValueError("news_chain_tape_digest_interval_invalid")
+        # Zero is a valid answer: it is "compute the digest, never call the model".
+        if not 0 <= self.max_calls_per_day <= 1_000:
+            raise ValueError("news_chain_tape_digest_max_calls_invalid")
+        return self
+
+
 class NewsChainTapeSettings(BaseModel):
     """The Robinhood Chain wallet tape (#572 PR-1): read-only, disabled by default, store-only.
 
@@ -497,6 +523,7 @@ class NewsChainTapeSettings(BaseModel):
     roster_provider_url: str = "https://robinhoodtrenches.com"
     roster: NewsChainTapeRosterSettings = Field(default_factory=NewsChainTapeRosterSettings)
     rules: NewsChainTapeRulesSettings = Field(default_factory=NewsChainTapeRulesSettings)
+    digest: NewsChainTapeDigestSettings = Field(default_factory=NewsChainTapeDigestSettings)
     retention_days: int = 90
 
     @field_validator("rpc_url", "roster_provider_url", mode="before")

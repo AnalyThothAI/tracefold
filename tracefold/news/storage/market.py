@@ -30,6 +30,7 @@ from ..market_contracts import MARKET_TIMELINE_MAX, MARKET_WINDOW_ROW_CAP
 from ..market_notifications import MARKET_TRACK_FIELDS, notification_status
 from ..oi_contracts import OI_METRIC_VERSION
 from ..source_contracts import MARKET_KINDS
+from ..wallet_contracts import DIGEST_KIND
 from .sql_values import _dumps
 
 
@@ -92,6 +93,7 @@ class MarketObservationRow(TypedDict):
     wallet_block_number: int | None
     wallet_closed: bool | None
     wallet_crowding_item_id: str | None
+    wallet_digest_lines: list[str] | None
     wallet_window_from_ms: int | None
     # Reported beside `parse_status`, never folded into it (#553 §6). An observation with no attempt
     # says which rule is holding it; one with an attempt says what the send did.
@@ -212,6 +214,13 @@ _OBSERVATIONS_SQL = f"""
            e.closed AS wallet_closed,
            e.window_from_ms AS wallet_window_from_ms,
            e.evidence ->> 'crowding_item_id' AS wallet_crowding_item_id,
+           -- The digest's sentences, in the order they were written (#572 PR-3). They live in the
+           -- observation's own evidence rather than in a column of their own: the row already carries
+           -- the fact pack they were grounded against, and a card is the only thing that reads them.
+           CASE WHEN e.kind = '{DIGEST_KIND}' THEN (
+                  SELECT jsonb_agg(line ->> 'text' ORDER BY ord)
+                    FROM jsonb_array_elements(e.evidence -> 'lines') WITH ORDINALITY AS digest(line, ord)
+                ) END AS wallet_digest_lines,
            i.market_notify_state AS notify_state,
            i.market_notify_group_key AS notify_group_key,
            i.market_notify_delivery_key AS delivery_key,
@@ -253,7 +262,7 @@ _OBSERVATIONS_SQL = f"""
       LEFT JOIN news_market_wallet_events e ON e.item_id = i.item_id
       LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
       LEFT JOIN news_market_tracks t ON t.group_key = i.market_notify_group_key
-"""  # noqa: S608 -- the only interpolation is the code-owned `OI_METRIC_VERSION` literal
+"""  # noqa: S608 -- the only interpolations are the code-owned `OI_METRIC_VERSION` and `DIGEST_KIND`
 
 _OBSERVATION_KEYS: Final[tuple[str, ...]] = (
     "item_id",
@@ -310,6 +319,7 @@ _OBSERVATION_KEYS: Final[tuple[str, ...]] = (
     "wallet_block_number",
     "wallet_closed",
     "wallet_crowding_item_id",
+    "wallet_digest_lines",
     "wallet_window_from_ms",
     "notify_group_key",
     "delivery_key",

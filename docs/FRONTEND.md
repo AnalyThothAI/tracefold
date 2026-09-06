@@ -2,7 +2,7 @@
 
 > **Scope.** Owns the `web/` architecture, layer responsibilities, component conventions, and the UI verification gate. Backend layer boundaries live in `ARCHITECTURE.md`; public HTTP contracts live in `CONTRACTS.md`; install and run commands live in `SETUP.md`.
 
-The React operator console is a News workbench plus one actionable Alpha/Execution desk. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/trading/status`, `/api/trading/cases`, and `/api/trading/executions` over HTTP — twelve reads and one write. `/api/trading/gate` and `/api/trading/gate/{event_id}` stay on the server and have no browser reader: the OI frame table joined each admission row to its Event on the same line, and #553 PR-1 removed that join with the Events themselves. The two market reads arrived with #553 PR-1: OI frames, liquidations, smart-money prints and market sources we have no parser for are stored facts rather than Events, so the Event feed cannot serve them and `/api/news/status` no longer counts them. `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections were deleted in #537 PR-5: no browser surface called any of the three, they were three more public shapes over the ledgers `/api/trading/executions` already reads folded, and `tracefold trading signals | observations | commands` reads the same repository directly. Every operation is a read except the exact authenticated `POST /api/trading/execution/commands`, which can append only pause, resume, or account-flatten intents in the existing closed grammar. It cannot submit an order or accept quantity, notional, leverage, venue, or direction. There is no WebSocket client, no separate Search route, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
+The React operator console is a News workbench plus one actionable Alpha/Execution desk. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/wallets`, `/api/news/wallets/cards`, `/api/trading/status`, `/api/trading/cases`, and `/api/trading/executions` over HTTP — fourteen reads and one write. `/api/trading/gate` and `/api/trading/gate/{event_id}` stay on the server and have no browser reader: the OI frame table joined each admission row to its Event on the same line, and #553 PR-1 removed that join with the Events themselves. The two market reads arrived with #553 PR-1: OI frames, liquidations, smart-money prints and market sources we have no parser for are stored facts rather than Events, so the Event feed cannot serve them and `/api/news/status` no longer counts them. The two wallet reads arrived with #572 PR-3 and answer a different question from the market list: not "what observations arrived" but "what is the chain tape doing" — its roster, its ingest position, and the +1h/+4h price receipt of every card its rules opened. `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections were deleted in #537 PR-5: no browser surface called any of the three, they were three more public shapes over the ledgers `/api/trading/executions` already reads folded, and `tracefold trading signals | observations | commands` reads the same repository directly. Every operation is a read except the exact authenticated `POST /api/trading/execution/commands`, which can append only pause, resume, or account-flatten intents in the existing closed grammar. It cannot submit an order or accept quantity, notional, leverage, venue, or direction. There is no WebSocket client, no separate Search route, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
 
 ## Source Layer Map (`web/src/`)
 
@@ -31,7 +31,9 @@ URL-owned feed state — and `marketFacts.ts` — the market page's kind vocabul
 URL-owned `?kind=`), `state/` (`useAnchoredEventFeed`), and
 `ui/` split into `chrome/` (the frame, tone grammar, outcome badge, direction chip,
 asset chips, quote values, health pill — anything more than one surface renders),
-`feed/`, `detail/`, `status/`, `market/` and `symbol/`. `features/news/shell.ts` is the shell
+`feed/`, `detail/`, `status/`, `market/`, `wallets/` and `symbol/`. `model/walletFacts.ts` holds the
+wallet page's own closed vocabularies (card kind, fill kind, verification basis) and its URL-owned
+`?window=`, by the same rule `marketFacts.ts` follows. `features/news/shell.ts` is the shell
 entrypoint and exports hooks, pure helpers and types only, so importing it does not pull
 the route components into the eager shell chunk.
 
@@ -111,7 +113,7 @@ the route components into the eager shell chunk.
 - **News routes.** `/news` is a decision-first scan surface over the flat
   Event feed from `/api/news/feed`; the browser never clusters, scores,
   triages, throttles, or reorders. The public News navigation contains
-  exactly `事件流`, `市场事实` and `交易`.
+  exactly `事件流`, `市场事实`, `链上钱包` and `交易`.
 
   `Alpha 判定` at `/news/alpha` was a fourth destination until #460. It read one
   endpoint — `/api/trading/cases` — and so does `/trading`, so the list of Cases
@@ -176,8 +178,38 @@ the route components into the eager shell chunk.
   Five kinds share that strip. Four of them are provider frames; `wallet` is not
   (#572 PR-2) — the chain tape derives it from the fills of the followed wallets,
   so it is always `parsed`, always `robinhood_chain`, and its `wallet_*` fields
-  are absent on every other kind. The console has no page of its own for it yet;
-  it appears in the market list and the market detail like any other kind.
+  are absent on every other kind. It appears in the market list and the market
+  detail like any other kind, and since #572 PR-3 it also has a destination of
+  its own at `/news/wallets`, which answers what the *tape* is doing rather than
+  what one observation said.
+
+  `/news/wallets` is `链上钱包` (#572 PR-3). It reads two endpoints on their own
+  keys and their own failures: `/api/news/wallets` for the header tiles and the
+  tracked roster, `/api/news/wallets/cards` for the card table and its receipts.
+  A failing card table leaves the roster and the tape's position exactly where
+  they are, and the reverse holds — neither read is a precondition for the other,
+  because neither answers the other's question.
+
+  Four tiles state the last 24 hours: what the tape stored by fill kind, what the
+  rules opened by card kind and how much of it was sent, the share of trades
+  nothing could price, and the tape's own last outcome beside its high-water
+  block. The roster table is the current version only — an earlier version is
+  evidence a card carries, not a page a reader browses — with both ranks shown
+  separately, because 质量榜 (realized P&L and profit factor) and 大户榜 (open
+  cost) are two lists and a wallet can be on one, both or neither. Win rate is
+  displayed and is deliberately not a criterion (#572 §3.2).
+
+  The card table's `?window=` is the server's own closed vocabulary — `24h`,
+  `72h`, `7d` — and each selection is a real request. Every card is listed
+  whether or not it was sent; the delivery state is printed as the notification
+  owner wrote it. The `+1h` and `+4h` columns are #572 §11's effect receipt, not
+  a gate: nothing in the code reads them, a negative figure is an answer, a
+  horizon nothing could price says `无价`, and a horizon that has not arrived is
+  the absence of a row rather than a zero. A digest row carries the sentences it
+  was sent with and says whether the model wrote them or the deterministic
+  template did — the one thing about a digest that the card itself cannot say.
+  Each row links to `/news/market/{item_id}`, which stays the single place one
+  observation is read in full.
 
   `raw` is a shape, not a failure. An `unknown_market` source has no parser at
   all, and its record is retained with its provider line and its stated reason —
@@ -480,7 +512,7 @@ the route components into the eager shell chunk.
   open interest rising is not price rising (#104). Only `favicon.svg` and
   the sidebar's `BrandMark` may be filled shapes; they are the same path on the
   same indigo tile, so the tab and the frame are one face.
-- **Shell navigation.** `AppSidebar` is a purpose-built 204px aside — one component for the in-frame sidebar and the drawer body, so the two presentations cannot disagree about what exists or which destination is current. `CockpitShell` picks the frame by mounting, not by hiding: from `(min-width: 1280px)` the sidebar is in-frame and stays there. From `768px` to `1279px` the same sidebar is the left `Drawer`; below `768px` `AppBottomNav` takes over. The nav carries three working surfaces in one `Workbench` group — `事件流` `/news`, `市场事实` `/news/market`, `交易` `/trading`. `System · 数据健康` held one entry and went with it (#553 PR-1): 市场事实 is a reading surface for what the venues reported, not a frame-parse audit, and whether the pipeline is telling the truth is the topbar lamp's question on every page. The feed entry shows the 24 h received count; the other two carry none — `/api/news/status` reports no market intake any more, and the destination prints the per-kind figures itself. A count clipped the 204px row's label to one glyph (#460), and the `tradingEnvironment` badge that replaced it — the lane's last-Case clock and the execution mode — cost every News route a 15 s poll of `/api/trading/status` for two words the desk itself states first (#537 PR-5). Counts are compacted and `aria-hidden`. `/` redirects to `/news`; topbar search always opens a fresh News scope. Public SPA routes are `/`, `/news`, `/news/market`, `/news/status`, `/news/symbols/:base`, `/news/events/:eventId`, and `/trading`; retired routes, including `/news/oi`, `/news/alpha` and `/news/leverage`, resolve through the standard not-found route. Operational diagnosis remains on API/CLI surfaces and there is no browser Ops route.
+- **Shell navigation.** `AppSidebar` is a purpose-built 204px aside — one component for the in-frame sidebar and the drawer body, so the two presentations cannot disagree about what exists or which destination is current. `CockpitShell` picks the frame by mounting, not by hiding: from `(min-width: 1280px)` the sidebar is in-frame and stays there. From `768px` to `1279px` the same sidebar is the left `Drawer`; below `768px` `AppBottomNav` takes over. The nav carries four working surfaces in one `Workbench` group — `事件流` `/news`, `市场事实` `/news/market`, `链上钱包` `/news/wallets`, `交易` `/trading`. `System · 数据健康` held one entry and went with it (#553 PR-1): 市场事实 is a reading surface for what the venues reported, not a frame-parse audit, and whether the pipeline is telling the truth is the topbar lamp's question on every page. The feed entry shows the 24 h received count; the other three carry none — `/api/news/status` reports no market intake any more, and the destination prints the per-kind figures itself. A count clipped the 204px row's label to one glyph (#460), and the `tradingEnvironment` badge that replaced it — the lane's last-Case clock and the execution mode — cost every News route a 15 s poll of `/api/trading/status` for two words the desk itself states first (#537 PR-5). Counts are compacted and `aria-hidden`. `/` redirects to `/news`; topbar search always opens a fresh News scope. Public SPA routes are `/`, `/news`, `/news/market`, `/news/wallets`, `/news/status`, `/news/symbols/:base`, `/news/events/:eventId`, and `/trading`; retired routes, including `/news/oi`, `/news/alpha` and `/news/leverage`, resolve through the standard not-found route. Operational diagnosis remains on API/CLI surfaces and there is no browser Ops route.
 - **No keyboard layer.** The console has no command palette, no `?` shortcut panel, and no document-level key bindings at all; #82's keyboard layer was cut whole. Every action the palette collapsed — the three destinations, the four feed task tabs, a `symbol` filter — is already a control on the page, so the layer bought a second way to reach what one click reached and a list that had to be kept in sync with the routes; the toolbar was even advertising an `X 复制标注` binding that nothing implemented. The cut removed `shared/ui/CommandPalette`, `shared/ui/ShortcutsDialog`, `features/cockpit/ui/appShortcuts.ts` and `features/news/state/useFeedCursor.ts` together with the shell's own `keydown` listener, the `--surface-cursor` token and every `<kbd>` hint. Do not reintroduce a `document.addEventListener("keydown", ...)` in shell or route code, and do not restore the `⌘K` topbar button: keyboard access is the platform's — real controls, real tab order, `Enter` on a form, and Radix's own `Esc`.
 - **Scrolling.** `body` remains locked for the app shell. `.center-column` is the shell-managed route scroll container. No retired table, bottom deck, controls row, or mobile task-bar reserves height. Route-level nested scrollers are allowed only when they are intentionally bounded and covered by Playwright overflow/reachability assertions.
 - **Breakpoint policy.** Desktop density starts at `1280px`. Tablet uses a single route column from `768px` through `1279px`. Mobile rules are `max-width: 767px` and must appear late enough in the cascade to win over base and desktop/tablet rules. Use container queries for local card/panel behavior when component width matters more than viewport width.
@@ -591,7 +623,7 @@ Production bundles ship inside the same Docker image as the Python service and a
 
 Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manually before declaring completion. The minimum checklist for frontend architecture changes is:
 
-1. Hard-reload `/`, `/news`, `/news/market`, `/trading`, `/trading?case=<id>`,
+1. Hard-reload `/`, `/news`, `/news/market`, `/news/wallets`, `/trading`, `/trading?case=<id>`,
    `/news/status`, `/news/symbols/:base` and `/news/events/:eventId` with representative query
    params; confirm `/news/oi`, `/news/alpha`, `/news/review`, `/macro`, `/search`, and `/token/...` render the
    not-found surface. On the token page, confirm a base no venue lists (`/news/symbols/SPOT`)

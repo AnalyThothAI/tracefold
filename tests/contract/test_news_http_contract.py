@@ -383,6 +383,11 @@ def test_news_exposes_read_routes_and_no_write_route_at_all() -> None:
         # serves one. The feed cannot answer the same question a second time and disagree.
         ("GET", "/api/news/market"),
         ("GET", "/api/news/market/{item_id}"),
+        # #572 PR-3: the chain wallet tape's own state. The market list answers what observations
+        # arrived; these two answer what the tape is doing -- its roster, its ingest position, and the
+        # price receipt taken after every card its rules opened.
+        ("GET", "/api/news/wallets"),
+        ("GET", "/api/news/wallets/cards"),
     }
 
 

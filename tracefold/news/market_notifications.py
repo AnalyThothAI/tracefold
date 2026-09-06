@@ -259,6 +259,9 @@ class MarketObservation:
     wallet_closed: bool = False
     wallet_crowding_item_id: str | None = None
     wallet_window_from_ms: int | None = None
+    # The digest's own lines (#572 PR-3). Already written and already grounded against the fact pack
+    # the tape computed; the card prints them and composes nothing.
+    wallet_digest_lines: tuple[str, ...] = ()
 
     def notional_amount(self) -> Decimal | None:
         """The reported notional as a number, or None when the report carried none it could be.
@@ -324,6 +327,7 @@ class MarketObservation:
             wallet_closed=bool(row.get("wallet_closed")),
             wallet_crowding_item_id=_text(row.get("wallet_crowding_item_id")),
             wallet_window_from_ms=_integer(row.get("wallet_window_from_ms")),
+            wallet_digest_lines=_lines(row.get("wallet_digest_lines")),
         )
 
 
@@ -409,6 +413,14 @@ def _text(value: Any) -> str | None:
 
 def _integer(value: Any) -> int | None:
     return None if value is None else int(value)
+
+
+def _lines(value: Any) -> tuple[str, ...]:
+    """A jsonb array of digest sentences as a tuple, and anything else as none of them."""
+
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(str(line) for line in value if str(line).strip())
 
 
 def group_family(observation: MarketObservation) -> MarketFamily:
@@ -1077,12 +1089,13 @@ def market_reader_card(
         link=ReaderCardLink(url=link, label=DETAIL_BUTTON_LABEL) if link is not None else None,
         note=ReaderCardNote(id=track.group_key, detail_id=latest.item_id),
         # A crowding observation *is* a window -- the rules folded several wallets' first buys into one
-        # derived row -- so its span is the window it covered, not the single instant the Item is
-        # stamped with. Every other family's span is the reports the card actually speaks for.
+        # derived row -- and a digest is four hours of them, so both spans are the window covered
+        # rather than the single instant the Item is stamped with. Every other family's span is the
+        # reports the card actually speaks for.
         times=ReaderCardTimes(
             event_at_ms=latest.event_at_ms,
             span_from_ms=latest.wallet_window_from_ms
-            if latest.wallet_kind == "crowding" and latest.wallet_window_from_ms
+            if latest.wallet_kind in {"crowding", "digest"} and latest.wallet_window_from_ms
             else first.event_at_ms,
         ),
     )
@@ -1120,6 +1133,7 @@ def _reader_wallet(observation: MarketObservation) -> ReaderCardWallet:
         closed=bool(observation.wallet_closed),
         late=(observation.wallet_tone or "") == "late",
         crowding_id=observation.wallet_crowding_item_id or "",
+        lines=observation.wallet_digest_lines,
     )
 
 

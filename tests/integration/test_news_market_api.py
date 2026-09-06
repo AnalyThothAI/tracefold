@@ -23,6 +23,7 @@ from tests.postgres_test_utils import connect_postgres_test, postgres_settings_s
 from tracefold.app.http.app import create_app
 from tracefold.app.http.schemas.market import NewsMarketObservationData
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.news.chain_tape.contracts import ClassifiedFill, RosterMember, TapeCursor
 from tracefold.news.market_notifications import REASON_UNPROCESSED
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame, admit_market_item, prepare_wallet_observation
@@ -510,3 +511,116 @@ def test_every_projected_observation_column_is_published_or_declared_internal() 
     # Not vacuous: the internal set names a column the projection really carries.
     assert set(_OBSERVATION_KEYS) >= INTERNAL_OBSERVATION_KEYS
     assert INTERNAL_OBSERVATION_KEYS.isdisjoint(NewsMarketObservationData.model_fields)
+
+
+# --- the wallet tape's own page (#572 PR-3) --------------------------------------------------------
+
+
+def _seed_wallet_tape(conn: Any, *, at_ms: int) -> None:
+    """One roster version, one fill and one card, so both wallet routes have something to publish."""
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.news.chain_tape_store_roster(
+            [
+                RosterMember(
+                    wallet="0x69326e48f68500fb6cf3b3a7da640737b9cc347b",
+                    handle="0xVantaa",
+                    followers=21_792,
+                    realized_pnl=510_000.0,
+                    closed_trades=46,
+                    win_rate=0.44,
+                    profit_factor=1.6,
+                    open_cost=220_000.0,
+                    rank_quality=1,
+                    rank_whale=None,
+                )
+            ],
+            now_ms=at_ms,
+        )
+        repos.news.chain_tape_record_fills(
+            [
+                ClassifiedFill(
+                    chain_id=4663,
+                    tx_hash="0x" + "ab" * 32,
+                    log_index=6,
+                    block_number=55_432_990,
+                    block_hash="0x" + "cd" * 32,
+                    wallet="0x69326e48f68500fb6cf3b3a7da640737b9cc347b",
+                    token="0x8de9018c1bb82884245f06dede9fe2bebabd1e18",
+                    kind="buy",
+                    amount_raw=8 * 10**18,
+                    event_at_ms=at_ms,
+                    received_at_ms=at_ms,
+                    classified_at_ms=at_ms,
+                    roster_version=1,
+                    token_symbol="FSD",
+                    token_decimals=18,
+                    cash_token="0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+                    cash_amount_raw=12_340_500_000,
+                    cash_decimals=6,
+                    usd=Decimal("12340.50"),
+                    usd_source="usdg_cash_leg",
+                )
+            ]
+        )
+        repos.news.chain_tape_save_state(
+            cursor=TapeCursor(55_432_960, 2_147_483_647),
+            roster_version=1,
+            outcome="success",
+            error=None,
+            now_ms=at_ms,
+            succeeded=True,
+            ignored_inbound=14,
+            unknown=1,
+            noise_cursor=TapeCursor(55_432_990, 6),
+        )
+    conn.commit()
+
+
+def test_the_wallets_page_publishes_the_roster_the_tape_state_and_two_windowed_counts(app, conn) -> None:
+    """`GET /api/news/wallets` through the real app: four statements, one envelope, no 500."""
+
+    now = int(time.time() * 1000)
+    _seed_wallet_tape(conn, at_ms=now - 60_000)
+    _admit_wallet_exit(conn, at_ms=now - 30_000)
+
+    with TestClient(app) as client:
+        response = client.get("/api/news/wallets", headers=AUTH)
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["roster"]["roster_version"] == 1
+    assert [member["handle"] for member in data["roster"]["members"]] == ["0xVantaa"]
+    assert data["roster"]["members"][0]["rank_quality"] == 1
+    assert data["tape"]["high_water_block"] == 55_432_960
+    assert data["tape"]["ignored_inbound_total"] == 14
+    assert [(row["kind"], row["fills"], row["unpriced"]) for row in data["fills"]] == [("buy", 1, 0)]
+    assert [(row["kind"], row["cards"]) for row in data["cards"]] == [("exit", 1)]
+
+
+def test_the_wallet_cards_route_publishes_each_card_with_its_receipts_and_bounds_its_window(app, conn) -> None:
+    """`GET /api/news/wallets/cards`: the closed window vocabulary, and a card's published shape."""
+
+    now = int(time.time() * 1000)
+    _seed_wallet_tape(conn, at_ms=now - 60_000)
+    item_id = _admit_wallet_exit(conn, at_ms=now - 30_000)
+
+    with TestClient(app) as client:
+        response = client.get("/api/news/wallets/cards?window=24h&limit=10", headers=AUTH)
+        refused = client.get("/api/news/wallets/cards?window=90d", headers=AUTH)
+        unknown = client.get("/api/news/wallets/cards?horizon=1h", headers=AUTH)
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["window"] == "24h"
+    assert data["window_to_ms"] - data["window_from_ms"] == 24 * 3_600_000
+    assert [card["item_id"] for card in data["cards"]] == [item_id]
+    card = data["cards"][0]
+    assert (card["kind"], card["basis"], card["ratio_bps"]) == ("exit", "chain_balance", 10_000)
+    # Nothing has been sent, so there is no card to have a receipt: absent, not zero.
+    assert (card["delivery_key"], card["return_1h_bps"], card["digest_lines"]) == (None, None, None)
+
+    assert refused.status_code == 400
+    assert refused.json()["error"] == "news_wallets_window_invalid"
+    assert unknown.status_code == 400

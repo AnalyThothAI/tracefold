@@ -390,6 +390,10 @@ news:
       crowding_min_usd: 1000.0
       crowding_premium_late_bps: 3000
       trigger_max_age_s: 600
+    digest:
+      enabled: true
+      interval_s: 14400
+      max_calls_per_day: 24
     retention_days: 90
   watchlist: []
 

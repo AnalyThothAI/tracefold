@@ -22,7 +22,7 @@ describe("AppSidebar", () => {
     expect(screen.queryByText("System · 数据健康")).not.toBeInTheDocument();
   });
 
-  it("renders the three supported primary destinations", () => {
+  it("renders the four supported primary destinations", () => {
     renderSidebar({ counts: { events: 1463 } });
 
     const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
@@ -30,10 +30,13 @@ describe("AppSidebar", () => {
     // #207: every slot is a working surface. 流水线状态 kept its route and lost its slot — a healthy
     // pipeline made it a click that answers "everything is fine". #256 removed 学习复盘 outright: the
     // ReviewDesk is a CLI lane now. #460 removed Alpha 判定, whose Cases and frozen evidence are both
-    // on 交易. #553 PR-1 renamed the telemetry audit to 市场事实 and moved it up beside the feed.
+    // on 交易. #553 PR-1 renamed the telemetry audit to 市场事实 and moved it up beside the feed, and
+    // #572 PR-3 added 链上钱包 beside it: the market list answers what observations arrived, and that
+    // page answers what the chain tape itself is doing.
     expect(links.map((link) => link.getAttribute("href"))).toEqual([
       "/news",
       "/news/market",
+      "/news/wallets",
       "/trading",
     ]);
     expect(links[0].textContent).toContain("事件流");
@@ -44,11 +47,16 @@ describe("AppSidebar", () => {
      */
     expect(links[1].textContent?.trim()).toBe("市场事实");
     /*
+     * 链上钱包 carries none either: every figure it could show is read from its own endpoint, and the
+     * page leads with exactly those tiles.
+     */
+    expect(links[2].textContent?.trim()).toBe("链上钱包");
+    /*
      * 交易 carries neither a count nor a badge. At 204px a count clipped the label to one glyph
      * (#460), and the `tradingEnvironment` badge that replaced it cost every News route a 15 s poll of
      * `/api/trading/status` for a clock and the word `paper` the desk itself states (#537 PR-5).
      */
-    expect(links[2].textContent?.trim()).toBe("交易");
+    expect(links[3].textContent?.trim()).toBe("交易");
   });
 
   it("no longer offers the retired ReviewDesk destination", () => {
@@ -77,6 +85,7 @@ describe("AppSidebar", () => {
 
     expect(screen.getByRole("link", { name: "事件流" })).toHaveAttribute("href", "/news");
     expect(screen.getByRole("link", { name: "市场事实" })).toHaveAttribute("href", "/news/market");
+    expect(screen.getByRole("link", { name: "链上钱包" })).toHaveAttribute("href", "/news/wallets");
   });
 
   it("carries no health chrome of its own", () => {
