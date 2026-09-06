@@ -423,6 +423,32 @@ code that still names the dropped columns fails against the new schema, and
 `make up` is that boundary. `downgrade` is refused: re-creating the deleted rows
 would put groups back on a page as though a card were still coming for them.
 
+`20260906_0372` turns the wallet tape into a market family a reader receives
+(#572 PR-2). It replaces `news_items_market_kind_check` so `market_kind` admits a
+fifth value, `wallet`, widens `news_market_tracks_family_check` to the three
+families `20260906_0371` left plus this one, and adds three tables:
+`news_market_wallet_events` (the derived observation, a cascade child of
+`news_items`), `news_market_wallet_checks` (every verification attempt against a
+sell) and `news_market_wallet_outcomes` (the +1h/+4h price a card is judged by).
+
+The CHECK is replaced rather than extended because a CHECK is a single
+expression; the swap validates the existing rows once, which at the measured
+12.7k market Items is one short scan under the revision's own 60 s statement
+timeout, and a writer on the previous code inserts no `wallet` row and is
+unaffected. The events table is a child of `news_items` on purpose: a wallet card
+is an ordinary market Item, so the notification loop, the delivery ledger, the
+detail route and retention all reach it with no second mechanism, and the typed
+fact dies with its Item exactly as the other three market facts do. Checks are
+keyed on the fill's own `(chain_id, tx_hash, log_index)` and are written even
+when they fail, because "how often was the public node's ten-minute state window
+still open" is a question only the failures answer — and it is the audit trail
+behind the `site_reported` basis a card prints when it was not. Outcomes are keyed
+on `delivery_key` rather than on an Item because the subject of a receipt is the
+card a reader received, and one card can speak for several observations.
+`downgrade` is refused: the events are the observations cards were sent for, and
+the fills they were derived from expire on a 90-day retention the derived rows do
+not share.
+
 ## Database development standard
 
 1. The deployment has one non-superuser application login, `tracefold`.

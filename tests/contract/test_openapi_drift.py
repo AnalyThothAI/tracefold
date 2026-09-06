@@ -318,6 +318,9 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "liquidation",
         "smart_money",
         "unknown_market",
+        # #572 PR-2: derived by this process from chain logs rather than reported by a provider, and an
+        # ordinary market observation in every other respect.
+        "wallet",
     ]
     # Provider decimals cross the wire as their exact stored text; a JSON number would round a notional
     # the ledger holds precisely.

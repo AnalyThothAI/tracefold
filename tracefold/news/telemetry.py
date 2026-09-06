@@ -24,6 +24,10 @@ NewsExternalDataSource = Literal[
     # tracked-trader list. Two labels because they fail independently and only one of them is the chain.
     "robinhood_rpc",
     "robinhoodtrenches",
+    # #572 PR-2's price receipt, and the one flow that is neither the chain nor the roster site: it is
+    # asked for a token's price after a card has already been sent, so its failures cost a receipt and
+    # never a card.
+    "dexscreener",
     "us_reference",
 ]
 NewsExternalDataOutcome = Literal["error", "partial", "success"]

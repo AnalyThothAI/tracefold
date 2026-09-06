@@ -1422,7 +1422,7 @@ export interface components {
              * Market Kind
              * @enum {string}
              */
-            market_kind: "oi" | "liquidation" | "smart_money" | "unknown_market";
+            market_kind: "oi" | "liquidation" | "smart_money" | "unknown_market" | "wallet";
             /** Notification Reason */
             notification_reason: string;
             /** Notification Status */
@@ -1500,7 +1500,7 @@ export interface components {
              * Market Kind
              * @enum {string}
              */
-            market_kind: "oi" | "liquidation" | "smart_money" | "unknown_market";
+            market_kind: "oi" | "liquidation" | "smart_money" | "unknown_market" | "wallet";
             /** Measurement Definition */
             measurement_definition?: string | null;
             /** Notification Reason */
@@ -1544,6 +1544,52 @@ export interface components {
             title: string;
             /** Trader Label */
             trader_label?: string | null;
+            /** Wallet Address */
+            wallet_address?: string | null;
+            /** Wallet Balance Before */
+            wallet_balance_before?: string | null;
+            /** Wallet Basis */
+            wallet_basis?: ("chain_balance" | "site_reported") | null;
+            /** Wallet Block Number */
+            wallet_block_number?: number | null;
+            /** Wallet Closed */
+            wallet_closed?: boolean | null;
+            /** Wallet Crowding Item Id */
+            wallet_crowding_item_id?: string | null;
+            /** Wallet Entry Price */
+            wallet_entry_price?: string | null;
+            /** Wallet Followers */
+            wallet_followers?: number | null;
+            /** Wallet Handle */
+            wallet_handle?: string | null;
+            /** Wallet Kind */
+            wallet_kind?: ("exit" | "crowding") | null;
+            /** Wallet Liquidity Usd */
+            wallet_liquidity_usd?: string | null;
+            /** Wallet Mark Price */
+            wallet_mark_price?: string | null;
+            /** Wallet Peer Usd */
+            wallet_peer_usd?: string | null;
+            /** Wallet Peer Wallets */
+            wallet_peer_wallets?: number | null;
+            /** Wallet Position Usd */
+            wallet_position_usd?: string | null;
+            /** Wallet Premium Bps */
+            wallet_premium_bps?: number | null;
+            /** Wallet Quantity */
+            wallet_quantity?: string | null;
+            /** Wallet Ratio Bps */
+            wallet_ratio_bps?: number | null;
+            /** Wallet Segment Key */
+            wallet_segment_key?: string | null;
+            /** Wallet Token */
+            wallet_token?: string | null;
+            /** Wallet Tone */
+            wallet_tone?: string | null;
+            /** Wallet Tx Hash */
+            wallet_tx_hash?: string | null;
+            /** Wallet Usd */
+            wallet_usd?: string | null;
             /** Whale Long Profit Bps */
             whale_long_profit_bps?: number | null;
             /** Whale Oi Ratio Bps */
@@ -1576,7 +1622,7 @@ export interface components {
              * Market Kind
              * @enum {string}
              */
-            market_kind: "oi" | "liquidation" | "smart_money" | "unknown_market";
+            market_kind: "oi" | "liquidation" | "smart_money" | "unknown_market" | "wallet";
             /**
              * Merged
              * @default 0

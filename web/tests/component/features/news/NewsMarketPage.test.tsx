@@ -1,4 +1,5 @@
 import { NewsPage } from "@features/news";
+import { NEWS_MARKET_KINDS } from "@features/news/api/newsQueries";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import {
@@ -179,6 +180,63 @@ describe("NewsMarketPage", () => {
     expect(raw?.querySelector(".news-market-subject")?.textContent).toBe("—");
   });
 
+  it("renders a wallet observation, the one kind no provider reports", async () => {
+    /*
+     * #572 PR-2. `wallet` is derived by the chain tape from what the followed wallets did on chain, so
+     * every field the four provider kinds fill is null on it and every `wallet_*` field is null on
+     * them. This page has to render both without inventing a value or throwing on a missing one --
+     * which is exactly what a `market_kind` the browser had never seen would otherwise do.
+     */
+    server.use(
+      http.get(/.*\/api\/news\/market$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: marketWithEveryKind({
+            groups: [
+              newsMarketGroupFixture({
+                first_event_at_ms: NEWS_NOW_MS - 95_000,
+                latest: newsMarketObservationFixture({
+                  event_at_ms: NEWS_NOW_MS - 90_000,
+                  group_key:
+                    "wallet|exit|robinhood_chain|0x69326e48f68500fb6cf3b3a7da640737b9cc347b|0x8de9018c1bb82884245f06dede9fe2bebabd1e18|1788642791000",
+                  item_id: "mkt-wallet-1",
+                  market_kind: "wallet",
+                  notification_reason: "",
+                  notification_status: "sent",
+                  oi_change_bps: null,
+                  oi_value_usd: null,
+                  provider: "robinhood_chain",
+                  raw_instrument: "0x8de9018c1bb82884245f06dede9fe2bebabd1e18",
+                  source_strategy_id: null,
+                  symbol: "FSD",
+                  title: "0xVantaa 清仓 FSD",
+                  whale_long_profit_bps: null,
+                  whale_oi_ratio_bps: null,
+                }),
+                market_kind: "wallet",
+                observation_count: 1,
+              }),
+            ],
+          }),
+        }),
+      ),
+    );
+
+    renderMarket();
+
+    const wallet = await screen.findByText("0xVantaa 清仓 FSD");
+    const row = wallet.closest(".news-market-row");
+    expect(row).not.toBeNull();
+    expect(row).toHaveAttribute("data-kind", "wallet");
+    // The kind's own word, not the raw server token and not a blank cell.
+    expect(row).toHaveTextContent("链上钱包");
+    expect(row).toHaveTextContent("FSD");
+    expect(within(row as HTMLElement).getByText("sent")).toBeInTheDocument();
+    // And the summary strip names it beside the four the provider sends.
+    const sources = await screen.findByLabelText("来源汇总");
+    expect(within(sources).getByTitle(/链上钱包/)).toBeInTheDocument();
+  });
+
   it("puts the chosen kinds in the URL and narrows the request with them", async () => {
     const observed: string[] = [];
     server.use(
@@ -224,7 +282,7 @@ describe("NewsMarketPage", () => {
     expect(within(sources).getByTitle(/持仓异动/)).toHaveTextContent("61");
     // Every kind the endpoint serves keeps a tile, whether or not it sent anything: "this source was
     // quiet for 72 hours" is the answer a reader came for, and a hidden tile cannot give it.
-    expect(sources.querySelectorAll(".news-market-source")).toHaveLength(4);
+    expect(sources.querySelectorAll(".news-market-source")).toHaveLength(NEWS_MARKET_KINDS.length);
   });
 
   it("expands a group to its stored payload and its retained timeline", async () => {

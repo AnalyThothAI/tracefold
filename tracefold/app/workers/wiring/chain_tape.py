@@ -4,8 +4,13 @@ One optional capability, one task, one `advance()`-shaped loop -- the same shape
 for the market notification loop, and for the same reason: the loop exposes one business action, while
 the tick, the stop event and the process lifecycle belong to the Workers root.
 
-The two provider adapters are constructed here because `tracefold.news` may not name `httpx`. The loop
-sees two protocols and never learns which endpoint answered.
+The provider adapters are constructed here because `tracefold.news` may not name `httpx`. The loop sees
+protocols and never learns which endpoint answered.
+
+#572 PR-2 adds the rules half. The same site client answers the roster *and* the card context (a
+wallet's bags, a token's mark), because it is one site and one courtesy pacing budget; DexScreener is a
+third adapter and is used for one thing only -- the +1h/+4h price receipt after a card has already been
+sent.
 """
 
 from __future__ import annotations
@@ -13,17 +18,23 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass
+from decimal import Decimal
+from typing import Any
 
 from loguru import logger
 
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.runtime import CHAIN_TAPE, CapabilityStates
 from tracefold.app.workers.wiring.database import WorkerChainTapeDatabase
+from tracefold.integrations.dexscreener import DexScreenerClient
 from tracefold.integrations.robinhood_chain import RobinhoodChainClient
 from tracefold.integrations.robinhoodtrenches import RobinhoodTrenchesClient
+from tracefold.news.bus import now_ms
 from tracefold.news.chain_tape import ChainTapeLoop
+from tracefold.news.chain_tape.derive import WalletCardDeriver
 from tracefold.news.chain_tape.loop import POLL_INTERVAL_SECONDS
 from tracefold.news.chain_tape.roster import RosterRules
+from tracefold.news.chain_tape.rules import WalletRules
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 
@@ -56,10 +67,15 @@ def _wire_chain_tape(
     if not chain_tape.enabled:
         capabilities.disabled(CHAIN_TAPE, "news_chain_tape_disabled")
         return None
+    tape_db = WorkerChainTapeDatabase(db)
+    chain = RobinhoodChainClient(rpc_url=chain_tape.rpc_url)
+    # One session against the site, shared by the roster refresh and the card context, so the two share
+    # the pacing floor the adapter applies to somebody else's small public server.
+    site = RobinhoodTrenchesClient(base_url=chain_tape.roster_provider_url)
     loop = ChainTapeLoop(
-        db=WorkerChainTapeDatabase(db),
-        chain=RobinhoodChainClient(rpc_url=chain_tape.rpc_url),
-        roster_provider=RobinhoodTrenchesClient(base_url=chain_tape.roster_provider_url),
+        db=tape_db,
+        chain=chain,
+        roster_provider=site,
         rules=RosterRules(
             min_closed_trades=chain_tape.roster.min_closed_trades,
             min_profit_factor=chain_tape.roster.min_profit_factor,
@@ -67,9 +83,39 @@ def _wire_chain_tape(
             top_whale_by_open_cost=chain_tape.roster.top_whale_by_open_cost,
         ),
         telemetry=telemetry,
+        deriver=WalletCardDeriver(
+            db=tape_db,
+            chain=chain,
+            site=site,
+            prices=DexScreenerClient(),
+            rules=_wallet_rules(chain_tape.rules),
+            telemetry=telemetry,
+            clock=now_ms,
+        ),
     )
     capabilities.running(CHAIN_TAPE)
     return ChainTapeComposition(loop=loop, poll_seconds=float(chain_tape.poll_interval_s))
+
+
+def _wallet_rules(configured: Any) -> WalletRules:
+    """The operator's thresholds as the rules module's own value object.
+
+    The dollar figures cross as `Decimal` rather than as the floats YAML produced: they are compared
+    against stored `numeric` position values, and a float comparison against a `Decimal` is the one
+    place a threshold could quietly mean something other than what was configured.
+    """
+
+    return WalletRules(
+        exit_ratio_bps=int(configured.exit_ratio_bps),
+        exit_min_position_usd=Decimal(str(configured.exit_min_position_usd)),
+        exit_cascade_window_s=int(configured.exit_cascade_window_s),
+        exit_cascade_min_usd=Decimal(str(configured.exit_cascade_min_usd)),
+        crowding_n=int(configured.crowding_n),
+        crowding_window_s=int(configured.crowding_window_s),
+        crowding_min_usd=Decimal(str(configured.crowding_min_usd)),
+        crowding_premium_late_bps=int(configured.crowding_premium_late_bps),
+        trigger_max_age_s=int(configured.trigger_max_age_s),
+    )
 
 
 async def run_chain_tape(

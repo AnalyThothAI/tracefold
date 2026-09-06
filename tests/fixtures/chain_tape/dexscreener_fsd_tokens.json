@@ -1,0 +1,1354 @@
+{
+ "schemaVersion": "1.0.0",
+ "pairs": [
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0x94cf0832a40e3447d0c73222f754459b3bd37568b22cf3ca136e64b62d63b2f9",
+   "pairAddress": "0x94cf0832a40e3447d0c73222f754459b3bd37568b22cf3ca136e64b62d63b2f9",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x322F0929c4625eD5bAd873c95208D54E1c003b2d",
+    "name": "Tesla \u2022 Robinhood Token",
+    "symbol": "TSLA"
+   },
+   "priceNative": "0.0000003054",
+   "priceUsd": "0.0001088",
+   "txns": {
+    "m5": {
+     "buys": 8,
+     "sells": 4
+    },
+    "h1": {
+     "buys": 116,
+     "sells": 88
+    },
+    "h6": {
+     "buys": 1167,
+     "sells": 951
+    },
+    "h24": {
+     "buys": 20993,
+     "sells": 21685
+    }
+   },
+   "volume": {
+    "h24": 3383702.07,
+    "h6": 151697.66,
+    "h1": 13468.53,
+    "m5": 391.87
+   },
+   "priceChange": {
+    "m5": -1.57,
+    "h1": -26.83,
+    "h6": -81.12,
+    "h24": 428
+   },
+   "liquidity": {
+    "usd": 78696.52,
+    "base": 456089450,
+    "quote": 81.5694
+   },
+   "fdv": 108833,
+   "marketCap": 108833,
+   "pairCreatedAt": 1788628277000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0x5270cfd0edf5d56be0210e1672d10fd9be577e17a03c19cb0a5d91fe841e1bdf",
+   "pairAddress": "0x5270cfd0edf5d56be0210e1672d10fd9be577e17a03c19cb0a5d91fe841e1bdf",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+    "name": "Global Dollar",
+    "symbol": "USDG"
+   },
+   "priceNative": "0.0001046",
+   "priceUsd": "0.0001046",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 1,
+     "sells": 3
+    },
+    "h6": {
+     "buys": 25,
+     "sells": 41
+    },
+    "h24": {
+     "buys": 905,
+     "sells": 995
+    }
+   },
+   "volume": {
+    "h24": 55776.51,
+    "h6": 260.96,
+    "h1": 10.03,
+    "m5": 0
+   },
+   "priceChange": {
+    "h1": -14.77,
+    "h6": -81.27,
+    "h24": -83.99
+   },
+   "liquidity": {
+    "usd": 91.95,
+    "base": 544394,
+    "quote": 34.9626
+   },
+   "fdv": 104675,
+   "marketCap": 104675,
+   "pairCreatedAt": 1788636249000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0xfa742212c7eeff9cac8382ca3e0d4f8866bfecba8ccd10c39ceadf3857cd421a",
+   "pairAddress": "0xfa742212c7eeff9cac8382ca3e0d4f8866bfecba8ccd10c39ceadf3857cd421a",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x0000000000000000000000000000000000000000",
+    "name": "Ether",
+    "symbol": "ETH"
+   },
+   "priceNative": "0.00000005763",
+   "priceUsd": "0.0001444",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 5,
+     "sells": 10
+    },
+    "h24": {
+     "buys": 222,
+     "sells": 232
+    }
+   },
+   "volume": {
+    "h24": 9323.75,
+    "h6": 120.91,
+    "h1": 0,
+    "m5": 0
+   },
+   "priceChange": {
+    "h6": -74.07,
+    "h24": -88.75
+   },
+   "liquidity": {
+    "usd": 192.53,
+    "base": 1330024,
+    "quote": 0.0001451
+   },
+   "fdv": 144490,
+   "marketCap": 144490,
+   "pairCreatedAt": 1788636882000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0x6cf447770dff43269350ea803fb0fb5a52acde065073e085676f2e7e27534260",
+   "pairAddress": "0x6cf447770dff43269350ea803fb0fb5a52acde065073e085676f2e7e27534260",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+    "name": "Global Dollar",
+    "symbol": "USDG"
+   },
+   "priceNative": "0.0001560",
+   "priceUsd": "0.0001559",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h24": {
+     "buys": 0,
+     "sells": 1
+    }
+   },
+   "volume": {
+    "h24": 34.97,
+    "h6": 0,
+    "h1": 0,
+    "m5": 0
+   },
+   "priceChange": {},
+   "liquidity": {
+    "usd": 100.29,
+    "base": 642031,
+    "quote": 0.1514
+   },
+   "fdv": 155974,
+   "marketCap": 155974,
+   "pairCreatedAt": 1788635386000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0xe2aabf06608e8a19843971c7e1c86fa3d325f22780cdc885d55e09d1270b5e68",
+   "pairAddress": "0xe2aabf06608e8a19843971c7e1c86fa3d325f22780cdc885d55e09d1270b5e68",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+    "name": "Global Dollar",
+    "symbol": "USDG"
+   },
+   "priceNative": "0.0003636",
+   "priceUsd": "0.0003636",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h24": {
+     "buys": 8,
+     "sells": 1
+    }
+   },
+   "volume": {
+    "h24": 23.77,
+    "h6": 0,
+    "h1": 0,
+    "m5": 0
+   },
+   "priceChange": {
+    "h24": 14.95
+   },
+   "liquidity": {
+    "usd": 53.61,
+    "base": 73706,
+    "quote": 26.8001
+   },
+   "fdv": 363681,
+   "marketCap": 363681,
+   "pairCreatedAt": 1788635255000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0xb8043228a3c5c8645ddff4b80cbf1d97ae7eba0acd90ddf1599b6c705c25ed9f",
+   "pairAddress": "0xb8043228a3c5c8645ddff4b80cbf1d97ae7eba0acd90ddf1599b6c705c25ed9f",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+    "name": "Global Dollar",
+    "symbol": "USDG"
+   },
+   "priceNative": "0.001124",
+   "priceUsd": "0.001125",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h24": {
+     "buys": 288,
+     "sells": 247
+    }
+   },
+   "volume": {
+    "h24": 14094.46,
+    "h6": 0,
+    "h1": 0,
+    "m5": 0
+   },
+   "priceChange": {
+    "h24": -6.1
+   },
+   "fdv": 1125093,
+   "marketCap": 1125093,
+   "pairCreatedAt": 1788636555000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0x969862c8f964b5778907f2b3c6515f16221c0fecd5bf17c912aa4eb6c9f7be3f",
+   "pairAddress": "0x969862c8f964b5778907f2b3c6515f16221c0fecd5bf17c912aa4eb6c9f7be3f",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x0000000000000000000000000000000000000000",
+    "name": "Ether",
+    "symbol": "ETH"
+   },
+   "priceNative": "0.00000009924",
+   "priceUsd": "0.0002486",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 0,
+     "sells": 1
+    },
+    "h24": {
+     "buys": 618,
+     "sells": 425
+    }
+   },
+   "volume": {
+    "h24": 28312.85,
+    "h6": 0.83,
+    "h1": 0,
+    "m5": 0
+   },
+   "priceChange": {
+    "h6": -55.35,
+    "h24": -6.42
+   },
+   "liquidity": {
+    "usd": 3.31,
+    "base": 6659.1434,
+    "quote": 0.0006608
+   },
+   "fdv": 248658,
+   "marketCap": 248658,
+   "pairCreatedAt": 1788636045000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0xa6fbb638115b73e7ae4e59fa6ccfceb04643c272c8073a4042f8bac27602472d",
+   "pairAddress": "0xa6fbb638115b73e7ae4e59fa6ccfceb04643c272c8073a4042f8bac27602472d",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+    "name": "Global Dollar",
+    "symbol": "USDG"
+   },
+   "priceNative": "0.0001795",
+   "priceUsd": "0.0001794",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 1
+    },
+    "h6": {
+     "buys": 0,
+     "sells": 3
+    },
+    "h24": {
+     "buys": 26,
+     "sells": 13
+    }
+   },
+   "volume": {
+    "h24": 129.2,
+    "h6": 3.86,
+    "h1": 1.72,
+    "m5": 0
+   },
+   "priceChange": {
+    "h1": -32.81,
+    "h6": -54.89,
+    "h24": 87.12
+   },
+   "liquidity": {
+    "usd": 15.8,
+    "base": 44025,
+    "quote": 7.9032
+   },
+   "fdv": 179460,
+   "marketCap": 179460,
+   "pairCreatedAt": 1788635756000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0x440e7ca381258037fc96979d399b34dba21442ab525f52bca5dc15f7a70cefb8",
+   "pairAddress": "0x440e7ca381258037fc96979d399b34dba21442ab525f52bca5dc15f7a70cefb8",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+    "name": "Global Dollar",
+    "symbol": "USDG"
+   },
+   "priceNative": "0.0001474",
+   "priceUsd": "0.0001475",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 1,
+     "sells": 5
+    },
+    "h24": {
+     "buys": 11,
+     "sells": 17
+    }
+   },
+   "volume": {
+    "h24": 59.09,
+    "h6": 10.11,
+    "h1": 0,
+    "m5": 0
+   },
+   "priceChange": {
+    "h6": -68.55,
+    "h24": -88.66
+   },
+   "liquidity": {
+    "usd": 22.38,
+    "base": 75870,
+    "quote": 11.1886
+   },
+   "fdv": 147525,
+   "marketCap": 147525,
+   "pairCreatedAt": 1788637011000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0x25e821eefd038154984cb7db38ff149615c4479ed467f27fe2637689f0630bda",
+   "pairAddress": "0x25e821eefd038154984cb7db38ff149615c4479ed467f27fe2637689f0630bda",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+    "name": "Global Dollar",
+    "symbol": "USDG"
+   },
+   "priceNative": "0.00009526",
+   "priceUsd": "0.00009546",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 0,
+     "sells": 1
+    },
+    "h24": {
+     "buys": 6,
+     "sells": 10
+    }
+   },
+   "volume": {
+    "h24": 22.66,
+    "h6": 0.72,
+    "h1": 0,
+    "m5": 0
+   },
+   "priceChange": {
+    "h6": -80.26,
+    "h24": -88.14
+   },
+   "liquidity": {
+    "usd": 1.15,
+    "base": 6053.6275,
+    "quote": 0.5766
+   },
+   "fdv": 95463,
+   "marketCap": 95463,
+   "pairCreatedAt": 1788637069000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0x308f07cdde6c5b5259e58bce715ba90580dcfb67b0bb4c01b40637d1530463e9",
+   "pairAddress": "0x308f07cdde6c5b5259e58bce715ba90580dcfb67b0bb4c01b40637d1530463e9",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x0000000000000000000000000000000000000000",
+    "name": "Ether",
+    "symbol": "ETH"
+   },
+   "priceNative": "0.00000006751",
+   "priceUsd": "0.0001694",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 0,
+     "sells": 2
+    },
+    "h24": {
+     "buys": 2,
+     "sells": 6
+    }
+   },
+   "volume": {
+    "h24": 14.27,
+    "h6": 3.4,
+    "h1": 0,
+    "m5": 0
+   },
+   "priceChange": {
+    "h6": -64.18,
+    "h24": -82.64
+   },
+   "liquidity": {
+    "usd": 10.02,
+    "base": 29594,
+    "quote": 0.001998
+   },
+   "fdv": 169437,
+   "marketCap": 169437,
+   "pairCreatedAt": 1788636611000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0xc2092b7444dde05e934facf78a0426b89eaecdf772eb9ba8072a039b314f4600",
+   "pairAddress": "0xc2092b7444dde05e934facf78a0426b89eaecdf772eb9ba8072a039b314f4600",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x0000000000000000000000000000000000000000",
+    "name": "Ether",
+    "symbol": "ETH"
+   },
+   "priceNative": "0.0000001400",
+   "priceUsd": "0.0003473",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h24": {
+     "buys": 6,
+     "sells": 0
+    }
+   },
+   "volume": {
+    "h24": 15.91,
+    "h6": 0,
+    "h1": 0,
+    "m5": 0
+   },
+   "priceChange": {
+    "h24": 113
+   },
+   "liquidity": {
+    "usd": 17.56,
+    "base": 25284,
+    "quote": 0.00354
+   },
+   "fdv": 347376,
+   "marketCap": 347376,
+   "pairCreatedAt": 1788635820000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0x71799b63aba4b80f8a384590e1eb63c903926090fc8d87bc2ef563b014967bc3",
+   "pairAddress": "0x71799b63aba4b80f8a384590e1eb63c903926090fc8d87bc2ef563b014967bc3",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x0000000000000000000000000000000000000000",
+    "name": "Ether",
+    "symbol": "ETH"
+   },
+   "priceNative": "0.0000001300",
+   "priceUsd": "0.0003225",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h24": {
+     "buys": 3,
+     "sells": 0
+    }
+   },
+   "volume": {
+    "h24": 2.55,
+    "h6": 0,
+    "h1": 0,
+    "m5": 0
+   },
+   "priceChange": {
+    "h24": 113
+   },
+   "liquidity": {
+    "usd": 2.25,
+    "base": 3492.5752,
+    "quote": 0.0004541
+   },
+   "fdv": 322542,
+   "marketCap": 322542,
+   "pairCreatedAt": 1788635831000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0xe607586a103851931aecc617453111c84b65207a80be33f11f1338dcc816272b",
+   "pairAddress": "0xe607586a103851931aecc617453111c84b65207a80be33f11f1338dcc816272b",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x0000000000000000000000000000000000000000",
+    "name": "Ether",
+    "symbol": "ETH"
+   },
+   "priceNative": "0.0000005878",
+   "priceUsd": "0.001458",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h24": {
+     "buys": 1,
+     "sells": 1
+    }
+   },
+   "volume": {
+    "h24": 8.24,
+    "h6": 0,
+    "h1": 0,
+    "m5": 0
+   },
+   "priceChange": {
+    "h24": -36.49
+   },
+   "liquidity": {
+    "usd": 25.43,
+    "base": 8722.8745,
+    "quote": 0.005127
+   },
+   "fdv": 1458097,
+   "marketCap": 1458097,
+   "pairCreatedAt": 1788636844000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0x5b4248d56f5389a8ae9472cf168b03655e849b343b8cd907a2b210e124864f3e",
+   "pairAddress": "0x5b4248d56f5389a8ae9472cf168b03655e849b343b8cd907a2b210e124864f3e",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x0000000000000000000000000000000000000000",
+    "name": "Ether",
+    "symbol": "ETH"
+   },
+   "priceNative": "0.00000006710",
+   "priceUsd": "0.0001664",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h24": {
+     "buys": 2,
+     "sells": 0
+    }
+   },
+   "volume": {
+    "h24": 5.92,
+    "h6": 0,
+    "h1": 0,
+    "m5": 0
+   },
+   "priceChange": {
+    "h24": 39.27
+   },
+   "liquidity": {
+    "usd": 1.3,
+    "base": 3930.8889,
+    "quote": 0.0002637
+   },
+   "fdv": 166492,
+   "marketCap": 166492,
+   "pairCreatedAt": 1788635824000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0x20e729da8ecd9598646fa886b8ba80b312e6c36dc0a83031235263dfd09d2a41",
+   "pairAddress": "0x20e729da8ecd9598646fa886b8ba80b312e6c36dc0a83031235263dfd09d2a41",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+    "name": "Global Dollar",
+    "symbol": "USDG"
+   },
+   "priceNative": "0.0001853",
+   "priceUsd": "0.0001854",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h24": {
+     "buys": 2,
+     "sells": 0
+    }
+   },
+   "volume": {
+    "h24": 1.24,
+    "h6": 0,
+    "h1": 0,
+    "m5": 0
+   },
+   "priceChange": {
+    "h24": 44.04
+   },
+   "liquidity": {
+    "usd": 1.02,
+    "base": 2756.3127,
+    "quote": 0.511
+   },
+   "fdv": 185436,
+   "marketCap": 185436,
+   "pairCreatedAt": 1788635768000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0x4f6e145cae7878a7c5e63df88e70e9294f8e37dccd1c3e700d08dfad565ab5fc",
+   "pairAddress": "0x4f6e145cae7878a7c5e63df88e70e9294f8e37dccd1c3e700d08dfad565ab5fc",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+    "name": "Global Dollar",
+    "symbol": "USDG"
+   },
+   "priceNative": "0.0001216",
+   "priceUsd": "0.0001217",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h24": {
+     "buys": 1,
+     "sells": 0
+    }
+   },
+   "volume": {
+    "h24": 0.73,
+    "h6": 0,
+    "h1": 0,
+    "m5": 0
+   },
+   "priceChange": {},
+   "liquidity": {
+    "usd": 0.21,
+    "base": 881.05432,
+    "quote": 0.1072
+   },
+   "fdv": 121701,
+   "marketCap": 121701,
+   "pairCreatedAt": 1788638522000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0xe73d5307b3a79ed9ddd8507b8d06394a006999db75c2151769078a68dc31e132",
+   "pairAddress": "0xe73d5307b3a79ed9ddd8507b8d06394a006999db75c2151769078a68dc31e132",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+    "name": "Global Dollar",
+    "symbol": "USDG"
+   },
+   "priceNative": "0.000000000000000000000000002938",
+   "priceUsd": "0.000000000000000000000000002940",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h24": {
+     "buys": 751,
+     "sells": 747
+    }
+   },
+   "volume": {
+    "h24": 41180.52,
+    "h6": 0,
+    "h1": 0,
+    "m5": 0
+   },
+   "priceChange": {
+    "h24": -100
+   },
+   "pairCreatedAt": 1788636448000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0x34ba4dff6de9b92d387deb05dd1f7056ac456d1a79ae54ee03e3a523725f38b5",
+   "pairAddress": "0x34ba4dff6de9b92d387deb05dd1f7056ac456d1a79ae54ee03e3a523725f38b5",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+    "name": "Global Dollar",
+    "symbol": "USDG"
+   },
+   "priceNative": "0.00001661",
+   "priceUsd": "0.00001664",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h24": {
+     "buys": 14,
+     "sells": 0
+    }
+   },
+   "volume": {
+    "h24": 15.65,
+    "h6": 0,
+    "h1": 0,
+    "m5": 0
+   },
+   "priceChange": {
+    "h24": 782
+   },
+   "liquidity": {
+    "usd": 0.42,
+    "base": 12725,
+    "quote": 0.2114
+   },
+   "fdv": 16646,
+   "marketCap": 16646,
+   "pairCreatedAt": 1788635829000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  },
+  {
+   "chainId": "robinhood",
+   "dexId": "uniswap",
+   "url": "https://dexscreener.com/robinhood/0xd524128be16d9a1a02d9ee8230ccb4c3eda5d6678f4721fc3a9b50eca45b15d9",
+   "pairAddress": "0xd524128be16d9a1a02d9ee8230ccb4c3eda5d6678f4721fc3a9b50eca45b15d9",
+   "labels": [
+    "v4"
+   ],
+   "baseToken": {
+    "address": "0x8De9018C1bB82884245F06dedE9fE2BEbAbd1e18",
+    "name": "Full Send Degen",
+    "symbol": "FSD"
+   },
+   "quoteToken": {
+    "address": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+    "name": "Global Dollar",
+    "symbol": "USDG"
+   },
+   "priceNative": "0.000000000000000000000000002938",
+   "priceUsd": "0.000000000000000000000000002937",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h24": {
+     "buys": 95,
+     "sells": 62
+    }
+   },
+   "volume": {
+    "h24": 1457.61,
+    "h6": 0,
+    "h1": 0,
+    "m5": 0
+   },
+   "priceChange": {
+    "h24": -100
+   },
+   "pairCreatedAt": 1788635279000,
+   "info": {
+    "imageUrl": "https://cdn.dexscreener.com/cms/images/MP5KFVcHqKa2vOzl?width=800&height=800&quality=95&format=auto",
+    "header": "https://cdn.dexscreener.com/cms/images/zJLRmg03lobu06FZ?width=1500&height=500&quality=95&format=auto",
+    "openGraph": "https://cdn.dexscreener.com/token-images/og/robinhood/0x8de9018c1bb82884245f06dede9fe2bebabd1e18?timestamp=1788671400000",
+    "websites": [],
+    "socials": [
+     {
+      "url": "https://x.com/FullSendDegen_",
+      "type": "twitter"
+     }
+    ]
+   }
+  }
+ ]
+}

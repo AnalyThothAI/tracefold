@@ -24,7 +24,7 @@ from tracefold.news.market_notifications import (
 )
 from tracefold.news.oi_signals import measurement_definition, oi_source_contract
 from tracefold.news.smart_money import parse_smart_money
-from tracefold.news.source_contracts import MARKET_PROVIDER
+from tracefold.news.source_contracts import MARKET_KINDS, MARKET_PROVIDER
 from tracefold.news.storage import market as market_storage
 
 pytestmark = pytest.mark.integration
@@ -329,7 +329,7 @@ def test_backfilled_smart_money_records_group_by_account_once_a_fact_names_one(c
     assert group["latest"]["account_address"] == address
 
 
-def test_the_kind_filter_narrows_and_the_source_summary_always_names_all_four(conn) -> None:
+def test_the_kind_filter_narrows_and_the_source_summary_always_names_every_kind(conn) -> None:
     repos = repositories_for_connection(conn)
     news = repos.news
     liquidation = parse_liquidation(
@@ -353,7 +353,7 @@ def test_the_kind_filter_narrows_and_the_source_summary_always_names_all_four(co
     assert [group["market_kind"] for group in _groups(news)] == ["liquidation", "oi"]
 
     sources = {row["market_kind"]: row for row in news.market_sources(from_ms=NOW - 1, to_ms=NOW + 3_600_000)}
-    assert set(sources) == {"oi", "liquidation", "smart_money", "unknown_market"}
+    assert set(sources) == set(MARKET_KINDS)
     assert (sources["oi"]["received"], sources["oi"]["parsed"], sources["oi"]["groups"]) == (1, 1, 1)
     assert sources["smart_money"] == {
         "market_kind": "smart_money",

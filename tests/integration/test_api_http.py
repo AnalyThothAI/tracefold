@@ -157,6 +157,9 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
         "liquidation",
         "smart_money",
         "unknown_market",
+        # #572 PR-2: derived by the chain tape rather than reported by a provider, and summarised
+        # beside the four the provider sends whether or not it has anything to report.
+        "wallet",
     }
     assert {row["outcome"]["kind"] for row in feed_data["events"]} <= {
         "held_recovery",

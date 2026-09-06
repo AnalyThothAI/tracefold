@@ -19,6 +19,7 @@ const MARKET_KIND_LABELS: Record<NewsMarketKind, string> = {
   liquidation: "清算",
   smart_money: "聪明钱",
   unknown_market: "原文",
+  wallet: "链上钱包",
 };
 
 const MARKET_KIND_TITLES: Record<NewsMarketKind, string> = {
@@ -26,6 +27,7 @@ const MARKET_KIND_TITLES: Record<NewsMarketKind, string> = {
   liquidation: "强平：单笔强制平仓回报",
   smart_money: "聪明钱：被跟踪账户的开平仓动作",
   unknown_market: "未识别来源：没有解析器，只保留供应商原始行",
+  wallet: "链上钱包：名单地址的减仓/清仓与拥挤买入，由链上成交推导",
 };
 
 export function marketKindLabel(kind: NewsMarketKind): string {

@@ -3040,7 +3040,8 @@
               "oi",
               "liquidation",
               "smart_money",
-              "unknown_market"
+              "unknown_market",
+              "wallet"
             ],
             "title": "Market Kind",
             "type": "string"
@@ -3253,7 +3254,8 @@
               "oi",
               "liquidation",
               "smart_money",
-              "unknown_market"
+              "unknown_market",
+              "wallet"
             ],
             "title": "Market Kind",
             "type": "string"
@@ -3447,6 +3449,267 @@
             ],
             "title": "Trader Label"
           },
+          "wallet_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Address"
+          },
+          "wallet_balance_before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Balance Before"
+          },
+          "wallet_basis": {
+            "anyOf": [
+              {
+                "enum": [
+                  "chain_balance",
+                  "site_reported"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Basis"
+          },
+          "wallet_block_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Block Number"
+          },
+          "wallet_closed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Closed"
+          },
+          "wallet_crowding_item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Crowding Item Id"
+          },
+          "wallet_entry_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Entry Price"
+          },
+          "wallet_followers": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Followers"
+          },
+          "wallet_handle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Handle"
+          },
+          "wallet_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "exit",
+                  "crowding"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Kind"
+          },
+          "wallet_liquidity_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Liquidity Usd"
+          },
+          "wallet_mark_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Mark Price"
+          },
+          "wallet_peer_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Peer Usd"
+          },
+          "wallet_peer_wallets": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Peer Wallets"
+          },
+          "wallet_position_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Position Usd"
+          },
+          "wallet_premium_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Premium Bps"
+          },
+          "wallet_quantity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Quantity"
+          },
+          "wallet_ratio_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Ratio Bps"
+          },
+          "wallet_segment_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Segment Key"
+          },
+          "wallet_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Token"
+          },
+          "wallet_tone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Tone"
+          },
+          "wallet_tx_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Tx Hash"
+          },
+          "wallet_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wallet Usd"
+          },
           "whale_long_profit_bps": {
             "anyOf": [
               {
@@ -3548,7 +3811,8 @@
               "oi",
               "liquidation",
               "smart_money",
-              "unknown_market"
+              "unknown_market",
+              "wallet"
             ],
             "title": "Market Kind",
             "type": "string"

@@ -1,0 +1,16 @@
+{
+  "_recorded": "eth_call balanceOf(0x69326e48f68500fb6cf3b3a7da640737b9cc347b) on FSD at block 0x34dd6c1 (55432993), 2026-09-06",
+  "result": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": "0x00000000000000000000000000000000000000000007c93458270b932e30c400"
+  },
+  "pruned": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+      "code": -32000,
+      "message": "metadata is not found"
+    }
+  }
+}

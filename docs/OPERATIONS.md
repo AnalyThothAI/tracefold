@@ -1544,13 +1544,14 @@ tolerance are code-owned; `news.venues.binance` / `news.venues.hyperliquid` /
 `news.venues.enabled` are the only switches, shared with the instrument
 snapshot.
 
-### Robinhood Chain wallet tape (#572 PR-1)
+### Robinhood Chain wallet tape (#572)
 
-Off by default and store-only: when `news.chain_tape.enabled` is true,
-`news-chain-tape` writes `news_market_wallet_fills` and
-`news_market_wallet_roster` and sends nothing. Both providers are public and
-unauthenticated, so nothing here is a secret and `uv run tracefold config`
-prints all of it under `news.chain_tape`:
+Off by default. When `news.chain_tape.enabled` is true, `news-chain-tape` writes
+`news_market_wallet_fills` and `news_market_wallet_roster`, and — since #572
+PR-2 — reads those fills against the rules below and opens `wallet` market Items
+that the ordinary market notification loop sends as Feishu cards. Every provider
+it touches is public and unauthenticated, so nothing here is a secret and
+`uv run tracefold config` prints all of it under `news.chain_tape`:
 
 | Key | Default | What it decides |
 | --- | --- | --- |
@@ -1562,11 +1563,49 @@ prints all of it under `news.chain_tape`:
 | `news.chain_tape.roster.min_profit_factor` | `1.2` | the profit factor it must also clear. Win rate is deliberately not a criterion (#572 §3.2) |
 | `news.chain_tape.roster.top_quality` | `20` | how many of those to keep, ranked by realized profit and loss |
 | `news.chain_tape.roster.top_whale_by_open_cost` | `20` | how many wallets to follow purely for position size, with no performance filter |
+| `news.chain_tape.rules.exit_ratio_bps` | `3000` | how much of a position must leave in one sell before it is a card. Strictly greater: exactly 30% does not trigger |
+| `news.chain_tape.rules.exit_min_position_usd` | `20000` | how big the position must have been for the exit to earn a card on its own size |
+| `news.chain_tape.rules.exit_cascade_window_s` | `7200` | how far back to look for other roster wallets buying the same token |
+| `news.chain_tape.rules.exit_cascade_min_usd` | `5000` | the smaller position floor that applies when at least one other roster wallet bought inside that window |
+| `news.chain_tape.rules.crowding_n` | `3` | how many roster wallets must open a position in the same token before it is a crowding card |
+| `news.chain_tape.rules.crowding_window_s` | `900` | the window they must all open inside |
+| `news.chain_tape.rules.crowding_min_usd` | `1000` | how much each of them must have put in inside that window to be counted |
+| `news.chain_tape.rules.crowding_premium_late_bps` | `3000` | the median follower entry premium over the lead at which the card is marked `late` |
+| `news.chain_tape.rules.trigger_max_age_s` | `600` | how far a fill's block time may lag the moment this host read it and still fire a rule. This is what keeps a backfill from sending cards |
 | `news.chain_tape.retention_days` | `90` | how long a fill is kept. The Janitor deletes at most 500 expired fills per turn on its existing heavy slot |
 
 The roster union is the topic array on every `eth_getLogs` call, so raising the
 two `top_*` numbers raises the request the public endpoint has to answer; the
 settings model caps each at 200.
+
+The `rules.*` block is #572 §6.4's **medium tier**, chosen on 2026-09-06 from the
+provider's own seven-day close ledger and projected at 25-40 cards a day. They
+are runtime values: raising `exit_min_position_usd` or `crowding_n` makes the
+channel quieter within a restart, and nothing about them is release evidence.
+`trigger_max_age_s` is the one to leave alone unless you mean it — the tape was
+seeded with a 24-hour backfill, and widening this would card all of it.
+
+Two card kinds, and both are decided before an Item exists. An **exit** is a
+roster wallet selling more than `exit_ratio_bps` of what it held, or selling the
+last of it, out of a position worth `exit_min_position_usd` — or worth
+`exit_cascade_min_usd` while at least one other roster wallet bought the same
+token inside `exit_cascade_window_s`. A **crowding** card is `crowding_n` roster
+wallets each putting `crowding_min_usd` into the same token inside
+`crowding_window_s`, each of them opening the position in that window.
+
+The denominator of an exit is read from the chain where it can be: `balanceOf`
+at the block before the sell, which the public node holds for about ten minutes.
+Outside that window it is the provider's own reported bag plus the amount that
+just left, and the card says `口径 持仓推算` rather than `口径 链上余额`. This is
+deliberately relaxed (#572's 2026-09-06 decision): a card with a stated basis
+beats no card. `news_market_wallet_checks` records every attempt, including the
+failed ones, which is the evidence for how often each basis is used.
+
+There is no third fallback. When the RPC will not answer *and* the provider will
+not either, the sell produces no card and no check row: nothing knows what was
+held, and reading that as a full exit is how a rate-limited turn during a partial
+sell would become a `清仓` card. A rising count of sells with no check row beside
+them, with `last_error` naming `robinhoodtrenches:*`, is that path.
 
 The week-one calibration counts #572 §6 asks for are three read-only queries:
 
@@ -1654,6 +1693,57 @@ but a count has no key to collapse on, so a movement is added to `ignored_inboun
 of `high_water_block` by roughly the overlap; that gap is the feature, not a fault. Both totals move
 only when the turn's write commits, which is why the Prometheus counters are emitted on the same
 condition — otherwise the two would disagree by exactly the refused turns.
+
+Cards sent and the basis they were sent on, per day:
+
+```sql
+SELECT to_char(to_timestamp(e.event_at_ms / 1000) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+       e.kind,
+       coalesce(e.basis, '-') AS basis,
+       count(*) FILTER (WHERE d.state = 'sent') AS sent,
+       count(*) FILTER (WHERE d.state IS DISTINCT FROM 'sent') AS not_sent,
+       count(*) FILTER (WHERE e.tone = 'late') AS late
+  FROM news_market_wallet_events e
+  LEFT JOIN news_items i ON i.item_id = e.item_id
+  LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
+ WHERE e.event_at_ms >= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - 7 * 86400000
+ GROUP BY 1, 2, 3
+ ORDER BY 1 DESC, 2, 3;
+```
+
+The effect receipt #572 §11 asks for — each sent card beside what its token did
+one and four hours later. It is a receipt, not a gate: nothing in the code reads
+it, and a negative column is an answer rather than a fault:
+
+```sql
+SELECT e.kind,
+       e.token_symbol,
+       to_timestamp(d.settled_at_ms / 1000) AT TIME ZONE 'UTC' AS sent_at,
+       e.mark_price AS price_at_card,
+       max(o.price) FILTER (WHERE o.horizon = '1h') AS price_1h,
+       max(o.price) FILTER (WHERE o.horizon = '4h') AS price_4h,
+       round(100 * (max(o.price) FILTER (WHERE o.horizon = '1h') / nullif(e.mark_price, 0) - 1), 2) AS pct_1h,
+       round(100 * (max(o.price) FILTER (WHERE o.horizon = '4h') / nullif(e.mark_price, 0) - 1), 2) AS pct_4h,
+       count(*) FILTER (WHERE o.source = 'unavailable') AS unpriced_horizons
+  FROM news_market_deliveries d
+  JOIN news_market_wallet_events e ON e.item_id = d.trigger_item_id
+  LEFT JOIN news_market_wallet_outcomes o ON o.delivery_key = d.delivery_key
+ WHERE d.state = 'sent'
+   AND d.settled_at_ms >= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - 7 * 86400000
+ GROUP BY e.kind, e.token_symbol, d.settled_at_ms, e.mark_price
+ ORDER BY sent_at DESC;
+```
+
+A horizon with no row yet is still due; one recorded with
+`source = 'unavailable'` is a horizon nothing could price within the grace
+period, which is a different fact from "not yet". The grace is fifteen minutes,
+not a day: a price read three hours after the one-hour mark does not answer the
+one-hour question, and a row that is never banked would keep occupying the turn's
+receipt budget for as long as it stays unpriceable. Each horizon gets its own half
+of that budget, so a backlog on one cannot hide the other. The price comes from
+DexScreener's deepest Robinhood Chain pool, and falls back to the provider's own
+`mark` (`source = 'robinhoodtrenches_mark'`) when DexScreener does not index the
+token; a non-positive figure from either is not a price and is treated as none.
 
 `last_outcome = 'partial'` with a `last_error` naming `robinhood_rpc:*` or
 `robinhoodtrenches:*` is the expected shape of a provider hiccup: the position

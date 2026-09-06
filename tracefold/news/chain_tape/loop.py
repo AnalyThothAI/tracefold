@@ -18,8 +18,12 @@ Nothing here can be root-fatal by construction. A provider failure ends the turn
 intact and is recorded; the only exceptions that leave `advance()` are the database port's, which the
 Workers root confines to the `chain_tape` capability.
 
-Store-only in PR-1: no `news_items` row, no card, no notification, no balance check. The first week's
-counts are the calibration input for the thresholds in #572 §6.4.
+PR-2 adds the second half of the turn (#572 PR-2). Once this turn's fills are committed, `derive`
+verifies the sells, asks the rules whether anything is worth a card, and opens one ordinary market Item
+per card through the same admission transaction the provider's four market kinds go through; then it
+fills in the +1h/+4h price receipts for cards already sent. Nothing there can fault the tape: a provider
+that does not answer costs a line on a card or leaves a receipt due, and the fills are committed before
+any of it runs.
 """
 
 from __future__ import annotations
@@ -81,6 +85,20 @@ ROSTER_SOURCE: Final[NewsExternalDataSource] = "robinhoodtrenches"
 # "This provider call did not answer". Distinct from a provider that answered `None`, which is a fact
 # about the chain (no such transaction) rather than a failure.
 _FAILED: Final = object()
+
+
+class WalletCardPort(Protocol):
+    """The rules half of the turn, as a protocol rather than an import (#572 PR-2).
+
+    `derive` lives in a module that reaches the admission path, and the admission path reaches the
+    concrete News repository -- which is the module that imports this package in the first place. A
+    protocol here is what keeps that a composition edge instead of an import cycle: the loop knows there
+    is something that reads its fills and takes its receipts, and the composition root knows what.
+    """
+
+    async def derive(self, fills: Sequence[Any], *, roster: RosterSnapshot, errors: list[str]) -> Any: ...
+
+    async def take_outcomes(self, errors: list[str]) -> Any: ...
 
 
 class ChainLogPort(Protocol):
@@ -160,6 +178,7 @@ class ChainTapeLoop:
         catch_up_blocks_max: int = CATCH_UP_BLOCKS_MAX,
         receipts_per_turn_max: int = RECEIPTS_PER_TURN_MAX,
         telemetry: NewsExternalDataTelemetryPort | None = None,
+        deriver: WalletCardPort | None = None,
     ) -> None:
         self.db = db
         self.chain = chain
@@ -170,6 +189,9 @@ class ChainTapeLoop:
         self.catch_up_blocks_max = max(1, int(catch_up_blocks_max))
         self.receipts_per_turn_max = max(1, int(receipts_per_turn_max))
         self.telemetry = telemetry
+        # The rules half of the turn (#572 PR-2). Absent means store-only, which is what every test that
+        # is about ingestion alone constructs.
+        self.deriver = deriver
         self.last_result: dict[str, Any] | None = None
         self.last_error: str | None = None
         self._roster: RosterSnapshot | None = None
@@ -182,8 +204,9 @@ class ChainTapeLoop:
         """Release whatever the two provider ports hold. A port with nothing to release says so by
         not having the method; the loop never learns what an adapter's session is."""
 
-        for provider in (self.chain, self.roster_provider):
-            close = getattr(provider, "aclose", None)
+        prices = None if self.deriver is None else getattr(self.deriver, "prices", None)
+        for provider in (self.chain, self.roster_provider, prices):
+            close = None if provider is None else getattr(provider, "aclose", None)
             if close is not None:
                 await close()
 
@@ -302,6 +325,11 @@ class ChainTapeLoop:
             # ever counted again, whatever the classified position does.
             noise_cursor=counted_through,
         )
+        # The rules run only against committed fills. A refused store means the same movements are read
+        # again next turn, and a card opened against rows that were rolled back would be a card about
+        # facts this database does not hold.
+        if self.deriver is not None and not self._store_refused:
+            await self._derive(fills, roster=roster, result=result, errors=errors)
         self._record_turn(
             started,
             "partial" if errors else "success",
@@ -310,6 +338,28 @@ class ChainTapeLoop:
             stored=not self._store_refused,
         )
         return result
+
+    async def _derive(
+        self,
+        fills: Sequence[ClassifiedFill],
+        *,
+        roster: RosterSnapshot,
+        result: dict[str, Any],
+        errors: list[str],
+    ) -> None:
+        """The rules half of the turn. Bounded, and never able to fail the ingestion half.
+
+        It is called after the store commits and its counters ride on the same turn result, so an
+        operator reading the state row sees "read this, stored that, opened these cards" as one answer.
+        """
+
+        derived = await self.deriver.derive(fills, roster=roster, errors=errors)  # type: ignore[union-attr]
+        receipts = await self.deriver.take_outcomes(errors)  # type: ignore[union-attr]
+        result["checks"] = derived.checks
+        result["exit_cards"] = derived.exits
+        result["crowding_cards"] = derived.crowding
+        result["outcomes"] = receipts.outcomes
+        result["outcomes_unavailable"] = receipts.unavailable
 
     async def _end(
         self,
@@ -704,6 +754,13 @@ def _empty_result() -> dict[str, Any]:
         "ignored_inbound": 0,
         "unknown": 0,
         "pending": 0,
+        # The PR-2 half of the turn, always present so a store-only turn and a carding turn answer the
+        # same shape.
+        "checks": 0,
+        "exit_cards": 0,
+        "crowding_cards": 0,
+        "outcomes": 0,
+        "outcomes_unavailable": 0,
     }
 
 
@@ -771,4 +828,5 @@ __all__ = [
     "ChainTapeLoop",
     "ChainTapeRepositories",
     "RosterProviderPort",
+    "WalletCardPort",
 ]

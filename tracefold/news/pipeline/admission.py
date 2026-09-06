@@ -44,6 +44,7 @@ from ..source_contracts import (
 )
 from ..storage.events import prepare_evidence_snapshot
 from ..telemetry import NewsWorkSemantics
+from ..wallet_contracts import WALLET_PROVIDER, WALLET_SOURCE_ID, WalletEvent
 from .runtime import NewsDatabasePort
 
 log = logging.getLogger("tracefold.news")
@@ -153,13 +154,21 @@ class _PreparedMarket:
     # instant is the admission transaction's own `now_ms`.
     event_at_ms: int
     received_at_ms: int
-    fact: FactUnit
+    # Absent for the one market kind that is not extracted from provider text at all: a `wallet`
+    # observation is derived by this process from chain logs, so there is no line to have pulled a
+    # FactUnit out of and inventing one would claim an extraction that never happened (#572 PR-2).
+    fact: FactUnit | None = None
+    # Which source this Item belongs to. Every provider frame is OpenNews's; a wallet observation is
+    # the chain's, and the two must not share an identity space -- `item_id` is
+    # `sha256(source_id, source_item_key)`.
+    source_id: str = OPENNEWS_SOURCE_ID
     oi: oi_signals.OiSignal | None = None
     oi_source: oi_signals.OiSourceContract | None = None
     oi_event_id: str = ""
     source_venue: str | None = None
     liquidation: liquidations.LiquidationFact | None = None
     smart_money_fact: smart_money.SmartMoneyFact | None = None
+    wallet: WalletEvent | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -466,7 +475,7 @@ def admit_market_item(
     news = repos.news
     inserted = news.upsert_item(
         item_id=prepared.item_id,
-        source_id=OPENNEWS_SOURCE_ID,
+        source_id=prepared.source_id,
         source_item_key=prepared.provider_record_id,
         title=prepared.parent.title or prepared.title or "(untitled)",
         raw_first_line=prepared.parent.first_line[:500],
@@ -529,7 +538,70 @@ def _write_market_fact(news: Any, prepared: _PreparedMarket, *, ingest_mode: str
     if prepared.smart_money_fact is not None:
         news.insert_market_smart_money(fact=prepared.smart_money_fact, ingest_mode=ingest_mode, now_ms=now_ms)
         return True
+    if prepared.wallet is not None:
+        return bool(news.chain_tape_insert_wallet_event(prepared.wallet))
     return False
+
+
+def prepare_wallet_observation(event: WalletEvent) -> _PreparedMarket:
+    """One derived wallet observation, ready for the same admission transaction every market kind uses.
+
+    This exists so the wallet rules do not grow an admission path of their own. What reaches PostgreSQL
+    is an ordinary market Item -- `market_kind = 'wallet'`, `market_notify_state = 'pending'` -- plus one
+    typed fact row, written together by `admit_market_item`, which is the same contract #553 wrote for
+    OI, liquidation and smart money.
+
+    Two things are deliberately different, and both are facts rather than accommodations. The source is
+    the chain rather than OpenNews, because `item_id` is `sha256(source_id, source_item_key)` and two
+    providers must not share an identity space. And there is no FactUnit: nothing extracted this from a
+    line of provider text, so the field stays empty rather than carrying an invented one.
+    """
+
+    title = event.title or f"{event.kind} {event.token_symbol or event.token}"
+    return _PreparedMarket(
+        item_id=event.item_id,
+        provider_record_id=wallet_record_key(event),
+        market_kind="wallet",
+        # No Strategy reported this. The provider that did is on the fact row, per row, as #553 §5.2
+        # said the second provider would be.
+        source_strategy_id="",
+        parse_status="parsed",
+        parse_error=None,
+        provider_metadata_json=canonical_json({"source": WALLET_PROVIDER, "strategies": []}),
+        provider_params_json=canonical_json(dict(event.evidence or {})),
+        strategy_ids_json="[]",
+        raw_text=title,
+        parent=ExtractedTitle(title=title, comparison="", first_line=title, token_count=0, url_slug=False),
+        title=title,
+        description="",
+        canonical_url=None,
+        reporting_origin=WALLET_PROVIDER,
+        source_artifact_id="",
+        event_at_ms=int(event.event_at_ms),
+        received_at_ms=int(event.received_at_ms),
+        source_id=WALLET_SOURCE_ID,
+        wallet=event,
+    )
+
+
+def wallet_record_key(event: WalletEvent) -> str:
+    """The chain-side identity one wallet observation is keyed on, and it is the rule's own subject.
+
+    An exit is the sell that triggered it -- one movement, one card, and a re-run of the same turn
+    recomputes the same key. A crowding card is its token, its window and how many wallets it counted,
+    so the doubling follow-up the rule allows is a different Item rather than a silent overwrite of the
+    card a reader already has.
+    """
+
+    if event.kind == "exit":
+        return f"exit|{event.chain_id}|{event.wallet}|{event.token}|{event.tx_hash}"
+    return f"crowding|{event.chain_id}|{event.token}|{event.window_from_ms}|{event.peer_wallets}"
+
+
+def wallet_item_id(event: WalletEvent) -> str:
+    """The Item identity for one wallet observation, by the same rule every other Item uses."""
+
+    return item_identity(source_id=WALLET_SOURCE_ID, source_item_key=wallet_record_key(event))
 
 
 def admit_frame(
@@ -1236,5 +1308,8 @@ __all__ = [
     "admit_item",
     "admit_market_item",
     "item_identity",
+    "prepare_wallet_observation",
     "publish_event",
+    "wallet_item_id",
+    "wallet_record_key",
 ]

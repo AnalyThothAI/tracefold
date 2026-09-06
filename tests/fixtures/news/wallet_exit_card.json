@@ -1,0 +1,41 @@
+{
+  "config": {
+    "wide_screen_mode": true
+  },
+  "elements": [
+    {
+      "content": "0xVantaa（12.3 万粉丝） · FSD · 05:12\n清仓 9,412,641.98 FSD · $23,531.60\n卖前持仓 9,412,641.98 · 约 $23,531.60 · 口径 链上余额\n进场均价 $0.0018 · 现价 $0.0025\ntx 0x5c10c3cf · 区块 55,432,994\n名单为原站统计所选，历史样本很短；卡片只陈述链上成交，不构成建议。\nFSD · robinhood_chain wallet（1 条报道） · 05:12",
+      "tag": "markdown"
+    },
+    {
+      "actions": [
+        {
+          "tag": "button",
+          "text": {
+            "content": "打开明细",
+            "tag": "plain_text"
+          },
+          "type": "default",
+          "url": "https://tracefold-win.big9er.com/news/market/45314f370a1d9d0d00bbcbbb0d09d0e522d1d648990865d97a4caf8faccaf010"
+        }
+      ],
+      "tag": "action"
+    },
+    {
+      "elements": [
+        {
+          "content": "Tracefold 市场 · wallet|exit|robinhood_ch",
+          "tag": "plain_text"
+        }
+      ],
+      "tag": "note"
+    }
+  ],
+  "header": {
+    "template": "orange",
+    "title": {
+      "content": "链上钱包 · 清仓 · FSD",
+      "tag": "plain_text"
+    }
+  }
+}

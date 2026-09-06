@@ -367,9 +367,9 @@ news:
     bitget: true
     us_reference: true
     snapshot_period_hours: 6.0
-  # #572 PR-1: the Robinhood Chain wallet tape. Two public read-only endpoints, no credentials, and
-  # store-only -- it writes fills and roster versions and sends nothing. Off until an operator turns
-  # it on.
+  # #572: the Robinhood Chain wallet tape. Public read-only endpoints, no credentials. When it is on it
+  # stores what followed wallets did and, under `rules`, sends exit and crowding cards through the same
+  # market notification loop every other market card goes through. Off until an operator turns it on.
   chain_tape:
     enabled: false
     rpc_url: "https://rpc.mainnet.chain.robinhood.com"
@@ -380,6 +380,16 @@ news:
       min_profit_factor: 1.2
       top_quality: 20
       top_whale_by_open_cost: 20
+    rules:
+      exit_ratio_bps: 3000
+      exit_min_position_usd: 20000.0
+      exit_cascade_window_s: 7200
+      exit_cascade_min_usd: 5000.0
+      crowding_n: 3
+      crowding_window_s: 900
+      crowding_min_usd: 1000.0
+      crowding_premium_late_bps: 3000
+      trigger_max_age_s: 600
     retention_days: 90
   watchlist: []
 

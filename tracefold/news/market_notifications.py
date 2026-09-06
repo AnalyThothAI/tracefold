@@ -52,6 +52,7 @@ from .reader_card import (
     ReaderCardNote,
     ReaderCardQuote,
     ReaderCardTimes,
+    ReaderCardWallet,
     reader_news,
     reader_quotes,
 )
@@ -91,8 +92,10 @@ SEND_ATTEMPTS_MAX: Final = 3
 CARD_METRIC_LINES_MAX: Final = 4
 
 # `raw` is a classification of a record, not a card family: an unstructured record is stored and
-# readable and is never notified (#582 §3.2).
-MarketFamily = Literal["oi", "liquidation", "smart_money", "raw"]
+# readable and is never notified (#582 §3.2). `wallet` is the opposite kind of addition -- a family
+# whose observations this process derived rather than received, and which always earns a card,
+# because the rules that produced it already decided that (#572 PR-2).
+MarketFamily = Literal["oi", "liquidation", "smart_money", "wallet", "raw"]
 # What this loop can write. `news_market_deliveries_reason_check` and the API's own Literal still
 # accept `raw`, because the four cards production sent under that reason are receipts and a receipt
 # is not rewritten by a rule change.
@@ -230,6 +233,32 @@ class MarketObservation:
     action: str | None = None
     position_side: str | None = None
     pnl_usd: str | None = None
+    # The chain wallet family (#572 PR-2). Every one of these was computed by the tape from stored
+    # fills and the provider's own figures; none of them is a number a provider reported about itself.
+    wallet_kind: str | None = None
+    wallet_address: str | None = None
+    wallet_handle: str | None = None
+    wallet_followers: int | None = None
+    wallet_token: str | None = None
+    wallet_segment_key: str | None = None
+    wallet_tone: str | None = None
+    wallet_ratio_bps: int | None = None
+    wallet_basis: str | None = None
+    wallet_quantity: str | None = None
+    wallet_balance_before: str | None = None
+    wallet_usd: str | None = None
+    wallet_position_usd: str | None = None
+    wallet_entry_price: str | None = None
+    wallet_mark_price: str | None = None
+    wallet_peer_wallets: int | None = None
+    wallet_peer_usd: str | None = None
+    wallet_premium_bps: int | None = None
+    wallet_liquidity_usd: str | None = None
+    wallet_tx_hash: str | None = None
+    wallet_block_number: int | None = None
+    wallet_closed: bool = False
+    wallet_crowding_item_id: str | None = None
+    wallet_window_from_ms: int | None = None
 
     def notional_amount(self) -> Decimal | None:
         """The reported notional as a number, or None when the report carried none it could be.
@@ -271,6 +300,30 @@ class MarketObservation:
             action=_text(row.get("action")),
             position_side=_text(row.get("position_side")),
             pnl_usd=_text(row.get("pnl_usd")),
+            wallet_kind=_text(row.get("wallet_kind")),
+            wallet_address=_text(row.get("wallet_address")),
+            wallet_handle=_text(row.get("wallet_handle")),
+            wallet_followers=_integer(row.get("wallet_followers")),
+            wallet_token=_text(row.get("wallet_token")),
+            wallet_segment_key=_text(row.get("wallet_segment_key")),
+            wallet_tone=_text(row.get("wallet_tone")),
+            wallet_ratio_bps=_integer(row.get("wallet_ratio_bps")),
+            wallet_basis=_text(row.get("wallet_basis")),
+            wallet_quantity=_text(row.get("wallet_quantity")),
+            wallet_balance_before=_text(row.get("wallet_balance_before")),
+            wallet_usd=_text(row.get("wallet_usd")),
+            wallet_position_usd=_text(row.get("wallet_position_usd")),
+            wallet_entry_price=_text(row.get("wallet_entry_price")),
+            wallet_mark_price=_text(row.get("wallet_mark_price")),
+            wallet_peer_wallets=_integer(row.get("wallet_peer_wallets")),
+            wallet_peer_usd=_text(row.get("wallet_peer_usd")),
+            wallet_premium_bps=_integer(row.get("wallet_premium_bps")),
+            wallet_liquidity_usd=_text(row.get("wallet_liquidity_usd")),
+            wallet_tx_hash=_text(row.get("wallet_tx_hash")),
+            wallet_block_number=_integer(row.get("wallet_block_number")),
+            wallet_closed=bool(row.get("wallet_closed")),
+            wallet_crowding_item_id=_text(row.get("wallet_crowding_item_id")),
+            wallet_window_from_ms=_integer(row.get("wallet_window_from_ms")),
         )
 
 
@@ -368,6 +421,10 @@ def group_family(observation: MarketObservation) -> MarketFamily:
 
     if observation.parse_status != "parsed":
         return "raw"
+    if observation.wallet_kind:
+        # The one family this process derived rather than received. It is decided first because it is
+        # decided by its own fact row existing, and no provider frame can produce one.
+        return "wallet"
     if observation.oi_change_bps is not None and observation.direction and observation.measurement_definition:
         return "oi"
     if observation.liquidated_position_side:
@@ -468,6 +525,41 @@ def group_identity(observation: MarketObservation) -> MarketTrack:
             account_verified=verified,
             trader_label=observation.trader_label,
         )
+    if family == "wallet":
+        # The subject, and the segment or window it belongs to. The wallet is on the key for an exit
+        # because two wallets getting out of the same token are two subjects; it is on a crowding key
+        # only through the token, because the subject there is the token everyone piled into.
+        #
+        # `segment_key` is what makes the follow-ups the rules allow land beside the card they follow:
+        # an exit segment ends when the balance reaches zero and the next sell opens a new one, and a
+        # crowding window ends when the buying stops. Neither is derivable from the row's other fields,
+        # which is why the tape stores it.
+        subject = observation.wallet_address or "" if observation.wallet_kind == "exit" else ""
+        key = "|".join(
+            (
+                "wallet",
+                observation.wallet_kind or "",
+                observation.provider or "",
+                subject,
+                observation.wallet_token or "",
+                observation.wallet_segment_key or "",
+            )
+        )
+        return MarketTrack(
+            group_key=key,
+            market_kind=observation.market_kind,
+            family=family,
+            provider=observation.provider,
+            source_venue=venue,
+            venue_known=venue is not None,
+            raw_instrument=observation.wallet_token,
+            symbol=observation.symbol,
+            # A chain address is an address, not a display label: this is the one market family whose
+            # account identity was read off the chain rather than off a provider's own naming.
+            account_key=observation.wallet_address,
+            account_verified=observation.wallet_address is not None,
+            trader_label=observation.wallet_handle,
+        )
     # An unstructured record is its own group and never becomes a track row. What the loop needs
     # from it is the group key the page already keys it by -- `raw|<kind>|<item_id>` -- so the
     # identity is returned and nothing is ever persisted from it (#582 §3.2).
@@ -551,6 +643,8 @@ def decide_group(
         return _decide_liquidation(current, observations, now_ms=now_ms, has_open_intent=has_open_intent)
     if identity.family == "smart_money":
         return _decide_smart_money(current, observations, now_ms=now_ms, has_open_intent=has_open_intent)
+    if identity.family == "wallet":
+        return _decide_wallet(current, observations, now_ms=now_ms, has_open_intent=has_open_intent)
     return GroupTurn(track=current)
 
 
@@ -763,6 +857,47 @@ def _decide_smart_money(
     )
 
 
+def _decide_wallet(
+    track: MarketTrack,
+    observations: Sequence[MarketObservation],
+    *,
+    now_ms: int,
+    has_open_intent: bool,
+) -> GroupTurn:
+    """#572 §5.3. Every wallet observation is due at once, because the rule already suppressed the rest.
+
+    This branch has no window, no threshold and no anchor comparison, and that is the point: the three
+    provider families reduce a *stream* of reports to the ones worth interrupting a reader for, while the
+    chain tape's rules do that work before an Item exists at all. An exit that did not clear its ratio,
+    its position size or its cascade arm was never written down as an observation; a crowding window that
+    did not reach N wallets was never written down either. Suppressing again here would be a second
+    threshold on numbers that already passed the first one, and it would hold a card whose whole subject
+    is that something just happened.
+
+    What still applies is the one rule every family shares: at most one un-started card per group. Two
+    observations of the same segment arriving in one turn merge into one card, exactly as two OI
+    measurements do, and the group key carries the segment so a follow-up lands beside the card it
+    follows rather than opening a group of its own.
+    """
+
+    for observation in observations:
+        track = _observed(track, observation)
+    if has_open_intent:
+        return GroupTurn(track=replace(track, pending_reason=REASON_MERGING))
+    # A card that told nobody leaves the anchor empty, so the next observation of this segment is a
+    # first card again rather than a follow-up to something the reader never saw.
+    reason: TriggerReason = "first" if track.anchor_state == "" else "followup"
+    return GroupTurn(
+        track=replace(
+            track,
+            pending_reason=REASON_MERGING,
+            next_due_at_ms=now_ms,
+            round_started_at_ms=observations[0].received_at_ms,
+        ),
+        intent=IntentPlan(reason, observations[0].item_id, now_ms),
+    )
+
+
 def _window_end(track: MarketTrack, window_ms: int) -> int | None:
     """The follow-up window, or None when there is nothing to follow up on.
 
@@ -869,6 +1004,11 @@ def quote_symbols(track: MarketTrack, observations: Sequence[MarketObservation])
     """
 
     latest = observations[-1] if observations else None
+    if track.family == "wallet":
+        # A Robinhood Chain token is not in any venue catalogue this repository holds -- #572 §9 says so
+        # in as many words -- so asking the quote read model about one would spend a read to be told the
+        # tag is unlisted. The card carries the chain's own mark instead, on its own line.
+        return ()
     symbol = track.symbol or (latest.symbol if latest is not None else None)
     return (symbol,) if symbol else ()
 
@@ -933,9 +1073,53 @@ def market_reader_card(
             news_pushed=news_pushed,
             news_total=news_total,
         ),
+        wallet=_reader_wallet(latest) if track.family == "wallet" else ReaderCardWallet(),
         link=ReaderCardLink(url=link, label=DETAIL_BUTTON_LABEL) if link is not None else None,
         note=ReaderCardNote(id=track.group_key, detail_id=latest.item_id),
-        times=ReaderCardTimes(event_at_ms=latest.event_at_ms, span_from_ms=first.event_at_ms),
+        # A crowding observation *is* a window -- the rules folded several wallets' first buys into one
+        # derived row -- so its span is the window it covered, not the single instant the Item is
+        # stamped with. Every other family's span is the reports the card actually speaks for.
+        times=ReaderCardTimes(
+            event_at_ms=latest.event_at_ms,
+            span_from_ms=latest.wallet_window_from_ms
+            if latest.wallet_kind == "crowding" and latest.wallet_window_from_ms
+            else first.event_at_ms,
+        ),
+    )
+
+
+def _reader_wallet(observation: MarketObservation) -> ReaderCardWallet:
+    """The chain wallet family's facts, straight off the observation the tape derived.
+
+    Nothing is recomputed here and nothing is combined across observations. A wallet card speaks for one
+    derived observation -- an exit is one sell, a crowding card is one window -- so the newest member of
+    the group *is* the card, and the merging that folds several OI measurements onto one card has
+    nothing to fold.
+    """
+
+    return ReaderCardWallet(
+        kind=observation.wallet_kind or "",
+        handle=observation.wallet_handle or "",
+        followers=int(observation.wallet_followers or 0),
+        symbol=observation.symbol or "",
+        token=observation.wallet_token or "",
+        quantity=observation.wallet_quantity or "",
+        balance_before=observation.wallet_balance_before or "",
+        ratio_bps=observation.wallet_ratio_bps,
+        basis=observation.wallet_basis or "",
+        usd=observation.wallet_usd or "",
+        position_usd=observation.wallet_position_usd or "",
+        entry_price=observation.wallet_entry_price or "",
+        mark_price=observation.wallet_mark_price or "",
+        peer_wallets=int(observation.wallet_peer_wallets or 0),
+        peer_usd=observation.wallet_peer_usd or "",
+        premium_bps=observation.wallet_premium_bps,
+        liquidity_usd=observation.wallet_liquidity_usd or "",
+        tx_hash=observation.wallet_tx_hash or "",
+        block_number=observation.wallet_block_number,
+        closed=bool(observation.wallet_closed),
+        late=(observation.wallet_tone or "") == "late",
+        crowding_id=observation.wallet_crowding_item_id or "",
     )
 
 
