@@ -1,9 +1,11 @@
 """Persistence for the instrument universe (#75, consolidated in #89). Callers own the transaction.
 
-The snapshot write is idempotent by ``(venue, venue_symbol)``: re-running it on an unchanged catalogue only moves
-``last_seen_ms``. The current universe answers what an issuer's canonical symbol is and whether it is a coin or a
-stock. A separate immutable event ledger records only the catalogue validity boundaries needed by historical
-Trading replay; it is not a second latest universe or a source of reader-facing listing news.
+The snapshot write is idempotent by ``(venue, venue_symbol)`` and it writes only what moved: re-running it on an
+unchanged catalogue writes no instrument row at all, and only the answering venue's row in
+``news_market_instrument_snapshot_state`` advances (#570 A11). The current universe answers what an issuer's
+canonical symbol is and whether it is a coin or a stock. A separate immutable event ledger records only the
+catalogue validity boundaries needed by historical Trading replay; it is not a second latest universe or a source
+of reader-facing listing news.
 """
 
 from __future__ import annotations
@@ -53,11 +55,16 @@ SEARCH_EVENT_SYMBOLS_SQL = "SELECT alias FROM news_symbol_aliases WHERE base_sym
 @dataclass(frozen=True, slots=True)
 class SnapshotResult:
     """What one snapshot wrote. ``delisted`` counts contracts an answering venue no longer lists — an operational
-    signal, not a card: a delisting the reader should hear about arrives as a provider frame."""
+    signal, not a card: a delisting the reader should hear about arrives as a provider frame.
+
+    ``total`` is how many contracts the answering venues declared; ``written`` is how many
+    ``news_market_instruments`` rows this snapshot actually wrote — new, changed, relisted or delisted — and is
+    therefore also the number of listing events it recorded. On an unchanged catalogue it is 0 (#570 A11)."""
 
     total: int
     venues: tuple[str, ...]
     delisted: int
+    written: int
 
 
 def _instrument_identity(item: Instrument) -> tuple[str, str, str | None]:
@@ -358,9 +365,11 @@ class InstrumentsRepository:
             (reference,),
         ).fetchone()
         summary = dict(row) if row else {}
-        # The timestamp spans every venue: one stale tier is still a stale snapshot.
+        # "The catalogue was refreshed at T" is a fact about a venue, not about each of its rows, so it is read
+        # from the snapshot state rather than from a per-row stamp (#570 A11). The figure still spans every venue,
+        # including the reference tier: one stale tier is still a stale snapshot.
         stamp = self.conn.execute(
-            "SELECT max(last_seen_ms) AS last_snapshot_ms FROM news_market_instruments"
+            "SELECT max(last_snapshot_ms) AS last_snapshot_ms FROM news_market_instrument_snapshot_state"
         ).fetchone()
         summary["last_snapshot_ms"] = stamp["last_snapshot_ms"] if stamp else None
         summary["reference_symbols"] = int(
@@ -465,29 +474,50 @@ class InstrumentsRepository:
         return {"written": written, "removed": int(getattr(cursor, "rowcount", 0) or 0)}
 
     def apply_snapshot(self, instruments: Sequence[Instrument], *, now_ms: int) -> SnapshotResult:
-        """Upsert one snapshot and reconcile the venues that answered.
+        """Reconcile the venues that answered, writing only the rows this snapshot moved.
+
+        Exactly four things write an instrument row: a contract this venue has not listed before, a contract whose
+        identity changed, a contract that came back from delisted, and a contract an answering venue no longer
+        lists. An unchanged instrument is not written at all. Re-stamping the whole catalogue every six hours cost
+        ~3.8M UPSERTs and 1.82 GB of WAL in production for a fact nobody read off the row (#570 A11), and the
+        comparison that made it unnecessary was already here — it decided the listing events.
+
+        "This venue answered a complete catalogue at T" is a fact about the venue, not about each of its rows, so
+        it lives in ``news_market_instrument_snapshot_state``: one row per answering venue, advanced on every
+        snapshot whether or not the catalogue moved. That is what the status page's ``last_snapshot_ms`` reads.
 
         Venues absent from ``instruments`` are left untouched — a venue that failed to answer must not read as a
-        mass delisting. Only symbols missing from a venue that *did* answer are marked delisted.
+        mass delisting, and its snapshot state keeps the last time it did answer. Only symbols missing from a venue
+        that *did* answer are marked delisted.
+
+        Every row write records exactly one listing event, so ``written`` counts both.
         """
 
         answered = {i.venue for i in instruments}
         before = {(item.venue, item.venue_symbol): item for item in self.all_instruments() if item.venue in answered}
         previous = tuple(item for item in before.values() if item.status == "trading")
 
+        written = 0
         for item in instruments:
             prior = before.get((item.venue, item.venue_symbol))
+            listed_and_identical = (
+                prior is not None
+                and prior.status == "trading"
+                and _instrument_identity(prior) == _instrument_identity(item)
+            )
+            if listed_and_identical:
+                continue
             self.conn.execute(
                 """
                 INSERT INTO news_market_instruments (
-                  venue, venue_symbol, base_symbol, instrument_class, quote_asset, status, last_seen_ms
+                  venue, venue_symbol, base_symbol, instrument_class, quote_asset, status, observed_at_ms
                 ) VALUES (%s, %s, %s, %s, %s, 'trading', %s)
                 ON CONFLICT (venue, venue_symbol) DO UPDATE SET
                   base_symbol      = EXCLUDED.base_symbol,
                   instrument_class = EXCLUDED.instrument_class,
                   quote_asset      = EXCLUDED.quote_asset,
                   status           = 'trading',
-                  last_seen_ms     = EXCLUDED.last_seen_ms
+                  observed_at_ms   = EXCLUDED.observed_at_ms
                 """,
                 (
                     item.venue,
@@ -498,19 +528,32 @@ class InstrumentsRepository:
                     int(now_ms),
                 ),
             )
-            if prior is None or prior.status != "trading" or _instrument_identity(prior) != _instrument_identity(item):
-                self._record_listing_event(item, status="trading", observed_at_ms=now_ms)
+            self._record_listing_event(item, status="trading", observed_at_ms=now_ms)
+            written += 1
 
         current_keys = {(i.venue, i.venue_symbol) for i in instruments}
         gone = [i for i in previous if (i.venue, i.venue_symbol) not in current_keys]
         for item in gone:
             self.conn.execute(
-                "UPDATE news_market_instruments SET status = 'delisted', last_seen_ms = %s"
+                "UPDATE news_market_instruments SET status = 'delisted', observed_at_ms = %s"
                 " WHERE venue = %s AND venue_symbol = %s",
                 (int(now_ms), item.venue, item.venue_symbol),
             )
             self._record_listing_event(item, status="delisted", observed_at_ms=now_ms)
-        return SnapshotResult(total=len(instruments), venues=tuple(sorted(answered)), delisted=len(gone))
+            written += 1
+
+        for venue in sorted(answered):
+            self.conn.execute(
+                """
+                INSERT INTO news_market_instrument_snapshot_state (venue, last_snapshot_ms)
+                VALUES (%s, %s)
+                ON CONFLICT (venue) DO UPDATE SET last_snapshot_ms = EXCLUDED.last_snapshot_ms
+                """,
+                (venue, int(now_ms)),
+            )
+        return SnapshotResult(
+            total=len(instruments), venues=tuple(sorted(answered)), delisted=len(gone), written=written
+        )
 
     def _record_listing_event(self, item: Instrument, *, status: InstrumentStatus, observed_at_ms: int) -> None:
         self.conn.execute(

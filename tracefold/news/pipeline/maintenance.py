@@ -70,8 +70,8 @@ class InstrumentSnapshotLoop:
     """Venue listing catalogues -> `news_market_instruments`, one bounded snapshot per period (#75).
 
     The universe is a provider fact, so the snapshot is idempotent and rebuildable: re-running it on an unchanged
-    catalogue only moves `last_seen_ms`. It feeds symbol normalization and the Gate's asset class — not listing
-    cards, which arrive as provider frames (#89).
+    catalogue writes no instrument row and only advances the answering venues' snapshot state (#570 A11). It feeds
+    symbol normalization and the Gate's asset class — not listing cards, which arrive as provider frames (#89).
 
     A venue that fails is skipped, never fatal: `apply_snapshot` only reconciles venues that actually answered, so
     an unreachable Binance cannot read as a mass delisting.
@@ -173,9 +173,10 @@ class InstrumentSnapshotLoop:
             return False
         self.last_result = result
         log.info(
-            "news instrument snapshot venues=%s total=%d delisted=%d",
+            "news instrument snapshot venues=%s total=%d written=%d delisted=%d",
             ",".join(result.venues),
             result.total,
+            result.written,
             result.delisted,
         )
         # A seed alias pointing at a symbol no venue lists resolves to nothing, silently, forever (#89).

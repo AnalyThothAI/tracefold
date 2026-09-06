@@ -67,7 +67,14 @@ class OiTradeProjectionRow(TypedDict):
 
 
 class TradeInstrumentProjectionRow(TypedDict):
-    """One exactly-listed native crypto perpetual for one underlying."""
+    """One exactly-listed native crypto perpetual for one underlying.
+
+    ``observed_at_ms`` is when the catalogue last wrote this row, which is not "the last refresh that saw this
+    contract": since #570 A11 an unchanged catalogue writes no row, so a refresh that changes nothing moves
+    nothing here. For every row written from `20260905_0367` onwards that is the observation time of the listing
+    event written beside it, the same fact the replay branch below reads from the event ledger. Rows that predate
+    the revision keep the stamp their last full refresh left and are not backfilled — a real observation of the
+    contract, never later than its identity's, and replaced by a true one the next time the contract changes."""
 
     venue: str
     venue_symbol: str
@@ -75,7 +82,7 @@ class TradeInstrumentProjectionRow(TypedDict):
     instrument_class: str
     quote_asset: str | None
     status: str
-    last_seen_ms: int
+    observed_at_ms: int
 
 
 class TradeEvidenceCollectionHealthRow(TypedDict):
@@ -330,7 +337,7 @@ class TradeProjectionStorage:
             rows = self.conn.execute(
                 """
                 SELECT venue, venue_symbol, base_symbol, instrument_class,
-                       quote_asset, status, last_seen_ms
+                       quote_asset, status, observed_at_ms
                   FROM news_market_instruments
                  WHERE base_symbol = %s
                    AND venue = ANY(%s)
@@ -364,7 +371,7 @@ class TradeProjectionStorage:
                    ORDER BY event.venue, event.venue_symbol, event.observed_at_ms DESC
                 )
                 SELECT venue, venue_symbol, base_symbol, instrument_class,
-                       quote_asset, status, observed_at_ms AS last_seen_ms
+                       quote_asset, status, observed_at_ms
                   FROM historical
                  WHERE base_symbol = %s
                    AND status = 'trading'
@@ -390,7 +397,7 @@ class TradeProjectionStorage:
                 instrument_class=row["instrument_class"],
                 quote_asset=row["quote_asset"],
                 status=row["status"],
-                last_seen_ms=row["last_seen_ms"],
+                observed_at_ms=row["observed_at_ms"],
             )
             for row in rows
         ]
@@ -404,7 +411,7 @@ class TradeProjectionStorage:
 
         rows = self.conn.execute(
             """
-            SELECT venue, venue_symbol, base_symbol, instrument_class, quote_asset, status, last_seen_ms
+            SELECT venue, venue_symbol, base_symbol, instrument_class, quote_asset, status, observed_at_ms
               FROM news_market_instruments
              WHERE venue = 'binance.perp'
                AND status = 'trading'
@@ -419,7 +426,7 @@ class TradeProjectionStorage:
                 instrument_class=row["instrument_class"],
                 quote_asset=row["quote_asset"],
                 status=row["status"],
-                last_seen_ms=row["last_seen_ms"],
+                observed_at_ms=row["observed_at_ms"],
             )
             for row in rows
         ]

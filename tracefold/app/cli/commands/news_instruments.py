@@ -55,6 +55,7 @@ def _handle_instruments(args: Namespace) -> tuple[int, dict[str, Any]]:
             "data": {
                 "total": result.total,
                 "venues": list(result.venues),
+                "written": result.written,
                 "delisted": result.delisted,
                 "aliases_seeded": seeds,
                 "aliases_learned": learned,
