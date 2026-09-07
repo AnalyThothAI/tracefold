@@ -67,18 +67,34 @@ def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden
     assert delivery["card"]["elements"]
     assert delivery["receipt"] == {"provider": "feishu", "code": 0, "status_code": 200}
     assert data["reader_receipt"]["state"] == "received"
-    # #400: the final topology is three business queues and the dead-letter queue. There is no retry
-    # lane left to drain, so an empty pipeline is exactly these four names at zero.
+    # The final topology is two business queues and the dead-letter queue: the push Verdict handoff
+    # is a `news_delivery_queue` row, so `news.deliver` no longer exists (#400, #598 D2). An empty
+    # pipeline is exactly these three names at zero, and the card above still reached the reader.
     assert golden_runtime.queue_depths() == {
         "news.raw": 0,
         "news.triage": 0,
-        "news.deliver": 0,
         "news.dead": 0,
     }
+    with psycopg.connect(golden_runtime.postgres_dsn, row_factory=dict_row) as conn:
+        owed = conn.execute("SELECT count(*) AS n FROM news_delivery_queue").fetchone()
+    assert int(owed["n"]) == 0, "a delivered card is no longer owed"
 
 
-def test_triage_publish_failure_uses_broker_retry_without_restarting_workers(golden_runtime: Any) -> None:
-    """The production Triage/outbox path ends in evidence, while the same Workers root stays live."""
+def test_an_unroutable_admission_handoff_is_repaired_without_restarting_workers(golden_runtime: Any) -> None:
+    """The production admission/outbox path ends in evidence, while the same Workers root stays live.
+
+    The route this test breaks used to be the push Verdict's, and it broke it three times over to
+    watch the broker's delivery limit spend itself. That handoff is now a `news_delivery_queue` row
+    written inside the verdict's own transaction, so no publish of it can fail and the broker's
+    counted-return contract is proven where it lives, against a real broker, in
+    `tests/integration/test_news_bus_rabbitmq.py` (#598 D2).
+
+    What is left here is what only this harness can show: the confirmed handoff that *does* still
+    cross the broker fails, the Workers root does not restart, a message on another lane still
+    reaches its own terminal settlement, and the Janitor repairs the handoff once the route is back --
+    after which the verdict, the queue row it commits with, and the card the claim loop sends all
+    follow with no broker message between the decision and the delivery.
+    """
 
     # Deliberately unlike the first frame in both ticker and wording. `listing` is an editorial kind
     # and takes the ordinary near-duplicate path, so two announcements differing in one word collapse
@@ -86,7 +102,7 @@ def test_triage_publish_failure_uses_broker_retry_without_restarting_workers(gol
     title = "OKX schedules ZETAUSDT margin pair removal for 2026-09-11"
     initial_readiness = golden_runtime.workers_readiness()
 
-    golden_runtime.set_verdict_route(enabled=False)
+    golden_runtime.set_event_route(enabled=False)
     started = time.monotonic()
     try:
         golden_runtime.publish_opennews(
@@ -107,44 +123,46 @@ def test_triage_publish_failure_uses_broker_retry_without_restarting_workers(gol
             }
         )
         event = _wait_for_event(golden_runtime, title=title)
-        pending = _wait_for_verdict(golden_runtime, event_id=str(event["event_id"]), published=False)
-        assert pending["final_decision"] == "push"
+        assert event["published_at_ms"] is None, "the handoff is exactly what the unbound route stopped"
 
         during_retry = golden_runtime.workers_readiness()
         assert during_retry["runtime_id"] == initial_readiness["runtime_id"]
         assert during_retry["process_id"] == initial_readiness["process_id"]
 
-        # A separate queue still reaches its own terminal settlement while Triage is held in the
+        # A separate message still reaches its own terminal settlement while this one is held in the
         # native retry window. This proves the process did not merely keep a probe alive after losing
         # the business consumers.
         golden_runtime.publish_raw_probe(message_id="raw:broker-handler-peer")
         golden_runtime.wait_for_queue_depth("news.dead", 1, timeout=10.0)
 
-        # delivery-limit=2 means three Triage attempts. The two broker-native 30 s waits must elapse
-        # before its Event message joins the peer probe in the dead-letter queue.
-        golden_runtime.wait_for_queue_depth("news.dead", 2, timeout=100.0)
-        assert time.monotonic() - started >= 50.0
+        # The unroutable publish is a counted return, so the frame waits out one broker-native 30 s
+        # delay before its redelivery is handled and acked. The Event stays unpublished across it.
+        golden_runtime.wait_for_queue_depth("news.raw", 0, timeout=90.0)
+        assert time.monotonic() - started >= 25.0
+        unrepaired = _wait_for_event(golden_runtime, title=title)
+        assert unrepaired["published_at_ms"] is None
         after_terminal = golden_runtime.workers_readiness()
         assert after_terminal["runtime_id"] == initial_readiness["runtime_id"]
         assert after_terminal["process_id"] == initial_readiness["process_id"]
     finally:
-        golden_runtime.set_verdict_route(enabled=True)
+        golden_runtime.set_event_route(enabled=True)
 
     dead = golden_runtime.dead_letters(limit=5)
-    assert {row["message_id"] for row in dead} == {
-        "raw:broker-handler-peer",
-        f"event:{event['event_id']}",
-    }
-    triage_dead = next(row for row in dead if row["message_id"] == f"event:{event['event_id']}")
-    assert triage_dead["reason"] == "delivery_limit"
-    assert triage_dead["delivery_count"] == 3
+    assert {row["message_id"] for row in dead} == {"raw:broker-handler-peer"}
 
-    detail = _wait_for_complete_detail(golden_runtime, event_id=str(event["event_id"]), timeout=90.0)
+    # The Janitor repairs the confirmed handoff once the route is back, and the rest of the path --
+    # the verdict, the queue row it writes with it, and the card the claim loop sends -- follows.
+    detail = _wait_for_complete_detail(golden_runtime, event_id=str(event["event_id"]), timeout=150.0)
     assert len(detail["verdicts"]) == 1
     assert len(detail["deliveries"]) == 1
     assert detail["deliveries"][0]["state"] == "sent"
     repaired = _wait_for_verdict(golden_runtime, event_id=str(event["event_id"]), published=True)
     assert repaired["published_at_ms"] is not None
+    with psycopg.connect(golden_runtime.postgres_dsn, row_factory=dict_row) as conn:
+        owed = conn.execute(
+            "SELECT count(*) AS n FROM news_delivery_queue WHERE event_id = %s", (str(event["event_id"]),)
+        ).fetchone()
+    assert int(owed["n"]) == 0, "the intent left the queue when its ledger row appeared"
 
     after_janitor = golden_runtime.workers_readiness()
     assert after_janitor["runtime_id"] == initial_readiness["runtime_id"]

@@ -39,7 +39,6 @@ from tracefold.news.bus import (
     DLX,
     EXCHANGE,
     Q_DEAD,
-    Q_DELIVER,
     Q_RAW,
     Q_TRIAGE,
     BusDecodeError,
@@ -121,7 +120,7 @@ class Topology:
 
 
 def topology(prefix: str = "") -> Topology:
-    """One topic exchange, one DLX, three business queues and the dead-letter queue.
+    """One topic exchange, one DLX, two business queues and the dead-letter queue.
 
     Queue arguments carry only what a policy cannot: the queue type, single-active consumption, and the
     dead-letter queue's evidence-preserving delivery limit. Delayed retry, the delivery limit,
@@ -135,7 +134,6 @@ def topology(prefix: str = "") -> Topology:
     queues = (
         QueueSpec(_q(prefix, Q_RAW), ("raw.#",), {**quorum, "x-single-active-consumer": True}),
         QueueSpec(_q(prefix, Q_TRIAGE), ("event.#",), quorum),
-        QueueSpec(_q(prefix, Q_DELIVER), ("verdict.push",), {**quorum, "x-single-active-consumer": True}),
         QueueSpec(
             _q(prefix, Q_DEAD),
             (),

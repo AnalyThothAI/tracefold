@@ -58,7 +58,7 @@ def test_canonical_identity_rejects_nonfinite_numbers(value: float) -> None:
 
 
 @given(
-    kind=st.sampled_from(("raw", "event", "verdict")),
+    kind=st.sampled_from(("raw", "event")),
     message_id=_IDENTIFIER_TEXT,
     trace_id=_IDENTIFIER_TEXT,
     occurred_at_ms=st.integers(min_value=1, max_value=10**30),

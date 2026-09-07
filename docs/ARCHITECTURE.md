@@ -138,12 +138,12 @@ evidence rather than executable configuration.
 | OpenNews history recovery | News | `durable_event` | official Strategy hits history | REST -> `raw.recovery.*` | `news-recovery`; startup or closed incident | same Admission path and News facts; never direct delivery |
 | RabbitMQ raw handoff | News | `durable_event` | OpenNews live/recovery envelopes | RabbitMQ quorum queue | `news-deduper`; message delivery | `news_items` / `news_events`; Triage projection |
 | RabbitMQ event handoff | News | `durable_event` | admitted `news_events` | RabbitMQ quorum queue | `news-triage`; message delivery | versioned `news_verdicts`; Delivery decision |
-| RabbitMQ verdict handoff | News | `durable_event` | push/escalate verdicts | RabbitMQ quorum queue | `news-deliverer`; message delivery | `news_deliveries`; reader receipt truth |
+| PostgreSQL verdict handoff | News | `durable_event` | push/escalate verdicts | `news_delivery_queue` row in the verdict's transaction | `news-deliverer`; claimed due row | `news_deliveries`; reader receipt truth |
 | Binance spot quote/day quote | News Market Review | `latest_state` | Binance public spot REST | REST polling | `news-quotes`; 20 s price / 300 s day reference | `news_quote_snapshots`; feed/event review readers |
 | Binance perpetual quote/day quote | News Market Review | `latest_state` | Binance public USD-M REST | REST polling | `news-quotes`; 20 s price / 300 s day reference | `news_quote_snapshots`; feed/event review readers |
 | Hyperliquid quote | News Market Review | `latest_state` | Hyperliquid public REST | REST polling | `news-quotes`; 20 s | `news_quote_snapshots`; feed/event review readers |
 | OKX quote | News Market Review | `latest_state` | OKX public REST | REST polling | `news-quotes`; 20 s | `news_quote_snapshots`; feed/event review readers |
-| Delivery price anchors | News Delivery | `derived_work` | Binance aggregate trades, then Hyperliquid/OKX/Lighter/Bitget recent trades; closed 1 m candles as fallback | bounded public REST on one approved delivery | `news-deliverer`; verdict message | ephemeral `ReaderDeliveryPresentation` only; no persisted tick history |
+| Delivery price anchors | News Delivery | `derived_work` | Binance aggregate trades, then Hyperliquid/OKX/Lighter/Bitget recent trades; closed 1 m candles as fallback | bounded public REST on one approved delivery | `news-deliverer`; claimed delivery intent | ephemeral `ReaderDeliveryPresentation` only; no persisted tick history |
 | Single-name tradeability verification | News Delivery | `derived_work` | fresh Binance, Hyperliquid, OKX, Lighter and Bitget public catalogues | one bounded post-send fan-out | `news-deliverer`; eligible sent message | result stored in desired card or receipt-bound deletion evidence |
 | Binance candles | News Market Review / Trading Signal | `derived_work` | Binance public closed 5 m bars | REST on planned demand | `news-reactions` or `trading-signal-lane`; due work | versioned `news_event_reactions` or frozen Trading Case evidence |
 | Hyperliquid candles | News Market Review / Trading Signal | `derived_work` | Hyperliquid public closed 5 m bars | REST on planned demand | `news-reactions` or `trading-signal-lane`; due work | versioned `news_event_reactions` or frozen Trading Case evidence |
@@ -174,7 +174,7 @@ does not apply.
 | OpenNews history recovery | startup, request, or 300 s fallback scan; 30 s overlap | recover while provider history exists | Strategy + incident window | bounded pending incidents and enabled Strategies | 100 hits/page; shared 60 provider calls and 1,000 confirmed messages/turn | serial Strategies/pages | shared 30 s wall budget plus provider-client budget | yes / requested pass coalesces / no | typed transient failures and budget exhaustion stay pending with bounded backoff; only explicit no-history/retention terminalizes |
 | RabbitMQ raw handoff | message delivery | durable backlog | message ID | raw prefetch 1 | one queue delivery | broker prefetch 1 | broker connection/confirm budgets | yes / no / no | PostgreSQL Admission is idempotent; decode/permanent/exhausted transient failures are terminal, handler-side broker failures are counted returns, and only settlement or unknown failures reach root supervision |
 | RabbitMQ event handoff | message delivery plus 60 s repair scan inside a 30 min relevance window | durable Event marker | Event ID | configured bounded Triage prefetch; repair batch 50 | one queue delivery | configured bounded consumer | broker connection/confirm budgets | yes / stable-ID duplicates coalesce at Triage / expired is explicit | confirmed publish precedes Event marker; PostgreSQL repairs marker-null Events while relevant and projects older rows as expired |
-| RabbitMQ verdict handoff | message delivery plus 60 s repair scan inside a 30 min relevance window | durable Verdict marker | Event ID + delivery kind | delivery prefetch 1; repair batch 50 | one queue delivery | broker prefetch 1 | broker connection/confirm budgets | yes / stable-ID duplicates converge on the delivery ledger / expired is explicit | confirmed publish precedes Verdict marker; PostgreSQL repairs push/escalate Verdicts while relevant, while external delivery remains at-most-once |
+| PostgreSQL verdict handoff | 1 s claim poll; a due row is claimed the moment it is due | queue row committed with the verdict | Event ID + delivery kind | one claimed intent per claim; 20 per turn | one `FOR UPDATE SKIP LOCKED` claim | one claim at a time | 30 s claim lease; 3 attempts | no catch-up needed / a re-decided Event coalesces on `ON CONFLICT (event_id, kind)` / `dead` is explicit | the queue row commits with the verdict, so there is nothing to repair; a spent budget is `state = 'dead'` with its reason, while external delivery remains at-most-once |
 | Binance spot quote/day quote | start-based 20 s current; 300 s day reference | current <=45 s; reference <=600 s | `binance.spot` source group | shared cap 256 symbols | shared cap 12 current groups; at most 2 due Binance day calls/turn; 100 requested symbols where supported | current 4; due day calls parallel after store | 10 s current turn / 8 s provider | no / yes / yes | completed current answers commit together; failed/pending source keeps its previous row; day failure cannot undo current |
 | Binance perpetual quote/day quote | start-based 20 s current; 300 s day reference | current <=45 s; reference <=600 s | `binance.perp` source group | shared cap 256 symbols | shared cap 12 current groups; at most 2 due Binance day calls/turn; 100 requested symbols where supported | current 4; due day calls parallel after store | 10 s current turn / 8 s provider | no / yes / yes | completed current answers commit together; failed/pending source keeps its previous row; day failure cannot undo current |
 | Hyperliquid quote | start-based 20 s | current <=45 s; native reference <=600 s | bounded `hl.*` source group | shared cap 256 symbols | shared cap 12 current groups; one group request | current 4 | 10 s current turn / 8 s provider | no / yes / yes | completed answer commits even when another source times out; failed/pending source keeps its previous row |
@@ -596,7 +596,9 @@ releases the shared capability permit before the underlying future actually
 finishes.
 
 News consumers have no frontier lease; the broker's single-active-consumer and
-per-message ack are their fences.
+per-message ack are their fences. Delivery has no broker queue at all: its fence
+is the row it claims with `FOR UPDATE SKIP LOCKED` and the
+`news_deliveries (event_id, kind)` key underneath it.
 
 Every business task the Workers root runs is declared in
 `app/workers/task_contract.py` against one named capability and a
@@ -694,18 +696,23 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
        (news_judgment_v2 marker, judgment origin/hash, model editorial when applicable,
        headline_zh, audience, exact runtime manifest,
        Program identity, per-Predictor execution/cost trace, preliminary + final status snapshots,
-       named rule) -> publish verdict.push (an escalate rides the same routing key at AMQP priority 5)
-  -> q:news.deliver [single-active-consumer] Deliverer: restart edit/delete reconciliation waits out
-       News-lane admission before consuming -> provider prepare/preflight -> begin(sending)
+       named rule) -> a `news_delivery_queue` row for a push or escalate, inserted in the same
+       transaction as the verdict; no broker publish (#598 D2)
+  -> Deliverer loop [one Workers task, polling PostgreSQL]: restart edit/delete reconciliation waits
+       out News-lane admission before claiming -> claim a due row
+       (`FOR UPDATE SKIP LOCKED`, attempts + 1, next_attempt_at_ms = now + 30 s)
+       -> provider prepare/preflight -> begin(sending)
        -> one configured-provider delivery attempt
        -> settle sent|terminal; crash between send and ack
        -> ambiguous_after_crash
+       -> the queue row is deleted once the ledger row exists, deferred on a retryable failure,
+          and `dead` once the 3-attempt budget is spent
   -> RabbitMQ 4.3 quorum delayed retry inside each business queue (no retry lane):
      TransientError is a counted return delayed 30 s and terminal after 3 total attempts,
      DeferError is an uncounted return delayed the same 30 s and never terminal;
      x:news.dlx -> q:news.dead (at-least-once) for decode/permanent/exhausted deliveries
-  -> Janitor: bounded Event->Triage and push-Verdict->Delivery handoff repair,
-              band expiry, 30/365-day Item retention,
+  -> Janitor: bounded Event->Triage handoff repair (the push-Verdict handoff needs none: it is a
+              row in the verdict's own transaction), band expiry, 30/365-day Item retention,
               bounded learning-evidence retention on the one-slot heavy gate,
      broker snapshot (depth, ready/unacked, delayed, pending dead letters, byte share, policy match)
   -> Serve: /api/news/feed, /api/news/events/{event_id}, /api/news/status
@@ -1572,7 +1579,7 @@ That changes the normal provider-call cost from one to three and expands the
 latency and failure surface; the benefit is future per-Predictor optimization,
 not a claim that the initial Program is already more accurate. `escalate`
 stays a `decide()` outcome — a high-importance
-push that rides the same `verdict.push` routing key at AMQP priority 5 and
+push that takes the same `news_delivery_queue` row as an ordinary push and
 wears a ⚡ card header — and never triggers another Program execution. The retired
 Analyst lane (`q:news.deep`, the `verdict.escalate`/`verdict.deep` routing
 keys, the evidence bundle and its `verify_verdict()` gate, follow-up cards)
@@ -1581,7 +1588,7 @@ rows that are never written again. An old `news.deep` queue left on a broker is
 reported as topology drift like any other unexpected name; the runtime does not
 know it and never deletes it.
 
-Delivery (`tracefold.news.delivery`, `consumers.DelivererConsumer`) renders the
+Delivery (`tracefold.news.delivery`, `pipeline.delivery.DelivererLoop`) renders the
 reader contract (`news_delivery_card_v11`): the header is `headline_zh` (⚡ when
 the decision is escalate), falling back only to the original Event title when
 the current headline sanitizes to empty. The first body line is `why_zh`, and the
@@ -1705,7 +1712,10 @@ too, so the console feed and the context line name the Event (issue #65). The
 AI copy is sanitized (URLs fall back to the code-owned title). There is no
 initial-send retry: `news_deliveries(event_id, kind)` (`kind` is always `first`) is
 inserted as `sending` after provider prepare/preflight and before the single
-initial delivery HTTP call, then settled `sent`/`terminal`. Telegram enrichment begins only after a successful
+initial delivery HTTP call, then settled `sent`/`terminal`. The intent behind it
+lives in `news_delivery_queue` until that ledger row exists, and its three
+attempts are attempts to *reach* the ledger, never to send a second card: an
+attempt that got as far as `begin_delivery` never gets another (#598 D2). Telegram enrichment begins only after a successful
 settlement. It records edit intent before provider I/O; update success confirms the ready card/receipt, while an
 uncertain update or post-provider persistence failure keeps the initial `sent` state and records edit ambiguity;
 interrupted rows are terminalized at startup. Recovery items, suppressed

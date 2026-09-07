@@ -31,7 +31,7 @@ DEGRADED_SHARE_WARN: Final = 0.03
 DEGRADED_SHARE_BAD: Final = 0.10
 DELIVERY_FAIL_SHARE_WARN: Final = 0.10
 DELIVERY_FAIL_SHARE_BAD: Final = 0.30
-_BUSINESS_QUEUES: Final = ("news.raw", "news.triage", "news.deliver")
+_BUSINESS_QUEUES: Final = ("news.raw", "news.triage")
 _NON_INGEST_INCIDENTS: Final = frozenset({"triage_circuit_open", "broker_backpressure", "broker_unavailable"})
 
 _LEVEL_ORDER: Final = {"ok": 0, "off": 0, "warn": 1, "bad": 2}
@@ -160,7 +160,7 @@ def broker_health(broker: Mapping[str, Any], *, open_causes: frozenset[str] = fr
         return HealthItem("warn", f"死信队列有 {dead} 条", "需要人工查看 news.dead")
     if broker.get("connected") is None:
         return HealthItem("warn", "队列状态未知", "Janitor 还没有上报快照")
-    summary = f"raw {depths['news.raw']} · triage {depths['news.triage']} · deliver {depths['news.deliver']}"
+    summary = f"raw {depths['news.raw']} · triage {depths['news.triage']}"
     return HealthItem("ok", "队列畅通", summary)
 
 

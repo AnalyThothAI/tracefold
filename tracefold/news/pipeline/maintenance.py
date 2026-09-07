@@ -30,7 +30,6 @@ from ..telemetry import (
 )
 from .admission import publish_event
 from .runtime import NewsDatabasePort, _sleep_or_stop
-from .triage import publish_verdict
 
 log = logging.getLogger("tracefold.news")
 
@@ -251,11 +250,6 @@ class JanitorLoop:
             except (BrokerBackpressure, BrokerUnavailable, TransientError, DeferError) as exc:
                 self._record_handoff_repair("event", "transient")
                 log.warning("news Event handoff repair deferred error=%s", type(exc).__name__)
-            try:
-                await self.repair_verdict_handoffs()
-            except (BrokerBackpressure, BrokerUnavailable, TransientError, DeferError) as exc:
-                self._record_handoff_repair("verdict", "transient")
-                log.warning("news Verdict handoff repair deferred error=%s", type(exc).__name__)
         if self.telemetry is not None:
             try:
                 await self._refresh_incident_telemetry(stamp)
@@ -504,38 +498,5 @@ class JanitorLoop:
                 occurred_at_ms=int(row["opened_at_ms"]),
             )
             self._record_handoff_repair("event", outcome)
-            republished += 1
-        return republished
-
-    async def repair_verdict_handoffs(self) -> int:
-        """Repair confirmed push-Verdict-to-Delivery handoffs inside the relevance window."""
-
-        stamp = now_ms()
-        floor_ms, ceiling_ms = stamp - _OUTBOX_MIN_AGE_MS, stamp - OUTBOX_MAX_AGE_MS
-
-        def _scan(repos: Any) -> Any:
-            return repos.news.verdict_handoff_scan(older_than_ms=floor_ms, newer_than_ms=ceiling_ms)
-
-        rows, state = await self.db.read("news_verdict_handoff_scan", _scan)
-        self._record_handoff_state("verdict", state, stamp)
-        expired = int(state.get("expired") or 0)
-        if expired:
-            log.warning(
-                "news Verdict handoff expired for %d row(s) older than %d min",
-                expired,
-                OUTBOX_MAX_AGE_MS // 60_000,
-            )
-        republished = 0
-        for row in rows:
-            outcome = await publish_verdict(
-                self.bus,
-                self.db,
-                event_id=str(row["event_id"]),
-                trace_id=str(row.get("trace_id") or new_trace_id()),
-                amqp_priority=5 if str(row["queue_priority"]) == "high" else 0,
-                policy_version=str(row["policy_version"]),
-                occurred_at_ms=int(row["created_at_ms"]),
-            )
-            self._record_handoff_repair("verdict", outcome)
             republished += 1
         return republished

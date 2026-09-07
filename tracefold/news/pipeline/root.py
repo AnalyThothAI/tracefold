@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from ..market_review.loops import EventReactionLoop, QuoteSnapshotLoop
 from .admission import DeduperConsumer
-from .delivery import DelivererConsumer
+from .delivery import DelivererLoop
 from .maintenance import InstrumentSnapshotLoop, JanitorLoop
 from .receiver import OpenNewsReceiver
 from .recovery import RecoveryRunner
@@ -25,7 +25,7 @@ class NewsPipeline:
     # Editorial is one capability among several: a Program that cannot be assembled or registered
     # leaves no Triage consumer, and reception, admission and retention run on without it (#553 PR-3).
     triage: TriageConsumer | None
-    deliverer: DelivererConsumer
+    deliverer: DelivererLoop
     janitor: JanitorLoop
     instruments: InstrumentSnapshotLoop | None = None
     # #88/#304: two bounded Price Review loops. They are not consumers — no queue or delivery —

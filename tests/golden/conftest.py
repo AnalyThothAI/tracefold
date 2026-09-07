@@ -149,8 +149,8 @@ class GoldenRuntime:
     def publish_raw_probe(self, *, message_id: str) -> None:
         asyncio.run(_publish_raw_probe(self.amqp_url, self.name_prefix, message_id=message_id))
 
-    def set_verdict_route(self, *, enabled: bool) -> None:
-        asyncio.run(_set_verdict_route(self.amqp_url, self.name_prefix, enabled=enabled))
+    def set_event_route(self, *, enabled: bool) -> None:
+        asyncio.run(_set_event_route(self.amqp_url, self.name_prefix, enabled=enabled))
 
     def workers_readiness(self) -> dict[str, object]:
         response = httpx.get(self.workers_ready_url, timeout=5.0, trust_env=False)
@@ -416,20 +416,26 @@ async def _publish_message(amqp_url: str, name_prefix: str, message: BusMessage)
         await connection.close()
 
 
-async def _set_verdict_route(amqp_url: str, name_prefix: str, *, enabled: bool) -> None:
+async def _set_event_route(amqp_url: str, name_prefix: str, *, enabled: bool) -> None:
+    """Bind or unbind `event.#`, which is how a handoff publish is made to fail against a real broker.
+
+    The push Verdict handoff was the route this helper used to break; it is a `news_delivery_queue`
+    row now and no publish can fail on it, so the admission handoff is the one left that can (#598 D2).
+    """
+
     from tracefold.integrations.rabbitmq import topology
-    from tracefold.news.bus import Q_DELIVER, RK_VERDICT_PUSH
+    from tracefold.news.bus import Q_TRIAGE
 
     spec = topology(name_prefix)
     connection = await aio_pika.connect_robust(amqp_url, timeout=5.0)
     channel = await connection.channel(publisher_confirms=True)
     try:
         exchange = await channel.get_exchange(spec.exchange, ensure=True)
-        queue = await channel.get_queue(f"{name_prefix}.{Q_DELIVER}", ensure=True)
+        queue = await channel.get_queue(f"{name_prefix}.{Q_TRIAGE}", ensure=True)
         if enabled:
-            await queue.bind(exchange, routing_key=RK_VERDICT_PUSH)
+            await queue.bind(exchange, routing_key="event.#")
         else:
-            await queue.unbind(exchange, routing_key=RK_VERDICT_PUSH)
+            await queue.unbind(exchange, routing_key="event.#")
     finally:
         await channel.close()
         await connection.close()

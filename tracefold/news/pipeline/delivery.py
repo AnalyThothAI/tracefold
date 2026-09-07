@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, ClassVar, Protocol, runtime_checkable
+from typing import Any, ClassVar, Final, Protocol, runtime_checkable
 
-from ..bus import Q_DELIVER, BusMessage, DeferError, PermanentError, TransientError, now_ms
+from ..bus import DeferError, PermanentError, TransientError, now_ms
 from ..delivery import card_assets, news_reader_card, reader_market_movements, reader_trade_targets
 from ..feishu_card import feishu_card
 from ..market_review.pricing import (
@@ -44,7 +45,44 @@ _DELIVERY_EDIT_RECONCILE_SECONDS = 30.0
 _DELIVERY_STARTUP_RECONCILE_RETRY_SECONDS = 0.25
 _PROGRESSION_REVIEW_CANDIDATE_MAX = 8
 
+# One Event, one card; there is no follow-up lane. The queue row and its ledger row are the same
+# intent at two moments, so they are keyed the same way.
+DELIVERY_KIND_FIRST: Final = "first"
+# The retry contract this lane used to rent from RabbitMQ, now held in PostgreSQL. The `news.deliver`
+# policy said `delivery-limit: 2`, which a quorum queue delivers three times because the first
+# delivery carries no `x-delivery-count`, and `delayed-retry-min/max: 30000`, a flat 30 s wait. Both
+# numbers are carried over unchanged: this change replaces the mechanism, not the observable timing,
+# exactly as #400 carried them over from the TTL lane before it. A graduated backoff would be a third
+# schedule for the same failure and nobody asked for one.
+DELIVERY_ATTEMPTS_MAX: Final = 3
+DELIVERY_RETRY_DELAY_MS: Final = 30_000
+# The claim's lease is that same wait: a claimed row is due again one retry later, so a process that
+# dies mid-attempt costs exactly the delay a failed attempt costs and needs no sweep to say so.
+# The loop takes one card per claim rather than a batch, because the work between the claim and the
+# settle -- a provider preparation, a quote read and the send itself -- is bounded well inside one
+# lease only when it is one card's worth.
+_DELIVERY_CLAIM_LIMIT = 1
+# How many cards one turn may send before the loop goes back to the top. A burst drains in one turn
+# instead of one per poll; an empty claim ends the turn immediately.
+_DELIVERY_SENDS_PER_TURN = 20
+# Idle poll. Shorter than the market loop's 2 s tick because this is a reader's first card and the
+# broker used to deliver it the instant Triage committed; one second is the whole latency the cut
+# costs, against a Triage stage that spends seconds in the model.
+_DELIVERY_POLL_SECONDS = 1.0
+
 logger = logging.getLogger(__name__)
+
+
+def _claim_due(repos: Any, *, now_ms: int) -> list[dict[str, Any]]:
+    """The claim, as one statement over the repositories: the database ports take a plain callable."""
+
+    claims: list[dict[str, Any]] = repos.news.claim_due_deliveries(
+        now_ms=now_ms,
+        next_attempt_at_ms=now_ms + DELIVERY_RETRY_DELAY_MS,
+        attempts_max=DELIVERY_ATTEMPTS_MAX,
+        limit=_DELIVERY_CLAIM_LIMIT,
+    )
+    return claims
 
 
 async def read_display_quotes(
@@ -359,15 +397,21 @@ class InitialSendEntry:
                 self._last_send_at = time.monotonic()
 
 
-class DelivererConsumer:
-    """SAC consumer: one initial send per identity; editable providers enrich that same receipt."""
+class DelivererLoop:
+    """One initial send per identity, claimed from PostgreSQL; editable providers enrich that receipt.
+
+    The to-do list is `news_delivery_queue`, written by Triage inside the transaction that writes the
+    verdict. This loop claims a due row with `FOR UPDATE SKIP LOCKED`, spends one attempt on it, and
+    then does exactly what the `news.deliver` consumer did: `begin_delivery`, render, send, settle.
+    `news_deliveries` is untouched and remains the only ledger of what a reader was sent -- the queue
+    row is deleted the moment that ledger row exists (#598 D2).
+    """
 
     work_semantics: ClassVar[tuple[NewsWorkSemantics, ...]] = ("durable_event",)
 
     def __init__(
         self,
         *,
-        bus: Any,
         db: NewsDatabasePort,
         sender: NewsPushSender | None,
         finite_operations: Any,
@@ -377,7 +421,6 @@ class DelivererConsumer:
         progression_verifier: ProgressionVerifier | None = None,
         tradability_verifier: TradabilityVerifier | None = None,
     ) -> None:
-        self.bus = bus
         self.db = db
         self.sender = sender
         self.finite = finite_operations
@@ -401,7 +444,7 @@ class DelivererConsumer:
                 "news_delivery_reconcile", lambda repos: repos.news.terminalize_interrupted_deliveries(now_ms=now_ms())
             )
         # Unlike an initial-send ambiguity, an inherited edit intent cannot be left in a pretend in-flight state:
-        # this process owns no edit task yet. Refuse to consume until PostgreSQL records that truth.
+        # this process owns no edit task yet. Refuse to claim until PostgreSQL records that truth.
         startup_reconciliations = (
             (
                 "news_delivery_edit_reconcile",
@@ -418,15 +461,15 @@ class DelivererConsumer:
                 break
             if stop_event.is_set():
                 return
-        consume_task = asyncio.create_task(
-            self.bus.consume(Q_DELIVER, self.handle, prefetch=1, stop_event=stop_event),
-            name="news-delivery-consume",
+        claim_task = asyncio.create_task(
+            self._claim_loop(stop_event=stop_event),
+            name="news-delivery-claim",
         )
         reconcile_task = asyncio.create_task(
             self._edit_reconcile_loop(stop_event=stop_event),
             name="news-delivery-edit-reconcile",
         )
-        tasks = {consume_task, reconcile_task}
+        tasks = {claim_task, reconcile_task}
         try:
             done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
@@ -452,17 +495,118 @@ class DelivererConsumer:
             lambda repos: repos.news.terminalize_stale_delivery_edits(now_ms=now_ms()),
         )
 
-    async def handle(self, message: BusMessage) -> None:
-        event_id = str(message.payload.get("event_id") or "")
-        kind = "first"  # one Event, one card; there is no follow-up lane
-        if not event_id:
-            raise PermanentError("news_event_id_missing")
+    async def _claim_loop(self, *, stop_event: asyncio.Event) -> None:
+        """Claim what is due, send it, and sleep only when nothing was owed.
+
+        Every business outcome of a send is already a durable `news_deliveries` row and never reaches
+        here; what reaches here is the claim transaction failing, and a database that cannot answer
+        this second is answered by waiting one poll rather than by faulting a capability.
+        """
+
+        while not stop_event.is_set():
+            try:
+                worked = await self.advance()
+            except (TransientError, DeferError):
+                worked = 0
+            if not worked:
+                await _sleep_or_stop(stop_event, _DELIVERY_POLL_SECONDS)
+
+    async def advance(self) -> int:
+        """One turn, and this loop's one business action: up to `_DELIVERY_SENDS_PER_TURN` claims.
+
+        Each claim is its own transaction, and the work between two of them holds no database
+        session: a provider preparation, a quote read and the send itself all happen with the
+        connection released, exactly as they did under the consumer.
+        """
+
+        worked = 0
+        for _ in range(_DELIVERY_SENDS_PER_TURN):
+            stamp = now_ms()
+            claims = await self.db.tx("news_delivery_claim", functools.partial(_claim_due, now_ms=stamp))
+            if not claims:
+                return worked
+            for claim in claims:
+                await self._deliver_claim(
+                    event_id=str(claim["event_id"]),
+                    kind=str(claim["kind"]),
+                    attempts=int(claim["attempts"]),
+                )
+                worked += 1
+        return worked
+
+    async def _deliver_claim(self, *, event_id: str, kind: str, attempts: int) -> None:
+        """Run one attempt and settle the queue row on its outcome.
+
+        Three outcomes and no fourth. The intent is finished -- a ledger row exists, or this Event was
+        never owed a card -- and the row is deleted. The intent can never succeed, and the row becomes
+        `dead`: this lane's `news.dead`, kept in place instead of in a broker. Or the attempt did not
+        finish, and the row keeps the lease the claim gave it, until the budget the broker policy used
+        to enforce is spent.
+        """
+
+        try:
+            await self.deliver(event_id=event_id, kind=kind)
+        except PermanentError as exc:
+            # The broker rejected these without requeue and they became dead letters. The row becomes
+            # `dead` in place instead, which is the same answer with the evidence left where an
+            # operator can read it.
+            await self._abandon_claim(event_id, kind, str(exc) or "news_delivery_refused")
+            return
+        except (TransientError, DeferError) as exc:
+            await self._retry_or_abandon(event_id, kind, attempts, f"news_delivery_deferred:{type(exc).__name__}")
+            return
+        except Exception as exc:
+            # Unclassified, and the contract is the consumer's own: it failed the Deliverer, which
+            # ends the task and marks `news_delivery` faulted beside healthy capabilities. Kept
+            # exactly, with the attempt and its reason recorded on the intent first, so the operator
+            # who restarts the process finds the row saying what happened to it.
+            await self._defer_claim(event_id, kind, f"news_delivery_failed:{type(exc).__name__}")
+            logger.error("news delivery attempt crashed event_id=%s (%s)", event_id, type(exc).__name__)
+            raise
+        with contextlib.suppress(TransientError, DeferError):
+            await self.db.tx(
+                "news_delivery_claim_finish",
+                lambda repos: repos.news.finish_delivery_claim(event_id=event_id, kind=kind),
+            )
+
+    async def _retry_or_abandon(self, event_id: str, kind: str, attempts: int, error_code: str) -> None:
+        """Spend the attempt the claim already counted, or give up when it was the last one."""
+
+        if attempts >= DELIVERY_ATTEMPTS_MAX:
+            await self._abandon_claim(event_id, kind, error_code)
+            return
+        await self._defer_claim(event_id, kind, error_code)
+
+    async def _defer_claim(self, event_id: str, kind: str, error_code: str) -> None:
+        """Record why this attempt did not finish. The claim's lease already holds the retry's wait."""
+
+        with contextlib.suppress(TransientError, DeferError):
+            await self.db.tx(
+                "news_delivery_claim_defer",
+                lambda repos: repos.news.defer_delivery_claim(
+                    event_id=event_id, kind=kind, error_code=error_code, now_ms=now_ms()
+                ),
+            )
+
+    async def _abandon_claim(self, event_id: str, kind: str, error_code: str) -> None:
+        logger.warning("news delivery intent abandoned event_id=%s error_code=%s", event_id, error_code)
+        with contextlib.suppress(TransientError, DeferError):
+            await self.db.tx(
+                "news_delivery_claim_abandon",
+                lambda repos: repos.news.abandon_delivery_claim(
+                    event_id=event_id, kind=kind, error_code=error_code, now_ms=now_ms()
+                ),
+            )
+
+    async def deliver(self, *, event_id: str, kind: str = DELIVERY_KIND_FIRST) -> None:
+        """One claimed intent: `begin_delivery`, render, send, settle. Unchanged from the consumer."""
+
         stamp = now_ms()
         bundle = await self.db.read("news_delivery_load", lambda repos: self._load(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_delivery_inputs_missing")
         card, triage_row, _admission, timing = bundle
-        # A delivery message can outlive the source-contract migration that held its Event. Immutable
+        # A queued delivery can outlive the source-contract migration that held its Event. Immutable
         # evidence and historical verdicts remain audit facts; current PostgreSQL routing still wins before
         # a delivery ledger row, quote read, or external send is attempted. A retired market kind is one of
         # those held Events (#553): `_load` answers it with no verdict, which is what "readable evidence,

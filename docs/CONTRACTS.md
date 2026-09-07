@@ -502,13 +502,17 @@ every Event this code can open.
   disagree. `hours` bounds `opened_at_ms` to the last N hours (`0` or absent =
   no bound).
 
-  Event-to-Triage and push-Verdict-to-Delivery use the same code-owned
-  30-minute relevance ceiling. A marker-null handoff is pending at exactly the
-  boundary and expired only when strictly older; a non-null marker remains
-  published regardless of age. `expired_triage_handoff` and
-  `expired_delivery_handoff` are `held`, never `pending`. Page rows, outcome
-  filtering, and first-page counts share one request `as_of_ms`, so a row
-  cannot be expired in the response but pending in its counts.
+  The Event-to-Triage handoff uses a code-owned 30-minute relevance ceiling. A
+  marker-null handoff is pending at exactly the boundary and expired only when
+  strictly older; a non-null marker remains published regardless of age.
+  `expired_triage_handoff` and `expired_delivery_handoff` are `held`, never
+  `pending`. Page rows, outcome filtering, and first-page counts share one
+  request `as_of_ms`, so a row cannot be expired in the response but pending in
+  its counts. `expired_delivery_handoff` can no longer be reached: the
+  push-Verdict handoff is a `news_delivery_queue` row written in the verdict's
+  own transaction, so `news_verdicts.published_at_ms` is never absent on a
+  Verdict whose card is owed (#598 D2). The outcome branch stays until the
+  column it reads is dropped.
 
   The feed is the editorial plane only: the query filters
   `e.event_kind IN ('news','listing')`, so a market observation is never a feed
@@ -1065,13 +1069,14 @@ edit of that same receipt-bound message; an edit is neither a second delivery no
 initial send. A delivery without a configured sender or whose
 preflight fails settles `terminal` immediately instead of holding the message.
 
-Broker contract: topic exchange `news`, dead-letter exchange `news.dlx`, three
-quorum business queues — `news.raw` (`raw.#`; single-active), `news.triage`
-(`event.#`) and `news.deliver` (`verdict.push`; single-active) — and `news.dead`
+Broker contract: topic exchange `news`, dead-letter exchange `news.dlx`, two
+quorum business queues — `news.raw` (`raw.#`; single-active) and `news.triage`
+(`event.#`) — and `news.dead`
 (delivery limit 1,000,000 so nothing can lose terminal evidence by returning it). All names take
 `news.broker.name_prefix`. Declaring the topology declares exactly those names
 and deletes nothing else: any other name under the prefix — the retired Analyst
 queue `news.deep` (issue #57), the removed retry lane `news.retry` (issue #400),
+the retired delivery queue `news.deliver` (issue #598 D2),
 another deployment's queue — is reported by `tracefold news bus-check` as
 topology drift for an operator to act on by hand.
 
@@ -1084,17 +1089,20 @@ generated from `tracefold.news.broker_policy` into
 delivers `delivery-limit + 1` times, so three total handler attempts),
 `dead-letter-strategy=at-least-once`, `dead-letter-exchange=news.dlx`,
 `overflow=reject-publish`, and a measured `max-length-bytes` per queue (64 MiB
-`news.raw`, 4 MiB `news.triage`, 4 MiB `news.deliver`, 16 MiB `news.dead`).
+`news.raw`, 4 MiB `news.triage`, 16 MiB `news.dead`).
 `tracefold news bus-policy apply|verify` is the only writer; Workers verifies
 the effective policy at startup and refuses to consume on a mismatch.
 
-All three business queues share one delivery limit, so `news.deliver` goes from
-the delivery limit of 1 it declared before #400 to the same 2 as the others.
-That is not a weakening of the external-delivery fence, because the fence was
-never the queue's: `begin_delivery` returns `new` exactly once per
-`(event_id, kind)`, and a redelivery settles `ambiguous_after_crash` instead of
-sending a second card. What the old limit of 1 actually bought was dead-lettering
-a crashed delivery one attempt sooner.
+The push Verdict handoff is not on this broker at all. Triage inserts a
+`news_delivery_queue (event_id, kind, next_attempt_at_ms, attempts, state)` row
+in the same transaction as the verdict, and the Deliverer claims a due row with
+`FOR UPDATE SKIP LOCKED`, spends one attempt, and leases the row until it is due
+again. The retry contract is the one the `news.deliver` policy gave it, carried
+over unchanged: three attempts 30 s apart, then `state = 'dead'` with the reason
+recorded on the row — this lane's `news.dead`, kept where a `SELECT` can read it.
+The external-delivery fence was never the queue's either: `begin_delivery`
+returns `new` exactly once per `(event_id, kind)`, and a re-claim settles
+`ambiguous_after_crash` instead of sending a second card.
 
 Message bodies are `news_bus_v1` JSON envelopes (`schema_version`, `kind`,
 `message_id`, `trace_id`, `occurred_at_ms`, `payload`) with AMQP priority 0 or 5

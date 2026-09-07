@@ -549,10 +549,9 @@ window.
 |---|---:|---:|---:|---|
 | `news.raw` | 2,048 B | 2,882 | 64 MiB | ~11 min of the worst minute ever observed (a Recovery backfill, itself capped at 1,000 messages per 30 s run), or ~42 h at the p99 minute of 13/min |
 | `news.triage` | 512 B | 111 | 4 MiB | ~8,192 Events: ~73 min at the worst minute, ~12 h at the p99 minute |
-| `news.deliver` | 512 B | 7 | 4 MiB | ~8,192 push Verdicts |
 | `news.dead` | 2,048 B | n/a | 16 MiB | ~8,192 dead letters an operator can still page through |
 
-The four bounds total 88 MiB against a 768 MiB broker container whose default
+The three bounds total 84 MiB against a 768 MiB broker container whose default
 `vm_memory_high_watermark` blocks publishers near 460 MiB. That ordering is the
 point: a queue bound rejects one queue's publishes as a typed
 `BrokerBackpressure`, which opens an incident and later replays through
@@ -697,6 +696,89 @@ and the old image ignores them. After step 6 the queues carry the new shape and
 after step 8 the old lane is gone, so rolling back would recreate an unconfigured
 retry queue rather than the one that was deleted. Roll forward.
 
+### Cutting over from the removed `news.deliver` queue (#598 D2)
+
+Run this once, from the primary checkout, when deploying the D2 image onto a
+deployment that still has `news.deliver`. The push Verdict's handoff to Delivery
+becomes a `news_delivery_queue` row written in the verdict's own transaction, so
+the queue, its `verdict.push` binding, its policy and the Janitor's repair of that
+handoff all go away. Workers must be stopped for the whole of it: a Triage on the
+new code writes a queue row a Deliverer on the old code never reads, and a Triage
+on the old code publishes a message a Deliverer on the new code never receives.
+Take the window from the News session that owns the running campaign.
+
+1. `docker compose exec -T workers tracefold news dlq inspect` and record what is
+   in `news.dead`. This image can no longer decode a `verdict` envelope — the kind
+   is gone with the queue — so any `push:<event_id>` dead letter must be dealt with
+   *before* the cutover: replay it on the old image (`tracefold news dlq replay`)
+   or record it and purge. A `verdict` dead letter left in place is unreadable
+   afterwards.
+2. `docker compose stop -t 40 workers`. The graceful stop lets an in-flight card
+   settle. Frames that arrive during the window are the ordinary deployment gap and
+   Recovery backfills them.
+3. Read `news.deliver` on the management API and record `messages`,
+   `messages_ready` and `messages_unacknowledged`. Whatever is left there is a
+   push Verdict whose card was never delivered, and step 6 is what recovers it.
+4. `make db-migrate` with Workers down. `20260907_0374` creates
+   `news_delivery_queue` and reads no other table.
+5. `make up`. The new Workers declares two business queues and the dead-letter
+   queue and verifies their policies; `news.deliver` is simply not in the topology
+   it declares, so it is reported by `tracefold news bus-check` as drift until it is
+   deleted by hand in step 7.
+6. Seed the cards that were owed at the cutover, with Workers already running
+   (a queue row is claimed the moment it is due, so ordering costs at most one
+   poll). The window is the Janitor's own 30-minute relevance ceiling and no
+   wider: a card nobody could still act on is not worth sending hours late.
+
+   ```sql
+   INSERT INTO news_delivery_queue (
+     event_id, kind, state, attempts, enqueued_at_ms, next_attempt_at_ms, updated_at_ms
+   )
+   SELECT v.event_id, 'first', 'pending', 0,
+          (extract(epoch FROM now()) * 1000)::bigint,
+          (extract(epoch FROM now()) * 1000)::bigint,
+          (extract(epoch FROM now()) * 1000)::bigint
+     FROM news_verdicts v
+    WHERE v.stage = 'triage'
+      AND v.judgment_contract_version = 'news_judgment_v2'
+      AND v.final_decision IN ('push', 'escalate')
+      AND v.created_at_ms >= (extract(epoch FROM now()) * 1000)::bigint - 30 * 60000
+      AND NOT EXISTS (
+            SELECT 1 FROM news_deliveries d
+             WHERE d.event_id = v.event_id AND d.kind = 'first')
+   ON CONFLICT (event_id, kind) DO NOTHING
+   ```
+
+   Count what it inserted and compare it against the depth recorded in step 3.
+   They should agree; a difference is a verdict whose message was still unacked
+   in the Deliverer when Workers stopped, which the same statement covers.
+7. Delete the queue and its policy by hand — the application deliberately will
+   not, exactly as with `news.retry`:
+
+   ```bash
+   curl -fsS -u "$USER:$PASS" -X DELETE "http://127.0.0.1:15672/api/queues/%2F/news.deliver"
+   curl -fsS -u "$USER:$PASS" -X DELETE "http://127.0.0.1:15672/api/policies/%2F/news-deliver"
+   ```
+
+   Then `docker compose exec -T workers tracefold news bus-check` must report empty
+   `drift` lists and `policy_ok` on `news.raw`, `news.triage` and `news.dead`.
+8. Prove the new lane end to end: the next push Verdict writes a
+   `news_delivery_queue` row and the row is gone again once `news_deliveries` has
+   it. Anything still owed is one `SELECT` away:
+
+   ```sql
+   SELECT event_id, state, attempts, error_code, next_attempt_at_ms
+     FROM news_delivery_queue ORDER BY next_attempt_at_ms
+   ```
+
+   A `state = 'dead'` row is this lane's dead letter: three attempts were spent and
+   `error_code` says on what. It is kept, never claimed again, and removed by hand
+   once an operator has read it.
+
+Rollback before step 4 may restore the previous image. After step 7 the queue is
+gone, so a rollback would have to redeclare it (start the old image, which
+declares its own topology) and re-publish the owed verdicts. Roll forward.
+
 ## Worker ownership
 
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
@@ -804,11 +886,13 @@ messages concurrently with a per-message ack, so `news.triage.concurrency`
 single-active queues use prefetch 1. When the News lane cannot admit a message
 the consumer raises `DeferError` and the message requeues uncounted through
 the retry lane. Delivery restart reconciliation likewise waits out a typed
-admission `DeferError` before consuming; statement overruns and unknown faults
+admission `DeferError` before claiming; statement overruns and unknown faults
 remain process-fatal.
 
 News has no projection lease: the broker's single-active-consumer and
-per-message ack are the fences.
+per-message ack are the fences on `news.raw` and `news.triage`, and on the
+delivery lane it is the row the claim holds with `FOR UPDATE SKIP LOCKED`,
+leased until its next due time (#598 D2).
 
 `/metrics` exposes low-cardinality worker transaction and shared capability
 resource signals. Use shared resource and PostgreSQL activity/lock evidence for
@@ -940,13 +1024,16 @@ OpenNews account Strategy WSS (whatever the account has enabled; no local allowl
      -> _normalize_and_validate_semantics -> Taxonomy -> ReaderCard.v2
      -> _assemble -> atomic SemanticJudgment/ScoredJudgment
      -> policy-v13 decide() -> news_verdicts (editorial + runtime manifest)
-     -> verdict.push (an escalate rides the same key at AMQP priority 5)
-  -> q:news.deliver [SAC] Deliverer: one configured-provider attempt per Event (kind first)
+     -> news_delivery_queue row in the same transaction (push/escalate); no broker publish
+  -> Deliverer loop (Workers task, 1 s poll): claim a due row with FOR UPDATE SKIP LOCKED,
+     one configured-provider attempt per Event (kind first); the row is deleted once
+     news_deliveries has it, and `dead` after three attempts 30 s apart
   -> RabbitMQ 4.3 native delayed retry inside each business queue: TransientError is a counted return
      (30 s delay, terminal after 3 total attempts), DeferError is an uncounted return (same delay);
      q:news.dead (at-least-once) for decode/PermanentError/exhausted-transient terminal cases
-  -> Janitor: Event->Triage and push-Verdict->Delivery repair (15 s minimum age,
-     30 min relevance ceiling, 50 rows/stage), band expiry, 30-day purge, broker snapshot
+  -> Janitor: Event->Triage repair only (15 s minimum age, 30 min relevance ceiling, 50 rows);
+     the push-Verdict handoff needs no repair -- it commits with the verdict --
+     band expiry, 30-day purge, broker snapshot
   -> /api/news/feed + /api/news/events/{event_id} + /api/news/status
 ```
 
@@ -2052,7 +2139,7 @@ settings schema rejects them and Serve/Workers fail to start with them
 present. Verify after restart: `tracefold db audit` reports
 `migration_status` `ready`, current News table counts, and
 `news_schema.exact`; `tracefold news bus-check` shows one consumer on
-`news.raw` and `news.deliver`; `/api/news/status.state` becomes `ready` only
+`news.raw` and `news.triage`; `/api/news/status.state` becomes `ready` only
 after the WSS, broker, model, delivery, and Workers health checks are all green;
 `/api/macro/overview` answers `404`; and the first candidate
 Event receives a Triage verdict within seconds.

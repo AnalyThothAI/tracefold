@@ -13,15 +13,7 @@ from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Literal
 
 from ..artifact_identity import canonical_json, canonical_sha
-from ..bus import (
-    Q_TRIAGE,
-    RK_VERDICT_PUSH,
-    BusMessage,
-    DeferError,
-    PermanentError,
-    TransientError,
-    now_ms,
-)
+from ..bus import Q_TRIAGE, BusMessage, DeferError, PermanentError, TransientError, now_ms
 from ..events.storyline import final_storyline_key
 from ..models import TRIAGE_POLICY_VERSION, json_ready
 from ..program.contracts import (
@@ -44,6 +36,7 @@ from ..triage_rules import (
     grounded_restatement,
     storyline_status,
 )
+from .delivery import DELIVERY_KIND_FIRST
 from .runtime import NewsDatabasePort
 from .triage_audit import (
     _program_execution,
@@ -71,6 +64,8 @@ from .triage_route import (
 log = logging.getLogger("tracefold.news")
 
 _INSTRUMENT_CACHE_TTL_MS = 10 * 60_000
+# The two decisions that owe a reader a card, and the one delivery kind there is: one Event, one card.
+_DELIVERED_DECISIONS: frozenset[str] = frozenset({"push", "escalate"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,49 +79,6 @@ class _PreparedTriageSettlement:
     judgment_sha256: str
     context_line: str
     trace_json: str
-
-
-async def publish_verdict(
-    bus: Any,
-    db: NewsDatabasePort,
-    *,
-    event_id: str,
-    trace_id: str,
-    amqp_priority: int,
-    policy_version: str,
-    occurred_at_ms: int | None = None,
-) -> Literal["marker_pending", "published"]:
-    """Publish one settled push Verdict to Delivery, then mark its confirmed handoff."""
-
-    stamp = now_ms()
-    await bus.publish(
-        BusMessage(
-            kind="verdict",
-            message_id=f"push:{event_id}",
-            routing_key=RK_VERDICT_PUSH,
-            payload={"event_id": event_id, "kind": "first"},
-            trace_id=trace_id,
-            occurred_at_ms=stamp if occurred_at_ms is None else int(occurred_at_ms),
-            priority=amqp_priority,
-        )
-    )
-    try:
-        await db.tx(
-            "news_triage_mark_published",
-            lambda repos: repos.news.mark_verdict_published(
-                event_id=event_id, stage="triage", policy_version=policy_version, now_ms=stamp
-            ),
-            timeout_seconds=1.0,
-        )
-        return "published"
-    except (TransientError, DeferError) as exc:
-        log.warning(
-            "news Verdict handoff confirmed but marker remains pending event_id=%s policy_version=%s error=%s",
-            event_id,
-            policy_version,
-            type(exc).__name__,
-        )
-        return "marker_pending"
 
 
 def _circuit_incident_for(
@@ -267,7 +219,7 @@ class TriageConsumer:
         # An Event of a retired market kind is immutable historical evidence, and Triage leaves it alone.
         if admission == "recovery" or event_kind not in EVENT_KINDS:
             return
-        if await self._republish_settled_verdict(event_id, message, policy_version=TRIAGE_POLICY_VERSION):
+        if await self._already_settled(event_id, policy_version=TRIAGE_POLICY_VERSION):
             return
         if str(card.get("evidence_schema_version") or "") != "news_event_evidence_v3":
             raise PermanentError("news_event_evidence_v3_required")
@@ -350,35 +302,20 @@ class TriageConsumer:
                         ),
                     )
             break
-        if outcome.final in {"push", "escalate"}:
-            await publish_verdict(
-                self.bus,
-                self.db,
-                event_id=event_id,
-                trace_id=message.trace_id,
-                amqp_priority=message.priority,
-                policy_version=TRIAGE_POLICY_VERSION,
-            )
 
-    async def _republish_settled_verdict(self, event_id: str, message: BusMessage, *, policy_version: str) -> bool:
-        """Whether this Event already has a verdict. A push that never left the process is re-published."""
+    async def _already_settled(self, event_id: str, *, policy_version: str) -> bool:
+        """Whether this Event already has a verdict, and so already handed its card to Delivery.
+
+        The handoff is a `news_delivery_queue` row written in the verdict's own transaction, so a
+        verdict that exists has one and a redelivery of this Event's Triage message has nothing left
+        to do. There is no "settled but never published" state left to repair (#598 D2).
+        """
 
         existing = await self.db.read(
             "news_triage_existing",
             lambda repos: repos.news.get_verdict(event_id=event_id, stage="triage", policy_version=policy_version),
         )
-        if existing is None:
-            return False
-        if existing.get("published_at_ms") is None and existing["final_decision"] in {"push", "escalate"}:
-            await publish_verdict(
-                self.bus,
-                self.db,
-                event_id=event_id,
-                trace_id=message.trace_id,
-                amqp_priority=message.priority,
-                policy_version=policy_version,
-            )
-        return True
+        return existing is not None
 
     def _route_inputs(
         self,
@@ -848,6 +785,22 @@ class TriageConsumer:
             followup_of=None,
             now_ms=s.stamp,
         )
+        if prepared.decision.final in _DELIVERED_DECISIONS:
+            # The handoff to Delivery, in the transaction that decides it. A queue row and a verdict
+            # now commit or roll back together, so there is no window in which a card is owed and
+            # nothing says so -- which is what the broker publish, the `published_at_ms` marker and
+            # the Janitor's repair scan existed to paper over (#598 D2).
+            repos.news.enqueue_delivery(event_id=s.event_id, kind=DELIVERY_KIND_FIRST, now_ms=s.stamp)
+            # Written here rather than after a confirmed publish, because the handoff *is* this
+            # transaction. The column keeps every meaning its readers give it -- the console's verdict
+            # panel and the review task source read it, and `event_outcome` asks only whether it is
+            # set -- and can no longer be absent on a Verdict whose card is owed.
+            repos.news.mark_verdict_published(
+                event_id=s.event_id,
+                stage="triage",
+                policy_version=s.policy_version,
+                now_ms=s.stamp,
+            )
         return _TriageOutcome(stale=False, final=prepared.decision.final, decision=prepared.decision)
 
     async def _trip_canary(self, activation_id: str, reason: str, stamp: int) -> None:

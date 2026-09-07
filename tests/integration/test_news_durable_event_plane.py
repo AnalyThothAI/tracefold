@@ -39,7 +39,6 @@ from tracefold.integrations.rabbitmq import RabbitMQBus, topology
 from tracefold.news import broker_policy
 from tracefold.news.bus import (
     Q_DEAD,
-    Q_DELIVER,
     Q_RAW,
     Q_TRIAGE,
     RK_RAW_LIVE,
@@ -548,9 +547,7 @@ def _restart_broker(container: str) -> None:
 def test_the_topology_this_module_used_is_the_final_one() -> None:
     async def scenario() -> None:
         async with _bus() as bus:
-            assert set(topology(bus.prefix).queue_names) == {
-                bus.queue_name(name) for name in (Q_RAW, Q_TRIAGE, Q_DELIVER, Q_DEAD)
-            }
+            assert set(topology(bus.prefix).queue_names) == {bus.queue_name(name) for name in (Q_RAW, Q_TRIAGE, Q_DEAD)}
             assert await bus.topology_drift() == {"queues": [], "exchanges": []}
 
     asyncio.run(scenario())

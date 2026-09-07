@@ -44,7 +44,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260906_0373"
+HEAD = "20260907_0374"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -115,6 +115,15 @@ def _pre_0357_command_payload(payload_json: str, *, confirmation_identity: str |
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
+def _table_exists(name: str) -> bool:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        row = conn.execute("SELECT to_regclass(%s) AS table_name", (f"public.{name}",)).fetchone()
+        return row is not None and row["table_name"] is not None
+    finally:
+        conn.close()
+
+
 def _stamped_revision() -> str | None:
     conn = connect_postgres_test(read_only=False)
     try:
@@ -133,6 +142,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260906_0373",
         "20260906_0372",
         "20260906_0371",
         "20260906_0370",
@@ -207,8 +217,12 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    # `20260906_0373` is now the first refusal the walk to base meets, and it is the head, so the walk
-    # stops before reversing anything: narrowing the wallet kind vocabulary again would leave digest
+    # `20260906_0373` is the first refusal the walk to base meets. `20260907_0374` sits in front of it
+    # and is reversible on purpose -- it creates one table of work still owed, never a record of what a
+    # reader received, so dropping it is the honest reverse of creating it -- but the walk runs under
+    # one transactional-DDL migration context, so the refusal rolls its drop back with everything else
+    # and `news_delivery_queue` is still there afterwards. Narrowing the wallet kind vocabulary again
+    # would leave digest
     # rows the CHECK rejects, and dropping them would delete summaries readers were sent.
     # `20260906_0372` is the refusal immediately behind it: its events are the observations wallet
     # cards were sent for, and the fills they were derived from expire on a 90-day retention the
@@ -228,6 +242,7 @@ def test_current_head_downgrade_is_irreversible() -> None:
     with pytest.raises(RuntimeError, match="news_market_wallet_digest_downgrade_unsupported"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
+    assert _table_exists("news_delivery_queue") is True
 
     # And 0357 is still the refusal behind it, proven on a database that stops there.
     _empty_the_schema()

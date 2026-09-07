@@ -437,7 +437,6 @@ def _status_inputs(**over: object) -> dict[str, object]:
             "queues": {
                 "news.raw": _queue(consumers=1),
                 "news.triage": _queue(messages=3, ready=3, consumers=1),
-                "news.deliver": _queue(consumers=1),
                 "news.dead": _queue(),
             },
         },
@@ -535,7 +534,6 @@ def test_broker_health_is_bad_when_the_retry_policy_does_not_match_the_contract(
         **{
             "news.raw": _queue(consumers=1),
             "news.triage": _queue(consumers=1, policy_ok=False),
-            "news.deliver": _queue(consumers=1),
             "news.dead": _queue(),
         }
     )
@@ -549,7 +547,6 @@ def test_broker_health_is_bad_when_a_queue_is_not_declared_at_all() -> None:
         **{
             "news.raw": _queue(consumers=1),
             "news.triage": _queue(consumers=1),
-            "news.deliver": _queue(consumers=1),
             "news.dead": _queue(missing=True, policy_ok=None, bytes_used_bps=None),
         }
     )
@@ -563,7 +560,6 @@ def test_broker_health_is_bad_when_a_dead_letter_is_stuck_on_its_source_queue() 
         **{
             "news.raw": _queue(consumers=1),
             "news.triage": _queue(messages=1, consumers=1, dead_letter_pending=1),
-            "news.deliver": _queue(consumers=1),
             "news.dead": _queue(),
         }
     )
@@ -575,7 +571,6 @@ def test_broker_health_warns_before_a_queue_reaches_its_byte_bound() -> None:
         **{
             "news.raw": _queue(messages=10, consumers=1, bytes_used_bps=5_200),
             "news.triage": _queue(consumers=1),
-            "news.deliver": _queue(consumers=1),
             "news.dead": _queue(),
         }
     )
@@ -584,7 +579,6 @@ def test_broker_health_warns_before_a_queue_reaches_its_byte_bound() -> None:
         **{
             "news.raw": _queue(messages=10, consumers=1, bytes_used_bps=9_100),
             "news.triage": _queue(consumers=1),
-            "news.deliver": _queue(consumers=1),
             "news.dead": _queue(),
         }
     )
@@ -599,7 +593,6 @@ def test_broker_health_warns_when_the_management_api_could_not_be_read() -> None
         **{
             "news.raw": {**unknown, "consumers": 1},
             "news.triage": {**unknown, "consumers": 1},
-            "news.deliver": {**unknown, "consumers": 1},
             "news.dead": dict(unknown),
         }
     )
@@ -607,9 +600,9 @@ def test_broker_health_warns_when_the_management_api_could_not_be_read() -> None
 
 
 def test_broker_health_warns_when_only_one_queue_is_missing_from_the_management_rows() -> None:
-    """A management API that answered about three queues has said nothing about the fourth.
+    """A management API that answered about two queues has said nothing about the third.
 
-    Three verified policies prove nothing about the delivery the fourth queue governs, so a partial
+    Two verified policies prove nothing about the delivery the third queue governs, so a partial
     answer is unknown, not healthy — and the warning names the queue nobody can vouch for.
     """
 
@@ -621,8 +614,7 @@ def test_broker_health_warns_when_only_one_queue_is_missing_from_the_management_
                 "connected": True,
                 "queues": {
                     "news.raw": _queue(consumers=1),
-                    "news.triage": _queue(consumers=1),
-                    "news.deliver": _queue(consumers=1, policy_ok=None, bytes_used_bps=None),
+                    "news.triage": _queue(consumers=1, policy_ok=None, bytes_used_bps=None),
                     "news.dead": _queue(),
                 },
             },
@@ -630,7 +622,7 @@ def test_broker_health_warns_when_only_one_queue_is_missing_from_the_management_
     )["health"]["broker"]
 
     assert (item["level"], item["summary_zh"]) == ("warn", "队列策略未知")
-    assert "news.deliver" in str(item["detail_zh"])
+    assert "news.triage" in str(item["detail_zh"])
 
 
 def test_an_unverifiable_policy_is_not_hidden_behind_the_standing_dead_letter_count() -> None:
@@ -640,7 +632,6 @@ def test_an_unverifiable_policy_is_not_hidden_behind_the_standing_dead_letter_co
         **{
             "news.raw": _queue(consumers=1, policy_ok=None, bytes_used_bps=None),
             "news.triage": _queue(consumers=1),
-            "news.deliver": _queue(consumers=1),
             "news.dead": _queue(messages=38, ready=38),
         }
     )

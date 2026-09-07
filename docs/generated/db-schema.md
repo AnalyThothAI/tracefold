@@ -81,6 +81,21 @@
 | `delete_attempted_at_ms` | `BIGINT` | True | `None` |
 | `delete_settled_at_ms` | `BIGINT` | True | `None` |
 
+## `news_delivery_queue`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `event_id` | `TEXT` | False | `None` |
+| `kind` | `TEXT` | False | `None` |
+| `state` | `TEXT` | False | `'pending'::text` |
+| `attempts` | `INTEGER` | False | `0` |
+| `error_code` | `TEXT` | True | `None` |
+| `enqueued_at_ms` | `BIGINT` | False | `None` |
+| `next_attempt_at_ms` | `BIGINT` | False | `None` |
+| `last_attempt_at_ms` | `BIGINT` | True | `None` |
+| `settled_at_ms` | `BIGINT` | True | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
 ## `news_event_assets`
 
 | Column | Type | Nullable | Default |
