@@ -1,4 +1,17 @@
-"""News V3 consumer unit tests: fake bus + fake repositories, no PostgreSQL and no broker."""
+"""News V3 consumer unit tests: fake bus + fake repositories, no PostgreSQL and no broker.
+
+What this module owns is what a consumer *computes*: the card and presentation it renders, the
+verdict and trace it materializes, the routing keys and priorities it publishes, the fallback
+reasons and error codes it chooses, its own circuit and budget rules, and the telemetry it emits.
+
+What it does not own, and must not claim, is durability. `FakeWorkerDatabase` opens no transaction,
+takes no lock and loses no compare-and-swap: `read` and `tx` are direct calls onto one recording
+object, so a recorded call order cannot tell one transaction from two, and a scripted `False` is not
+a CAS that was actually lost. Atomicity, row locks, CAS, uniqueness, crash survival and replay are
+asserted against real rows in `tests/integration/test_news_crash_replay.py`,
+`test_news_durable_event_plane.py`, `test_news_v3_pipeline.py`, `test_news_learning_retention.py`
+and the twin `tests/integration/test_news_v3_consumers.py` (#598 D8).
+"""
 
 from __future__ import annotations
 
@@ -7,7 +20,7 @@ import json
 import logging
 import threading
 from collections.abc import Mapping, Sequence
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, Literal
@@ -29,11 +42,9 @@ from tracefold.news.bus import (
     DeferError,
     PermanentError,
     TransientError,
-    now_ms,
 )
 from tracefold.news.market_review.pricing import Candle, PriceInstrument, PricePoint
 from tracefold.news.models import (
-    OUTBOX_MAX_AGE_MS,
     TRIAGE_POLICY_VERSION,
     ReaderDeliveryPresentation,
     ReaderMarketMovement,
@@ -324,12 +335,7 @@ class FakeWorkerDatabase:
     @contextmanager
     def worker_session(self, name: str, *_args: Any, **_kwargs: Any):
         del name
-        yield SimpleNamespace(
-            news=self.news,
-            instruments=self.instruments,
-            price=self.price,
-            transaction=nullcontext,
-        )
+        yield SimpleNamespace(news=self.news, instruments=self.instruments, price=self.price)
 
     async def run_news(self, name: str, fn: Any, *args: Any, operation_timeout_seconds: float, **kwargs: Any):
         self.operation_timeouts.append((name, operation_timeout_seconds))
@@ -966,19 +972,6 @@ def test_triage_output_failure_is_traced_and_never_opens_the_circuit() -> None:
     assert triage.circuit.failures == 0
 
 
-def test_triage_consumer_start_closes_incidents_left_open_by_a_previous_process() -> None:
-    news = RecordingNews(close_open_incidents=1)
-    bus = FakeBus()
-    triage = _triage(news, bus)
-    stop = asyncio.Event()
-    stop.set()
-
-    asyncio.run(triage.run(stop_event=stop))
-
-    assert news.kwargs_of("close_open_incidents")["cause_classes"] == ["triage_circuit_open"]
-    assert bus.consumed == ["news.triage"]
-
-
 def test_triage_refuses_to_consume_when_startup_reconciliation_fails() -> None:
     """#400: consuming with unknown incident state would leave PostgreSQL permanently wrong.
 
@@ -1091,56 +1084,6 @@ def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_inc
     assert [row["degraded"] for row in inserted] == [True, True, True, False]
 
 
-def test_triage_reasserts_the_open_incident_while_the_circuit_stays_open() -> None:
-    """#400: the durable incident follows the circuit's state, not a remembered edge.
-
-    A trip recorded only once, in memory, is exactly the divergence this replaced: if the transaction
-    that should have opened the incident failed, nothing would ever try again. Deriving the transition
-    from the circuit itself makes every later settle converge instead.
-    """
-
-    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True, open_incident=1)
-    bus = FakeBus()
-    failures = [_program_error("news_program_timeout", retryable=True) for _ in range(5)]
-    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge(failures))
-
-    for index in range(5):
-        asyncio.run(triage.handle(_message("event", {"event_id": f"ev-open-{index}"})))
-
-    # Three failures trip the circuit; every settle from there on re-asserts the same open incident.
-    assert news.names().count("open_incident") == 3
-    assert "close_open_incidents" not in news.names()
-
-
-def test_triage_closes_the_incident_inside_the_transaction_that_writes_the_verdict() -> None:
-    """The verdict and the incident close move together or not at all, so a failed write retries both."""
-
-    from tracefold.news.models import TriageVerdict
-
-    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True, close_open_incidents=0)
-    bus = FakeBus()
-    ok = _judgment(
-        TriageVerdict(
-            novelty="new_fact",
-            assets=[],
-            direction="bullish",
-            scope="single_name",
-            magnitude=1,
-            confidence=0.6,
-            headline_zh="ok",
-        )
-    )
-    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge([ok]))
-
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-close"})))
-
-    names = news.names()
-    # No prior open is remembered anywhere, so a healthy Program answer still asserts the closed state.
-    assert names.count("close_open_incidents") == 1
-    assert names.index("close_open_incidents") < names.index("insert_verdict")
-    assert "open_incident" not in names
-
-
 def test_triage_circuit_incident_failure_reaches_the_broker_instead_of_process_memory() -> None:
     """A DB lane that cannot admit the incident write must return the message, not drop the transition."""
 
@@ -1196,25 +1139,6 @@ def test_triage_records_the_answering_model_and_the_fallback_reason() -> None:
     assert inserted["trace"]["verdict_sha256"] == canonical_sha(inserted["verdict"])
     assert inserted["trace"]["model_fallback_from"] == "news_program_timeout"
     assert inserted["trace"]["model_attempts"] == 3
-
-
-def test_triage_replays_an_existing_unpublished_decision_without_reinserting() -> None:
-    news = RecordingNews(
-        get_verdict={"final_decision": "push", "published_at_ms": None},
-        event_card=_card(),
-    )
-    bus = FakeBus()
-
-    asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": "ev-strong"})))
-    assert bus.routing_keys() == [RK_VERDICT_PUSH]
-    assert "event_card" in news.names()
-    assert "insert_verdict" not in news.names()
-    assert news.names()[-2:] == ["get_verdict", "mark_verdict_published"]
-
-    settled = RecordingNews(get_verdict={"final_decision": "drop", "published_at_ms": None}, event_card=_card())
-    quiet = FakeBus()
-    asyncio.run(_triage(settled, quiet).handle(_message("event", {"event_id": "ev-strong"})))
-    assert quiet.published == [] and settled.names()[-1] == "get_verdict"
 
 
 def test_triage_rejects_missing_event_id_and_missing_event() -> None:
@@ -1296,20 +1220,6 @@ class RecordingEditableSender(RecordingSender):
         self.edited_reader_cards.append(card)
         self.edited_presentations.append(presentation or ReaderDeliveryPresentation())
         return {**dict(receipt), "edited_at_ms": NOW_MS + 1_000}
-
-
-class FailingEditSender(RecordingEditableSender):
-    def edit_card(
-        self,
-        receipt: Mapping[str, Any],
-        card: ReaderCard,
-        *,
-        channel_payload: Mapping[str, Any],
-        presentation: ReaderDeliveryPresentation | None = None,
-    ) -> dict[str, Any]:
-        del receipt, card, channel_payload, presentation
-        self.order.append("edit")
-        raise RuntimeError("telegram edit unavailable")
 
 
 class BlockingEditSender(RecordingEditableSender):
@@ -1437,7 +1347,6 @@ def _delivery_news(**overrides: Any) -> RecordingNews:
         "settle_delivery": True,
         "begin_delivery_edit": True,
         "settle_delivery_edit": True,
-        "mark_delivery_edit_ambiguous": True,
     }
     responses.update(overrides)
     return RecordingNews(**responses)
@@ -1464,21 +1373,6 @@ def test_deliverer_holds_a_queued_push_reclassified_by_the_current_source_contra
     assert "latest_verdict" not in news.names()
     assert "begin_delivery" not in news.names()
     assert "settle_delivery" not in news.names()
-
-
-def test_deliverer_without_sender_settles_terminal_delivery_unavailable() -> None:
-    news = _delivery_news()
-    bus = FakeBus()
-
-    asyncio.run(_deliverer(news, bus).handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"})))
-
-    begin = news.kwargs_of("begin_delivery")
-    assert begin["event_id"] == "ev-strong" and begin["kind"] == "first" and begin["card"] == {}
-    settle = news.kwargs_of("settle_delivery")
-    assert settle["state"] == "terminal" and settle["error_code"] == "delivery_unavailable"
-    assert settle["receipt"] is None
-    assert bus.published == []
-    assert "get_presentation" not in news.names()
 
 
 def test_deliverer_prepares_the_provider_before_creating_the_sending_row() -> None:
@@ -1518,14 +1412,6 @@ def test_deliverer_settles_a_preflight_failure_without_calling_send() -> None:
     assert settle["state"] == "terminal"
     assert settle["error_code"] == "news_delivery_telegram_preflight_transport_failed"
     assert sender.cards == []
-
-
-def test_deliverer_without_sender_leaves_existing_delivery_untouched() -> None:
-    news = _delivery_news(begin_states=["terminal"])
-
-    asyncio.run(_deliverer(news, FakeBus()).handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"})))
-
-    assert "begin_delivery" in news.names() and "settle_delivery" not in news.names()
 
 
 def test_deliverer_has_no_reader_count_input() -> None:
@@ -2525,97 +2411,6 @@ def test_telegram_delivery_sends_before_market_enrichment_then_edits_the_same_me
     assert news.kwargs_of("settle_delivery_edit")["receipt"]["edited_at_ms"] == NOW_MS + 1_000
 
 
-def test_telegram_delivery_keeps_the_initial_message_when_enrichment_edit_fails() -> None:
-    async def scenario() -> tuple[RecordingNews, FailingEditSender, list[str]]:
-        order: list[str] = []
-        news_at = NOW_MS - 20_000
-        news = _delivery_news(
-            event_card=_card(grounded_assets=["MSFT"], leader_published_at_ms=news_at),
-            event_delivery_timing={"news_at_ms": news_at, "observed_at_ms": news_at + 1_000},
-            latest_verdict=lambda **_kwargs: {
-                "final_decision": "push",
-                "verdict": {
-                    "direction": "bullish",
-                    "magnitude": 2,
-                    "headline_zh": "微软事件",
-                    "assets": [{"symbol": "MSFT", "role": "primary"}],
-                },
-            },
-        )
-        sender = FailingEditSender(order)
-
-        def price_fetcher_for(_venue: str) -> Any:
-            async def fetch(_venue_symbol: str, targets: Any) -> dict[int, PricePoint]:
-                order.append("price")
-                current, hour, day, event = targets
-                return {
-                    current: PricePoint(current, Decimal("101"), "trade"),
-                    hour: PricePoint(hour, Decimal("100"), "trade"),
-                    day: PricePoint(day, Decimal("90"), "candle_1m"),
-                    event: PricePoint(event, Decimal("99"), "trade"),
-                }
-
-            return fetch
-
-        consumer = _deliverer(
-            news,
-            FakeBus(),
-            price=RecordingPrice(
-                quotes=[
-                    {
-                        "requested_symbol": "MSFT",
-                        "symbol": "MSFT",
-                        "base_symbol": "MSFT",
-                        "venue": "binance.perp",
-                        "venue_symbol": "MSFTUSDT",
-                        "quote_asset": "USDT",
-                        "instrument_class": "equity",
-                        "price": "500",
-                        "state": "fresh",
-                    }
-                ],
-                instruments={"MSFT": (PriceInstrument("binance.perp", "MSFTUSDT", "MSFT", "equity", "USDT"),)},
-            ),
-            sender=sender,
-            price_fetcher_for=price_fetcher_for,
-        )
-        await consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
-        await consumer.close()
-        return news, sender, order
-
-    news, sender, order = asyncio.run(scenario())
-
-    assert order == ["prepare", "send", "price", "edit"]
-    assert sender.presentations[0].market_data_state == "pending"
-    assert news.kwargs_of("settle_delivery")["state"] == "sent"
-    assert "begin_delivery_edit" in news.names()
-    assert "settle_delivery_edit" not in news.names()
-    assert news.kwargs_of("mark_delivery_edit_ambiguous")["error_code"] == "builtins.RuntimeError"
-
-
-def test_telegram_delivery_does_not_edit_when_initial_sent_settlement_loses_its_cas() -> None:
-    order: list[str] = []
-    news = _delivery_news(
-        settle_delivery=False,
-        event_card=_card(grounded_assets=["MSFT"]),
-        latest_verdict=lambda **_kwargs: {
-            "final_decision": "push",
-            "verdict": {
-                "direction": "bullish",
-                "magnitude": 2,
-                "headline_zh": "微软事件",
-                "assets": [{"symbol": "MSFT", "role": "primary"}],
-            },
-        },
-    )
-    consumer = _deliverer(news, FakeBus(), sender=RecordingEditableSender(order))
-
-    asyncio.run(consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"})))
-
-    assert order == ["prepare", "send"]
-    assert "begin_delivery_edit" not in news.names()
-
-
 def test_delivery_refuses_to_consume_when_startup_edit_reconciliation_is_unavailable() -> None:
     def unavailable(**_kwargs: Any) -> int:
         raise TransientError("edit reconciliation unavailable")
@@ -2924,59 +2719,6 @@ def test_delivery_drain_allows_an_accepted_edit_to_submit_after_shutdown_admissi
     assert order == ["prepare", "send", "price", "edit"]
 
 
-def test_stale_sweep_recovers_after_edit_settlement_and_ambiguity_writes_both_fail() -> None:
-    async def scenario() -> RecordingNews:
-        def unavailable(**_kwargs: Any) -> bool:
-            raise TransientError("database temporarily unavailable")
-
-        order: list[str] = []
-        news = _delivery_news(
-            settle_delivery_edit=unavailable,
-            mark_delivery_edit_ambiguous=unavailable,
-            terminalize_stale_delivery_edits=1,
-            event_card=_card(grounded_assets=["MSFT"]),
-            latest_verdict=lambda **_kwargs: {
-                "final_decision": "push",
-                "verdict": {
-                    "direction": "bullish",
-                    "magnitude": 2,
-                    "headline_zh": "微软事件",
-                    "assets": [{"symbol": "MSFT", "role": "primary"}],
-                },
-            },
-        )
-        consumer = _deliverer(
-            news,
-            FakeBus(),
-            price=RecordingPrice(
-                quotes=[
-                    {
-                        "requested_symbol": "MSFT",
-                        "symbol": "MSFT",
-                        "base_symbol": "MSFT",
-                        "venue": "binance.perp",
-                        "venue_symbol": "MSFTUSDT",
-                        "quote_asset": "USDT",
-                        "instrument_class": "equity",
-                        "price": "500",
-                        "state": "fresh",
-                    }
-                ]
-            ),
-            sender=RecordingEditableSender(order),
-        )
-        await consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
-        await consumer.drain()
-        await consumer._reconcile_stale_delivery_edits()
-        return news
-
-    news = asyncio.run(scenario())
-
-    assert "settle_delivery_edit" in news.names()
-    assert "mark_delivery_edit_ambiguous" in news.names()
-    assert "terminalize_stale_delivery_edits" in news.names()
-
-
 def _quoted_delivery_news() -> RecordingNews:
     """A pushed crypto card whose primary the Gate did ground, which is what earns a quote line.
 
@@ -3124,37 +2866,6 @@ def test_deliverer_does_not_read_quotes_for_a_card_it_will_not_send() -> None:
     assert unavailable_price.requested == []
 
 
-# ---------------------------------------------------------------- Janitor
-def test_janitor_republishes_candidates_that_never_left_the_process() -> None:
-    news = RecordingNews(
-        unpublished_candidates=[
-            {
-                "event_id": "ev-lost",
-                "dedupe_family": "general",
-                "queue_priority": "normal",
-                "trace_id": "trace-1",
-                "opened_at_ms": NOW_MS - 60_000,
-            }
-        ],
-    )
-    bus = FakeBus()
-
-    db = FakeWorkerDatabase(news)
-    republished = asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port, bus=bus).repair_event_handoffs())
-
-    assert republished == 1
-    assert bus.routing_keys() == ["event.general.normal"]
-    assert bus.published[0].payload == {"event_id": "ev-lost"} and bus.published[0].trace_id == "trace-1"
-    assert bus.published[0].occurred_at_ms == NOW_MS - 60_000
-    assert news.kwargs_of("mark_event_published")["event_id"] == "ev-lost"
-    assert "event_card" not in news.names()
-    # #76: the catch-up scan is bounded on both sides — a floor so it skips Events still mid-publish, and a
-    # ceiling so it never delivers something the reader can no longer use.
-    scan = news.kwargs_of("event_handoff_scan")
-    assert scan["older_than_ms"] > scan["newer_than_ms"]
-    assert scan["older_than_ms"] - scan["newer_than_ms"] == OUTBOX_MAX_AGE_MS - 15_000
-
-
 def test_janitor_never_gives_up_on_a_stranded_event_silently(caplog, monkeypatch) -> None:
     """Rows past the relevance ceiling are explicit terminal projections, never silent pending work."""
 
@@ -3172,37 +2883,6 @@ def test_janitor_never_gives_up_on_a_stranded_event_silently(caplog, monkeypatch
         quiet_db = FakeWorkerDatabase(quiet)
         asyncio.run(JanitorLoop(db=quiet_db, cold_db=quiet_db.cold_port, bus=FakeBus()).repair_event_handoffs())
     assert not [r for r in caplog.records if "handoff expired" in r.getMessage()]
-
-
-def test_janitor_repairs_verdict_handoff_with_the_triage_message_contract() -> None:
-    news = RecordingNews(
-        unpublished_verdict_candidates=[
-            {
-                "event_id": "ev-push",
-                "policy_version": "policy-v1",
-                "created_at_ms": NOW_MS - 60_000,
-                "queue_priority": "high",
-                "trace_id": "trace-push",
-            }
-        ]
-    )
-    bus = FakeBus()
-    db = FakeWorkerDatabase(news)
-
-    republished = asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port, bus=bus).repair_verdict_handoffs())
-
-    assert republished == 1
-    assert bus.routing_keys() == [RK_VERDICT_PUSH]
-    assert bus.published[0].message_id == "push:ev-push"
-    assert bus.published[0].payload == {"event_id": "ev-push", "kind": "first"}
-    assert bus.published[0].trace_id == "trace-push" and bus.published[0].priority == 5
-    assert bus.published[0].occurred_at_ms == NOW_MS - 60_000
-    assert news.kwargs_of("mark_verdict_published") == {
-        "event_id": "ev-push",
-        "stage": "triage",
-        "policy_version": "policy-v1",
-        "now_ms": news.kwargs_of("mark_verdict_published")["now_ms"],
-    }
 
 
 def test_janitor_records_handoff_state_and_marker_pending(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3511,7 +3191,6 @@ def test_triage_runs_exactly_the_persisted_canary_arm_and_traces_the_assignment(
         "selector_version": "news_canary_selector_v2",
         "eligibility_reason": "eligible_bucket",
     }
-    assert news.names().index("assign_agent_arm") < news.names().index("insert_verdict")
     assert "evaluate_canary_rolling_slo" in news.names()
 
 
@@ -3664,9 +3343,6 @@ def test_triage_reader_history_reaches_the_model_and_the_trace_and_grounds_a_res
     assert trace["restates_event_id"] == "ev-earlier"
     assert "status_final" in trace and "input_sha256" in trace and "reasked_after_told_change" not in trace
     assert news.kwargs_of("lock_storyline")["arg0"] == "asset:NVDA"
-    # decide -> insert happen after the lock, inside the same persist call.
-    names = news.names()
-    assert names.index("lock_storyline") < names.index("insert_verdict")
     assert bus.published == []
 
 
@@ -3914,47 +3590,9 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
         "total_tokens": 50,
         "provider_cost_microusd": 60,
     }
-    assert news.names().count("lock_storyline") == 1  # stale material is discarded before opening a write transaction
     # The re-ask reloads everything the model and decide() look at: card, sent ledger, and control state.
     assert news.names().count("event_card") == 2
     assert bus.published == []
-
-
-def test_triage_rechecks_reader_history_after_taking_the_storyline_lock() -> None:
-    """A same-key delivery between the preflight refresh and lock cannot let both Events push."""
-
-    fresh_push = _ledger_row("ev-between-refresh-and-lock", NOW_MS - 1_000)
-    ledger_calls = {"n": 0}
-
-    def reader_history(*, now_ms: int, **_: Any) -> ReaderHistorySnapshot:
-        ledger_calls["n"] += 1
-        if ledger_calls["n"] <= 2:  # initial load and transaction-free refresh
-            return ReaderHistorySnapshot()
-        return _recent_history(fresh_push, now_ms=now_ms)
-
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=_card(),
-        insert_verdict=True,
-        reader_history=reader_history,
-    )
-    model = _ScriptedSemanticJudge(
-        [
-            _model_verdict(novelty="new_fact"),
-            _model_verdict(novelty="restatement", restates=0),
-        ]
-    )
-    triage = _triage_with_judge(news, FakeBus(), model)
-
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
-
-    assert len(model.inputs) == 2
-    assert model.inputs[0].told.entries == ()
-    assert model.inputs[1].told.entries[0].event_id == "ev-between-refresh-and-lock"
-    inserted = [kwargs for name, kwargs in news.calls if name == "insert_verdict"]
-    assert len(inserted) == 1
-    assert inserted[0]["final_decision"] == "drop"
-    assert news.names().count("lock_storyline") == 2
 
 
 def test_triage_rebuilds_gate_facts_when_evidence_changes_before_the_reask() -> None:
@@ -4324,14 +3962,6 @@ def test_triage_withholds_a_batch_duplicate_on_a_storyline_nobody_has_pushed_on(
 
 
 # ---------------------------------------------------------- Receiver / Recovery
-class _WakeRecovery:
-    def __init__(self) -> None:
-        self.requests = 0
-
-    def request(self) -> None:
-        self.requests += 1
-
-
 class _DurableIncidentNews(RecordingNews):
     def __init__(self) -> None:
         super().__init__()
@@ -4382,44 +4012,6 @@ class _BlockedPublishBus(FakeBus):
         await asyncio.Event().wait()
 
 
-def test_receiver_reconciles_a_broker_incident_after_process_restart() -> None:
-    news = _DurableIncidentNews()
-    wake = _WakeRecovery()
-    failed = OpenNewsReceiver(
-        bus=_FailingPublishBus(BrokerUnavailable("news_broker_not_connected")),
-        db=FakeWorkerDatabase(news),
-        ws_client=None,
-        recovery=None,
-    )
-    close_deferred = OpenNewsReceiver(
-        bus=FakeBus(),
-        db=FakeWorkerDatabase(news, admission_timeout_for={"news_ingest_frame"}),
-        ws_client=None,
-        recovery=wake,  # type: ignore[arg-type]
-    )
-    restarted = OpenNewsReceiver(
-        bus=FakeBus(),
-        db=FakeWorkerDatabase(news),
-        ws_client=None,
-        recovery=wake,  # type: ignore[arg-type]
-    )
-
-    async def scenario() -> None:
-        await failed._publish_frame({"params": {"id": 1}}, strategy_id="1018")
-        assert news.open_causes == {"broker_unavailable"}
-        with pytest.raises(DeferError, match="news_ingest_frame"):
-            await close_deferred._publish_frame({"params": {"id": 2}}, strategy_id="1018")
-        assert news.open_causes == {"broker_unavailable"} and wake.requests == 0
-        await restarted._publish_frame({"params": {"id": 3}}, strategy_id="1018")
-
-    asyncio.run(scenario())
-
-    assert not news.open_causes
-    assert wake.requests == 1
-    failed_state = next(kwargs for name, kwargs in news.calls if name == "update_ingest_state")
-    assert failed_state["last_frame_at_ms"] > 0 and failed_state["last_error_code"] == "broker_unavailable"
-
-
 def test_receiver_surfaces_database_and_unknown_publish_failures() -> None:
     news = _DurableIncidentNews()
     deferred = OpenNewsReceiver(
@@ -4448,8 +4040,7 @@ def test_receiver_surfaces_database_and_unknown_publish_failures() -> None:
 class _StubWsClient:
     """The provider socket, reduced to what the Receiver loop actually calls."""
 
-    def __init__(self, *, block: bool = True) -> None:
-        self.block = block
+    def __init__(self) -> None:
         self.connected = 0
         self.closed = 0
 
@@ -4457,99 +4048,10 @@ class _StubWsClient:
         self.connected += 1
 
     async def receive(self) -> Any:
-        if self.block:
-            await asyncio.Event().wait()  # a live socket with a quiet provider
-        return None
+        await asyncio.Event().wait()  # a live socket with a quiet provider
 
     async def close(self) -> None:
         self.closed += 1
-
-
-def test_a_cancelled_receiver_writes_nothing_and_the_next_process_opens_the_outage_interval() -> None:
-    """#425: the process that is killed cannot record its own absence, so the next one does.
-
-    A fatal cancellation reaches this loop after the Workers root has already closed business
-    admission, so nothing it could write would land — and a SIGKILL never runs application code at
-    all. The durable row is the handover: `connected` still true means the last Receiver was killed
-    while connected, and the interval starts at that row's last write.
-    """
-
-    killed_news = _DurableIncidentNews()
-    killed = OpenNewsReceiver(
-        bus=FakeBus(),
-        db=FakeWorkerDatabase(killed_news),
-        ws_client=_StubWsClient(),
-        recovery=None,
-    )
-
-    async def cancelled() -> None:
-        stop = asyncio.Event()
-        task = asyncio.create_task(killed.run(stop_event=stop))
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-    asyncio.run(cancelled())
-    # The killed process reported no disconnect at all: no `planned_shutdown`, no relabelling.
-    assert killed_news.open_causes == set()
-    assert "close_open_incidents" in killed_news.names()  # it did connect
-
-    wake = _WakeRecovery()
-    successor_news = _DurableIncidentNews()
-    successor_news.responses["ingest_liveness"] = {"connected": True, "updated_at_ms": 1_700_000_000_000}
-    successor = OpenNewsReceiver(
-        bus=FakeBus(),
-        db=FakeWorkerDatabase(successor_news),
-        ws_client=_StubWsClient(),
-        recovery=wake,  # type: ignore[arg-type]
-    )
-
-    async def restarted() -> None:
-        stop = asyncio.Event()
-        task = asyncio.create_task(successor.run(stop_event=stop))
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        stop.set()
-        await asyncio.wait_for(task, timeout=5)
-
-    asyncio.run(restarted())
-
-    opened = successor_news.kwargs_of("open_incident")
-    assert opened["cause_class"] == "process_outage"
-    # The interval starts when the killed process was last known to be running, not at this startup.
-    assert opened["now_ms"] == 1_700_000_000_000
-    assert "planned" not in opened or opened["planned"] is False
-    # Connecting closes it and asks Recovery to backfill the window, like any other incident.
-    closed = successor_news.kwargs_of("close_open_incidents")
-    assert "process_outage" in (closed["cause_classes"] or ())
-    assert wake.requests == 1
-
-
-def test_the_outage_interval_never_starts_in_the_future() -> None:
-    """A predecessor whose clock ran ahead must not open a window its successor closes before it began.
-
-    `news_ingest_state.updated_at_ms` only ever moves forward, so a fast clock leaves a timestamp this
-    process has not reached. The incident's own check constraint refuses `closed_at_ms < opened_at_ms`,
-    so trusting it would make the Receiver die on the very row it just wrote, every time it started.
-    """
-
-    news = _DurableIncidentNews()
-    news.responses["ingest_liveness"] = {"connected": True, "updated_at_ms": now_ms() + 3_600_000}
-    receiver = OpenNewsReceiver(
-        bus=FakeBus(),
-        db=FakeWorkerDatabase(news),
-        ws_client=_StubWsClient(),
-        recovery=None,
-    )
-
-    before = now_ms()
-    asyncio.run(receiver._record_a_predecessor_that_never_reported_a_disconnect())
-
-    opened = news.kwargs_of("open_incident")
-    assert opened["cause_class"] == "process_outage"
-    assert before <= opened["now_ms"] <= now_ms()
 
 
 def test_a_receiver_that_stops_gracefully_records_a_planned_shutdown_and_no_outage() -> None:
