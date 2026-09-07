@@ -128,7 +128,6 @@ services:
     restart: "no"
     environment:
       TRACEFOLD_IMAGE_DIGEST: ${TRACEFOLD_IMAGE_DIGEST:-}
-      TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON: ${TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -280,12 +279,18 @@ services:
           cpus: "2.0"
           memory: 2G
     healthcheck:
+      # Liveness, like Serve's. `/readyz` answers 200 with the payload now (#598 D5-b), so it can no
+      # longer be a health signal, and it should not be one: a runtime that is alive but blocked --
+      # startup reconciliation unproven, unexpected exposure, entries paused -- is exactly the
+      # process an operator must be able to reach, and `restart: unless-stopped` on an unhealthy
+      # container would restart the owner of an open position instead. What is wrong is in the
+      # payload `make runtime-status` prints.
       test:
         [
           "CMD",
           "python",
           "-c",
-          "from urllib.request import urlopen; urlopen('http://127.0.0.1:8767/readyz', timeout=1).read()",
+          "from urllib.request import urlopen; urlopen('http://127.0.0.1:8767/healthz', timeout=1).read()",
         ]
       interval: 10s
       # Same interpreter-spawn cost as the other two probes.

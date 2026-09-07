@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 import uvicorn
+from alembic.script import ScriptDirectory
 from loguru import logger
 from nautilus_trader.adapters.binance import (
     BINANCE,
@@ -68,7 +69,7 @@ from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrate
 from tracefold.platform.config.models import Settings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.postgres.client import postgres_health_check
-from tracefold.platform.postgres.migrations import latest_migration_version
+from tracefold.platform.postgres.migrations import alembic_config, latest_migration_version
 from tracefold.trading import EXECUTION_STRATEGY_ID
 from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
 
@@ -188,23 +189,54 @@ def run_nautilus(settings: Settings) -> None:
 
 
 def _require_current_schema(conn: Any) -> None:
-    """Refuse to become the account-slot owner against a schema this build does not know.
+    """Refuse to become the account-slot owner against a schema this build cannot read.
 
     The runtime no longer depends on the one-shot migration container (#537 D4), so nothing in the
-    Compose graph orders it after a migration any more. This is the replacement, and it is stronger:
-    an ordering edge only proves a migration ran at some point in this boot, while reading
-    `alembic_version` proves the database is at the head this image was built for. It runs before
-    `acquire()`, so a stale image takes no lock and builds no node — it costs one SELECT and exits.
+    Compose graph orders it after a migration any more. This is the replacement: reading
+    `alembic_version` proves what the database actually is, where an ordering edge only proved that
+    a migration ran at some point in this boot. It runs before `acquire()`, so an image that cannot
+    read the schema takes no lock and builds no node — it costs one SELECT and exits.
+
+    Direction is the whole question, and head *equality* answered a different one (#598 D5-c). The
+    runtime is deployed separately from the application on purpose: `make up` migrates and
+    `make runtime-up` does not, so the ordinary release order leaves the database one or more
+    revisions ahead of a runtime image that is still perfectly able to read it — and that runtime,
+    holding an open position, was what the equality check then refused to restart. The unsafe
+    direction is the other one: a database *older* than this image is missing migrations this code
+    compiles against. So the ancestry of the code head is the test, and being ahead of it is logged.
     """
 
-    health = postgres_health_check(conn, expected_migration_version=latest_migration_version())
+    image_head = latest_migration_version()
+    health = postgres_health_check(conn, expected_migration_version=image_head)
     if "error" in health or "detail" in health:
         raise RuntimeError(f"oi_runtime_schema_probe_failed: {health.get('error')}: {health.get('detail')}")
-    if not health.get("ok"):
-        raise RuntimeError(
-            "oi_runtime_schema_head_mismatch: "
-            f"database={health.get('migration_version')} expected={health.get('expected_migration_version')}"
-        )
+    if health.get("ok"):
+        return
+    database_head = health.get("migration_version")
+    if _database_precedes_image(database_head, image_head=image_head):
+        raise RuntimeError(f"oi_runtime_schema_head_mismatch: database={database_head} expected={image_head}")
+    logger.warning(
+        "Execution runtime starting against a forward-migrated database database={} image={}",
+        database_head,
+        image_head,
+    )
+
+
+def _database_precedes_image(database_head: Any, *, image_head: str) -> bool:
+    """Is the live revision one this image's own history has already passed?
+
+    An unmigrated database has no revision at all and is behind everything. A revision this image
+    has never heard of was written by a newer deploy: it is ahead, not behind, and the schema it
+    left is one this build can still read. Only a strict ancestor of the head this code was built
+    against means the database is missing migrations this build needs.
+    """
+
+    if not database_head:
+        return True
+    if database_head == image_head:
+        return False
+    scripts = ScriptDirectory.from_config(alembic_config())
+    return database_head in {script.revision for script in scripts.walk_revisions("base", image_head)}
 
 
 async def _run_active_runtime(
@@ -751,7 +783,13 @@ def _read_secret(path: Any, name: str) -> str:
 
 def _probe_server(readiness: Callable[[], dict[str, Any]]) -> uvicorn.Server:
     config = uvicorn.Config(
-        create_probe_app(title="Tracefold Nautilus Probe", readiness=readiness),
+        # Always 200, payload and all: this endpoint is the operator's diagnosis of the process that
+        # owns live exposure, not a gate anything waits on. The Compose healthcheck asks `/healthz`.
+        create_probe_app(
+            title="Tracefold Nautilus Probe",
+            readiness=readiness,
+            readiness_status_gate=False,
+        ),
         host="0.0.0.0",  # noqa: S104 -- Compose publishes only on operator-selected host loopback
         port=_INTERNAL_PORT,
         log_config=None,

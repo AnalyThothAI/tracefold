@@ -332,7 +332,11 @@ async def _connect_news_bus(
     *,
     telemetry: TelemetryRegistry | None = None,
 ) -> RabbitMQBus:
-    from tracefold.integrations.rabbitmq import POLICY_EFFECTIVE_TIMEOUT_SECONDS, RabbitMQBus
+    from tracefold.integrations.rabbitmq import (
+        POLICY_EFFECTIVE_TIMEOUT_SECONDS,
+        BrokerPolicyMismatch,
+        RabbitMQBus,
+    )
 
     broker_url = settings.news.broker.url
     if not broker_url:
@@ -345,13 +349,29 @@ async def _connect_news_bus(
         telemetry=telemetry,
     )
     await bus.connect()
-    # Retry now lives in the broker policy (#400). Workers refuses to consume against a topology whose
-    # effective policy is not the checked-in contract, because a missing policy is not a degraded mode:
-    # it is immediate redelivery, the quorum default delivery limit and at-most-once dead lettering.
+    # Retry lives in the broker policy (#400), so drift here is real: no policy means immediate
+    # redelivery, the quorum default delivery limit and at-most-once dead lettering. It is not,
+    # however, a reason for News to be down. Refusing to attach consumers stopped ingestion,
+    # triage, delivery and every push, and left the operator a dead process to read the reason out
+    # of; reporting it and consuming leaves a degraded retry contract and a running product, which
+    # is the smaller failure and the one somebody can see (#598 D5-e). `tracefold news bus verify`
+    # is still fail-closed, because a diagnostic that answers "yes" while drifted is worthless.
     # The settle bound covers the first boot against a fresh broker: connect() has just declared the
     # queues, and the management API only publishes their effective policy on its statistics interval,
-    # so an unbounded-truth one-shot read here would kill Workers on every fresh volume.
-    await bus.verify_policies(settle_timeout_seconds=POLICY_EFFECTIVE_TIMEOUT_SECONDS)
+    # so an unbounded-truth one-shot read here would report drift on every fresh volume.
+    drifted = False
+    try:
+        await bus.verify_policies(settle_timeout_seconds=POLICY_EFFECTIVE_TIMEOUT_SECONDS)
+    except BrokerPolicyMismatch as exc:
+        drifted = True
+        logger.error(
+            "News broker effective policy is not the checked-in contract; attaching consumers anyway. "
+            "Retry, delivery limit and dead lettering are the broker defaults until "
+            "`tracefold news bus-policy apply` is rerun. mismatch={}",
+            exc,
+        )
+    if telemetry is not None:
+        telemetry.set_news_broker_policy_drift(drifted=drifted)
     return bus
 
 

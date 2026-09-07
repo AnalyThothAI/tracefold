@@ -111,15 +111,43 @@ def test_the_shutdown_budget_covers_the_worst_case_the_runtime_can_produce() -> 
         assert f"-t {_STOP_GRACE_SECONDS}" in statement, statement
 
 
-def test_make_down_refuses_while_the_execution_runtime_still_exists() -> None:
-    """`docker compose down` removes the project's containers and network, runtime included."""
+def test_make_down_takes_the_runtime_down_itself_before_the_stack() -> None:
+    """`docker compose down` removes the project's containers and network, runtime included.
+
+    So the order is the contract, and running it is now `make down`'s own job (#598 D5-g): it
+    delegates to the `runtime-down` recipe -- the same `-t 90` stop, so `singleton.release()` still
+    runs -- and only then tears the stack down. It no longer exits 2 telling the operator to type
+    the command it could have run.
+    """
 
     recipe = _dry_run("down")
-    refusal = recipe.index("execution runtime is running and owns live exposure")
+    runtime_stop = recipe.index("docker compose stop -t 90 nautilus")
+    runtime_remove = recipe.index("docker compose rm -f nautilus")
     teardown = recipe.index("docker compose down")
 
-    assert refusal < teardown
-    assert "runtime-down" in recipe
+    assert runtime_stop < runtime_remove < teardown
+    assert "make --no-print-directory runtime-down" in recipe
+    assert "run make runtime-down first" not in recipe
+    assert "exit 2" not in recipe
+
+
+def test_preflight_guards_the_four_entries_that_build_start_or_migrate_and_no_other() -> None:
+    """A read or a stop must not need a working toolchain to run (#598 D5-a).
+
+    `preflight` was a prerequisite of fourteen targets, so an operator whose Docker daemon had died
+    could not run `make logs` to find out why, and one on the wrong project interpreter could not
+    run `make runtime-down` to stop trading. It guards what actually needs a toolchain: the entries
+    that build an image, start the stack or migrate the database. Everything else fails, when it
+    fails, on the real command -- which names itself.
+    """
+
+    rules = re.findall(r"^([a-zA-Z0-9_][a-zA-Z0-9_.-]*):([^=\n]*)$", _makefile(), re.MULTILINE)
+    guarded = {name for name, prerequisites in rules if "preflight" in prerequisites.split("#")[0].split()}
+
+    assert guarded == {"up", "deploy-image", "db-migrate", "runtime-build"}
+    # `curl` left with them. The recipes that need it fail on the `curl` line, and the ones that do
+    # not were being asked for a tool they never call.
+    assert "curl" not in _dry_run("preflight")
 
 
 @pytest.mark.parametrize("target", ("runtime-up", "runtime-restart", "runtime-down"))

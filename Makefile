@@ -439,12 +439,18 @@ workers: ## run the ingestion/projection/provider/model runtime in foreground
 	@$(TRACEFOLD) workers
 
 
-preflight: ## verify the one-command startup prerequisites
+# The prerequisite of the four entries that build an image, start the stack or migrate the
+# database, and of nothing else (#598 D5-a). It used to guard fourteen targets, including every
+# way of looking at or stopping a running deployment: an operator whose Docker daemon had gone
+# away could not run `make logs` to find out why, and one on the wrong interpreter could not run
+# `make runtime-down`. A read or a stop now fails on the real command, which says the same thing
+# and says it about the command that actually failed. `curl` left the list for the same reason:
+# the recipes that use it fail on the `curl` line itself.
+preflight: ## verify the build/migrate prerequisites (up, deploy-image, db-migrate, runtime-build)
 	@command -v git >/dev/null 2>&1 || { echo "git is not installed or not on PATH" >&2; exit 127; }
 	@command -v uv >/dev/null 2>&1 || { echo "uv is not installed or not on PATH" >&2; exit 127; }
 	@command -v docker >/dev/null 2>&1 || { echo "docker is not installed or not on PATH" >&2; exit 127; }
 	@docker compose version >/dev/null 2>&1 || { echo "docker compose plugin is unavailable" >&2; exit 127; }
-	@command -v curl >/dev/null 2>&1 || { echo "curl is not installed or not on PATH" >&2; exit 127; }
 	@docker info >/dev/null 2>&1 || { \
 		echo "Docker daemon is not reachable from this shell." >&2; \
 		echo "Start Docker Desktop or grant this terminal access to the Docker socket, then rerun make up." >&2; \
@@ -520,6 +526,12 @@ _up-locked:
 # additionally requiring the image to carry current main's SHA meant the one image an operator
 # actually needs during an incident — the previous one — was the one image this target refused
 # (#537 D12). It never touches the execution runtime: that is `make runtime-up`'s job.
+# It also no longer reads `news_learning_artifacts` to require the newest `deployment_receipt` and
+# `active_agent` rows to name this image (#598 D5-h). Those rows are written by Workers after it
+# boots, so the gate asked the deploy to prove a fact about a learning ledger that the deploy it
+# was blocking is what produces — and any lag, or a News epoch changing under it, refused a
+# correct deployment. What the deploy can prove about itself is kept: every recreated container
+# runs the requested image ID, and Workers' own `/readyz` reports that digest.
 deploy-image: preflight github-preflight ## deploy an explicit local DB-compatible sha256 image from the primary checkout
 	@uv run python scripts/with_deployment_lock.py make --no-print-directory _deploy-image-locked
 
@@ -638,45 +650,6 @@ _deploy-image-locked:
 			echo "Workers readiness image_digest '$$ready_image' does not equal requested '$$image_id'." >&2; \
 			fail; \
 		fi; \
-		if ! receipt_identity=$$(docker compose exec -T postgres sh -eu -c \
-			'PGPASSWORD=$$(cat /run/secrets/postgres_database_password); \
-			PGOPTIONS="-c default_transaction_read_only=on"; \
-			export PGPASSWORD PGOPTIONS; \
-			exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold -d tracefold \
-			-c "$$1"' sh \
-			"WITH active AS ( \
-			   SELECT artifact_sha, payload \
-			     FROM news_learning_artifacts \
-			    WHERE kind = 'active_agent' \
-			    ORDER BY created_at_ms DESC, artifact_sha DESC \
-			    LIMIT 1 \
-			 ), deployment AS ( \
-			   SELECT parent_sha, payload \
-			     FROM news_learning_artifacts \
-			    WHERE kind = 'deployment_receipt' \
-			      AND payload->>'action' = 'runtime_deploy' \
-			    ORDER BY created_at_ms DESC, artifact_sha DESC \
-			    LIMIT 1 \
-			 ) \
-			 SELECT CASE WHEN \
-			   active.payload->>'image_digest' = '$$image_id' \
-			   AND deployment.payload->>'image_digest' = '$$image_id' \
-			   AND deployment.payload->>'active_agent_sha' = active.artifact_sha \
-			   AND deployment.parent_sha = active.artifact_sha \
-			   AND EXISTS ( \
-			     SELECT 1 FROM news_agent_runtime_manifests AS manifest \
-			      WHERE manifest.manifest_sha = active.payload->>'runtime_manifest_sha' \
-			        AND manifest.image_digest = '$$image_id' \
-			   ) \
-			 THEN 'ok' ELSE 'mismatch' END \
-			 FROM active CROSS JOIN deployment"); then \
-			echo "Could not inspect the latest active/deployment receipt identity." >&2; \
-			fail; \
-		fi; \
-		if [ "$$receipt_identity" != "ok" ]; then \
-			echo "Latest active/deployment receipt does not prove requested image '$$image_id'." >&2; \
-			fail; \
-		fi; \
 		make --no-print-directory status-app || fail; \
 		echo "Tracefold deployed exact local image $$image_id."
 
@@ -684,7 +657,7 @@ status: ## fail closed unless the product and the execution runtime are both rea
 	@$(MAKE) --no-print-directory status-app
 	@$(MAKE) --no-print-directory runtime-status
 
-status-app: preflight ## fail closed unless PostgreSQL, migration, Serve and Workers are ready
+status-app: ## fail closed unless PostgreSQL, migration, Serve and Workers are ready
 	@set -eu; \
 		COMPOSE_PROFILES=execution; export COMPOSE_PROFILES; \
 		docker compose ps --all; \
@@ -729,16 +702,24 @@ status-app: preflight ## fail closed unless PostgreSQL, migration, Serve and Wor
 			exit 1; \
 		fi
 
-logs: preflight ## tail all product runtime and dependency logs
+logs: ## tail all product runtime and dependency logs
 	@COMPOSE_PROFILES=execution docker compose logs -f --tail=100 serve workers nautilus migrate postgres rabbitmq
 
-down: preflight ## stop the container stack without deleting PostgreSQL data
+# `docker compose down` removes the project's containers and network, the execution runtime
+# included, so the runtime has to go down first. It used to be the operator who was told to do that,
+# and `make down` exited 2 until they had: a refusal that knew the exact command it wanted and would
+# not run it (#598 D5-g). It runs `runtime-down` itself now — the same recipe, the same 90 s stop
+# budget, so `singleton.release()` still runs and the account slot is still released — and says
+# what it did.
+down: ## stop the execution runtime, then the container stack, without deleting PostgreSQL data
 	@set -eu; \
 		if [ -n "$$(COMPOSE_PROFILES=execution docker compose ps --all -q nautilus)" ]; then \
-			echo "the execution runtime is running and owns live exposure; run make runtime-down first." >&2; \
-			exit 2; \
-		fi; \
-		COMPOSE_PROFILES=execution docker compose down
+			echo "stopping the execution runtime first; it owns live exposure."; \
+		else \
+			echo "no execution runtime container to stop."; \
+		fi
+	@$(MAKE) --no-print-directory runtime-down
+	@COMPOSE_PROFILES=execution docker compose down
 
 # The execution runtime lifecycle (#537 PR-2). It is separate from `up`/`deploy-image` on purpose:
 # a News, Serve or Workers deploy must change nothing about the one process that owns live Binance
@@ -768,7 +749,7 @@ _runtime-build-locked:
 		docker compose build nautilus; \
 		echo "Execution runtime image built: $$TRACEFOLD_RUNTIME_IMAGE"
 
-runtime-up: preflight ## start or replace the execution runtime from an already built local image
+runtime-up: ## start or replace the execution runtime from an already built local image
 	@uv run python scripts/with_deployment_lock.py make --no-print-directory _runtime-up-locked RUNTIME_IMAGE="$(RUNTIME_IMAGE)"
 
 _runtime-up-locked:
@@ -814,7 +795,7 @@ _runtime-up-locked:
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) nautilus; \
 		make --no-print-directory runtime-status
 
-runtime-restart: preflight ## restart the execution runtime on the exact image it is already running
+runtime-restart: ## restart the execution runtime on the exact image it is already running
 	@set -eu; \
 		container_id=$$(COMPOSE_PROFILES=execution docker compose ps --all -q nautilus); \
 		if [ -z "$$container_id" ]; then \
@@ -824,16 +805,21 @@ runtime-restart: preflight ## restart the execution runtime on the exact image i
 		image=$$(docker inspect --format '{{.Config.Image}}' "$$container_id"); \
 		make --no-print-directory runtime-up RUNTIME_IMAGE="$$image"
 
-runtime-down: preflight ## stop and remove the execution runtime container
+runtime-down: ## stop and remove the execution runtime container
 	@set -eu; \
 		COMPOSE_PROFILES=execution; export COMPOSE_PROFILES; \
 		docker compose stop -t 90 nautilus; \
 		docker compose rm -f nautilus
 
-runtime-logs: preflight ## tail the execution runtime log
+runtime-logs: ## tail the execution runtime log
 	@COMPOSE_PROFILES=execution docker compose logs -f --tail=100 nautilus
 
-runtime-status: preflight ## report the execution runtime container, health, and operator readiness
+# The readiness payload is printed, never interpreted (#598 D5-b). `/readyz` answers 200 with the
+# whole payload now, so `curl -fsS` is gone with the 503 it used to discard: an operator asking
+# what is wrong gets `execution_safe`, `entry_block_reason` and the rest instead of an empty body
+# and one line of curl. An unreachable endpoint is reported and the container state above it,
+# which is the check that actually notices a dead process, still decides the exit status.
+runtime-status: ## report the execution runtime container, health, and operator readiness
 	@set -eu; \
 		runtime_config=$$($(TRACEFOLD) config); \
 		trading_enabled=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_ENABLED)); \
@@ -861,11 +847,10 @@ runtime-status: preflight ## report the execution runtime container, health, and
 				failed=1; \
 			fi; \
 			echo "execution runtime image: $$(docker inspect --format '{{.Config.Image}}' "$$container_id")"; \
-			if readiness=$$(curl -fsS "$(TRACEFOLD_NAUTILUS_URL)/readyz"); then \
+			if readiness=$$(curl -sS "$(TRACEFOLD_NAUTILUS_URL)/readyz" 2>/dev/null) && [ -n "$$readiness" ]; then \
 				printf 'execution runtime readyz: %s\n' "$$readiness"; \
 			else \
-				echo "nautilus readiness failed" >&2; \
-				failed=1; \
+				echo "execution runtime readyz: unreachable at $(TRACEFOLD_NAUTILUS_URL)/readyz"; \
 			fi; \
 			if [ "$$failed" -eq 0 ]; then \
 				echo "execution runtime: mode=$$execution_mode (Binance Runtime ready)"; \
@@ -876,10 +861,10 @@ runtime-status: preflight ## report the execution runtime container, health, and
 			exit 1; \
 		fi
 
-serve-shell: preflight ## open a shell in the Serve container
+serve-shell: ## open a shell in the Serve container
 	@docker compose exec serve /bin/sh
 
-workers-shell: preflight ## open a shell in the Workers container
+workers-shell: ## open a shell in the Workers container
 	@docker compose exec workers /bin/sh
 
 .PHONY: docs-generated docs-db-schema docs-cli-help docs-rabbitmq-definitions

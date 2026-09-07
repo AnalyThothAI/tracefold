@@ -53,11 +53,8 @@ def run_restore_drill(
         _bootstrap_migration_database(source_admin_dsn)
         _bootstrap_migration_database(restored_admin_dsn)
         fresh_install_evidence = {
-            "TRACEFOLD_NEWS_GENESIS_FRESH_INSTALL": "1",
             "TRACEFOLD_RUNTIME_REVISION": "0" * 40,
             "TRACEFOLD_IMAGE_DIGEST": "sha256:" + "1" * 64,
-            "TRACEFOLD_NEWS_GENESIS_EXPECTED_RUNTIME_MANIFEST_SHA256": "2" * 64,
-            "TRACEFOLD_NEWS_GENESIS_BROKER_OBSERVATION_SHA256": "3" * 64,
         }
         previous_evidence = {name: os.environ.get(name) for name in fresh_install_evidence}
         os.environ.update(fresh_install_evidence)

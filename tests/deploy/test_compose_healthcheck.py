@@ -27,6 +27,23 @@ def test_container_healthcheck_uses_liveness_endpoint():
     assert "http://127.0.0.1:8765/readyz" not in compose_yaml
 
 
+def test_the_execution_runtime_is_health_checked_on_liveness_not_readiness():
+    """Its `/readyz` answers 200 with the payload now, so it is a diagnosis and not a signal.
+
+    It should not be one either (#598 D5-b): a runtime that is alive but blocked -- startup
+    reconciliation unproven, unexpected exposure, entries paused -- is exactly the process an
+    operator has to be able to reach, and `restart: unless-stopped` on an unhealthy container would
+    restart the owner of an open position instead of leaving it there to be read.
+    """
+
+    compose_yaml = Path("compose.yaml").read_text()
+
+    assert "http://127.0.0.1:8767/healthz" in compose_yaml
+    assert "http://127.0.0.1:8767/readyz" not in compose_yaml
+    # Workers keeps its readiness gate: `make up` waits on that endpoint to call a deploy finished.
+    assert "http://127.0.0.1:8766/readyz" in compose_yaml
+
+
 def test_workers_start_period_outlasts_the_broker_settle_it_waits_on():
     """Workers reports readiness, so its start period has to cover what readiness actually waits for.
 
