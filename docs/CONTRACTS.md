@@ -1219,22 +1219,33 @@ Runtime facts, and status carries readiness plus bounded totals.
   freshness budgets — so a reader compares one instant against its own clock
   instead of running a timer per rule. Serve reads no secret file and constructs
   no provider client.
-- `GET /api/trading/cases?underlying={base|crypto:BASE}&state={open|no_trade|blocked|emitted}`
-  — the Case/Decision aggregate, and the drawer behind `/trading?case=<id>`.
-  Every number a Case row publishes is the frozen one it was decided on:
-  `policy_config` and `policy_checks` (check, operator, threshold, measured,
+- `GET /api/trading/cases?case_id={id}` — one frozen Case by identity, and the
+  drawer behind `/trading?case=<id>`. `cases` is that Case or nothing: an
+  unknown id is an empty answer rather than an error, and a malformed one is
+  `400 trading_cases_case_id_invalid`. Without `case_id` there are no Cases at
+  all (#604 T3): the unconditional 100-row page this route used to send on every
+  15 s poll was rendered by nothing, and the `NO_TRADE` Cases past the hundredth
+  — 553 of the 584 in a production day — were the ones it could never reach.
+  `?underlying=` and `?state=` went with that page, because both could only
+  narrow a list that no longer exists; `tracefold trading cases [--state]` reads
+  the windowed page directly. Every number a Case row publishes is the frozen one
+  it was decided on: `policy_checks` (check, operator, threshold, measured,
   passed) and the policy identity read off the manifest, never today's
-  thresholds. `market_key` is venue-neutral. Beside the rows travel the two
-  durable 24 h distributions `state_counts_24h` and `reason_counts_24h`.
-  Bounded to 100 rows with a `complete` flag and **no cursor**: the response
-  published a `next_cursor` no reader ever sent back (#537 PR-5). The nine
-  fields deleted with it had no reader anywhere — `underlying_key` (the row
-  publishes `base_symbol`), `source_venue`, `trigger_kind`, `policy_version` (a
-  second copy of `policy_id`), the four measured OI numbers `policy_checks`
-  already carries beside the threshold each was measured against, and
-  `policy_decision`, a required `Literal` over a nullable column, which is
-  exactly the shape that turns a stored `NULL` into a 500 on a read route
-  (#532).
+  thresholds. `market_key` is venue-neutral. Beside the Case travel three durable
+  24 h distributions: `state_counts_24h`, `reason_counts_24h`, and
+  `admission_counts_24h`, a `{status, reason, count}` per admission answer over
+  the frames the lane looked at — the funnel's top, and a `count(*)` rather than
+  the per-frame `decisions[]` #589 PR-2 deleted. `complete` stays, and there is
+  **no cursor**: the response published a `next_cursor` no reader ever sent back
+  (#537 PR-5). The ten fields deleted from a Case row had no reader anywhere —
+  `underlying_key` (the row publishes `base_symbol`), `source_venue`,
+  `trigger_kind`, `policy_version` (a second copy of `policy_id`), the four
+  measured OI numbers `policy_checks` already carries beside the threshold each
+  was measured against, `policy_decision`, a required `Literal` over a nullable
+  column, which is exactly the shape that turns a stored `NULL` into a 500 on a
+  read route (#532), and `policy_config`, the frozen dictionary
+  `policy_checks[].threshold` is drawn from and `policy_config_digest` already
+  identifies (#604 T3).
 - `GET /api/trading/executions` — the desk table (#528 PR-1, PR-3). One row per
   entry identity in a bounded 24-hour window: a `TradeSignalV1`, or a
   `manual_entry` Command, which is the identity the Runtime correlates that
@@ -1249,7 +1260,16 @@ Runtime facts, and status carries readiness plus bounded totals.
   `position_status`, which are its inputs and not published beside it, and the
   `accepted | rejected` split that was published said what `ordered` and
   `rejected` already say about the same row (#537 PR-5); `last_observed_at_ns`
-  was a second clock beside `observed_at_ns` that no column printed.
+  was a second clock beside `observed_at_ns` that no column printed. The Signal's
+  own `expires_at_ns` is an input too (#604 T3): a Signal with no disposition and
+  no order past its TTL is `expired`, because the bridge that offers Signals to
+  the Runtime anti-joins on that clock and therefore stops offering it — read as
+  `pending` it was a row an operator could not explain and the desk claimed was
+  still in flight. Three columns come out of the same fold: `entry_filled_at_ns`
+  and `position_closed_at_ns`, the two instants a holding time is the distance
+  between, and `order_reject_reason`, the venue's own words on an entry order it
+  refused, absent on every row the Runtime wrote before it recorded them
+  (#604 T1).
   The same response carries `commands[]`, one row per operator Command in the
   same window — a manual entry appears there too, as the instruction record —
   each carrying a
@@ -1259,7 +1279,16 @@ Runtime facts, and status carries readiness plus bounded totals.
   operator typed into the field above the ledger and `operator_identity` was the
   constant `operator-console` on every row a browser wrote. No venue observation
   is attached to a Command row: a flatten converges the whole account slot, so
-  the orders it produces belong to the exposure, not to the Command. Bounded to
+  the orders it produces belong to the exposure, not to the Command. Each Command
+  row also carries the `reason` its own `control_disposition` gives — the same
+  column `stage` is read off, which the derivation used to drop, so the desk said
+  "Runtime rejected" with no way to say what for (#604 T3). Beside the two
+  ledgers travels `totals`: `realized_today_usd`, `realized_total_usd`,
+  `closed_today` and `closed_total`, folded over every `closed` position this
+  account slot has, manual entries included, the day half-open on the server's
+  own UTC clock. It is the one read on the response with no 24 h window, because
+  a running realized result bounded by a window answers a different question from
+  the one an operator reconciles against the venue. Bounded to
   100 entry rows with a `complete` flag and no cursor.
 - `POST /api/trading/execution/commands` — the sole browser write. It requires
   the session `ws_token` in `Authorization: Bearer` plus

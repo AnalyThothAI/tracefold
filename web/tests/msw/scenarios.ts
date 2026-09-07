@@ -11,7 +11,7 @@ import {
   newsWalletsFixture,
 } from "@tests/fixtures/newsFixture";
 import {
-  tradingCasesForUnderlying,
+  tradingCasesForId,
   tradingExecutionsFixture,
   tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
@@ -75,10 +75,10 @@ export function mockAppRoutes(apiMock: ApiMock) {
     // #537 PR-5: only `/trading` reads this now. The shell polled it on every News route for a
     // sidebar badge and two chrome figures until the badge and the figures were deleted.
     if (path === "/api/trading/status") return ok(tradingStatusFixture());
-    // #282: the endpoint filters by `underlying`, so a mock that ignored it handed a token page a case
-    // for a different name, carrying an `event_id` no loaded frame matches.
+    // #604 T3: the endpoint reads one Case by `case_id`, so a mock that ignored it handed the drawer a
+    // Case nobody asked for.
     if (path.startsWith("/api/trading/cases")) {
-      return ok(tradingCasesForUnderlying(param("underlying")));
+      return ok(tradingCasesForId(param("case_id")));
     }
     if (path === "/api/trading/executions") return ok(tradingExecutionsFixture());
     if (path.startsWith("/api/news/symbols/"))

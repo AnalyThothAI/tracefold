@@ -18,11 +18,14 @@ from tracefold.trading.storage.gate import (
 )
 from tracefold.trading.storage.lane import LATEST_CASE_CREATED_AT_SQL
 from tracefold.trading.storage.queries import (
+    CONSOLE_CASE_BY_ID_SQL,
     TRADING_CASE_COUNTS_SQL,
     TRADING_CASE_REASON_COUNTS_SQL,
+    TRADING_GATE_COUNTS_SQL,
     console_cases_statement,
     console_executions_statement,
     console_operator_intents_statement,
+    console_realized_totals_statement,
     observation_ledger_statement,
     signal_ledger_statement,
 )
@@ -105,20 +108,22 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     # One statement over `trading_cases`, where the two 24 h `count(*)` scans this route also ran on
     # every 15 s poll were rendered nowhere the desk still has (#537 PR-5).
     "/api/trading/status": ("trading_status_latest_case",),
-    # The Case read is registered twice, because the route plans two statements: the first page with
-    # no filter, and the filtered page a reader gets once they narrow. Certifying only one of them
-    # certifies a plan the route does not always execute.
+    # #604 T3. Four statements, and only one of them reads a Case: the identity lookup behind
+    # `?case_id=`. The windowed page and its filtered twin are still audited below because `tracefold
+    # trading cases` still runs them -- they stopped being this route's plans, not statements.
     "/api/trading/cases": (
-        "trading_console_cases",
-        "trading_console_cases_filtered",
+        "trading_console_cases_by_id",
         "trading_case_counts",
         "trading_case_reason_counts",
+        "trading_gate_counts",
     ),
-    # #528 PR-1. The desk table plans two statements: its own per-entry fold, and the unfiltered
-    # window of the Command ledger it renders beside it.
+    # #528 PR-1, #604 T3. The desk table plans three statements: its own per-entry fold, the
+    # unfiltered window of the Command ledger it renders beside it, and the realized totals that are
+    # the only numbers on the page not bounded by that window.
     "/api/trading/executions": (
         "trading_console_executions",
         "trading_console_commands",
+        "trading_realized_totals",
     ),
 }
 
@@ -185,15 +190,22 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
     predicate and once with all of them, so both plans the route can execute are certified and neither
     can drift away from an audited copy.
 
-    Four of these reads belong to no public route: `tracefold trading signals`, `tracefold trading
-    observations` and `tracefold trading gate` are their only callers since #537 PR-5 and #589 PR-2
-    deleted the `GET` routes that were. They stay audited because they still run against production
-    data — a statement stops being audited when nothing executes it, not when its route is deleted.
+    Six of these reads belong to no public route: `tracefold trading cases`, `tracefold trading
+    signals`, `tracefold trading observations` and `tracefold trading gate` are their only callers
+    since #537 PR-5, #589 PR-2 and #604 T3 deleted or narrowed the `GET` routes that were. They stay
+    audited because they still run against production data — a statement stops being audited when
+    nothing executes it, not when its route is deleted.
     """
 
     since_ms = int(now_ms) - 24 * 3_600_000
     since_ns = since_ms * 1_000_000
     executions_sql, executions_params = console_executions_statement(since_ns=since_ns, limit=101)
+    day_start_ns = (int(now_ms) - int(now_ms) % 86_400_000) * 1_000_000
+    totals_sql, totals_params = console_realized_totals_statement(
+        account_slot="binance_usdm_primary",
+        day_start_ns=day_start_ns,
+        day_end_ns=day_start_ns + 86_400_000 * 1_000_000,
+    )
     return (
         ReadQuerySpec(
             # The Decision Plane's liveness: one index-only probe of the newest Case, and the whole
@@ -223,12 +235,19 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
+        ReadQuerySpec(
+            # #604 T3. `GET /api/trading/cases?case_id=` is a primary-key read: one row, or none.
+            name="trading_console_cases_by_id",
+            sql=CONSOLE_CASE_BY_ID_SQL,
+            params={"case_id": "0" * 32},
+            max_read_return_amplification=4.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
         *_console_specs(
             name="trading_console_cases",
             unfiltered=console_cases_statement(since_ms=since_ms, limit=101),
             filtered=console_cases_statement(
                 since_ms=since_ms,
-                underlying_key="crypto:BTC",
                 states=("SIGNAL_EMITTED", "NO_TRADE"),
                 limit=101,
             ),
@@ -248,6 +267,22 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
+            # #604 T3. The admission funnel's top, grouped over the same window the two Case
+            # distributions above use, on `source_observed_at_ms` -- the frame clock, which is both
+            # the one this ledger indexes and the one that keeps a re-read backlog out of today's
+            # total. The row ceiling is the guard that means something here: a day is ~900 frames
+            # against a 90-day retention of ~74,000 rows, so an order of magnitude above the window
+            # still reports the day the index stops being used. Measured on a seeded 74,000-row
+            # ledger: 822 rows read, 0.46 ms. Amplification cannot bound a grouped count -- its
+            # denominator is the handful of `(status, reason)` pairs a closed vocabulary can produce,
+            # so a day where every frame gets the same answer divides the whole window by one.
+            name="trading_gate_counts",
+            sql=TRADING_GATE_COUNTS_SQL,
+            params=(since_ms,),
+            max_read_return_amplification=200.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
             # #528 PR-1. One plan, not two: the desk table takes no filter. The fold reads every
             # observation of the Signals in its own window, so its input is the join rather than the
             # row per Signal it returns.
@@ -255,6 +290,24 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             sql=executions_sql,
             params=executions_params,
             max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            # #604 T3. The one read on the desk with no window at all: an operator's running realized
+            # result is the sum over every trade the slot ever closed, and a 24 h bound would answer a
+            # different question. What bounds it instead is the ledger's correlated slice -- a
+            # `position` observation always carries the entry identity it belongs to, so the plan is a
+            # `BitmapOr` of the two partial recovery indexes and never touches the reconciliation rows
+            # that are ~97% of the table. Measured on a 12,240-row ledger with 40 closed positions:
+            # 240 rows read, 35 buffers, 0.3 ms, against 12,240 rows and 1,118 buffers for the bare
+            # kind filter. The amplification ceiling is the shape of an entry rather than a guess:
+            # an entry that reaches the venue writes ~8 correlated observations and at most one of
+            # them is a `closed` position, and entries the Runtime refuses write one disposition each
+            # with no close at all -- production's 233 correlated rows over 10 closed positions is 23.
+            name="trading_realized_totals",
+            sql=totals_sql,
+            params=totals_params,
+            max_read_return_amplification=40.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         *_console_specs(

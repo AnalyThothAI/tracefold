@@ -2214,10 +2214,13 @@ an upstream judge, Program, policy or learning cohort.
 Cases freeze source identity, cutoff, the price window, a venue-neutral
 `market_key`, and the exact policy identity, version, typed config and config
 digest — all of them inside the `manifest` jsonb, which is the copy the lane
-compares before it decides, the copy `/api/trading/cases` renders, and the only
-copy there is. `policy_checks` records every condition the policy executed —
-threshold, operator, measured value, pass/fail — so a Case decided a week ago is
-explained without today's configuration.
+compares before it decides, the copy `/api/trading/cases` reads a Case's policy
+identity and digest off, and the only copy there is. `policy_checks` records
+every condition the policy executed — threshold, operator, measured value,
+pass/fail — so a Case decided a week ago is explained without today's
+configuration, and it is why the frozen `policy_config` dictionary itself stopped
+being published beside it (#604 T3): every number that was tested is already on a
+check, beside what it was measured against.
 
 The `trading_manifest_v11` manifest names exactly one `primary_trigger`, one
 `policy_id` / `policy_version` / exact typed `policy_config` /

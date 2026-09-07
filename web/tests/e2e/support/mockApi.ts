@@ -16,7 +16,7 @@ import {
 } from "@tests/fixtures/newsFixture";
 import {
   TRADING_NOW_MS,
-  tradingCasesForUnderlying,
+  tradingCasesForId,
   tradingExecutionFixture,
   tradingExecutionsFixture,
   tradingStatusFixture,
@@ -110,10 +110,10 @@ export async function installMockApi(
         ),
       );
     }
-    // #282: a caller that asks for one underlying has to get that name back. `/trading` asks for none
-    // and gets the whole window, which is what the Case drawer opens one row of.
+    // #604 T3: `/api/trading/cases` answers by identity. Without `?case_id=` it carries the three 24 h
+    // distributions and no Case at all, which is what the desk polls it for.
     if (path === "/api/trading/cases") {
-      return fulfill(route, tradingCasesForUnderlying(url.searchParams.get("underlying")));
+      return fulfill(route, tradingCasesForId(url.searchParams.get("case_id")));
     }
     if (path === "/api/trading/executions") {
       return fulfill(route, options.tradingExecutions ?? tradingExecutionsFixture());

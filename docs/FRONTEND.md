@@ -121,12 +121,16 @@ the route components into the eager shell chunk.
   frozen evidence, and that moved into the Trading Case card rather than being
   deleted with the page: selecting a row there opens the Case's terminal answer,
   its identity and timestamps, and the frozen check table (check, operator,
-  threshold, measured, pass/fail) with its frozen `policy_config` beneath it. A
+  threshold, measured, pass/fail). A
   Case written before `policy_checks` existed says so rather than showing an
   empty table, and every threshold on screen is the Case's own, never today's
-  configuration. `/trading?case=<id>` opens one directly, and the desk's own Case
-  rows link that way. A `case` the rolling window has
-  already dropped says so and names the window rather than rendering nothing.
+  configuration. The frozen `policy_config` dictionary that used to sit beneath
+  the table went in #604 T3: `policy_checks[].threshold` already carries every
+  number that was tested, beside what it was measured against, and
+  `policy_config_digest` still identifies the whole set. `/trading?case=<id>`
+  opens one directly, and the desk's own Case rows link that way; the drawer asks
+  `/api/trading/cases?case_id=<id>` for that one Case, and a `case` the ledger no
+  longer holds says so rather than rendering nothing.
 
 
   `/news/market` is `市场事实` (#553 PR-1, replacing `/news/oi` and the OI
@@ -410,16 +414,26 @@ the route components into the eager shell chunk.
      opens its Case. The two columns #537 PR-5 dropped were both second answers:
      `disposition` was `accepted` / `rejected` beside a `stage` that already says
      `ordered` or `rejected`, and `position_status` was `closed` beside
-     `stage=closed`. The header totals entries, splits them by source, and sums
-     the realized PnL, which is the page's only arithmetic — #528 refuses an
-     equity-curve table for a number that is already one column.
+     `stage=closed`. #604 T3 added the facts the page could not derive: the
+     entry's first fill clock and its position's close clock, which are the two
+     instants a holding time is the distance between; the venue's own words on an
+     entry order it refused; and `totals`, the realized sums and counts over
+     every closed position this slot has, today and ever. Summing the realized
+     column of the rows on screen was the page's only arithmetic and it answered
+     a smaller question than the one an operator reconciles against the venue.
 
   **The Case drawer** is `/api/trading/cases`, opened by `?case=<id>` — the deep
   link the desk's own Case rows publish. It shows one
-  Case's terminal answer, the frozen per-check evidence and the frozen policy
-  configuration, and says so when the Case is outside the 24 h window rather
-  than rendering nothing. Beside it, one card carries that read's two durable 24 h
-  distributions: `state_counts_24h` and the policy-reason counts. There is no
+  Case's terminal answer and the frozen per-check evidence, and says so when the
+  ledger no longer holds the Case rather than rendering nothing. The browser asks
+  for that Case by `?case_id=<id>` and the response carries it alone (#604 T3):
+  the unconditional 100-row page it used to send on every 15 s poll was rendered
+  by nothing and could not reach the `NO_TRADE` Cases past the hundredth, which
+  are 553 of the 584 in a production day and the ones an operator opens to ask
+  why. Beside it, the same read carries three durable 24 h distributions:
+  `state_counts_24h`, the policy-reason counts, and `admission_counts_24h` — a
+  count per `(status, reason)` pair over the admission ledger, which is the
+  funnel's top and not the per-frame `decisions[]` #589 PR-2 deleted. There is no
   pagination and no cursor — the response published a `next_cursor` no reader
   ever sent back.
 

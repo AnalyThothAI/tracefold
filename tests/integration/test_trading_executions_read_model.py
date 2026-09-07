@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -19,7 +21,12 @@ from tests.nautilus_oi_runtime_fixtures import NOW_NS
 from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
 from tracefold.app.http.app import create_app
 from tracefold.platform.config.models import Settings
-from tracefold.trading.storage.execution_stream import prepare_operator_intent, prepare_trade_signal
+from tracefold.trading.execution_contracts import ExecutionObservationV1
+from tracefold.trading.storage.execution_stream import (
+    prepare_execution_observations,
+    prepare_operator_intent,
+    prepare_trade_signal,
+)
 from tracefold.trading.storage.root import TradingRepository
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
@@ -33,19 +40,25 @@ _MARKET_KEY = "crypto:perp:BTC:USDT"
 TOKEN = "executions-read-model-token"
 
 
-def _seed_signal() -> None:
+def _seed_signal(
+    *,
+    signal_id: str = _SIGNAL_ID,
+    case_id: str = "case-1",
+    observed_at_ns: int = NOW_NS - 1_000_000,
+    expires_at_ns: int = NOW_NS + 60_000_000_000,
+) -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)
         with conn.transaction():
             repo.ensure_execution_runtime_control_state(_ACCOUNT_SLOT, now_ns=NOW_NS)
         prepared = prepare_trade_signal(
-            signal_id=_SIGNAL_ID,
-            case_id="case-1",
+            signal_id=signal_id,
+            case_id=case_id,
             market_key="crypto:perp:BTC:USDT",
             direction="long",
-            observed_at_ns=NOW_NS - 1_000_000,
-            expires_at_ns=NOW_NS + 60_000_000_000,
+            observed_at_ns=observed_at_ns,
+            expires_at_ns=expires_at_ns,
         )
         with conn.transaction():
             conn.execute(
@@ -56,12 +69,12 @@ def _seed_signal() -> None:
                   policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
                   updated_at_ms
                 ) VALUES (
-                  'case-1', 'crypto:BTC', 'oi', 'runtime-source:case-1',
+                  %s, 'crypto:BTC', 'oi', %s,
                   '{"test":"executions"}'::jsonb, %s, 'SIGNAL_EMITTED', 'long',
                   'executions_read_model', 1, 1, 1, 1
                 )
                 """,
-                ("4" * 64,),
+                (case_id, f"runtime-source:{case_id}", "4" * 64),
             )
             repo.append_trade_signal(prepared)
     finally:
@@ -272,4 +285,169 @@ def _flatten_intent(*, command_id: str = _FLATTEN_COMMAND_ID):
         expires_at_ns=NOW_NS + 60_000_000_000,
         market_key=None,
         direction=None,
+    )
+
+
+def test_a_stopped_out_signal_publishes_both_clocks_and_the_slots_realized_totals(
+    postgres_clone_dsn: str,
+    tmp_path: Path,
+) -> None:
+    """#604 T3. Two clocks a holding time is the distance between, and totals the window cannot add up.
+
+    Before this change the desk had `observed_at_ns` -- when the Signal was *written* -- and nothing
+    else, so "how long was this open" had no answer, and the only realized number on the page was the
+    sum of whichever rows the 24 h window happened to be showing. Both come off the same durable
+    observations the Runtime just wrote in its own process: the first entry `fill` and the `closed`
+    position, and one aggregate over every `closed` position this slot has.
+    """
+
+    _seed_signal()
+    receipt = _run_runtime(postgres_clone_dsn, "stop_filled")
+    assert receipt["positions_count"] == 0, receipt
+
+    data = _executions(tmp_path)
+    row = next(item for item in data["executions"] if item["entry_id"] == _SIGNAL_ID)
+
+    assert row["stage"] == "closed"
+    assert row["entry_filled_at_ns"] is not None
+    assert row["position_closed_at_ns"] is not None
+    assert row["entry_filled_at_ns"] < row["position_closed_at_ns"]
+    # The entry fill is the first venue fact about this entry, and the close is the last.
+    assert row["observed_at_ns"] <= row["entry_filled_at_ns"]
+    # Nothing refused this order, so there is no venue text to print.
+    assert row["order_reject_reason"] is None
+
+    verify = connect_postgres_test(read_only=False)
+    try:
+        closed = verify.execute(
+            """
+            SELECT occurred_at_ns, summary
+              FROM trading_execution_observations
+             WHERE normalized_kind = 'position' AND summary ->> 'status' = 'closed'
+            """
+        ).fetchone()
+        first_fill = verify.execute(
+            """
+            SELECT min(occurred_at_ns) AS at_ns
+              FROM trading_execution_observations
+             WHERE normalized_kind = 'fill' AND summary ->> 'leg' = 'entry'
+            """
+        ).fetchone()
+    finally:
+        verify.close()
+
+    # The published clocks are the observations' own, not a derivation beside them.
+    assert row["position_closed_at_ns"] == int(closed["occurred_at_ns"])
+    assert row["entry_filled_at_ns"] == int(first_fill["at_ns"])
+
+    totals = data["totals"]
+    assert totals["closed_total"] == 1
+    assert Decimal(totals["realized_total_usd"]) == Decimal(str(closed["summary"]["realized_pnl_usd"]))
+    assert Decimal(totals["realized_total_usd"]) == Decimal(row["realized_pnl_usd"])
+    # The Runtime's own clock is years ahead of this test's wall clock, so the same close is not in
+    # "today" and the day-scoped pair is the honest zero rather than a copy of the all-time pair.
+    assert totals["closed_today"] == 0
+    assert totals["realized_today_usd"] == "0"
+
+
+def test_a_venue_refusal_reaches_the_desk_as_the_words_the_venue_used(
+    postgres_clone_dsn: str,
+    tmp_path: Path,
+) -> None:
+    """#604 T3 over #604 T1. The Runtime records `summary.reason` on a rejected entry order.
+
+    The desk printed `ordered` and stopped: an operator could see that a Signal reached the venue and
+    not that the venue refused it, or what for. The observation is written straight through the
+    storage API here rather than provoked out of the backtest engine, because what is under test is
+    the fold that publishes the column -- and it tolerates a row written before the Runtime recorded
+    a reason at all, which is every row in the production ledger today. The summary is the exact
+    shape the writer produces, which `test_nautilus_oi_runtime_strategy.py` pins against the real
+    Nautilus event: `{"leg": "entry", "status": "rejected", "reason": <venue text>}`.
+    """
+
+    _seed_signal()
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        with conn.transaction():
+            repo.append_execution_observations(
+                prepare_execution_observations(
+                    (
+                        _observation(
+                            event="a",
+                            kind="signal_disposition",
+                            summary={"disposition": "accepted"},
+                        ),
+                        _observation(
+                            event="b",
+                            kind="order",
+                            summary={
+                                "leg": "entry",
+                                "status": "rejected",
+                                "reason": "Margin is insufficient.",
+                            },
+                        ),
+                    )
+                )
+            )
+    finally:
+        conn.close()
+
+    row = next(item for item in _executions(tmp_path)["executions"] if item["entry_id"] == _SIGNAL_ID)
+
+    assert row["stage"] == "ordered"
+    assert row["disposition_reason"] == "accepted"
+    assert row["order_reject_reason"] == "Margin is insufficient."
+    assert row["entry_filled_at_ns"] is None
+    assert row["position_closed_at_ns"] is None
+
+
+def test_a_signal_whose_ttl_ran_out_without_a_disposition_reads_expired(
+    postgres_clone_dsn: str,
+    tmp_path: Path,
+) -> None:
+    """#604 T3 (audit A4). The hole the bridge leaves is a word, not a row that never resolves.
+
+    `UNRESOLVED_TRADE_SIGNALS_SQL` anti-joins on `expires_at_ns > now`, so a Signal refused only for a
+    retryable reason -- which writes no durable disposition -- stops being offered the instant it
+    expires and never receives one. Read back through `/api/trading/executions` that was `pending`
+    for the rest of the 24 h window: a row an operator cannot explain and the desk claims is still in
+    flight. Nothing new is written to close it; the Signal's own published TTL is the answer.
+    """
+
+    now_ns = time.time_ns()
+    _seed_signal(
+        signal_id="9" * 64,
+        case_id="case-ttl",
+        observed_at_ns=now_ns - 3_600_000_000_000,
+        expires_at_ns=now_ns - 60_000_000_000,
+    )
+    _seed_signal(
+        signal_id="8" * 64,
+        case_id="case-live",
+        observed_at_ns=now_ns - 3_600_000_000_000,
+        expires_at_ns=now_ns + 3_600_000_000_000,
+    )
+
+    rows = {row["entry_id"]: row for row in _executions(tmp_path)["executions"]}
+
+    assert rows["9" * 64]["stage"] == "expired"
+    assert rows["9" * 64]["disposition_reason"] is None
+    # A Signal still inside its own TTL is still pending: the clock is the only thing that changed.
+    assert rows["8" * 64]["stage"] == "pending"
+
+
+def _observation(*, event: str, kind: str, summary: dict[str, object]) -> ExecutionObservationV1:
+    return ExecutionObservationV1.model_validate(
+        {
+            "event_id": event * 64,
+            "account_slot": _ACCOUNT_SLOT,
+            "execution_strategy": "oi_nautilus_v1",
+            "signal_id": _SIGNAL_ID,
+            "normalized_kind": kind,
+            "occurred_at_ns": NOW_NS,
+            "observed_at_ns": NOW_NS + 1,
+            "native_identity_references": (),
+            "summary": summary,
+        }
     )

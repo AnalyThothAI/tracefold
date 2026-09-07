@@ -11,6 +11,12 @@ and the Command list is `executions[].commands`. Nothing in the browser called a
 only browser reader either route ever had; what remained was a public HTTP shape over the admission
 ledger with no caller. `tracefold trading gate [--source-key KEY] [--since-ms N]` reads the same two
 repository statements directly, and the runbook in Operations reads the row in SQL.
+
+The admission ledger comes back here as a distribution rather than as rows (#604 T3): `cases`
+publishes `admission_counts_24h`, a `count(*)` per `(status, reason)` pair over the same window its
+two Case distributions use. That is the funnel's top -- how many frames the lane looked at and what
+admission answered -- and it is not the per-frame `decisions[]` #589 PR-2 deleted; no frame identity,
+evidence blob or Case link travels with a count.
 """
 
 from __future__ import annotations
@@ -47,15 +53,13 @@ _ExecutionsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingExecutionsD
 _CommandReceiptEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingOperatorCommandReceiptData]
 
 _WINDOW_MS: Final = 24 * 3_600_000
+_DAY_MS: Final = 86_400_000
 _ROW_LIMIT: Final = 100
 _OI_METRIC_VERSION: Final = OI_METRIC_VERSION
-_BASE_SYMBOL: Final = re.compile(r"^[A-Z0-9._-]{1,24}$")
-_CASE_STATE_FILTERS: Final[dict[str, tuple[str, ...]]] = {
-    "open": ("PENDING", "RUNNING"),
-    "no_trade": ("NO_TRADE",),
-    "blocked": ("BLOCKED",),
-    "emitted": ("SIGNAL_EMITTED",),
-}
+# The identity shape every Case the lane has ever written has (`uuid4().hex`), widened to the bounded
+# identity alphabet the rest of the Trading ledgers use so a Case frozen under an older naming still
+# opens. It is a primary key, so anything outside it cannot name a row and is refused rather than read.
+_CASE_ID: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$")
 _CONSOLE_COMMAND_ACTIONS: Final = frozenset({"pause_entries", "resume_entries", "flatten"})
 _MAX_COMMAND_REQUEST_BYTES: Final = 2_048
 _COMMAND_REQUEST_OPENAPI: Final = {
@@ -92,30 +96,37 @@ def get_trading_status(request: Request) -> Response:
 @router.get("/trading/cases", response_model=_CasesEnvelope)
 def get_trading_cases(
     request: Request,
-    underlying: Annotated[str, Query(max_length=32)] = "",
-    state: Annotated[str, Query(max_length=16)] = "",
+    # Wider than the identity itself, so an id one character too long is refused by `_case_id` with
+    # the same 400 and the same word as every other malformed identity rather than by the framework.
+    case_id: Annotated[str, Query(max_length=256)] = "",
 ) -> Response:
-    _validate_query_params(request, supported={"state", "token", "underlying"})
-    if state and state not in _CASE_STATE_FILTERS:
-        raise ApiBadRequest("trading_cases_state_invalid", field="state")
-    underlying_key = _underlying_key(underlying, error="trading_cases_underlying_invalid")
+    """One frozen Case by identity, beside the three durable 24 h distributions (#604 T3).
+
+    The list this route used to send is gone: 100 whole Cases on every 15 s poll, of which the desk
+    rendered at most the one behind `?case=<id>`, and never the `NO_TRADE` Cases past the hundredth --
+    553 of the 584 in a production day -- which are the ones an operator opens to ask why. A Case is
+    reached by its own identity now, and no identity means no Case rather than a page nobody reads.
+    The two filters that narrowed that page went with it: `?underlying=` and `?state=` could only
+    select rows out of a list that is now always the caller's own Case or nothing.
+    """
+
+    _validate_query_params(request, supported={"case_id", "token"})
+    identity = _case_id(case_id)
     runtime = _authenticated_runtime(request)
     now_ms = int(time.time() * 1000)
+    since_ms = now_ms - _WINDOW_MS
     with runtime.repositories() as repos:
-        rows = repos.trading.console_cases(
-            since_ms=now_ms - _WINDOW_MS,
-            underlying_key=underlying_key,
-            states=_CASE_STATE_FILTERS.get(state, ()),
-            limit=_ROW_LIMIT + 1,
-        )
-        states = repos.trading.case_counts(since_ms=now_ms - _WINDOW_MS)
-        reasons = repos.trading.case_reason_counts(since_ms=now_ms - _WINDOW_MS)
+        row = None if identity is None else repos.trading.console_case(case_id=identity)
+        states = repos.trading.case_counts(since_ms=since_ms)
+        reasons = repos.trading.case_reason_counts(since_ms=since_ms)
+        admissions = repos.trading.gate_counts(since_ms=since_ms)
     return _etagged(
         {
-            "cases": [_case(row) for row in rows[:_ROW_LIMIT]],
+            "cases": [] if row is None else [_case(row)],
             "state_counts_24h": states,
             "reason_counts_24h": reasons,
-            "complete": len(rows) <= _ROW_LIMIT,
+            "admission_counts_24h": admissions,
+            "complete": True,
             "window_hours": _WINDOW_MS // 3_600_000,
         },
         request,
@@ -135,10 +146,21 @@ def get_trading_executions(request: Request) -> Response:
     with runtime.repositories() as repos:
         rows = repos.trading.console_executions(since_ns=since_ns, limit=_ROW_LIMIT + 1)
         commands = repos.trading.console_operator_intents(since_ns=since_ns, action=None, limit=_ROW_LIMIT)
+        # Midnight UTC of the instant this request was served, and the next one. One clock, floored
+        # once, so "today" is the same day for the sums and the counts; bounded on both sides because
+        # `occurred_at_ns` is the venue's clock and a venue running ahead of this host would otherwise
+        # file tomorrow's close under today and leave it there.
+        day_start_ns = (now_ms - now_ms % _DAY_MS) * 1_000_000
+        totals = repos.trading.console_realized_totals(
+            account_slot=runtime.settings.trading.execution.account_slot,
+            day_start_ns=day_start_ns,
+            day_end_ns=day_start_ns + _DAY_MS * 1_000_000,
+        )
     return _etagged(
         {
-            "executions": [_execution(row) for row in rows[:_ROW_LIMIT]],
+            "executions": [_execution(row, now_ns=now_ns) for row in rows[:_ROW_LIMIT]],
             "commands": [_execution_command(row, now_ns=now_ns) for row in commands],
+            "totals": _totals(totals),
             "complete": len(rows) <= _ROW_LIMIT,
         },
         request,
@@ -219,7 +241,6 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
         # Three columns beside it said the same thing and nothing read them (#537 PR-3).
         "policy_id": _string_or_none(manifest.get("policy_id")),
         "policy_config_digest": _string_or_none(manifest.get("policy_config_digest")),
-        "policy_config": _frozen_config(manifest.get("policy_config")),
         "policy_checks": _policy_checks(row.get("policy_checks")),
         "state": str(row["state"]),
         "policy_reason": row.get("policy_reason"),
@@ -231,7 +252,7 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _execution(row: dict[str, Any]) -> dict[str, Any]:
+def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
     reason = _string_or_none(row.get("disposition_reason"))
     fill_quantity = _string_or_none(row.get("fill_quantity"))
     stop_trigger_price = _string_or_none(row.get("stop_trigger_price"))
@@ -243,47 +264,64 @@ def _execution(row: dict[str, Any]) -> dict[str, Any]:
         "direction": str(row["direction"]),
         "observed_at_ns": int(row["observed_at_ns"]),
         "disposition_reason": reason,
+        "order_reject_reason": _string_or_none(row.get("order_reject_reason")),
         "fill_quantity": fill_quantity,
         "fill_avg_price": _string_or_none(row.get("fill_avg_price")),
         "stop_trigger_price": stop_trigger_price,
+        "entry_filled_at_ns": _int_or_none(row.get("entry_filled_at_ns")),
+        "position_closed_at_ns": _int_or_none(row.get("position_closed_at_ns")),
         "exit_price": _string_or_none(row.get("exit_price")),
         "realized_pnl_usd": _string_or_none(row.get("realized_pnl_usd")),
         "exit_reason": _string_or_none(row.get("exit_reason")),
         # The venue's own `order_status` and `position_status` are inputs to this word, not a second
         # answer beside it: the table renders the stage, and publishing both let a reader compare a
-        # raw venue string against the server's derivation of the same row (#537 PR-5).
+        # raw venue string against the server's derivation of the same row (#537 PR-5). The Signal's
+        # own TTL is an input for the same reason: a Signal that expired without a disposition is
+        # `expired`, not work still pending (#604 T3).
         "stage": execution_stage(
             disposition_reason=reason,
             order_status=_string_or_none(row.get("order_status")),
             fill_quantity=fill_quantity,
             stop_trigger_price=stop_trigger_price,
             position_status=_string_or_none(row.get("position_status")),
+            expires_at_ns=_int_or_none(row.get("expires_at_ns")),
+            now_ns=now_ns,
         ),
     }
 
 
 def _execution_command(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
+    disposition_reason = _string_or_none(row.get("disposition_reason"))
     return {
         "command_id": str(row["command_id"]),
         "action": str(row["action"]),
         "requested_at_ns": int(row["requested_at_ns"]),
         "stage": command_stage(
             disposition=_string_or_none(row.get("disposition")),
-            disposition_reason=_string_or_none(row.get("disposition_reason")),
+            disposition_reason=disposition_reason,
             expires_at_ns=int(row["expires_at_ns"]),
             now_ns=now_ns,
         ),
+        "reason": disposition_reason,
     }
 
 
-def _underlying_key(value: str, *, error: str) -> str | None:
-    raw = str(value or "").strip().upper().removeprefix("XYZ-")
+def _totals(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "realized_today_usd": str(row.get("realized_today_usd") or "0"),
+        "realized_total_usd": str(row.get("realized_total_usd") or "0"),
+        "closed_today": int(row.get("closed_today") or 0),
+        "closed_total": int(row.get("closed_total") or 0),
+    }
+
+
+def _case_id(value: str) -> str | None:
+    raw = str(value or "").strip()
     if not raw:
         return None
-    base = raw.removeprefix("CRYPTO:")
-    if _BASE_SYMBOL.fullmatch(base) is None:
-        raise ApiBadRequest(error, field="underlying")
-    return f"crypto:{base}"
+    if _CASE_ID.fullmatch(raw) is None:
+        raise ApiBadRequest("trading_cases_case_id_invalid", field="case_id")
+    return raw
 
 
 def _base_symbol(underlying_key: object) -> str:
@@ -315,12 +353,6 @@ def _policy_checks(value: Any) -> list[dict[str, Any]]:
         for item in checks
         if isinstance(item, dict)
     ]
-
-
-def _frozen_config(value: Any) -> dict[str, str]:
-    if not isinstance(value, dict):
-        return {}
-    return {str(key): str(item) for key, item in sorted(value.items())}
 
 
 def _int_or_none(value: Any) -> int | None:

@@ -135,7 +135,6 @@ export function tradingCaseFixture(overrides: Partial<TradingCase> = {}): Tradin
         threshold: "8000",
       },
     ],
-    policy_config: { max_price_move_bps: "600", min_whale_oi_ratio_bps: "8000" },
     policy_config_digest: "e".repeat(64),
     policy_id: ALPHA_POLICY_ID,
     policy_reason: "smart_money_ratio_below_or_equal_floor",
@@ -147,6 +146,11 @@ export function tradingCaseFixture(overrides: Partial<TradingCase> = {}): Tradin
 
 export function tradingCasesFixture(overrides: Partial<TradingCases> = {}): TradingCases {
   return {
+    admission_counts_24h: [
+      { count: 553, reason: "oi_value_below_floor", status: "REJECTED" },
+      { count: 31, reason: "case_created", status: "CASE_CREATED" },
+      { count: 2, reason: null, status: "DEFERRED" },
+    ],
     cases: [tradingCaseFixture()],
     complete: true,
     reason_counts_24h: { smart_money_ratio_below_or_equal_floor: 4 },
@@ -156,12 +160,16 @@ export function tradingCasesFixture(overrides: Partial<TradingCases> = {}): Trad
   };
 }
 
-/** `?underlying=` is still a bounded server filter; `base_symbol` is what the response identifies a row by. */
-export function tradingCasesForUnderlying(underlying: string | null): TradingCases {
+/**
+ * `?case_id=` is an exact primary-key read: that Case, or none at all (#604 T3).
+ *
+ * Without it the response still carries the three 24 h distributions and no Case, which is what the
+ * route answers now that the unconditional 100-row page is gone.
+ */
+export function tradingCasesForId(caseId: string | null): TradingCases {
   const batch = tradingCasesFixture();
-  if (!underlying) return batch;
-  const base = underlying.split(":").pop()?.toUpperCase() ?? "";
-  return { ...batch, cases: (batch.cases ?? []).filter((row) => row.base_symbol === base) };
+  if (!caseId) return { ...batch, cases: [] };
+  return { ...batch, cases: (batch.cases ?? []).filter((row) => row.case_id === caseId) };
 }
 
 /**
@@ -178,6 +186,7 @@ export function tradingExecutionRowFixture(
     case_id: "case-btc",
     direction: "long",
     disposition_reason: "accepted",
+    entry_filled_at_ns: (TRADING_NOW_MS - 118_000) * 1_000_000,
     entry_id: "1".repeat(64),
     exit_price: "9699.0",
     exit_reason: "flatten",
@@ -185,6 +194,8 @@ export function tradingExecutionRowFixture(
     fill_quantity: "0.049",
     market_key: "crypto:perp:BTC:USDT",
     observed_at_ns: (TRADING_NOW_MS - 120_000) * 1_000_000,
+    order_reject_reason: null,
+    position_closed_at_ns: (TRADING_NOW_MS - 40_000) * 1_000_000,
     realized_pnl_usd: "-14.92274518",
     source: "signal",
     stage: "closed",
@@ -223,7 +234,9 @@ export function tradingExecutionsFixture(
         fill_avg_price: null,
         fill_quantity: null,
         market_key: "crypto:perp:NVDA:USDT",
+        entry_filled_at_ns: null,
         observed_at_ns: (TRADING_NOW_MS - 300_000) * 1_000_000,
+        position_closed_at_ns: null,
         realized_pnl_usd: null,
         stage: "rejected",
         stop_trigger_price: null,
@@ -238,7 +251,9 @@ export function tradingExecutionsFixture(
         fill_avg_price: null,
         fill_quantity: null,
         market_key: "crypto:perp:SOL:USDT",
+        entry_filled_at_ns: null,
         observed_at_ns: (TRADING_NOW_MS - 600_000) * 1_000_000,
+        position_closed_at_ns: null,
         realized_pnl_usd: null,
         stage: "expired",
         stop_trigger_price: null,
@@ -256,11 +271,18 @@ export function tradingExecutionsFixture(
         fill_quantity: "0.0122",
         market_key: "crypto:perp:ETH:USDT",
         observed_at_ns: (TRADING_NOW_MS - 90_000) * 1_000_000,
+        position_closed_at_ns: (TRADING_NOW_MS - 30_000) * 1_000_000,
         realized_pnl_usd: "-1.11984726",
         source: "manual",
         stop_trigger_price: "80315.6",
       }),
     ],
+    totals: {
+      closed_today: 2,
+      closed_total: 12,
+      realized_today_usd: "-16.04",
+      realized_total_usd: "56.40",
+    },
     ...overrides,
   };
 }
@@ -271,6 +293,7 @@ export function tradingCommandRowFixture(
   return {
     action: "pause_entries",
     command_id: "9".repeat(64),
+    reason: null,
     requested_at_ns: TRADING_NOW_MS * 1_000_000,
     stage: "recorded",
     ...overrides,
