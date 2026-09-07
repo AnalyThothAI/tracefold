@@ -134,23 +134,27 @@ async def run_signal_lane(
 
     while not stop_event.is_set():
         started = time.perf_counter()
-        outcome = "error"
         try:
-            await lane.advance()
+            turn = await lane.advance()
         except Exception:
             logger.exception("signal lane turn failed")
             if telemetry is not None:
                 telemetry.record_external_data_turn(
                     "trading_signal_lane",
-                    outcome,
+                    "error",
                     time.perf_counter() - started,
                 )
             raise
         if telemetry is not None:
+            # What the turn read and what it made of it. The port and both gauges have carried these
+            # two counts since #331; this loop passed neither, so the lane's source and target volume
+            # was the one external-data runner an operator could not see (#604 T2).
             telemetry.record_external_data_turn(
                 "trading_signal_lane",
                 "success",
                 time.perf_counter() - started,
+                source_count=turn.sources,
+                target_count=turn.cases_created,
             )
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop_event.wait(), timeout=max(0.05, float(poll_seconds)))

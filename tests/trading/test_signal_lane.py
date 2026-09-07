@@ -162,7 +162,8 @@ def test_long_writes_one_engine_neutral_signal_and_terminal_case() -> None:
 
     turn = asyncio.run(_lane(trading).advance())
 
-    assert (turn.cases_created, turn.signals_emitted, turn.blocked) == (1, 1, 0)
+    assert turn.cases_created == 1
+    assert len(trading.signals) == 1
     signal = trading.signals[0].value
     assert signal.market_key == "crypto:perp:BTC:USDT"
     assert signal.direction == "long"
@@ -190,7 +191,8 @@ def test_signal_expiry_is_capped_at_the_source_freshness_deadline() -> None:
 
     turn = asyncio.run(_lane(trading).advance())
 
-    assert (turn.signals_emitted, turn.blocked) == (1, 0)
+    assert turn.cases_created == 1
+    assert len(trading.signals) == 1
     signal = trading.signals[0].value
     assert signal.observed_at_ns == NOW * 1_000_000
     assert signal.expires_at_ns == (observed_at_ms + 300_000) * 1_000_000
@@ -199,9 +201,8 @@ def test_signal_expiry_is_capped_at_the_source_freshness_deadline() -> None:
 def test_source_at_its_freshness_deadline_is_blocked_without_a_signal() -> None:
     trading = FakeTrading((_row(observed_at_ms=NOW - 300_000),))
 
-    turn = asyncio.run(_lane(trading).advance())
+    asyncio.run(_lane(trading).advance())
 
-    assert (turn.signals_emitted, turn.blocked) == (0, 1)
     assert trading.signals == []
     case = next(iter(trading.cases.values()))
     assert case["state"] is CaseState.BLOCKED
@@ -239,9 +240,8 @@ def test_signal_ttl_never_exceeds_an_accepted_source_freshness_window(
 def test_no_trade_writes_no_signal() -> None:
     trading = FakeTrading((_row(whale_oi_ratio_bps=4_000),))
 
-    turn = asyncio.run(_lane(trading).advance())
+    asyncio.run(_lane(trading).advance())
 
-    assert (turn.no_trade, turn.signals_emitted) == (1, 0)
     assert trading.signals == []
     assert next(iter(trading.cases.values()))["state"] is CaseState.NO_TRADE
 
@@ -415,9 +415,9 @@ def test_a_case_frozen_under_a_retired_manifest_version_is_blocked_not_re_decide
     trading.claimable.append(case_id)
     trading.signals.clear()
 
-    turn = asyncio.run(lane.advance())
+    asyncio.run(lane.advance())
 
-    assert turn.blocked == 1
+    assert trading.cases[case_id]["state"] is CaseState.BLOCKED
     assert trading.cases[case_id]["policy_reason"] == "manifest_invalid"
     assert trading.signals == []
 
@@ -427,8 +427,9 @@ def test_invalid_market_key_is_durably_rejected_without_faulting_workers() -> No
 
     turn = asyncio.run(_lane(trading, expected_symbol="@107").advance())
 
-    assert (turn.cases_created, turn.signals_emitted) == (0, 0)
+    assert turn.cases_created == 0
     assert trading.cases == {}
+    assert trading.signals == []
     assert trading.admission[0]["reason"] == "source_contract_invalid"
     # The rulebook that answered rides in `evidence` beside the rule that refused (#537 PR-3).
     assert trading.admission[0]["evidence"]["rule"] == "market_key_invalid"
@@ -489,9 +490,9 @@ def test_the_v5_policy_digest_no_longer_carries_the_profit_threshold() -> None:
     assert ALPHA_POLICY.config_digest == canonical_sha256(ALPHA_POLICY.config_snapshot)
 
     trading = FakeTrading((_row(whale_long_profit_bps=0),))
-    turn = asyncio.run(_lane(trading).advance())
+    asyncio.run(_lane(trading).advance())
 
-    assert turn.signals_emitted == 1
+    assert len(trading.signals) == 1
     manifest = next(iter(trading.cases.values()))["manifest"]
     assert manifest.policy_id == "source_native_oi_smart_money_long_v5"
     assert manifest.contexts.oi.whale_long_profit_bps == 0

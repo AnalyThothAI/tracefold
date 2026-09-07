@@ -70,7 +70,7 @@ from tracefold.platform.config.models import Settings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.postgres.client import postgres_health_check
 from tracefold.platform.postgres.migrations import alembic_config, latest_migration_version
-from tracefold.trading import EXECUTION_STRATEGY_ID
+from tracefold.trading import EXECUTION_STRATEGY_ID, market_key
 from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
 
 _EXECUTION_STRATEGY = EXECUTION_STRATEGY_ID
@@ -591,10 +591,10 @@ async def _discover_routes(
             continue
         if str((instrument.info or {}).get("status")) != "TRADING":
             continue
-        market_key = f"crypto:perp:{instrument.base_currency.code}:USDT"
+        key = market_key(instrument.base_currency.code)
         try:
             route = OiInstrumentRoute(
-                market_key=market_key,
+                market_key=key,
                 instrument_id=instrument.id,
                 stop_distance_bps=stop_distance_bps,
             )
@@ -602,9 +602,9 @@ async def _discover_routes(
             if str(exc) == "oi_runtime_market_key_invalid":
                 continue
             raise
-        if market_key in routes:
+        if key in routes:
             raise RuntimeError("oi_runtime_market_route_ambiguous")
-        routes[market_key] = route
+        routes[key] = route
     if not routes:
         raise RuntimeError("oi_runtime_route_catalog_empty")
     return tuple(routes[key] for key in sorted(routes))

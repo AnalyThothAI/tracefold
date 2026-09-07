@@ -14,6 +14,10 @@ from tracefold.platform.postgres.client import require_transaction
 
 from ..contracts import EXECUTION_STRATEGY_ID
 from ..execution_contracts import (
+    IDENTITY_PATTERN,
+    MAX_OBSERVATION_APPEND_BATCH,
+    MAX_OBSERVATION_APPEND_BYTES,
+    SHA256_PATTERN,
     ExecutionObservationV1,
     OperatorIntentV1,
     TradeSignalV1,
@@ -21,10 +25,11 @@ from ..execution_contracts import (
 )
 
 MAX_EXECUTION_READ_BATCH = 1_000
-MAX_OBSERVATION_APPEND_BATCH = 128
-MAX_OBSERVATION_APPEND_BYTES = 1_048_576
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,127}$")
+# The append bounds and the two identity shapes come from the contract module that states them; this
+# adapter used to re-declare all four at the same values, under a docstring over there claiming they
+# had been unified (#604 T2).
+_SHA256 = re.compile(SHA256_PATTERN)
+_IDENTITY = re.compile(IDENTITY_PATTERN)
 _OBSERVATION_BATCH_SAVEPOINT = "tracefold_execution_observation_batch"
 
 type StoredExecutionPayload = tuple[int, dict[str, Any]]
@@ -1002,8 +1007,6 @@ class ExecutionStreamStorage:
 
 __all__ = [
     "MAX_EXECUTION_READ_BATCH",
-    "MAX_OBSERVATION_APPEND_BATCH",
-    "MAX_OBSERVATION_APPEND_BYTES",
     "UNRESOLVED_OPERATOR_INTENTS_SQL",
     "UNRESOLVED_TRADE_SIGNALS_SQL",
     "ExecutionAccountOrder",

@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import ClassVar, Final, Literal, Protocol
+from typing import ClassVar, Final, Protocol
 
 from pydantic import ValidationError
 
@@ -45,6 +45,7 @@ from .contracts import (
     canonical_sha256,
     oi_source_key,
 )
+from .execution_contracts import market_key
 from .market_context import PriceWindow, pre_move_bps, select_bar
 from .policy import ALPHA_POLICY, AlphaPolicy
 from .sources import SourceRejected, normalize_oi_source, telemetry_source
@@ -71,17 +72,10 @@ class TradingDatabasePort(Protocol):
 
 BarFetcher = Callable[[OiTradeCandidate, int, int], Awaitable[Sequence[Bar]]]
 OiProjectionReader = Callable[[str, int, int], Awaitable[Sequence[OiCandidateRow]]]
-LaneOutcome = Literal["ADVANCED", "HALTED"]
 
 
 def now_ms() -> int:
     return int(datetime.now(tz=UTC).timestamp() * 1000)
-
-
-def market_key(base_symbol: str) -> str:
-    """The venue-neutral perpetual market identity carried across the execution boundary."""
-
-    return f"crypto:perp:{base_symbol}:USDT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,24 +107,16 @@ class SignalLaneConfig:
 
 @dataclass(frozen=True, slots=True)
 class LaneTurn:
-    outcome: LaneOutcome
-    reason: str
-    sources: int = 0
-    cases_created: int = 0
-    no_trade: int = 0
-    blocked: int = 0
-    signals_emitted: int = 0
+    """What one turn read and what it made of it, for the caller's turn metric.
 
-    def as_dict(self) -> dict[str, str | int]:
-        return {
-            "outcome": self.outcome,
-            "reason": self.reason,
-            "sources": self.sources,
-            "cases_created": self.cases_created,
-            "no_trade": self.no_trade,
-            "blocked": self.blocked,
-            "signals_emitted": self.signals_emitted,
-        }
+    Nothing else: an `outcome`/`reason` pair rode here too, but the one production caller discards the
+    value and no rule ever read either field, so `"HALTED"` was a state only a test fake could produce
+    and three more counters were kept for a reader that does not exist. The Case states a turn settled
+    are durable rows; this value is the process measurement its host records (#604 T2).
+    """
+
+    sources: int
+    cases_created: int
 
 
 class SignalLane:
@@ -183,28 +169,10 @@ class SignalLane:
         await self._flush_admission(results, now)
         await self._maintain_admission(now)
 
-        no_trade = blocked = signals_emitted = 0
         for _ in range(_MAX_DECISIONS_PER_TURN):
-            decided = await self._decide_one()
-            if decided is None:
+            if await self._decide_one() is None:
                 break
-            if decided is CaseState.BLOCKED:
-                blocked += 1
-            elif decided is CaseState.NO_TRADE:
-                no_trade += 1
-            elif decided is CaseState.SIGNAL_EMITTED:
-                signals_emitted += 1
-            else:  # pragma: no cover - the repository writer owns this closed set
-                raise RuntimeError(f"trading_decision_state_unexpected:{decided}")
-        return LaneTurn(
-            outcome="ADVANCED",
-            reason="advanced",
-            sources=len(rows),
-            cases_created=created,
-            no_trade=no_trade,
-            blocked=blocked,
-            signals_emitted=signals_emitted,
-        )
+        return LaneTurn(sources=len(rows), cases_created=created)
 
     def _admit(
         self,
@@ -476,5 +444,4 @@ __all__ = [
     "SignalLane",
     "SignalLaneConfig",
     "TradingDatabasePort",
-    "market_key",
 ]

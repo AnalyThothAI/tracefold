@@ -220,10 +220,6 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.market_review.pricing",
         "tracefold.news.tradability",
     ),
-    "integrations.nautilus": (
-        "tracefold.trading.execution_policy",
-        "tracefold.trading.replay",
-    ),
 }
 # Concrete integration families may own one business-facing adapter. This is a module-family rule,
 # not a filename inventory: converting `opentrade.py` into an `opentrade/` package keeps the seam.

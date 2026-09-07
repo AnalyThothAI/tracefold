@@ -55,6 +55,19 @@ class _FrozenContract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False, strict=True)
 
 
+def market_key(base_symbol: str) -> str:
+    """The venue-neutral perpetual market identity carried across the execution boundary.
+
+    The Signal lane spells it onto every `TradeSignalV1` and the Runtime's route catalogue spells it
+    onto every instrument it can reach; the entry path joins the two by string equality. Both sides
+    used to write the same f-string, so one of them could be edited alone and every Signal would be
+    answered `instrument_unmapped` with no test red anywhere (#604 T2). It lives here, beside the
+    `MARKET_KEY_PATTERN` the result has to satisfy.
+    """
+
+    return f"crypto:perp:{base_symbol}:USDT"
+
+
 def postgres_text_valid(value: str) -> bool:
     """Text PostgreSQL will actually store: no NUL, encodable as UTF-8."""
 
@@ -232,5 +245,6 @@ __all__ = [
     "ExecutionObservationV1",
     "OperatorIntentV1",
     "TradeSignalV1",
+    "market_key",
     "postgres_text_valid",
 ]

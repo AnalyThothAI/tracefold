@@ -12,6 +12,7 @@ import pytest
 from tracefold.app import worker_database as database_module
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
+from tracefold.app.workers.wiring.trading import run_signal_lane
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.resource import (
     ResourceAdmissionTimeout,
@@ -19,6 +20,7 @@ from tracefold.platform.resource import (
     ResourceOperationOverrun,
     await_concurrent_future,
 )
+from tracefold.trading.signal_lane import LaneTurn
 
 
 async def _rendered_once_active_permits_settle(
@@ -205,6 +207,31 @@ def test_finite_awaits_durable_fence_before_submitting_thread_work() -> None:
             capability.close()
 
     asyncio.run(scenario())
+
+
+def test_the_signal_lane_turn_reports_the_sources_it_read_and_the_cases_it_made() -> None:
+    """#604 T2 F2P. Two `external_data` gauges the port has always accepted, finally set.
+
+    `run_signal_lane` timed every turn and named its outcome, then discarded the value the turn
+    returns, so `tracefold_external_data_source_count` and `_target_count` stayed empty for the one
+    Trading runner while every News runner set them -- an operator could see that the lane turned and
+    how long it took, but not whether it had read anything or made anything of it.
+    """
+
+    stop = asyncio.Event()
+
+    class Lane:
+        async def advance(self) -> LaneTurn:
+            stop.set()
+            return LaneTurn(sources=3, cases_created=2)
+
+    telemetry = TelemetryRegistry()
+    asyncio.run(run_signal_lane(Lane(), stop_event=stop, telemetry=telemetry))  # type: ignore[arg-type]
+
+    rendered = telemetry.render_prometheus_text()
+    assert 'tracefold_external_data_source_count{name="trading_signal_lane"} 3.0' in rendered
+    assert 'tracefold_external_data_target_count{name="trading_signal_lane"} 2.0' in rendered
+    assert 'tracefold_external_data_turn_total{name="trading_signal_lane",outcome="success"} 1.0' in rendered
 
 
 def test_external_data_metrics_use_bounded_labels_and_a_live_success_age(monkeypatch: pytest.MonkeyPatch) -> None:
