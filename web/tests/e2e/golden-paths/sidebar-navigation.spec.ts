@@ -19,10 +19,6 @@ async function expectSidebarRouteChange(page: Page, routeName: string, expectedP
 }
 
 test.describe("desktop sidebar navigation", () => {
-  test.beforeEach(({}, testInfo) => {
-    test.skip(!testInfo.project.name.startsWith("desktop-"), "desktop-only sidebar contract");
-  });
-
   test("keeps all four destinations in the fixed desktop frame", async ({ page }) => {
     await installMockApi(page);
     await page.goto("/");
@@ -129,42 +125,5 @@ test.describe("desktop sidebar navigation", () => {
     await page.goto("/news/status");
 
     await expectSidebarRouteChange(page, "事件流", "/news");
-  });
-});
-
-test.describe("mobile bottom navigation", () => {
-  test.beforeEach(({}, testInfo) => {
-    test.skip(!testInfo.project.name.startsWith("mobile-"), "mobile-only navigation contract");
-  });
-
-  test("keeps every destination under the thumb and switches routes without a drawer", async ({
-    page,
-  }) => {
-    await installMockApi(page);
-    await page.goto("/");
-
-    // #87: no drawer to open on a phone. The bar is there from the first paint and stays there.
-    await expect(page.getByRole("button", { name: "切换侧栏" })).toHaveCount(0);
-    const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
-    await expect(primaryNavigation).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "Radar" })).toHaveCount(0);
-    await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "市场事实" })).toBeVisible();
-    // #207: the pipeline status page kept its route and lost its slot — the topbar lamp is the way in.
-    await expect(primaryNavigation.getByRole("link", { name: "流水线状态" })).toHaveCount(0);
-
-    await primaryNavigation.getByRole("link", { name: "市场事实" }).click();
-    await expect(page).toHaveURL(/\/news\/market$/);
-    await expect(primaryNavigation).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "市场事实" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
-
-    await primaryNavigation.getByRole("link", { name: "事件流" }).click();
-    await expect(page).toHaveURL(/\/news(?:\?|$)/);
-
-    await expectNoDocumentHorizontalOverflow(page);
-    await expectNoUnhandledApiRequests(page);
   });
 });

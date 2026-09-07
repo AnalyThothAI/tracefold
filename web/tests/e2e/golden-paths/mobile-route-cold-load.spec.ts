@@ -17,10 +17,6 @@ type RouteCase = {
   lastMeaningfulSelector: string;
 };
 
-test.beforeEach(({}, testInfo) => {
-  test.skip(!testInfo.project.name.startsWith("mobile-"), "mobile-only route layout contract");
-});
-
 const routeCases: RouteCase[] = [
   {
     name: "news queue",

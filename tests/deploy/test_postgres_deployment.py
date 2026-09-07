@@ -17,10 +17,16 @@ def test_required_and_scheduled_postgres_evidence_uses_the_production_image() ->
     ci = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
     scheduled = yaml.safe_load(Path(".github/workflows/scheduled-diagnostics.yml").read_text())
 
-    assert ci["jobs"]["postgres-behavior"]["services"]["postgres"]["image"] == POSTGRES_IMAGE
-    assert ci["jobs"]["migration"]["services"]["postgres"]["image"] == POSTGRES_IMAGE
-    assert ci["jobs"]["runtime-broker"]["services"]["postgres"]["image"] == POSTGRES_IMAGE
-    assert ci["jobs"]["deploy-e2e"]["services"]["postgres"]["image"] == POSTGRES_IMAGE
+    # Derived rather than enumerated. The four job names listed here went stale the moment #598 D8
+    # folded `migration` into `postgres-behavior`, and they had never covered the `frontend` job's
+    # own PostgreSQL — an enumeration that misses a job is a pin that misses an image. Every
+    # PostgreSQL any job in the fixed plan starts is the production image, whatever the jobs are
+    # called.
+    required_images = [
+        job["services"]["postgres"]["image"] for job in ci["jobs"].values() if "postgres" in job.get("services", {})
+    ]
+    assert len(required_images) >= 4
+    assert set(required_images) == {POSTGRES_IMAGE}
     scheduled_job = scheduled["jobs"]["production-duration"]
     assert scheduled_job["services"]["postgres"]["image"] == POSTGRES_IMAGE
     run_step = next(

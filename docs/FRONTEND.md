@@ -50,7 +50,7 @@ the route components into the eager shell chunk.
 | `fixtures/`         | Shared frontend test fixtures.                                                                         |
 | `msw/`              | MSW server, handlers, and named API scenarios.                                                         |
 | `render/`           | React Testing Library render wrappers and route render harnesses.                                      |
-| `e2e/golden-paths/` | Playwright browser golden paths.                                                                       |
+| `e2e/golden-paths/` | Required four-viewport Playwright interaction specs over an intercepted API.                           |
 | `e2e/full-stack/`   | Required Chromium smoke against real FastAPI static/bootstrap/API reads.                               |
 
 ## Conventions
@@ -565,22 +565,37 @@ Common frontend gates:
 - `cd web && npm run typecheck`
 - `cd web && npm test -- --run`
 - `cd web && npm run build`
-- `cd web && npm run test:e2e` (explicit four-project visual/interaction lane)
+- `cd web && npm run test:e2e` or `make test-visual` (the required four-viewport interaction lane)
 - `make test-browser-smoke` (required single-Chromium FastAPI/browser seam)
 
-The four Playwright viewport projects are a local, non-gating diagnostic lane.
-No CI job runs them, and
-[Risk-tiered local verification](DEVELOPMENT.md#risk-tiered-local-verification)
-excludes `make test-visual` from required per-PR evidence. The CI browser seam
-is `tests.browser.run_full_stack_smoke`, which `make test-browser-smoke` and the
-`ci-frontend` owner both run. The four diagnostic projects are:
+The four Playwright viewport projects are required per PR. `ci-frontend` runs
+them from `web/playwright.config.ts` — the same config `make test-visual` runs —
+with a JSON report that `scripts/require_test_reports.py` holds to the same
+fail-closed contract as the full-stack smoke: `forbidOnly`, no retry, no repeat,
+`updateSnapshots: "none"`, at least one executed case, and no skipped, flaky or
+unexpected outcome. There are two browser seams now, and they prove different
+things: the full-stack smoke proves the backend seam, and these specs prove the
+responsive interaction contracts across:
 
 - `desktop-1366` (`1366x720`)
 - `desktop-1920` (`1920x1080`)
 - `tablet-834` (`834x1194`)
 - `mobile-390` (`390x844`)
 
-Desktop-only specs must explicitly skip non-desktop projects. Mobile-only specs must explicitly skip non-mobile projects. New `page.setViewportSize` calls are allowed only in dedicated responsive specs or explicitly marked desktop-only specs.
+Which spec runs at which viewport is decided by per-project `testMatch` in
+`web/playwright.config.ts`, at collection time. It used to be decided at run time
+by `test.skip(!testInfo.project.name.startsWith(...))` inside each spec, and a
+required Playwright report may contain no skip at all (#598 D8). Add a new spec to
+exactly the project lists whose viewport it contracts; a spec that reaches the
+wrong viewport now fails instead of skipping. A spec covering more than one
+viewport's contract belongs in more than one file. New `page.setViewportSize`
+calls are allowed only in dedicated responsive specs or in a spec whose file
+comment records that the config gives it desktop projects only.
+
+There are no screenshot baselines. The two `toHaveScreenshot` specs and their 40
+committed `-darwin` PNGs were deleted with the same decision: a baseline rendered
+on one developer's macOS is not a detector any Linux CI runner can match, and
+nothing had run them in CI.
 
 The required smoke uses a separate single-Chromium project with no route
 interception and no skips. It loads the production bundle from FastAPI,
@@ -588,8 +603,9 @@ observes `/api/bootstrap`, verifies the installed bearer reaches
 `/api/news/feed`, and renders a service-owned Event fact on `/news`. Every
 Playwright spec uses the shared guard fixture: unexpected `pageerror`, console
 error, failed request or unhandled API request fails the case. The four-project
-mock/visual lane remains valuable for responsive interaction and screenshots,
-but it intercepts routes and is therefore not evidence of a backend seam.
+lane intercepts every route through `tests/e2e/support/mockApi.ts` and serves the
+built bundle from `vite preview`, so it is evidence of responsive interaction and
+never of a backend seam.
 
 Required Vitest runs set `allowOnly=false`, disable retry/repeat, and emit the
 built-in JSON report under `artifacts/test-results/`. Required-test ESLint

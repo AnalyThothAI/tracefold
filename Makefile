@@ -104,23 +104,20 @@ CI_TEST_INTEGRITY_SELECTION := tests/contract/test_hook_installer.py \
 CI_FRONTEND_PYTHON_SELECTION := tests/contract/test_openapi_codegen.py -m external_codegen
 
 TRACEFOLD_COVERAGE_DIR ?= artifacts/coverage
-TRACEFOLD_MUTATION_DIR ?= artifacts/mutation
-TRACEFOLD_MUTATION_SHARDS ?= 1
-TRACEFOLD_MUTATION_SHARD ?= 0
 
-# The required lanes run under `coverage run`, so the same execution that produces the JUnit report
-# produces the coverage data — there is no second full-suite pass. `--parallel-mode` keeps one data
-# file per process so the lanes, and the child processes coverage's `patch = subprocess` starts, can
-# be combined afterwards. `make test-fast` deliberately does not go through here.
+# The required lanes run pytest directly. They used to run under `coverage run --parallel-mode` so a
+# ninth report-only job could combine the data, and that job is gone (#598 D8): every required lane
+# paid the tracer, the artifact upload and the download for a number nothing read and nothing gated.
+# `make coverage` still measures on demand; nothing in the fixed plan does.
 define RUN_REQUIRED_PYTEST
 PYTEST_ADDOPTS= PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_HYPOTHESIS_PROFILE=ci \
-	TRACEFOLD_TEST_RESOURCES_REQUIRED=1 uv run python -m coverage run --parallel-mode \
+	TRACEFOLD_TEST_RESOURCES_REQUIRED=1 uv run python \
 	-m pytest -p _hypothesis_pytestplugin \
 	$(1) --maxfail=0 --override-ini=xfail_strict=true \
 	--junitxml="$(TRACEFOLD_TEST_RESULT_DIR)/$(2)" --durations=50
 endef
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status status-app logs down runtime-build _runtime-build-locked runtime-up _runtime-up-locked runtime-restart runtime-down runtime-logs runtime-status preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness mutation mutation-sentinel ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-broker ci-deploy-e2e ci-test-integrity ci-frontend test-slow test-scheduled postgres-restore-drill test-browser-smoke test-visual check check-static init config db-migrate db-health serve workers serve-shell workers-shell test-integration test-deploy test-e2e test-golden regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status status-app logs down runtime-build _runtime-build-locked runtime-up _runtime-up-locked runtime-restart runtime-down runtime-logs runtime-status preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare coverage ci-quality-static ci-python-hermetic ci-postgres-behavior ci-runtime-broker ci-deploy-e2e ci-frontend test-slow test-scheduled postgres-restore-drill test-browser-smoke test-visual check check-static init config db-migrate db-health serve workers serve-shell workers-shell test-integration test-deploy test-e2e test-golden regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -147,22 +144,20 @@ test-all: ## local convenience: every Python lane plus frontend; not verificatio
 	@uv run python -m pytest
 
 test-results-prepare:
-	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
 	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)"/junit-*.xml \
 		"$(TRACEFOLD_TEST_RESULT_DIR)"/vitest-*.json \
-		"$(TRACEFOLD_TEST_RESULT_DIR)/playwright.json"
-	@rm -rf "$(TRACEFOLD_COVERAGE_DIR)"/.coverage* "$(TRACEFOLD_COVERAGE_DIR)"/html \
-		"$(TRACEFOLD_COVERAGE_DIR)"/coverage.json "$(TRACEFOLD_COVERAGE_DIR)"/coverage.xml
+		"$(TRACEFOLD_TEST_RESULT_DIR)"/playwright*.json
 
 ci-quality-static:
-	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
 	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-quality-static.xml"
 	@$(MAKE) --no-print-directory check-static
 	@$(call RUN_REQUIRED_PYTEST,$(CI_QUALITY_SELECTION),junit-quality-static.xml)
 	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-quality-static.xml"
 
 ci-python-hermetic:
-	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
 	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-python-hermetic.xml"
 	@$(call RUN_REQUIRED_PYTEST,$(CI_PYTHON_HERMETIC_SELECTION),junit-python-hermetic.xml)
 	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-python-hermetic.xml"
@@ -193,45 +188,51 @@ sys.exit(completed.returncode)
 endef
 export CHECK_GENERATED_DB_SCHEMA_PY
 
+# Two selections, two reports, one PostgreSQL. The historical migration walk used to be a job of
+# its own (#598 D8): it needs exactly the pinned image this lane already starts, and a second
+# runner bought a second bootstrap for 58 nodeids. The selections stay separate — the behavior
+# tests clone a run-scoped baseline at head, the migration tests own an empty database and
+# traverse revisions — and each writes the JUnit report `require_test_reports.py` reads by name.
 ci-postgres-behavior:
-	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
-	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-postgres-behavior.xml"
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
+	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-postgres-behavior.xml" \
+		"$(TRACEFOLD_TEST_RESULT_DIR)/junit-migration.xml"
 	@$(call RUN_REQUIRED_PYTEST,$(CI_POSTGRES_BEHAVIOR_SELECTION),junit-postgres-behavior.xml)
 	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-postgres-behavior.xml"
-	@uv run python -c "$$CHECK_GENERATED_DB_SCHEMA_PY"
-
-ci-migration:
-	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
-	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-migration.xml"
 	@$(call RUN_REQUIRED_PYTEST,$(CI_MIGRATION_SELECTION),junit-migration.xml)
 	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-migration.xml"
+	@uv run python -c "$$CHECK_GENERATED_DB_SCHEMA_PY"
 
 ci-runtime-broker:
-	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
 	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-runtime-broker.xml"
 	@$(call RUN_REQUIRED_PYTEST,$(CI_RUNTIME_BROKER_SELECTION),junit-runtime-broker.xml)
 	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-runtime-broker.xml"
 
 ci-deploy-e2e:
-	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
 	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-deploy-e2e.xml"
 	@$(call RUN_REQUIRED_PYTEST,$(CI_DEPLOY_E2E_SELECTION),junit-deploy-e2e.xml)
 	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-deploy-e2e.xml"
 
-ci-test-integrity:
-	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
-	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-test-integrity.xml"
-	@$(call RUN_REQUIRED_PYTEST,$(CI_TEST_INTEGRITY_SELECTION),junit-test-integrity.xml)
-	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-test-integrity.xml"
-
+# The Node-dependent lanes all live here now (#598 D8). `test-integrity` was a job whose whole
+# resource list was "Node", which this job already installs, and the golden-path interaction specs
+# need the Chromium this job already downloads. Every selection keeps its own native report, and
+# the report names may not collide: `junit-frontend-python.xml`, `junit-test-integrity.xml`,
+# `vitest-architecture.json`, `vitest-unit.json`, `playwright-golden-paths.json` and
+# `playwright.json` are six independent fail-closed checks.
 ci-frontend:
-	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
 	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-frontend-python.xml" \
+		"$(TRACEFOLD_TEST_RESULT_DIR)/junit-test-integrity.xml" \
 		"$(TRACEFOLD_TEST_RESULT_DIR)/vitest-architecture.json" \
 		"$(TRACEFOLD_TEST_RESULT_DIR)/vitest-unit.json" \
+		"$(TRACEFOLD_TEST_RESULT_DIR)/playwright-golden-paths.json" \
 		"$(TRACEFOLD_TEST_RESULT_DIR)/playwright.json"
 	@$(call RUN_REQUIRED_PYTEST,$(CI_FRONTEND_PYTHON_SELECTION),junit-frontend-python.xml)
 	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-frontend-python.xml"
+	@$(call RUN_REQUIRED_PYTEST,$(CI_TEST_INTEGRITY_SELECTION),junit-test-integrity.xml)
+	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-test-integrity.xml"
 	@npm --prefix web run typecheck
 	@npm --prefix web run lint:eslint
 	@npm --prefix web run test:architecture -- \
@@ -241,12 +242,15 @@ ci-frontend:
 		--vitest-json "$(TRACEFOLD_TEST_RESULT_DIR)/vitest-architecture.json"
 	@npm --prefix web run test:unit -- \
 		--allowOnly=false --reporter=json \
-		--outputFile="$(CURDIR)/$(TRACEFOLD_TEST_RESULT_DIR)/vitest-unit.json" \
-		--coverage --coverage.reportsDirectory="$(CURDIR)/$(TRACEFOLD_COVERAGE_DIR)/frontend"
+		--outputFile="$(CURDIR)/$(TRACEFOLD_TEST_RESULT_DIR)/vitest-unit.json"
 	@uv run python scripts/require_test_reports.py \
 		--vitest-json "$(TRACEFOLD_TEST_RESULT_DIR)/vitest-unit.json"
 	@npm --prefix web run format:check
 	@npm --prefix web run build
+	@PLAYWRIGHT_JSON_OUTPUT_NAME="$(CURDIR)/$(TRACEFOLD_TEST_RESULT_DIR)/playwright-golden-paths.json" \
+		npm --prefix web run test:e2e
+	@uv run python scripts/require_test_reports.py \
+		--playwright-json "$(TRACEFOLD_TEST_RESULT_DIR)/playwright-golden-paths.json"
 	@uv run python -m tests.browser.run_full_stack_smoke \
 		--playwright-json "$(TRACEFOLD_TEST_RESULT_DIR)/playwright.json"
 	@uv run python scripts/require_test_reports.py \
@@ -257,97 +261,24 @@ test-ci: ## optional complete local preflight for declared high-risk changes; no
 	@$(MAKE) --no-print-directory ci-quality-static
 	@$(MAKE) --no-print-directory ci-python-hermetic
 	@$(MAKE) --no-print-directory ci-postgres-behavior
-	@$(MAKE) --no-print-directory ci-migration
 	@$(MAKE) --no-print-directory ci-runtime-broker
 	@$(MAKE) --no-print-directory ci-deploy-e2e
-	@$(MAKE) --no-print-directory ci-test-integrity
 	@$(MAKE) --no-print-directory ci-frontend
-	@$(MAKE) --no-print-directory ci-test-effectiveness
 
-# Report-only (#373 PR 2). Standard coverage.py combine and reports over the data the required
-# lanes already produced; it re-runs nothing, reads no JUnit/Vitest/Playwright report, and
-# adjudicates no pass/fail. Thresholds arrive in PR 3, from measured exact-main baselines.
-#
-# One shell, so the early return really returns: a lane that failed before reaching pytest
-# uploaded no data, `coverage combine` exits non-zero on an empty directory, and a report that
-# went red because there was nothing to report would be the one failure that is not about
-# coverage at all.
-ci-test-effectiveness:
-	@set -eu; \
-		mkdir -p "$(TRACEFOLD_COVERAGE_DIR)"; \
-		if ! ls "$(TRACEFOLD_COVERAGE_DIR)"/.coverage* >/dev/null 2>&1; then \
-			echo "no coverage data was produced; nothing to report"; \
-			exit 0; \
-		fi; \
-		uv run python -m coverage combine; \
-		uv run python -m coverage report; \
-		echo "--- tracefold/news ---"; \
-		uv run python -m coverage report --include='tracefold/news/*'; \
-		echo "--- tracefold/trading ---"; \
-		uv run python -m coverage report --include='tracefold/trading/*'; \
-		uv run python -m coverage json -o "$(TRACEFOLD_COVERAGE_DIR)/coverage.json"; \
-		uv run python -m coverage xml -o "$(TRACEFOLD_COVERAGE_DIR)/coverage.xml"; \
-		uv run python -m coverage html -d "$(TRACEFOLD_COVERAGE_DIR)/html" --quiet
-
-# The scheduled mutation batch. `mutation.toml` carries the scope and the reasoning; the sentinel
-# runs first because a mutation score is only evidence once the mutants provably reach the
-# interpreter, and a harness that silently tests unmutated source reports good news. Locally this is
-# one sequential shard (~63 min); CI splits the same session six ways, one checkout per worker,
-# because Cosmic Ray mutates in place. `uv sync --group mutation` first: the tool is in a
-# non-default group so that nothing which builds or ships the service can reach it.
-#
-# Mutating in place means the working tree holds a mutant for the whole run, and an interrupted run
-# leaves one behind — which is a live defect sitting in a tracked file, one `git add -A` away from
-# being committed. So the batch refuses to start unless the files it rewrites are clean, and
-# restores them on the way out however it exits. The clean check is what makes the restore safe:
-# it is only ever discarding a mutant this target wrote.
-#
-# Two details the first version got wrong. The sentinel rewrites a *third* tracked file — the canary
-# under `tests/support/` — so `$(TRACEFOLD_MUTATION_FILES)` covers it as well as `mutation.toml`'s
-# two kernels; leaving it out meant a kill during the sentinel could strand a mutated canary that
-# then silently defeats the next run's harness proof. And an EXIT trap alone does not fire when the
-# shell is killed by an untrapped signal under dash, which is `/bin/sh` on Debian and Ubuntu — so
-# Ctrl-C during the hour-long batch, by far the likeliest way this ends, would leave the mutant in
-# place. INT, TERM and HUP are trapped too.
-TRACEFOLD_MUTATION_FILES = $$(uv run --no-sync python -c 'import tomllib, pathlib; \
-	print(" ".join([*tomllib.loads(pathlib.Path("mutation.toml").read_text())["cosmic-ray"]["module-path"], \
-	"tests/support/mutation_canary.py"]))')
-
-mutation: ## scheduled-lane mutation batch: sentinel, then the batch, then survivor triage
-	@set -eu; \
-		files="$(TRACEFOLD_MUTATION_FILES)"; \
-		if ! git diff --quiet -- $$files; then \
-			echo "mutation: these files have uncommitted changes and the batch rewrites them in place:" >&2; \
-			echo "  $$files" >&2; \
-			echo "commit or set the changes aside first." >&2; \
-			exit 1; \
-		fi; \
-		trap 'git checkout -- '"$$files" EXIT INT TERM HUP; \
-		mkdir -p "$(TRACEFOLD_MUTATION_DIR)"; \
-		uv sync --locked --group mutation; \
-		uv run --no-sync python scripts/mutation_sentinel.py; \
-		session="$(TRACEFOLD_MUTATION_DIR)/shard-$(TRACEFOLD_MUTATION_SHARD).sqlite"; \
-		rm -f "$$session"; \
-		uv run --no-sync cosmic-ray init mutation.toml "$$session"; \
-		uv run --no-sync python scripts/mutation_shard.py "$$session" \
-			--shard $(TRACEFOLD_MUTATION_SHARD) --of $(TRACEFOLD_MUTATION_SHARDS); \
-		uv run --no-sync cosmic-ray exec mutation.toml "$$session"; \
-		uv run --no-sync python scripts/mutation_survivors.py "$$session"
-
-# Same guard as `mutation`: the sentinel rewrites the canary in place, so an interrupted run leaves
-# a mutated tracked file behind — and a stranded canary is the one file whose corruption makes the
-# harness proof itself meaningless.
-mutation-sentinel: ## prove the mutation harness executes mutated code, without running a batch
-	@set -eu; \
-		files="$(TRACEFOLD_MUTATION_FILES)"; \
-		if ! git diff --quiet -- $$files; then \
-			echo "mutation-sentinel: the canary or a mutated module has uncommitted changes:" >&2; \
-			echo "  $$files" >&2; \
-			exit 1; \
-		fi; \
-		trap 'git checkout -- '"$$files" EXIT INT TERM HUP; \
-		uv sync --locked --group mutation; \
-		uv run --no-sync python scripts/mutation_sentinel.py
+# Coverage on demand, and nowhere else. It was a ninth CI job that combined data every required
+# lane produced under a tracer; it re-ran nothing, gated nothing and nobody read it, so #598 D8
+# deleted the job and the wrapper. The configuration in `pyproject.toml` stays, and this target is
+# the way in: one hermetic run, measured, reported, thresholdless.
+coverage: ## measure and print coverage of the hermetic selection; reports only, gates nothing
+	@rm -rf "$(TRACEFOLD_COVERAGE_DIR)"
+	@mkdir -p "$(TRACEFOLD_COVERAGE_DIR)"
+	@uv run python -m coverage run --parallel-mode -m pytest $(FAST_TEST_SELECTION)
+	@uv run python -m coverage combine
+	@uv run python -m coverage report
+	@echo "--- tracefold/news ---"
+	@uv run python -m coverage report --include='tracefold/news/*'
+	@echo "--- tracefold/trading ---"
+	@uv run python -m coverage report --include='tracefold/trading/*'
 
 test-slow: ## real-process Workers runtime tests bounded by wall-clock deadlines
 	@uv run python -m pytest -m "slow and not scheduled"
@@ -367,7 +298,11 @@ test-browser-smoke: ## one real FastAPI static/bootstrap/bearer/news path in Chr
 	@uv run python scripts/require_test_reports.py \
 		--playwright-json "$(TRACEFOLD_TEST_RESULT_DIR)/playwright.json"
 
-test-visual: ## explicit four-viewport Playwright interaction/screenshot diagnostics
+# The same config `ci-frontend` runs. The lane stopped being a local diagnostic when its two
+# screenshot specs and their 40 committed `-darwin` baselines were deleted (#598 D8): what is left
+# is eight interaction specs over four viewports, and they are required per PR now. This target is
+# the local way to run exactly what CI runs.
+test-visual: ## the four-viewport Playwright interaction lane `ci-frontend` requires
 	@npm --prefix web run test:e2e
 
 check-static: ## run hermetic static and generated drift checks without pytest

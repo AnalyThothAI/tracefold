@@ -2,10 +2,10 @@ import { expect, test, type Page } from "@tests/e2e/fixtures";
 import { installMockApi } from "@tests/e2e/support/mockApi";
 import { newsFeedEventFixture, newsFeedFixture } from "@tests/fixtures/newsFixture";
 
-// @desktop-only-spec
-test.beforeEach(({}, testInfo) => {
-  test.skip(!testInfo.project.name.startsWith("desktop-"), "desktop-only layout contract");
-});
+/**
+ * Desktop-only: `playwright.config.ts` collects this file for the two desktop projects and no
+ * other, which is why the cases below may set their own viewport width.
+ */
 
 test("topbar keeps search and action controls contained", async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 720 });

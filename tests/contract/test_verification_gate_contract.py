@@ -12,13 +12,6 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
-# Report-only (#373 PR 2). It is in the workflow but not in `ci-gate`'s dependencies, and the tests
-# below hold it to both halves of that: it may not decide a merge, and it may not run a test.
-REPORT_ONLY_JOB = "test-effectiveness"
-# Scheduled mutation (#373 PR 4) lives in its own workflow for the same reason, taken further:
-# `require_main_ci.py` reads the `ci-gate` check run and requires its workflow run's `path` to be
-# `.github/workflows/ci.yml`, so a lane outside that file cannot reach a deployment at all.
-MUTATION_WORKFLOW = ROOT / ".github" / "workflows" / "mutation.yml"
 pytestmark = pytest.mark.contract
 
 
@@ -79,11 +72,10 @@ def test_required_ci_runs_one_fixed_full_plan_for_every_event() -> None:
 def test_every_workflow_pins_its_actions_and_keeps_its_credentials(workflow_path: Path) -> None:
     """The supply-chain invariants belong to every workflow, not to the one they were written beside.
 
-    `test_the_gate_is_thin_and_owns_the_required_set` walks only `ci.yml`, so a workflow added later
-    inherits none of it — `mutation.yml` and `scheduled-diagnostics.yml` between them run a dozen
-    actions that nothing held to a SHA pin, and a `@v5` tag or a `persist-credentials` default could
-    land with the whole required suite green. Parametrised over the directory so the next workflow
-    is covered by existing.
+    `test_ci_gate_is_a_unique_thin_all_success_interface` walks only `ci.yml`, so a workflow added
+    later inherits none of it — `scheduled-diagnostics.yml` runs actions that nothing else holds to
+    a SHA pin, and a `@v5` tag or a `persist-credentials` default could land with the whole required
+    suite green. Parametrised over the directory so the next workflow is covered by existing.
     """
 
     workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
@@ -99,50 +91,57 @@ def test_every_workflow_pins_its_actions_and_keeps_its_credentials(workflow_path
                 )
 
 
-def test_the_effectiveness_job_reports_and_decides_nothing() -> None:
-    """#373 PR 2 is measurement without authority: no merge power, no execution, no re-adjudication.
+def test_the_fixed_workflow_holds_nothing_but_required_jobs_and_the_gate() -> None:
+    """Every job in `ci.yml` is required, and none of them may decline to decide.
 
-    Three independent halves, and the third is the one that is easy to miss. `ci-gate` not depending
-    on it keeps a coverage regression from blocking a merge. Its running no test runner keeps it from
-    becoming a second execution truth beside the fixed jobs. And `continue-on-error` keeps it out of
-    the *workflow run's* conclusion — which matters because `scripts/require_main_ci.py` requires the
-    run to have concluded `success`, not merely `ci-gate`. Without it, a coverage job that failed on
-    a green main would raise `main_ci_gate_not_full_plan` and refuse the deployment, which is a great
-    deal of authority for a job whose comment says it has none.
+    This replaces the report-only coverage job's three-part contract (#598 D8). That job needed a
+    `continue-on-error` escape precisely because `scripts/require_main_ci.py` requires the whole
+    *workflow run* to have concluded `success`, not merely `ci-gate` — so a non-required job living
+    in this file could still refuse a deployment. The rule that removes the whole class: this
+    workflow contains the required jobs and the gate, and nothing else. A new lane here is a
+    required lane or it is another workflow.
     """
 
-    workflow = _workflow()
-    jobs = workflow["jobs"]
-    job = jobs[REPORT_ONLY_JOB]
-
-    required_jobs = _required_jobs(workflow)
-    assert REPORT_ONLY_JOB not in required_jobs
-    assert set(job["needs"]) == required_jobs
-    assert job["if"] == "always()"
-    assert job["continue-on-error"] is True
-    assert "services" not in job
+    jobs = _workflow()["jobs"]
+    assert set(jobs) == _required_jobs() | {"ci-gate"}
     for name, definition in jobs.items():
-        if name in required_jobs or name == "ci-gate":
-            assert "continue-on-error" not in definition, name
+        assert "continue-on-error" not in definition, name
 
-    commands = "\n".join(step.get("run", "") for step in job["steps"])
-    assert 'test "$(git rev-parse HEAD)" = "$TESTED_SHA"' in commands
-    assert "make ci-test-effectiveness" in commands
-    for runner in ("pytest", "vitest", "playwright", "npm ", "junit"):
-        assert runner not in commands.lower()
+
+def test_the_fixed_plan_measures_no_coverage_and_mutates_nothing() -> None:
+    """The required lanes run pytest, not a tracer, and nothing schedules a mutation batch.
+
+    `coverage run --parallel-mode` wrapped all eight required lanes so a ninth job could combine
+    the data; the batch mutated `tracefold/trading/market_context.py` on a cron. Neither number was
+    read and neither could gate anything, and #598 D8 deleted both. `make coverage` still measures
+    on demand — from `pyproject.toml`'s retained configuration — which is why this asserts on the
+    fixed plan rather than on the absence of the tool.
+    """
 
     recipe = subprocess.run(
-        ["make", "--dry-run", "ci-test-effectiveness"],
+        ["make", "--dry-run", "test-ci"],
         cwd=ROOT,
         capture_output=True,
         check=True,
         text=True,
     ).stdout
-    for runner in ("pytest", "vitest", "playwright", "npm ", "require_test_reports"):
-        assert runner not in recipe.lower()
-    for standard in ("coverage combine", "coverage report", "coverage json", "coverage xml", "coverage html"):
-        assert standard in recipe
+
+    assert "coverage" not in recipe
     assert "--fail-under" not in recipe
+    assert not list((ROOT / ".github" / "workflows").glob("mutation*"))
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.y*ml")):
+        assert "cosmic-ray" not in path.read_text(encoding="utf-8"), path.name
+
+    on_demand = subprocess.run(
+        ["make", "--dry-run", "coverage"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout
+    assert "coverage run --parallel-mode" in on_demand
+    assert "coverage report" in on_demand
+    assert "--fail-under" not in on_demand
 
 
 def test_ci_gate_is_a_unique_thin_all_success_interface() -> None:
@@ -188,7 +187,7 @@ def test_ci_gate_is_a_unique_thin_all_success_interface() -> None:
 def test_thin_gate_rejects_every_result_other_than_success(result: str) -> None:
     gate = _workflow()["jobs"]["ci-gate"]
     env = {name: "success" for name in gate["env"]}
-    env["MIGRATION_RESULT"] = result
+    env["POSTGRES_BEHAVIOR_RESULT"] = result
 
     process = subprocess.run(
         ["bash", "-eu", "-o", "pipefail", "-c", gate["steps"][0]["run"]],
@@ -286,14 +285,45 @@ def test_make_complete_verification_uses_native_reports_and_strict_runner_policy
         "ci-quality-static",
         "ci-python-hermetic",
         "ci-postgres-behavior",
-        "ci-migration",
         "ci-runtime-broker",
         "ci-deploy-e2e",
-        "ci-test-integrity",
         "ci-frontend",
     ):
         assert target in commands
-    assert "ci-runtime-process" not in commands
+    for retired in ("ci-runtime-process", "ci-migration", "ci-test-integrity", "ci-test-effectiveness"):
+        assert retired not in commands, retired
+
+    # Folding a job into another job is only free if the folded selection keeps its own native
+    # report. Two pytest runs in one Make target share a `--junitxml` path unless someone names
+    # them apart, and a shared path means the second run silently overwrites the first one's
+    # evidence — the failure that would make a fold indistinguishable from a deletion (#598 D8).
+    reports = (
+        "junit-quality-static.xml",
+        "junit-python-hermetic.xml",
+        "junit-postgres-behavior.xml",
+        "junit-migration.xml",
+        "junit-runtime-broker.xml",
+        "junit-deploy-e2e.xml",
+        "junit-frontend-python.xml",
+        "junit-test-integrity.xml",
+        "vitest-architecture.json",
+        "vitest-unit.json",
+        "playwright-golden-paths.json",
+        "playwright.json",
+    )
+    assert len(set(reports)) == len(reports)
+    for report in reports:
+        written = f"artifacts/test-results/{report}"
+        assert written in commands, report
+    checked = [
+        argument
+        for line in commands.replace("\\\n", " ").splitlines()
+        if "require_test_reports.py" in line
+        for argument in line.split()
+        if argument.strip('"').startswith("artifacts/test-results/")
+    ]
+    verified = [argument.strip('"').removeprefix("artifacts/test-results/") for argument in checked]
+    assert sorted(verified) == sorted(reports)
     assert "PYTEST_ADDOPTS=" in commands
     assert "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1" in commands
     assert "TRACEFOLD_HYPOTHESIS_PROFILE=ci" in commands
@@ -316,32 +346,3 @@ def test_migration_marker_owns_every_historical_migration_module() -> None:
         source = module.read_text(encoding="utf-8")
         assert "pytest.mark.migration" in source, module
         assert 'pytest.mark.usefixtures("postgres_migration_dsn")' in source, module
-
-
-def test_the_mutation_lane_is_scheduled_and_cannot_gate_anything() -> None:
-    """The measurement informs; it never decides a merge or a deploy.
-
-    Two independent reasons, both asserted rather than assumed. It defines no `ci-gate` job, so
-    `require_unique_ci_gate_definition` still finds exactly one owner and `require_main_ci` never
-    reads this workflow. And it does not run on `pull_request` or `push`, so it produces no check
-    run on a commit anyone is waiting on.
-    """
-
-    workflow = yaml.safe_load(MUTATION_WORKFLOW.read_text(encoding="utf-8"))
-    jobs = workflow["jobs"]
-    assert "ci-gate" not in {str(job.get("name") or job_id) for job_id, job in jobs.items()}
-
-    # PyYAML resolves a bare `on:` key to the boolean True, which is why this is not `workflow["on"]`.
-    triggers = workflow[True]
-    assert set(triggers) == {"schedule", "workflow_dispatch"}
-
-
-def test_the_mutation_lane_proves_its_harness_before_it_reports_a_score() -> None:
-    """A score from a harness that never delivered a mutant is the failure that looks like success."""
-
-    workflow = yaml.safe_load(MUTATION_WORKFLOW.read_text(encoding="utf-8"))
-    jobs = workflow["jobs"]
-    assert jobs["mutate"]["needs"] == "sentinel"
-    assert jobs["classify"]["needs"] == "mutate"
-    assert "scripts/mutation_sentinel.py" in str(jobs["sentinel"]["steps"])
-    assert jobs["mutate"]["timeout-minutes"] == 30
