@@ -1667,6 +1667,17 @@ no execution adapter. Read
 `uv run python notebooks/research/oi_research_cli.py oi-replay --help` for the
 current flags rather than a copy of them here.
 
+The #604 R0 exit study is the second one, and takes no flags:
+
+```bash
+uv run python notebooks/research/oi_exit_rules_replay_2026_09_07.py
+```
+
+It replays two pre-registered exit conventions over the sealed #535 corpus in
+`~/.tracefold/research/oi_backtest_cache/` and rewrites
+`docs/research/oi-exit-rules-replay-2026-09-07.json`. Offline, and the same cold
+terms: no database, no venue endpoint, no credential.
+
 ### Price Review plane (#88)
 
 `/api/news/status.price` is the first place to look:

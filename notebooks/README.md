@@ -28,7 +28,9 @@ notebooks/
 Notebooks are flat and top level. The date belongs in the filename
 (`news-learning-loop-audit-2026-08-21.ipynb`), never in a directory.
 `snapshots/` and `research/` are the two exceptions, and neither holds a
-notebook: one holds data, the other holds code too large for one file.
+notebook: one holds data, the other holds the pre-registered replay programs —
+code too large for one file, or a rule that was written down before its corpus
+was read and has to stay legible as such.
 
 | Notebook | Channel | Question |
 | --- | --- | --- |
@@ -37,6 +39,7 @@ notebook: one holds data, the other holds code too large for one file.
 | [`trading-agent-72h-event-study.ipynb`](trading-agent-72h-event-study.ipynb) | A | Over 72 h of delivered pushes, would a trading agent have had anything executable? |
 | [`oi_chain_backtest_2026_09_03.py`](oi_chain_backtest_2026_09_03.py) | A | What did the deployed OI chain do to the 310 frames it saw, and were those frames worth anything? |
 | [`research/oi_research_cli.py`](research/oi_research_cli.py) | A | Does the pre-registered #459 rule survive a holdout over every USDT perpetual Binance lists? |
+| [`research/oi_exit_rules_replay_2026_09_07.py`](research/oi_exit_rules_replay_2026_09_07.py) | B | On the frames the deployed OI entry rule already saw, does changing only the exit make it positive? |
 
 A plain `.py` belongs here on the same terms as a notebook when the work has no
 reason to carry cell state: same header block, same channel, same red lines. It
@@ -45,7 +48,13 @@ that `docs/research/` cites, and a committed `.ipynb` of a channel-A run would
 have to be stripped of exactly that output. `make check` reads only `.ipynb`, so
 a `.py` here answers to `ruff check` and `ruff format` instead.
 
-## `research/` — the #459 Stage A open-interest program
+## `research/` — the pre-registered replay programs
+
+Two of them, sharing a directory because they share a discipline: the rule is
+fixed in writing before the corpus is read, and the receipt names the corpus it
+ran on.
+
+### The #459 Stage A open-interest program
 
 One question needed more than one file, so it gets a directory rather than a
 1,000-line script. #537 PR-1 moved it out of the service package, where it had
@@ -77,10 +86,10 @@ uv run python notebooks/research/oi_research_cli.py oi-replay --corpus ~/.tracef
 ```
 
 The modules import each other as siblings, so the entry script and the tests put
-their own directory on `sys.path`; nothing here imports `tracefold`. Corpora and
-receipts live under the operator's `~/.tracefold/`, never in the repository —
-`docs/research/oi-stage-a-holdout-2026-09-01.md` quotes the corpus digest instead
-of carrying the 5 GB it names.
+their own directory on `sys.path`; nothing here imports `tracefold`. This
+program's corpora and its replay receipt live under the operator's
+`~/.tracefold/`, never in the repository — `docs/research/oi-stage-a-holdout-2026-09-01.md`
+quotes the corpus digest instead of carrying the 5 GB it names.
 
 The self-tests are not in `tests/`, so the fixed CI job set does not run them
 (`testpaths = ["tests"]`): this is research, and CI verifies the service. Run
@@ -89,6 +98,32 @@ them beside the scripts, and before quoting any number they produced:
 ```bash
 uv run python -m pytest notebooks/research/test_oi_research.py
 ```
+
+### `oi_exit_rules_replay_2026_09_07.py` — the #604 R0 exit study
+
+One file, and it stays here rather than going flat at the top level because it is
+the same kind of object as the program above: two exit conventions and an
+adopt/report criterion pre-registered in Issue #604 §5, replayed over a corpus
+that was sealed before either was written.
+
+```bash
+uv run python notebooks/research/oi_exit_rules_replay_2026_09_07.py
+```
+
+It reads two frozen inputs — the committed #535 receipt
+`docs/research/oi-chain-backtest-2026-09-03.json`, and the operator's candle cache
+under `~/.tracefold/research/oi_backtest_cache/` (`TRACEFOLD_OI_BACKTEST_CACHE`
+overrides it) — and writes one, `docs/research/oi-exit-rules-replay-2026-09-07.json`.
+No exchange endpoint, no PostgreSQL, no `tracefold` import. It refuses to start if
+the cache does not cover every frame the #535 receipt named, so an incomplete
+corpus cannot become a quiet average over a different population.
+
+It carries no self-tests, because its first act is a stronger check than one: the
+#535 scoring functions are transcribed into it (that script no longer imports on
+`main` — #537 PR-3 deleted the `DEFAULT_PRICE_WINDOW` its module body reads), and
+the run stops unless all 310 of the published per-frame outcomes reproduce exactly
+and the deployed cell lands on its published mean. Calibrate, then measure; never
+adjust until it agrees.
 
 ## The three data channels
 

@@ -1,0 +1,1104 @@
+{
+  "meta": {
+    "generated_at_utc": "2026-09-07T06:54:37+00:00",
+    "issue": "#604 R0",
+    "repo_head": "3c78130b495461f86490136d8c4b341d175f1dbf",
+    "script": "notebooks/research/oi_exit_rules_replay_2026_09_07.py",
+    "script_sha256": "e9fb5a74f1a749ea5d0d21a4b93b8886028faeaa7d4fe1f5b67bed859f28a290",
+    "source_receipt": "docs/research/oi-chain-backtest-2026-09-03.json",
+    "source_receipt_sha256": "76ca44e86619ee19acc6e9dcd652847285ee50365f0e7f7014e31ef65f560301",
+    "seed": 20260907,
+    "seed_derivation": "random.Random(f'{SEED}:{cohort}:{convention}') per cell, so a cell is reproducible independently of the order the cells are evaluated in",
+    "permutation_draws": 2000,
+    "bootstrap_draws": 10000,
+    "window": {
+      "frames_from_ms": 1788267180000,
+      "frames_to_ms": 1788471261000,
+      "candles_cutoff_ms": 1788475500000
+    }
+  },
+  "pre_registration": {
+    "source": "Issue #604 §5, written before this run",
+    "entry_rule": "unchanged: the deployed policy's own pass/fail, read from the #535 receipt; no threshold is re-evaluated or varied here",
+    "entry_model": "long, market, at the first 5-minute close after the frame's observed_at_ms",
+    "conventions": {
+      "A": "100 bps reduce-only stop + time exit at [60, 120, 240] minutes",
+      "B": "100 bps stop; on touching +100 bps (+1R) the stop moves to the entry price; otherwise identical to A-240"
+    },
+    "primary_cohort": "policy_pass",
+    "secondary_cohort": "all_frames",
+    "primary_metric": "mean net bps per frame, net of a 9.6 bps round trip",
+    "null": "same symbol and window random entries, 2000 draws, same exit convention applied",
+    "criterion": "ADOPT only if mean > null 95th percentile AND mean > +50 bps; otherwise REPORT ONLY",
+    "intrabar_convention": "adverse side first: the stop in force at the start of a bar is tested against the low before the high may arm the break-even move"
+  },
+  "corpus": {
+    "frames": 310,
+    "pairs_named_by_receipt": 63,
+    "pairs_present_in_cache": 63,
+    "pairs_missing": [],
+    "pairs_with_fetch_error": [],
+    "frames_without_entry_bar": [],
+    "corpus_sha256": "5ed04b2aa69f57febb719779a5b71906bcf9e5ca898d2a1122fecd3ac91b53c3",
+    "cache_dir": "/home/qinghuan/.tracefold/research/oi_backtest_cache",
+    "files": [
+      {
+        "pair": "binance:AAVE",
+        "sha256": "8ac46460b1e8b51e9850f432c3418d52cf42284a191211ebac50f22c7252b944",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:AGT",
+        "sha256": "f288a80fb1e6c502e49b096d331e7a7f559cff85676fdafa733a43a2608f1f3a",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:AKE",
+        "sha256": "48f020eb47257d15b0a12bc1a05d424af0d64e4371a32c463b246a85dd8c88b1",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:APR",
+        "sha256": "8089827274af2c4b7ba22fe5e1ef08cadb97b0e15d2be46945c2698ef088c74f",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:AR",
+        "sha256": "2d94435f7369caf8002af4dbb79f06bb62e6ae8bac56c4b8523e1e530ca4f971",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:ARB",
+        "sha256": "cf95ad348332fcc2b82313bc21ffe4a3c0a84f8225193ef36b9b38e3f63a6a3f",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:AVGO",
+        "sha256": "865f3d77c6d9b4cf3a74b7ba0d54169af1793fea7adeb69bc4c4567cf41ede21",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:BAN",
+        "sha256": "294143f7c9753ac3342e25917395b9d1a7968436bdab9c26c01c9673ce82d663",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:BLUAI",
+        "sha256": "4177b4e467dd83edb814dc55e50300333fb61f0c3cf6c6efa3ac0fccc8add14e",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:BMNR",
+        "sha256": "954d78fc61c67a945fa91320c73f2e1d6b72588ada6104965764cfbe8a4f8edc",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:BTW",
+        "sha256": "f32882dd7eda0a05893c7e51624879617a2c10215627610f4f06a3fc34318f94",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:BULLA",
+        "sha256": "8bac395a7b85c9f82bd395264fdf73b6cbe261a01f813937771fa49c6e139a12",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:CAP",
+        "sha256": "82a784df1fdcbdeb7d13a971c01903722dab27847eb466b33c2b864a21cac179",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:CHIP",
+        "sha256": "5380ad9e073aa48d62a8f58d648b40b87f29bd90fb062ceb9e508676784ed36f",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:COLLECT",
+        "sha256": "cac99f43f612f95e5d291b828ee852e976e6ef428de0691ba0b8b327c1a7a1c1",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:COMP",
+        "sha256": "194a9252e4fcc6315cf17cd064cc7cc9a3e2dd376b7463d4a0e3392826fc2ab3",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:CRM",
+        "sha256": "99cc8b415d4383a084b56f69d71978c59c9868b13508e74cee29b65310415b26",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:DELL",
+        "sha256": "e4b166f5edfef27731e5167d1de298079e67346e9c3af395cd09cac7a02ab037",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:FF",
+        "sha256": "bf844f295ca3ea053bb98930d16f636269d2a16e1aacca145189ca49ef61cd45",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:FIL",
+        "sha256": "39ed0263306fd694ff0ecaf075f8044c24b01805432f9e89c255c158ea377eb4",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:FLOCK",
+        "sha256": "1f69b13c1bfc5ff5138c823f75be5236596addf9d7ba6fe03fa9df35cb7763a5",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:HEMI",
+        "sha256": "eab9c3b0d771aa09af960bd4190e89ed10d380aa1d6d41893122d8450df3d516",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:HOOD",
+        "sha256": "9339f01987f539e16f564852da7aceb289cad0e937643ec5f34e290e31a4f8d5",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:LA",
+        "sha256": "246ba77ab2ef27def8584ff4c342ecc5671defcbab6aaf8d27d4c09b86d246f1",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:MAGMA",
+        "sha256": "ec8351790c27d6113060f794ee6e1cdd342f1c0732f2c709182d80bd8102e353",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:MARSCOIN",
+        "sha256": "f804a63ff4c1b0606221807325ad4c1e820db2f2ec1e8fe453dbd148496a1255",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:META",
+        "sha256": "79d139c1adbf45238eea4a36171adc74299a9e5afb06be21815bf3c5cbe17699",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:MINIMAX",
+        "sha256": "af305cec0450542b9e9672627eeae5753f128440b8df2f5fda9931e66630f106",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:MSTR",
+        "sha256": "fea8e095aefea59b31c07f407c5a17cb6f0210c52af4206dd5175d60e9e4a3b3",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:MUBARAK",
+        "sha256": "9ab8cbd941e6ab85c6a3d66110622f363fd0a9981b50a3373321fff708d4bd1e",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:NVDA",
+        "sha256": "db8403fd71350ce5fee8dd75370f869be01257c066135f539c7de62fca381b10",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:ORCL",
+        "sha256": "d58cc7f006ccc398494cd297fad10daee1f1962e5184d3bf803c3c98342d5eca",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:PORTAL",
+        "sha256": "198d104c9eb32982da76ed13969dcc8decd9666718ff7a7b12c9a14dfed1d974",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:SNDK",
+        "sha256": "7345e928f06b8e6cc6a2918d9b5a199caa3f7fde3aac3dd1a8cff769fa941c0b",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:SNOW",
+        "sha256": "286fa31df555c963f683574f55f324cb03f81b1bb5e1f093afacbb0bdbe73c92",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:SOXS",
+        "sha256": "1a80789247ccb0be29f016eb4d8899b6879fb3b6c8fa3d0e77e07170a784735d",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:SPK",
+        "sha256": "2424e095ce0a91b3ae4cf80abea696f712edb1eff3c8b9f2a462d4ee0d7cb208",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:STRK",
+        "sha256": "8f11b0051427be8ee5345d716b20be881cd1608ae4e4f683de0ab185cde57128",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:STX",
+        "sha256": "9c6b9b71f1841a4ac9bfe17dd6dfb310e77de01ca38d9c7e7ab2b9747036aad1",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:TAKE",
+        "sha256": "f09f24e4ee9825d81de40bec339b671a2917a5480b010586a3c427778374e326",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:TIA",
+        "sha256": "634d5da02ed451bc19a8129cfbb28564b37504a314577444cb07bd82ea07e911",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:TRADOOR",
+        "sha256": "9c322d445aecfe81a2a1960ca2f67555c6479a8b880860dc5d03df03b7b4a399",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:TSLA",
+        "sha256": "bd5ab6bbc69a2dd5bc09d0dea4be27ef70526817fdeaf5fc0f682c2e85da87b4",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:UAI",
+        "sha256": "5afc8482c881527b236a492e60f01159f1f46898f2e39ce420333959326d8990",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:UNI",
+        "sha256": "e5e022920cd56919d043d3340112e7a0be2048972b36a476ac9b07535f351240",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:USELESS",
+        "sha256": "2a651f53d2c44d2e57c49fe6f0250abe611176f956c2ae8c7cd8641ba0762460",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:ZEC",
+        "sha256": "ab495b7ec4a8774c00a6a304eaf2f089de034f09d0ecb5edc6c53a50a64f06b9",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:ZEN",
+        "sha256": "d68248c439573865d7fa637d473d3258c25a3bd85ee3b717cbc4586ae751c140",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "binance:龙虾",
+        "sha256": "cc955209c6d87056cfabe19806201f8bcc30cfb8494e2457b993f8e0a5e382e1",
+        "bars_raw": 708,
+        "bars_kept": 707
+      },
+      {
+        "pair": "hyperliquid:ARB",
+        "sha256": "f861ddb115c2286fd7dd148a03434362c9e746b7169708edd54c198f14a0101d",
+        "bars_raw": 709,
+        "bars_kept": 708
+      },
+      {
+        "pair": "hyperliquid:ASTER",
+        "sha256": "ea06510fad5085cf06ebe19947c9bda74a836f6aa232d280a840c7375ebd1dfe",
+        "bars_raw": 709,
+        "bars_kept": 708
+      },
+      {
+        "pair": "hyperliquid:CHIP",
+        "sha256": "4873591a9732cf59cf5bc2a9afdc449fd79c292fde6ef1ea72fa95647ffcfa58",
+        "bars_raw": 709,
+        "bars_kept": 708
+      },
+      {
+        "pair": "hyperliquid:ETHFI",
+        "sha256": "1fcee1ff1ec6c03930ec4be5470b039d8ac4c2a7dcdf163e562030e6d9ea83ca",
+        "bars_raw": 709,
+        "bars_kept": 708
+      },
+      {
+        "pair": "hyperliquid:JUP",
+        "sha256": "ebcfe386a3cd285775f69f868f7c871e27845f1d54eb7f96c76ce28b01462724",
+        "bars_raw": 709,
+        "bars_kept": 708
+      },
+      {
+        "pair": "hyperliquid:LDO",
+        "sha256": "af1daf245bc058eb29e7c07c32412c9b56e7ec511d0abe42e5fe4d57bdc6cd5e",
+        "bars_raw": 709,
+        "bars_kept": 708
+      },
+      {
+        "pair": "hyperliquid:LINK",
+        "sha256": "3d4a15e978d5f44ffe256a98e58cb232f0af4326457fafdacd81442240359385",
+        "bars_raw": 709,
+        "bars_kept": 708
+      },
+      {
+        "pair": "hyperliquid:PYTH",
+        "sha256": "0ff9661cf03a2a8af59e0f063f04e5999aa237896e9367c6c0bc949aab9b3c13",
+        "bars_raw": 709,
+        "bars_kept": 708
+      },
+      {
+        "pair": "hyperliquid:SPX",
+        "sha256": "adcd1c7ad66882f116e8e4012aa7778639fa1d833a9a4f265468c98be2310683",
+        "bars_raw": 709,
+        "bars_kept": 708
+      },
+      {
+        "pair": "hyperliquid:STRK",
+        "sha256": "8c09ec72275a45bb6e1409f6534d6aee68e288e72dfcce598d84f6abbe793934",
+        "bars_raw": 709,
+        "bars_kept": 708
+      },
+      {
+        "pair": "hyperliquid:SYRUP",
+        "sha256": "1dd33f22ea6e64e1b2c3872c44c3a714ad77ef0eb1ce5692297772da738d841b",
+        "bars_raw": 709,
+        "bars_kept": 708
+      },
+      {
+        "pair": "hyperliquid:UNI",
+        "sha256": "432d667e9865e80b2f9c1403d739e21f8d35d17e6d3e493e46d7e76f048f2297",
+        "bars_raw": 709,
+        "bars_kept": 708
+      },
+      {
+        "pair": "hyperliquid:XPL",
+        "sha256": "5863e1a33643c2d6f52fce4eb03f70e622859196468a02cafc2d6d9f7db10a81",
+        "bars_raw": 709,
+        "bars_kept": 708
+      },
+      {
+        "pair": "hyperliquid:ZEC",
+        "sha256": "0fdb158bdf25a5ba858ee6c2b0aa4c82e365dd805313003a7979f89fbd3b0a3a",
+        "bars_raw": 709,
+        "bars_kept": 708
+      }
+    ]
+  },
+  "calibration": {
+    "definition": "the #535 deployed cell: policy_pass, 100 bps stop, 4 h hold, 10 bps round trip",
+    "per_frame_rows_checked": 310,
+    "per_frame_mismatches": [],
+    "policy_pass_n_scored": 15,
+    "policy_pass_mean_net_bps": 0.0,
+    "all_frames_n_scored": 303,
+    "all_frames_mean_net_bps": 15.7,
+    "published_mean_net_bps": 0.0,
+    "deviation_bps": 0.0,
+    "tolerance_bps": 5.0,
+    "matches": true
+  },
+  "cells": [
+    {
+      "cohort": "policy_pass",
+      "convention": "A-60",
+      "hold_minutes": 60,
+      "breakeven_after_bps": null,
+      "stop_bps": 100,
+      "cost_bps": 9.6,
+      "net": {
+        "n": 16,
+        "mean_bps": 3.7,
+        "median_bps": -103.1,
+        "win_rate": 0.375,
+        "sd_bps": 152.0,
+        "se_bps": 38.0,
+        "mean_ci95_bps": [
+          -65.3,
+          79.8
+        ]
+      },
+      "gross": {
+        "n": 16,
+        "mean_bps": 13.3,
+        "median_bps": -93.5,
+        "win_rate": 0.375,
+        "sd_bps": 152.0,
+        "se_bps": 38.0
+      },
+      "exit_reasons": {
+        "stop": 8,
+        "breakeven_stop": 0,
+        "time": 8
+      },
+      "open_at_horizon": 0,
+      "mfe_bps": {
+        "mean": 165.5,
+        "median": 154.0
+      },
+      "mae_bps": {
+        "mean": -146.4,
+        "median": -95.0
+      },
+      "held_bars": {
+        "mean": 7.2,
+        "median": 11.0
+      },
+      "null": {
+        "definition": "same venue and symbol, a uniformly random 5-minute close in the frame window, scored under the same exit convention, net of the same round-trip cost",
+        "permutations": 2000,
+        "cohort_keys_used": 16,
+        "cohort_keys_without_candidates": 0,
+        "null_mean_net_bps": 8.7,
+        "null_p05_net_bps": -49.5,
+        "null_p95_net_bps": 106.2,
+        "p_one_sided_greater": 0.4358,
+        "null_single_draw": {
+          "n": 2000,
+          "mean_bps": 6.1,
+          "median_bps": -19.6,
+          "win_rate": 0.363,
+          "sd_bps": 193.6,
+          "se_bps": 4.3,
+          "exit_reasons": {
+            "stop": 714,
+            "breakeven_stop": 0,
+            "time": 1286
+          }
+        }
+      },
+      "robustness_complete_4h_cohort": {
+        "n": 15,
+        "mean_bps": 7.5,
+        "median_bps": -109.6,
+        "win_rate": 0.4,
+        "sd_bps": 156.5,
+        "se_bps": 40.4
+      },
+      "decision": {
+        "criterion": "ADOPT only if mean net > null p95 AND mean net > +50 bps; otherwise REPORT ONLY",
+        "beats_null_p95": false,
+        "above_floor_bps": false,
+        "verdict": "REPORT ONLY"
+      }
+    },
+    {
+      "cohort": "all_frames",
+      "convention": "A-60",
+      "hold_minutes": 60,
+      "breakeven_after_bps": null,
+      "stop_bps": 100,
+      "cost_bps": 9.6,
+      "net": {
+        "n": 310,
+        "mean_bps": -7.0,
+        "median_bps": -109.6,
+        "win_rate": 0.1968,
+        "sd_bps": 285.0,
+        "se_bps": 16.2,
+        "mean_ci95_bps": [
+          -36.7,
+          26.8
+        ]
+      },
+      "gross": {
+        "n": 310,
+        "mean_bps": 2.6,
+        "median_bps": -100.0,
+        "win_rate": 0.2032,
+        "sd_bps": 285.0,
+        "se_bps": 16.2
+      },
+      "exit_reasons": {
+        "stop": 231,
+        "breakeven_stop": 0,
+        "time": 79
+      },
+      "open_at_horizon": 0,
+      "mfe_bps": {
+        "mean": 364.3,
+        "median": 134.5
+      },
+      "mae_bps": {
+        "mean": -234.2,
+        "median": -148.5
+      },
+      "held_bars": {
+        "mean": 5.0,
+        "median": 2.0
+      },
+      "null": {
+        "definition": "same venue and symbol, a uniformly random 5-minute close in the frame window, scored under the same exit convention, net of the same round-trip cost",
+        "permutations": 2000,
+        "cohort_keys_used": 310,
+        "cohort_keys_without_candidates": 0,
+        "null_mean_net_bps": 21.7,
+        "null_p05_net_bps": -2.7,
+        "null_p95_net_bps": 48.9,
+        "p_one_sided_greater": 0.974,
+        "null_single_draw": {
+          "n": 2000,
+          "mean_bps": 26.4,
+          "median_bps": -59.6,
+          "win_rate": 0.3575,
+          "sd_bps": 286.4,
+          "se_bps": 6.4,
+          "exit_reasons": {
+            "stop": 959,
+            "breakeven_stop": 0,
+            "time": 1041
+          }
+        }
+      },
+      "robustness_complete_4h_cohort": {
+        "n": 292,
+        "mean_bps": -3.9,
+        "median_bps": -109.6,
+        "win_rate": 0.1986,
+        "sd_bps": 292.8,
+        "se_bps": 17.1
+      },
+      "decision": {
+        "criterion": "ADOPT only if mean net > null p95 AND mean net > +50 bps; otherwise REPORT ONLY",
+        "beats_null_p95": false,
+        "above_floor_bps": false,
+        "verdict": "REPORT ONLY"
+      }
+    },
+    {
+      "cohort": "policy_pass",
+      "convention": "A-120",
+      "hold_minutes": 120,
+      "breakeven_after_bps": null,
+      "stop_bps": 100,
+      "cost_bps": 9.6,
+      "net": {
+        "n": 16,
+        "mean_bps": -16.8,
+        "median_bps": -109.6,
+        "win_rate": 0.3125,
+        "sd_bps": 140.0,
+        "se_bps": 35.0,
+        "mean_ci95_bps": [
+          -77.0,
+          55.5
+        ]
+      },
+      "gross": {
+        "n": 16,
+        "mean_bps": -7.2,
+        "median_bps": -100.0,
+        "win_rate": 0.3125,
+        "sd_bps": 140.0,
+        "se_bps": 35.0
+      },
+      "exit_reasons": {
+        "stop": 9,
+        "breakeven_stop": 0,
+        "time": 7
+      },
+      "open_at_horizon": 0,
+      "mfe_bps": {
+        "mean": 187.1,
+        "median": 154.0
+      },
+      "mae_bps": {
+        "mean": -150.8,
+        "median": -108.0
+      },
+      "held_bars": {
+        "mean": 12.5,
+        "median": 11.5
+      },
+      "null": {
+        "definition": "same venue and symbol, a uniformly random 5-minute close in the frame window, scored under the same exit convention, net of the same round-trip cost",
+        "permutations": 2000,
+        "cohort_keys_used": 16,
+        "cohort_keys_without_candidates": 0,
+        "null_mean_net_bps": 15.1,
+        "null_p05_net_bps": -57.0,
+        "null_p95_net_bps": 136.8,
+        "p_one_sided_greater": 0.6627,
+        "null_single_draw": {
+          "n": 2000,
+          "mean_bps": 20.5,
+          "median_bps": -36.6,
+          "win_rate": 0.3505,
+          "sd_bps": 298.9,
+          "se_bps": 6.7,
+          "exit_reasons": {
+            "stop": 884,
+            "breakeven_stop": 0,
+            "time": 1116
+          }
+        }
+      },
+      "robustness_complete_4h_cohort": {
+        "n": 15,
+        "mean_bps": -14.5,
+        "median_bps": -109.6,
+        "win_rate": 0.3333,
+        "sd_bps": 144.6,
+        "se_bps": 37.3
+      },
+      "decision": {
+        "criterion": "ADOPT only if mean net > null p95 AND mean net > +50 bps; otherwise REPORT ONLY",
+        "beats_null_p95": false,
+        "above_floor_bps": false,
+        "verdict": "REPORT ONLY"
+      }
+    },
+    {
+      "cohort": "all_frames",
+      "convention": "A-120",
+      "hold_minutes": 120,
+      "breakeven_after_bps": null,
+      "stop_bps": 100,
+      "cost_bps": 9.6,
+      "net": {
+        "n": 309,
+        "mean_bps": -3.0,
+        "median_bps": -109.6,
+        "win_rate": 0.1553,
+        "sd_bps": 435.4,
+        "se_bps": 24.8,
+        "mean_ci95_bps": [
+          -44.9,
+          50.2
+        ]
+      },
+      "gross": {
+        "n": 309,
+        "mean_bps": 6.6,
+        "median_bps": -100.0,
+        "win_rate": 0.1683,
+        "sd_bps": 435.4,
+        "se_bps": 24.8
+      },
+      "exit_reasons": {
+        "stop": 248,
+        "breakeven_stop": 0,
+        "time": 61
+      },
+      "open_at_horizon": 1,
+      "mfe_bps": {
+        "mean": 415.4,
+        "median": 146
+      },
+      "mae_bps": {
+        "mean": -242.6,
+        "median": -151
+      },
+      "held_bars": {
+        "mean": 7.6,
+        "median": 2
+      },
+      "null": {
+        "definition": "same venue and symbol, a uniformly random 5-minute close in the frame window, scored under the same exit convention, net of the same round-trip cost",
+        "permutations": 2000,
+        "cohort_keys_used": 309,
+        "cohort_keys_without_candidates": 0,
+        "null_mean_net_bps": 33.8,
+        "null_p05_net_bps": 2.1,
+        "null_p95_net_bps": 71.9,
+        "p_one_sided_greater": 0.9785,
+        "null_single_draw": {
+          "n": 2000,
+          "mean_bps": 26.5,
+          "median_bps": -109.6,
+          "win_rate": 0.3045,
+          "sd_bps": 341.8,
+          "se_bps": 7.6,
+          "exit_reasons": {
+            "stop": 1199,
+            "breakeven_stop": 0,
+            "time": 801
+          }
+        }
+      },
+      "robustness_complete_4h_cohort": {
+        "n": 292,
+        "mean_bps": 1.4,
+        "median_bps": -109.6,
+        "win_rate": 0.1644,
+        "sd_bps": 447.4,
+        "se_bps": 26.2
+      },
+      "decision": {
+        "criterion": "ADOPT only if mean net > null p95 AND mean net > +50 bps; otherwise REPORT ONLY",
+        "beats_null_p95": false,
+        "above_floor_bps": false,
+        "verdict": "REPORT ONLY"
+      }
+    },
+    {
+      "cohort": "policy_pass",
+      "convention": "A-240",
+      "hold_minutes": 240,
+      "breakeven_after_bps": null,
+      "stop_bps": 100,
+      "cost_bps": 9.6,
+      "net": {
+        "n": 15,
+        "mean_bps": 0.4,
+        "median_bps": -109.6,
+        "win_rate": 0.3333,
+        "sd_bps": 182.2,
+        "se_bps": 47.1,
+        "mean_ci95_bps": [
+          -79.0,
+          96.9
+        ]
+      },
+      "gross": {
+        "n": 15,
+        "mean_bps": 10.0,
+        "median_bps": -100.0,
+        "win_rate": 0.3333,
+        "sd_bps": 182.2,
+        "se_bps": 47.1
+      },
+      "exit_reasons": {
+        "stop": 9,
+        "breakeven_stop": 0,
+        "time": 6
+      },
+      "open_at_horizon": 1,
+      "mfe_bps": {
+        "mean": 206.6,
+        "median": 183
+      },
+      "mae_bps": {
+        "mean": -159.1,
+        "median": -114
+      },
+      "held_bars": {
+        "mean": 21.3,
+        "median": 10
+      },
+      "null": {
+        "definition": "same venue and symbol, a uniformly random 5-minute close in the frame window, scored under the same exit convention, net of the same round-trip cost",
+        "permutations": 2000,
+        "cohort_keys_used": 15,
+        "cohort_keys_without_candidates": 0,
+        "null_mean_net_bps": 22.4,
+        "null_p05_net_bps": -70.2,
+        "null_p95_net_bps": 161.1,
+        "p_one_sided_greater": 0.5527,
+        "null_single_draw": {
+          "n": 2000,
+          "mean_bps": 12.0,
+          "median_bps": -109.6,
+          "win_rate": 0.2875,
+          "sd_bps": 263.3,
+          "se_bps": 5.9,
+          "exit_reasons": {
+            "stop": 1174,
+            "breakeven_stop": 0,
+            "time": 826
+          }
+        }
+      },
+      "robustness_complete_4h_cohort": {
+        "n": 15,
+        "mean_bps": 0.4,
+        "median_bps": -109.6,
+        "win_rate": 0.3333,
+        "sd_bps": 182.2,
+        "se_bps": 47.1
+      },
+      "decision": {
+        "criterion": "ADOPT only if mean net > null p95 AND mean net > +50 bps; otherwise REPORT ONLY",
+        "beats_null_p95": false,
+        "above_floor_bps": false,
+        "verdict": "REPORT ONLY"
+      }
+    },
+    {
+      "cohort": "all_frames",
+      "convention": "A-240",
+      "hold_minutes": 240,
+      "breakeven_after_bps": null,
+      "stop_bps": 100,
+      "cost_bps": 9.6,
+      "net": {
+        "n": 303,
+        "mean_bps": 16.1,
+        "median_bps": -109.6,
+        "win_rate": 0.1386,
+        "sd_bps": 699.1,
+        "se_bps": 40.2,
+        "mean_ci95_bps": [
+          -48.0,
+          108.5
+        ]
+      },
+      "gross": {
+        "n": 303,
+        "mean_bps": 25.7,
+        "median_bps": -100.0,
+        "win_rate": 0.1419,
+        "sd_bps": 699.1,
+        "se_bps": 40.2
+      },
+      "exit_reasons": {
+        "stop": 258,
+        "breakeven_stop": 0,
+        "time": 45
+      },
+      "open_at_horizon": 7,
+      "mfe_bps": {
+        "mean": 517.4,
+        "median": 161
+      },
+      "mae_bps": {
+        "mean": -250.2,
+        "median": -156
+      },
+      "held_bars": {
+        "mean": 11.1,
+        "median": 2
+      },
+      "null": {
+        "definition": "same venue and symbol, a uniformly random 5-minute close in the frame window, scored under the same exit convention, net of the same round-trip cost",
+        "permutations": 2000,
+        "cohort_keys_used": 303,
+        "cohort_keys_without_candidates": 0,
+        "null_mean_net_bps": 57.6,
+        "null_p05_net_bps": 12.4,
+        "null_p95_net_bps": 111.7,
+        "p_one_sided_greater": 0.9325,
+        "null_single_draw": {
+          "n": 2000,
+          "mean_bps": 69.1,
+          "median_bps": -109.6,
+          "win_rate": 0.2665,
+          "sd_bps": 640.6,
+          "se_bps": 14.3,
+          "exit_reasons": {
+            "stop": 1354,
+            "breakeven_stop": 0,
+            "time": 646
+          }
+        }
+      },
+      "robustness_complete_4h_cohort": {
+        "n": 292,
+        "mean_bps": 20.8,
+        "median_bps": -109.6,
+        "win_rate": 0.1438,
+        "sd_bps": 711.7,
+        "se_bps": 41.7
+      },
+      "decision": {
+        "criterion": "ADOPT only if mean net > null p95 AND mean net > +50 bps; otherwise REPORT ONLY",
+        "beats_null_p95": false,
+        "above_floor_bps": false,
+        "verdict": "REPORT ONLY"
+      }
+    },
+    {
+      "cohort": "policy_pass",
+      "convention": "B",
+      "hold_minutes": 240,
+      "breakeven_after_bps": 100,
+      "stop_bps": 100,
+      "cost_bps": 9.6,
+      "net": {
+        "n": 15,
+        "mean_bps": -19.1,
+        "median_bps": -109.6,
+        "win_rate": 0.2,
+        "sd_bps": 162.7,
+        "se_bps": 42.0,
+        "mean_ci95_bps": [
+          -84.9,
+          71.7
+        ]
+      },
+      "gross": {
+        "n": 15,
+        "mean_bps": -9.5,
+        "median_bps": -100.0,
+        "win_rate": 0.2,
+        "sd_bps": 162.7,
+        "se_bps": 42.0
+      },
+      "exit_reasons": {
+        "stop": 8,
+        "breakeven_stop": 3,
+        "time": 4
+      },
+      "open_at_horizon": 1,
+      "mfe_bps": {
+        "mean": 167.2,
+        "median": 108
+      },
+      "mae_bps": {
+        "mean": -153.9,
+        "median": -114
+      },
+      "held_bars": {
+        "mean": 14.9,
+        "median": 3
+      },
+      "null": {
+        "definition": "same venue and symbol, a uniformly random 5-minute close in the frame window, scored under the same exit convention, net of the same round-trip cost",
+        "permutations": 2000,
+        "cohort_keys_used": 15,
+        "cohort_keys_without_candidates": 0,
+        "null_mean_net_bps": 20.1,
+        "null_p05_net_bps": -54.5,
+        "null_p95_net_bps": 139.1,
+        "p_one_sided_greater": 0.7056,
+        "null_single_draw": {
+          "n": 2000,
+          "mean_bps": 21.3,
+          "median_bps": -9.6,
+          "win_rate": 0.2375,
+          "sd_bps": 251.6,
+          "se_bps": 5.6,
+          "exit_reasons": {
+            "stop": 793,
+            "breakeven_stop": 534,
+            "time": 673
+          }
+        }
+      },
+      "robustness_complete_4h_cohort": {
+        "n": 15,
+        "mean_bps": -19.1,
+        "median_bps": -109.6,
+        "win_rate": 0.2,
+        "sd_bps": 162.7,
+        "se_bps": 42.0
+      },
+      "decision": {
+        "criterion": "ADOPT only if mean net > null p95 AND mean net > +50 bps; otherwise REPORT ONLY",
+        "beats_null_p95": false,
+        "above_floor_bps": false,
+        "verdict": "REPORT ONLY"
+      }
+    },
+    {
+      "cohort": "all_frames",
+      "convention": "B",
+      "hold_minutes": 240,
+      "breakeven_after_bps": 100,
+      "stop_bps": 100,
+      "cost_bps": 9.6,
+      "net": {
+        "n": 304,
+        "mean_bps": 25.2,
+        "median_bps": -109.6,
+        "win_rate": 0.0822,
+        "sd_bps": 691.6,
+        "se_bps": 39.7,
+        "mean_ci95_bps": [
+          -37.4,
+          113.0
+        ]
+      },
+      "gross": {
+        "n": 304,
+        "mean_bps": 34.8,
+        "median_bps": -100.0,
+        "win_rate": 0.0822,
+        "sd_bps": 691.6,
+        "se_bps": 39.7
+      },
+      "exit_reasons": {
+        "stop": 181,
+        "breakeven_stop": 96,
+        "time": 27
+      },
+      "open_at_horizon": 6,
+      "mfe_bps": {
+        "mean": 487.9,
+        "median": 138.5
+      },
+      "mae_bps": {
+        "mean": -225.5,
+        "median": -138.0
+      },
+      "held_bars": {
+        "mean": 8.2,
+        "median": 2.0
+      },
+      "null": {
+        "definition": "same venue and symbol, a uniformly random 5-minute close in the frame window, scored under the same exit convention, net of the same round-trip cost",
+        "permutations": 2000,
+        "cohort_keys_used": 304,
+        "cohort_keys_without_candidates": 0,
+        "null_mean_net_bps": 45.0,
+        "null_p05_net_bps": 6.0,
+        "null_p95_net_bps": 93.5,
+        "p_one_sided_greater": 0.7531,
+        "null_single_draw": {
+          "n": 2000,
+          "mean_bps": 42.5,
+          "median_bps": -9.6,
+          "win_rate": 0.1775,
+          "sd_bps": 444.2,
+          "se_bps": 9.9,
+          "exit_reasons": {
+            "stop": 917,
+            "breakeven_stop": 671,
+            "time": 412
+          }
+        }
+      },
+      "robustness_complete_4h_cohort": {
+        "n": 292,
+        "mean_bps": 29.0,
+        "median_bps": -109.6,
+        "win_rate": 0.0856,
+        "sd_bps": 705.4,
+        "se_bps": 41.3
+      },
+      "decision": {
+        "criterion": "ADOPT only if mean net > null p95 AND mean net > +50 bps; otherwise REPORT ONLY",
+        "beats_null_p95": false,
+        "above_floor_bps": false,
+        "verdict": "REPORT ONLY"
+      }
+    }
+  ]
+}
