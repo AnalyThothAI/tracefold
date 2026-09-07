@@ -5,10 +5,6 @@ import {
 } from "@tests/e2e/support/layoutAssertions";
 import { installMockApi } from "@tests/e2e/support/mockApi";
 
-test.beforeEach(({}, testInfo) => {
-  test.skip(!testInfo.project.name.startsWith("tablet-"), "tablet-only shell contract");
-});
-
 test("tablet shell keeps top-level route navigation in the sidebar drawer", async ({ page }) => {
   await installMockApi(page);
   await page.goto("/");

@@ -14,10 +14,6 @@ import { installMockApi } from "@tests/e2e/support/mockApi";
  * not: without the suppression Radix closes on the outside pointerdown and the row's own handler reopens it
  * on the same tick, so the swap survives either way and asserting it proves nothing about dismissal.
  */
-test.beforeEach(({}, testInfo) => {
-  test.skip(!testInfo.project.name.startsWith("desktop-"), "the drawer needs ≥1024px");
-});
-
 const openFullPage = (eventId: string) => `/news/events/${eventId}`;
 
 test("opens beside the list, swaps to the next row, and closes on Esc", async ({ page }) => {

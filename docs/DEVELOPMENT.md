@@ -165,17 +165,18 @@ their corrections remain in #319.
 | `make test-deploy` | deployment and operations behavior | Compose, locks, rollback, receipts, signals, fake executable simulation | broad hermetic checkpoint |
 | `make test-e2e` | Serve-process evidence | real PostgreSQL, uvicorn, readiness and HTTP read surfaces | Workers or broker behavior |
 | `make test-golden` | broker-driven production path | real RabbitMQ, production Workers wiring, PostgreSQL facts and HTTP read projection | provider/paid model truth |
-| `make test-browser-smoke` | required browser/backend seam | production FastAPI static mount, bootstrap bearer, real API envelope and one Chromium `/news` fact | visual matrix and screenshot baselines |
+| `make test-browser-smoke` | required browser/backend seam | production FastAPI static mount, bootstrap bearer, real API envelope and one Chromium `/news` fact | route interception and the viewport matrix |
 | `make test-slow` | explicit process/meta-test diagnostics | shortened injected deadlines and nested fail-closed harness F2P | `make check`, `make test-fast`, live/provider truth |
 | `make test-scheduled` | non-gating production-duration diagnostics | real code-owned timeout envelopes on a fixed runner | merge evidence and the broad hermetic checkpoint |
-| `make test-visual` | explicit visual diagnostics | four viewport projects and screenshot baselines | required per-PR evidence |
+| `make test-visual` | the required four-viewport interaction lane, run locally | mock-API responsive/interaction contracts across four viewport projects | a backend seam; screenshot baselines |
 | `make test-all` | local complete-suite convenience | all Python lanes and frontend | exact-HEAD CI or fail-closed evidence claims |
-| `make test-ci` | optional complete local preflight for declared high-risk changes | every fixed owner surface, run serially with native reports and fail-closed resources/outcomes | routine local changes, merge/release authorization, visual/scheduled diagnostics, missing declared resources, skip/xfail/xpass/rerun/maxfail |
+| `make test-ci` | optional complete local preflight for declared high-risk changes | every fixed owner surface, run serially with native reports and fail-closed resources/outcomes | routine local changes, merge/release authorization, scheduled diagnostics, missing declared resources, skip/xfail/xpass/rerun/maxfail |
+| `make coverage` | on-demand coverage of the hermetic selection | standard coverage.py measurement and report | any plan, any lane, any threshold |
 
 Prefer behavior at a maintained public or persistence seam. Do not preserve
 tests that assert private file layout, source text, mock call choreography, or
-implementation detail. Coverage is measured and reported; no percentage gates a
-merge today.
+implementation detail. Coverage is measured only when `make coverage` is run; no
+required lane carries a tracer and no percentage gates anything.
 
 Select commands by risk:
 
@@ -431,70 +432,6 @@ receipt, lifecycle, seven-day window, release, and rollback subjects. No pure
 test, fixture, local artifact, mock, or green CI job may stand in for future
 calendar data, a human grant/arm, a venue-native write/flat receipt, or the
 final fixed-window/rollback terminal.
-
-### Scheduled mutation
-
-`make mutation` and `.github/workflows/mutation.yml` run a Cosmic Ray batch over
-`tracefold/trading/market_context.py`, the remaining pure kernel that turns
-source-native bars into the basis-point move frozen on a Case. `mutation.toml`
-carries the scope, the command and the reasoning behind both. The lane is a
-workflow of its own rather than a job in CI: `scripts/require_main_ci.py` admits
-a deployment only when the whole CI run for the exact main SHA concluded
-successfully, so a measurement nobody waits on stays outside that run and never
-gates a deploy.
-
-`make mutation-sentinel` runs first and separately, because a mutation score is
-only evidence once the mutants provably reach the interpreter. The sentinel
-mutates `tests/support/mutation_canary.py`, whose every mutation is pinned by
-`tests/mutation/test_mutation_canary.py`, and requires that nothing survives. A
-survivor there means the suite imported unmutated source, which is the failure
-that reports good news: it is why `mutmut` is not used here, its shadow
-`mutants/` tree being importable as a namespace package alongside the real one.
-
-Zero survivors is only half a proof, so the sentinel runs `cosmic-ray baseline`
-first. Cosmic Ray records a kill for any non-zero exit, so a command that never
-reached an assertion — a collection error, a missing binary, a failed
-resolution — also produces zero survivors. The baseline requires the same
-command to be green on unmutated source, which is what makes the zero mean
-something; the scheduled job runs it against `mutation.toml` for the same
-reason, rather than a hand-written approximation of the command it measures.
-
-Cosmic Ray mutates in place, so for the length of a run the working tree holds a
-mutant in a tracked file. `make mutation` therefore refuses to start unless the
-modules it rewrites are clean and restores them however it exits, and a
-whole-tree check run concurrently with a batch — `ruff check .`, or a `git add
--A` — is reading mutated source and will not agree with itself. Two workers
-cannot share a checkout for the same reason. Parallelism is therefore one checkout per worker,
-which a job matrix already is: `scripts/mutation_shard.py` reserves a
-deterministic slice of the session for each runner by skipping the rest, and
-`scripts/mutation_survivors.py` unions the shard databases into one score.
-
-The slice is keyed on `(module_path, operator_name, occurrence)` rather than on
-`job_id`, and that is a correctness requirement rather than a preference: each
-matrix leg runs its own `cosmic-ray init`, which mints fresh job ids, so a
-job-id ordering gives every shard an independent random slice instead of a
-partition. For the same reason the score unions mutant identities rather than
-summing per-session counts — every shard database holds the whole population,
-with the other shards' jobs marked skipped. Where the union falls short of the
-population the run is reported as partial and only unclassified survivors are
-checked, since "listed but no longer surviving" is a claim about the tests and
-not about which slice happened to run. The
-batch remains partitioned across the fixed six-runner matrix and each shard is
-capped at 30 minutes so an over-long batch fails rather than drifts.
-
-The command runs `tests/trading/test_market_context.py`, the focused suite that
-constrains the selected-bar and basis-point arithmetic.
-
-Survivors are classified rather than counted. `mutation-survivors.toml` holds
-two forms and `scripts/mutation_survivors.py` fails on an unclassified survivor,
-on an entry that no longer matches one, and on a rule that matches none. A
-`[[accepted]]` entry names one site by module, function, line and operator. A
-`[[rule]]` covers a mechanical category and is honoured only where its premise
-is checked against the source: `annotation-union` accepts a mutated `|` on a
-line where every `|` sits inside an annotation, which
-`from __future__ import annotations` never evaluates. That check is per site
-rather than per operator so a future runtime-evaluated union cannot be silently
-classified as an inert annotation mutation.
 
 ### News V3 evaluation seams
 

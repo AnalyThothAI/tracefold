@@ -6,10 +6,6 @@ import {
 } from "@tests/e2e/support/layoutAssertions";
 import { installMockApi } from "@tests/e2e/support/mockApi";
 
-test.beforeEach(({}, testInfo) => {
-  test.skip(!testInfo.project.name.startsWith("mobile-"), "mobile-only layout contract");
-});
-
 test("mobile shell exposes News navigation around the News landing", async ({ page }) => {
   await installMockApi(page);
   await page.goto("/");

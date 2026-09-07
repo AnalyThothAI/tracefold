@@ -45,13 +45,6 @@ jobs:
           name: test-results-quality-static-${{ env.TESTED_SHA }}
           path: artifacts/test-results
           if-no-files-found: error
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: coverage-quality-static-${{ env.TESTED_SHA }}
-          path: artifacts/coverage
-          include-hidden-files: true
-          if-no-files-found: warn
 
   python-hermetic:
     name: python-hermetic
@@ -75,13 +68,6 @@ jobs:
           name: test-results-python-hermetic-${{ env.TESTED_SHA }}
           path: artifacts/test-results
           if-no-files-found: error
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: coverage-python-hermetic-${{ env.TESTED_SHA }}
-          path: artifacts/coverage
-          include-hidden-files: true
-          if-no-files-found: warn
 
   postgres-behavior:
     name: postgres-behavior
@@ -116,7 +102,9 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
         with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
       - run: uv sync --locked
-      - name: Run PostgreSQL and broker behavior tests
+      # Two pytest selections and the generated-schema check, one PostgreSQL. The historical
+      # migration walk was a job of its own until #598 D8; it needs exactly this pinned image.
+      - name: Run PostgreSQL behavior, migration, and generated-schema checks
         env: &resource_env
           TRACEFOLD_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test
           TRACEFOLD_POSTGRES_IMAGE: postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
@@ -129,48 +117,6 @@ jobs:
           name: test-results-postgres-behavior-${{ env.TESTED_SHA }}
           path: artifacts/test-results
           if-no-files-found: error
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: coverage-postgres-behavior-${{ env.TESTED_SHA }}
-          path: artifacts/coverage
-          include-hidden-files: true
-          if-no-files-found: warn
-
-  migration:
-    name: migration
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    services:
-      postgres: *postgres_service
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: {fetch-depth: 0, persist-credentials: false, ref: "${{ env.TESTED_SHA }}"}
-      - name: Require the exact tested SHA
-        run: test "$(git rev-parse HEAD)" = "$TESTED_SHA"
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with: {python-version: "${{ env.PYTHON_VERSION }}"}
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
-        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
-      - run: uv sync --locked
-      - name: Run every historical migration test
-        env:
-          TRACEFOLD_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test
-          TRACEFOLD_POSTGRES_IMAGE: postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
-        run: make ci-migration
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: test-results-migration-${{ env.TESTED_SHA }}
-          path: artifacts/test-results
-          if-no-files-found: error
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: coverage-migration-${{ env.TESTED_SHA }}
-          path: artifacts/coverage
-          include-hidden-files: true
-          if-no-files-found: warn
 
   runtime-broker:
     name: runtime-broker
@@ -211,13 +157,6 @@ jobs:
           name: test-results-runtime-broker-${{ env.TESTED_SHA }}
           path: artifacts/test-results
           if-no-files-found: error
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: coverage-runtime-broker-${{ env.TESTED_SHA }}
-          path: artifacts/coverage
-          include-hidden-files: true
-          if-no-files-found: warn
 
   deploy-e2e:
     name: deploy-e2e
@@ -251,48 +190,6 @@ jobs:
           name: test-results-deploy-e2e-${{ env.TESTED_SHA }}
           path: artifacts/test-results
           if-no-files-found: error
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: coverage-deploy-e2e-${{ env.TESTED_SHA }}
-          path: artifacts/coverage
-          include-hidden-files: true
-          if-no-files-found: warn
-
-  test-integrity:
-    name: test-integrity
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: {fetch-depth: 0, persist-credentials: false, ref: "${{ env.TESTED_SHA }}"}
-      - name: Require the exact tested SHA
-        run: test "$(git rev-parse HEAD)" = "$TESTED_SHA"
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with: {python-version: "${{ env.PYTHON_VERSION }}"}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: {node-version: "${{ env.NODE_VERSION }}", cache: npm, cache-dependency-path: web/package-lock.json}
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
-        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
-      - name: Install locked dependencies
-        run: |
-          uv sync --locked
-          npm ci --prefix web
-      - name: Run required-test and hook fail-closed tests
-        run: make ci-test-integrity
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: test-results-test-integrity-${{ env.TESTED_SHA }}
-          path: artifacts/test-results
-          if-no-files-found: error
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: coverage-test-integrity-${{ env.TESTED_SHA }}
-          path: artifacts/coverage
-          include-hidden-files: true
-          if-no-files-found: warn
 
   frontend:
     name: frontend
@@ -317,7 +214,10 @@ jobs:
           uv sync --locked
           npm ci --prefix web
           (cd web && npx playwright install --with-deps chromium)
-      - name: Run frontend, generated-contract, and browser tests
+      # Every Node-dependent selection (#598 D8): the generated-contract codegen, the required-test
+      # and hook fail-closed nodeids that used to be the `test-integrity` job, the two Vitest
+      # projects, the four-viewport golden-path interaction specs, and the full-stack smoke.
+      - name: Run frontend, generated-contract, test-integrity, and browser tests
         env: *resource_env
         run: make ci-frontend
       - if: always()
@@ -326,59 +226,10 @@ jobs:
           name: test-results-frontend-${{ env.TESTED_SHA }}
           path: artifacts/test-results
           if-no-files-found: error
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: coverage-frontend-${{ env.TESTED_SHA }}
-          path: artifacts/coverage
-          include-hidden-files: true
-          if-no-files-found: warn
-
-  # Report-only (#373 PR 2). It combines the coverage data the fixed jobs already produced and prints
-  # standard coverage.py reports. It reads no JUnit, Vitest, or Playwright report, and re-runs no test.
-  #
-  # Absence from `ci-gate`'s dependencies is only half of "report-only", and the missing half is the
-  # one that bites. `scripts/require_main_ci.py` requires the whole *workflow run* to have concluded
-  # `success`, not merely `ci-gate` — so a failure in any job of this workflow, required or not,
-  # would raise `main_ci_gate_not_full_plan` and refuse to deploy an otherwise green main.
-  # `continue-on-error` keeps a coverage failure out of the run's conclusion, which is what actually
-  # makes this job unable to decide anything.
-  test-effectiveness:
-    name: test-effectiveness
-    needs: [quality-static, python-hermetic, postgres-behavior, migration, runtime-broker, deploy-e2e, test-integrity, frontend]
-    if: always()
-    continue-on-error: true
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: {persist-credentials: false, ref: "${{ env.TESTED_SHA }}"}
-      - name: Require the exact tested SHA
-        run: test "$(git rev-parse HEAD)" = "$TESTED_SHA"
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with: {python-version: "${{ env.PYTHON_VERSION }}"}
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
-        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
-      - run: uv sync --locked
-      - name: Collect the coverage every fixed job produced
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          pattern: coverage-*-${{ env.TESTED_SHA }}
-          path: artifacts/coverage
-          merge-multiple: true
-      - name: Combine and report
-        run: make ci-test-effectiveness
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: coverage-report-${{ env.TESTED_SHA }}
-          path: artifacts/coverage
-          include-hidden-files: true
-          if-no-files-found: warn
 
   ci-gate:
     name: ci-gate
-    needs: [quality-static, python-hermetic, postgres-behavior, migration, runtime-broker, deploy-e2e, test-integrity, frontend]
+    needs: [quality-static, python-hermetic, postgres-behavior, runtime-broker, deploy-e2e, frontend]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -386,10 +237,8 @@ jobs:
       QUALITY_STATIC_RESULT: ${{ needs.quality-static.result }}
       PYTHON_HERMETIC_RESULT: ${{ needs.python-hermetic.result }}
       POSTGRES_BEHAVIOR_RESULT: ${{ needs.postgres-behavior.result }}
-      MIGRATION_RESULT: ${{ needs.migration.result }}
       RUNTIME_BROKER_RESULT: ${{ needs.runtime-broker.result }}
       DEPLOY_E2E_RESULT: ${{ needs.deploy-e2e.result }}
-      TEST_INTEGRITY_RESULT: ${{ needs.test-integrity.result }}
       FRONTEND_RESULT: ${{ needs.frontend.result }}
     steps:
       - name: Require every fixed job to succeed
@@ -398,10 +247,8 @@ jobs:
             "$QUALITY_STATIC_RESULT" \
             "$PYTHON_HERMETIC_RESULT" \
             "$POSTGRES_BEHAVIOR_RESULT" \
-            "$MIGRATION_RESULT" \
             "$RUNTIME_BROKER_RESULT" \
             "$DEPLOY_E2E_RESULT" \
-            "$TEST_INTEGRITY_RESULT" \
             "$FRONTEND_RESULT"
           do
             if [ "$result" != success ]; then
