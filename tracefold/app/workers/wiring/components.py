@@ -18,6 +18,8 @@ from tracefold.app.workers.runtime import (
     NEWS_REACTIONS,
     SHARED_RESOURCE_FAILURES,
     TRADING_SIGNAL_LANE,
+    WALLET_DIGEST,
+    WALLET_RESEARCH,
     CapabilityStates,
 )
 from tracefold.app.workers.wiring.chain_tape import ChainTapeComposition, _wire_chain_tape
@@ -106,6 +108,8 @@ async def _wire_components(
             NEWS_REACTIONS,
             MARKET_NOTIFICATIONS,
             CHAIN_TAPE,
+            WALLET_RESEARCH,
+            WALLET_DIGEST,
         ):
             capabilities.disabled(capability, "news_disabled")
         # A push target declared against a disabled News is a configuration error, not a delivery.

@@ -27,7 +27,7 @@ const MARKET_KIND_TITLES: Record<NewsMarketKind, string> = {
   liquidation: "强平：单笔强制平仓回报",
   smart_money: "聪明钱：被跟踪账户的开平仓动作",
   unknown_market: "未识别来源：没有解析器，只保留供应商原始行",
-  wallet: "链上钱包：名单地址的减仓/清仓与拥挤买入，由链上成交推导",
+  wallet: "链上钱包：名单地址的买入观察、退出与拥挤变化，由链上成交推导",
 };
 
 export function marketKindLabel(kind: NewsMarketKind): string {
@@ -115,6 +115,17 @@ export function marketObservationTrace(
     ["trader_label", observation.trader_label],
     ["source_strategy_id", observation.source_strategy_id],
     ["historical", observation.historical || null],
+    ["wallet_kind", observation.wallet_kind],
+    ["wallet_address", observation.wallet_address],
+    ["wallet_token", observation.wallet_token],
+    ["wallet_quantity", observation.wallet_quantity],
+    ["wallet_tx_hash", observation.wallet_tx_hash],
+    ["wallet_block_number", observation.wallet_block_number],
+    ["wallet_stage", observation.wallet_stage],
+    ["wallet_selection_reason", observation.wallet_selection_reason],
+    ["wallet_buy_count", observation.wallet_buy_count],
+    ["wallet_observed_at_ms", observation.wallet_observed_at_ms],
+    ["wallet_history_from_ms", observation.wallet_history_from_ms],
   ];
   return fields
     .filter(([, value]) => value !== null && value !== undefined && value !== "")

@@ -748,37 +748,42 @@ def test_real_market_notification_task_fault_stops_only_that_task() -> None:
 
 
 @pytest.mark.slow
-def test_real_chain_tape_task_fault_stops_only_that_task() -> None:
-    """#572 PR-1's own task, through the real process: the wrapper, the registration, the capability.
+@pytest.mark.parametrize("capability", ["chain_tape", "wallet_research", "wallet_digest"])
+def test_real_chain_tape_task_fault_stops_only_that_task(capability: str) -> None:
+    """#614's three tasks cross the real process, task supervision, PostgreSQL and readiness seam.
 
-    `run_chain_tape` ticks and re-raises the first unexpected program error out of `advance()` rather
-    than swallowing it. The Workers root then records `chain_tape` faulted and leaves the ingestion task
-    beside it committing -- which is the whole reason the tape is an optional capability task and not
-    part of the information entry.
+    A fault closes only its stage. Both wallet siblings and News fact admission continue; orderly
+    process shutdown joins the healthy wallet stages and closes each independently owned resource.
     """
 
     _create_test_fact_table()
     port = _free_port()
-    process = _start_workers_process("chain_tape_fault", port)
+    process = _start_workers_process(f"{capability}_fault", port)
+    siblings = {"chain_tape", "wallet_research", "wallet_digest"} - {capability}
     try:
         _wait_ready(process, port)
-        # The marker only prints on the second turn, so reaching it proves the loop ticked on the stop
-        # event at least once before it failed.
-        _wait_for_output(process, "CHAIN_TAPE_ABOUT_TO_FAIL")
-        _wait_capability(port, "chain_tape", "faulted")
+        _wait_capability(port, capability, "faulted")
 
         after_fault = _test_fact_count()
-        _wait_until(lambda: _test_fact_count() > after_fault, "ingestion stopped with the chain tape task")
+        _wait_until(lambda: _test_fact_count() > after_fault, "ingestion stopped with the wallet task")
         payload = _readiness_payload(port)
         assert payload["ok"] is True
-        assert payload["capabilities"]["chain_tape"] == {
+        assert payload["capabilities"][capability] == {
             "state": "faulted",
-            "reason": "chain_tape:RuntimeError",
+            "reason": f"{capability}:RuntimeError",
         }
-        assert payload["capabilities"]["news_ingestion"] == {"state": "running", "reason": None}
+        for sibling in siblings | {"news_ingestion"}:
+            assert payload["capabilities"][sibling] == {"state": "running", "reason": None}
 
         process.send_signal(signal.SIGTERM)
         assert process.wait(timeout=5.0) == 0
+        assert process.stdout is not None
+        output = process.stdout.read()
+        # The failure marker comes only after a healthy turn. All stages close exactly once.
+        assert f"{capability.upper()}_ABOUT_TO_FAIL" in output
+        for stage in siblings | {capability}:
+            assert output.count(f"{stage.upper()}_CLOSED") == 1
+        _assert_probe_closed(port)
     finally:
         _ensure_process_stopped(process)
 

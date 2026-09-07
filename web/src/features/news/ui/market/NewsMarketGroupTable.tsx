@@ -2,6 +2,7 @@ import { ActionButton } from "@shared/ui/ActionButton";
 import { EmptyNote } from "@shared/ui/EmptyNote";
 import * as PageState from "@shared/ui/PageState";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 
 import {
   NEWS_MARKET_KINDS,
@@ -21,6 +22,8 @@ import {
   toggleMarketKind,
 } from "../../model/marketFacts";
 import { clockTime, displayTime, formatCount } from "../../model/newsLabels";
+import { formatPrice } from "../../model/newsPrice";
+import { walletCardLabel, walletHistoryPath, walletStageLabel } from "../../model/walletFacts";
 
 import "./newsMarketGroupTable.css";
 
@@ -142,6 +145,7 @@ function GroupRow({ group, token }: { group: NewsMarketGroup; token: string }) {
           </span>
           <span className="news-market-kind" title={marketKindTitle(group.market_kind)}>
             {marketKindLabel(group.market_kind)}
+            {latest.wallet_kind ? ` · ${walletCardLabel(latest.wallet_kind)}` : ""}
           </span>
           <b className="news-market-subject">{marketSubject(latest)}</b>
           {/* The run, not a rank: how many consecutive observations this one row stands for. */}
@@ -316,6 +320,7 @@ function GroupDetail({ itemId, token }: { itemId: string; token: string }) {
          * first thing a reader who opened this row came for (#572 PR-3).
          */}
         <DigestLines lines={item.observation.wallet_digest_lines} />
+        <WalletBuyEvidence observation={item.observation} />
         <small className="news-market-detail-label">供应商原文</small>
         <code className="news-market-raw">{item.raw_first_line || item.observation.title}</code>
         {item.description ? <p className="news-market-description">{item.description}</p> : null}
@@ -363,6 +368,60 @@ function GroupDetail({ itemId, token }: { itemId: string; token: string }) {
         </ol>
       </div>
     </div>
+  );
+}
+
+function WalletBuyEvidence({ observation }: { observation: NewsMarketObservation }) {
+  if (observation.wallet_kind !== "buy") return null;
+  return (
+    <>
+      <small className="news-market-detail-label">买入观察依据</small>
+      <TraceList
+        entries={[
+          ["阶段", walletStageLabel(observation.wallet_stage)],
+          ["钱包", observation.wallet_handle || observation.wallet_address || "未记录"],
+          ["代币合约", observation.wallet_token || "未记录"],
+          ["已计价金额", formatPrice(observation.wallet_usd)],
+          ["已计价均价", formatPrice(observation.wallet_entry_price)],
+          [
+            "未计价笔数",
+            observation.wallet_unpriced_buys == null
+              ? "未记录"
+              : String(observation.wallet_unpriced_buys),
+          ],
+          ["观察价", formatPrice(observation.wallet_mark_price)],
+          ["记录原因", observation.wallet_selection_reason || "未记录"],
+          [
+            "买入笔数",
+            observation.wallet_buy_count == null ? "未记录" : String(observation.wallet_buy_count),
+          ],
+          [
+            "观察时点",
+            observation.wallet_observed_at_ms == null
+              ? "未记录"
+              : displayTime(observation.wallet_observed_at_ms),
+          ],
+          [
+            "历史覆盖自",
+            observation.wallet_history_from_ms == null
+              ? "未记录"
+              : displayTime(observation.wallet_history_from_ms),
+          ],
+        ]}
+      />
+      {observation.wallet_address && observation.wallet_token ? (
+        <Link
+          to={walletHistoryPath({
+            kind: "all",
+            window: "7d",
+            walletAddress: observation.wallet_address,
+            tokenAddress: observation.wallet_token,
+          })}
+        >
+          查看同钱包与代币的观察时间线
+        </Link>
+      ) : null}
+    </>
   );
 }
 

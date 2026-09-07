@@ -27,7 +27,14 @@ WALLET_SOURCE_ID: Final = "news-robinhood-chain"
 # wallet started getting out of this" or "several of them just got in at once" -- and the third kind is
 # the periodic digest (#572 §5.4), which is about the window rather than about any one movement: it names
 # no wallet and no token, and its subject is what the whole roster did in four hours.
-WalletEventKind = Literal["exit", "crowding", "digest"]
+WalletEventKind = Literal["buy", "exit", "crowding", "digest"]
+BUY_STAGE_ZH: Final = {
+    "first_observed": "首次观察买入",
+    "new_position": "新建仓",
+    "add": "加仓",
+    "reentry": "重新买入",
+    "unknown": "仓位历史不足",
+}
 # The digest's own kind value, as a constant rather than a literal repeated in five SQL statements and
 # three modules. It is a stored value, so the one place it is written down is the one place it can move.
 DIGEST_KIND: Final = "digest"
@@ -45,8 +52,12 @@ DIGEST_LINES_MIN: Final = 3
 CheckBasis = Literal["chain_balance", "site_reported"]
 
 # The two horizons a card's price receipt is taken at, and how far after the send each one falls.
-OutcomeHorizon = Literal["1h", "4h"]
-WALLET_OUTCOME_HORIZONS: Final[tuple[tuple[OutcomeHorizon, int], ...]] = (("1h", 3_600_000), ("4h", 14_400_000))
+OutcomeHorizon = Literal["15m", "1h", "4h"]
+WALLET_OUTCOME_HORIZONS: Final[tuple[tuple[OutcomeHorizon, int], ...]] = (
+    ("15m", 900_000),
+    ("1h", 3_600_000),
+    ("4h", 14_400_000),
+)
 # What an outcome row says when the horizon passed and nothing could price the token for a whole day. A
 # row rather than a silence: "we looked and could not price it" is a different fact from "not due yet",
 # and the absence of a row is what "not due yet" means.
@@ -67,17 +78,7 @@ OUTCOME_GIVE_UP_MS: Final = 15 * 60_000
 
 @dataclass(frozen=True, slots=True)
 class DigestLine:
-    """One line of a digest, and the fact ids it is allowed to have used.
-
-    The pair is the whole of the grounding contract (#572 §5.4): a line the model wrote may only state
-    figures that appear in the facts it cites, and a line the deterministic template wrote cites the one
-    fact it was rendered from. Both sides of the fallback therefore carry the same evidence, so "which
-    numbers is this sentence standing on" is answerable from the stored row rather than from the prompt.
-
-    It lives here rather than under `chain_tape` because the Program that produces it may not import the
-    tape (the tape's loop imports the admission path, and the Program is reached from the composition
-    root), and because the rendered lines are part of what a wallet observation carries.
-    """
+    """A program-rendered fact line with immutable citations; the model only selects fact IDs."""
 
     text: str
     cites: tuple[str, ...] = ()
@@ -166,13 +167,18 @@ class WalletCheck:
 
 @dataclass(frozen=True, slots=True)
 class WalletOutcome:
-    """One card's price receipt at one horizon. `price` is absent when nothing could price the token."""
+    """An observation's price receipt, including candidates that were never notified."""
 
-    delivery_key: str
+    item_id: str
     horizon: OutcomeHorizon
     price: Decimal | None
     at_ms: int
     source: str
+    reference_price: Decimal | None
+    reference_at_ms: int
+    target_at_ms: int
+    reference_kind: str = "observed"
+    delivery_key: str | None = None
 
 
 __all__ = [

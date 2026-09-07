@@ -225,6 +225,13 @@ class MarketObservation:
     wallet_closed: bool = False
     wallet_crowding_item_id: str | None = None
     wallet_window_from_ms: int | None = None
+    wallet_notify_eligible: bool = False
+    wallet_stage: str | None = None
+    wallet_selection_reason: str | None = None
+    wallet_buy_count: int | None = None
+    wallet_unpriced_buys: int | None = None
+    wallet_observed_at_ms: int | None = None
+    wallet_history_from_ms: int | None = None
     # The digest's own lines (#572 PR-3). Already written and already grounded against the fact pack
     # the tape computed; the card prints them and composes nothing.
     wallet_digest_lines: tuple[str, ...] = ()
@@ -293,6 +300,13 @@ class MarketObservation:
             wallet_closed=bool(row.get("wallet_closed")),
             wallet_crowding_item_id=_text(row.get("wallet_crowding_item_id")),
             wallet_window_from_ms=_integer(row.get("wallet_window_from_ms")),
+            wallet_notify_eligible=row.get("wallet_notify_eligible") is True,
+            wallet_stage=_text(row.get("wallet_stage")),
+            wallet_selection_reason=_text(row.get("wallet_selection_reason")),
+            wallet_buy_count=_integer(row.get("wallet_buy_count")),
+            wallet_unpriced_buys=_integer(row.get("wallet_unpriced_buys")),
+            wallet_observed_at_ms=_integer(row.get("wallet_observed_at_ms")),
+            wallet_history_from_ms=_integer(row.get("wallet_history_from_ms")),
             wallet_digest_lines=_lines(row.get("wallet_digest_lines")),
         )
 
@@ -512,7 +526,7 @@ def group_identity(observation: MarketObservation) -> MarketTrack:
         # an exit segment ends when the balance reaches zero and the next sell opens a new one, and a
         # crowding window ends when the buying stops. Neither is derivable from the row's other fields,
         # which is why the tape stores it.
-        subject = observation.wallet_address or "" if observation.wallet_kind == "exit" else ""
+        subject = observation.wallet_address or "" if observation.wallet_kind in {"buy", "exit"} else ""
         key = "|".join(
             (
                 "wallet",
@@ -835,6 +849,12 @@ def _decide_smart_money(
     )
 
 
+def _wallet_notify_eligible(observation: MarketObservation) -> bool:
+    """Buy candidates and exits require the producer's explicit notification decision."""
+
+    return observation.wallet_kind not in {"buy", "exit"} or observation.wallet_notify_eligible
+
+
 def _decide_wallet(
     track: MarketTrack,
     observations: Sequence[MarketObservation],
@@ -842,37 +862,30 @@ def _decide_wallet(
     now_ms: int,
     has_open_intent: bool,
 ) -> GroupTurn:
-    """#572 §5.3. Every wallet observation is due at once, because the rule already suppressed the rest.
-
-    This branch has no window, no threshold and no anchor comparison, and that is the point: the three
-    provider families reduce a *stream* of reports to the ones worth interrupting a reader for, while the
-    chain tape's rules do that work before an Item exists at all. An exit that did not clear its ratio,
-    its position size or its cascade arm was never written down as an observation; a crowding window that
-    did not reach N wallets was never written down either. Suppressing again here would be a second
-    threshold on numbers that already passed the first one, and it would hold a card whose whole subject
-    is that something just happened.
-
-    What still applies is the one rule every family shares: at most one un-started card per group. Two
-    observations of the same segment arriving in one turn merge into one card, exactly as two OI
-    measurements do, and the group key carries the segment so a follow-up lands beside the card it
-    follows rather than opening a group of its own.
-    """
+    """Keep every candidate observable, but only explicit selections may create a notification."""
 
     for observation in observations:
         track = _observed(track, observation)
     if has_open_intent:
         return GroupTurn(track=replace(track, pending_reason=REASON_MERGING))
-    # A card that told nobody leaves the anchor empty, so the next observation of this segment is a
-    # first card again rather than a follow-up to something the reader never saw.
+    eligible = tuple(observation for observation in observations if _wallet_notify_eligible(observation))
+    if not eligible:
+        return GroupTurn(
+            track=replace(
+                track,
+                next_due_at_ms=None,
+                pending_reason=observations[-1].wallet_selection_reason or "wallet_not_selected",
+            )
+        )
     reason: TriggerReason = "first" if track.anchor_state == "" else "followup"
     return GroupTurn(
         track=replace(
             track,
             pending_reason=REASON_MERGING,
             next_due_at_ms=now_ms,
-            round_started_at_ms=observations[0].received_at_ms,
+            round_started_at_ms=eligible[0].received_at_ms,
         ),
-        intent=IntentPlan(reason, observations[0].item_id, now_ms),
+        intent=IntentPlan(reason, eligible[0].item_id, now_ms),
     )
 
 
@@ -1020,7 +1033,7 @@ def market_reader_card(
         times=ReaderCardTimes(
             event_at_ms=latest.event_at_ms,
             span_from_ms=latest.wallet_window_from_ms
-            if latest.wallet_kind in {"crowding", "digest"} and latest.wallet_window_from_ms
+            if latest.wallet_kind in {"buy", "crowding", "digest"} and latest.wallet_window_from_ms
             else first.event_at_ms,
         ),
     )
@@ -1059,6 +1072,12 @@ def _reader_wallet(observation: MarketObservation) -> ReaderCardWallet:
         late=(observation.wallet_tone or "") == "late",
         crowding_id=observation.wallet_crowding_item_id or "",
         lines=observation.wallet_digest_lines,
+        stage=observation.wallet_stage or "unknown",
+        selection_reason=observation.wallet_selection_reason or "",
+        buy_count=observation.wallet_buy_count or 0,
+        unpriced_buys=observation.wallet_unpriced_buys or 0,
+        observed_at_ms=observation.wallet_observed_at_ms,
+        history_from_ms=observation.wallet_history_from_ms,
     )
 
 
@@ -1486,6 +1505,10 @@ class MarketNotificationLoop:
         observations = [
             MarketObservation.from_row(item) for item in news.market_delivery_observations(delivery_key=key)
         ]
+        if int(row["attempts"] or 0) == 0:
+            # Unattempted historical exits have no opt-in decision. An attempted retry keeps the
+            # immutable card and delivery evidence that already exist.
+            observations = [observation for observation in observations if _wallet_notify_eligible(observation)]
         if not observations:
             # Nothing to put on it. An empty card is never sent, and an intent that has never been
             # attempted is not evidence of anything, so it is discarded rather than settled (§4.3).

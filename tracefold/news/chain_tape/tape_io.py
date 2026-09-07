@@ -1,10 +1,9 @@
-"""The database passes both halves of one chain-tape turn take, and the failure rule they share.
+"""Bounded database passes for independently supervised wallet research and digest stages.
 
-`derive` and `digest_writer` run inside the same `ChainTapeLoop.advance()` turn and sit under the same
-contract: the rules half cannot fault the ingestion half. Each held its own byte-identical copy of the
-two bounded passes and the absorb rule below, which is two places for one promise to be edited. The
-copies differed in three values -- two timeouts and the word an error is recorded under -- so those are
-what a subclass names.
+Translated admission and transient database refusals keep their durable work pending for the next
+turn. Unexpected failures escape to that stage's capability supervisor. Retry diagnostics contain
+operation and exception type only; a running capability means the loop is alive, not that its backlog
+has drained.
 """
 
 from __future__ import annotations
@@ -24,50 +23,28 @@ FAILED: Final = object()
 
 
 class TapePasses:
-    """One bounded read, one bounded write, and what happens to a failure the port did not translate."""
+    """Retry expected database refusals; let each stage own the fate of an unexpected failure."""
 
     db: Any
     _read_timeout_seconds: ClassVar[float]
     _write_timeout_seconds: ClassVar[float]
-    # What this half calls itself in an error line and in its own log record.
     _failure_stage: ClassVar[str]
-    _failure_label: ClassVar[str]
 
     async def _read(self, name: str, fn: Callable[[Any], Any], errors: list[str]) -> Any:
         try:
             return await self.db.read(name, fn, timeout_seconds=self._read_timeout_seconds)
         except (TransientError, DeferError) as exc:
             errors.append(f"db:{type(exc).__name__}")
+            log.warning("wallet %s deferred operation=%s error=%s", self._failure_stage, name, type(exc).__name__)
             return FAILED
-        except Exception as exc:  # deliberately everything; see `_absorb`
-            return self._absorb(name, exc, errors)
 
     async def _write(self, name: str, fn: Callable[[Any], Any], errors: list[str]) -> Any:
         try:
             return await self.db.tx(name, fn, timeout_seconds=self._write_timeout_seconds)
         except (TransientError, DeferError) as exc:
             errors.append(f"db:{type(exc).__name__}")
+            log.warning("wallet %s deferred operation=%s error=%s", self._failure_stage, name, type(exc).__name__)
             return FAILED
-        except Exception as exc:  # deliberately everything; see `_absorb`
-            return self._absorb(name, exc, errors)
-
-    def _absorb(self, name: str, exc: BaseException, errors: list[str]) -> Any:
-        """Record a failure the port did not translate, and end this pass rather than the tape.
-
-        The port turns an admission refusal and an overrun into the two News errors above; anything else
-        -- a constraint the driver refused, a shape a row could not take -- arrives here raw. The loop's
-        own contract is that the rules half cannot fault the ingestion half, and it has to hold for the
-        cases nobody enumerated as much as for the ones that were: a single derived row that PostgreSQL
-        will not accept would otherwise stop the chain tape, on every restart, for ever, because the row
-        or the window that produced it is still there to be produced again.
-
-        It is recorded rather than swallowed. The reason reaches the tape's own state row through
-        `errors`, the turn is `partial`, and the traceback is logged.
-        """
-
-        log.exception("chain tape %s failed: %s", self._failure_label, name)
-        errors.append(f"{self._failure_stage}:{name}:{type(exc).__name__}")
-        return FAILED
 
 
 def tape_decimal(value: Any, *, allow_zero: bool = True) -> Decimal | None:

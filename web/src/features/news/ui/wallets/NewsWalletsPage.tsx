@@ -3,6 +3,7 @@ import { Metric, MetricRow } from "@shared/ui/Metric";
 import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
 import { SourceLine } from "@shared/ui/SourceLine";
+import type { FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import {
@@ -10,8 +11,10 @@ import {
   useNewsWalletCardsWithToken,
   useNewsWalletsWithToken,
   type NewsWalletCard,
+  type NewsWalletCardFilters,
   type NewsWalletCardTotal,
   type NewsWalletFillTotal,
+  type NewsWalletFill,
   type NewsWalletRosterMember,
   type NewsWalletTapeState,
 } from "../../api/newsQueries";
@@ -19,118 +22,172 @@ import { clockTime, displayTime, formatCount, optionalTime } from "../../model/n
 import { formatBps, formatPrice, priceTone } from "../../model/newsPrice";
 import {
   nextWalletParams,
-  parseWalletWindow,
+  parseWalletFilters,
+  WALLET_CARD_FILTERS,
+  walletHistoryPath,
   walletBasisLabel,
   walletCardLabel,
   walletCardMeasure,
   walletCardSubject,
   walletCardTitle,
   walletFillLabel,
+  walletFillQuantity,
+  walletTransactionUrl,
 } from "../../model/walletFacts";
 import { NewsPageHeader } from "../chrome/NewsChrome";
 
 import "./newsWallets.css";
 
-/**
- * 链上钱包 — what the Robinhood Chain wallet tape follows, reads and sends (#572 PR-3).
- *
- * The market list already publishes a wallet observation the way it publishes every other market kind.
- * This page answers the question that surface cannot: what the *tape* is doing. Which wallets it follows
- * and on which of the two lists, how far it has read the chain, what it stored and how much of it nothing
- * could price, and — for the cards it opened — what the token did one and four hours after a reader was
- * told.
- *
- * **Two independent reads, two independent failures.** The header and the roster come from
- * `/api/news/wallets`; the card table comes from `/api/news/wallets/cards` on its own window. A slow or
- * failing card table leaves the roster and the tape's position exactly where they are, and the reverse
- * holds too — neither read is a precondition for the other, because neither answers the other's question.
- *
- * **Every receipt is published, and none of them is a gate.** The +1h and +4h columns are #572 §11's
- * effect receipt: nothing in the code reads them, a negative number is an answer rather than a fault, and
- * a horizon nothing could price says so instead of showing a zero.
- */
+/** Buy candidates and their evidence lead; tape health is an independent supporting read. */
 export function NewsWalletsPage({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
-  const window = parseWalletWindow(searchParams.get("window"));
+  const filters = parseWalletFilters(searchParams);
   const walletsQuery = useNewsWalletsWithToken(token);
-  const cardsQuery = useNewsWalletCardsWithToken(token, window);
+  const cardsQuery = useNewsWalletCardsWithToken(token, filters);
   const tape = walletsQuery.data;
+  const setFilters = (next: NewsWalletCardFilters) =>
+    setSearchParams(nextWalletParams(next), { replace: true });
+  const filterAddresses = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    setFilters({
+      ...filters,
+      walletAddress: String(values.get("wallet_address") ?? "")
+        .trim()
+        .toLowerCase(),
+      tokenAddress: String(values.get("token_address") ?? "")
+        .trim()
+        .toLowerCase(),
+    });
+  };
 
   return (
     <PageShell archetype="scan" className="news-wallets-shell" label="链上钱包">
       <NewsPageHeader
-        subtitle="Robinhood Chain 上被跟踪钱包的成交由链上日志推导：名单按原站的已实现盈亏与 profit factor 构建，退出卡与拥挤卡由规则决定，摘要每四小时一次。这一页只答「跟谁、读到哪、存了什么、发了什么、事后值多少」。"
+        subtitle="先看谁在买、买入阶段与后续变化。名单是观察范围，质量榜与持仓规模分别展示；买入候选是否通知、历史是否完整、价格何时取得，都保留各自依据。"
         title="链上钱包"
       />
-
-      {walletsQuery.isLoading && !tape ? (
-        <div className="news-wallets-body">
-          <PageState.TileSkeleton label="正在读取链上钱包状态" tiles={4} />
-          <PageState.Loading label="正在读取名单" layout="panel" rows={6} />
-        </div>
-      ) : null}
-      {walletsQuery.isError && !tape ? (
-        <PageState.Error error={walletsQuery.error} onRetry={() => void walletsQuery.refetch()} />
-      ) : null}
-
-      {tape ? (
-        <PageState.Stale
-          failedRefresh={
-            walletsQuery.isError ? "链上钱包状态刷新失败，下面仍是上次读取的结果。" : undefined
-          }
-          onRetry={() => void walletsQuery.refetch()}
-          updating={walletsQuery.isFetching}
-        >
-          <div className="news-wallets-body">
-            <TapeTiles cards={tape.cards} fills={tape.fills} tape={tape.tape ?? null} />
-
-            <section aria-label="跟踪名单" className="news-wallets-panel">
-              <div className="news-wallets-toolbar">
-                <b>跟踪名单</b>
-                <small>
-                  版本 {tape.roster.roster_version} · {tape.roster.members.length} 个地址 ·{" "}
-                  {optionalTime(tape.roster.taken_at_ms)} 取得
-                </small>
-              </div>
-              {tape.roster.members.length === 0 ? (
-                <EmptyNote>还没有名单版本：链上钱包任务未开启或第一次刷新尚未完成。</EmptyNote>
-              ) : (
-                <RosterTable members={tape.roster.members} />
-              )}
-            </section>
-
-            <section aria-label="钱包卡片" className="news-wallets-panel">
-              <div className="news-wallets-toolbar">
-                <div aria-label="按窗口筛选" className="news-wallets-windows" role="group">
-                  {NEWS_WALLET_CARD_WINDOWS.map((option) => (
-                    <button
-                      aria-pressed={option === window}
-                      className="news-wallets-window"
-                      data-active={option === window || undefined}
-                      key={option}
-                      onClick={() => setSearchParams(nextWalletParams(option), { replace: true })}
-                      type="button"
-                    >
-                      {option}
-                    </button>
-                  ))}
-                </div>
-                <small>
-                  {cardsQuery.data
-                    ? `${displayTime(cardsQuery.data.window_from_ms)} → ${displayTime(cardsQuery.data.window_to_ms)}`
-                    : "正在读取"}
-                </small>
-              </div>
-              <CardsPanel query={cardsQuery} />
-            </section>
-
-            <SourceLine
-              note="名单、tape 位置与两块计数来自同一次读取；卡片与 +1h/+4h 回执来自卡片读取，二者互不阻塞"
-              path="GET /api/news/wallets → roster · tape · fills[] · cards[] ｜ GET /api/news/wallets/cards → cards[]"
-            />
+      <div className="news-wallets-body">
+        <section aria-label="钱包卡片" className="news-wallets-panel">
+          <div className="news-wallets-toolbar">
+            <b>{filters.walletAddress || filters.tokenAddress ? "观察时间线" : "买入研究"}</b>
+            <div aria-label="按类型筛选" className="news-wallets-windows" role="group">
+              {WALLET_CARD_FILTERS.map((kind) => (
+                <button
+                  aria-pressed={kind === filters.kind}
+                  className="news-wallets-window"
+                  data-active={kind === filters.kind || undefined}
+                  key={kind}
+                  onClick={() => setFilters({ ...filters, kind })}
+                  type="button"
+                >
+                  {kind === "all" ? "全部" : walletCardLabel(kind)}
+                </button>
+              ))}
+            </div>
+            <div aria-label="按窗口筛选" className="news-wallets-windows" role="group">
+              {NEWS_WALLET_CARD_WINDOWS.map((window) => (
+                <button
+                  aria-pressed={window === filters.window}
+                  className="news-wallets-window"
+                  data-active={window === filters.window || undefined}
+                  key={window}
+                  onClick={() => setFilters({ ...filters, window })}
+                  type="button"
+                >
+                  {window}
+                </button>
+              ))}
+            </div>
           </div>
-        </PageState.Stale>
-      ) : null}
+          <form
+            className="news-wallets-filters"
+            key={`${filters.walletAddress}:${filters.tokenAddress}`}
+            onSubmit={filterAddresses}
+          >
+            <label>
+              钱包地址
+              <input
+                defaultValue={filters.walletAddress}
+                name="wallet_address"
+                pattern="0x[0-9a-fA-F]{40}"
+                placeholder="0x… 精确地址"
+                spellCheck={false}
+              />
+            </label>
+            <label>
+              代币合约
+              <input
+                defaultValue={filters.tokenAddress}
+                name="token_address"
+                pattern="0x[0-9a-fA-F]{40}"
+                placeholder="0x… 精确合约"
+                spellCheck={false}
+              />
+            </label>
+            <button className="news-wallets-window" type="submit">
+              筛选
+            </button>
+            {filters.walletAddress || filters.tokenAddress ? (
+              <button
+                className="news-wallets-window"
+                onClick={() => setFilters({ ...filters, walletAddress: "", tokenAddress: "" })}
+                type="button"
+              >
+                清除地址
+              </button>
+            ) : null}
+          </form>
+          <p className="news-wallets-note">
+            按观察时间从新到旧，包含未发送候选。价格变化的基准见各行记录，成交均价单列。
+            {cardsQuery.data
+              ? ` ${displayTime(cardsQuery.data.window_from_ms)} → ${displayTime(cardsQuery.data.window_to_ms)}`
+              : ""}
+          </p>
+          <CardsPanel filters={filters} query={cardsQuery} />
+        </section>
+
+        {walletsQuery.isLoading && !tape ? (
+          <PageState.TileSkeleton label="正在读取链上钱包状态" tiles={4} />
+        ) : null}
+        {walletsQuery.isError && !tape ? (
+          <PageState.Error error={walletsQuery.error} onRetry={() => void walletsQuery.refetch()} />
+        ) : null}
+        {tape ? (
+          <PageState.Stale
+            failedRefresh={
+              walletsQuery.isError ? "链上钱包状态刷新失败，下面仍是上次读取的结果。" : undefined
+            }
+            onRetry={() => void walletsQuery.refetch()}
+            updating={walletsQuery.isFetching}
+          >
+            <div className="news-wallets-body">
+              <TapeTiles cards={tape.cards} fills={tape.fills} tape={tape.tape ?? null} />
+              <section aria-label="跟踪名单" className="news-wallets-panel">
+                <div className="news-wallets-toolbar">
+                  <b>跟踪名单</b>
+                  <small>
+                    版本 {tape.roster.roster_version} · {tape.roster.members.length} 个地址 ·{" "}
+                    {optionalTime(tape.roster.taken_at_ms)} 取得
+                  </small>
+                </div>
+                <p className="news-wallets-note">
+                  质量榜按历史统计筛选，大户榜按持仓成本排序。进入名单不代表已验证的盈利能力；点击钱包查看其观察时间线。
+                </p>
+                {tape.roster.members.length === 0 ? (
+                  <EmptyNote>还没有名单版本：链上钱包任务未开启或第一次刷新尚未完成。</EmptyNote>
+                ) : (
+                  <RosterTable filters={filters} members={tape.roster.members} />
+                )}
+              </section>
+            </div>
+          </PageState.Stale>
+        ) : null}
+        <SourceLine
+          note="候选与 +15m/+1h/+4h 价格回执独立读取；名单和运行状态失败不会隐藏候选"
+          path="GET /api/news/wallets/cards → cards[] · fills[] ｜ GET /api/news/wallets → roster · tape · fills[] · cards[]"
+        />
+      </div>
     </PageShell>
   );
 }
@@ -170,7 +227,6 @@ function TapeTiles({
             .join(" · ") || "无成交"
         }
         eyebrow="FILLS 24H"
-        note={`${fills.reduce((count, row) => count + row.wallets, 0)} 个地址 · ${fills.reduce((count, row) => count + row.tokens, 0)} 个代币`}
         value={formatCount(totalFills)}
       />
       <Metric
@@ -185,7 +241,7 @@ function TapeTiles({
         value={formatCount(totalCards)}
       />
       <Metric
-        caption="现金腿不是锚定稳定币的成交"
+        caption="未取得可归属美元现金腿的成交"
         eyebrow="UNPRICED"
         note={`${formatCount(unpriced)} / ${formatCount(priceable)} 笔`}
         value={priceable ? `${((unpriced / priceable) * 100).toFixed(1)}%` : "—"}
@@ -212,7 +268,13 @@ function TapeTiles({
  * losing money (#572 §3.2). The two ranks are two separate lists — quality by realized P&L, whale by open
  * cost — and a wallet can hold one, both or neither rank while still being followed.
  */
-function RosterTable({ members }: { members: readonly NewsWalletRosterMember[] }) {
+function RosterTable({
+  filters,
+  members,
+}: {
+  filters: NewsWalletCardFilters;
+  members: readonly NewsWalletRosterMember[];
+}) {
   return (
     <div className="news-wallets-scroll">
       <table className="news-wallets-table">
@@ -233,7 +295,12 @@ function RosterTable({ members }: { members: readonly NewsWalletRosterMember[] }
           {members.map((member) => (
             <tr key={member.wallet}>
               <th scope="row" title={member.wallet}>
-                {member.handle || member.wallet.slice(0, 10)}
+                <Link
+                  className="news-wallets-kind"
+                  to={walletHistoryPath({ ...filters, walletAddress: member.wallet })}
+                >
+                  {member.handle || member.wallet.slice(0, 10)}
+                </Link>
               </th>
               <td>{formatCount(member.followers)}</td>
               <td>{member.rank_quality ?? "—"}</td>
@@ -253,61 +320,214 @@ function RosterTable({ members }: { members: readonly NewsWalletRosterMember[] }
   );
 }
 
-/** The card table and its own three states; the header above it is untouched by any of them. */
-function CardsPanel({ query }: { query: ReturnType<typeof useNewsWalletCardsWithToken> }) {
+/** Candidate and delivery state are independent: unsent rows keep their price evidence. */
+function CardsPanel({
+  filters,
+  query,
+}: {
+  filters: NewsWalletCardFilters;
+  query: ReturnType<typeof useNewsWalletCardsWithToken>;
+}) {
   if (query.isError && !query.data) {
     return <PageState.Error error={query.error} onRetry={() => void query.refetch()} />;
   }
   if (!query.data) {
     return <PageState.Loading label="正在读取钱包卡片" layout="panel" rows={6} />;
   }
-  if (query.data.cards.length === 0) {
-    return <EmptyNote>这个窗口里规则没有开出任何卡片。</EmptyNote>;
-  }
   return (
-    <div className="news-wallets-scroll">
-      <table className="news-wallets-table" data-table="cards">
-        <thead>
-          <tr>
-            <th scope="col">时间</th>
-            <th scope="col">类型</th>
-            <th scope="col">Handle</th>
-            <th scope="col">标的</th>
-            <th scope="col">比例 / 规模</th>
-            <th scope="col">口径</th>
-            <th scope="col">金额</th>
-            <th scope="col">推送</th>
-            <th scope="col">+1h</th>
-            <th scope="col">+4h</th>
-          </tr>
-        </thead>
-        <tbody>
-          {query.data.cards.map((card) => (
-            <CardRow card={card} key={card.item_id} />
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <PageState.Stale
+      failedRefresh={query.isError ? "观察刷新失败，仍显示上次读取的结果。" : undefined}
+      onRetry={() => void query.refetch()}
+      updating={query.isFetching}
+    >
+      {query.data.cards.length === 0 ? (
+        <EmptyNote>当前窗口与筛选下没有观察记录。</EmptyNote>
+      ) : (
+        <div className="news-wallets-scroll">
+          <table className="news-wallets-table" data-table="cards">
+            <thead>
+              <tr>
+                <th scope="col">时间</th>
+                <th scope="col">类型</th>
+                <th scope="col">钱包</th>
+                <th scope="col">标的</th>
+                <th scope="col">阶段 / 规模</th>
+                <th scope="col">已计价金额</th>
+                <th scope="col">已计价均价</th>
+                <th scope="col">观察价</th>
+                <th scope="col">推送</th>
+                <th scope="col">+15m</th>
+                <th scope="col">+1h</th>
+                <th scope="col">+4h</th>
+              </tr>
+            </thead>
+            <tbody>
+              {query.data.cards.map((card) => (
+                <CardRow card={card} filters={filters} key={card.item_id} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {filters.walletAddress && filters.tokenAddress ? (
+        <WalletFillsTable fills={query.data.fills} limit={query.data.limit} />
+      ) : null}
+    </PageState.Stale>
   );
 }
 
-/**
- * One card, and — for a digest — the sentences it was sent with beneath it.
- *
- * The lines are a second row rather than a cell: they are prose in a table of figures, and the one thing
- * a digest carries that no column can hold. They are always shown rather than folded away, because a
- * digest row with its lines hidden is a row that says nothing at all.
- */
-function CardRow({ card }: { card: NewsWalletCard }) {
+function WalletFillsTable({ fills, limit }: { fills: readonly NewsWalletFill[]; limit: number }) {
+  return (
+    <section aria-label="交易流水">
+      <div className="news-wallets-toolbar">
+        <b>交易流水</b>
+      </div>
+      <p className="news-wallets-note">
+        同钱包与代币在当前窗口内的买入、卖出与转出，不受卡片类型与提醒门槛影响。按链上顺序从新到旧，最多{" "}
+        {limit} 笔；仅覆盖已保留流水。
+      </p>
+      {fills.length === 0 ? (
+        <EmptyNote>当前窗口内没有保留的交易流水。</EmptyNote>
+      ) : (
+        <div className="news-wallets-scroll">
+          <table className="news-wallets-table">
+            <thead>
+              <tr>
+                <th scope="col">时间</th>
+                <th scope="col">动作</th>
+                <th scope="col">数量</th>
+                <th scope="col">已计价金额</th>
+                <th scope="col">区块 / 日志</th>
+                <th scope="col">交易</th>
+              </tr>
+            </thead>
+            <tbody>
+              {fills.map((fill) => {
+                const transactionUrl = walletTransactionUrl(fill);
+                return (
+                  <tr key={`${fill.chain_id}:${fill.tx_hash}:${fill.log_index}`}>
+                    <td title={displayTime(fill.event_at_ms)}>{clockTime(fill.event_at_ms)}</td>
+                    <td>{walletFillLabel(fill.kind)}</td>
+                    <td>{walletFillQuantity(fill)}</td>
+                    <td>{fill.usd == null ? "未知" : formatPrice(fill.usd)}</td>
+                    <td>
+                      {formatCount(fill.block_number)} / {fill.log_index}
+                    </td>
+                    <td>
+                      {transactionUrl ? (
+                        <a
+                          className="news-wallets-kind"
+                          href={transactionUrl}
+                          rel="noopener noreferrer"
+                          target="_blank"
+                          title={fill.tx_hash}
+                        >
+                          {fill.tx_hash.slice(0, 10)}…
+                        </a>
+                      ) : (
+                        <span title={fill.tx_hash}>{fill.tx_hash.slice(0, 10)}…</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function CardRow({ card, filters }: { card: NewsWalletCard; filters: NewsWalletCardFilters }) {
   const lines = card.digest_lines ?? [];
   return (
     <>
-      <CardFigures card={card} />
+      <tr data-kind={card.kind}>
+        <td title={displayTime(card.event_at_ms)}>{clockTime(card.event_at_ms)}</td>
+        <td>
+          <Link
+            className="news-wallets-kind"
+            title={walletCardTitle(card.kind)}
+            to={`/news/market/${card.item_id}`}
+          >
+            {walletCardLabel(card.kind)}
+            {card.tone === "late" ? " · 偏晚" : ""}
+          </Link>
+        </td>
+        <td>
+          {card.wallet ? (
+            <Link
+              className="news-wallets-kind"
+              title={card.wallet}
+              to={walletHistoryPath({ ...filters, walletAddress: card.wallet })}
+            >
+              {card.handle || card.wallet.slice(0, 10)}
+            </Link>
+          ) : (
+            "—"
+          )}
+        </td>
+        <td>
+          {card.token ? (
+            <Link
+              className="news-wallets-kind"
+              title={card.token}
+              to={walletHistoryPath({ ...filters, tokenAddress: card.token })}
+            >
+              {walletCardSubject(card)}
+            </Link>
+          ) : (
+            walletCardSubject(card)
+          )}
+        </td>
+        <td>{walletCardMeasure(card)}</td>
+        <td>{formatPrice(card.usd ?? card.position_usd)}</td>
+        <td>{formatPrice(card.entry_price)}</td>
+        <td>{formatPrice(card.mark_price)}</td>
+        <td>{card.delivery_state ?? "未发送"}</td>
+        <Outcome bps={card.return_15m_bps} source={card.outcome_15m_source} />
+        <Outcome bps={card.return_1h_bps} source={card.outcome_1h_source} />
+        <Outcome bps={card.return_4h_bps} source={card.outcome_4h_source} />
+      </tr>
+      {card.kind !== "digest" ? (
+        <tr className="news-wallets-lines" data-kind={card.kind}>
+          <td colSpan={12}>
+            <div className="news-wallets-evidence">
+              {card.selection_reason ? <span>记录原因：{card.selection_reason}</span> : null}
+              {card.kind === "buy" ? (
+                <>
+                  <span>窗口买入 {card.buy_count == null ? "未记录" : `${card.buy_count} 笔`}</span>
+                  <span>
+                    未计价 {card.unpriced_buys == null ? "未记录" : `${card.unpriced_buys} 笔`}
+                  </span>
+                  <span>观察于 {optionalTime(card.observed_at_ms)}</span>
+                  <span>历史覆盖自 {optionalTime(card.history_from_ms)}</span>
+                </>
+              ) : card.kind === "exit" ? (
+                <span>{walletBasisLabel(card.basis)}</span>
+              ) : null}
+              <span>价格基准：{card.price_reference || "未记录"}</span>
+              {card.wallet && card.token ? (
+                <Link
+                  className="news-wallets-kind"
+                  to={walletHistoryPath({
+                    ...filters,
+                    walletAddress: card.wallet,
+                    tokenAddress: card.token,
+                  })}
+                >
+                  同钱包与代币的后续变化
+                </Link>
+              ) : null}
+            </div>
+          </td>
+        </tr>
+      ) : null}
       {lines.length ? (
         <tr className="news-wallets-lines" data-kind={card.kind}>
-          <td colSpan={10}>
+          <td colSpan={12}>
             <ol>
-              {/* Position is the identity: two sentences of a digest may legitimately read the same. */}
               {lines.map((line, index) => (
                 <li key={index}>{line}</li>
               ))}
@@ -316,39 +536,6 @@ function CardRow({ card }: { card: NewsWalletCard }) {
         </tr>
       ) : null}
     </>
-  );
-}
-
-function CardFigures({ card }: { card: NewsWalletCard }) {
-  return (
-    <tr data-kind={card.kind}>
-      <td title={displayTime(card.event_at_ms)}>{clockTime(card.event_at_ms)}</td>
-      <td>
-        <Link
-          className="news-wallets-kind"
-          title={walletCardTitle(card.kind)}
-          to={`/news/market/${card.item_id}`}
-        >
-          {walletCardLabel(card.kind)}
-          {card.tone === "late" ? " · 偏晚" : ""}
-        </Link>
-      </td>
-      <td title={card.wallet || undefined}>{card.handle || "—"}</td>
-      <td title={card.token || undefined}>{walletCardSubject(card)}</td>
-      <td>{walletCardMeasure(card)}</td>
-      <td>{card.kind === "exit" ? walletBasisLabel(card.basis) : "—"}</td>
-      <td>
-        {card.usd
-          ? formatPrice(card.usd)
-          : card.position_usd
-            ? formatPrice(card.position_usd)
-            : "—"}
-      </td>
-      {/* An open string the notification owner writes, printed as it is. */}
-      <td>{card.delivery_state ?? "未开始"}</td>
-      <Outcome bps={card.return_1h_bps} source={card.outcome_1h_source} />
-      <Outcome bps={card.return_4h_bps} source={card.outcome_4h_source} />
-    </tr>
   );
 }
 

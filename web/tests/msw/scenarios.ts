@@ -7,7 +7,7 @@ import {
   newsMarketObservationFixture,
   newsStatusFixture,
   newsSymbolFixture,
-  newsWalletCardsFixture,
+  newsWalletCardsForParams,
   newsWalletsFixture,
 } from "@tests/fixtures/newsFixture";
 import {
@@ -67,8 +67,16 @@ export function mockAppRoutes(apiMock: ApiMock) {
      */
     if (path === "/api/news/wallets") return ok(newsWalletsFixture());
     if (path === "/api/news/wallets/cards") {
-      const window = param("window") ?? "24h";
-      return ok(newsWalletCardsFixture({ window }));
+      return ok(
+        newsWalletCardsForParams(
+          new URLSearchParams(
+            ["window", "kind", "wallet_address", "token_address"].map((key) => [
+              key,
+              param(key) ?? "",
+            ]),
+          ),
+        ),
+      );
     }
     if (path === "/api/news/quotes") return ok({ measured_at_ms: 0, quotes: [] });
     if (path.startsWith("/api/news/events/")) return ok(newsEventDetailFixture());

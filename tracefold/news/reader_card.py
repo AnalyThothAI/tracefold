@@ -49,6 +49,7 @@ FAMILY_TITLE: Final[dict[str, str]] = {
 # distinguishable in the header, and the follow-up qualifier the other families use answers a different
 # question -- the family's line already says which movement this is (#572 PR-2).
 WALLET_QUALIFIER: Final[dict[str, str]] = {
+    "buy": "买入观察",
     "exit": "减仓",
     "exit_closed": "清仓",
     "crowding": "拥挤",
@@ -262,6 +263,12 @@ class ReaderCardWallet:
     # Digest: the sentences themselves, already written and already grounded against the fact pack
     # they came from. The card renders them and composes nothing -- a digest line is the whole line.
     lines: tuple[str, ...] = ()
+    stage: str = "unknown"
+    selection_reason: str = ""
+    buy_count: int = 0
+    unpriced_buys: int = 0
+    observed_at_ms: int | None = None
+    history_from_ms: int | None = None
     # Exit: what left, what was held before it, and what share of it that was.
     quantity: str = ""
     balance_before: str = ""
@@ -508,6 +515,43 @@ class ReaderCard:
             return [f"名单钱包 · {span}", *wallet.lines, _WALLET_NOTE]
         who = f"{wallet.handle or fmt.UNKNOWN_ACCOUNT}{_followers(wallet.followers)}"
         subject = wallet.symbol or wallet.token[:10]
+        if wallet.kind == "buy":
+            stage = {
+                "first_observed": "首次观察买入（此前持仓未知）",
+                "new_position": "买前余额为零的新仓",
+                "add": "已有余额上加仓",
+                "reentry": "买前余额为零的重入",
+            }.get(wallet.stage, "仓位阶段未知")
+            selection = {
+                "selected": "金额与时效满足提醒条件",
+                "history": "历史成交，仅供研究",
+                "stale": "成交已过提醒时限",
+                "unpriced": "未计价，仅供研究",
+                "below_minimum": "金额未达提醒条件",
+                "same_window": "同窗口已有提醒，规模未明显增加",
+            }.get(wallet.selection_reason, "")
+            entry = fmt.money(wallet.entry_price)
+            mark = fmt.money(wallet.mark_price)
+            return [
+                f"{who} · {subject} · {span}",
+                _joined(
+                    f"窗口买入 {wallet.buy_count} 笔" if wallet.buy_count else "买入观察",
+                    f"已计价金额 {fmt.money(wallet.usd) or '未知'}",
+                    f"未计价 {wallet.unpriced_buys} 笔",
+                ),
+                _joined(f"已计价部分均价 {entry or '未知'}", f"观察价 {mark or '未知'}"),
+                stage,
+                f"选材依据：{selection}" if selection else "",
+                f"观察时间 {fmt.clock(wallet.observed_at_ms)}" if wallet.observed_at_ms else "观察时间未知",
+                "只覆盖保留流水；观察前历史与余额连续性未确认",
+                f"代币 {wallet.token}" if wallet.token else "",
+                _joined(
+                    f"tx {wallet.tx_hash[:10]}" if wallet.tx_hash else "",
+                    f"区块 {wallet.block_number:,}" if wallet.block_number else "",
+                ),
+                quote,
+                _WALLET_NOTE,
+            ]
         if wallet.kind == "crowding":
             total = fmt.money(wallet.peer_usd)
             entry = fmt.money(wallet.entry_price)

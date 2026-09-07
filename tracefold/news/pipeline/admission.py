@@ -596,6 +596,8 @@ def wallet_record_key(event: WalletEvent) -> str:
     the same four hours (#572 PR-3).
     """
 
+    if event.kind == "buy":
+        return f"buy|{event.chain_id}|{event.wallet}|{event.token}|{event.tx_hash}|{event.evidence['log_index']}"
     if event.kind == "exit":
         return f"exit|{event.chain_id}|{event.wallet}|{event.token}|{event.tx_hash}"
     if event.kind == "digest":

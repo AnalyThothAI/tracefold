@@ -2,7 +2,7 @@
 
 > **Scope.** Owns the `web/` architecture, layer responsibilities, component conventions, and the UI verification gate. Backend layer boundaries live in `ARCHITECTURE.md`; public HTTP contracts live in `CONTRACTS.md`; install and run commands live in `SETUP.md`.
 
-The React operator console is a News workbench plus one actionable Alpha/Execution desk. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/wallets`, `/api/news/wallets/cards`, `/api/trading/status`, `/api/trading/cases`, and `/api/trading/executions` over HTTP — fourteen reads and one write, which is every `/api/` path the server publishes. The two market reads arrived with #553 PR-1: OI frames, liquidations, smart-money prints and market sources we have no parser for are stored facts rather than Events, so the Event feed cannot serve them and `/api/news/status` no longer counts them. The two wallet reads arrived with #572 PR-3 and answer a different question from the market list: not "what observations arrived" but "what is the chain tape doing" — its roster, its ingest position, and the +1h/+4h price receipt of every card its rules opened. `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections were deleted in #537 PR-5: no browser surface called any of the three, they were three more public shapes over the ledgers `/api/trading/executions` already reads folded, and `tracefold trading signals | observations | commands` reads the same repository directly. `GET /api/trading/gate` and `GET /api/trading/gate/{event_id}` were deleted in #589 PR-2 on the same terms: the OI frame table joined each admission row to its Event on the same line, #553 PR-1 removed that join with the Events themselves, and `tracefold trading gate [--source-key KEY] [--since-ms N]` reads the same two admission-ledger statements directly. Every operation is a read except the exact authenticated `POST /api/trading/execution/commands`, which can append only pause, resume, or account-flatten intents in the existing closed grammar. It cannot submit an order or accept quantity, notional, leverage, venue, or direction. There is no WebSocket client, no separate Search route, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
+The React operator console is a News workbench plus one actionable Alpha/Execution desk. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/wallets`, `/api/news/wallets/cards`, `/api/trading/status`, `/api/trading/cases`, and `/api/trading/executions` over HTTP — fourteen reads and one write, which is every `/api/` path the server publishes. The two market reads arrived with #553 PR-1: OI frames, liquidations, smart-money prints and market sources we have no parser for are stored facts rather than Events, so the Event feed cannot serve them and `/api/news/status` no longer counts them. The two wallet reads arrived with #572 PR-3 and answer a different question from the market list: not "what observations arrived" but "what is the chain tape doing" — its roster, its ingest position, and the buy candidates, their evidence and +15m/+1h/+4h price observations. `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections were deleted in #537 PR-5: no browser surface called any of the three, they were three more public shapes over the ledgers `/api/trading/executions` already reads folded, and `tracefold trading signals | observations | commands` reads the same repository directly. `GET /api/trading/gate` and `GET /api/trading/gate/{event_id}` were deleted in #589 PR-2 on the same terms: the OI frame table joined each admission row to its Event on the same line, #553 PR-1 removed that join with the Events themselves, and `tracefold trading gate [--source-key KEY] [--since-ms N]` reads the same two admission-ledger statements directly. Every operation is a read except the exact authenticated `POST /api/trading/execution/commands`, which can append only pause, resume, or account-flatten intents in the existing closed grammar. It cannot submit an order or accept quantity, notional, leverage, venue, or direction. There is no WebSocket client, no separate Search route, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
 
 ## Source Layer Map (`web/src/`)
 
@@ -33,7 +33,7 @@ asset chips, quote values, health pill — anything more than one News surface r
 route measure, the provenance line and the nothing-here sentence are `@shared/ui`),
 `feed/`, `detail/`, `status/`, `market/`, `wallets/` and `symbol/`. `model/walletFacts.ts` holds the
 wallet page's own closed vocabularies (card kind, fill kind, verification basis) and its URL-owned
-`?window=`, by the same rule `marketFacts.ts` follows. `features/news/shell.ts` is the shell
+`?window=`, `?kind=`, `?wallet_address=` and `?token_address=`, by the same rule `marketFacts.ts` follows. `features/news/shell.ts` is the shell
 entrypoint and exports hooks, pure helpers and types only, so importing it does not pull
 the route components into the eager shell chunk.
 
@@ -185,33 +185,55 @@ the route components into the eager shell chunk.
   its own at `/news/wallets`, which answers what the *tape* is doing rather than
   what one observation said.
 
-  `/news/wallets` is `链上钱包` (#572 PR-3). It reads two endpoints on their own
-  keys and their own failures: `/api/news/wallets` for the header tiles and the
-  tracked roster, `/api/news/wallets/cards` for the card table and its receipts.
-  A failing card table leaves the roster and the tape's position exactly where
-  they are, and the reverse holds — neither read is a precondition for the other,
-  because neither answers the other's question.
+  `/news/wallets` is `链上钱包`, with buy research first (#614). The candidate
+  table precedes the tape metrics and roster. It reads two independent endpoints:
+  `/api/news/wallets/cards` for observations, price outcomes and scoped raw actions, and
+  `/api/news/wallets` for the supporting tape state and current roster. Neither
+  successful read is required to render the other. Refresh failures keep that
+  read's previous data with an explicit stale message.
 
-  Four tiles state the last 24 hours: what the tape stored by fill kind, what the
-  rules opened by card kind and how much of it was sent, the share of trades
-  nothing could price, and the tape's own last outcome beside its high-water
-  block. The roster table is the current version only — an earlier version is
-  evidence a card carries, not a page a reader browses — with both ranks shown
-  separately, because 质量榜 (realized P&L and profit factor) and 大户榜 (open
-  cost) are two lists and a wallet can be on one, both or neither. Win rate is
-  displayed and is deliberately not a criterion (#572 §3.2).
+  The URL owns `window=24h|72h|7d`, `kind=buy|all|exit|crowding|digest`,
+  `wallet_address` and `token_address`. Absent or invalid kind means the page's
+  default `buy`; `kind=all` is the explicit UI state that omits the API kind
+  filter. The API's own default remains unfiltered. Address filters accept exact
+  20-byte EVM addresses and normalize case. `token_address` never uses the
+  reserved authentication parameter `token`. Every filter changes the request,
+  query key and ETag key; a window change preserves the chosen identities.
+  Wallet and token links narrow the same page, while the combined link opens
+  that wallet/token observation timeline with all kinds. When both exact addresses
+  are present, the same response also supplies `fills[]`: the current window's
+  retained buys, sells and transfers, independently of the card kind and notification
+  thresholds. The `交易流水` table therefore includes small sells without exit cards.
+  It follows descending block/log order and shares the bounded page limit (at most
+  200). Quantities use the stored decimal count without JavaScript number rounding;
+  absent decimals show the raw integer explicitly. Missing dollar values stay
+  unknown. Valid chain-4663 transaction hashes link only to the
+  [officially listed Blockscout explorer](https://docs.robinhood.com/chain/connecting/).
+  This is retained history within the chosen window and limit, not a full position ledger.
 
-  The card table's `?window=` is the server's own closed vocabulary — `24h`,
-  `72h`, `7d` — and each selection is a real request. Every card is listed
-  whether or not it was sent; the delivery state is printed as the notification
-  owner wrote it. The `+1h` and `+4h` columns are #572 §11's effect receipt, not
-  a gate: nothing in the code reads them, a negative figure is an answer, a
-  horizon nothing could price says `无价`, and a horizon that has not arrived is
-  the absence of a row rather than a zero. A digest row carries the sentences it
-  was sent with and says whether the model wrote them or the deterministic
-  template did — the one thing about a digest that the card itself cannot say.
-  Each row links to `/news/market/{item_id}`, which stays the single place one
-  observation is read in full.
+  All returned candidates render whether they were sent or suppressed. Buy rows
+  show their stored stage (`first_observed`, `new_position`, `add`, `reentry`,
+  `unknown`), priced cumulative amount, mean price of the priced fills, unpriced
+  buy count, observation price, selection
+  reason, buy count, observation time and history coverage start. A first
+  observation is labelled `观察期首次买入`, never promoted to a verified new
+  position. Delivery and selection reasons remain the owner's open strings.
+  No wallet rank, stage, price return or selection is inferred in the browser.
+
+  The `+15m`, `+1h` and `+4h` columns render server-returned basis points and
+  source. The price-reference field is visible beside each buy or exit; a
+  missing reference says `未记录`. An unavailable price says `无价`, while a
+  missing receipt is `—`, and neither becomes zero. Digest rows retain their
+  exact sentences and model/program material-selection attribution. Every observation links to
+  `/news/market/{item_id}`; expanded buy observations on the market page show
+  the same stage, quantities, price distinction, provenance and timeline link.
+
+  The four supporting metrics describe the last 24 hours: stored fill kinds,
+  candidate/card kinds and delivery count, unpriced trade share, and tape
+  position. Per-kind distinct wallet or token counts are not summed into a
+  purported unique total. The roster is the current version, with quality and
+  holding-size ranks shown separately; membership does not claim validated
+  profitability. Clicking a roster wallet opens its observation timeline.
 
   `raw` is a shape, not a failure. An `unknown_market` source has no parser at
   all, and its record is retained with its provider line and its stated reason —

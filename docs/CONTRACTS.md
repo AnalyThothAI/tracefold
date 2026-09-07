@@ -461,7 +461,7 @@ and it resolves into **two disjoint vocabularies** (#553):
   not a provider frame at all: the chain tape derives it from
   `news_market_wallet_fills` and opens the Item itself, through the same
   `admit_market_item` transaction, with `provider = 'robinhood_chain'` and no
-  Strategy id. Its typed row carries `kind` (`exit|crowding`), the wallet, the
+  Strategy id. Its typed row carries `kind` (`buy|exit|crowding|digest`), the wallet, the
   token, the roster version it was following, the window, the numbers the card
   shows and the fill identities in `evidence`. Everything downstream — the
   notification loop, the card, the delivery ledger, the detail route, retention
@@ -639,7 +639,7 @@ every Event this code can open.
   definition; liquidation replaces the definition with the liquidated side;
   smart money is provider, Strategy id, trader label, account address, venue,
   native instrument, action and position side; a wallet observation is its kind,
-  provider, the selling wallet (exits only), the token and the position segment
+  provider, the subject wallet (buys and exits), the token and the position segment
   or crowding window the rules assigned it. An observation with no typed fact is
   its own group (`raw|<market_kind>|<item_id>`), so unknown never merges with
   unknown.
@@ -652,7 +652,7 @@ every Event this code can open.
 
   Three rules about the group payload that the schema cannot state. The
   `wallet_*` block is absent on the four provider kinds; `wallet_kind` is
-  `exit`, `crowding` or `digest`, and `wallet_digest_lines` is present on a
+  `buy`, `exit`, `crowding` or `digest`, and `wallet_digest_lines` is present on a
   digest alone, carrying the sentences it was sent with, in order.
   `notify_group_key` is deliberately not the display `group_key` — a smart-money
   display run breaks when the account changes action and the notification group
@@ -689,33 +689,52 @@ every Event this code can open.
   `last_error` are the loop's own open strings and are printed as written.
 
   `fills[]` is counted per stored kind (`buy`, `sell`, `transfer_out`) and
-  `cards[]` per card kind (`exit`, `crowding`, `digest`). A kind nothing
+  `cards[]` per card kind (`buy`, `exit`, `crowding`, `digest`). A kind nothing
   happened for is absent rather than zeroed — unlike the market surface's
   `sources[]`, these are counts of what the tape did rather than a per-source
   inventory a reader is owed either way.
-- `GET /api/news/wallets/cards?window=...&limit=...` returns one bounded window
-  of the cards the tape's rules opened, newest first (#572 PR-3). `window` is
-  the closed set `24h|72h|7d`, default `24h`; anything else is 400
-  `news_wallets_window_invalid` (`field: window`). `limit` is 1..200, default
-  100; outside that range FastAPI returns 422. Any other query parameter is 400
-  `unsupported_query_param`.
+- `GET /api/news/wallets/cards?window=...&limit=...` returns stored research
+  observations newest first, including candidates that were never notified (#614).
+  `window` is `24h|72h|7d`, default `24h`; invalid values return 400
+  `news_wallets_window_invalid`. `limit` is 1..200, default 100 (422 outside it).
+  Optional `kind=buy|exit|crowding|digest`, `wallet_address`, and `token_address`
+  narrow the ledger query before limiting it. Invalid kind or address returns 422.
+  Omitted kind returns all kinds;
+  the console explicitly defaults to buy. With both exact address filters, `fills[]`
+  contains the bounded raw buy/sell/transfer-out ledger in descending block/log order,
+  regardless of the card kind filter. Otherwise `fills` is empty. Quantities retain raw
+  integer text and optional decimals; missing price/precision stays unknown.
+  Address filters identify wallet/token,
+  while `token` remains authentication. Unsupported query parameters return 400.
 
-  `digest_lines` and `digest_model_used` are present on a digest card alone.
-  Every card is published whether or not it was sent: "was a reader told" is
-  reported per row and is never a filter, exactly as on the market list.
+  Buy rows carry `stage` (`first_observed|new_position|add|reentry|unknown`),
+  `selection_reason`, `buy_count`, `unpriced_buys`, `observed_at_ms`,
+  `history_from_ms` and `price_reference`. Stage requires evidence of the balance
+  before the exact transfer; absence of retained history alone is never zero.
+  Amount and entry mean include only priced fills; unpriced counts disclose
+  incomplete coverage. Reaching the configured amount selects a notification,
+  with another in the same window only after the selected cumulative amount
+  doubles. Every candidate retains its own transaction identity and evidence.
+  Independent exit notifications default off; exit facts stay available.
 
-  The two return figures are #572 §11's effect receipt and are not a gate:
-  nothing in the code reads them. They are integer basis points against the
-  price the card itself printed — the chain's mark at the moment it fired, or
-  the lead's entry for a crowding window — clamped to ±10,000,000 bps because
-  these pools print prices spanning thirty orders of magnitude. `null` with
-  `outcome_*_source` of `unavailable` is "we looked and nothing could price it";
-  `null` with no source is "that horizon has not arrived", which is the absence
-  of a receipt row rather than a zero.
+  `digest_lines` and `digest_model_used` occur on digest rows only. Model-used
+  means model-selected buy fact IDs: every final line is rendered by the program,
+  including identity, direction and arithmetic. Overall window totals are separate
+  full-window queries, never inferred from the bounded buy detail list.
 
-  `item_id` is the Item's own identity, so every row links to
-  `/api/news/market/{item_id}`, which stays the single place one observation is
-  read in full.
+  The 15m, 1h and 4h return figures use each outcome's persisted observation price,
+  never the lead wallet's entry or an assumed delivery-time quote. Outcome rows
+  retain reference/target/actual sampling times and source. Returns are clamped
+  to ±10,000,000 bps; they describe observed prices, not executable returns.
+  A missed grace interval or unavailable quote is recorded as `unavailable`;
+  an absent outcome means pending, which includes not-due and unprocessed work.
+  A measured outcome without a reference price still has a source and a null
+  return. Legacy delivery receipts preserve unknown reference prices after the
+  hard cut. Every observed candidate can receive outcomes whether it was sent
+  or not; no notification-success selection is applied. A persisted attempt checkpoint
+  rotates unpriced candidates behind untried work within each horizon budget.
+
+  `item_id` links to `/api/news/market/{item_id}`, the common observation detail.
 - `GET /api/news/market/{item_id}` returns one observation in full: the
   observation itself, the stored `provider_params` payload, the card that spoke
   for it (`notification_delivery`, or `null`), the Items that card covered, and

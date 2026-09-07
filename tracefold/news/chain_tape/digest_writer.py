@@ -1,10 +1,10 @@
 """When the wallet digest is due, and where it goes (#572 §5.4).
 
 The impure half, in the same relation to `digest` that `derive` is in to `rules`: this module owns the
-clock, the database checkouts, the one model call and the write. It runs inside `ChainTapeLoop`'s own
-turn -- there is no second task and no second scheduler -- and like the card rules it can never fault
-the tape: a failed read, a refused write, an unreachable model and a provider that will not answer all
-end in either "no digest this turn" or "the template's wording".
+clock, the database checkouts, the one model call and the write. It is offered by the app-owned
+digest worker, independently of chain ingestion. Transient database refusals defer the window; optional
+model and provider failures use deterministic selection or omit unavailable context. Unexpected database
+failures reach this stage's capability supervisor.
 
 The model call is deliberately between two checkouts and inside neither. The pack is read, the
 connection is released, the call is made, and a short transaction writes the result -- which is what
@@ -61,7 +61,7 @@ log = logging.getLogger("tracefold.news.chain_tape")
 
 @dataclass(frozen=True, slots=True)
 class DigestResult:
-    """What one digest pass did, counted so a turn can report it on the tape's own state row."""
+    """What one independently scheduled digest pass wrote."""
 
     digests: int = 0
     lines: int = 0
@@ -73,7 +73,7 @@ class DigestResult:
 
 @dataclass(frozen=True, slots=True)
 class _Lines:
-    """The sentences this pass will send, and what reconciliation did to get there."""
+    """The rendered facts this pass will send, and the model selection audit."""
 
     lines: tuple[DigestLine, ...]
     model_called: bool
@@ -83,17 +83,16 @@ class _Lines:
 
 
 class WalletDigestWriter(TapePasses):
-    """One digest per due window, written as an ordinary `wallet` Item the existing loop sends.
+    """One buy digest per due window, written as an ordinary `wallet` Item the existing loop sends.
 
     Its own object rather than more methods on the deriver: the deriver's turn is per fill and runs
-    every two seconds, and this one runs six times a day over a window. What they share is the tape's
-    turn, which is where `ChainTapeLoop` calls both.
+    every two seconds, and this one runs six times a day over a window. App owns its scheduler; the writer
+    exposes one bounded due-window operation.
     """
 
     _read_timeout_seconds = _DB_READ_TIMEOUT_SECONDS
     _write_timeout_seconds = _DB_WRITE_TIMEOUT_SECONDS
     _failure_stage = "digest"
-    _failure_label = "digest"
 
     def __init__(
         self,
@@ -113,6 +112,24 @@ class WalletDigestWriter(TapePasses):
         self.max_calls_per_day = max(0, int(max_calls_per_day))
         self.telemetry = telemetry
         self._clock = clock
+
+    async def advance(self) -> DigestResult:
+        """One app-scheduled pass; ingestion never waits for the model or the bag snapshots."""
+
+        errors: list[str] = []
+        roster = await self._read(
+            "news_chain_tape_digest_roster", lambda repos: repos.news.chain_tape_current_roster(), errors
+        )
+        if roster is FAILED or roster is None:
+            return DigestResult()
+        return await self.take_digest(roster=roster, errors=errors)
+
+    async def aclose(self) -> None:
+        """Release the writer's independent site client; the model runtime belongs to App."""
+
+        close = None if self.bags is None else getattr(self.bags, "aclose", None)
+        if close is not None:
+            await close()
 
     async def take_digest(self, *, roster: RosterSnapshot, errors: list[str]) -> DigestResult:
         """Write the window's digest if one is due. Never able to fail the tape's ingestion half."""
@@ -201,15 +218,13 @@ class WalletDigestWriter(TapePasses):
         )
 
     async def _lines(self, pack: DigestPack, *, calls_today: int) -> _Lines:
-        """The model's surviving lines when enough of them survive, and the template's otherwise.
+        """The model's valid buy selection, rendered by the program, and the template otherwise.
 
         The call happens here, between two database checkouts and inside neither: the pack was read and
         the connection released before this runs, and the write that follows opens its own.
 
-        Reconciliation is per line (`ground`), so one rounded figure costs its own sentence rather than
-        the whole card. The template takes over only when too few lines are left to be a summary, and
-        the counts are carried either way -- a run where the model answered and lost six of eight lines
-        is the evidence that says the instruction needs work, and the card alone cannot show it.
+        The model only returns fact IDs. `ground` validates the selection and the program renders
+        every character of reader-facing text; invalid selections fall back to deterministic order.
         """
 
         if self.program is None or calls_today >= self.max_calls_per_day:
@@ -217,9 +232,9 @@ class WalletDigestWriter(TapePasses):
         try:
             answer = await self.program.summarize(facts_json=pack.as_json())
         except Exception:  # a digest that could not be written is a digest the template writes
-            # The audited LM seam already records the call itself; what this decides is only whether
-            # the reader gets the model's wording or the pack's own.
-            log.warning("chain tape digest model call failed; rendering the template")
+            # The audited LM seam records the call; this decides whether buy ordering comes from the
+            # model or the deterministic selection. The program owns all wording in both cases.
+            log.warning("chain tape digest selection call failed; rendering the template")
             return _Lines(template_lines(pack), model_called=True, model_used=False)
         grounded = ground(pack, tuple(answer))
         if not grounded.accepted():
@@ -325,8 +340,8 @@ def _digest_event(
         segment_key=str(int(pack.window_from_ms)),
         event_at_ms=int(pack.window_to_ms),
         received_at_ms=int(now_ms),
-        title=f"名单钱包 {window_hours(pack.window_from_ms, pack.window_to_ms)} 小时摘要",
-        peer_wallets=len(rows.activity),
+        title=f"名单钱包 {window_hours(pack.window_from_ms, pack.window_to_ms)} 小时买入摘要",
+        peer_wallets=rows.totals.buy_wallets,
         evidence={
             "lines": [{"text": line.text, "cites": list(line.cites)} for line in outcome.lines],
             "facts": [{"id": fact.id, "text": fact.text} for fact in pack.facts],
@@ -337,6 +352,7 @@ def _digest_event(
             # instruction working", and they are not recoverable from the card.
             "lines_kept": outcome.kept,
             "lines_dropped": outcome.dropped,
+            "model_authority": "buy_fact_selection",
             "roster_version": roster.roster_version,
         },
     )

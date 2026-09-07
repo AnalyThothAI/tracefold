@@ -207,11 +207,10 @@ export interface paths {
         };
         /**
          * Get News Wallet Cards
-         * @description Cards the tape opened in the window, newest first, each beside its two price receipts.
+         * @description Retained observations, optionally narrowed by kind and exact wallet/token identity.
          *
          *     Every card is published, sent or not: whether a reader was told is reported per row and is never a
-         *     filter. A digest carries its own sentences and says whether the model wrote them, which is the one
-         *     thing a reader of this page cannot get from the card itself.
+         *     filter. A digest says whether the model selected its material; the program renders its sentences.
          */
         get: operations["get_news_wallet_cards_api_news_wallets_cards_get"];
         put?: never;
@@ -1576,6 +1575,8 @@ export interface components {
             wallet_basis?: ("chain_balance" | "site_reported") | null;
             /** Wallet Block Number */
             wallet_block_number?: number | null;
+            /** Wallet Buy Count */
+            wallet_buy_count?: number | null;
             /** Wallet Closed */
             wallet_closed?: boolean | null;
             /** Wallet Crowding Item Id */
@@ -1588,12 +1589,16 @@ export interface components {
             wallet_followers?: number | null;
             /** Wallet Handle */
             wallet_handle?: string | null;
+            /** Wallet History From Ms */
+            wallet_history_from_ms?: number | null;
             /** Wallet Kind */
-            wallet_kind?: ("exit" | "crowding" | "digest") | null;
+            wallet_kind?: ("buy" | "exit" | "crowding" | "digest") | null;
             /** Wallet Liquidity Usd */
             wallet_liquidity_usd?: string | null;
             /** Wallet Mark Price */
             wallet_mark_price?: string | null;
+            /** Wallet Observed At Ms */
+            wallet_observed_at_ms?: number | null;
             /** Wallet Peer Usd */
             wallet_peer_usd?: string | null;
             /** Wallet Peer Wallets */
@@ -1608,12 +1613,18 @@ export interface components {
             wallet_ratio_bps?: number | null;
             /** Wallet Segment Key */
             wallet_segment_key?: string | null;
+            /** Wallet Selection Reason */
+            wallet_selection_reason?: string | null;
+            /** Wallet Stage */
+            wallet_stage?: ("first_observed" | "new_position" | "add" | "reentry" | "unknown") | null;
             /** Wallet Token */
             wallet_token?: string | null;
             /** Wallet Tone */
             wallet_tone?: string | null;
             /** Wallet Tx Hash */
             wallet_tx_hash?: string | null;
+            /** Wallet Unpriced Buys */
+            wallet_unpriced_buys?: number | null;
             /** Wallet Usd */
             wallet_usd?: string | null;
             /** Whale Long Profit Bps */
@@ -2486,16 +2497,16 @@ export interface components {
         };
         /**
          * NewsWalletCardData
-         * @description One card the tape opened, with the two price receipts taken after it was sent.
+         * @description A retained observation, its selection evidence and frozen-reference price outcomes.
          *
-         *     `return_1h_bps` / `return_4h_bps` are measured against the price the card itself printed -- the
-         *     chain's mark at the moment it fired, or the lead's entry for a crowding window -- and are absent
-         *     where the card carried no price to measure against or nothing could price the token. They are
-         *     #572 §11's receipt, not a gate: nothing in the code reads them.
+         *     A buy can have no delivery and still have outcomes. The paid entry price is distinct from the
+         *     observed market price; unavailable or historically unrecorded references never invent returns.
          */
         NewsWalletCardData: {
             /** Basis */
             basis?: ("chain_balance" | "site_reported") | null;
+            /** Buy Count */
+            buy_count?: number | null;
             /**
              * Closed
              * @default false
@@ -2518,15 +2529,21 @@ export interface components {
              * @default
              */
             handle: string;
+            /** History From Ms */
+            history_from_ms?: number | null;
             /** Item Id */
             item_id: string;
             /**
              * Kind
              * @enum {string}
              */
-            kind: "exit" | "crowding" | "digest";
+            kind: "buy" | "exit" | "crowding" | "digest";
             /** Mark Price */
             mark_price?: string | null;
+            /** Observed At Ms */
+            observed_at_ms?: number | null;
+            /** Outcome 15M Source */
+            outcome_15m_source?: string | null;
             /** Outcome 1H Source */
             outcome_1h_source?: string | null;
             /** Outcome 4H Source */
@@ -2540,14 +2557,22 @@ export interface components {
             position_usd?: string | null;
             /** Premium Bps */
             premium_bps?: number | null;
+            /** Price Reference */
+            price_reference?: string | null;
             /** Ratio Bps */
             ratio_bps?: number | null;
+            /** Return 15M Bps */
+            return_15m_bps?: number | null;
             /** Return 1H Bps */
             return_1h_bps?: number | null;
             /** Return 4H Bps */
             return_4h_bps?: number | null;
+            /** Selection Reason */
+            selection_reason?: string | null;
             /** Settled At Ms */
             settled_at_ms?: number | null;
+            /** Stage */
+            stage?: ("first_observed" | "new_position" | "add" | "reentry" | "unknown") | null;
             /**
              * Token
              * @default
@@ -2560,6 +2585,8 @@ export interface components {
              * @default
              */
             tone: string;
+            /** Unpriced Buys */
+            unpriced_buys?: number | null;
             /** Usd */
             usd?: string | null;
             /**
@@ -2586,7 +2613,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "exit" | "crowding" | "digest";
+            kind: "buy" | "exit" | "crowding" | "digest";
             /** Last Event At Ms */
             last_event_at_ms?: number | null;
             /**
@@ -2602,6 +2629,8 @@ export interface components {
         NewsWalletCardsData: {
             /** Cards */
             cards: components["schemas"]["NewsWalletCardData"][];
+            /** Fills */
+            fills: components["schemas"]["NewsWalletFillData"][];
             /** Limit */
             limit: number;
             /** Window */
@@ -2610,6 +2639,39 @@ export interface components {
             window_from_ms: number;
             /** Window To Ms */
             window_to_ms: number;
+        };
+        /**
+         * NewsWalletFillData
+         * @description A retained wallet/token action, whether or not it generated an observation.
+         */
+        NewsWalletFillData: {
+            /** Amount Raw */
+            amount_raw: string;
+            /** Block Number */
+            block_number: number;
+            /** Chain Id */
+            chain_id: number;
+            /** Event At Ms */
+            event_at_ms: number;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "buy" | "sell" | "transfer_out";
+            /** Log Index */
+            log_index: number;
+            /** Token */
+            token: string;
+            /** Token Decimals */
+            token_decimals: number | null;
+            /** Token Symbol */
+            token_symbol: string | null;
+            /** Tx Hash */
+            tx_hash: string;
+            /** Usd */
+            usd: string | null;
+            /** Wallet */
+            wallet: string;
         };
         /**
          * NewsWalletFillTotalData
@@ -3626,6 +3688,9 @@ export interface operations {
             query?: {
                 window?: string;
                 limit?: number;
+                kind?: ("buy" | "exit" | "crowding" | "digest") | null;
+                wallet_address?: string | null;
+                token_address?: string | null;
             };
             header?: never;
             path?: never;

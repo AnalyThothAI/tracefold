@@ -41,6 +41,49 @@
     white-space: nowrap;
   }
 
+  .news-wallets-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: end;
+    padding: 6px 10px;
+  }
+
+  .news-wallets-filters label {
+    display: grid;
+    flex: 1 1 220px;
+    gap: 4px;
+    min-width: 0;
+    color: var(--text-secondary);
+    font: 500 var(--font-size-meta)/1.5 var(--font-sans);
+  }
+
+  .news-wallets-filters input {
+    width: 100%;
+    min-width: 0;
+    padding: 6px 8px;
+    border: 1px solid var(--signal-neutral-border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    background: var(--surface-panel);
+    font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
+  }
+
+  .news-wallets-note {
+    margin: 0;
+    padding: 6px 10px;
+    color: var(--text-subtle);
+    font: 400 var(--font-size-meta)/1.5 var(--font-sans);
+  }
+
+  .news-wallets-evidence {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    color: var(--text-subtle);
+    font: 400 var(--font-size-meta)/1.5 var(--font-sans);
+  }
+
   /* One meaning per state, the way the market page's kind chips work: a lit chip is the window in force. */
   .news-wallets-windows {
     display: inline-flex;

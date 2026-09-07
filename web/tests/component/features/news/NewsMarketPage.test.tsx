@@ -10,6 +10,7 @@ import {
   newsMarketItemFixture,
   newsMarketObservationFixture,
   newsStatusFixture,
+  newsWalletBuyFixture,
 } from "@tests/fixtures/newsFixture";
 import { server } from "@tests/msw/server";
 import { HttpResponse, http } from "msw";
@@ -236,6 +237,53 @@ describe("NewsMarketPage", () => {
     // And the summary strip names it beside the four the provider sends.
     const sources = await screen.findByLabelText("来源汇总");
     expect(within(sources).getByTitle(/链上钱包/)).toBeInTheDocument();
+  });
+
+  it("shows a buy observation's frozen evidence and links its exact wallet/token timeline", async () => {
+    const buy = newsWalletBuyFixture();
+    const observation = newsMarketObservationFixture({
+      market_kind: "wallet",
+      wallet_kind: "buy",
+      wallet_stage: buy.stage,
+      wallet_address: buy.wallet,
+      wallet_token: buy.token,
+      wallet_handle: buy.handle,
+      wallet_usd: buy.usd,
+      wallet_entry_price: buy.entry_price,
+      wallet_mark_price: buy.mark_price,
+      wallet_selection_reason: buy.selection_reason,
+      wallet_buy_count: buy.buy_count,
+      wallet_observed_at_ms: buy.observed_at_ms,
+      wallet_history_from_ms: buy.history_from_ms,
+      title: "0xVantaa 买入观察 FSD",
+    });
+    server.use(
+      http.get(/.*\/api\/news\/market\/.+$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsMarketItemFixture({ observation, timeline: [observation] }),
+        }),
+      ),
+      http.get(/.*\/api\/news\/market$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsMarketFixture({
+            groups: [newsMarketGroupFixture({ latest: observation, market_kind: "wallet" })],
+          }),
+        }),
+      ),
+    );
+    renderMarket();
+    const rows = await screen.findAllByRole("button", { expanded: false });
+    fireEvent.click(rows[0]);
+    expect(await screen.findByText("买入观察依据")).toBeInTheDocument();
+    expect(screen.getByText("观察期首次买入")).toBeInTheDocument();
+    expect(screen.getByText("已计价均价")).toBeInTheDocument();
+    expect(screen.getByText("观察价")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "查看同钱包与代币的观察时间线" })).toHaveAttribute(
+      "href",
+      `/news/wallets?window=7d&kind=all&wallet_address=${buy.wallet}&token_address=${buy.token}`,
+    );
   });
 
   it("prints a wallet digest's own sentences when its group is expanded", async () => {

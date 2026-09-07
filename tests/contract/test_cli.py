@@ -389,7 +389,7 @@ class CliTests(unittest.TestCase):
                 "enabled": False,
                 "rpc_url": "https://rpc.mainnet.chain.robinhood.com",
                 "poll_interval_s": 2.0,
-                "roster_provider_url": "https://robinhoodtrenches.com",
+                "roster_provider_url": "https://rhtrenches.com",
                 "roster": {
                     "min_closed_trades": 10,
                     "min_profit_factor": 1.2,
@@ -397,6 +397,9 @@ class CliTests(unittest.TestCase):
                     "top_whale_by_open_cost": 20,
                 },
                 "rules": {
+                    "exit_notifications_enabled": False,
+                    "buy_min_usd": 1000.0,
+                    "buy_window_s": 900,
                     "exit_ratio_bps": 3000,
                     "exit_min_position_usd": 20_000.0,
                     "exit_cascade_window_s": 7200,

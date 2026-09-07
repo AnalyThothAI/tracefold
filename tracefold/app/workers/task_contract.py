@@ -38,9 +38,13 @@ from tracefold.app.workers.runtime import (
     NEWS_QUOTES,
     NEWS_REACTIONS,
     TRADING_SIGNAL_LANE,
+    WALLET_DIGEST,
+    WALLET_RESEARCH,
 )
 from tracefold.app.workers.wiring.chain_tape import (
     CHAIN_TAPE_TASK_NAME,
+    WALLET_DIGEST_TASK_NAME,
+    WALLET_RESEARCH_TASK_NAME,
     ChainTapeComposition,
     run_chain_tape,
 )
@@ -144,6 +148,24 @@ def worker_business_tasks(
                 foundational=False,
             )
         )
+        tasks.append(
+            WorkerTask(
+                name=WALLET_RESEARCH_TASK_NAME,
+                capability=WALLET_RESEARCH,
+                run=lambda stop: run_chain_tape(tape.research, stop_event=stop, poll_seconds=tape.poll_seconds),
+                foundational=False,
+            )
+        )
+        if tape.digest is not None:
+            digest = tape.digest
+            tasks.append(
+                WorkerTask(
+                    name=WALLET_DIGEST_TASK_NAME,
+                    capability=WALLET_DIGEST,
+                    run=lambda stop: run_chain_tape(digest, stop_event=stop, poll_seconds=tape.poll_seconds),
+                    foundational=False,
+                )
+            )
     if signal_lane is not None:
         lane = signal_lane
         tasks.append(

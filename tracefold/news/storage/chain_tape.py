@@ -32,15 +32,12 @@ from ..chain_tape.contracts import (
     TapeCursor,
 )
 from ..chain_tape.digest import (
-    DIGEST_CARDS_MAX,
     DIGEST_COSTS_MAX,
-    DIGEST_WALLETS_MAX,
-    DigestCardRow,
     DigestOutcomeRow,
     DigestWindowRows,
+    DigestWindowTotals,
     LastDigest,
     TokenWindowFlow,
-    WalletWindowActivity,
 )
 from ..chain_tape.rules import CrowdingBuyer, PreviousCrowding, PreviousExit
 from ..wallet_contracts import (
@@ -218,59 +215,53 @@ SELECT count(DISTINCT wallet) AS wallets, COALESCE(sum(usd), 0) AS usd
    AND event_at_ms >= %s AND event_at_ms <= %s
 """
 
-# The crowding rule's window: who *opened* a position in this token inside it, and for how much.
-#
-# The scan is bounded to the window itself, and both halves have an index that can serve them:
-# `ix_news_market_wallet_fills_token_event_at` for the window, and PR-1's
-# `(wallet, token, event_at_ms DESC)` for the "was this wallet already holding" anti-join. Which one
-# the planner actually picks is its business -- on a small table either is cheap, and on a large one
-# the point is that neither half degrades into a scan of the token's whole retained history, which is
-# what finding each wallet's first buy without a lower bound would have cost.
+# The crowding window counts purchases, including additions to existing holdings. The token/event
+# index bounds the scan; chain coordinates choose each wallet's first fill within the window.
 _CROWDING_BUYERS_SQL: Final = """
 WITH window_buys AS (
-  SELECT wallet, event_at_ms, usd, amount_raw, token_decimals
+  SELECT wallet, event_at_ms, block_number, log_index, usd, amount_raw, token_decimals
     FROM news_market_wallet_fills
    WHERE chain_id = %(chain_id)s AND token = %(token)s AND kind = 'buy'
      AND event_at_ms >= %(from_ms)s AND event_at_ms <= %(to_ms)s
+     AND (block_number, log_index) <= (%(through_block)s, %(through_log)s)
 ), firsts AS (
   SELECT DISTINCT ON (wallet)
          wallet, event_at_ms AS first_at_ms, usd AS first_usd,
+         block_number AS first_block, log_index AS first_log,
          amount_raw AS first_amount_raw, token_decimals AS first_decimals
     FROM window_buys
-   ORDER BY wallet, event_at_ms, usd
+   ORDER BY wallet, block_number, log_index
 )
 SELECT f.wallet, f.first_at_ms, f.first_usd, f.first_amount_raw, f.first_decimals,
+       f.first_block, f.first_log,
        COALESCE(sum(b.usd), 0) AS window_usd
   FROM firsts f
   JOIN window_buys b ON b.wallet = f.wallet
- WHERE NOT EXISTS (
-   SELECT 1 FROM news_market_wallet_fills held
-    WHERE held.chain_id = %(chain_id)s AND held.token = %(token)s AND held.kind = 'buy'
-      AND held.wallet = f.wallet AND held.event_at_ms < %(from_ms)s)
- GROUP BY f.wallet, f.first_at_ms, f.first_usd, f.first_amount_raw, f.first_decimals
- ORDER BY f.first_at_ms, f.wallet
+ GROUP BY f.wallet, f.first_at_ms, f.first_usd, f.first_amount_raw, f.first_decimals, f.first_block, f.first_log
+ ORDER BY f.first_at_ms, f.first_block, f.first_log, f.wallet
 """
 
 _INSERT_OUTCOME_SQL: Final = """
-INSERT INTO news_market_wallet_outcomes (delivery_key, horizon, price, at_ms, source)
-VALUES (%s, %s, %s, %s, %s)
-ON CONFLICT (delivery_key, horizon) DO NOTHING
+INSERT INTO news_market_wallet_outcomes
+ (item_id, delivery_key, horizon, price, at_ms, source, reference_price, reference_at_ms, target_at_ms, reference_kind)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (item_id, horizon) DO NOTHING
 """
 
-# Due price receipts: a sent wallet card whose horizon has passed and which has no row yet. The card's
-# own settle time is the anchor, because the subject of a receipt is what the reader was told and when.
+# Every observed candidate owns its receipts. Retry order rotates unpriced candidates so a missing
+# provider quote cannot occupy the bounded budget until everyone behind it has also expired.
 _DUE_OUTCOMES_SQL: Final = """
-SELECT d.delivery_key, d.settled_at_ms, e.token
-  FROM news_market_deliveries d
-  JOIN news_market_wallet_events e ON e.item_id = d.trigger_item_id
+SELECT e.item_id, i.market_notify_delivery_key AS delivery_key, e.token,
+       e.mark_price AS reference_price, (e.evidence->>'observed_at_ms')::bigint AS reference_at_ms
+  FROM news_market_wallet_events e
+  LEFT JOIN news_items i ON i.item_id = e.item_id
   LEFT JOIN news_market_wallet_outcomes o
-         ON o.delivery_key = d.delivery_key AND o.horizon = %(horizon)s
- WHERE d.market_kind = 'wallet'
-   AND d.state = 'sent'
-   AND d.settled_at_ms IS NOT NULL
-   AND d.settled_at_ms + %(horizon_ms)s <= %(now_ms)s
-   AND o.delivery_key IS NULL
- ORDER BY d.settled_at_ms
+         ON o.item_id = e.item_id AND o.horizon = %(horizon)s
+ WHERE e.kind IN ('buy', 'exit', 'crowding')
+   AND e.evidence ? 'observed_at_ms'
+   AND (e.evidence->>'observed_at_ms')::bigint + %(horizon_ms)s <= %(now_ms)s
+   AND o.item_id IS NULL
+ ORDER BY COALESCE(e.outcome_attempted_at_ms, 0), (e.evidence->>'observed_at_ms')::bigint, e.item_id
  LIMIT %(limit)s
 """
 
@@ -310,97 +301,76 @@ SELECT digest_attempted_at_ms FROM news_market_wallet_tape_state WHERE state_id 
 # The window's own totals, and the chain the facts came from. A digest with no chain id has nothing to
 # be a digest about, which is the same condition `DigestWindowRows.is_empty` reports.
 _DIGEST_TOTALS_SQL: Final = """
-SELECT count(DISTINCT token) AS tokens,
-       max(chain_id) AS chain_id,
+SELECT max(chain_id) AS chain_id,
+       count(DISTINCT wallet) AS active_wallets,
+       count(*) FILTER (WHERE kind = 'buy') AS buys,
+       COALESCE(sum(usd) FILTER (WHERE kind = 'buy'), 0) AS buy_usd,
+       count(DISTINCT wallet) FILTER (WHERE kind = 'buy') AS buy_wallets,
+       count(DISTINCT (wallet, token)) FILTER (WHERE kind = 'buy') AS buy_positions,
+       count(*) FILTER (WHERE kind = 'sell') AS sells,
+       COALESCE(sum(usd) FILTER (WHERE kind = 'sell'), 0) AS sell_usd,
+       count(*) FILTER (WHERE kind = 'transfer_out') AS transfers_out,
        count(*) FILTER (WHERE kind <> 'transfer_out' AND usd IS NULL) AS unpriced
   FROM news_market_wallet_fills
  WHERE event_at_ms >= %(from_ms)s AND event_at_ms < %(to_ms)s
 """
 
-_DIGEST_ACTIVITY_SQL: Final = """
-SELECT wallet,
-       count(*) FILTER (WHERE kind = 'buy') AS buys,
-       COALESCE(sum(usd) FILTER (WHERE kind = 'buy'), 0) AS buy_usd,
-       count(*) FILTER (WHERE kind = 'sell') AS sells,
-       COALESCE(sum(usd) FILTER (WHERE kind = 'sell'), 0) AS sell_usd,
-       count(*) FILTER (WHERE kind = 'transfer_out') AS transfers_out,
-       count(*) FILTER (WHERE kind <> 'transfer_out' AND usd IS NULL) AS unpriced,
-       COALESCE(sum(usd), 0) AS window_usd
-  FROM news_market_wallet_fills
- WHERE event_at_ms >= %(from_ms)s AND event_at_ms < %(to_ms)s
- GROUP BY wallet
- ORDER BY window_usd DESC, wallet
- LIMIT %(limit)s
-"""
-
-# The three cost bases are computed from these sums and nowhere else. The window halves answer "what
-# did this position do in the last four hours"; the unfiltered halves are every fill still retained for
-# the pair, which is what a net cash recovery line has to be measured against.
+# Select buy subjects before the bounded history lookup. Dollar numerator and quantity denominator
+# use exactly the same priced fills; sells can neither qualify nor displace a buy subject.
 _DIGEST_FLOWS_SQL: Final = """
-WITH active AS (
-  SELECT DISTINCT wallet, token
+WITH buys AS (
+  SELECT wallet, token, max(chain_id) AS chain_id,
+         COALESCE(max(token_symbol), '') AS token_symbol,
+         max(token_decimals) AS token_decimals,
+         COALESCE(sum(usd), 0) AS window_buy_usd,
+         COALESCE(sum(amount_raw), 0) AS window_buy_raw,
+         COALESCE(sum(amount_raw) FILTER (WHERE usd IS NOT NULL), 0) AS priced_buy_raw,
+         count(*) AS buys, count(*) FILTER (WHERE usd IS NULL) AS unpriced_buys,
+         min(event_at_ms) AS first_buy_at_ms, max(event_at_ms) AS last_buy_at_ms
     FROM news_market_wallet_fills
-   WHERE event_at_ms >= %(from_ms)s AND event_at_ms < %(to_ms)s
-     AND kind IN ('buy', 'sell')
+   WHERE event_at_ms >= %(from_ms)s AND event_at_ms < %(to_ms)s AND kind = 'buy'
+   GROUP BY wallet, token
+   ORDER BY window_buy_usd DESC, last_buy_at_ms DESC, wallet, token
+   LIMIT %(limit)s
 )
-SELECT f.wallet, f.token,
-       COALESCE(max(f.token_symbol), '') AS token_symbol,
-       max(f.token_decimals) AS token_decimals,
-       COALESCE(sum(f.usd) FILTER (
-         WHERE f.kind = 'buy' AND f.event_at_ms >= %(from_ms)s AND f.event_at_ms < %(to_ms)s), 0)
-         AS window_buy_usd,
-       COALESCE(sum(f.amount_raw) FILTER (
-         WHERE f.kind = 'buy' AND f.event_at_ms >= %(from_ms)s AND f.event_at_ms < %(to_ms)s), 0)
-         AS window_buy_raw,
-       COALESCE(sum(f.usd) FILTER (
-         WHERE f.kind = 'sell' AND f.event_at_ms >= %(from_ms)s AND f.event_at_ms < %(to_ms)s), 0)
-         AS window_sell_usd,
-       COALESCE(sum(f.usd) FILTER (WHERE f.kind = 'buy'), 0) AS lifetime_buy_usd,
-       COALESCE(sum(f.usd) FILTER (WHERE f.kind = 'sell'), 0) AS lifetime_sell_usd,
-       COALESCE(sum(f.amount_raw) FILTER (WHERE f.kind = 'buy'), 0) AS lifetime_buy_raw,
-       COALESCE(sum(f.amount_raw) FILTER (WHERE f.kind = 'sell'), 0) AS lifetime_sell_raw,
-       COALESCE(sum(f.amount_raw) FILTER (WHERE f.kind = 'transfer_out'), 0) AS lifetime_out_raw,
-       COALESCE(sum(f.usd) FILTER (
-         WHERE f.event_at_ms >= %(from_ms)s AND f.event_at_ms < %(to_ms)s), 0) AS window_usd
-  FROM news_market_wallet_fills f
-  JOIN active a ON a.wallet = f.wallet AND a.token = f.token
- GROUP BY f.wallet, f.token
- ORDER BY window_usd DESC, f.wallet, f.token
- LIMIT %(limit)s
+SELECT b.*, h.history_from_ms,
+       h.subsequent_sells, h.subsequent_sell_usd
+  FROM buys b
+ CROSS JOIN LATERAL (
+   SELECT min(f.event_at_ms) AS history_from_ms,
+          count(*) FILTER (WHERE f.kind = 'sell' AND f.event_at_ms > b.first_buy_at_ms) AS subsequent_sells,
+          COALESCE(sum(f.usd) FILTER (WHERE f.kind = 'sell' AND f.event_at_ms > b.first_buy_at_ms), 0)
+            AS subsequent_sell_usd
+     FROM news_market_wallet_fills f
+    WHERE f.chain_id = b.chain_id AND f.wallet = b.wallet AND f.token = b.token
+      AND f.event_at_ms < %(to_ms)s
+ ) h
+ ORDER BY b.window_buy_usd DESC, b.last_buy_at_ms DESC, b.wallet, b.token
 """
 
-_DIGEST_CARDS_SQL: Final = f"""
-SELECT e.kind, e.handle, COALESCE(e.token_symbol, '') AS token_symbol, e.ratio_bps, e.basis,
-       e.peer_wallets, e.usd, e.position_usd, e.tone, e.chain_id,
-       COALESCE(d.state = 'sent', false) AS sent
+_DIGEST_CARD_TOTALS_SQL: Final = f"""
+SELECT count(*) AS cards, count(*) FILTER (WHERE d.state = 'sent') AS sent_cards
   FROM news_market_wallet_events e
   LEFT JOIN news_items i ON i.item_id = e.item_id
   LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
  WHERE e.event_at_ms >= %(from_ms)s AND e.event_at_ms < %(to_ms)s AND e.kind <> '{DIGEST_KIND}'
- ORDER BY e.event_at_ms
- LIMIT %(limit)s
 """  # noqa: S608 -- the only interpolation is this repository's own code-owned kind literal
 
-# What the price receipts that landed in this window said, against the price the card itself printed.
-# `percentile_cont` skips the rows nothing could price, so `priced` is the honest denominator of the
-# median beside it.
+# The candidate owns its reference. Unsent buys remain in the sample; old delivery references never
+# fall back to a leader's entry price. Keep kinds separate because an exit and a buy answer different questions.
 _DIGEST_OUTCOMES_SQL: Final = """
-WITH receipts AS (
-  SELECT o.horizon, o.price, COALESCE(e.mark_price, e.entry_price) AS reference
-    FROM news_market_wallet_outcomes o
-    JOIN news_market_deliveries d ON d.delivery_key = o.delivery_key
-    JOIN news_market_wallet_events e ON e.item_id = d.trigger_item_id
-   WHERE o.at_ms >= %(from_ms)s AND o.at_ms < %(to_ms)s
-)
-SELECT horizon,
+SELECT e.kind, o.horizon, o.reference_kind,
        count(*) AS receipts,
-       count(*) FILTER (WHERE price IS NOT NULL) AS priced,
+       count(*) FILTER (WHERE o.price IS NOT NULL) AS priced,
+       count(*) FILTER (WHERE o.price IS NOT NULL AND o.reference_price > 0) AS comparable,
        percentile_cont(0.5) WITHIN GROUP (
-         ORDER BY CASE WHEN price IS NOT NULL AND reference IS NOT NULL AND reference > 0
-                       THEN (price / reference - 1) * 10000 END) AS median_bps
-  FROM receipts
- GROUP BY horizon
- ORDER BY horizon
+         ORDER BY CASE WHEN o.price IS NOT NULL AND o.reference_price > 0
+                       THEN (o.price / o.reference_price - 1) * 10000 END) AS median_bps
+  FROM news_market_wallet_outcomes o
+  JOIN news_market_wallet_events e ON e.item_id = o.item_id
+ WHERE o.at_ms >= %(from_ms)s AND o.at_ms < %(to_ms)s
+ GROUP BY e.kind, o.horizon, o.reference_kind
+ ORDER BY e.kind, o.horizon, o.reference_kind
 """
 
 
@@ -447,21 +417,20 @@ SELECT e.kind,
  ORDER BY e.kind
 """
 
-# One page of cards with their receipts. The return is computed against the price the card itself
-# printed -- the chain's mark at the moment it fired, or the lead's entry for a crowding window -- and
-# clamped, because these pools print prices spanning thirty orders of magnitude and an unclamped ratio
-# of two of them does not fit the integer it crosses the wire as.
+# One bounded page with outcome-owned observation references; no fallback to historical entry prices.
 WALLET_CARDS_SQL: Final = f"""
 WITH cards AS (
   SELECT e.item_id, e.kind, e.handle, e.wallet, e.token, e.token_symbol, e.tone,
          e.ratio_bps, e.basis, e.closed, e.peer_wallets, e.premium_bps,
          e.usd, e.position_usd, e.entry_price, e.mark_price, e.evidence,
          e.event_at_ms, e.window_from_ms, e.window_to_ms,
-         COALESCE(e.mark_price, e.entry_price) AS reference_price,
          i.market_notify_delivery_key AS delivery_key
     FROM news_market_wallet_events e
     LEFT JOIN news_items i ON i.item_id = e.item_id
    WHERE e.event_at_ms >= %(from_ms)s AND e.event_at_ms < %(to_ms)s
+     AND (%(kind)s::text IS NULL OR e.kind = %(kind)s)
+     AND (%(wallet_address)s::text IS NULL OR e.wallet = %(wallet_address)s)
+     AND (%(token_address)s::text IS NULL OR e.token = %(token_address)s)
    ORDER BY e.event_at_ms DESC
    LIMIT %(limit)s
 )
@@ -470,15 +439,25 @@ SELECT c.item_id, c.kind, c.handle, c.wallet, c.token, c.token_symbol, c.tone,
        c.usd::text AS usd, c.position_usd::text AS position_usd,
        c.entry_price::text AS entry_price, c.mark_price::text AS mark_price,
        c.event_at_ms, c.window_from_ms, c.window_to_ms,
+       c.evidence->>'stage' AS stage, c.evidence->>'selection_reason' AS selection_reason,
+       (c.evidence->>'buy_count')::integer AS buy_count,
+       (c.evidence->>'unpriced_buys')::integer AS unpriced_buys,
+       (c.evidence->>'observed_at_ms')::bigint AS observed_at_ms,
+       (c.evidence->>'history_from_ms')::bigint AS history_from_ms,
+       c.evidence->>'price_reference' AS price_reference,
        c.delivery_key, d.state AS delivery_state, d.settled_at_ms,
+       o15.source AS outcome_15m_source,
+       CASE WHEN o15.price IS NOT NULL AND o15.reference_price > 0
+            THEN LEAST(10000000, GREATEST(-10000000,
+                 round((o15.price / o15.reference_price - 1) * 10000)))::integer END AS return_15m_bps,
        o1.source AS outcome_1h_source,
-       CASE WHEN o1.price IS NOT NULL AND c.reference_price > 0
+       CASE WHEN o1.price IS NOT NULL AND o1.reference_price > 0
             THEN LEAST(10000000, GREATEST(-10000000,
-                 round((o1.price / c.reference_price - 1) * 10000)))::integer END AS return_1h_bps,
+                 round((o1.price / o1.reference_price - 1) * 10000)))::integer END AS return_1h_bps,
        o4.source AS outcome_4h_source,
-       CASE WHEN o4.price IS NOT NULL AND c.reference_price > 0
+       CASE WHEN o4.price IS NOT NULL AND o4.reference_price > 0
             THEN LEAST(10000000, GREATEST(-10000000,
-                 round((o4.price / c.reference_price - 1) * 10000)))::integer END AS return_4h_bps,
+                 round((o4.price / o4.reference_price - 1) * 10000)))::integer END AS return_4h_bps,
        CASE WHEN c.kind = '{DIGEST_KIND}' THEN (
               SELECT jsonb_agg(line ->> 'text' ORDER BY ord)
                 FROM jsonb_array_elements(c.evidence -> 'lines') WITH ORDINALITY AS t(line, ord)
@@ -487,8 +466,9 @@ SELECT c.item_id, c.kind, c.handle, c.wallet, c.token, c.token_symbol, c.tone,
             THEN COALESCE((c.evidence ->> 'model_used') = 'true', false) END AS digest_model_used
   FROM cards c
   LEFT JOIN news_market_deliveries d ON d.delivery_key = c.delivery_key
-  LEFT JOIN news_market_wallet_outcomes o1 ON o1.delivery_key = c.delivery_key AND o1.horizon = '1h'
-  LEFT JOIN news_market_wallet_outcomes o4 ON o4.delivery_key = c.delivery_key AND o4.horizon = '4h'
+  LEFT JOIN news_market_wallet_outcomes o15 ON o15.item_id = c.item_id AND o15.horizon = '15m'
+  LEFT JOIN news_market_wallet_outcomes o1 ON o1.item_id = c.item_id AND o1.horizon = '1h'
+  LEFT JOIN news_market_wallet_outcomes o4 ON o4.item_id = c.item_id AND o4.horizon = '4h'
  ORDER BY c.event_at_ms DESC
 """  # noqa: S608 -- the only interpolation is this repository's own code-owned kind literal
 
@@ -496,10 +476,14 @@ SELECT c.item_id, c.kind, c.handle, c.wallet, c.token, c.token_symbol, c.tone,
 class DueOutcomeRow(TypedDict):
     """One price receipt this turn may take: which card, which horizon, and which token to price."""
 
-    delivery_key: str
+    item_id: str
+    delivery_key: str | None
     horizon: OutcomeHorizon
     token: str
     expired: bool
+    reference_price: Decimal | None
+    reference_at_ms: int
+    target_at_ms: int
 
 
 class ChainTapeStateRow(TypedDict):
@@ -520,6 +504,66 @@ class ChainTapeStateRow(TypedDict):
 
 class ChainTapeStorage:
     conn: Any
+
+    def chain_tape_pending_fills(self, *, limit: int = 100) -> list[ClassifiedFill]:
+        rows = self.conn.execute(
+            """SELECT * FROM news_market_wallet_fills WHERE derived_at_ms IS NULL
+                 ORDER BY block_number, log_index LIMIT %s""",
+            (int(limit),),
+        ).fetchall()
+        return [ClassifiedFill(**{name: row[name] for name in ClassifiedFill.__dataclass_fields__}) for row in rows]
+
+    def chain_tape_mark_derived(self, fill: ClassifiedFill, *, now_ms: int) -> None:
+        self.conn.execute(
+            """UPDATE news_market_wallet_fills SET derived_at_ms = %s
+                 WHERE chain_id = %s AND tx_hash = %s AND log_index = %s AND derived_at_ms IS NULL""",
+            (int(now_ms), fill.chain_id, fill.tx_hash, fill.log_index),
+        )
+
+    def chain_tape_buy_context(self, fill: ClassifiedFill, *, from_ms: int) -> dict[str, Any]:
+        rows = self.conn.execute(
+            """SELECT tx_hash, log_index, block_number, kind, amount_raw, usd, event_at_ms
+                 FROM news_market_wallet_fills
+                WHERE chain_id = %s AND wallet = %s AND token = %s
+                  AND (block_number, log_index) <= (%s, %s)
+                ORDER BY block_number, log_index""",
+            (fill.chain_id, fill.wallet, fill.token, fill.block_number, fill.log_index),
+        ).fetchall()
+        buys = [r for r in rows if r["kind"] == "buy" and int(r["event_at_ms"]) >= from_ms]
+        priced = [r for r in buys if r["usd"] is not None]
+        previous = self.conn.execute(
+            """SELECT usd FROM news_market_wallet_events
+                WHERE kind = 'buy' AND chain_id = %s AND wallet = %s AND token = %s
+                  AND segment_key = %s AND evidence->>'selection_reason' = 'selected'
+                  AND (block_number, (evidence->>'log_index')::integer) < (%s, %s)
+                ORDER BY block_number DESC, (evidence->>'log_index')::integer DESC LIMIT 1""",
+            (fill.chain_id, fill.wallet, fill.token, str(from_ms), fill.block_number, fill.log_index),
+        ).fetchone()
+        return {
+            "buy_count": len(buys),
+            "buy_usd": sum((r["usd"] for r in priced), Decimal(0)),
+            "priced_raw": sum(int(r["amount_raw"]) for r in priced),
+            "buy_raw": sum(int(r["amount_raw"]) for r in buys),
+            "unpriced": len(buys) - len(priced),
+            "prior_buys": sum(
+                r["kind"] == "buy" and (r["tx_hash"], r["log_index"]) != (fill.tx_hash, fill.log_index) for r in rows
+            ),
+            "history_from_ms": min((int(r["event_at_ms"]) for r in rows), default=fill.event_at_ms),
+            "previous_selected_usd": None if previous is None else previous["usd"],
+            "fills": [{"tx_hash": r["tx_hash"], "log_index": int(r["log_index"])} for r in buys],
+        }
+
+    def chain_tape_roster_version(self, version: int) -> RosterSnapshot | None:
+        rows = self.conn.execute(
+            "SELECT * FROM news_market_wallet_roster WHERE roster_version = %s ORDER BY wallet", (int(version),)
+        ).fetchall()
+        if not rows:
+            return None
+        return RosterSnapshot(
+            roster_version=int(version),
+            taken_at_ms=int(rows[0]["taken_at_ms"]),
+            members=tuple(RosterMember(**{name: r[name] for name in RosterMember.__dataclass_fields__}) for r in rows),
+        )
 
     # ------------------------------------------------------------------ fills
     def chain_tape_record_fills(self, fills: Sequence[ClassifiedFill]) -> int:
@@ -736,9 +780,16 @@ class ChainTapeStorage:
         return int(row["wallets"] or 0), Decimal(row["usd"] or 0)
 
     def chain_tape_crowding_buyers(
-        self, *, chain_id: int, token: str, from_ms: int, to_ms: int
+        self,
+        *,
+        chain_id: int,
+        token: str,
+        from_ms: int,
+        to_ms: int,
+        through_block: int = 9223372036854775807,
+        through_log: int = 2147483647,
     ) -> tuple[CrowdingBuyer, ...]:
-        """The wallets that opened a position in this token inside the window, with their entry price.
+        """The wallets that bought this token inside the window, with their first window-buy price.
 
         The price is the wallet's first buy in dollars over its quantity in the token's own units -- the
         two numbers already on the fill. A fill the cash leg could not price, or a token that answered no
@@ -747,7 +798,14 @@ class ChainTapeStorage:
 
         rows = self.conn.execute(
             _CROWDING_BUYERS_SQL,
-            {"chain_id": int(chain_id), "token": str(token), "from_ms": int(from_ms), "to_ms": int(to_ms)},
+            {
+                "chain_id": int(chain_id),
+                "token": str(token),
+                "from_ms": int(from_ms),
+                "to_ms": int(to_ms),
+                "through_block": int(through_block),
+                "through_log": int(through_log),
+            },
         ).fetchall()
         return tuple(
             CrowdingBuyer(
@@ -755,6 +813,8 @@ class ChainTapeStorage:
                 first_at_ms=int(row["first_at_ms"]),
                 usd=Decimal(row["window_usd"] or 0),
                 price=_unit_price(row["first_usd"], row["first_amount_raw"], row["first_decimals"]),
+                first_block=int(row["first_block"]),
+                first_log=int(row["first_log"]),
             )
             for row in rows
         )
@@ -778,13 +838,17 @@ class ChainTapeStorage:
             ).fetchall()
             due.extend(
                 DueOutcomeRow(
-                    delivery_key=str(row["delivery_key"]),
+                    item_id=str(row["item_id"]),
+                    delivery_key=row["delivery_key"],
                     horizon=horizon,
                     token=str(row["token"]),
                     # A horizon that is more than the grace period late is banked as `unavailable`: a
                     # price read long after the mark is not that mark's price, and a row that is never
                     # banked occupies the budget for as long as it stays unpriceable.
-                    expired=int(now_ms) - (int(row["settled_at_ms"]) + int(horizon_ms)) >= OUTCOME_GIVE_UP_MS,
+                    expired=int(now_ms) - (int(row["reference_at_ms"]) + int(horizon_ms)) >= OUTCOME_GIVE_UP_MS,
+                    reference_price=row["reference_price"],
+                    reference_at_ms=int(row["reference_at_ms"]),
+                    target_at_ms=int(row["reference_at_ms"]) + int(horizon_ms),
                 )
                 for row in rows
             )
@@ -796,14 +860,27 @@ class ChainTapeStorage:
         cursor = self.conn.execute(
             _INSERT_OUTCOME_SQL,
             (
-                str(outcome.delivery_key),
+                outcome.item_id,
+                outcome.delivery_key,
                 str(outcome.horizon),
                 outcome.price,
                 int(outcome.at_ms),
                 str(outcome.source),
+                outcome.reference_price,
+                outcome.reference_at_ms,
+                outcome.target_at_ms,
+                outcome.reference_kind,
             ),
         )
         return bool(cursor.rowcount)
+
+    def chain_tape_mark_outcome_attempted(self, item_ids: Sequence[str], *, now_ms: int) -> None:
+        """Rotate unpriced candidates behind untried ones without treating a retry as a receipt."""
+        self.conn.execute(
+            """UPDATE news_market_wallet_events SET outcome_attempted_at_ms = %s
+                WHERE item_id = ANY(%s)""",
+            (int(now_ms), list(item_ids)),
+        )
 
     # ------------------------------------------------------------------ the digest (PR-3)
     def chain_tape_last_digest(self, *, since_ms: int) -> LastDigest | None:
@@ -839,23 +916,11 @@ class ChainTapeStorage:
         self.conn.execute(_MARK_DIGEST_ATTEMPT_SQL, (TAPE_STATE_ID, int(now_ms), int(now_ms)))
 
     def chain_tape_digest_window(self, *, from_ms: int, to_ms: int) -> DigestWindowRows:
-        """Everything one digest states, read in one checkout and computed by nothing but SQL."""
+        """Full-window totals and bounded buy-only subjects, in the same database checkout."""
 
         window = {"from_ms": int(from_ms), "to_ms": int(to_ms)}
-        totals = self.conn.execute(_DIGEST_TOTALS_SQL, window).fetchone()
-        chain_id = 0 if totals is None or totals["chain_id"] is None else int(totals["chain_id"])
-        activity = tuple(
-            WalletWindowActivity(
-                wallet=str(row["wallet"]),
-                buys=int(row["buys"] or 0),
-                buy_usd=Decimal(row["buy_usd"] or 0),
-                sells=int(row["sells"] or 0),
-                sell_usd=Decimal(row["sell_usd"] or 0),
-                transfers_out=int(row["transfers_out"] or 0),
-                unpriced=int(row["unpriced"] or 0),
-            )
-            for row in self.conn.execute(_DIGEST_ACTIVITY_SQL, {**window, "limit": DIGEST_WALLETS_MAX}).fetchall()
-        )
+        total = self.conn.execute(_DIGEST_TOTALS_SQL, window).fetchone()
+        cards = self.conn.execute(_DIGEST_CARD_TOTALS_SQL, window).fetchone()
         flows = tuple(
             TokenWindowFlow(
                 wallet=str(row["wallet"]),
@@ -864,53 +929,46 @@ class ChainTapeStorage:
                 token_decimals=None if row["token_decimals"] is None else int(row["token_decimals"]),
                 window_buy_usd=Decimal(row["window_buy_usd"] or 0),
                 window_buy_raw=int(row["window_buy_raw"] or 0),
-                window_sell_usd=Decimal(row["window_sell_usd"] or 0),
-                lifetime_buy_usd=Decimal(row["lifetime_buy_usd"] or 0),
-                lifetime_sell_usd=Decimal(row["lifetime_sell_usd"] or 0),
-                lifetime_buy_raw=int(row["lifetime_buy_raw"] or 0),
-                lifetime_sell_raw=int(row["lifetime_sell_raw"] or 0),
-                lifetime_out_raw=int(row["lifetime_out_raw"] or 0),
+                priced_buy_raw=int(row["priced_buy_raw"] or 0),
+                buys=int(row["buys"] or 0),
+                unpriced_buys=int(row["unpriced_buys"] or 0),
+                first_buy_at_ms=int(row["first_buy_at_ms"]),
+                last_buy_at_ms=int(row["last_buy_at_ms"]),
+                subsequent_sells=int(row["subsequent_sells"] or 0),
+                subsequent_sell_usd=Decimal(row["subsequent_sell_usd"] or 0),
+                history_from_ms=int(row["history_from_ms"]),
             )
             for row in self.conn.execute(_DIGEST_FLOWS_SQL, {**window, "limit": DIGEST_COSTS_MAX}).fetchall()
         )
-        card_rows = self.conn.execute(_DIGEST_CARDS_SQL, {**window, "limit": DIGEST_CARDS_MAX}).fetchall()
-        if chain_id <= 0 and card_rows:
-            # The fills a card was derived from can age out from under it -- they are on a 90-day
-            # retention the derived rows do not share -- so the card is the second place the chain the
-            # window's facts came from can be read.
-            chain_id = int(card_rows[0]["chain_id"] or 0)
-        cards = tuple(
-            DigestCardRow(
-                kind=str(row["kind"]),
-                handle=str(row["handle"] or ""),
-                symbol=str(row["token_symbol"] or ""),
-                ratio_bps=None if row["ratio_bps"] is None else int(row["ratio_bps"]),
-                basis=None if row["basis"] is None else str(row["basis"]),
-                peer_wallets=int(row["peer_wallets"] or 0),
-                usd=None if row["usd"] is None else Decimal(row["usd"]),
-                position_usd=None if row["position_usd"] is None else Decimal(row["position_usd"]),
-                tone=str(row["tone"] or ""),
-                sent=bool(row["sent"]),
-            )
-            for row in card_rows
-        )
         outcomes = tuple(
             DigestOutcomeRow(
+                kind=str(row["kind"]),
                 horizon=str(row["horizon"]),
+                reference_kind=str(row["reference_kind"]),
                 receipts=int(row["receipts"] or 0),
                 priced=int(row["priced"] or 0),
+                comparable=int(row["comparable"] or 0),
                 median_bps=None if row["median_bps"] is None else round(float(row["median_bps"])),
             )
             for row in self.conn.execute(_DIGEST_OUTCOMES_SQL, window).fetchall()
         )
         return DigestWindowRows(
-            chain_id=chain_id,
-            activity=activity,
+            chain_id=0 if total is None else int(total["chain_id"] or 0),
+            totals=DigestWindowTotals(
+                buys=int(total["buys"] or 0),
+                buy_usd=Decimal(total["buy_usd"] or 0),
+                buy_wallets=int(total["buy_wallets"] or 0),
+                buy_positions=int(total["buy_positions"] or 0),
+                sells=int(total["sells"] or 0),
+                sell_usd=Decimal(total["sell_usd"] or 0),
+                active_wallets=int(total["active_wallets"] or 0),
+                transfers_out=int(total["transfers_out"] or 0),
+                unpriced=int(total["unpriced"] or 0),
+                cards=int(cards["cards"] or 0),
+                sent_cards=int(cards["sent_cards"] or 0),
+            ),
             flows=flows,
-            cards=cards,
             outcomes=outcomes,
-            tokens=0 if totals is None else int(totals["tokens"] or 0),
-            unpriced=0 if totals is None else int(totals["unpriced"] or 0),
         )
 
     # ------------------------------------------------------------------ the console page (PR-3)
@@ -964,12 +1022,48 @@ class ChainTapeStorage:
             for row in self.conn.execute(WALLET_CARDS_BY_KIND_SQL, {"from_ms": int(from_ms)}).fetchall()
         ]
 
-    def chain_tape_cards(self, *, from_ms: int, to_ms: int, limit: int) -> list[dict[str, Any]]:
+    def chain_tape_wallet_fills(
+        self,
+        *,
+        wallet_address: str,
+        token_address: str,
+        from_ms: int,
+        to_ms: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """All retained movements for one researched position, independent of alert thresholds."""
+        rows = self.conn.execute(
+            """SELECT chain_id, tx_hash, log_index, block_number, wallet, token, token_symbol,
+                      token_decimals, kind, amount_raw::text AS amount_raw, usd::text AS usd, event_at_ms
+                 FROM news_market_wallet_fills
+                WHERE wallet = %s AND token = %s AND event_at_ms >= %s AND event_at_ms < %s
+                ORDER BY block_number DESC, log_index DESC LIMIT %s""",
+            (wallet_address, token_address, int(from_ms), int(to_ms), max(1, min(200, int(limit)))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def chain_tape_cards(
+        self,
+        *,
+        from_ms: int,
+        to_ms: int,
+        limit: int,
+        kind: str | None = None,
+        wallet_address: str | None = None,
+        token_address: str | None = None,
+    ) -> list[dict[str, Any]]:
         """One bounded page of wallet cards, each beside the two price receipts taken for it."""
 
         rows = self.conn.execute(
             WALLET_CARDS_SQL,
-            {"from_ms": int(from_ms), "to_ms": int(to_ms), "limit": max(1, int(limit))},
+            {
+                "from_ms": int(from_ms),
+                "to_ms": int(to_ms),
+                "limit": max(1, int(limit)),
+                "kind": kind,
+                "wallet_address": wallet_address,
+                "token_address": token_address,
+            },
         ).fetchall()
         return [
             {
@@ -992,9 +1086,18 @@ class ChainTapeStorage:
                 "event_at_ms": int(row["event_at_ms"]),
                 "window_from_ms": int(row["window_from_ms"]),
                 "window_to_ms": int(row["window_to_ms"]),
+                "stage": row["stage"],
+                "selection_reason": row["selection_reason"],
+                "buy_count": row["buy_count"],
+                "unpriced_buys": row["unpriced_buys"],
+                "observed_at_ms": row["observed_at_ms"],
+                "history_from_ms": row["history_from_ms"],
+                "price_reference": row["price_reference"],
                 "delivery_key": None if row["delivery_key"] is None else str(row["delivery_key"]),
                 "delivery_state": None if row["delivery_state"] is None else str(row["delivery_state"]),
                 "settled_at_ms": None if row["settled_at_ms"] is None else int(row["settled_at_ms"]),
+                "outcome_15m_source": row["outcome_15m_source"],
+                "return_15m_bps": row["return_15m_bps"],
                 "outcome_1h_source": None if row["outcome_1h_source"] is None else str(row["outcome_1h_source"]),
                 "return_1h_bps": None if row["return_1h_bps"] is None else int(row["return_1h_bps"]),
                 "outcome_4h_source": None if row["outcome_4h_source"] is None else str(row["outcome_4h_source"]),
@@ -1038,16 +1141,15 @@ class ChainTapeStorage:
         *,
         now_ms: int,
     ) -> RosterSnapshot:
-        """Version the roster only when the list itself moved; otherwise re-stamp the current one.
+        """Version membership, ranks and statistics together so prior observations retain their evidence.
 
-        The comparison is membership plus ranks. Follower counts and P&L are recorded on every version
-        and never open one: they change hourly, and a version that changed hourly could not answer
-        "which list was this wallet on when the card fired".
+        An unchanged snapshot only refreshes its fetch time. Any member statistic change opens a new
+        version instead of presenting an old figure as a fresh fetch.
         """
 
         proposed = RosterSnapshot(roster_version=0, taken_at_ms=int(now_ms), members=tuple(members))
         current = self.chain_tape_current_roster()
-        if current is not None and current.membership_key() == proposed.membership_key():
+        if current is not None and current.members == proposed.members:
             self.conn.execute(_TOUCH_ROSTER_SQL, (int(now_ms), current.roster_version))
             return RosterSnapshot(
                 roster_version=current.roster_version,

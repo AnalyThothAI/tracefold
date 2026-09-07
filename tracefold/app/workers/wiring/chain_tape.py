@@ -1,22 +1,8 @@
-"""Composition for the `news-chain-tape` task (#572 PR-1).
+"""Compose independently supervised wallet ingestion, research and digest tasks (#614).
 
-One optional capability, one task, one `advance()`-shaped loop -- the same shape #553 PR-2 introduced
-for the market notification loop, and for the same reason: the loop exposes one business action, while
-the tick, the stop event and the process lifecycle belong to the Workers root.
-
-The provider adapters are constructed here because `tracefold.news` may not name `httpx`. The loop sees
-protocols and never learns which endpoint answered.
-
-#572 PR-2 adds the rules half. The same site client answers the roster *and* the card context (a
-wallet's bags, a token's mark), because it is one site and one courtesy pacing budget; DexScreener is a
-third adapter and is used for one thing only -- the +1h/+4h price receipt after a card has already been
-sent.
-
-#572 PR-3 adds the four-hourly digest, and it is the one part of this flow a model touches. The
-Program is resolved from the same operator settings the editorial Program is -- the reader-card slot,
-because a digest is reader-facing Chinese copy -- and it is optional twice over: an unconfigured
-endpoint and a disabled `digest` block both leave the tape writing the deterministic summary it
-computed before any call was considered.
+Each task owns its adapters, one bounded `advance()` and one `aclose()`. PostgreSQL facts and durable
+work markers connect the stages. Slow context or model calls cannot hold up ingestion, and a faulted
+stage closes only its own clients. App owns polling, cancellation and joining all in-flight work.
 """
 
 from __future__ import annotations
@@ -25,13 +11,13 @@ import asyncio
 import contextlib
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import Any, Protocol
 
 from loguru import logger
 
 from tracefold.app.learning_runtime import compose_news_program_runtime
 from tracefold.app.worker_database import WorkerDatabase
-from tracefold.app.workers.runtime import CHAIN_TAPE, CapabilityStates
+from tracefold.app.workers.runtime import CHAIN_TAPE, WALLET_DIGEST, WALLET_RESEARCH, CapabilityStates
 from tracefold.app.workers.wiring.database import WorkerChainTapeDatabase
 from tracefold.integrations.dexscreener import DexScreenerClient
 from tracefold.integrations.robinhood_chain import RobinhoodChainClient
@@ -47,19 +33,26 @@ from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 
 CHAIN_TAPE_TASK_NAME = "news-chain-tape"
+WALLET_RESEARCH_TASK_NAME = "news-wallet-research"
+WALLET_DIGEST_TASK_NAME = "news-wallet-digest"
+
+
+class WalletStage(Protocol):
+    """The three wallet tasks expose the same bounded turn and resource lifetime to App."""
+
+    async def advance(self) -> Any: ...
+
+    async def aclose(self) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
 class ChainTapeComposition:
-    """The composed tape and the tick the operator configured for it.
-
-    The cadence rides here rather than on the loop because the loop owns no clock: App polls it, exactly
-    as it polls the market notification loop and the Signal lane, and `news.chain_tape.poll_interval_s`
-    is what App polls it with.
-    """
+    """Three stages with independent resources and one operator-configured polling cadence."""
 
     loop: ChainTapeLoop
     poll_seconds: float
+    research: WalletCardDeriver
+    digest: WalletDigestWriter | None
 
 
 def _wire_chain_tape(
@@ -73,17 +66,14 @@ def _wire_chain_tape(
 
     chain_tape = settings.news.chain_tape
     if not chain_tape.enabled:
-        capabilities.disabled(CHAIN_TAPE, "news_chain_tape_disabled")
+        for capability in (CHAIN_TAPE, WALLET_RESEARCH, WALLET_DIGEST):
+            capabilities.disabled(capability, "news_chain_tape_disabled")
         return None
     tape_db = WorkerChainTapeDatabase(db)
-    chain = RobinhoodChainClient(rpc_url=chain_tape.rpc_url)
-    # One session against the site, shared by the roster refresh and the card context, so the two share
-    # the pacing floor the adapter applies to somebody else's small public server.
-    site = RobinhoodTrenchesClient(base_url=chain_tape.roster_provider_url)
     loop = ChainTapeLoop(
         db=tape_db,
-        chain=chain,
-        roster_provider=site,
+        chain=RobinhoodChainClient(rpc_url=chain_tape.rpc_url),
+        roster_provider=RobinhoodTrenchesClient(base_url=chain_tape.roster_provider_url),
         rules=RosterRules(
             min_closed_trades=chain_tape.roster.min_closed_trades,
             min_profit_factor=chain_tape.roster.min_profit_factor,
@@ -91,26 +81,32 @@ def _wire_chain_tape(
             top_whale_by_open_cost=chain_tape.roster.top_whale_by_open_cost,
         ),
         telemetry=telemetry,
-        deriver=WalletCardDeriver(
-            db=tape_db,
-            chain=chain,
-            site=site,
-            prices=DexScreenerClient(),
-            rules=_wallet_rules(chain_tape.rules),
-            telemetry=telemetry,
-            clock=now_ms,
-        ),
-        digest=_wire_digest(settings, db=tape_db, site=site, telemetry=telemetry),
     )
+    research = WalletCardDeriver(
+        db=tape_db,
+        chain=RobinhoodChainClient(rpc_url=chain_tape.rpc_url),
+        site=RobinhoodTrenchesClient(base_url=chain_tape.roster_provider_url),
+        prices=DexScreenerClient(),
+        rules=_wallet_rules(chain_tape.rules),
+        telemetry=telemetry,
+        clock=now_ms,
+    )
+    digest = _wire_digest(settings, db=tape_db, telemetry=telemetry)
     capabilities.running(CHAIN_TAPE)
-    return ChainTapeComposition(loop=loop, poll_seconds=float(chain_tape.poll_interval_s))
+    capabilities.running(WALLET_RESEARCH)
+    if digest is None:
+        capabilities.disabled(WALLET_DIGEST, "news_wallet_digest_disabled")
+    else:
+        capabilities.running(WALLET_DIGEST)
+    return ChainTapeComposition(
+        loop=loop, research=research, digest=digest, poll_seconds=float(chain_tape.poll_interval_s)
+    )
 
 
 def _wire_digest(
     settings: Settings,
     *,
     db: WorkerChainTapeDatabase,
-    site: RobinhoodTrenchesClient,
     telemetry: TelemetryRegistry | None,
 ) -> WalletDigestWriter | None:
     """The four-hourly summary, with a model behind it when one is configured (#572 §5.4).
@@ -120,8 +116,7 @@ def _wire_digest(
     summary is written from its own fact pack. The card rules are unaffected by either, which is the
     whole point of keeping the model off the card path.
 
-    The same site session as the roster and the card context: the digest asks it for one thing, the
-    moving-average cost of a bounded number of positions, and it shares that client's pacing floor.
+    The digest owns its site session, so cancelling it cannot close an ingestion or research request.
     """
 
     configured = settings.news.chain_tape.digest
@@ -133,7 +128,7 @@ def _wire_digest(
     return WalletDigestWriter(
         db=db,
         program=program,
-        bags=site,
+        bags=RobinhoodTrenchesClient(base_url=settings.news.chain_tape.roster_provider_url),
         interval_s=int(configured.interval_s),
         max_calls_per_day=int(configured.max_calls_per_day),
         telemetry=telemetry,
@@ -150,6 +145,9 @@ def _wallet_rules(configured: Any) -> WalletRules:
     """
 
     return WalletRules(
+        exit_notifications_enabled=bool(configured.exit_notifications_enabled),
+        buy_min_usd=Decimal(str(configured.buy_min_usd)),
+        buy_window_s=int(configured.buy_window_s),
         exit_ratio_bps=int(configured.exit_ratio_bps),
         exit_min_position_usd=Decimal(str(configured.exit_min_position_usd)),
         exit_cascade_window_s=int(configured.exit_cascade_window_s),
@@ -163,32 +161,49 @@ def _wallet_rules(configured: Any) -> WalletRules:
 
 
 async def run_chain_tape(
-    loop: ChainTapeLoop,
+    loop: WalletStage,
     *,
     stop_event: asyncio.Event,
     poll_seconds: float = POLL_INTERVAL_SECONDS,
 ) -> None:
-    """Poll `advance()` until the process stops. The loop owns no clock and no timer of its own.
+    """Poll one stage and join its in-flight turn on stop or cancellation before closing its clients.
 
-    An exception out of `advance()` is an infrastructure fault by construction: every provider failure is
-    already an outcome recorded on the tape's own state row, so what is left is the database port and a
-    program error. It ends this run of the loop and is raised rather than swallowed. The Workers root
-    records `chain_tape` as `faulted`, the task stops, and News reception, market facts and every read
-    carry on beside it. Nothing restarts it: the position is in PostgreSQL, so an operator restart after
-    the fix resumes from exactly where this process stopped.
+    Expected provider/admission failures remain the stage's durable retry decision. Unexpected errors
+    propagate to its own Workers capability. A cancelled turn has no in-memory handoff to lose: the
+    next process reads the stage's PostgreSQL work markers again.
     """
 
     try:
         while not stop_event.is_set():
-            try:
-                await loop.advance()
-            except Exception:
-                logger.exception("chain tape turn failed")
-                raise
+            await _advance_or_stop(loop, stop_event=stop_event)
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop_event.wait(), timeout=max(0.05, float(poll_seconds)))
     finally:
         await loop.aclose()
 
 
-__all__ = ["CHAIN_TAPE_TASK_NAME", "ChainTapeComposition", "_wire_chain_tape", "run_chain_tape"]
+async def _advance_or_stop(loop: WalletStage, *, stop_event: asyncio.Event) -> None:
+    turn = asyncio.create_task(loop.advance())
+    stopping = asyncio.create_task(stop_event.wait())
+    try:
+        done, _ = await asyncio.wait({turn, stopping}, return_when=asyncio.FIRST_COMPLETED)
+        # A completed failure remains a failure even when stop was signalled in the same event-loop turn.
+        if turn in done:
+            await turn
+    finally:
+        for task in (turn, stopping):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(turn, stopping, return_exceptions=True)
+    if not turn.cancelled():
+        turn.result()
+
+
+__all__ = [
+    "CHAIN_TAPE_TASK_NAME",
+    "WALLET_DIGEST_TASK_NAME",
+    "WALLET_RESEARCH_TASK_NAME",
+    "ChainTapeComposition",
+    "_wire_chain_tape",
+    "run_chain_tape",
+]

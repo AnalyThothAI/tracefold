@@ -11,7 +11,7 @@ import {
   newsQuoteFixture,
   newsStatusFixture,
   newsSymbolFixture,
-  newsWalletCardsFixture,
+  newsWalletCardsForParams,
   newsWalletsFixture,
 } from "@tests/fixtures/newsFixture";
 import {
@@ -91,10 +91,7 @@ export async function installMockApi(
      */
     if (path === "/api/news/wallets") return fulfill(route, newsWalletsFixture());
     if (path === "/api/news/wallets/cards") {
-      return fulfill(
-        route,
-        newsWalletCardsFixture({ window: url.searchParams.get("window") ?? "24h" }),
-      );
+      return fulfill(route, newsWalletCardsForParams(url.searchParams));
     }
     if (path === "/api/news/quotes") return fulfill(route, newsQuotesData(url));
     if (path.startsWith("/api/news/events/")) return fulfill(route, newsEventDetailData(path));

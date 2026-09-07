@@ -11,7 +11,7 @@ route the wallet is only a middle hop of.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -19,7 +19,6 @@ from typing import Any
 import pytest
 
 from tracefold.news.chain_tape.classify import (
-    TRANSFER_TOPIC,
     CashLeg,
     cash_leg,
     classify_receipt,
@@ -29,9 +28,11 @@ from tracefold.news.chain_tape.classify import (
 )
 from tracefold.news.chain_tape.contracts import (
     STABLE_CASH_TOKEN,
+    SWAP_TOPICS,
     USD_SOURCE_STABLE_CASH_LEG,
 )
 from tracefold.news.chain_tape.evm import (
+    TRANSFER_TOPIC,
     address_topic,
     normalize_address,
     topic_address,
@@ -152,6 +153,57 @@ def test_the_recorded_buy_is_priced_by_the_stablecoin_that_entered_the_route() -
     assert fill.cash_amount_raw == 993_760_928
     usd, _source = usd_face_value(CashLeg(str(fill.cash_token), int(fill.cash_amount_raw or 0)), cash_decimals=6)
     assert usd == Decimal("993.760928")
+
+
+def _transfer(token: str, sender: str, recipient: str, amount: int, index: int) -> _Log:
+    return _Log(token, (TRANSFER_TOPIC, _topic(sender), _topic(recipient)), "0x" + format(amount, "064x"), index)
+
+
+def test_two_bought_assets_keep_both_fills_without_spending_the_same_cash_twice() -> None:
+    receipt = _recorded("receipt_buy_madetest.json")
+    pool = next(log.address for log in receipt.logs if log.topics[0] in SWAP_TOPICS)
+    receipt = replace(
+        receipt,
+        logs=(*receipt.logs, _transfer(FSD, pool, EXECUTOR, 20, 60), _transfer(FSD, EXECUTOR, BUY_WALLET, 20, 61)),
+    )
+
+    outcome = _classify(receipt, (BUY_WALLET,))
+
+    assert [(fill.kind, fill.token) for fill in outcome.fills] == [("buy", MADETEST), ("buy", FSD)]
+    assert all(fill.cash_amount_raw is None for fill in outcome.fills)
+    assert outcome.unknown == 0
+
+
+def test_a_gift_beside_a_real_buy_never_borrows_its_swap_or_cash() -> None:
+    receipt = _recorded("receipt_buy_madetest.json")
+    receipt = replace(receipt, logs=(*receipt.logs, _transfer(FSD, EXECUTOR, BUY_WALLET, 20, 60)))
+
+    outcome = _classify(receipt, (BUY_WALLET,))
+
+    assert [(fill.kind, fill.token, fill.cash_amount_raw) for fill in outcome.fills] == [("buy", MADETEST, 993_760_928)]
+    assert outcome.unknown == 1
+
+
+@pytest.mark.parametrize("wallets", [(BUY_WALLET, SELL_WALLET), (BUY_WALLET,)])
+def test_a_shared_buy_keeps_each_tracked_recipient_but_does_not_assign_the_whole_cash_to_one(
+    wallets: tuple[str, ...],
+) -> None:
+    receipt = _recorded("receipt_buy_madetest.json")
+    last = next(log for log in receipt.logs if log.log_index == 38)
+    amount = int(last.data, 16)
+    receipt = replace(
+        receipt,
+        logs=(
+            *(replace(log, data="0x" + format(amount // 2, "064x")) if log is last else log for log in receipt.logs),
+            _transfer(MADETEST, EXECUTOR, SELL_WALLET, amount - amount // 2, 60),
+        ),
+    )
+
+    outcome = _classify(receipt, wallets)
+
+    assert [(fill.kind, fill.wallet) for fill in outcome.fills] == [("buy", wallet) for wallet in wallets]
+    assert all(fill.cash_amount_raw is None for fill in outcome.fills)
+    assert outcome.unknown == 0
 
 
 def test_a_receipt_of_another_wallets_trade_produces_nothing() -> None:
