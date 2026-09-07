@@ -1,53 +1,107 @@
-import type { TradingCase, TradingCases, TradingPolicyCheck } from "../api/tradingQueries";
+import type {
+  TradingCase,
+  TradingCases,
+  TradingExecutionRow,
+  TradingPolicyCheck,
+} from "../api/tradingQueries";
 
 import { CASE_STATE_ZH, bpsPercent, policyReasonLabel } from "./tradingLabels";
 
 /**
  * The Case/Decision surface's whole model.
  *
- * It derives nothing. Every threshold is frozen onto the Case, so the page renders what the server
- * already decided: a Case frozen last week must not be re-measured against a floor edited yesterday.
+ * It derives nothing about a Case. Every threshold is frozen onto the Case, so the page renders what the
+ * server already decided: a Case frozen last week must not be re-measured against a floor edited
+ * yesterday. The funnel below counts, which is a different act — every figure in it is a server aggregate
+ * or a count of the ledger rows the desk is already showing, never a re-judgement of one.
  */
-export type CaseFigure = {
+type FunnelStep = {
   key: string;
   label: string;
-  value: string;
-  tone: "plain" | "accent" | "caution";
+  value: number;
+  /** The last three steps are the venue's answer, not the lane's; the strip marks where that changes. */
+  side: "lane" | "venue";
 };
 
 /**
- * The desk's one Case card, every figure a durable count the server aggregated (#331).
+ * 帧 → 成案 → 不交易 → 发出 → 受理 → 成交 → 平仓, over the same rolling 24 h window.
  *
- * `0 成案` is a legitimate output of the current rules and is presented as one. What it must never be
- * presented as is "no data": the admission figures beside it say how many facts the lane actually saw.
+ * The first four are `/api/trading/cases` aggregates: `admission_counts_24h` is how many frames admission
+ * looked at at all (#604 T3), and `state_counts_24h` is what the policy did with the ones that became
+ * Cases. The last three are counted from the execution rows already on the desk, because that response is
+ * the only place the venue's answer per entry exists. A step is a count, never a rate: the desk states
+ * seven numbers and leaves the division to the reader.
  */
-export function caseFigures(data: TradingCases | undefined): CaseFigure[] {
-  const states = data?.state_counts_24h ?? {};
-  const total = Object.values(states).reduce((sum, value) => sum + value, 0);
+export function funnelSteps(
+  cases: TradingCases | undefined,
+  executions: readonly TradingExecutionRow[],
+): FunnelStep[] {
+  const states = cases?.state_counts_24h ?? {};
+  const frames = (cases?.admission_counts_24h ?? []).reduce((sum, item) => sum + item.count, 0);
+  const decided = Object.values(states).reduce((sum, value) => sum + value, 0);
+  const venue = entrySplit(executions);
   return [
-    { key: "cases", label: "24h 成案", value: String(total), tone: "plain" },
-    {
-      key: "emitted",
-      label: "已发出 Signal",
-      value: String(states.SIGNAL_EMITTED ?? 0),
-      tone: (states.SIGNAL_EMITTED ?? 0) > 0 ? "accent" : "plain",
-    },
-    { key: "no_trade", label: "不交易", value: String(states.NO_TRADE ?? 0), tone: "plain" },
-    {
-      key: "blocked",
-      label: "无法判定",
-      value: String(states.BLOCKED ?? 0),
-      tone: (states.BLOCKED ?? 0) > 0 ? "caution" : "plain",
-    },
+    { key: "frames", label: "帧", value: frames, side: "lane" },
+    { key: "cases", label: "成案", value: decided, side: "lane" },
+    { key: "no_trade", label: "不交易", value: states.NO_TRADE ?? 0, side: "lane" },
+    { key: "emitted", label: "发出", value: states.SIGNAL_EMITTED ?? 0, side: "lane" },
+    { key: "accepted", label: "受理", value: venue.accepted, side: "venue" },
+    { key: "filled", label: "成交", value: venue.filled, side: "venue" },
+    { key: "closed", label: "平仓", value: venue.closed, side: "venue" },
   ];
 }
 
-/** `smart_money_ratio_below_or_equal_floor · 12` — the durable reason distribution, largest first. */
-export function caseReasonRows(data: TradingCases | undefined): Array<[string, number]> {
+/**
+ * How far the venue took the entries in the window, counted once for the two blocks that state it.
+ *
+ * `rejected` and `expired` are the stages that mean the entry never reached the venue at all, as
+ * `tracefold/trading/stages.py` derives them; everything else is an entry the Runtime accepted.
+ */
+export function entrySplit(executions: readonly TradingExecutionRow[]): {
+  accepted: number;
+  closed: number;
+  filled: number;
+  refused: number;
+} {
+  const refused = executions.filter((row) => row.stage === "rejected" || row.stage === "expired");
+  return {
+    accepted: executions.length - refused.length,
+    closed: executions.filter((row) => row.stage === "closed").length,
+    filled: executions.filter((row) => row.fill_quantity != null).length,
+    refused: refused.length,
+  };
+}
+
+type FunnelReasonRow = { count: number; key: string; label: string };
+
+/**
+ * The three rules that refused most Cases in the window, in the language the desk is read in.
+ *
+ * The page printed the raw keys, so the seven translations in `POLICY_RULE_ZH` could not reach a reader at
+ * all. `undecided` is not a rule and is dropped; a key with no translation still renders as itself,
+ * because that string is what an operator greps.
+ */
+export function funnelReasonRows(data: TradingCases | undefined): FunnelReasonRow[] {
   return Object.entries(data?.reason_counts_24h ?? {})
     .filter(([reason]) => reason !== "undecided")
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .slice(0, 8);
+    .slice(0, 3)
+    .map(([reason, count]) => ({ count, key: reason, label: policyReasonLabel(reason) }));
+}
+
+/** `准入拒绝 · 持仓价值低于地板 · 61` — why frames never became Cases, largest first. */
+export function admissionRefusalRows(
+  data: TradingCases | undefined,
+): Array<{ count: number; key: string; reason: string | null; status: string }> {
+  return (data?.admission_counts_24h ?? [])
+    .filter((item) => item.status !== "CASE_CREATED")
+    .slice(0, 3)
+    .map((item) => ({
+      count: item.count,
+      key: `${item.status}:${item.reason ?? ""}`,
+      reason: item.reason ?? null,
+      status: item.status,
+    }));
 }
 
 function caseStateLabel(item: TradingCase): string {
@@ -62,7 +116,7 @@ export function caseVerdict(item: TradingCase): string {
   return `${caseStateLabel(item)}${item.policy_reason ? ` · ${policyReasonLabel(item.policy_reason)}` : ""}`;
 }
 
-export type CaseCheckRow = TradingPolicyCheck & { threshold_label: string; measured_label: string };
+type CaseCheckRow = TradingPolicyCheck & { threshold_label: string; measured_label: string };
 
 /**
  * The frozen checks, with the two basis-point fields rendered as percentages.

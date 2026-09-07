@@ -1,14 +1,18 @@
 import { ApiError } from "@lib/api/client";
 import { ActionButton } from "@shared/ui/ActionButton";
 import { Card } from "@shared/ui/Card";
+import { EmptyNote } from "@shared/ui/EmptyNote";
 import { SourceLine } from "@shared/ui/SourceLine";
 import { useState } from "react";
 
 import type { TradingExecutionCommand } from "../api/tradingQueries";
 import { useIssueTradingCommandWithToken } from "../api/tradingQueries";
-import { COMMAND_ACTION_ZH, COMMAND_STAGE_ZH, nsClock } from "../model/tradingLabels";
-
-import { TradingLedgerNote } from "./TradingChrome";
+import {
+  COMMAND_ACTION_ZH,
+  COMMAND_STAGE_ZH,
+  ledgerSentence,
+  nsClock,
+} from "../model/tradingLabels";
 
 type CommandAction = "pause" | "resume" | "flatten";
 type CommandEnvelope = {
@@ -82,6 +86,7 @@ export function TradingControls({
 
   return (
     <Card
+      data-block="controls"
       flush
       hint="按钮只写入 Command；进度是 Runtime 自己的 control_disposition"
       title="执行控制"
@@ -135,9 +140,10 @@ export function TradingControls({
       </section>
 
       {/*
-       * Action, stage and clock. The reason column repeated the text the operator had just typed into
-       * the field above it, and `operator_identity` was the constant `operator-console` on every row a
-       * browser wrote — neither is published any more (#537 PR-5).
+       * Action, stage, why, clock. The reason column used to repeat the text the operator had just typed
+       * into the field above the ledger, so #537 PR-5 removed it; this one is the opposite direction —
+       * `disposition_reason` is the *Runtime's* answer, which the statement already selected and the stage
+       * derivation then threw away. Without it 「Runtime 拒绝」 was a refusal with no reason on it (#604 T3).
        */}
       {commands.length ? (
         <div className="trading-command-list">
@@ -147,14 +153,17 @@ export function TradingControls({
               <span className="trading-stage" data-stage={item.stage}>
                 {COMMAND_STAGE_ZH[item.stage] ?? item.stage}
               </span>
+              <span data-tone={item.reason ? "caution" : undefined}>{item.reason ?? "—"}</span>
               <span>{nsClock(item.requested_at_ns)}</span>
             </article>
           ))}
         </div>
       ) : (
-        <TradingLedgerNote failed={commandsFailed} pending={commandsPending} subject="Command" />
+        <EmptyNote className="trading-empty-note">
+          {ledgerSentence({ failed: commandsFailed, pending: commandsPending, subject: "Command" })}
+        </EmptyNote>
       )}
-      <SourceLine path="POST /api/trading/execution/commands · GET /api/trading/executions → commands[].stage" />
+      <SourceLine path="POST /api/trading/execution/commands · GET /api/trading/executions → commands[].stage · commands[].reason" />
     </Card>
   );
 }

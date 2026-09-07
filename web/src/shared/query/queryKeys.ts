@@ -61,7 +61,9 @@ export const queryKeys = {
   // The Signal lane's own keys. Separate from News so a 15 s trading poll cannot evict the
   // feed page a reader is scrolled into.
   tradingStatus: () => ["trading-status"] as const,
-  tradingCases: (underlying: string) => ["trading-cases", underlying] as const,
+  // #604 T3: the empty id is the polled 24 h count read, a `case_id` the one frozen Case the drawer opens.
+  // Two keys because they are two rhythms — the counts move every 15 s, a frozen Case never moves at all.
+  tradingCases: (caseId: string) => ["trading-cases", caseId] as const,
   // #528 PR-2: one key for the folded execution read model — the desk's Signal rows and Command rows
   // arrive in the same response, so they cannot disagree about the window they describe.
   tradingExecutions: () => ["trading-executions"] as const,

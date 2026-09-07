@@ -1,11 +1,16 @@
 import {
+  admissionReasonLabel,
+  admissionStatusLabel,
   bpsPercent,
   caseClock,
   entryBlockReasonLabel,
+  holdingLabel,
   moneyLabel,
+  moneyTone,
   nsClock,
   policyLabel,
   policyReasonLabel,
+  protectionStatusLabel,
   signalDispositionLabel,
 } from "@features/trading/model/tradingLabels";
 import { describe, expect, it } from "vitest";
@@ -88,5 +93,52 @@ describe("execution labels", () => {
     expect(nsClock(at * 1_000_000)).toBe(caseClock(at));
     expect(nsClock(at * 1_000_000)).toMatch(/^\d{2}-\d{2} \d{2}:\d{2}$/);
     expect(nsClock(null)).toBe("—");
+  });
+});
+
+describe("desk labels", () => {
+  it("answers about protection in the language the rest of the desk answers in", () => {
+    // It was the one vocabulary written inline in a component, and the only one that answered in English.
+    expect(protectionStatusLabel("protected")).toBe("已受保护");
+    expect(protectionStatusLabel("unprotected")).toBe("未受保护");
+    expect(protectionStatusLabel("not_applicable")).toBe("无需保护");
+    // A status nobody translated is the string an operator greps, not an upper-cased guess at it.
+    expect(protectionStatusLabel("half_covered")).toBe("half_covered");
+    expect(protectionStatusLabel(null)).toBe("—");
+  });
+
+  it("names an admission status and its refusal, and never crashes on an unknown key", () => {
+    expect(admissionStatusLabel("CASE_CREATED")).toBe("成案");
+    expect(admissionStatusLabel("REJECTED")).toBe("准入拒绝");
+    expect(admissionStatusLabel("EXPIRED")).toBe("过期");
+    expect(admissionStatusLabel("A_STATUS_NOBODY_TRANSLATED")).toBe("A_STATUS_NOBODY_TRANSLATED");
+    expect(admissionReasonLabel("oi_value_below_floor")).toBe("持仓价值低于地板");
+    expect(admissionReasonLabel("instrument_unmapped")).toBe("无可执行路由");
+    expect(admissionReasonLabel("source_not_live")).toBe("来源未上线");
+    expect(admissionReasonLabel("a_gate_nobody_translated")).toBe("a_gate_nobody_translated");
+    // `CASE_CREATED` carries no reason, and the absence is a dash rather than an invented one.
+    expect(admissionReasonLabel(null)).toBe("—");
+  });
+
+  it("measures a holding interval between the two clocks the ledger stores, and only those", () => {
+    const filled = 1_700_000_000_000_000_000;
+    expect(holdingLabel(filled, filled)).toBe("0s");
+    expect(holdingLabel(filled, filled + 92_500_000_000)).toBe("1m33s");
+    expect(holdingLabel(filled, filled + 4 * 3_600_000_000_000 + 600_000_000_000)).toBe("4h10m");
+    // One clock missing means the entry is still open or never filled. It is not measured against `now`.
+    expect(holdingLabel(null, filled)).toBe("—");
+    expect(holdingLabel(filled, null)).toBe("—");
+    expect(holdingLabel(null, null)).toBe("—");
+    // A close that precedes its own fill is not an interval; the cell says nothing rather than a negative.
+    expect(holdingLabel(filled, filled - 1_000_000_000)).toBe("—");
+  });
+
+  it("puts a realized result on the market axis, and leaves an unmeasured one off it", () => {
+    // `tokens.css` reads red as bullish; a profit is what a long that worked produced (#604 T4).
+    expect(moneyTone("110.33")).toBe("profit");
+    expect(moneyTone("-11.04")).toBe("loss");
+    expect(moneyTone("0")).toBeUndefined();
+    expect(moneyTone(null)).toBeUndefined();
+    expect(moneyTone("unavailable")).toBeUndefined();
   });
 });

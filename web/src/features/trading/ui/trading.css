@@ -46,8 +46,9 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* A constant is not a warning. `EXECUTION paper` has not changed since the lane started (#604 T4). */
   .trading-heading-aside small {
-    color: var(--signal-caution);
+    color: var(--text-subtle);
     font-size: inherit;
   }
 
@@ -55,11 +56,21 @@
     color: var(--signal-caution);
   }
 
-  .trading-shell [data-tone="long"] {
+  .trading-shell [data-tone="alert"] {
+    color: var(--signal-alert);
+  }
+
+  /*
+   * One axis, four words. `tokens.css` reads red as bullish and green as bearish, and a realized result is
+   * on that same axis — a profit is what a long that worked produced (#604 T4).
+   */
+  .trading-shell [data-tone="long"],
+  .trading-shell [data-tone="profit"] {
     color: var(--dir-bullish);
   }
 
-  .trading-shell [data-tone="short"] {
+  .trading-shell [data-tone="short"],
+  .trading-shell [data-tone="loss"] {
     color: var(--dir-bearish);
   }
 
@@ -81,12 +92,40 @@
     font: var(--type-mono-meta);
   }
 
-  /* The three order counts and the protection word, above the positions they describe (#537 PR-5). */
-  .trading-order-counts {
+  /*
+   * ⑤ Exposure and protection, closed while the account holds nothing (#604 T4). `max_positions` is 1 and
+   * the lane emits a handful of Signals a day, so this block is empty most of the time; the disclosure
+   * keeps it one line until a position, an order or unowned exposure exists.
+   */
+  .trading-exposure {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 8px 12px;
-    padding: 0 14px 10px;
+    gap: 10px;
+    padding: 0 14px 12px;
+  }
+
+  .trading-exposure > summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 10px 0;
+    color: var(--text-secondary);
+    font-size: var(--font-size-mono-meta);
+    cursor: pointer;
+  }
+
+  .trading-exposure > summary small {
+    color: var(--text-subtle);
+  }
+
+  .trading-alert-line {
+    margin: 0;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--signal-alert-soft);
+    box-shadow: inset 0 0 0 1px var(--signal-alert-border);
+    font-size: var(--font-size-mono-meta);
   }
 
   /*
@@ -147,6 +186,11 @@
     text-decoration: underline;
   }
 
+  /*
+   * The desk's own fact grid rather than `@shared/ui/FactGrid`: that primitive drops a pair whose value is
+   * empty, and a surface with capital on the line must print UNAVAILABLE where a number is missing. A
+   * silently absent tile and a tile reading zero are the two things this grid may not confuse.
+   */
   .trading-fact-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -154,6 +198,10 @@
     overflow: hidden;
     border-radius: var(--radius-sm);
     background: var(--border-faint);
+  }
+
+  .trading-fact-grid[data-columns="4"] {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .trading-fact {
@@ -174,6 +222,14 @@
     overflow-wrap: anywhere;
     color: var(--text-primary);
     font: var(--type-mono-meta);
+  }
+
+  /*
+   * A toned tile colours its number. The tone lands on the tile so the whole cell reads as one answer, and
+   * `.trading-fact b` would otherwise repaint the only part of it a reader scans.
+   */
+  .trading-fact[data-tone] b {
+    color: inherit;
   }
 
   .trading-position-list,
@@ -333,7 +389,7 @@
 
   .trading-command-row {
     display: grid;
-    grid-template-columns: minmax(120px, 0.7fr) auto minmax(0, 1fr);
+    grid-template-columns: minmax(120px, 0.7fr) auto minmax(0, 1.2fr) minmax(0, 0.8fr);
     gap: 6px 12px;
     align-items: baseline;
     min-width: 0;
@@ -385,52 +441,107 @@
     color: var(--signal-caution);
   }
 
-  .trading-execution-table {
+  /*
+   * ④ The loop ledger. Nine columns where CONFIRM had twelve: 方向 was a column of one constant word and
+   * is a chip in the market cell now, and the disposition stopped repeating the stage's colour. What that
+   * bought is the holding interval under the realized number (#604 T4).
+   */
+  .trading-ledger-table {
     display: grid;
     min-width: 0;
     overflow-x: auto;
   }
 
-  .trading-execution-head,
-  .trading-execution-row {
+  .trading-ledger-head,
+  .trading-ledger-row {
     display: grid;
     grid-template-columns:
-      minmax(86px, 0.7fr) minmax(56px, 0.4fr) minmax(150px, 1.3fr) minmax(52px, 0.4fr)
-      minmax(120px, 1fr) minmax(78px, 0.6fr) minmax(74px, 0.6fr) minmax(84px, 0.6fr)
-      minmax(78px, 0.6fr) minmax(78px, 0.6fr) minmax(84px, 0.6fr) minmax(94px, 0.7fr);
+      minmax(64px, 0.5fr) minmax(150px, 1.4fr) minmax(120px, 1fr) minmax(76px, 0.6fr)
+      minmax(72px, 0.6fr) minmax(84px, 0.6fr) minmax(78px, 0.6fr) minmax(84px, 0.7fr)
+      minmax(92px, 0.8fr);
     gap: 4px 10px;
     align-items: baseline;
-    min-width: 1002px;
-    padding: 7px 14px;
+    min-width: 880px;
+    padding: 8px 14px;
     border-bottom: 1px solid var(--border-faint);
     font-size: var(--font-size-mono-meta);
     font-variant-numeric: tabular-nums;
   }
 
-  .trading-execution-head {
+  .trading-ledger-head {
     color: var(--text-subtle);
     font: var(--type-eyebrow);
     letter-spacing: 0.06em;
   }
 
-  .trading-execution-row {
+  .trading-ledger-row {
     color: var(--text-secondary);
   }
 
-  .trading-execution-row:last-child {
+  .trading-ledger-row:last-child {
     border-bottom: 0;
   }
 
-  .trading-execution-row span {
+  .trading-ledger-row > span {
+    display: grid;
+    gap: 2px;
     min-width: 0;
     overflow-wrap: anywhere;
+  }
+
+  .trading-ledger-row small {
+    color: var(--text-subtle);
+    font-size: var(--font-size-mono-meta);
+  }
+
+  .trading-ledger-row b {
+    font: var(--type-mono-meta);
+  }
+
+  .trading-ledger-market b {
+    color: var(--text-primary);
+  }
+
+  /* ③ The 24 h funnel: seven counts in one line, with the lane / venue seam marked rather than narrated. */
+  .trading-funnel {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 6px;
+    align-items: baseline;
+    padding: 12px 14px 4px;
+  }
+
+  .trading-funnel-step {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    min-width: 0;
+    padding: 4px 9px;
+    border-radius: var(--radius-pill);
+    background: var(--surface-raised);
+    box-shadow: inset 0 0 0 1px var(--border-faint);
+    font-size: var(--font-size-mono-meta);
+  }
+
+  .trading-funnel-step[data-side="venue"] {
+    box-shadow: inset 0 0 0 1px var(--signal-done-border);
+  }
+
+  .trading-funnel-step small {
+    color: var(--text-subtle);
+  }
+
+  .trading-funnel-step b {
+    color: var(--text-primary);
+    font: var(--type-mono-meta);
+    font-variant-numeric: tabular-nums;
   }
 
   .trading-count-list {
     display: grid;
     gap: 1px;
     overflow: hidden;
-    margin-top: 10px;
+    margin: 10px 14px 12px;
     border-radius: var(--radius-sm);
     background: var(--border-faint);
   }
@@ -520,11 +631,53 @@
     }
   }
 
+  /*
+   * The phone reads the desk in a different order (#604 T4): is it alive, do I have exposure, do I need to
+   * press something, how is today going, what happened to each entry, what did the lane do above it. The
+   * column order is the DOM order at every width above this; here the two blocks an operator acts on move
+   * up, and the ones they read move down.
+   */
   @media (max-width: 767px) {
+    .trading-body {
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* The drawer keeps order 0: a reader who arrived on `?case=<id>` asked for that Case first. */
+    .trading-body > [data-block="safety"],
+    .trading-body > .trading-empty-note {
+      order: 1;
+    }
+
+    .trading-body > [data-block="exposure"] {
+      order: 2;
+    }
+
+    .trading-body > [data-block="controls"] {
+      order: 3;
+    }
+
+    .trading-body > [data-block="tally"] {
+      order: 4;
+    }
+
+    .trading-body > [data-block="ledger"] {
+      order: 5;
+    }
+
+    .trading-body > [data-block="funnel"] {
+      order: 6;
+    }
+
     .trading-safety-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
       grid-auto-columns: auto;
       grid-auto-flow: row;
+    }
+
+    /* ARMED carries the blocking reason, so it takes the full width rather than truncating it. */
+    .trading-safety-grid > :last-child {
+      grid-column: 1 / -1;
     }
 
     .trading-heading-aside {
@@ -537,13 +690,11 @@
       grid-template-columns: minmax(0, 1fr);
     }
 
-    .trading-order-counts {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
     .trading-control-actions {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
+      /* A thumb finds a 48px row; the button stretches into it rather than restyling the shared control. */
+      grid-auto-rows: minmax(48px, auto);
     }
 
     .trading-protection-strip {
@@ -551,7 +702,8 @@
     }
 
     .trading-position-facts,
-    .trading-fact-grid {
+    .trading-fact-grid,
+    .trading-fact-grid[data-columns="4"] {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
@@ -561,6 +713,43 @@
 
     .trading-case-check {
       grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    /*
+     * The ledger stops being a table. A nine-column grid cannot be read at 390px and a horizontal scroll
+     * inside a phone card is a way of hiding eight of the columns; each entry becomes its own card, and
+     * every cell prints the header it lost from `data-label`.
+     */
+    .trading-ledger-table {
+      display: grid;
+      gap: 8px;
+      overflow-x: visible;
+      padding: 10px 12px;
+    }
+
+    .trading-ledger-head {
+      display: none;
+    }
+
+    .trading-ledger-row {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      min-width: 0;
+      padding: 10px;
+      border-bottom: 0;
+      border-radius: var(--radius-md);
+      background: var(--surface-raised);
+      box-shadow: var(--ring-control);
+    }
+
+    .trading-ledger-row > span[data-label]::before {
+      content: attr(data-label);
+      color: var(--text-subtle);
+      font: var(--type-eyebrow);
+      letter-spacing: 0.06em;
+    }
+
+    .trading-ledger-market {
+      grid-column: 1 / -1;
     }
   }
 }

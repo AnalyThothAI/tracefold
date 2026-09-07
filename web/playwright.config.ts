@@ -23,6 +23,7 @@ const desktop = specs(
   "news-event-drawer.spec.ts",
   "sidebar-navigation.spec.ts",
   "topbar-layout.spec.ts",
+  "trading-desk.spec.ts",
 );
 const tablet = specs(...everyViewport, "tablet-shell.spec.ts");
 const mobile = specs(
@@ -30,6 +31,9 @@ const mobile = specs(
   "mobile-navigation.spec.ts",
   "mobile-route-cold-load.spec.ts",
   "mobile-shell.spec.ts",
+  // #604 T4: the desk is a two-viewport spec. It asserts the thumb target at 390 and the ledger's own
+  // horizontal scroll at both desktop widths; the tablet frame adds no claim either of those does not.
+  "trading-desk.spec.ts",
 );
 
 export default defineConfig({

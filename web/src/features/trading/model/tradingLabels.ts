@@ -182,6 +182,56 @@ export const EXIT_REASON_ZH: Record<string, string> = {
 };
 
 /**
+ * How far the Runtime has got with protecting what the account holds, as `protection_status` names it.
+ *
+ * It lived inline in `TradingRisk` and answered in English — `PROTECTION PENDING`, `UNPROTECTED` — while
+ * the nine tables beside it answered in Chinese. One reader, one language, one place (#604 T4).
+ */
+export const PROTECTION_STATUS_ZH: Record<string, string> = {
+  not_applicable: "无需保护",
+  pending: "保护挂单中",
+  protected: "已受保护",
+  unknown: "保护状态未知",
+  unprotected: "未受保护",
+};
+
+export function protectionStatusLabel(value: string | null | undefined): string {
+  if (!value) return "—";
+  return PROTECTION_STATUS_ZH[value] ?? value;
+}
+
+/** The admission ledger's three terminal words, as `trading_candidate_gate_decisions.status` stores them. */
+export const ADMISSION_STATUS_ZH: Record<string, string> = {
+  CASE_CREATED: "成案",
+  REJECTED: "准入拒绝",
+  EXPIRED: "过期",
+};
+
+/**
+ * Why admission refused a frame before any policy ran, keyed as the gate writes it.
+ *
+ * These are the reasons above the Case: a frame that never became a Case has no frozen checks to show,
+ * so this table is the only account of it the desk can give. An untranslated key renders as itself.
+ */
+export const ADMISSION_REASON_ZH: Record<string, string> = {
+  instrument_unmapped: "无可执行路由",
+  oi_value_below_floor: "持仓价值低于地板",
+  source_contract_invalid: "来源契约无效",
+  source_not_live: "来源未上线",
+  trigger_stale: "触发已陈旧",
+};
+
+export function admissionStatusLabel(status: string | null | undefined): string {
+  if (!status) return "—";
+  return ADMISSION_STATUS_ZH[status] ?? status;
+}
+
+export function admissionReasonLabel(reason: string | null | undefined): string {
+  if (!reason) return "—";
+  return ADMISSION_REASON_ZH[reason] ?? reason;
+}
+
+/**
  * The one thing every ledger on the desk says when it has no rows (#537 PR-5).
  *
  * Three blocks each carried their own `ledgerEmpty(pending, failed)` with the same three sentences in
@@ -246,4 +296,43 @@ export function moneyLabel(value: string | null | undefined): string {
     maximumFractionDigits: 2,
     minimumFractionDigits: 2,
   })}`;
+}
+
+/**
+ * `1m32s` — how long the venue actually held the position, from the two clocks the ledger stores.
+ *
+ * Both are the Runtime's own observation timestamps: the first `fill` on the entry leg and the `position`
+ * observation that closed it (#604 T3). Nothing is inferred from the Signal clock — a Signal can wait
+ * minutes before the entry order fills, and calling that holding time would overstate every row. One
+ * clock missing means the entry is still open or never filled, and the cell says so with a dash rather
+ * than measuring against `now`.
+ */
+export function holdingLabel(
+  filledAtNs: number | null | undefined,
+  closedAtNs: number | null | undefined,
+): string {
+  if (filledAtNs == null || closedAtNs == null) return "—";
+  const seconds = Math.round((closedAtNs - filledAtNs) / 1_000_000_000);
+  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  const hours = Math.floor(seconds / 3_600);
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  const rest = seconds % 60;
+  if (hours) return `${hours}h${String(minutes).padStart(2, "0")}m`;
+  if (minutes) return `${minutes}m${String(rest).padStart(2, "0")}s`;
+  return `${rest}s`;
+}
+
+/**
+ * Which side of the market axis a realized number sits on, or neither.
+ *
+ * `tokens.css` reads red as bullish and green as bearish, and a realized result belongs to that same axis:
+ * a profit is what a long that worked produced. The ledger used to print both in `--text-secondary`, where
+ * `−$11.04` and `+$110.33` scan identically, and spent the direction axis on a `LONG` column that has been
+ * the same word on every production row (#604 T4).
+ */
+export function moneyTone(value: string | null | undefined): "profit" | "loss" | undefined {
+  if (value == null) return undefined;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric === 0) return undefined;
+  return numeric > 0 ? "profit" : "loss";
 }

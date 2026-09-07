@@ -1,76 +1,87 @@
-import { Card } from "@shared/ui/Card";
 import { EmptyNote } from "@shared/ui/EmptyNote";
 import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
 import { useSearchParams } from "react-router-dom";
 
 import {
+  useTradingCaseWithToken,
   useTradingCasesWithToken,
   useTradingExecutionsWithToken,
   useTradingStatusWithToken,
 } from "../api/tradingQueries";
-import { caseFigures, caseReasonRows } from "../model/tradingCases";
 import { caseClock, ledgerSentence } from "../model/tradingLabels";
 
 import { TradingCaseDetail } from "./TradingCaseDetail";
 import { TradingControls } from "./TradingControls";
-import { TradingExecutionTable } from "./TradingExecutionTable";
-import { TradingRisk } from "./TradingRisk";
+import { TradingFunnel } from "./TradingFunnel";
+import { TradingLoopLedger } from "./TradingLoopLedger";
+import { TradingExposure, TradingSafetyStrip } from "./TradingRisk";
+import { TradingTally } from "./TradingTally";
 
 import "./trading.css";
 
 /**
- * The operator desk: three blocks, and a Case drawer that opens on demand (#537 PR-5).
+ * The operator desk: six blocks in one column, and a Case drawer that opens on demand (#604 T4).
  *
- * RISK answers "is what I already have safe" from `/api/trading/status`. ACT writes the three bounded
- * Commands and reads them back from `/api/trading/executions`. CONFIRM is the rest of that same
- * response: what the venue did with every entry today. Those two reads are the desk.
+ * The order is the order an operator asks the questions in. ① is it alive and armed, and if not why.
+ * ② what has today's capital done. ③ what did the lane do above the account — frames, Cases, refusals.
+ * ④ every entry in the window with what the venue did to it. ⑤ what is on the account right now, closed
+ * while that is nothing. ⑥ the three writes, and every Command with the Runtime's answer.
  *
- * It was six blocks over four endpoints. The two that went were both funnels: a card of today's
- * admission configuration beside a status distribution, which cost a 400-row `decisions[]` download
- * every 15 s and told an operator nothing they could act on, and a list of every Case in the window
- * whose only interactive purpose was opening one of them. `/api/trading/cases` still answers the
- * drawer behind `?case=<id>` — the link this page's own Case rows publish — and the one durable 24 h
- * card beside it.
+ * **Three independent reads, three independent failures.** `/api/trading/status` used to gate the whole
+ * page: it was read first and a cold error returned one error panel, so a 5xx on the readiness projection
+ * blanked a perfectly readable execution ledger. It answers ① ⑤ and half of ② now, and nothing else waits
+ * on it. Each block states its own unreadable answer in the desk's one ledger vocabulary, and
+ * `PageState.Stale` names which ledger broke while keeping the two that did not.
  *
  * The page runs no timer of its own and recomputes no freshness. `execution.facts_expire_at_ms` is the
  * instant the server published as the end of its own projection's budget, and one comparison against it
- * is the whole rule — the two `setTimeout` re-render clocks and the three client freshness models they
- * drove disagreed with the server about ages it had already measured.
+ * is the whole rule.
  */
 export function TradingPage({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
-  // The drawer's identity is read before the queries, because `/api/trading/cases` answers one Case by
-  // `case_id` now and sends none without it (#604 T3).
-  const selectedCaseId = searchParams.get("case");
   const statusQuery = useTradingStatusWithToken(token);
-  const casesQuery = useTradingCasesWithToken(token, selectedCaseId);
+  const casesQuery = useTradingCasesWithToken(token);
   const executionsQuery = useTradingExecutionsWithToken(token);
+  const selectedCaseId = searchParams.get("case");
+  /*
+   * The drawer's own read, and the only one that ever downloads a Case. It is disabled until a reader has
+   * asked for one: the desk polled up to 100 frozen Cases with their checks attached every 15 s to render
+   * at most one of them (#604 T3).
+   */
+  const caseQuery = useTradingCaseWithToken(token, selectedCaseId);
   const status = statusQuery.data;
+  const executions = executionsQuery.data?.executions ?? [];
+  const commands = executionsQuery.data?.commands ?? [];
 
-  if (statusQuery.isPending && !status) {
-    return <PageState.Loading label="正在读取执行账户状态" layout="panel" rows={4} />;
+  const coldStatus = statusQuery.isPending && !status;
+  const coldExecutions = executionsQuery.isPending && !executionsQuery.data;
+  if (coldStatus && coldExecutions) {
+    return <PageState.Loading label="正在读取交易台" layout="panel" rows={4} />;
   }
-  if (statusQuery.isError && !status) {
-    return <PageState.Error error={statusQuery.error} onRetry={() => void statusQuery.refetch()} />;
+  if (statusQuery.isError && executionsQuery.isError && !status && !executionsQuery.data) {
+    return (
+      <PageState.Error
+        error={statusQuery.error}
+        onRetry={() => {
+          void statusQuery.refetch();
+          void executionsQuery.refetch();
+        }}
+      />
+    );
   }
-  if (!status) return null;
 
   /*
    * The whole freshness rule. `facts_expire_at_ms` is an absolute instant, so this one comparison also
-   * covers a body kept from a failed refresh — there is nothing for a query-health flag to add, and no
-   * reason to re-derive a heartbeat age the server already measured. A `null` expiry is not staleness:
-   * it means there is no live projection at all (mode disabled, or no Runtime state), and every safety
-   * word below is already `false` for that reason and says so.
+   * covers a body kept from a failed refresh. A `null` expiry is not staleness: it means there is no live
+   * projection at all (mode disabled, or no Runtime state), and every safety word below is already `false`
+   * for that reason and says so.
    */
-  const expiresAtMs = status.execution.facts_expire_at_ms;
+  const expiresAtMs = status?.execution.facts_expire_at_ms;
   const stale = expiresAtMs != null && Date.now() > expiresAtMs;
 
-  const cases = casesQuery.data?.cases ?? [];
-  const executions = executionsQuery.data?.executions ?? [];
-  const commands = executionsQuery.data?.commands ?? [];
   const selectedCase = selectedCaseId
-    ? cases.find((item) => item.case_id === selectedCaseId)
+    ? caseQuery.data?.cases?.find((item) => item.case_id === selectedCaseId)
     : undefined;
 
   const selectCase = (caseId: string | null) => {
@@ -80,9 +91,11 @@ export function TradingPage({ token }: { token: string }) {
     setSearchParams(params, { replace: true });
   };
 
-  const failed = [executionsQuery.isError ? "执行" : "", casesQuery.isError ? "Case" : ""].filter(
-    Boolean,
-  );
+  const failed = [
+    executionsQuery.isError ? "执行" : "",
+    casesQuery.isError ? "Case" : "",
+    statusQuery.isError ? "执行状态" : "",
+  ].filter(Boolean);
 
   return (
     <PageShell archetype="scan" className="trading-shell" label="可操作交易台">
@@ -91,9 +104,14 @@ export function TradingPage({ token }: { token: string }) {
           <h1>Trading Desk</h1>
           <p>先回答现有 exposure 是否安全，再决定是否允许新增 exposure。</p>
         </div>
+        {/*
+         * `EXECUTION paper` is a constant and no longer wears the caution colour. Amber is what the desk
+         * says when something needs an operator, and spending it on a word that has not changed since the
+         * lane started taught readers to ignore it (#604 T4).
+         */}
         <div className="trading-heading-aside" data-tone={stale ? "caution" : undefined}>
-          <span>ALPHA {caseClock(status.decision.last_case_at_ms)}</span>
-          <small>EXECUTION {status.execution.mode}</small>
+          <span>ALPHA {caseClock(status?.decision.last_case_at_ms)}</span>
+          <small>EXECUTION {status?.execution.mode ?? "UNAVAILABLE"}</small>
         </div>
       </header>
 
@@ -121,10 +139,10 @@ export function TradingPage({ token }: { token: string }) {
                 <TradingCaseDetail item={selectedCase} />
               ) : (
                 <EmptyNote className="trading-empty-note">
-                  {casesQuery.isPending || casesQuery.isError
+                  {caseQuery.isPending || caseQuery.isError
                     ? ledgerSentence({
-                        failed: casesQuery.isError,
-                        pending: casesQuery.isPending,
+                        failed: caseQuery.isError,
+                        pending: caseQuery.isPending,
                         subject: "Case",
                       })
                     : `这个案例不在当前 ${casesQuery.data?.window_hours ?? "—"} 小时窗口。`}
@@ -133,18 +151,34 @@ export function TradingPage({ token }: { token: string }) {
             </section>
           ) : null}
 
-          <TradingRisk execution={status.execution} stale={stale} />
+          {status ? (
+            <TradingSafetyStrip execution={status.execution} stale={stale} />
+          ) : (
+            <EmptyNote className="trading-empty-note">
+              {ledgerSentence({
+                failed: statusQuery.isError,
+                pending: statusQuery.isPending,
+                subject: "执行状态",
+              })}
+            </EmptyNote>
+          )}
 
-          <TradingControls
-            commands={commands}
-            commandsFailed={executionsQuery.isError}
-            commandsPending={executionsQuery.isPending}
-            entriesPaused={status.execution.entries_paused}
-            mode={status.execution.mode}
-            token={token}
+          <TradingTally
+            execution={status?.execution}
+            executions={executions}
+            executionsFailed={executionsQuery.isError}
+            executionsPending={executionsQuery.isPending}
+            totals={executionsQuery.data?.totals}
           />
 
-          <TradingExecutionTable
+          <TradingFunnel
+            cases={casesQuery.data}
+            executions={executions}
+            failed={casesQuery.isError}
+            pending={casesQuery.isPending}
+          />
+
+          <TradingLoopLedger
             complete={executionsQuery.data?.complete ?? true}
             failed={executionsQuery.isError}
             onOpenCase={selectCase}
@@ -153,43 +187,16 @@ export function TradingPage({ token }: { token: string }) {
             selectedCaseId={selectedCaseId}
           />
 
-          {/*
-           * The one durable Case figure left on the desk. Both distributions are server aggregates over
-           * the same 24 h window the blocks above describe, so a zero here is a lane that decided
-           * nothing rather than a page that counted the rows it happened to render (#331).
-           */}
-          <Card hint="冻结判定的终局与原因" title="Alpha 成案 · 24h">
-            <div className="trading-fact-grid">
-              {caseFigures(casesQuery.data).map((figure) => (
-                <span
-                  className="trading-fact"
-                  data-tone={figure.tone === "plain" ? undefined : figure.tone}
-                  key={figure.key}
-                >
-                  <small>{figure.label}</small>
-                  <b>{figure.value}</b>
-                </span>
-              ))}
-            </div>
-            {caseReasonRows(casesQuery.data).length ? (
-              <div className="trading-count-list">
-                {caseReasonRows(casesQuery.data).map(([reason, count]) => (
-                  <span className="trading-count-row" key={reason}>
-                    <small>{reason}</small>
-                    <b>{count}</b>
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <p className="trading-inline-empty">
-                {ledgerSentence({
-                  failed: casesQuery.isError,
-                  pending: casesQuery.isPending,
-                  subject: "Case",
-                })}
-              </p>
-            )}
-          </Card>
+          {status ? <TradingExposure execution={status.execution} stale={stale} /> : null}
+
+          <TradingControls
+            commands={commands}
+            commandsFailed={executionsQuery.isError}
+            commandsPending={executionsQuery.isPending}
+            entriesPaused={status?.execution.entries_paused ?? false}
+            mode={status?.execution.mode ?? "disabled"}
+            token={token}
+          />
         </div>
       </PageState.Stale>
     </PageShell>

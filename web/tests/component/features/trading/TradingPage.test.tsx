@@ -18,13 +18,13 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * Three blocks, and a Case drawer that opens on demand (#537 PR-5).
+ * Six blocks over three reads, and a Case drawer that opens on demand (#604 T4).
  *
- * RISK is `/api/trading/status`, ACT and CONFIRM are the two halves of `/api/trading/executions`, and
- * `/api/trading/cases` answers the drawer behind `?case=<id>` plus one durable 24 h card. The tests
- * below are mostly about the page not inventing anything: every stage word, disposition and figure is
- * a field the server already folded, and the one comparison the browser is allowed to make is
- * `Date.now()` against the expiry instant `/status` publishes.
+ * The tests below are mostly about the page not inventing anything: every stage word, disposition, count
+ * and figure is a field the server already folded, and the two computations the browser is allowed are
+ * `Date.now()` against the expiry instant `/status` publishes and the holding interval between the two
+ * clocks the execution ledger stores. The other subject is failure: three reads, three failures, and no
+ * one of them may blank a block another read answers.
  */
 describe("TradingPage", () => {
   beforeEach(() => {
@@ -33,8 +33,8 @@ describe("TradingPage", () => {
       http.get(/.*\/api\/trading\/status$/, () =>
         HttpResponse.json({ ok: true, data: tradingStatusFixture() }),
       ),
-      http.get(/.*\/api\/trading\/cases$/, () =>
-        HttpResponse.json({ ok: true, data: tradingCasesFixture() }),
+      http.get(/.*\/api\/trading\/cases$/, ({ request }) =>
+        HttpResponse.json({ ok: true, data: casesFor(request.url) }),
       ),
       http.get(/.*\/api\/trading\/executions$/, () =>
         HttpResponse.json({ ok: true, data: tradingExecutionsFixture() }),
@@ -48,23 +48,23 @@ describe("TradingPage", () => {
     vi.unstubAllGlobals();
   });
 
-  it("RISK names the blocking reason in Chinese and the Runtime's route count", async () => {
+  it("names the blocking reason in Chinese, in three safety words rather than four", async () => {
+    /*
+     * `FLAT` was the fourth. `ExecutionRuntimeState.account_flat` stays false with zero positions, so it
+     * read `NOT PROVEN` around the clock — an always-amber quarter of the strip nobody could act on. The
+     * proof is a sentence in the exposure block now, qualifying the empty position list it belongs to.
+     */
     renderTrading();
 
     expect(await screen.findByRole("heading", { name: "Trading Desk" })).toBeVisible();
     const safety = screen.getByLabelText("执行安全状态");
     expect(within(safety).getAllByText("NO")).toHaveLength(3);
-    expect(within(safety).getByText("NOT PROVEN")).toBeVisible();
+    expect(within(safety).queryByText("NOT PROVEN")).toBeNull();
     expect(within(safety).getByText("执行通道未启用")).toBeVisible();
     expect(screen.getByText(/Runtime 可执行市场 0 个/)).toBeVisible();
   });
 
-  it("RISK degrades every safety word once the server's own expiry instant has passed", async () => {
-    /*
-     * One comparison, against the instant `/status` published as the end of its own budget. The page
-     * keeps no timer and re-derives no heartbeat age — the two clocks that used to do that disagreed
-     * with the server about ages it had already measured.
-     */
+  it("degrades every safety word once the server's own expiry instant has passed", async () => {
     server.use(
       http.get(/.*\/api\/trading\/status$/, () =>
         HttpResponse.json({
@@ -84,17 +84,180 @@ describe("TradingPage", () => {
     renderTrading();
 
     const safety = await screen.findByLabelText("执行安全状态");
-    expect(within(safety).getAllByText("过期")).toHaveLength(4);
+    expect(within(safety).getAllByText("过期")).toHaveLength(3);
     expect(within(safety).queryByText("YES")).toBeNull();
-    expect(within(safety).queryByText("PROVEN")).toBeNull();
     expect(screen.getByText(/本次读取的事实已过期/)).toBeVisible();
   });
 
-  it("RISK folds the order counts into the positions table it describes", async () => {
+  it("keeps the ledger readable when the readiness projection is the read that failed", async () => {
     /*
-     * #537 PR-5. Open / inflight / unknown were a card of their own between the equity figures and the
-     * positions, which read as a fifth safety answer. They are three integers about the same account.
+     * The one structural repair. `/api/trading/status` was read first and a cold error returned a single
+     * error panel for the whole route, so a 5xx on the readiness projection took a perfectly readable
+     * execution ledger with it. Three reads, three failures.
      */
+    server.use(
+      http.get(/.*\/api\/trading\/status$/, () =>
+        HttpResponse.json({ ok: false, error: "status_unavailable" }, { status: 500 }),
+      ),
+    );
+    renderTrading();
+
+    expect(await screen.findByText("crypto:perp:BTC:USDT")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "回路账本 · 24h" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "24h 漏斗" })).toBeVisible();
+    expect(screen.getByText(/执行状态账本读取失败；保留其余已验证事实。/)).toBeVisible();
+    // The blocks that read `/status` say so in the same vocabulary rather than rendering a false answer.
+    expect(screen.getByText("执行状态账本读取失败，不能据此断言为空。")).toBeVisible();
+    expect(screen.queryByLabelText("执行安全状态")).toBeNull();
+  });
+
+  it("asks for a Case only once a reader opens the drawer", async () => {
+    /*
+     * The polled read carries three count dictionaries and no Cases (#604 T3). One `case_id` request is
+     * made, once, when a reader clicks a Signal row — not up to 100 frozen Cases every 15 s to render at
+     * most one of them.
+     */
+    const asked: string[] = [];
+    server.use(
+      http.get(/.*\/api\/trading\/cases$/, ({ request }) => {
+        const caseId = new URL(request.url).searchParams.get("case_id");
+        if (caseId) asked.push(caseId);
+        return HttpResponse.json({ ok: true, data: casesFor(request.url) });
+      }),
+    );
+    renderTrading();
+
+    const row = (await screen.findByText("crypto:perp:BTC:USDT")).closest(
+      ".trading-ledger-row",
+    ) as HTMLElement;
+    expect(asked).toEqual([]);
+
+    fireEvent.click(within(row).getByRole("button", { name: "crypto:perp:BTC:USDT" }));
+    await waitFor(() => expect(asked).toEqual(["case-btc"]));
+  });
+
+  it("opens the Case a Signal row authored in the drawer, keyed on the URL", async () => {
+    const { router } = renderTrading();
+
+    const row = (await screen.findByText("crypto:perp:BTC:USDT")).closest(
+      ".trading-ledger-row",
+    ) as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: "crypto:perp:BTC:USDT" }));
+
+    expect(await screen.findByRole("region", { name: "案例 HYPE" })).toBeVisible();
+    expect(screen.getByLabelText("案例抽屉")).toHaveTextContent("case-btc");
+    expect(screen.getByText("whale_oi_ratio_bps")).toBeVisible();
+    expect(screen.getByText("未通过")).toBeVisible();
+    // #604 T3 removed `policy_config`: the evidence table's 阈值 column already prints those numbers.
+    expect(screen.queryByRole("heading", { name: "冻结策略配置" })).toBeNull();
+    expect(router.search).toBe("?case=case-btc");
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    await waitFor(() => expect(screen.queryByLabelText("案例抽屉")).toBeNull());
+    expect(router.search).toBe("");
+  });
+
+  it("says a deep-linked Case is outside the window rather than showing nothing", async () => {
+    renderTrading("/trading?case=case-gone");
+
+    expect(await screen.findByLabelText("案例抽屉")).toHaveTextContent(
+      "这个案例不在当前 24 小时窗口。",
+    );
+    expect(screen.queryByRole("region", { name: /^案例 / })).toBeNull();
+  });
+
+  it("colours a realized result on the market axis and times the position from two clocks", async () => {
+    renderTrading();
+
+    const closed = await screen.findByText("crypto:perp:BTC:USDT");
+    const row = closed.closest(".trading-ledger-row") as HTMLElement;
+    expect(within(row).getByText("已平仓")).toBeVisible();
+    expect(within(row).getByText("已受理")).toBeVisible();
+    expect(within(row).getByText("0.049")).toBeVisible();
+    expect(within(row).getByText("9699.0")).toBeVisible();
+    expect(within(row).getByText("flatten 退出")).toBeVisible();
+    // A loss is green and a profit red, exactly as `tokens.css` reads the two market directions.
+    expect(within(row).getByText("−$14.92")).toHaveAttribute("data-tone", "loss");
+    expect(within(row).getByText("持仓 1m33s")).toBeVisible();
+
+    const manual = screen.getByText("crypto:perp:ETH:USDT").closest(".trading-ledger-row")!;
+    expect(within(manual as HTMLElement).getByText("$1.12")).toHaveAttribute("data-tone", "profit");
+    expect(within(manual as HTMLElement).getByText("持仓 57s")).toBeVisible();
+    // The manual entry has no Case, so its market cell is a word rather than the button a Signal carries.
+    expect(within(manual as HTMLElement).queryByRole("button")).toBeNull();
+    expect(within(manual as HTMLElement).getByText(/SHORT · 手工/)).toBeVisible();
+  });
+
+  it("prints a dash for an entry that never filled, and the venue's own rejection words", async () => {
+    renderTrading();
+
+    const unmapped = (await screen.findByText("crypto:perp:NVDA:USDT")).closest(
+      ".trading-ledger-row",
+    ) as HTMLElement;
+    expect(within(unmapped).getByText("运行时目录里没有这个市场")).toBeVisible();
+    expect(within(unmapped).getByText("已拒绝")).toBeVisible();
+    // Verbatim: it is the exchange talking, and translating it would put words in the venue's mouth.
+    expect(within(unmapped).getByText("Order would immediately trigger.")).toBeVisible();
+    expect(within(unmapped).getByText("持仓 —")).toBeVisible();
+
+    // A Signal whose TTL ran out before the Runtime could act carries the server's own `expired` stage.
+    const stale = screen.getByText("crypto:perp:SOL:USDT").closest(".trading-ledger-row")!;
+    expect(within(stale as HTMLElement).getByText("已过期")).toBeVisible();
+    expect(within(stale as HTMLElement).getByText("Signal 已过期")).toBeVisible();
+  });
+
+  it("states the realized totals the server summed, not the rows the desk happens to hold", async () => {
+    renderTrading();
+
+    const tally = (await screen.findByRole("heading", { name: "今日战况" })).closest(
+      "section",
+    ) as HTMLElement;
+    expect(within(tally).getByText("今日已实现").nextSibling).toHaveTextContent("−$13.80");
+    expect(within(tally).getByText("累计已实现").nextSibling).toHaveTextContent("$56.40");
+    expect(within(tally).getByText("累计平仓 9 笔")).toBeVisible();
+    // Four entries in the window, two of which the Runtime refused before any order reached the venue.
+    expect(within(tally).getByText("今日入场").nextSibling).toHaveTextContent("4");
+    expect(within(tally).getByText("受理 2 · 拒绝 2")).toBeVisible();
+  });
+
+  it("renders the funnel's reasons in Chinese rather than the keys the writer stores", async () => {
+    /*
+     * The Case card printed `smart_money_ratio_below_or_equal_floor`, so the seven translations in
+     * `POLICY_RULE_ZH` could never reach a reader. The funnel's own top is `admission_counts_24h`, which is
+     * the only account the desk can give of a frame that never became a Case at all.
+     */
+    renderTrading();
+
+    const funnel = (await screen.findByRole("heading", { name: "24h 漏斗" })).closest(
+      "section",
+    ) as HTMLElement;
+    const strip = within(funnel).getByLabelText("24h 漏斗");
+    expect(within(strip).getByText("帧").nextSibling).toHaveTextContent("12");
+    expect(within(strip).getByText("成案").nextSibling).toHaveTextContent("7");
+    expect(within(strip).getByText("不交易").nextSibling).toHaveTextContent("5");
+    expect(within(strip).getByText("发出").nextSibling).toHaveTextContent("1");
+    expect(within(strip).getByText("受理").nextSibling).toHaveTextContent("2");
+    expect(within(strip).getByText("成交").nextSibling).toHaveTextContent("2");
+    expect(within(strip).getByText("平仓").nextSibling).toHaveTextContent("2");
+
+    expect(within(funnel).getByText("不交易 · 鲸鱼占比未超过地板")).toBeVisible();
+    expect(within(funnel).getByText("准入拒绝 · 持仓价值低于地板")).toBeVisible();
+    expect(within(funnel).getByText("过期 · 触发已陈旧")).toBeVisible();
+    expect(within(funnel).queryByText("smart_money_ratio_below_or_equal_floor")).toBeNull();
+  });
+
+  it("opens the exposure block only when the account holds something", async () => {
+    renderTrading();
+
+    const closed = (await screen.findByRole("heading", { name: "敞口与保护" })).closest(
+      "section",
+    ) as HTMLElement;
+    expect(closed.querySelector("details")).not.toHaveAttribute("open");
+    // The summary is the whole block until a reader opens it; the facts are present and not rendered.
+    expect(within(closed).getByText(/仓位 0 · 挂单 — · 保护 保护状态未知/)).toBeVisible();
+    expect(within(closed).getByText("未见当前仓位；这本身不能证明账户为空。")).not.toBeVisible();
+
+    cleanup();
     server.use(
       http.get(/.*\/api\/trading\/status$/, () =>
         HttpResponse.json({
@@ -112,21 +275,20 @@ describe("TradingPage", () => {
     );
     renderTrading();
 
-    expect(await screen.findByText("$997.50")).toBeVisible();
-    expect(screen.getByText("1,000 ms")).toBeVisible();
-    expect(screen.getByText("audit_append_failed")).toBeVisible();
-    const positions = screen
-      .getByRole("heading", { name: "当前仓位与挂单" })
-      .closest("section") as HTMLElement;
-    expect(within(positions).getByText("Open").nextSibling).toHaveTextContent("1");
-    expect(within(positions).getByText("Unknown").nextSibling).toHaveTextContent("0");
-    expect(within(positions).getAllByText("FULL COVERAGE").length).toBeGreaterThan(0);
-    // The stop's trigger price is on the open-order row, not only on the position's protection strip.
-    expect(within(positions).getAllByText("Trigger 9800")).toHaveLength(2);
-    expect(screen.getByText("−$0.03")).toBeVisible();
+    const open = (await screen.findByRole("heading", { name: "敞口与保护" })).closest(
+      "section",
+    ) as HTMLElement;
+    expect(open.querySelector("details")).toHaveAttribute("open");
+    expect(within(open).getByText("$997.50")).toBeVisible();
+    expect(within(open).getByText("1,000 ms")).toBeVisible();
+    // The audit tile was a constant `HEALTHY`; only the state a reader acts on renders now, as an alert.
+    expect(within(open).getByText(/账户事实写入审计失败 · audit_append_failed/)).toBeVisible();
+    expect(within(open).queryByText("HEALTHY")).toBeNull();
+    expect(within(open).getAllByText("已受保护").length).toBeGreaterThan(0);
+    expect(within(open).getAllByText("Trigger 9800")).toHaveLength(2);
   });
 
-  it("ACT writes a Command with no second confirmation and renders action, stage and clock only", async () => {
+  it("writes a Command with no second confirmation and reads back the Runtime's own answer", async () => {
     vi.stubGlobal("crypto", {
       randomUUID: () => "11111111-1111-4111-8111-111111111111",
     });
@@ -139,30 +301,40 @@ describe("TradingPage", () => {
           data: tradingStatusFixture({ execution: tradingLiveExecutionFixture() }),
         }),
       ),
+      http.get(/.*\/api\/trading\/executions$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingExecutionsFixture({
+            commands: [
+              tradingCommandRowFixture({
+                action: "resume_entries",
+                command_id: "d".repeat(64),
+                reason: "daily_loss_limit",
+                stage: "rejected",
+              }),
+              tradingCommandRowFixture({
+                action: "flatten",
+                command_id: "b".repeat(64),
+                stage: "completed",
+              }),
+            ],
+          }),
+        }),
+      ),
       http.post(/.*\/api\/trading\/execution\/commands$/, async ({ request }) => {
         authorization = request.headers.get("authorization");
         posted = await request.json();
-        return HttpResponse.json({
-          ok: true,
-          data: {
-            command_id: "a".repeat(64),
-            disposition: "awaiting_runtime",
-            reason: null,
-            requested_at_ns: 1,
-            seq: 7,
-            truth: "intent_recorded_not_runtime_or_venue",
-          },
-        });
+        return HttpResponse.json({ ok: true, data: commandReceipt("a".repeat(64)) });
       }),
     );
     renderTrading();
 
-    // The flatten Command already in the window is `completed`: its private reconciliation proved flat.
-    expect(await screen.findByText("已完成 · 私有对账证明")).toBeVisible();
-    expect(screen.getByText("已持久化")).toBeVisible();
-    // #537 PR-5: the reason repeated the field above the ledger and the identity was a constant.
-    expect(screen.queryByText("maintenance")).toBeNull();
-    expect(screen.queryByText("console:operator")).toBeNull();
+    // A refusal with a reason on it: `disposition_reason` was selected and then discarded (#604 T3).
+    const rejected = (await screen.findByText("Runtime 拒绝")).closest(
+      ".trading-command-row",
+    ) as HTMLElement;
+    expect(within(rejected).getByText("daily_loss_limit")).toBeVisible();
+    expect(screen.getByText("已完成 · 私有对账证明")).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "Resume / Arm" }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
@@ -177,96 +349,11 @@ describe("TradingPage", () => {
     );
   });
 
-  it("CONFIRM renders one row per entry from the server's own fields and totals the realized PnL", async () => {
-    renderTrading();
-
-    const closed = await screen.findByText("crypto:perp:BTC:USDT");
-    const row = closed.closest(".trading-execution-row") as HTMLElement;
-    expect(within(row).getByText("Signal")).toBeVisible();
-    expect(within(row).getByText("已平仓")).toBeVisible();
-    expect(within(row).getByText("已受理")).toBeVisible();
-    expect(within(row).getByText("0.049")).toBeVisible();
-    expect(within(row).getByText("9699.0")).toBeVisible();
-    expect(within(row).getByText("−$14.92")).toBeVisible();
-    expect(within(row).getByText("flatten 退出")).toBeVisible();
-
-    // A refusal keeps its named reason and shows no venue column at all.
-    const unmapped = screen.getByText("crypto:perp:NVDA:USDT").closest(".trading-execution-row")!;
-    expect(within(unmapped as HTMLElement).getByText("运行时目录里没有这个市场")).toBeVisible();
-    expect(within(unmapped as HTMLElement).getByText("已拒绝")).toBeVisible();
-    expect(screen.getByText("Signal 已过期")).toBeVisible();
-
-    /*
-     * #528 PR-3. The CLI manual entry is a row of its own, keyed on its Command and holding the same
-     * venue facts — before this it existed only as `manual_entry accepted` in ACT, with the fills,
-     * the exit and the realized result it produced nowhere on the desk. It has no Case, so its 来源
-     * cell is a word rather than the button a Signal row carries (#537 PR-5).
-     */
-    const manual = screen.getByText("crypto:perp:ETH:USDT").closest(".trading-execution-row")!;
-    expect(within(manual as HTMLElement).getByText("手工")).toBeVisible();
-    expect(within(manual as HTMLElement).getByText("已平仓")).toBeVisible();
-    expect(within(manual as HTMLElement).getByText("0.0122")).toBeVisible();
-    expect(within(manual as HTMLElement).getByText("81100.0")).toBeVisible();
-    expect(within(manual as HTMLElement).getByText("−$1.12")).toBeVisible();
-    expect(within(manual as HTMLElement).queryByRole("button")).toBeNull();
-
-    expect(
-      screen.getByText(/入场 4（Signal 3 · 手工 1）· 执行 2 · 已实现 −\$16\.04/),
-    ).toBeVisible();
-  });
-
-  it("CONFIRM opens the Case a Signal row authored in the drawer, keyed on the URL", async () => {
-    server.use(
-      http.get(/.*\/api\/trading\/cases$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: tradingCasesFixture({ cases: [tradingCaseFixture({ case_id: "case-btc" })] }),
-        }),
-      ),
-    );
-    const { router } = renderTrading();
-
-    const row = (await screen.findByText("crypto:perp:BTC:USDT")).closest(
-      ".trading-execution-row",
-    ) as HTMLElement;
-    fireEvent.click(within(row).getByRole("button", { name: "Signal" }));
-
-    expect(await screen.findByRole("region", { name: "案例 HYPE" })).toBeVisible();
-    expect(screen.getByLabelText("案例抽屉")).toHaveTextContent("case-btc");
-    expect(screen.getByText("whale_oi_ratio_bps")).toBeVisible();
-    expect(screen.getByText("未通过")).toBeVisible();
-    expect(router.search).toBe("?case=case-btc");
-
-    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
-    await waitFor(() => expect(screen.queryByLabelText("案例抽屉")).toBeNull());
-  });
-
-  it("says a deep-linked Case is outside the window rather than showing nothing", async () => {
-    renderTrading("/trading?case=case-gone");
-
-    expect(await screen.findByLabelText("案例抽屉")).toHaveTextContent(
-      "这个案例不在当前 24 小时窗口。",
-    );
-    expect(screen.queryByRole("region", { name: /^案例 / })).toBeNull();
-  });
-
-  it("keeps the durable 24 h Case card beside the ledgers rather than counting the rows on screen", async () => {
-    renderTrading();
-
-    const card = (await screen.findByRole("heading", { name: "Alpha 成案 · 24h" })).closest(
-      "section",
-    ) as HTMLElement;
-    // 7 = 1 + 5 + 1 from `state_counts_24h`, which is not the one Case row the page rendered.
-    expect(within(card).getByText("24h 成案").nextSibling).toHaveTextContent("7");
-    expect(within(card).getByText("smart_money_ratio_below_or_equal_floor")).toBeVisible();
-  });
-
   it("reads no admission ledger and no Signal list", async () => {
     /*
      * #537 PR-5. The desk downloaded up to 400 `decisions[]` from `/api/trading/gate` every 15 s and
-     * rendered none of the rows; `/api/trading/signals` is deleted outright. `/news/oi` joined each
-     * frame to its own admission answer until #553 PR-1 replaced it with 市场事实, which reads no
-     * Trading endpoint at all — a market observation carries no `event_id` to join on.
+     * rendered none of the rows; `/api/trading/signals` is deleted outright. The funnel's frame count is a
+     * server aggregate over the same admission ledger, which is a count read and not that row read.
      */
     const unexpected: string[] = [];
     server.use(
@@ -294,6 +381,8 @@ describe("TradingPage", () => {
     expect(await screen.findByText("执行账本读取失败，不能据此断言为空。")).toBeVisible();
     expect(screen.getByText("Command账本读取失败，不能据此断言为空。")).toBeVisible();
     expect(screen.getByText(/执行账本读取失败；保留其余已验证事实。/)).toBeVisible();
+    // The safety strip is a different read and keeps answering.
+    expect(screen.getByLabelText("执行安全状态")).toBeVisible();
   });
 
   it("reuses the exact command envelope after an unknown submission result", async () => {
@@ -319,17 +408,7 @@ describe("TradingPage", () => {
         if (attempts === 1) {
           return HttpResponse.json({ ok: false, error: "service_busy" }, { status: 503 });
         }
-        return HttpResponse.json({
-          ok: true,
-          data: {
-            command_id: "c".repeat(64),
-            disposition: "awaiting_runtime",
-            reason: null,
-            requested_at_ns: 1,
-            seq: 9,
-            truth: "intent_recorded_not_runtime_or_venue",
-          },
-        });
+        return HttpResponse.json({ ok: true, data: commandReceipt("c".repeat(64)) });
       }),
     );
     renderTrading();
@@ -360,7 +439,11 @@ describe("TradingPage", () => {
       http.get(/.*\/api\/trading\/cases$/, () =>
         HttpResponse.json({
           ok: true,
-          data: tradingCasesFixture({ cases: [], reason_counts_24h: {}, state_counts_24h: {} }),
+          data: tradingCasesFixture({
+            admission_counts_24h: [],
+            reason_counts_24h: {},
+            state_counts_24h: {},
+          }),
         }),
       ),
       http.get(/.*\/api\/trading\/executions$/, () =>
@@ -407,6 +490,7 @@ describe("TradingPage", () => {
               tradingCommandRowFixture({
                 action: "resume_entries",
                 command_id: "d".repeat(64),
+                reason: "runtime_stopped",
                 stage: "rejected",
               }),
               tradingCommandRowFixture({
@@ -433,8 +517,32 @@ describe("TradingPage", () => {
     expect(within(commands).getAllByText("Runtime 受理")).toHaveLength(2);
     expect(within(commands).getByText("已过期")).toBeVisible();
     expect(within(commands).getByText("手动方向")).toBeVisible();
+    expect(within(commands).getByText("runtime_stopped")).toBeVisible();
+    // A Command the Runtime accepted has no refusal to explain.
+    expect(within(commands).getAllByText("—")).toHaveLength(3);
   });
 });
+
+function casesFor(requestUrl: string) {
+  const caseId = new URL(requestUrl).searchParams.get("case_id");
+  const counts = tradingCasesFixture();
+  if (!caseId) return counts;
+  return {
+    ...counts,
+    cases: caseId === "case-gone" ? [] : [tradingCaseFixture({ case_id: caseId })],
+  };
+}
+
+function commandReceipt(commandId: string) {
+  return {
+    command_id: commandId,
+    disposition: "awaiting_runtime",
+    reason: null,
+    requested_at_ns: 1,
+    seq: 7,
+    truth: "intent_recorded_not_runtime_or_venue",
+  };
+}
 
 function renderTrading(entry = "/trading") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
