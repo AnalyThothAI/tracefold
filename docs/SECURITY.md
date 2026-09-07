@@ -105,8 +105,8 @@ The production model consumers are the News semantic Program and the optional
 post-delivery progression verifier. The Program's sole Interface is
 `SemanticJudge.judge(TriageContext) -> SemanticJudgment`. The
 production Adapter executes the fixed three-Predictor native DSPy Program
-`EventSemantics -> deterministic SemanticNormalizer -> Taxonomy -> ReaderCard.v2
--> deterministic VerdictAssembler`; callers
+`EventSemantics -> deterministic _normalize_and_validate_semantics -> Taxonomy
+-> ReaderCard.v2 -> deterministic _assemble`; callers
 cannot supply instructions, topology, routes, retry policy or artifact paths. A
 normal judgment uses exactly three serial provider calls. DSPy's JSONAdapter may
 make one format fallback per Predictor, so one route is capped at six calls;
@@ -249,8 +249,8 @@ compile-record cut the same way: it admits the `compile_record` artifact kind,
 keeps `compile_receipt` in the constraint so retired rows stay readable, and
 trips open activations again, because a candidate registered against the old
 chain names a receipt that no longer validates. Neither re-opens the epoch —
-identity changed, evidence did not — so accepted `news_review_v4`
-truth stays eligible. Every earlier
+identity changed, evidence did not — so the reviews accepted under the rubric of
+the day stayed eligible. Every earlier
 review, dataset, recording and release receipt is
 retained as audit history but is never training, metric-v8,
 validation, holdout or promotion evidence for the current Program factory.
