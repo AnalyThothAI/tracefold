@@ -507,6 +507,100 @@ def test_a_killed_receiver_becomes_a_process_outage_the_next_one_recovers_into_o
     assert _count(conn, "SELECT count(*) AS n FROM news_items WHERE source_item_key = %s", (str(hit["id"]),)) == 1
 
 
+class _QuietSocket:
+    """The provider socket reduced to what the Receiver loop calls: it connects and then stays quiet."""
+
+    def __init__(self) -> None:
+        self.connected = 0
+        self.closed = 0
+
+    async def connect(self) -> None:
+        self.connected += 1
+
+    async def receive(self) -> Any:
+        await asyncio.Event().wait()
+
+    async def close(self) -> None:
+        self.closed += 1
+
+
+def test_a_cancelled_receiver_leaves_the_liveness_row_connected_and_writes_no_disconnect(conn) -> None:
+    """#425: a killed Receiver's last durable word is `connected`, because it never gets another one.
+
+    The Workers root closes business admission before it cancels this task, and a SIGKILL never
+    reaches application code at all, so the dying process must not relabel its own death — a
+    `planned_shutdown` row here would tell the successor there was no gap to recover. What the row
+    has to say is nothing: still connected, at the last write the old process managed.
+    """
+
+    repos = repositories_for_connection(conn)
+    seeded = repos.news.ingest_liveness()
+    assert seeded is not None
+    # A predecessor that did report its disconnect, so the successor's startup opens no window of its
+    # own and every row below is one this process wrote.
+    with repos.transaction():
+        repos.news.update_ingest_state(now_ms=int(seeded["updated_at_ms"]) + 1, connected=False)
+    conn.commit()
+
+    db = FaultInjectingDatabase(conn)
+    socket = _QuietSocket()
+    receiver = OpenNewsReceiver(bus=RecordingBus(), db=db, ws_client=socket, recovery=None)
+
+    async def killed() -> None:
+        stop = asyncio.Event()
+        task = asyncio.create_task(receiver.run(stop_event=stop))
+        for _ in range(200):
+            if socket.connected:
+                break
+            await asyncio.sleep(0.001)
+        else:  # pragma: no cover - the loop connects on its first pass
+            raise AssertionError("the receiver never reached its socket")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(killed())
+    conn.commit()
+
+    causes = [dict(row)["cause_class"] for row in conn.execute("SELECT * FROM news_opennews_incidents").fetchall()]
+    assert causes == [], "a kill writes no disconnect of any kind, and least of all a planned one"
+    liveness = repos.news.ingest_liveness()
+    assert liveness is not None and liveness["connected"] is True, "the last durable word is still `connected`"
+
+
+def test_a_predecessor_whose_clock_ran_ahead_cannot_open_an_outage_in_the_future(conn) -> None:
+    """`updated_at_ms` only moves forward, so a fast predecessor leaves a timestamp this process has not reached.
+
+    Trusting it would open an interval that this same process then closes *before* it began, and
+    `news_opennews_incidents_check` refuses `closed_at_ms < opened_at_ms` — so the Receiver would die
+    on the row it had just written, every single time it started.
+    """
+
+    repos = repositories_for_connection(conn)
+    seeded = repos.news.ingest_liveness()
+    assert seeded is not None
+    ahead_ms = max(int(seeded["updated_at_ms"]), now_ms()) + 3_600_000
+    with repos.transaction():
+        repos.news.update_ingest_state(now_ms=ahead_ms, connected=True)
+    conn.commit()
+    assert int(repos.news.ingest_liveness()["updated_at_ms"]) == ahead_ms
+
+    successor = OpenNewsReceiver(bus=RecordingBus(), db=FaultInjectingDatabase(conn), ws_client=None, recovery=None)
+    before = now_ms()
+    asyncio.run(successor._record_a_predecessor_that_never_reported_a_disconnect())
+    conn.commit()
+
+    opened = [dict(row) for row in conn.execute("SELECT * FROM news_opennews_incidents").fetchall()]
+    assert [row["cause_class"] for row in opened] == ["process_outage"]
+    assert before <= int(opened[0]["opened_at_ms"]) <= now_ms(), "an outage cannot have begun in the future"
+
+    # The proof that the clamp is load-bearing: this same process can close what it opened.
+    asyncio.run(successor._connected())
+    conn.commit()
+    closed = conn.execute("SELECT opened_at_ms, closed_at_ms FROM news_opennews_incidents").fetchone()
+    assert closed["closed_at_ms"] is not None and int(closed["closed_at_ms"]) >= int(closed["opened_at_ms"])
+
+
 # ------------------------------------------------------- Deduper: published to the broker, unmarked in the row
 
 
@@ -777,6 +871,109 @@ def test_a_second_evidence_change_refuses_to_bind_the_stale_judgment(conn) -> No
     ).fetchall()
     assert len(verdicts) == 1
     assert int(verdicts[0]["evidence_version"]) == 3, "the verdict names the evidence it actually read"
+
+
+def _second_admissible_hit() -> dict[str, Any]:
+    """A second scored, grounded frame whose text is unrelated to `_one_hit()`, so it opens its own Event."""
+
+    first_id = str(_one_hit()["id"])
+    stamp = now_ms()
+    for hit in _hits():
+        if str(hit["id"]) == first_id:
+            continue
+        rating = hit.get("aiRating") or {}
+        if float(rating.get("score") or 0) >= 70 and (hit.get("coins") or []):
+            return {**hit, "ts": datetime.now(UTC).isoformat(), "link": _fresh_status_url(stamp)}
+    raise AssertionError("fixture no longer contains a second admissible frame")
+
+
+class _CardLandingDatabase(FaultInjectingDatabase):
+    """Another process settles a card on its own connection, after the refresh and before the lock.
+
+    The window this reproduces is narrower than the one a re-read can see: Triage refreshes the
+    reader ledger outside any transaction, and only then opens the persist transaction and takes the
+    storyline lock. A card that commits between those two moments is invisible to the refresh and
+    visible inside the lock, which is exactly why the locked step re-reads the ledger revision
+    instead of trusting the snapshot it arrived with.
+    """
+
+    def __init__(self, conn: Any, *, delivered_event_id: str) -> None:
+        super().__init__(conn)
+        self.delivered_event_id = delivered_event_id
+        self.armed = True
+
+    async def tx(self, name: str, fn: Any, *, timeout_seconds: float = 3.0) -> Any:
+        if name == "news_triage_persist" and self.armed:
+            self.armed = False
+            self._settle_on_another_connection()
+        return await super().tx(name, fn, timeout_seconds=timeout_seconds)
+
+    def _settle_on_another_connection(self) -> None:
+        other = connect_postgres_test(read_only=False)
+        try:
+            repos = repositories_for_connection(other)
+            stamp = now_ms()
+            with repos.transaction():
+                assert (
+                    repos.news.begin_delivery(
+                        event_id=self.delivered_event_id,
+                        kind="first",
+                        card={"headline_zh": "另一条已推送的卡片"},
+                        now_ms=stamp,
+                    )
+                    == "new"
+                )
+                assert repos.news.settle_delivery(
+                    event_id=self.delivered_event_id,
+                    kind="first",
+                    state="sent",
+                    receipt={"provider": "test", "message_id": 1, "pushed_at_ms": stamp},
+                    error_code=None,
+                    now_ms=stamp,
+                )
+            other.commit()
+        finally:
+            other.close()
+
+
+def test_a_card_that_lands_after_the_refresh_is_seen_inside_the_storyline_lock(conn) -> None:
+    """A push committed between the ledger refresh and the lock must not be judged around.
+
+    The evidence race above has a sibling on the other input the model is shown: the cards the
+    reader already received. `reader_history_revision` is a compare-and-swap token over the settled
+    deliveries, re-read inside the persist transaction under `lock_storyline`, and the writer that
+    moves it here is a genuinely separate connection whose commit PostgreSQL — not a script — makes
+    visible. Losing that CAS costs one bounded re-ask, and the verdict that lands names the ledger it
+    actually read.
+    """
+
+    bus = RecordingBus()
+    db = FaultInjectingDatabase(conn)
+    delivered_event_id = _pushable_event(conn, db, bus)
+
+    asyncio.run(_deduper(db, bus).handle(_raw_message(_second_admissible_hit())))
+    conn.commit()
+    judged = [message for message in bus.of_kind("event") if message.payload["event_id"] != delivered_event_id]
+    assert len(judged) == 1, "the second frame has to open its own Event, not join the first"
+    event_id = str(judged[0].payload["event_id"])
+
+    racing_db = _CardLandingDatabase(conn, delivered_event_id=delivered_event_id)
+    judge = _EvidenceMovingJudge(_deduper(racing_db, bus), [])
+    asyncio.run(_triage(racing_db, bus, judge=judge).handle(judged[0]))
+    conn.commit()
+
+    assert racing_db.armed is False, "the card has to land while the judgment is being persisted"
+    assert judge.asks == 2, "the lost CAS buys exactly one re-ask"
+    verdicts = conn.execute(
+        "SELECT trace FROM news_verdicts WHERE event_id = %s AND stage = 'triage'", (event_id,)
+    ).fetchall()
+    assert len(verdicts) == 1, "the stale round writes nothing"
+    assert verdicts[0]["trace"]["reasked_after_told_change"] is True
+    settled = _count(
+        conn,
+        "SELECT count(*) AS n FROM news_deliveries WHERE kind = 'first' AND state = 'sent'",
+    )
+    assert settled == 1, "the racing card is a durable row, not a scripted return value"
 
 
 def test_a_verdict_mark_failure_redelivers_the_decision_into_one_delivery_lifecycle(conn) -> None:
