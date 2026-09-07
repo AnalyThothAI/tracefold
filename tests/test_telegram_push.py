@@ -22,8 +22,8 @@ import httpx
 import pytest
 
 from tracefold.integrations.telegram import (
-    _TELEGRAM_RESPONSE_MAX_BYTES,
     _SECTION_SEPARATOR,
+    _TELEGRAM_RESPONSE_MAX_BYTES,
     _TELEGRAM_TEXT_MAX,
     _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS,
     TelegramDeliveryError,

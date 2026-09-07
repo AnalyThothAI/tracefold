@@ -1478,6 +1478,8 @@ def test_deliverer_never_retries_a_send_whose_outcome_the_provider_did_not_repor
     settle = news.kwargs_of("settle_delivery")
     assert (settle["state"], settle["error_code"]) == ("terminal", "news_delivery_feishu_transport_unreadable")
     assert "release_delivery" not in news.names()
+
+
 def test_the_enrichment_edit_is_paced_by_the_same_entry_the_initial_send_uses() -> None:
     """#604 N3: one process, one pacer, whether the outbound message is a send or an edit.
 

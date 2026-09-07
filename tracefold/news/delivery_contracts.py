@@ -57,6 +57,7 @@ def classify_delivery_failure(exc: BaseException) -> str:
         return DELIVERY_FAILURE_RETRIABLE
     return DELIVERY_FAILURE_REFUSED
 
+
 # The longest wait a provider may buy itself with one refusal. A rate limit is the provider talking,
 # and a durable due time is this process trusting it, so the number it wrote is bounded before it
 # becomes one: an hour parked in `pending` for a card a reader is waiting on is worse than asking
@@ -69,8 +70,8 @@ __all__ = [
     "DELIVERY_FAILURE_REFUSED",
     "DELIVERY_FAILURE_RETRIABLE",
     "DELIVERY_FAILURE_UNKNOWN",
-    "classify_delivery_failure",
     "RETRY_AFTER_MAX_SECONDS",
+    "classify_delivery_failure",
     "retry_after_ms",
 ]
 
