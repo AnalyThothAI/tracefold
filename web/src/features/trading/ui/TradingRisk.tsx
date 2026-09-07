@@ -1,25 +1,88 @@
 import { Card } from "@shared/ui/Card";
 import { EmptyNote } from "@shared/ui/EmptyNote";
 import { Metric, MetricRow } from "@shared/ui/Metric";
+import { SourceLine } from "@shared/ui/SourceLine";
 import type { ReactNode } from "react";
 
 import type { TradingExecutionReadiness } from "../api/tradingQueries";
-import { bpsPercent, entryBlockReasonLabel, moneyLabel } from "../model/tradingLabels";
+import {
+  bpsPercent,
+  entryBlockReasonLabel,
+  moneyLabel,
+  protectionStatusLabel,
+} from "../model/tradingLabels";
 
 /**
- * RISK: is the lane safe, and what is on the account (#537 PR-5, blocks 1 and 2 of #528 PR-2 merged).
+ * The two blocks `/api/trading/status` owns, and the reason they are not adjacent on the desk (#604 T4).
  *
- * One strip of four safety words, four numbers beside it, and the positions the venue actually holds
- * with the protection covering each. The open / inflight / unknown order counts are that table's own
- * header rather than a card of their own — they are three integers about the same account, and a card
- * between the equity and the positions made them read as a fifth safety answer.
+ * ① is the strip an operator reads first and ⑤ is the detail they open only when something is on the
+ * account; the tally, the funnel and the ledger sit between them. They stay one module because they are
+ * one read and one vocabulary — split across two files, the second would eventually consult a second
+ * source for the same account.
  *
  * `stale` is the page's one freshness comparison — `Date.now() > execution.facts_expire_at_ms`, the instant
- * the server itself published as the end of this projection's budget. Past it the four safety words are
- * not what the response says they are, so all four read 过期 rather than the browser recomputing a
- * heartbeat age and a reconciliation age of its own and disagreeing with the server about both.
+ * the server itself published as the end of this projection's budget. Past it the safety words are not what
+ * the response says they are, so they read 过期 rather than the browser recomputing a heartbeat age and a
+ * reconciliation age of its own and disagreeing with the server about both.
  */
-export function TradingRisk({
+export function TradingSafetyStrip({
+  execution,
+  stale,
+}: {
+  execution: TradingExecutionReadiness;
+  stale: boolean;
+}) {
+  return (
+    <div className="trading-risk" data-block="safety">
+      {/*
+       * Three words, not four. `FLAT` was the fourth and has read `NOT PROVEN` around the clock in
+       * production: `ExecutionRuntimeState.account_flat` stays false with zero positions, so the tile was a
+       * permanently amber quarter of the strip that no operator could act on. That is a writer-side defect
+       * and it is tracked as one; here the proof is a footnote of the exposure block, where an empty
+       * position list is the claim it qualifies.
+       */}
+      <MetricRow className="trading-safety-grid" columns={3} label="执行安全状态">
+        <Metric
+          eyebrow="ALIVE"
+          value={safety(execution.alive, stale)}
+          caption="进程 / Node / event loop"
+          tone={!stale && execution.alive ? "accent" : "caution"}
+        />
+        <Metric
+          eyebrow="SAFE"
+          value={safety(execution.execution_safe, stale)}
+          caption="现有 exposure 可保护和退出"
+          tone={!stale && execution.execution_safe ? "accent" : "caution"}
+        />
+        <Metric
+          eyebrow="ARMED"
+          value={safety(execution.entries_armed, stale)}
+          caption={stale ? "事实已过期" : entryBlockReasonLabel(execution.entry_block_reason)}
+          tone={!stale && execution.entries_armed ? "accent" : "caution"}
+        />
+      </MetricRow>
+      <p className="trading-routes-line">
+        Runtime 可执行市场 {execution.routes_count} 个 · 账户槽位{" "}
+        <code>{execution.account_slot}</code>
+        {stale ? " · 本次读取的事实已过期" : ""}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * ⑤ Exposure and protection, closed while there is nothing on the account.
+ *
+ * `max_positions` is 1 and the lane emits a handful of Signals a day, so the positions list, the order list
+ * and the protection strip are empty most of the time — three empty regions holding a full card each. The
+ * block opens itself the moment the account holds a position or an order, or the Runtime reports exposure
+ * it does not own, and stays open until that is no longer true.
+ *
+ * The audit tile went with it. `audit_healthy` is true around the clock, so `审计写入 HEALTHY` was a
+ * constant occupying a cell; an unhealthy audit is now an alert line, which is the only state a reader has
+ * to act on. `unexpected_exposure` gets the same treatment and had no rendering at all before.
+ */
+export function TradingExposure({
   execution,
   stale,
 }: {
@@ -29,41 +92,29 @@ export function TradingRisk({
   const account = execution.current_account;
   const positions = account?.positions ?? [];
   const orders = account?.orders ?? [];
+  const open = positions.length > 0 || orders.length > 0 || execution.unexpected_exposure;
   return (
-    <div className="trading-risk">
-      <MetricRow className="trading-safety-grid" columns={4} label="执行安全状态">
-        <Metric
-          eyebrow="ALIVE"
-          value={safety(execution.alive, stale, "YES", "NO")}
-          caption="进程 / Node / event loop"
-          tone={!stale && execution.alive ? "accent" : "caution"}
-        />
-        <Metric
-          eyebrow="SAFE"
-          value={safety(execution.execution_safe, stale, "YES", "NO")}
-          caption="现有 exposure 可保护和退出"
-          tone={!stale && execution.execution_safe ? "accent" : "caution"}
-        />
-        <Metric
-          eyebrow="ARMED"
-          value={safety(execution.entries_armed, stale, "YES", "NO")}
-          caption={stale ? "事实已过期" : entryBlockReasonLabel(execution.entry_block_reason)}
-          tone={!stale && execution.entries_armed ? "accent" : "caution"}
-        />
-        <Metric
-          eyebrow="FLAT"
-          value={safety(execution.account_flat_proven, stale, "PROVEN", "NOT PROVEN")}
-          caption="新鲜 Binance 私有对账"
-          tone={!stale && execution.account_flat_proven ? "accent" : "caution"}
-        />
-      </MetricRow>
-      <p className="trading-routes-line">
-        Runtime 可执行市场 {execution.routes_count} 个 · 账户槽位{" "}
-        <code>{execution.account_slot}</code>
-        {stale ? " · 本次读取的事实已过期" : ""}
-      </p>
+    <Card data-block="exposure" flush title="敞口与保护">
+      <details className="trading-exposure" open={open}>
+        <summary>
+          <span>
+            仓位 {positions.length} · 挂单 {account?.open_orders_count ?? "—"} · 保护{" "}
+            {protectionStatusLabel(execution.protection_status)}
+          </span>
+          <small>{open ? "账户上有敞口" : "无敞口，展开查看账户事实"}</small>
+        </summary>
 
-      <Card title="账户与风险">
+        {execution.unexpected_exposure ? (
+          <p className="trading-alert-line" data-tone="alert">
+            Runtime 报告了无主敞口；在处置之前不要解除 ARMED 之外的任何限制。
+          </p>
+        ) : null}
+        {account != null && !account.audit_healthy ? (
+          <p className="trading-alert-line" data-tone="alert">
+            账户事实写入审计失败 · {account.audit_failure_reason ?? "UNHEALTHY"}
+          </p>
+        ) : null}
+
         <div className="trading-fact-grid">
           <Fact label="Equity" value={moneyLabel(account?.equity_usd)} />
           <Fact
@@ -93,37 +144,9 @@ export function TradingRisk({
             warn={!account?.complete}
           />
           <Fact
-            /*
-             * The audit the Runtime writes its own facts through. Unhealthy means the account read
-             * happened and could not be recorded, which is a different fact from a missing snapshot —
-             * so it names its own reason rather than degrading into UNAVAILABLE beside it.
-             */
-            label="审计写入"
-            value={
-              account == null
-                ? "UNAVAILABLE"
-                : account.audit_healthy
-                  ? "HEALTHY"
-                  : (account.audit_failure_reason ?? "UNHEALTHY")
-            }
-            warn={account != null && !account.audit_healthy}
-          />
-        </div>
-      </Card>
-
-      <Card hint="仓位与保护逐项展示；数量完整覆盖才标记 protected" title="当前仓位与挂单">
-        <div className="trading-order-counts">
-          <Fact label="Open" value={account?.open_orders_count ?? "—"} />
-          <Fact label="Inflight" value={account?.inflight_orders_count ?? "—"} />
-          <Fact
-            label="Unknown"
-            value={account?.unknown_orders_count ?? "—"}
+            label="Inflight / Unknown"
+            value={`${account?.inflight_orders_count ?? "—"} / ${account?.unknown_orders_count ?? "—"}`}
             warn={Boolean(account?.unknown_orders_count)}
-          />
-          <Fact
-            label="Protection"
-            value={protectionLabel(execution.protection_status)}
-            warn={["pending", "unprotected", "unknown"].includes(execution.protection_status)}
           />
         </div>
 
@@ -136,7 +159,7 @@ export function TradingRisk({
                   <span data-tone={position.side === "long" ? "long" : "short"}>
                     {position.side.toUpperCase()}
                   </span>
-                  {!position.owned ? <span data-tone="caution">UNCLAIMED</span> : null}
+                  {!position.owned ? <span data-tone="alert">UNCLAIMED</span> : null}
                 </div>
                 <div className="trading-position-facts">
                   <Fact label="Qty" value={position.quantity} />
@@ -152,7 +175,7 @@ export function TradingRisk({
                   className="trading-protection-strip"
                   data-tone={position.protection_full_coverage ? "protected" : "caution"}
                 >
-                  <b>{protectionLabel(position.protection_status)}</b>
+                  <b>{protectionStatusLabel(position.protection_status)}</b>
                   <span>Qty {position.protection_quantity ?? "—"}</span>
                   <span>Trigger {position.protection_trigger_price ?? "—"}</span>
                   <span>
@@ -163,6 +186,11 @@ export function TradingRisk({
             ))}
           </div>
         ) : (
+          /*
+           * The FLAT footnote. `account_flat_proven` is one fresh private reconciliation saying the slot
+           * holds nothing — it qualifies this empty list and nothing else, which is why it is a sentence
+           * here rather than a permanently amber word in the safety strip.
+           */
           <EmptyNote className="trading-empty-note">
             {!stale && execution.account_flat_proven
               ? "当前账户无仓位，且新鲜 Binance 私有对账已证明账户为空。"
@@ -190,8 +218,9 @@ export function TradingRisk({
         ) : (
           <p className="trading-inline-empty">未见 open / inflight order；不据此推断账户为空。</p>
         )}
-      </Card>
-    </div>
+      </details>
+      <SourceLine path="GET /api/trading/status → execution.current_account" />
+    </Card>
   );
 }
 
@@ -204,19 +233,7 @@ function Fact({ label, value, warn = false }: { label: string; value: ReactNode;
   );
 }
 
-function safety(value: boolean, stale: boolean, yes: string, no: string): string {
+function safety(value: boolean, stale: boolean): string {
   if (stale) return "过期";
-  return value ? yes : no;
-}
-
-function protectionLabel(value: string): string {
-  return (
-    {
-      not_applicable: "NOT APPLICABLE",
-      pending: "PROTECTION PENDING",
-      protected: "PROTECTED",
-      unknown: "PROTECTION UNKNOWN",
-      unprotected: "UNPROTECTED",
-    }[value] ?? value.toUpperCase()
-  );
+  return value ? "YES" : "NO";
 }

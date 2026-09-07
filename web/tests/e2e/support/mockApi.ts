@@ -16,7 +16,7 @@ import {
 } from "@tests/fixtures/newsFixture";
 import {
   TRADING_NOW_MS,
-  tradingCasesForId,
+  tradingCasesForCaseId,
   tradingExecutionFixture,
   tradingExecutionsFixture,
   tradingStatusFixture,
@@ -110,10 +110,13 @@ export async function installMockApi(
         ),
       );
     }
-    // #604 T3: `/api/trading/cases` answers by identity. Without `?case_id=` it carries the three 24 h
-    // distributions and no Case at all, which is what the desk polls it for.
+    /*
+     * #604 T3: without `case_id` this answers the three 24 h count distributions and an empty `cases[]`;
+     * with one it answers that exact Case or none. The mock narrows on the parameter because the drawer's
+     * read is a real request, and a mock that ignored it would let a browser-side `find` pass a baseline.
+     */
     if (path === "/api/trading/cases") {
-      return fulfill(route, tradingCasesForId(url.searchParams.get("case_id")));
+      return fulfill(route, tradingCasesForCaseId(url.searchParams.get("case_id")));
     }
     if (path === "/api/trading/executions") {
       return fulfill(route, options.tradingExecutions ?? tradingExecutionsFixture());

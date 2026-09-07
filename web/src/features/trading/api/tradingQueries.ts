@@ -13,6 +13,8 @@ export type TradingPolicyCheck = TradingSchemas["TradingPolicyCheckData"];
 export type TradingExecutions = TradingSchemas["TradingExecutionsData"];
 export type TradingExecutionRow = TradingSchemas["TradingExecutionRowData"];
 export type TradingExecutionCommand = TradingSchemas["TradingExecutionCommandRowData"];
+export type TradingRealizedTotals = TradingSchemas["TradingRealizedTotalsData"];
+export type TradingAdmissionCount = TradingSchemas["TradingAdmissionCountData"];
 export type TradingOperatorCommandReceipt = TradingSchemas["TradingOperatorCommandReceiptData"];
 
 export const TRADING_REFETCH_MS = 15_000;
@@ -33,24 +35,45 @@ export const useTradingStatusWithToken = (token: string) =>
   });
 
 /**
- * The three durable 24 h distributions, plus the one Case behind `?case_id=` when a drawer is open.
+ * The 24 h funnel's three durable distributions, and nothing else (#604 T3).
  *
- * `/api/trading/cases` stopped sending a page of Cases (#604 T3): it answers one identity, or none.
- * The poll continues either way, because the distributions beside it are what the funnel draws.
+ * Without `case_id` the response's `cases[]` is empty by contract, so this poll now carries three count
+ * dictionaries instead of up to 100 frozen Cases with their checks attached — of which the desk could
+ * render at most one, once a reader clicked. The one Case a reader does click is the query below.
  */
-export const useTradingCasesWithToken = (token: string, caseId?: string | null) =>
+export const useTradingCasesWithToken = (token: string) =>
   useQuery({
     enabled: Boolean(token),
-    queryKey: queryKeys.tradingCases(caseId ?? ""),
+    queryKey: queryKeys.tradingCases(""),
     queryFn: async () =>
       (
         await getApi<TradingCases>("/api/trading/cases", {
-          etagKey: `trading-cases:${caseId ?? "none"}`,
-          params: caseId ? { case_id: caseId } : undefined,
+          etagKey: "trading-cases",
           token,
         })
       ).data,
     refetchInterval: TRADING_REFETCH_MS,
+    staleTime: 5_000,
+  });
+
+/**
+ * One Case by primary key, read only while the drawer behind `?case=<id>` is open.
+ *
+ * It does not poll: a frozen Case cannot change. An unknown id answers with an empty `cases[]` rather than
+ * an error, which is the drawer's "not in this window" sentence and not a failed read.
+ */
+export const useTradingCaseWithToken = (token: string, caseId: string | null) =>
+  useQuery({
+    enabled: Boolean(token && caseId),
+    queryKey: queryKeys.tradingCases(caseId ?? ""),
+    queryFn: async () =>
+      (
+        await getApi<TradingCases>("/api/trading/cases", {
+          etagKey: `trading-case:${caseId}`,
+          params: { case_id: caseId },
+          token,
+        })
+      ).data,
     staleTime: 5_000,
   });
 
@@ -62,7 +85,8 @@ export const useTradingCasesWithToken = (token: string, caseId?: string | null) 
  * the raw Observation stream this page used to correlate in the browser. That correlation was wrong for
  * a flatten — the exit orders carry the *entry's* id, not the flatten Command's — and `stage` is now the
  * server's word from `tracefold/trading/stages.py`, so the CLI and the console cannot disagree about how
- * far one entry got.
+ * far one entry got. `totals` is the same ledger's realized sum over today and over all time (#604 T3):
+ * the desk states the two numbers the server added up rather than summing the rows it happens to hold.
  */
 export const useTradingExecutionsWithToken = (token: string) =>
   useQuery({

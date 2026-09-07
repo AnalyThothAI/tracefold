@@ -118,19 +118,17 @@ the route components into the eager shell chunk.
   `Alpha 判定` at `/news/alpha` was a fourth destination until #460. It read one
   endpoint — `/api/trading/cases` — and so does `/trading`, so the list of Cases
   existed twice. The thing it showed that `/trading` did not was one Case's
-  frozen evidence, and that moved into the Trading Case card rather than being
-  deleted with the page: selecting a row there opens the Case's terminal answer,
-  its identity and timestamps, and the frozen check table (check, operator,
-  threshold, measured, pass/fail). A
-  Case written before `policy_checks` existed says so rather than showing an
-  empty table, and every threshold on screen is the Case's own, never today's
-  configuration. The frozen `policy_config` dictionary that used to sit beneath
-  the table went in #604 T3: `policy_checks[].threshold` already carries every
-  number that was tested, beside what it was measured against, and
-  `policy_config_digest` still identifies the whole set. `/trading?case=<id>`
-  opens one directly, and the desk's own Case rows link that way; the drawer asks
-  `/api/trading/cases?case_id=<id>` for that one Case, and a `case` the ledger no
-  longer holds says so rather than rendering nothing.
+  frozen evidence, and that moved into the Trading Case drawer rather than being
+  deleted with the page: opening a Case there shows its terminal answer, its
+  identity and timestamps, and the frozen check table (check, operator,
+  threshold, measured, pass/fail). A Case written before `policy_checks` existed
+  says so rather than showing an empty table, and every threshold on screen is
+  the Case's own, never today's configuration. A third card restated the frozen
+  `policy_config` under that table until #604 T3 removed the field from the
+  contract: the threshold column already prints those numbers beside the
+  condition each one was measured against. `/trading?case=<id>` opens one directly, and the desk's own Case
+  rows link that way. A `case` the rolling window has
+  already dropped says so and names the window rather than rendering nothing.
 
 
   `/news/market` is `市场事实` (#553 PR-1, replacing `/news/oi` and the OI
@@ -376,23 +374,54 @@ the route components into the eager shell chunk.
   pipeline dropped it and it moved 3%" is the one thing the conclusion cannot
   say. A horizon that has not matured reads `未到期`, never `0.00%`.
 
-  `/trading` is the Alpha/Execution operator desk: **three blocks over two
-  endpoints, plus a Case drawer that opens on demand** (#537 PR-5). It was six
-  blocks over four; the two that went were both funnels — a card of today's
-  admission configuration beside a status distribution, and a list of every Case
-  in the window whose only interactive purpose was opening one of them.
+  `/trading` is the Alpha/Execution operator desk: **six blocks in one column
+  over three endpoints, plus a Case drawer that opens on demand** (#604 T4).
+  The order is the order an operator asks the questions in.
 
-  1. **RISK** — `/api/trading/status`. One strip of `ALIVE`, `SAFE`, `ARMED`,
-     `FLAT` with the blocking reason through `ENTRY_BLOCK_REASON_ZH` and
-     `execution.routes_count` as `Runtime 可执行市场 N 个`; then equity, UTC-day
-     drawdown, aggregate risk, private reconcile age and `audit_healthy` with
-     its own failure reason; then the positions the venue holds, each with
-     quantity, entry, mark, unrealized PnL and its protection trigger and
-     coverage, under a header of the three order counts (open / inflight /
-     unknown) and the protection word. Those three counts were a card of their
-     own between the equity figures and the positions, where they read as a
-     fifth safety answer; they are three integers about the same account.
-  2. **ACT** — `POST /api/trading/execution/commands` to write, and the
+  1. **安全条** — `/api/trading/status`. Three words: `ALIVE`, `SAFE`, `ARMED`,
+     the last carrying the blocking reason through `ENTRY_BLOCK_REASON_ZH`;
+     under them `execution.routes_count` and the account slot. `FLAT` was a
+     fourth word and is a footnote of block 5 now: `account_flat` stays false
+     with zero positions, so the tile read `NOT PROVEN` around the clock, and a
+     permanently amber quarter of the safety strip is a warning nobody can act
+     on. It qualifies an empty position list, which is where it now sits.
+  2. **今日战况** — `executions.totals` plus `execution.current_account`. Today's
+     and all-time realized results as the server summed them (manual entries
+     included, and the caption says so), the entries in the window split into
+     accepted and refused, and the positions and orders on the account. The
+     page used to print a third number instead: the sum of the realized column
+     over the rows it happened to be showing, which is neither.
+  3. **24h 漏斗** — `/api/trading/cases`. Seven counts, 帧 → 成案 → 不交易 → 发出
+     → 受理 → 成交 → 平仓. The first four are that read's own aggregates —
+     `admission_counts_24h` is how many frames admission looked at at all
+     (#604 T3) — and the last three are counted from the execution rows below,
+     which is the only place the venue's answer per entry exists. Under the
+     strip, the largest refusals in Chinese through `policyReasonLabel`,
+     `ADMISSION_STATUS_ZH` and `ADMISSION_REASON_ZH`; the page printed the raw
+     keys, so those translations could never reach a reader. They are counts and
+     not links: neither distribution publishes an identity, and a `NO_TRADE`
+     Case has no execution row to carry one, so the desk holds no `case_id` for
+     any of them and does not invent one.
+  4. **回路账本** — `/api/trading/executions`. Nine columns: time, market (with
+     direction and `source` as one chip), `disposition_reason` through
+     `SIGNAL_DISPOSITION_ZH` with `order_reject_reason` verbatim beneath it,
+     `stage`, fill quantity and average price, stop trigger, exit price and
+     reason, and the realized PnL with the holding interval under it. That
+     interval is `entry_filled_at_ns` to `position_closed_at_ns` (#604 T3) — a
+     dash when either clock is absent, never measured against `now`. The
+     realized number is coloured on the market axis, red for a profit and green
+     for a loss; direction was a column of one constant word and paid for it.
+     A manual entry renders beside a Signal with the same columns and no Case
+     identity (#528 PR-3); a Signal row's market cell is the link that opens its
+     Case.
+  5. **敞口与保护** — `/api/trading/status`, closed while the account holds
+     nothing and opened by a position, an order, or `unexpected_exposure`.
+     Equity, UTC-day drawdown, aggregate risk, private reconcile age, the
+     inflight/unknown order counts, then each position with quantity, entry,
+     mark, unrealized PnL and its protection trigger and coverage. An unhealthy
+     audit and unowned exposure are alert lines rather than tiles: `audit_healthy`
+     is true around the clock, so the tile was a constant occupying a cell.
+  6. **执行控制** — `POST /api/trading/execution/commands` to write, and the
      `commands[]` of `/api/trading/executions` to read back. Pause, Resume /
      Arm and Flatten, with **no confirmation dialog**: none of the three can
      submit an entry, and a modal in front of them taught readers that clicking
@@ -401,41 +430,30 @@ the route components into the eager shell chunk.
      pasted write token and the Live `CONFIRM` re-entry went with #520 PR-B). A
      successful POST says only that the Command was persisted. Each Command row
      is action, the server's `stage` — `recorded / accepted / rejected /
-     completed / expired`, derived from `control_disposition` alone — and its
-     clock. The reason column repeated the text the operator had just typed into
-     the field above it, and `operator_identity` was the constant
-     `operator-console` on every row a browser wrote.
-  3. **CONFIRM** — `/api/trading/executions`. One row per entry: time, `source`
-     (Signal or the operator's own manual entry), market, direction,
-     `disposition_reason` through `SIGNAL_DISPOSITION_ZH`, `stage`, fill
-     quantity and average price, stop trigger, exit price, realized PnL and exit
-     reason. A manual entry renders beside a Signal with the same columns and no
-     Case identity (#528 PR-3); a Signal row's `source` cell is the link that
-     opens its Case. The two columns #537 PR-5 dropped were both second answers:
-     `disposition` was `accepted` / `rejected` beside a `stage` that already says
-     `ordered` or `rejected`, and `position_status` was `closed` beside
-     `stage=closed`. #604 T3 added the facts the page could not derive: the
-     entry's first fill clock and its position's close clock, which are the two
-     instants a holding time is the distance between; the venue's own words on an
-     entry order it refused; and `totals`, the realized sums and counts over
-     every closed position this slot has, today and ever. Summing the realized
-     column of the rows on screen was the page's only arithmetic and it answered
-     a smaller question than the one an operator reconciles against the venue.
+     completed / expired`, derived from `control_disposition` alone — the
+     Runtime's own `reason` for refusing or expiring it (#604 T3), and its
+     clock.
 
-  **The Case drawer** is `/api/trading/cases`, opened by `?case=<id>` — the deep
-  link the desk's own Case rows publish. It shows one
-  Case's terminal answer and the frozen per-check evidence, and says so when the
-  ledger no longer holds the Case rather than rendering nothing. The browser asks
-  for that Case by `?case_id=<id>` and the response carries it alone (#604 T3):
-  the unconditional 100-row page it used to send on every 15 s poll was rendered
-  by nothing and could not reach the `NO_TRADE` Cases past the hundredth, which
-  are 553 of the 584 in a production day and the ones an operator opens to ask
-  why. Beside it, the same read carries three durable 24 h distributions:
-  `state_counts_24h`, the policy-reason counts, and `admission_counts_24h` — a
-  count per `(status, reason)` pair over the admission ledger, which is the
-  funnel's top and not the per-frame `decisions[]` #589 PR-2 deleted. There is no
-  pagination and no cursor — the response published a `next_cursor` no reader
-  ever sent back.
+  **Three independent reads, three independent failures.** `/api/trading/status`
+  used to gate the page: it was read first and a cold error returned one error
+  panel, so a 5xx on the readiness projection blanked a perfectly readable
+  execution ledger. It answers blocks 1 and 5 and half of 2 now, and nothing
+  else waits on it. Each block states its own unreadable answer in the desk's one
+  ledger vocabulary, and the stale banner names which ledger broke while keeping
+  the two that did not.
+
+  **The Case drawer** is `/api/trading/cases?case_id=<id>`, opened by
+  `?case=<id>` — the deep link the ledger's Signal rows publish. That query is
+  disabled until a reader asks for one, and does not poll, because a frozen Case
+  cannot change; the polled read carries the three count distributions and an
+  empty `cases[]` (#604 T3): `state_counts_24h`, the policy-reason counts, and
+  `admission_counts_24h` — a count per `(status, reason)` pair over the
+  admission ledger, which is the funnel's top and not the per-frame
+  `decisions[]` #589 PR-2 deleted. There is no pagination and no cursor. The drawer shows one Case's terminal answer and the
+  frozen per-check evidence, and says so when the Case is outside the 24 h window
+  rather than rendering nothing. The frozen-configuration card went with the
+  contract field: the evidence table's threshold column already prints those
+  numbers beside the condition each was measured against.
 
   **One empty-ledger vocabulary.** Every ledger on the page says the same three
   sentences about its own subject word: reading, unreadable, or empty. Three
@@ -445,8 +463,13 @@ the route components into the eager shell chunk.
   When Decision is disabled, empty ledger copy says the lane has no work; it
   never rebrands execution as paper. Loading, cold failure, stale refresh, and a
   genuinely empty batch remain different page states. The responsive desk uses
-  cards at desktop, tablet, and phone widths; CONFIRM's twelve-column table
-  scrolls inside its own panel and never widens the document.
+  cards at desktop, tablet, and phone widths; the ledger's nine-column table
+  scrolls inside its own panel and never widens the document. At `767px` and
+  below the block order becomes 安全条 → 敞口与保护 → 执行控制 → 今日战况 → 回路账本
+  → 漏斗 — alive, exposed, act, then read — the three write controls take a 48px
+  row, and the ledger stops being a table: each entry is a card whose cells print
+  the header they lost from `data-label`, because a horizontal scroll inside a
+  phone card hides eight of the nine columns.
 
 
   The Event detail carried an admission badge until #553 PR-1 and carries none
@@ -673,15 +696,17 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
 4. Confirm no failing `/api/*` requests and no WebSocket connection attempt in the browser session.
    On `/trading`, verify disabled controls; alive-but-unsafe and safe-but-paused
    states; a protected position; pending/failed protection; an unknown order; a
-   Command at each of `recorded / accepted / rejected / completed / expired`; a
-   Signal row at `rejected`, `expired` and `closed`; and the four safety words
-   reading `过期` once `facts_expire_at_ms` has passed. Confirm Resume and
-   Flatten write on one click with no dialog, and that every success message
-   still denies Runtime/venue completion.
+   Command at each of `recorded / accepted / rejected / completed / expired` with
+   the Runtime's reason on the refused ones; a Signal row at `rejected`,
+   `expired` and `closed`; and the three safety words reading `过期` once
+   `facts_expire_at_ms` has passed. Confirm Resume and Flatten write on one click
+   with no dialog, and that every success message still denies Runtime/venue
+   completion. With `/api/trading/status` failing, confirm the ledger, the funnel
+   and the controls still render and only the two blocks that read it say so.
 5. Confirm the topbar shows no status pill while `/api/status.runtime.ok` is
    true and shows the first runtime reason when it is not, and that the feed
    header shows no health pill while `health.overall` is `ok`.
-6. At `390px`, confirm there is no sidebar trigger, the bottom tab bar shows every destination with 48px targets and clears the home indicator, `.topbar` / `.center-column` / the bar do not overlap, Event rows read as separate cards with no select box and no expand caret, the funnel tiles and task tabs scroll horizontally inside themselves without giving the page a horizontal scroll, `/` lands on the News list, the approved tabs/time/filter controls remain reachable, and no retired Tape/task bar exists. On `/trading`, confirm the RISK strip, the account figures, the positions and their order-count header, the ACT controls and Command rows, the CONFIRM table (which scrolls inside its own panel) and the 24 h Case card remain reachable without page-level horizontal overflow.
+6. At `390px`, confirm there is no sidebar trigger, the bottom tab bar shows every destination with 48px targets and clears the home indicator, `.topbar` / `.center-column` / the bar do not overlap, Event rows read as separate cards with no select box and no expand caret, the funnel tiles and task tabs scroll horizontally inside themselves without giving the page a horizontal scroll, `/` lands on the News list, the approved tabs/time/filter controls remain reachable, and no retired Tape/task bar exists. On `/trading`, confirm the safety strip, the tally band, the funnel, the loop ledger's per-entry cards, the exposure disclosure and the three 48px control buttons remain reachable without page-level horizontal overflow.
 7. At tablet width around `834px`, confirm the desktop sidebar is not mounted, the topbar trigger opens the drawer, drawer route navigation and topbar search still work, and the News list and no-overflow contract remain intact.
    At `1280px` and above, confirm `/news` keeps the sidebar fixed in the frame with no trigger, other routes
    retain the shared fold trigger, all three destinations are present and 交易 carries its mode word,

@@ -16,6 +16,11 @@ import { bpsPercent, caseClock, policyLabel } from "../model/tradingLabels";
  * evidence a database query rather than something an operator can read. #537 PR-5 deleted that row list
  * too: this opens on demand from `?case=<id>`, which is the link every surface that names a Case already
  * publishes, rather than being one card in a list of every Case in the window.
+ *
+ * Two cards, not three. The third listed the frozen policy configuration, which was the same set of numbers
+ * the evidence table's 阈值 column already prints beside the condition each one was measured against —
+ * #604 T3 removed the field from the contract for that reason. `policy_config_digest` stays in the card
+ * hint: the identity of the configuration is release evidence, its restated values were not.
  */
 export function TradingCaseDetail({ item }: { item: TradingCase }) {
   const checks = caseChecks(item);
@@ -97,7 +102,7 @@ export function TradingCaseDetail({ item }: { item: TradingCase }) {
         ) : (
           <p className="trading-case-facts">
             这个案例在冻结逐条证据之前写入（#331 之前）。它的终局与规则仍然是{" "}
-            <code>{item.policy_reason ?? "—"}</code>，冻结配置由上方的摘要标识。
+            <code>{item.policy_reason ?? "—"}</code>。
           </p>
         )}
       </Card>

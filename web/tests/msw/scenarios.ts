@@ -11,7 +11,7 @@ import {
   newsWalletsFixture,
 } from "@tests/fixtures/newsFixture";
 import {
-  tradingCasesForId,
+  tradingCasesForCaseId,
   tradingExecutionsFixture,
   tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
@@ -75,10 +75,9 @@ export function mockAppRoutes(apiMock: ApiMock) {
     // #537 PR-5: only `/trading` reads this now. The shell polled it on every News route for a
     // sidebar badge and two chrome figures until the badge and the figures were deleted.
     if (path === "/api/trading/status") return ok(tradingStatusFixture());
-    // #604 T3: the endpoint reads one Case by `case_id`, so a mock that ignored it handed the drawer a
-    // Case nobody asked for.
+    // #604 T3: `case_id` is an exact primary key and the only way to get a Case out of this route.
     if (path.startsWith("/api/trading/cases")) {
-      return ok(tradingCasesForId(param("case_id")));
+      return ok(tradingCasesForCaseId(param("case_id")));
     }
     if (path === "/api/trading/executions") return ok(tradingExecutionsFixture());
     if (path.startsWith("/api/news/symbols/"))

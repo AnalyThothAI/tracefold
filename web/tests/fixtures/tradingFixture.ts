@@ -144,14 +144,21 @@ export function tradingCaseFixture(overrides: Partial<TradingCase> = {}): Tradin
   };
 }
 
+/**
+ * The counts read: three durable 24 h distributions and no Cases (#604 T3).
+ *
+ * `cases` is empty without `case_id` by contract — the response stopped publishing the 100-row list the
+ * desk downloaded every 15 s to render at most one of. `admission_counts_24h` is the funnel's top: how
+ * many frames admission looked at at all, and what it did with the ones it refused.
+ */
 export function tradingCasesFixture(overrides: Partial<TradingCases> = {}): TradingCases {
   return {
     admission_counts_24h: [
-      { count: 553, reason: "oi_value_below_floor", status: "REJECTED" },
-      { count: 31, reason: "case_created", status: "CASE_CREATED" },
-      { count: 2, reason: null, status: "DEFERRED" },
+      { status: "CASE_CREATED", reason: null, count: 7 },
+      { status: "REJECTED", reason: "oi_value_below_floor", count: 4 },
+      { status: "EXPIRED", reason: "trigger_stale", count: 1 },
     ],
-    cases: [tradingCaseFixture()],
+    cases: [],
     complete: true,
     reason_counts_24h: { smart_money_ratio_below_or_equal_floor: 4 },
     state_counts_24h: { BLOCKED: 1, NO_TRADE: 5, SIGNAL_EMITTED: 1 },
@@ -160,16 +167,17 @@ export function tradingCasesFixture(overrides: Partial<TradingCases> = {}): Trad
   };
 }
 
-/**
- * `?case_id=` is an exact primary-key read: that Case, or none at all (#604 T3).
- *
- * Without it the response still carries the three 24 h distributions and no Case, which is what the
- * route answers now that the unconditional 100-row page is gone.
- */
-export function tradingCasesForId(caseId: string | null): TradingCases {
+/** The known Cases this fixture set can answer `?case_id=` with; anything else is an empty `cases[]`. */
+const KNOWN_CASE_IDS = new Set(["case-hype", "case-btc", "case-nvda", "case-sol"]);
+
+/** `?case_id=` is an exact primary key: the one Case, or none, and an unknown id is not an error. */
+export function tradingCasesForCaseId(caseId: string | null): TradingCases {
   const batch = tradingCasesFixture();
-  if (!caseId) return { ...batch, cases: [] };
-  return { ...batch, cases: (batch.cases ?? []).filter((row) => row.case_id === caseId) };
+  if (!caseId) return batch;
+  return {
+    ...batch,
+    cases: KNOWN_CASE_IDS.has(caseId) ? [tradingCaseFixture({ case_id: caseId })] : [],
+  };
 }
 
 /**
@@ -186,16 +194,16 @@ export function tradingExecutionRowFixture(
     case_id: "case-btc",
     direction: "long",
     disposition_reason: "accepted",
-    entry_filled_at_ns: (TRADING_NOW_MS - 118_000) * 1_000_000,
     entry_id: "1".repeat(64),
     exit_price: "9699.0",
     exit_reason: "flatten",
     fill_avg_price: "10000",
     fill_quantity: "0.049",
     market_key: "crypto:perp:BTC:USDT",
+    entry_filled_at_ns: (TRADING_NOW_MS - 118_000) * 1_000_000,
     observed_at_ns: (TRADING_NOW_MS - 120_000) * 1_000_000,
     order_reject_reason: null,
-    position_closed_at_ns: (TRADING_NOW_MS - 40_000) * 1_000_000,
+    position_closed_at_ns: (TRADING_NOW_MS - 25_500) * 1_000_000,
     realized_pnl_usd: "-14.92274518",
     source: "signal",
     stage: "closed",
@@ -228,14 +236,15 @@ export function tradingExecutionsFixture(
         case_id: "case-nvda",
         direction: "long",
         disposition_reason: "instrument_unmapped",
+        entry_filled_at_ns: null,
         entry_id: "2".repeat(64),
         exit_price: null,
         exit_reason: null,
         fill_avg_price: null,
         fill_quantity: null,
         market_key: "crypto:perp:NVDA:USDT",
-        entry_filled_at_ns: null,
         observed_at_ns: (TRADING_NOW_MS - 300_000) * 1_000_000,
+        order_reject_reason: "Order would immediately trigger.",
         position_closed_at_ns: null,
         realized_pnl_usd: null,
         stage: "rejected",
@@ -245,13 +254,13 @@ export function tradingExecutionsFixture(
       tradingExecutionRowFixture({
         case_id: "case-sol",
         disposition_reason: "expired",
+        entry_filled_at_ns: null,
         entry_id: "3".repeat(64),
         exit_price: null,
         exit_reason: null,
         fill_avg_price: null,
         fill_quantity: null,
         market_key: "crypto:perp:SOL:USDT",
-        entry_filled_at_ns: null,
         observed_at_ns: (TRADING_NOW_MS - 600_000) * 1_000_000,
         position_closed_at_ns: null,
         realized_pnl_usd: null,
@@ -265,22 +274,28 @@ export function tradingExecutionsFixture(
       tradingExecutionRowFixture({
         case_id: null,
         direction: "short",
+        entry_filled_at_ns: (TRADING_NOW_MS - 89_000) * 1_000_000,
         entry_id: "e".repeat(64),
         exit_price: "81100.0",
         fill_avg_price: "81126.9",
         fill_quantity: "0.0122",
         market_key: "crypto:perp:ETH:USDT",
         observed_at_ns: (TRADING_NOW_MS - 90_000) * 1_000_000,
-        position_closed_at_ns: (TRADING_NOW_MS - 30_000) * 1_000_000,
-        realized_pnl_usd: "-1.11984726",
+        position_closed_at_ns: (TRADING_NOW_MS - 32_000) * 1_000_000,
+        realized_pnl_usd: "1.11984726",
         source: "manual",
         stop_trigger_price: "80315.6",
       }),
     ],
+    /*
+     * The server's own sums over the `position` observations it closed, not the sum of the rows above
+     * them: one bounded to the current UTC day, one unbounded, both including the manual entries an
+     * operator typed at the CLI (#604 T3).
+     */
     totals: {
       closed_today: 2,
-      closed_total: 12,
-      realized_today_usd: "-16.04",
+      closed_total: 9,
+      realized_today_usd: "-13.80",
       realized_total_usd: "56.40",
     },
     ...overrides,
