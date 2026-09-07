@@ -21,6 +21,7 @@ from .execution_contracts import (
     ExecutionObservationV1,
     OperatorIntentV1,
     TradeSignalV1,
+    market_key,
 )
 from .operator_control import (
     OperatorCommandError,
@@ -61,6 +62,7 @@ __all__ = [
     "TradeSignalV1",
     "command_stage",
     "execution_stage",
+    "market_key",
     "parse_operator_command",
     "prepare_parsed_operator_intent",
 ]

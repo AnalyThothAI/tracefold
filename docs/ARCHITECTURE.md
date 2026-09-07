@@ -2490,12 +2490,15 @@ without a read route is durable evidence, not a deleted fact.
 
 Append-only history and current state are separate rows on purpose.
 `trading_execution_runtime_state` is the one generation-fenced current
-projection: its `account_flat` and `reconciliation_observed_at_ns` are the only
-account-freshness and flat proof, and no reader folds the observation window to
-obtain one. A `steady` reconciliation that finds the same positions, regular
-orders and Algo orders as the previous one appends no observation at all —
-unchanged current state is what the projection is for. Any other trigger, and
-any change to those three identity sets, still appends.
+projection: its `reconciliation_observed_at_ns` is the only account-freshness
+proof, and `account_flat_proven` is that row's own `account_flat` — the venue's
+complete report of positions, regular orders and Algo orders — conjoined with
+the `account_snapshot` the same row carries, which the Nautilus Cache answered
+for the same instant. Both sources have to say flat, and no reader folds the
+observation window to obtain either. A `steady` reconciliation that finds the
+same positions, regular orders and Algo orders as the previous one appends no
+observation at all — unchanged current state is what the projection is for. Any
+other trigger, and any change to those three identity sets, still appends.
 
 `RuntimeAccountProjector` reads only the sole Nautilus Cache/Portfolio plus the
 `RuntimeExecutionState` aggregate, then stores one bounded replaceable JSON

@@ -336,6 +336,9 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
         "TradeSignalV1",
         "command_stage",
         "execution_stage",
+        # #604 T2. The one spelling of the market identity the Signal carries and the Runtime's route
+        # catalogue is keyed on. `app/nautilus/root.py` wrote the same f-string by hand.
+        "market_key",
         "parse_operator_command",
         "prepare_parsed_operator_intent",
     ]
@@ -400,7 +403,7 @@ def test_workers_declares_one_signal_task_and_app_owns_its_loop() -> None:
         async def advance(self) -> LaneTurn:
             nonlocal turns
             turns += 1
-            return LaneTurn(outcome="HALTED", reason="disabled")
+            return LaneTurn(sources=0, cases_created=0)
 
     async def exercise() -> None:
         tasks = worker_business_tasks(news_pipeline=None, signal_lane=Lane())  # type: ignore[arg-type]

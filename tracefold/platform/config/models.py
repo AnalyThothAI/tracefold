@@ -625,11 +625,12 @@ class TradingExecutionCredentialsSettings(BaseModel):
 class TradingExecutionRiskSettings(BaseModel):
     """The Runtime-owned risk gap policy, as operator-owned numbers (#510 E).
 
-    Every value here used to be a literal in `tracefold/app/nautilus/root.py`, which meant the
-    `config_sha256` activation fence -- the thing that refuses to reuse a profile whose configuration
-    moved -- could not see a risk change at all. They are in the profile digest now, so editing one
-    requires a new profile id and a fresh activation, exactly like changing the mode or the account
-    slot. None of them is a secret and `tracefold config` prints all of them.
+    Every value here used to be a literal in `tracefold/app/nautilus/root.py`, so a risk change meant
+    a code change. The Runtime reads this section once, when it starts, into the profile it runs with;
+    a change to any of these numbers therefore takes effect at the next Runtime restart and needs
+    nothing else. The activation fence that once stood beside them -- a `config_sha256` digest and the
+    `profile_id` it fenced -- is gone (#520, #537). None of them is a secret and `tracefold config`
+    prints all of them.
 
     The stop distance stays a Runtime number: the Nautilus Strategy places and replaces the stop, and
     neither the Case nor the Signal ever carries it.

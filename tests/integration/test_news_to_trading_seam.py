@@ -8,18 +8,23 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
 import pytest
+from nautilus_trader.model.identifiers import InstrumentId
 
 from tests.postgres_test_utils import connect_postgres_test
+from tracefold.app.nautilus import root as nautilus_root
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.workers.wiring.database import WorkerNewsDatabase
 from tracefold.app.workers.wiring.news_to_trading import news_oi_sources, to_oi_candidate_row
+from tracefold.integrations.nautilus.oi_runtime.config import BinanceRuntimeCredentials, OiInstrumentRoute
 from tracefold.news import OI_METRIC_VERSION
 from tracefold.news.bus import RK_RAW_LIVE, BusMessage, new_trace_id, now_ms
 from tracefold.news.pipeline.admission import DeduperConsumer
+from tracefold.platform.config.models import Settings
 from tracefold.trading.admission import ADMISSION_VERSION
 from tracefold.trading.contracts import Bar, CaseState, OiCandidateRow
 from tracefold.trading.signal_lane import BAR_INTERVAL_MS, SignalLane, SignalLaneConfig
@@ -211,7 +216,7 @@ def test_news_frame_mapper_and_signal_lane_commit_one_current_pair(clean: Any) -
 
     cases = [dict(row) for row in conn.execute("SELECT * FROM trading_cases ORDER BY created_at_ms").fetchall()]
     signals = [dict(row) for row in conn.execute("SELECT * FROM trading_trade_signals ORDER BY seq").fetchall()]
-    assert (first.sources, first.cases_created, first.signals_emitted) == (1, 1, 1)
+    assert (first.sources, first.cases_created) == (1, 1)
     assert second.cases_created == 0
     assert len(cases) == len(signals) == 1
     assert CaseState(cases[0]["state"]) is CaseState.SIGNAL_EMITTED
@@ -324,7 +329,7 @@ def test_numeric_oi_ledger_alone_freezes_a_case_and_emits_a_signal(clean: Any) -
 
     cases = [dict(row) for row in conn.execute("SELECT * FROM trading_cases").fetchall()]
     signals = [dict(row) for row in conn.execute("SELECT * FROM trading_trade_signals").fetchall()]
-    assert (turn.sources, turn.cases_created, turn.signals_emitted) == (1, 1, 1)
+    assert (turn.sources, turn.cases_created) == (1, 1)
     assert len(cases) == len(signals) == 1
     assert CaseState(cases[0]["state"]) is CaseState.SIGNAL_EMITTED
     assert cases[0]["manifest"]["manifest_version"] == "trading_manifest_v11"
@@ -377,6 +382,65 @@ def _seam_lane(conn: Any) -> SignalLane:
         oi_projection=_news_projection(NewsDatabase(conn)),
         clock=now_ms,
     )
+
+
+def _discovered_routes(monkeypatch: pytest.MonkeyPatch, *base_symbols: str) -> tuple[OiInstrumentRoute, ...]:
+    """The Runtime's own catalogue, discovered from a provider that lists exactly these perpetuals."""
+
+    class _Instrument:
+        def __init__(self, base_code: str) -> None:
+            self.quote_currency = nautilus_root.USDT
+            self.settlement_currency = nautilus_root.USDT
+            self.info = {"status": "TRADING"}
+            self.base_currency = SimpleNamespace(code=base_code)
+            self.id = InstrumentId.from_str(f"{base_code}USDT-PERP.BINANCE")
+
+    class _Provider:
+        def __init__(self, **_: Any) -> None: ...
+
+        async def load_all_async(self) -> None: ...
+
+        def list_all(self) -> list[_Instrument]:
+            return [_Instrument(symbol) for symbol in base_symbols]
+
+    monkeypatch.setattr(nautilus_root, "CryptoPerpetual", _Instrument)
+    monkeypatch.setattr(nautilus_root, "get_cached_binance_http_client", lambda **_: None)
+    monkeypatch.setattr(nautilus_root, "BinanceFuturesInstrumentProvider", _Provider)
+    return asyncio.run(
+        nautilus_root._discover_routes(
+            "paper",
+            BinanceRuntimeCredentials(api_key="demo-key", api_secret="demo-secret"),
+            stop_distance_bps=Settings().trading.execution.risk.stop_distance_bps,
+        )
+    )
+
+
+def test_the_runtime_route_catalogue_is_keyed_exactly_as_the_lane_spells_the_market(
+    clean: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#604 T2 F2P. The one cross-process join key, produced by both packages and compared.
+
+    `crypto:perp:{BASE}:USDT` was written twice: `market_key()` for every `TradeSignalV1` the lane
+    commits, and a hand-typed f-string in `_discover_routes` for every route the Runtime publishes.
+    The entry path joins the two by string equality, and nothing said they had to be the same string:
+    route discovery asserted its own literal against a fake provider and the lane asserted its own
+    against the ledger, so renaming the format on one side left the other green and answered every
+    Signal `instrument_unmapped`. Both sides execute here, over a Signal this database actually holds.
+    """
+
+    conn = clean
+    _numeric_oi_fact(conn, event_id="join-evt", item_id="join-item", observed_at_ms=now_ms() - 30_000)
+    conn.commit()
+
+    asyncio.run(_seam_lane(conn).advance())
+
+    committed = {
+        str(row["market_key"]) for row in conn.execute("SELECT market_key FROM trading_trade_signals").fetchall()
+    }
+    routes = _discovered_routes(monkeypatch, OI_SYMBOL)
+
+    assert len(committed) == 1
+    assert committed == {route.market_key for route in routes}
 
 
 def test_the_lane_admits_a_market_no_runtime_lists_and_the_runtime_is_the_one_catalogue(clean: Any) -> None:
