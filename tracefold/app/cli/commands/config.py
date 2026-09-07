@@ -113,6 +113,9 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                         "requested": push_availability.requested,
                         "delivery_available": push_availability.delivery_available,
                         "reason": push_availability.reason,
+                        # Advice beside the reason, never a refusal: a complete Telegram
+                        # configuration paced for Feishu is reported here and still delivers (#604 N3).
+                        "pacing_warning": push_availability.pacing_warning,
                         "provider": push_availability.provider,
                         "feishu_webhook_url_configured": (push_availability.feishu_webhook_url_configured),
                         "feishu_signing_secret_configured": (push_availability.feishu_signing_secret_configured),

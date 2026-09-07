@@ -7,13 +7,13 @@ import contextlib
 import functools
 import logging
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Final, Protocol, runtime_checkable
 
 from ..bus import DeferError, PermanentError, TransientError, now_ms
 from ..delivery import card_assets, news_reader_card, reader_market_movements, reader_trade_targets
-from ..delivery_contracts import DELIVERY_FAILURE_RETRIABLE, classify_delivery_failure
+from ..delivery_contracts import DELIVERY_FAILURE_RETRIABLE, classify_delivery_failure, retry_after_ms
 from ..feishu_card import feishu_card
 from ..market_review.pricing import (
     QUOTE_READ_TIMEOUT_SECONDS,
@@ -294,7 +294,8 @@ class EditableNewsPushSender(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class _EnrichmentEditContext:
-    sender: EditableNewsPushSender
+    """What the enrichment task needs. Not the sender: the shared entry owns the one it may edit."""
+
     event_id: str
     kind: str
     event: Mapping[str, Any]
@@ -314,17 +315,20 @@ _INITIAL_SEND_TIMEOUT_SECONDS = 8.0
 
 
 class InitialSendEntry:
-    """The one place an initial card leaves this process.
+    """The one place a card leaves this process, whether it is a first send or an edit.
 
-    Ordinary News and market notifications both queue here (#553 §5.2). Sharing it is the point: the
-    operator configured one `min_interval_seconds`, and two independent pacers would have meant the
-    channel could be interrupted twice as often as the number they set. The lock is also what stops
-    two loops being inside the provider at the same time, which the previous shape -- a bare interval
-    on the Deliverer, serialised only by its own `prefetch=1` -- did not do for anyone else.
+    Ordinary News, its enrichment edit, and market notifications all queue here (#553 §5.2). Sharing
+    it is the point: the operator configured one `min_interval_seconds`, and two independent pacers
+    would have meant the channel could be interrupted twice as often as the number they set. That was
+    not hypothetical -- the Deliverer kept a second lock and a second stamp for its edit, so on
+    Telegram, where every News card is edited once, the real outbound rate was twice the configured
+    one and the promise in this docstring was false (#604 N3). The lock is also what stops two loops
+    being inside the provider at the same time, which the previous shape -- a bare interval on the
+    Deliverer, serialised only by its own `prefetch=1` -- did not do for anyone else.
 
     `asyncio.Lock` admits waiters in arrival order, so the queueing is fair by construction: a burst
     of market cards cannot starve a News card that was already waiting, and neither can hold the entry
-    across anything but its own one send.
+    across anything but its own one provider call.
     """
 
     def __init__(
@@ -380,31 +384,76 @@ class InitialSendEntry:
         sender = self._sender
         if sender is None:
             raise RuntimeError("news_delivery_sender_unavailable")
+        async with self._paced():
+            if prepare:
+                # Idempotent -- a validated target returns immediately -- and the adapter
+                # invalidates it again the moment a send fails, so a rotated token is re-checked
+                # rather than cached for the life of the process.
+                await self._finite.run("news_delivery_prepare", sender.prepare, timeout_seconds=self._timeout_seconds)
+            receipt: Mapping[str, Any] = await self._finite.run(
+                operation,
+                sender.send_card,
+                card,
+                channel_payload=dict(channel_payload),
+                presentation=presentation,
+                timeout_seconds=self._timeout_seconds,
+            )
+            return receipt
+
+    async def send_prepared_edit(
+        self,
+        receipt: Mapping[str, Any],
+        card: ReaderCard,
+        *,
+        channel_payload: Mapping[str, Any],
+        presentation: ReaderDeliveryPresentation | None = None,
+        operation: str = "news_delivery_edit",
+        timeout_seconds: float = _DELIVERY_EDIT_TIMEOUT_SECONDS,
+    ) -> Mapping[str, Any]:
+        """Replace one already-sent card in place, behind the same lock and the same interval.
+
+        An edit is an outbound provider message like any other, and the channel counts it against the
+        same per-chat rate a send is counted against. The Deliverer used to pace it separately, which
+        made the operator's one interval mean two different things at once; the only thing the caller
+        still owns is the durable `editing` intent it must hold before it gets here.
+
+        `allow_shutdown` is the one asymmetry and it is the caller's contract, not this entry's: an
+        edit that is still in flight when the process is asked to stop may finish, because the message
+        it is replacing is already on the reader's screen either way.
+        """
+
+        sender = self._sender
+        if not isinstance(sender, EditableNewsPushSender):
+            raise RuntimeError("news_delivery_editable_sender_unavailable")
+        async with self._paced():
+            edited: Mapping[str, Any] = await self._finite.run(
+                operation,
+                sender.edit_card,
+                dict(receipt),
+                card,
+                channel_payload=dict(channel_payload),
+                presentation=presentation,
+                timeout_seconds=timeout_seconds,
+                allow_shutdown=True,
+            )
+            return edited
+
+    @contextlib.asynccontextmanager
+    async def _paced(self) -> AsyncIterator[None]:
+        """Hold the entry for exactly one provider call, no sooner than the operator's interval.
+
+        The stamp covers the whole held block, not just a successful call. A `prepare` that raises is
+        still a provider call this process just made, and leaving the stamp stale would let the next
+        caller compute `wait <= 0` -- so a turn draining its card budget against a broken target would
+        hammer the preflight with no interval between attempts at all.
+        """
+
         async with self._lock:
-            # The stamp covers the whole held block, not just the send. A `prepare` that raises is
-            # still a provider call this process just made, and leaving the stamp stale would let the
-            # next caller compute `wait <= 0` -- so a turn draining its card budget against a broken
-            # target would hammer the preflight with no interval between attempts at all.
             try:
                 wait = self.min_interval - (time.monotonic() - self._last_send_at)
                 if wait > 0:
                     await asyncio.sleep(wait)
-                if prepare:
-                    # Idempotent -- a validated target returns immediately -- and the adapter
-                    # invalidates it again the moment a send fails, so a rotated token is re-checked
-                    # rather than cached for the life of the process.
-                    await self._finite.run(
-                        "news_delivery_prepare", sender.prepare, timeout_seconds=self._timeout_seconds
-                    )
-                receipt: Mapping[str, Any] = await self._finite.run(
-                    operation,
-                    sender.send_card,
-                    card,
-                    channel_payload=dict(channel_payload),
-                    presentation=presentation,
-                    timeout_seconds=self._timeout_seconds,
-                )
-                return receipt
+                yield
             finally:
                 self._last_send_at = time.monotonic()
 
@@ -436,9 +485,11 @@ class DelivererLoop:
         self.db = db
         self.sender = sender
         self.finite = finite_operations
-        self.min_interval = float(min_interval_seconds)
         # The Deliverer owns the entry and composition hands the same object to the market loop, so
         # there is one pacer for the process rather than one per caller who remembered to share it.
+        # The enrichment edit goes through it too: this loop used to keep a second lock and a second
+        # stamp of its own, and on Telegram -- where every News card is edited once -- that made the
+        # provider see twice the rate the operator configured (#604 N3).
         self.send_entry = InitialSendEntry(
             sender=sender, finite_operations=finite_operations, min_interval_seconds=min_interval_seconds
         )
@@ -446,8 +497,6 @@ class DelivererLoop:
         self._price_fetcher_for = price_fetcher_for
         self._progression_verifier = progression_verifier
         self._tradability_verifier = tradability_verifier
-        self._last_edit_at = 0.0
-        self._edit_lock = asyncio.Lock()
         self._edit_tasks: set[asyncio.Task[None]] = set()
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
@@ -570,17 +619,24 @@ class DelivererLoop:
         except _ProviderNotSent as exc:
             # The provider's own code rather than this lane's, because that is the whole diagnosis:
             # a rate limit and a dead channel are the same row state and different operator actions.
-            await self._retry_or_abandon(event_id, kind, attempts, str(exc))
+            # The adapter error is the cause, and it is the one that carries the provider's own wait.
+            await self._retry_or_abandon(event_id, kind, attempts, str(exc), retry_after_ms(exc.__cause__ or exc))
             return
         except (TransientError, DeferError) as exc:
-            await self._retry_or_abandon(event_id, kind, attempts, f"news_delivery_deferred:{type(exc).__name__}")
+            await self._retry_or_abandon(
+                event_id,
+                kind,
+                attempts,
+                f"news_delivery_deferred:{type(exc).__name__}",
+                retry_after_ms(exc),
+            )
             return
         except Exception as exc:
             # Unclassified, and the contract is the consumer's own: it failed the Deliverer, which
             # ends the task and marks `news_delivery` faulted beside healthy capabilities. Kept
             # exactly, with the attempt and its reason recorded on the intent first, so the operator
             # who restarts the process finds the row saying what happened to it.
-            await self._defer_claim(event_id, kind, f"news_delivery_failed:{type(exc).__name__}")
+            await self._defer_claim(event_id, kind, f"news_delivery_failed:{type(exc).__name__}", retry_after_ms(exc))
             logger.error("news delivery attempt crashed event_id=%s (%s)", event_id, type(exc).__name__)
             raise
         with contextlib.suppress(TransientError, DeferError):
@@ -589,22 +645,34 @@ class DelivererLoop:
                 lambda repos: repos.news.finish_delivery_claim(event_id=event_id, kind=kind),
             )
 
-    async def _retry_or_abandon(self, event_id: str, kind: str, attempts: int, error_code: str) -> None:
+    async def _retry_or_abandon(
+        self, event_id: str, kind: str, attempts: int, error_code: str, advised_wait_ms: int
+    ) -> None:
         """Spend the attempt the claim already counted, or give up when it was the last one."""
 
         if attempts >= DELIVERY_ATTEMPTS_MAX:
             await self._abandon_claim(event_id, kind, error_code)
             return
-        await self._defer_claim(event_id, kind, error_code)
+        await self._defer_claim(event_id, kind, error_code, advised_wait_ms)
 
-    async def _defer_claim(self, event_id: str, kind: str, error_code: str) -> None:
-        """Record why this attempt did not finish. The claim's lease already holds the retry's wait."""
+    async def _defer_claim(self, event_id: str, kind: str, error_code: str, advised_wait_ms: int) -> None:
+        """Record why this attempt did not finish, and how long the provider asked us to stay away.
+
+        The claim's lease is this lane's own wait, and it stands unless the provider named a longer
+        one: `defer_delivery_claim` only ever moves the due time later, so a rate limit that says "not
+        for another two minutes" is obeyed and everything else keeps the flat 30 s (#604 N3).
+        """
 
         with contextlib.suppress(TransientError, DeferError):
+            stamp = now_ms()
             await self.db.tx(
                 "news_delivery_claim_defer",
                 lambda repos: repos.news.defer_delivery_claim(
-                    event_id=event_id, kind=kind, error_code=error_code, now_ms=now_ms()
+                    event_id=event_id,
+                    kind=kind,
+                    error_code=error_code,
+                    next_attempt_at_ms=stamp + advised_wait_ms,
+                    now_ms=stamp,
                 ),
             )
 
@@ -803,7 +871,6 @@ class DelivererLoop:
             return
         self._start_enrichment_edit(
             _EnrichmentEditContext(
-                sender=progressive_sender,
                 event_id=event_id,
                 kind=kind,
                 event=dict(card),
@@ -921,38 +988,31 @@ class DelivererLoop:
                 progression_review_parent_age_minutes=parent_reference.age_minutes,
                 progression_review_parent_message_id=parent_reference.message_id,
             )
-            async with self._edit_lock:
-                wait = self.min_interval - (time.monotonic() - self._last_edit_at)
-                if wait > 0:
-                    await asyncio.sleep(wait)
-                intent_started = bool(
-                    await self.db.tx(
-                        "news_delivery_begin_edit",
-                        lambda repos: repos.news.begin_delivery_edit(
-                            event_id=context.event_id,
-                            kind=context.kind,
-                            card=card_payload,
-                            receipt=context.receipt.canonical(),
-                            now_ms=now_ms(),
-                        ),
-                    )
+            # The durable `editing` intent is claimed before the entry is, not inside it: the CAS is
+            # what makes this the only task editing this receipt, and holding the process-wide send
+            # lock across a PostgreSQL round trip would put a market card behind a database instead of
+            # behind one provider call.
+            intent_started = bool(
+                await self.db.tx(
+                    "news_delivery_begin_edit",
+                    lambda repos: repos.news.begin_delivery_edit(
+                        event_id=context.event_id,
+                        kind=context.kind,
+                        card=card_payload,
+                        receipt=context.receipt.canonical(),
+                        now_ms=now_ms(),
+                    ),
                 )
-                if not intent_started:
-                    logger.warning("News delivery enrichment edit failed: news_delivery_edit_intent_conflict")
-                    return
-                try:
-                    result = await self.finite.run(
-                        "news_delivery_edit",
-                        context.sender.edit_card,
-                        context.receipt.canonical(),
-                        reader_card,
-                        channel_payload=card_payload,
-                        presentation=presentation,
-                        timeout_seconds=_DELIVERY_EDIT_TIMEOUT_SECONDS,
-                        allow_shutdown=True,
-                    )
-                finally:
-                    self._last_edit_at = time.monotonic()
+            )
+            if not intent_started:
+                logger.warning("News delivery enrichment edit failed: news_delivery_edit_intent_conflict")
+                return
+            result = await self.send_entry.send_prepared_edit(
+                context.receipt.canonical(),
+                reader_card,
+                channel_payload=card_payload,
+                presentation=presentation,
+            )
             try:
                 updated_receipt = TelegramDeliveryReceipt.model_validate(result)
             except ValueError as exc:
@@ -1056,17 +1116,18 @@ class DelivererLoop:
                 lambda repos: repos.news.delivery(event_id=parent_event_id, kind="first"),
                 timeout_seconds=QUOTE_READ_TIMEOUT_SECONDS,
             )
-            if (
-                not isinstance(row, Mapping)
-                or row.get("state") != "sent"
-                or row.get("delete_state") is not None
-                or not isinstance(row.get("receipt"), Mapping)
-            ):
+            # A parent worth linking to is one this same channel sent, before this card, and settled.
+            # It used to be checked for deletion as well, in two ways -- a `delete_state` on the row
+            # and a `deleted_at_ms` on the receipt -- and #562 §5 row 5 removed the path that could
+            # ever have written either: no code in this repository deletes a card, so both were
+            # asking a question with one possible answer (#604 N3).
+            if not isinstance(row, Mapping) or row.get("state") != "sent":
+                return _ProgressionParentReference()
+            if not isinstance(row.get("receipt"), Mapping):
                 return _ProgressionParentReference()
             parent_receipt = TelegramDeliveryReceipt.model_validate(row["receipt"])
             if (
                 parent_receipt.target_sha256 != context.receipt.target_sha256
-                or parent_receipt.deleted_at_ms is not None
                 or parent_receipt.pushed_at_ms > context.receipt.pushed_at_ms
             ):
                 return _ProgressionParentReference()

@@ -43,6 +43,7 @@ from .delivery_contracts import (
     DELIVERY_FAILURE_RETRIABLE,
     DELIVERY_FAILURE_UNKNOWN,
     classify_delivery_failure,
+    retry_after_ms,
 )
 from .feishu_card import feishu_card
 from .market_contracts import (
@@ -1288,7 +1289,11 @@ def classify_send_failure(exc: BaseException, *, attempts: int) -> SendOutcome:
     if failure == DELIVERY_FAILURE_RETRIABLE:
         delay = retry_delay_ms(attempts)
         if delay is not None:
-            return SendOutcome(state="pending", error=code, retry_in_ms=delay)
+            # The ladder is this lane's floor. A provider that named its own wait -- a Telegram 429
+            # carries `retry_after` and a Feishu one a `Retry-After` header -- is obeyed when it asks
+            # for longer, because coming back at 5 s against a 60 s limit spends the whole budget on
+            # refusals and the card is `failed` without ever having been offered (#604 N3).
+            return SendOutcome(state="pending", error=code, retry_in_ms=max(delay, retry_after_ms(exc)))
     return SendOutcome(state="failed", error=code)
 
 

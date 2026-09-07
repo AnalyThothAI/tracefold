@@ -117,14 +117,11 @@ class TelegramDeliveryReceipt(ExactNewsModel):
     pushed_at_ms: int = Field(gt=0, strict=True)
     target_sha256: str = Field(pattern=r"^[0-9a-f]{64}$", strict=True)
     edited_at_ms: int | None = Field(default=None, gt=0, strict=True)
-    deleted_at_ms: int | None = Field(default=None, gt=0, strict=True)
 
     @model_validator(mode="after")
     def validate_lifecycle_order(self) -> TelegramDeliveryReceipt:
         if self.edited_at_ms is not None and self.edited_at_ms < self.pushed_at_ms:
             raise ValueError("telegram_delivery_receipt_edit_before_push")
-        if self.deleted_at_ms is not None and self.deleted_at_ms < (self.edited_at_ms or self.pushed_at_ms):
-            raise ValueError("telegram_delivery_receipt_delete_before_last_mutation")
         return self
 
     def canonical(self) -> dict[str, Any]:

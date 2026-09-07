@@ -432,6 +432,8 @@ class CliTests(unittest.TestCase):
                 "requested": False,
                 "delivery_available": False,
                 "reason": None,
+                # Advice beside the reason: null here because no provider is inferred at all (#604 N3).
+                "pacing_warning": None,
                 "provider": None,
                 "feishu_webhook_url_configured": False,
                 "feishu_signing_secret_configured": False,

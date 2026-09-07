@@ -23,12 +23,14 @@ import pytest
 
 from tracefold.integrations.telegram import (
     _TELEGRAM_RESPONSE_MAX_BYTES,
+    _SECTION_SEPARATOR,
     _TELEGRAM_TEXT_MAX,
     _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS,
     TelegramDeliveryError,
     TelegramNewsPushSender,
     _fit_telegram_message,
     _plain_html_text,
+    _telegram_text_length,
 )
 from tracefold.news import (
     COMMIT_PHASE_NOT_SENT,
@@ -208,10 +210,10 @@ def test_sender_posts_scannable_sections_and_links_the_normalized_source_text() 
         "1h 暂无，\n"
         "24h 暂无\n\n"
         "🧭 <b>方向</b>  利多 · 影响明显\n\n"
-        '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道'
+        '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道\n'
+        "Tracefold · abc12345"
     )
     assert observed["parse_mode"] == "HTML"
-    assert "abc12345" not in str(observed["text"])
     assert observed["link_preview_options"] == {"is_disabled": True}
     assert "reply_markup" not in observed
     assert methods == ["getChat", "getMe", "getChatMember", "sendMessage"]
@@ -307,7 +309,8 @@ def test_sender_renders_the_compact_single_asset_layout() -> None:
         "\n"
         "新闻时间  10:48\n"
         "推送时间  10:48\n"
-        '🔗 <b>来源</b>  <a href="https://x.com/jukan05/status/1234567890123456789">jukan05 的推特</a>'
+        '🔗 <b>来源</b>  <a href="https://x.com/jukan05/status/1234567890123456789">jukan05 的推特</a>\n'
+        "Tracefold · abc12345"
     )
 
 
@@ -424,7 +427,8 @@ def test_sender_puts_new_fact_below_title_and_explains_macro_events_without_a_ti
         "🧭 <b>方向</b>  利空 · 影响重大\n\n"
         "新闻时间  22:02\n"
         "推送时间  22:03\n"
-        "🔗 <b>来源</b>  金十"
+        "🔗 <b>来源</b>  金十\n"
+        "Tracefold · abc12345"
     )
 
 
@@ -678,7 +682,8 @@ def test_sender_renders_exact_binance_tickers_as_html_links() -> None:
         "1h 暂无，\n"
         "24h 暂无\n\n"
         "🧭 <b>方向</b>  利多 · 影响明显\n\n"
-        '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道'
+        '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道\n'
+        "Tracefold · abc12345"
     )
 
 
@@ -764,7 +769,8 @@ def test_sender_renders_each_asset_in_its_own_complete_market_block() -> None:
         "1h 暂无，\n"
         "24h +1.70%\n\n"
         "🧭 <b>方向</b>  利空 · 影响重大\n\n"
-        '🔗 <b>来源</b>  <a href="https://x.com/serenity/status/1234567890123456789">serenity 的推特</a>'
+        '🔗 <b>来源</b>  <a href="https://x.com/serenity/status/1234567890123456789">serenity 的推特</a>\n'
+        "Tracefold · abc12345"
     )
     assert "reply_markup" not in observed
 
@@ -810,7 +816,8 @@ def test_sender_shows_the_news_and_push_times_to_the_minute() -> None:
     assert str(observed["text"]).endswith(
         "新闻时间  14:32\n"
         "推送时间  14:32\n"
-        '🔗 <b>来源</b>  <a href="https://www.bloomberg.com/news/articles/2026-08-28/bitcoin">彭博社</a>'
+        '🔗 <b>来源</b>  <a href="https://www.bloomberg.com/news/articles/2026-08-28/bitcoin">彭博社</a>\n'
+        "Tracefold · abc12345"
     )
     assert "处理时长" not in str(observed["text"])
 
@@ -842,7 +849,8 @@ def test_sender_keeps_known_push_time_when_news_time_is_missing() -> None:
     assert str(observed["text"]).endswith(
         "新闻时间  暂无\n"
         "推送时间  14:32\n"
-        '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道'
+        '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道\n'
+        "Tracefold · abc12345"
     )
 
 
@@ -1120,7 +1128,8 @@ def test_sender_escapes_untrusted_card_text_before_enabling_html() -> None:
         "🔴 <b>A &lt; B &amp; &lt;inot markup&lt;/i</b>\n\n"
         "利润 &lt; 预期 &amp; 风险上升\n\n"
         "🧭 <b>方向</b>  利空 · 影响明显\n\n"
-        '🔗 <b>来源</b>  <a href="https://www.reuters.com/world/example">路透社</a>'
+        '🔗 <b>来源</b>  <a href="https://www.reuters.com/world/example">路透社</a>\n'
+        "Tracefold · abc12345"
     )
 
 
@@ -1163,7 +1172,8 @@ def test_degraded_card_uses_asset_label_instead_of_claiming_a_model_judgment() -
         "新闻后 暂无\n"
         "1h 暂无，\n"
         "24h 暂无\n\n"
-        "🔗 <b>来源</b>  opennews"
+        "🔗 <b>来源</b>  opennews\n"
+        "Tracefold · abc12345"
     )
 
 
@@ -1646,7 +1656,9 @@ def test_an_over_long_card_is_clipped_rather_than_lost() -> None:
     assert len(_plain_html_text(text)) <= _TELEGRAM_TEXT_MAX
     assert text.startswith("🟢 <b>BTC ETF 净流入</b>")
     assert "连续第三日净流入" in text
-    assert text.endswith('🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道')
+    assert text.endswith(
+        '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道\nTracefold · abc12345'
+    )
     # Bottom-up: the first asset blocks survive and the last ones are the ones given up.
     assert "🎯 <b>标的</b>  AAA0000" in text
     assert "AAA0399" not in text
@@ -1689,7 +1701,7 @@ def test_sender_keeps_an_unsafe_source_destination_as_plain_text(source_url: str
 
     assert "reply_markup" not in observed
     assert "<a href=" not in str(observed["text"])
-    assert str(observed["text"]).endswith("🔗 <b>来源</b>  CoinDesk · 2 条报道")
+    assert str(observed["text"]).endswith("🔗 <b>来源</b>  CoinDesk · 2 条报道\nTracefold · abc12345")
     assert "⏱ <b>时间</b>" not in str(observed["text"])
 
 
@@ -1898,7 +1910,8 @@ def test_an_open_interest_card_keeps_its_family_mark_its_event_time_and_its_own_
         "事件时间  01:00\n"
         "推送时间  17:27\n"
         "🔗 <b>来源</b>  opennews oi · 1 条报道\n"
-        '🔗 <a href="https://console.example.com/news">打开明细</a>'
+        '🔗 <a href="https://console.example.com/news">打开明细</a>\n'
+        "Tracefold 市场 · oi|opennews|binance|BTC"
     )
     assert "标的" not in text
     assert "暂无" not in text
@@ -1915,7 +1928,8 @@ def test_a_liquidation_card_carries_the_familys_mark_and_the_reported_figure() -
         "事件时间  16:51\n"
         "推送时间  17:27\n"
         "🔗 <b>来源</b>  opennews liquidation · 3 条报道\n"
-        '🔗 <a href="https://console.example.com">打开明细</a>'
+        '🔗 <a href="https://console.example.com">打开明细</a>\n'
+        "Tracefold 市场 · liquidation|opennews|bin"
     )
     assert "暂无" not in text
 
@@ -1931,7 +1945,10 @@ def test_a_smart_money_card_keeps_its_turquoise_mark_and_its_action_timeline() -
         "Close 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。\n\n"
         "事件时间  10:42\n"
         "推送时间  17:27\n"
-        "🔗 <b>来源</b>  opennews smart_money · 6 条报道"
+        "🔗 <b>来源</b>  opennews smart_money · 6 条报道\n"
+        # No console is configured for this card, so its note carries the detail id an operator
+        # would otherwise have no way of looking it up by (#604 N3).
+        "Tracefold 市场 · smart_money|opennews|hyp · i6"
     )
     assert "暂无" not in text
 
@@ -2009,7 +2026,8 @@ def test_a_market_card_shows_the_market_number_its_model_carries() -> None:
         "事件时间  01:00\n"
         "推送时间  17:27\n"
         "🔗 <b>来源</b>  opennews oi · 1 条报道\n"
-        '🔗 <a href="https://console.example.com/news">打开明细</a>'
+        '🔗 <a href="https://console.example.com/news">打开明细</a>\n'
+        "Tracefold 市场 · oi|opennews|binance|BTC"
     )
     # The stale second quote costs its own entry and nothing else, on this channel as on Feishu.
     assert "ETH" not in text
@@ -2055,7 +2073,8 @@ def test_an_oi_card_carries_the_news_lines_both_channels_take_from_one_list() ->
         "· 某交易所下架三个永续合约 13:33\n\n"
         "事件时间  23:05\n"
         "推送时间  17:27\n"
-        "🔗 <b>来源</b>  opennews oi · 2 条报道"
+        "🔗 <b>来源</b>  opennews oi · 2 条报道\n"
+        "Tracefold 市场 · oi|opennews||PEPE · l2"
     )
     # One list, two channels: the Feishu body is the same lines, unescaped, and neither adds a link
     # or a button for a headline (#582 §3.3).
@@ -2152,7 +2171,8 @@ def test_the_enrichment_edit_replaces_the_message_from_the_updated_card() -> Non
         "🧭 <b>方向</b>  利多 · 影响明显\n\n"
         "新闻时间  14:32\n"
         "推送时间  14:32\n"
-        '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道'
+        '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道\n'
+        "Tracefold · abc12345"
     )
     assert observed[1][1]["message_id"] == 42
     assert observed[1][1]["text"] == (
@@ -2168,7 +2188,8 @@ def test_the_enrichment_edit_replaces_the_message_from_the_updated_card() -> Non
         "🧭 <b>方向</b>  利多 · 影响明显\n\n"
         "新闻时间  14:32\n"
         "推送时间  14:32\n"
-        '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道'
+        '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道\n'
+        "Tracefold · abc12345"
     )
     assert edited["pushed_at_ms"] == receipt["pushed_at_ms"]
     assert edited["edited_at_ms"] == 1_787_898_741_000
@@ -2198,25 +2219,82 @@ def _wide_card(assets: int) -> ReaderCard:
 
 
 def test_a_message_within_the_channel_bound_is_sent_whole() -> None:
-    text = _sent_text(_wide_card(111))
+    text = _sent_text(_wide_card(107))
 
-    # The bound is on the text a reader receives, which is the message without its markup.
-    assert 4_000 < len(_plain_html_text(text)) <= 4_096
-    assert text.count("🎯 <b>标的</b>") == 111
+    # The bound is on the text a reader receives -- the message without its markup -- counted in the
+    # units Telegram counts it in. Every emoji this renderer marks a card with is one code point and
+    # two UTF-16 code units, so the two numbers are not the same number (#604 N3).
+    assert 4_000 < _telegram_text_length([text]) <= _TELEGRAM_TEXT_MAX
+    assert len(_plain_html_text(text)) < _telegram_text_length([text])
+    assert text.count("🎯 <b>标的</b>") == 107
 
 
 def test_a_card_over_the_bound_gives_up_its_bottom_blocks_and_keeps_its_source() -> None:
     """Bottom-up: the judgment row sits lowest above the footer, then the last asset block."""
 
-    whole = _sent_text(_wide_card(111))
-    clipped = _sent_text(_wide_card(112))
+    whole = _sent_text(_wide_card(107))
+    clipped = _sent_text(_wide_card(108))
 
     assert "🧭 <b>方向</b>  利多 · 影响明显" in whole
-    assert len(_plain_html_text(clipped)) <= _TELEGRAM_TEXT_MAX
+    assert _telegram_text_length([clipped]) <= _TELEGRAM_TEXT_MAX
     assert "🧭 <b>方向</b>" not in clipped
-    assert "AAA0111" not in clipped and "🎯 <b>标的</b>  AAA0110" in clipped
+    assert "AAA0107" not in clipped and "🎯 <b>标的</b>  AAA0106" in clipped
     assert clipped.startswith("🟢 <b>BTC ETF 净流入</b>")
-    assert clipped.endswith('🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道')
+    assert clipped.endswith(
+        '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道\nTracefold · abc12345'
+    )
+
+
+def test_every_card_carries_the_identity_line_its_feishu_copy_has_always_carried() -> None:
+    """#604 N3: this channel dropped `note_text()`, so a reader's screenshot named no Event.
+
+    Feishu prints the card's note element and Telegram printed nothing, which left an operator holding
+    a screenshot of a card they could not look up. The line is the card model's own -- `Tracefold ·
+    <event id>` for News, `Tracefold 市场 · <group key>` for a market card, and the detail id as well
+    when no console is configured, because that is then the only handle the card has.
+    """
+
+    news = _sent_text(_card())
+    linked_market = _sent_text(_fixture_market_card("market-oi-followup-billions"))
+    unlinked_market = _sent_text(_fixture_market_card("market-smart-money-action-change-six-reports"))
+
+    assert news.endswith("\nTracefold · abc12345")
+    assert linked_market.endswith("\nTracefold 市场 · oi|opennews|binance|BTC")
+    # No `api.public_url`, so there is no 打开明细 button and the detail id is the only handle left.
+    assert "打开明细" not in unlinked_market
+    assert unlinked_market.endswith("\nTracefold 市场 · smart_money|opennews|hyp · i6")
+
+
+def test_the_identity_line_is_escaped_and_outlives_clipping_together_with_the_source() -> None:
+    """It joins the footer rather than trailing it, so clipping cannot keep the id and drop the link."""
+
+    card = replace(_card(), note=replace(_card().note, id="<b>&not markup"))
+
+    assert _sent_text(card).endswith("Tracefold · &lt;b&gt;&amp;not")
+    # A card clipped to its last two sections still carries both, because they are the same section.
+    clipped = _sent_text(_wide_card(400))
+    assert clipped.endswith(
+        '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道\nTracefold · abc12345'
+    )
+
+
+def test_the_channel_bound_is_counted_in_the_units_telegram_counts_it_in() -> None:
+    """#604 N3: a card measured in code points was trimmed to a length Telegram still refuses.
+
+    Telegram's 4096 is UTF-16 code units, and every mark this renderer puts on a card -- 🟢 🔵 💠 🟠
+    🆕 🔄 🎯 🧭 🔗 -- is one Python character and two of those units. A message that measured 4090 by
+    Python's count went out at 4100 by Telegram's, came back 400, and the whole delivery settled
+    `terminal` with the reader getting nothing at all.
+    """
+
+    astral = "🎯" * 10
+    body = "x" * (4_090 - len(astral))
+    sections = ["title", body + astral, "footer"]
+
+    assert len(_SECTION_SEPARATOR.join(sections).strip()) > 4_000
+    assert _telegram_text_length(sections) > _TELEGRAM_TEXT_MAX
+    # The body is given up, which is what keeps the message inside the bound Telegram enforces.
+    assert _fit_telegram_message(sections) == "title\n\nfooter"
 
 
 def test_clipping_gives_up_the_middle_before_the_title_or_the_footer() -> None:

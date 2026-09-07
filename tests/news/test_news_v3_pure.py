@@ -41,7 +41,14 @@ from tracefold.news.events.storyline import (
 from tracefold.news.events.titles import extract_title
 from tracefold.news.events.tokens import comparison_tokens, jaccard
 from tracefold.news.market_review.pricing import CHANGE_BASIS_ZH
-from tracefold.news.models import ReaderMarketMovement, ReaderReceipt, ReaderTradeTarget, TriageAsset, TriageVerdict
+from tracefold.news.models import (
+    ReaderMarketMovement,
+    ReaderReceipt,
+    ReaderTradeTarget,
+    TelegramDeliveryReceipt,
+    TriageAsset,
+    TriageVerdict,
+)
 from tracefold.news.opennews import source_artifact_identity
 from tracefold.news.outcome import OVERRIDE_RULE_ZH, storyline_key_zh, throttled_by_zh
 from tracefold.news.pipeline.admission import _event_identity
@@ -240,6 +247,26 @@ def test_fact_unit_context_is_empty_when_the_digest_has_no_preamble() -> None:
     units = extract_fact_units(item_id="item-5", raw_text=_BULLETS, fallback_title=first_bullet)
     assert len(units) == 3
     assert all(u.context == "" for u in units)
+
+
+def test_a_delivery_receipt_has_no_delete_lifecycle_left_to_record() -> None:
+    """#604 N3: `deleted_at_ms` was written by nothing and read by one dead predicate.
+
+    #562 §5 row 5 removed the path that could delete a card -- `deleteMessage` is not even on the
+    adapter's method allowlist -- and the receipt field outlived it. The model forbids extras, so a
+    historical receipt carrying one would now be refused; none exists, because nothing ever wrote one.
+    The `news_deliveries` delete columns, their CHECKs and the partial index stay where they are, and
+    `ReaderReceipt` still answers a `delete_state` row, because those are storage an operator can
+    still read.
+    """
+
+    live = TelegramDeliveryReceipt.model_validate(
+        {"provider": "telegram", "message_id": 42, "pushed_at_ms": 1_700_000_000_000, "target_sha256": "a" * 64}
+    )
+    assert "deleted_at_ms" not in live.canonical()
+    assert not hasattr(live, "deleted_at_ms")
+    with pytest.raises(ValueError):
+        TelegramDeliveryReceipt.model_validate({**live.canonical(), "deleted_at_ms": 1_700_000_001_000})
 
 
 def test_reader_receipt_never_confuses_decision_or_ambiguous_send_with_received() -> None:

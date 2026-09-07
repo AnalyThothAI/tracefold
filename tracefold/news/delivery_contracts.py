@@ -57,6 +57,11 @@ def classify_delivery_failure(exc: BaseException) -> str:
         return DELIVERY_FAILURE_RETRIABLE
     return DELIVERY_FAILURE_REFUSED
 
+# The longest wait a provider may buy itself with one refusal. A rate limit is the provider talking,
+# and a durable due time is this process trusting it, so the number it wrote is bounded before it
+# becomes one: an hour parked in `pending` for a card a reader is waiting on is worse than asking
+# again in five minutes and being refused a second time.
+RETRY_AFTER_MAX_SECONDS: Final = 300.0
 
 __all__ = [
     "COMMIT_PHASE_NOT_SENT",
@@ -65,4 +70,30 @@ __all__ = [
     "DELIVERY_FAILURE_RETRIABLE",
     "DELIVERY_FAILURE_UNKNOWN",
     "classify_delivery_failure",
+    "RETRY_AFTER_MAX_SECONDS",
+    "retry_after_ms",
 ]
+
+
+def retry_after_ms(exc: BaseException) -> int:
+    """How long the provider asked the caller to wait, in milliseconds, or 0 when it asked nothing.
+
+    A rate limit is the one failure where the provider knows the answer and the caller is guessing:
+    Telegram answers a 429 with `parameters.retry_after` and Feishu with a `Retry-After` header, and
+    the adapters carry it here as `retry_after_seconds` on the error. A lane's own backoff is a floor
+    and never a ceiling -- coming back sooner than the provider asked earns another refusal, and the
+    lane's attempt budget is spent on nothing -- so every caller uses this to *raise* a wait it
+    already computed, never to shorten one (#604 N3).
+
+    A missing, unreadable, non-positive or absurd number is no advice at all and reads as zero, which
+    leaves the caller's own backoff exactly as it was.
+    """
+
+    advice = getattr(exc, "retry_after_seconds", None)
+    if not isinstance(advice, int | float) or isinstance(advice, bool):
+        return 0
+    # `not > 0` rather than `<= 0` so a NaN reads as no advice, and the cap answers an infinity.
+    seconds = float(advice)
+    if not seconds > 0:
+        return 0
+    return int(min(seconds, RETRY_AFTER_MAX_SECONDS) * 1000)
