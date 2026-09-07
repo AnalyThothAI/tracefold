@@ -1531,22 +1531,17 @@ def test_a_deferred_claim_keeps_its_lease_unless_the_provider_asked_for_longer()
     class Ordinary(TransientError):
         pass
 
-    def _deferred(exc: Exception) -> dict[str, Any]:
-        news = _delivery_news(defer_delivery_claim=True)
+    def _deferred(failure: type[TransientError]) -> dict[str, Any]:
+        def refuse(**_kwargs: Any) -> None:
+            raise failure("the provider refused this attempt")
+
+        news = _delivery_news(latest_verdict=refuse, defer_delivery_claim=True)
         consumer = _deliverer(news, sender=RecordingSender())
-
-        async def scenario() -> None:
-            async def failing(**_kwargs: Any) -> None:
-                raise exc
-
-            consumer.deliver = failing  # type: ignore[method-assign]
-            await consumer._deliver_claim(event_id="ev-strong", kind="first", attempts=1)
-
-        asyncio.run(scenario())
+        asyncio.run(consumer._deliver_claim(event_id="ev-strong", kind="first", attempts=1))
         return news.kwargs_of("defer_delivery_claim")
 
-    advised = _deferred(RateLimited("rate limited"))
-    plain = _deferred(Ordinary("temporary"))
+    advised = _deferred(RateLimited)
+    plain = _deferred(Ordinary)
 
     # The advice is a due time in the future; the ordinary deferral asks for nothing beyond `now`, so
     # `GREATEST` leaves the claim's own lease standing.
