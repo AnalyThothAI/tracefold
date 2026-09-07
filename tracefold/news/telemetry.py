@@ -41,9 +41,11 @@ NewsExternalDataSkipReason = Literal[
     "no_work",
     "unclassified",
 ]
-NewsHandoffStage = Literal["event", "verdict"]
+# One handoff is still a broker publish: admission to Triage. A push Verdict hands its card
+# over inside its own transaction now, so there is no verdict stage to measure (#598 D2).
+NewsHandoffStage = Literal["event"]
 NewsHandoffRepairOutcome = Literal["marker_pending", "published", "transient"]
-NewsRabbitQueue = Literal["news.deliver", "news.raw", "news.triage"]
+NewsRabbitQueue = Literal["news.raw", "news.triage"]
 NewsRabbitConsumerFatalReason = Literal["handler", "settlement"]
 NewsRabbitPublishFailureReason = Literal["backpressure", "confirm_timeout", "transport", "unroutable"]
 NewsOpenNewsIncidentCause = Literal[

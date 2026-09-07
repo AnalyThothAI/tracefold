@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from tracefold.news import broker_policy
-from tracefold.news.bus import Q_DEAD, Q_DELIVER, Q_RAW, Q_TRIAGE
+from tracefold.news.bus import Q_DEAD, Q_RAW, Q_TRIAGE
 
 REPO = Path(__file__).resolve().parents[2]
 DEFINITIONS = REPO / "docker" / "rabbitmq" / "definitions.json"
@@ -39,7 +39,7 @@ def test_three_total_transient_attempts_is_the_delivery_limit_plus_one() -> None
 
 def test_every_business_queue_carries_the_whole_retry_contract() -> None:
     definitions = broker_policy.expected_effective_definitions()
-    for queue in (Q_RAW, Q_TRIAGE, Q_DELIVER):
+    for queue in (Q_RAW, Q_TRIAGE):
         assert definitions[queue] == {
             "delayed-retry-type": "all",
             "delayed-retry-min": 30_000,
@@ -59,7 +59,7 @@ def test_every_business_queue_carries_the_whole_retry_contract() -> None:
 
 
 def test_byte_bounds_are_the_documented_formula_over_the_recorded_measurements() -> None:
-    for queue in (Q_RAW, Q_TRIAGE, Q_DELIVER):
+    for queue in (Q_RAW, Q_TRIAGE):
         computed = (
             broker_policy.P99_ENVELOPE_BYTES[queue]
             * broker_policy.PEAK_MESSAGES_PER_MINUTE[queue]
@@ -84,7 +84,7 @@ def test_the_total_byte_bound_stays_under_the_broker_budget() -> None:
 def test_one_policy_per_queue_and_no_pattern_overlap() -> None:
     for prefix in ("", "tf_test_abcd1234"):
         policies = broker_policy.policies(name_prefix=prefix)
-        assert len(policies) == 4
+        assert len(policies) == 3
         for policy in policies:
             matched = [other for other in policies if re.fullmatch(policy.pattern, other.queue)]
             assert matched == [policy], f"{policy.pattern} matched {[m.queue for m in matched]}"
@@ -148,7 +148,7 @@ def test_the_application_never_publishes_to_the_cut_retry_lane() -> None:
     # `topology_drift` reports whatever is actually on the broker.
     assert source.count("news.retry") == 0
     declared = {spec.name for spec in rabbitmq.topology().queues}
-    assert declared == {Q_RAW, Q_TRIAGE, Q_DELIVER, Q_DEAD}
+    assert declared == {Q_RAW, Q_TRIAGE, Q_DEAD}
     assert rabbitmq.topology().exchange_names == ("news", "news.dlx")
 
 

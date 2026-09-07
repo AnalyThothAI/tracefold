@@ -23,11 +23,7 @@ from .chain_tape import (
     WALLET_ROSTER_ROWS_SQL,
     WALLET_TAPE_STATE_SQL,
 )
-from .decisions import (
-    MARKET_NEWS_PUSHED_SQL,
-    MARKET_NEWS_TOTAL_SQL,
-    UNPUBLISHED_VERDICT_CANDIDATES_SQL,
-)
+from .decisions import MARKET_NEWS_PUSHED_SQL, MARKET_NEWS_TOTAL_SQL
 from .events import BAND_CANDIDATES_SQL, UNPUBLISHED_EVENT_CANDIDATES_SQL
 from .feed_sql import (
     ASSET_SEARCH_PREDICATE,
@@ -86,13 +82,6 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="news_event_handoff_candidates",
             sql=UNPUBLISHED_EVENT_CANDIDATES_SQL,
-            params=(int(now_ms) - 15_000, day_ago, 50),
-            max_read_return_amplification=20.0,
-            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="news_verdict_handoff_candidates",
-            sql=UNPUBLISHED_VERDICT_CANDIDATES_SQL,
             params=(int(now_ms) - 15_000, day_ago, 50),
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,

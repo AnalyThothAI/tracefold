@@ -51,7 +51,7 @@ from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
 from tracefold.news.market_notifications import TICK_SECONDS, MarketNotificationLoop
 from tracefold.news.market_review.loops import QuoteDatabasePort, ReactionDatabasePort
 from tracefold.news.pipeline.admission import DeduperConsumer
-from tracefold.news.pipeline.delivery import DelivererConsumer, read_display_quotes, read_pushed_news
+from tracefold.news.pipeline.delivery import DelivererLoop, read_display_quotes, read_pushed_news
 from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
@@ -620,8 +620,7 @@ def _compose_news_pipeline(
                 runtime_manifest=arms.runtime_manifest,
             )
         ),
-        deliverer=DelivererConsumer(
-            bus=bus,
+        deliverer=DelivererLoop(
             db=news_db,
             sender=sender,
             finite_operations=finite,

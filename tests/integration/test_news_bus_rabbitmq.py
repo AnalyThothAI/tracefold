@@ -42,7 +42,6 @@ from tracefold.integrations.rabbitmq import (
 from tracefold.news import broker_policy
 from tracefold.news.bus import (
     Q_DEAD,
-    Q_DELIVER,
     Q_RAW,
     Q_TRIAGE,
     BrokerBackpressure,
@@ -205,12 +204,12 @@ def test_the_broker_is_the_version_the_retry_contract_was_measured_against() -> 
     assert (major, minor) >= (4, 3), f"native delayed retry needs RabbitMQ 4.3+, found {_broker_version()}"
 
 
-def test_topology_is_three_business_queues_one_dlq_and_no_retry_lane() -> None:
+def test_topology_is_two_business_queues_one_dlq_and_no_retry_lane() -> None:
     async def scenario() -> None:
         async with _bus() as bus:
             declared = await bus.declare_topology()
             names = {name.removeprefix(f"{bus.prefix}.") for name in declared["queues"]}
-            assert names == {Q_RAW, Q_TRIAGE, Q_DELIVER, Q_DEAD}
+            assert names == {Q_RAW, Q_TRIAGE, Q_DEAD}
             assert declared["exchange"].endswith("news")
             assert declared["dlx"].endswith("news.dlx")
             assert "retry" not in json.dumps(declared)
@@ -356,7 +355,7 @@ def test_effective_policy_is_the_checked_in_retry_contract() -> None:
             effective = await bus.effective_policies()
             expected = broker_policy.expected_effective_definitions(name_prefix=bus.prefix)
             assert effective == expected
-            for queue in (Q_RAW, Q_TRIAGE, Q_DELIVER):
+            for queue in (Q_RAW, Q_TRIAGE):
                 definition = effective[bus.queue_name(queue)]
                 assert definition["delayed-retry-type"] == "all"
                 assert definition["delayed-retry-min"] == definition["delayed-retry-max"] == 30_000

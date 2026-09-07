@@ -53,7 +53,7 @@ from tracefold.news.opennews import (
     source_artifact_identity,
 )
 from tracefold.news.pipeline.admission import DeduperConsumer
-from tracefold.news.pipeline.delivery import DelivererConsumer
+from tracefold.news.pipeline.delivery import DELIVERY_ATTEMPTS_MAX, DELIVERY_RETRY_DELAY_MS, DelivererLoop
 from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
@@ -725,25 +725,13 @@ def test_a_crash_between_begin_and_settle_is_durably_ambiguous_and_never_resends
     conn.commit()
     assert sender.sent == []
 
-    deliverer = DelivererConsumer(
-        bus=bus,
+    deliverer = DelivererLoop(
         db=db,
         sender=sender,
         finite_operations=InlineFiniteOperations(),
         min_interval_seconds=0.0,
     )
-    asyncio.run(
-        deliverer.handle(
-            BusMessage(
-                kind="verdict",
-                message_id=f"push:{event_id}",
-                routing_key="verdict.push",
-                payload={"event_id": event_id, "kind": "first"},
-                trace_id=new_trace_id(),
-                occurred_at_ms=now_ms(),
-            )
-        )
-    )
+    asyncio.run(deliverer.deliver(event_id=event_id, kind="first"))
     conn.commit()
 
     delivery = repos.news.delivery(event_id=event_id, kind="first")
@@ -762,16 +750,7 @@ def test_a_settlement_failure_after_a_successful_send_never_produces_a_second_se
     db = FaultInjectingDatabase(conn)
     sender = _RecordingSender()
     event_id = _pushable_event(conn, db, bus)
-    message = BusMessage(
-        kind="verdict",
-        message_id=f"push:{event_id}",
-        routing_key="verdict.push",
-        payload={"event_id": event_id, "kind": "first"},
-        trace_id=new_trace_id(),
-        occurred_at_ms=now_ms(),
-    )
-    deliverer = DelivererConsumer(
-        bus=bus,
+    deliverer = DelivererLoop(
         db=db,
         sender=sender,
         finite_operations=InlineFiniteOperations(),
@@ -780,7 +759,7 @@ def test_a_settlement_failure_after_a_successful_send_never_produces_a_second_se
 
     db.fail_operations = {"news_delivery_settle"}
     with pytest.raises(RuntimeError, match="news_delivery_settlement_unavailable"):
-        asyncio.run(deliverer.handle(message))
+        asyncio.run(deliverer.deliver(event_id=event_id, kind="first"))
     conn.commit()
 
     assert len(sender.sent) == 1, "the card really did reach the provider"
@@ -788,9 +767,9 @@ def test_a_settlement_failure_after_a_successful_send_never_produces_a_second_se
     stranded = repos.news.delivery(event_id=event_id, kind="first")
     assert stranded is not None and stranded["state"] == "sending"
 
-    # Redelivery: the row still says `sending`, so this is the unknown-outcome case, not a retry.
+    # Re-claim: the row still says `sending`, so this is the unknown-outcome case, not a retry.
     db.fail_operations = set()
-    asyncio.run(deliverer.handle(message))
+    asyncio.run(deliverer.deliver(event_id=event_id, kind="first"))
     conn.commit()
 
     settled = repos.news.delivery(event_id=event_id, kind="first")
@@ -976,13 +955,15 @@ def test_a_card_that_lands_after_the_refresh_is_seen_inside_the_storyline_lock(c
     assert settled == 1, "the racing card is a durable row, not a scripted return value"
 
 
-def test_a_verdict_mark_failure_redelivers_the_decision_into_one_delivery_lifecycle(conn) -> None:
-    """Verdict publish success -> mark failure -> redelivery: one Verdict, one delivery lifecycle.
+def test_a_redelivered_triage_message_owes_one_card_and_the_loop_sends_it_once(conn) -> None:
+    """Verdict and queue row commit together, so a redelivered Event adds no second card.
 
-    `publish_verdict` is the same commit-then-publish shape as the Event outbox, and it suppresses
-    its mark for the same reason. The consequence is a settled verdict the row still calls
-    unpublished, so a redelivered Event republishes the decision. Two identical verdict messages then
-    reach the Deliverer, and the reader must still receive exactly one card.
+    This is the window `publish_verdict` could not close: it committed the verdict in one transaction
+    and published the handoff in another, and the mark that recorded the publish could fail on its
+    own, leaving a settled verdict the row still called unpublished. A redelivered Event then
+    republished the decision and two identical messages reached the Deliverer. The handoff is now a
+    `news_delivery_queue` row inside the verdict's own transaction: there is no second write to fail,
+    the redelivery finds the verdict and stops, and the loop claims exactly one intent (#598 D2).
     """
 
     bus = RecordingBus()
@@ -995,7 +976,6 @@ def test_a_verdict_mark_failure_redelivers_the_decision_into_one_delivery_lifecy
     event_message = bus.of_kind("event")[0]
 
     judge = _EvidenceMovingJudge(_deduper(db, bus), [])
-    db.fail_operations = {"news_triage_mark_published"}
     asyncio.run(_triage(db, bus, judge=judge).handle(event_message))
     conn.commit()
 
@@ -1003,40 +983,31 @@ def test_a_verdict_mark_failure_redelivers_the_decision_into_one_delivery_lifecy
         "SELECT final_decision, published_at_ms FROM news_verdicts WHERE event_id = %s AND stage = 'triage'",
         (event_id,),
     ).fetchone()
-    throttle = conn.execute(
-        "SELECT final_decision, throttled_by, trace FROM news_verdicts WHERE event_id = %s", (event_id,)
-    ).fetchone()
-    assert verdict_row["final_decision"] in {"push", "escalate"}, dict(throttle)
-    assert verdict_row["published_at_ms"] is None, "the mark is exactly what the injected fault stopped"
-    assert len(bus.of_kind("verdict")) == 1
+    assert verdict_row["final_decision"] in {"push", "escalate"}
+    assert verdict_row["published_at_ms"] is not None, "the marker is written in the verdict's own transaction"
+    assert bus.of_kind("verdict") == [], "the handoff is a row, not a message"
+    assert _queue_rows(conn, event_id) == [{"kind": "first", "state": "pending", "attempts": 0, "error_code": None}]
 
-    # Redelivery of the Event: the verdict is already settled, so it is republished, never re-judged.
-    db.fail_operations = set()
+    # Redelivery of the Event: the verdict is already settled, so nothing at all happens.
     asyncio.run(_triage(db, bus, judge=judge).handle(event_message))
     conn.commit()
 
     assert judge.asks == 1, "the second pass must not ask the model again"
-    assert len(bus.of_kind("verdict")) == 2
     assert _count(conn, "SELECT count(*) AS n FROM news_verdicts WHERE event_id = %s", (event_id,)) == 1
-    assert (
-        conn.execute(
-            "SELECT published_at_ms FROM news_verdicts WHERE event_id = %s AND stage = 'triage'", (event_id,)
-        ).fetchone()["published_at_ms"]
-        is not None
-    )
+    assert _queue_rows(conn, event_id) == [{"kind": "first", "state": "pending", "attempts": 0, "error_code": None}]
 
-    deliverer = DelivererConsumer(
-        bus=bus,
+    deliverer = DelivererLoop(
         db=db,
         sender=sender,
         finite_operations=InlineFiniteOperations(),
         min_interval_seconds=0.0,
     )
-    for message in bus.of_kind("verdict"):
-        asyncio.run(deliverer.handle(message))
+    asyncio.run(deliverer.advance())
+    asyncio.run(deliverer.advance())
     conn.commit()
 
-    assert len(sender.sent) == 1, "two verdict messages, one card on the reader's screen"
+    assert len(sender.sent) == 1, "one intent, one card on the reader's screen"
+    assert _queue_rows(conn, event_id) == [], "a delivered card is no longer owed"
     deliveries = [
         dict(row)
         for row in conn.execute(
@@ -1044,3 +1015,143 @@ def test_a_verdict_mark_failure_redelivers_the_decision_into_one_delivery_lifecy
         ).fetchall()
     ]
     assert deliveries == [{"kind": "first", "state": "sent", "error_code": None}]
+
+
+def test_two_delivery_loops_claim_disjoint_intents_and_the_reader_gets_one_card(conn) -> None:
+    """Two claimers over one due intent: `SKIP LOCKED` gives it to one of them and no card is doubled.
+
+    The old lane rented this from RabbitMQ's `x-single-active-consumer`. It is now the claim's own
+    property, and `news_deliveries`'s `ON CONFLICT (event_id, kind)` is still the authority underneath
+    it: even a claimer that somehow held the same row could not write a second ledger row (#598 D2).
+    """
+
+    bus = RecordingBus()
+    db = FaultInjectingDatabase(conn)
+    sender = _RecordingSender()
+    event_id = _pushable_event(conn, db, bus)
+    repos = repositories_for_connection(conn)
+    stamp = now_ms()
+
+    # A second connection is what makes this a race rather than two calls in one session.
+    other = connect_postgres_test(read_only=False)
+    try:
+        first = repos.news.claim_due_deliveries(
+            now_ms=stamp,
+            next_attempt_at_ms=stamp + DELIVERY_RETRY_DELAY_MS,
+            attempts_max=DELIVERY_ATTEMPTS_MAX,
+            limit=5,
+        )
+        with other.transaction():
+            second = repositories_for_connection(other).news.claim_due_deliveries(
+                now_ms=stamp,
+                next_attempt_at_ms=stamp + DELIVERY_RETRY_DELAY_MS,
+                attempts_max=DELIVERY_ATTEMPTS_MAX,
+                limit=5,
+            )
+        conn.commit()
+    finally:
+        other.close()
+
+    assert [row["event_id"] for row in first] == [event_id]
+    assert second == [], "the row the first claimer holds is skipped, never waited on"
+
+    deliverer = DelivererLoop(
+        db=db, sender=sender, finite_operations=InlineFiniteOperations(), min_interval_seconds=0.0
+    )
+    asyncio.run(deliverer.deliver(event_id=event_id, kind="first"))
+    asyncio.run(deliverer.deliver(event_id=event_id, kind="first"))
+    conn.commit()
+
+    assert len(sender.sent) == 1
+    assert _count(conn, "SELECT count(*) AS n FROM news_deliveries WHERE event_id = %s", (event_id,)) == 1
+
+
+def test_a_crash_between_the_claim_and_the_ledger_row_leaves_the_card_claimable(conn) -> None:
+    """A claimed intent nobody finished comes back when its lease expires, and gives up after three.
+
+    The broker used to redeliver an unacked message and dead-letter it once `delivery-limit` was
+    spent. Those are the same two numbers here -- three attempts, 30 s apart -- and they are now due
+    times and an attempt count in PostgreSQL, so the process that died is not part of the mechanism.
+    """
+
+    bus = RecordingBus()
+    db = FaultInjectingDatabase(conn)
+    event_id = _pushable_event(conn, db, bus)
+    repos = repositories_for_connection(conn)
+    stamp = now_ms()
+
+    def _claim(at_ms: int) -> list[dict[str, Any]]:
+        claimed = repos.news.claim_due_deliveries(
+            now_ms=at_ms,
+            next_attempt_at_ms=at_ms + DELIVERY_RETRY_DELAY_MS,
+            attempts_max=DELIVERY_ATTEMPTS_MAX,
+            limit=5,
+        )
+        conn.commit()
+        return claimed
+
+    # First attempt: claimed, then the process dies before `begin_delivery`. No ledger row exists.
+    assert [row["attempts"] for row in _claim(stamp)] == [1]
+    assert _count(conn, "SELECT count(*) AS n FROM news_deliveries WHERE event_id = %s", (event_id,)) == 0
+    assert _claim(stamp + DELIVERY_RETRY_DELAY_MS - 1) == [], "the lease is the wait, and it has not run out"
+
+    # Second and third attempts arrive when the lease does, and the third is the last.
+    assert [row["attempts"] for row in _claim(stamp + DELIVERY_RETRY_DELAY_MS)] == [2]
+    assert [row["attempts"] for row in _claim(stamp + 2 * DELIVERY_RETRY_DELAY_MS)] == [DELIVERY_ATTEMPTS_MAX]
+
+    # A fourth is not granted: the intent becomes this lane's dead letter, kept where it can be read.
+    assert _claim(stamp + 3 * DELIVERY_RETRY_DELAY_MS) == []
+    assert _queue_rows(conn, event_id) == [
+        {
+            "kind": "first",
+            "state": "dead",
+            "attempts": DELIVERY_ATTEMPTS_MAX,
+            "error_code": "news_delivery_attempts_exhausted",
+        }
+    ]
+    assert _count(conn, "SELECT count(*) AS n FROM news_deliveries WHERE event_id = %s", (event_id,)) == 0
+
+
+def test_a_deferred_delivery_keeps_its_intent_and_gives_up_with_the_reason_recorded(conn) -> None:
+    """A News lane that cannot admit the read spends an attempt, records why, and retries on the lease."""
+
+    bus = RecordingBus()
+    db = FaultInjectingDatabase(conn)
+    sender = _RecordingSender()
+    event_id = _pushable_event(conn, db, bus)
+    deliverer = DelivererLoop(
+        db=db, sender=sender, finite_operations=InlineFiniteOperations(), min_interval_seconds=0.0
+    )
+
+    db.fail_operations = {"news_delivery_begin"}
+    for _ in range(DELIVERY_ATTEMPTS_MAX):
+        asyncio.run(deliverer.advance())
+        conn.commit()
+        # Each turn claims at most one attempt: the lease holds the row until it is due again.
+        conn.execute("UPDATE news_delivery_queue SET next_attempt_at_ms = 0 WHERE state = 'pending'")
+        conn.commit()
+
+    assert sender.sent == []
+    assert _queue_rows(conn, event_id) == [
+        {
+            "kind": "first",
+            "state": "dead",
+            "attempts": DELIVERY_ATTEMPTS_MAX,
+            "error_code": "news_delivery_deferred:TransientError",
+        }
+    ]
+
+    db.fail_operations = set()
+    asyncio.run(deliverer.advance())
+    conn.commit()
+    assert sender.sent == [], "a dead intent is never claimed again"
+
+
+def _queue_rows(conn: Any, event_id: str) -> list[dict[str, Any]]:
+    return [
+        dict(row)
+        for row in conn.execute(
+            "SELECT kind, state, attempts, error_code FROM news_delivery_queue WHERE event_id = %s ORDER BY kind",
+            (event_id,),
+        ).fetchall()
+    ]

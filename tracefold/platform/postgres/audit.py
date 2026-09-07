@@ -93,6 +93,7 @@ NEWS_TABLES = (
     "news_event_assets",
     "news_verdicts",
     "news_deliveries",
+    "news_delivery_queue",
     "news_reviews",
     "news_external_miss_snapshots",
     "news_market_instruments",

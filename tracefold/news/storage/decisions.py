@@ -27,64 +27,52 @@ from .feed_sql import EDITORIAL_EVENT_SQL
 from .sql_values import _dumps
 
 _STORYLINE_LOCK_NAMESPACE = 0x4E455753  # 'NEWS', distinct from App session-lock namespaces.
-_HANDOFF_STATE_LIMIT = 1_000
-UNPUBLISHED_VERDICT_CANDIDATES_SQL = """
-    SELECT v.event_id, v.policy_version, v.created_at_ms, e.queue_priority, e.trace_id
-      FROM news_verdicts v
-      JOIN news_events e ON e.event_id = v.event_id
-      JOIN news_event_evidence_snapshots evidence
-        ON evidence.event_id = v.event_id
-       AND evidence.evidence_version = v.evidence_version
-       AND evidence.evidence_sha256 = v.evidence_sha256
-       AND evidence.provenance = 'observed'
-       AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-     WHERE v.stage = 'triage'
-       AND v.judgment_contract_version = 'news_judgment_v2'
-       AND v.final_decision IN ('push', 'escalate')
-       AND v.published_at_ms IS NULL
-       AND v.created_at_ms <= %s AND v.created_at_ms >= %s
-     ORDER BY v.created_at_ms, v.event_id, v.policy_version LIMIT %s
-"""
-_VERDICT_HANDOFF_STATE_SQL = """
-    WITH pending AS MATERIALIZED (
-      SELECT v.created_at_ms
-        FROM news_verdicts v
-        JOIN news_events e ON e.event_id = v.event_id
-        JOIN news_event_evidence_snapshots evidence
-          ON evidence.event_id = v.event_id
-         AND evidence.evidence_version = v.evidence_version
-         AND evidence.evidence_sha256 = v.evidence_sha256
-         AND evidence.provenance = 'observed'
-         AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-       WHERE v.stage = 'triage'
-         AND v.judgment_contract_version = 'news_judgment_v2'
-         AND v.final_decision IN ('push', 'escalate')
-         AND v.published_at_ms IS NULL
-         AND v.created_at_ms >= %s
-       ORDER BY v.created_at_ms, v.event_id, v.policy_version
+# The claim, and the whole of it. `FOR UPDATE SKIP LOCKED` inside the CTE is what lets two claimers
+# read disjoint sets instead of queueing behind each other, and the `UPDATE` beside it is the lease:
+# a claimed row's next due time moves out by one retry delay, so a process that dies between the
+# claim and `begin_delivery` leaves a row the next claimer picks up when that lease expires, with no
+# sweep and no reconciliation pass. `news_deliveries`'s own `ON CONFLICT (event_id, kind)` stays the
+# anti-duplicate authority: a lost race here costs a wasted read, never a second card.
+#
+# Due time, then arrival, then the key: one order, and the tie-breakers are what make it the same
+# order under two claimers. There is no priority column. An escalate rode `news.deliver` at AMQP
+# priority 5, and at this lane's measured volume -- 7 messages in the worst minute ever recorded --
+# every due card drains inside one turn, so the priority chose between cards that were going out
+# in the same second anyway.
+CLAIM_DUE_DELIVERIES_SQL = """
+    WITH due AS (
+      SELECT event_id, kind FROM news_delivery_queue
+       WHERE state = 'pending'
+         AND next_attempt_at_ms <= %s
+       ORDER BY next_attempt_at_ms, enqueued_at_ms, event_id
        LIMIT %s
-    ), expired AS MATERIALIZED (
-      SELECT v.created_at_ms
-        FROM news_verdicts v
-        JOIN news_events e ON e.event_id = v.event_id
-        JOIN news_event_evidence_snapshots evidence
-          ON evidence.event_id = v.event_id
-         AND evidence.evidence_version = v.evidence_version
-         AND evidence.evidence_sha256 = v.evidence_sha256
-         AND evidence.provenance = 'observed'
-         AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-       WHERE v.stage = 'triage'
-         AND v.judgment_contract_version = 'news_judgment_v2'
-         AND v.final_decision IN ('push', 'escalate')
-         AND v.published_at_ms IS NULL
-         AND v.created_at_ms < %s
-       ORDER BY v.created_at_ms DESC, v.event_id DESC, v.policy_version DESC
-       LIMIT %s
+       FOR UPDATE SKIP LOCKED
     )
-    SELECT (SELECT count(*) FROM pending) AS pending,
-           (SELECT min(created_at_ms) FROM pending) AS oldest_pending_at_ms,
-           (SELECT count(*) FROM expired) AS expired
+    UPDATE news_delivery_queue q
+       SET attempts = q.attempts + 1,
+           next_attempt_at_ms = %s,
+           last_attempt_at_ms = %s,
+           updated_at_ms = %s
+      FROM due
+     WHERE q.event_id = due.event_id AND q.kind = due.kind
+    RETURNING q.event_id, q.kind, q.attempts, q.enqueued_at_ms
 """
+
+# The attempt nobody finished. A process that died mid-attempt spent one, and its row comes back due
+# with the budget already gone; without this it would be `pending` for ever and invisible, because
+# the claim above refuses to increment past the column's own bound. Run in the claim transaction, on
+# the same partial index, ahead of the claim.
+EXPIRE_DELIVERY_CLAIMS_SQL = """
+    UPDATE news_delivery_queue
+       SET state = 'dead',
+           error_code = COALESCE(error_code, 'news_delivery_attempts_exhausted'),
+           settled_at_ms = %s,
+           updated_at_ms = %s
+     WHERE state = 'pending'
+       AND attempts >= %s
+       AND next_attempt_at_ms <= %s
+"""
+
 _READER_HISTORY_PROJECTION = """
     SELECT v.event_id, d.settled_at_ms AS at_ms, e.storyline_key, e.comparison_title,
            e.comparison_fingerprint, e.dedupe_family,
@@ -692,41 +680,85 @@ class DecisionStorage:
         )
         return bool(cursor.rowcount)
 
-    def unpublished_verdict_candidates(
-        self, *, older_than_ms: int, newer_than_ms: int, limit: int = 50
-    ) -> list[dict[str, Any]]:
-        """Push Verdicts whose confirmed Delivery handoff marker is still absent."""
+    def enqueue_delivery(self, *, event_id: str, kind: str, now_ms: int) -> bool:
+        """Record that this Event owes a reader a card. Written in the Verdict's own transaction.
 
+        `ON CONFLICT DO NOTHING` on the natural key, so a re-decided Event never queues a second card
+        and no caller has to read before writing. Due immediately: the wait a retry earns is set when
+        an attempt fails, never before the first one.
+        """
+
+        cursor = self.conn.execute(
+            """
+            INSERT INTO news_delivery_queue (
+              event_id, kind, state, attempts, enqueued_at_ms, next_attempt_at_ms, updated_at_ms
+            ) VALUES (%s, %s, 'pending', 0, %s, %s, %s)
+            ON CONFLICT (event_id, kind) DO NOTHING
+            """,
+            (event_id, kind, int(now_ms), int(now_ms), int(now_ms)),
+        )
+        return bool(cursor.rowcount)
+
+    def claim_due_deliveries(
+        self, *, now_ms: int, next_attempt_at_ms: int, attempts_max: int, limit: int
+    ) -> list[dict[str, Any]]:
+        """Take up to `limit` due cards, spending one attempt each and leasing them until their next due.
+
+        The expiry pass runs first and in the same transaction: an attempt no process finished has
+        already been spent, and its row would otherwise come back due with a budget the claim cannot
+        increment past.
+        """
+
+        self.conn.execute(
+            EXPIRE_DELIVERY_CLAIMS_SQL,
+            (int(now_ms), int(now_ms), int(attempts_max), int(now_ms)),
+        )
         rows = self.conn.execute(
-            UNPUBLISHED_VERDICT_CANDIDATES_SQL,
-            (int(older_than_ms), int(newer_than_ms), int(limit)),
+            CLAIM_DUE_DELIVERIES_SQL,
+            (int(now_ms), int(limit), int(next_attempt_at_ms), int(now_ms), int(now_ms)),
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def verdict_handoff_scan(
-        self, *, older_than_ms: int, newer_than_ms: int, limit: int = 50
-    ) -> tuple[list[dict[str, Any]], dict[str, int | None]]:
-        return (
-            self.unpublished_verdict_candidates(
-                older_than_ms=older_than_ms,
-                newer_than_ms=newer_than_ms,
-                limit=limit,
-            ),
-            self._verdict_handoff_state(deadline_ms=newer_than_ms),
-        )
+    def finish_delivery_claim(self, *, event_id: str, kind: str) -> bool:
+        """The card is no longer owed: `news_deliveries` has the row, and it is the only ledger."""
 
-    def _verdict_handoff_state(self, *, deadline_ms: int) -> dict[str, int | None]:
+        cursor = self.conn.execute(
+            "DELETE FROM news_delivery_queue WHERE event_id = %s AND kind = %s",
+            (event_id, kind),
+        )
+        return bool(cursor.rowcount)
+
+    def defer_delivery_claim(self, *, event_id: str, kind: str, error_code: str, now_ms: int) -> bool:
+        """Keep the claim's lease as the retry's wait and record why this attempt did not finish."""
+
+        cursor = self.conn.execute(
+            """
+            UPDATE news_delivery_queue SET error_code = %s, updated_at_ms = %s
+             WHERE event_id = %s AND kind = %s AND state = 'pending'
+            """,
+            (error_code, int(now_ms), event_id, kind),
+        )
+        return bool(cursor.rowcount)
+
+    def abandon_delivery_claim(self, *, event_id: str, kind: str, error_code: str, now_ms: int) -> bool:
+        """The budget is spent or the intent can never succeed. This lane's `news.dead`, kept in place."""
+
+        cursor = self.conn.execute(
+            """
+            UPDATE news_delivery_queue
+               SET state = 'dead', error_code = %s, settled_at_ms = %s, updated_at_ms = %s
+             WHERE event_id = %s AND kind = %s AND state = 'pending'
+            """,
+            (error_code, int(now_ms), int(now_ms), event_id, kind),
+        )
+        return bool(cursor.rowcount)
+
+    def delivery_claim(self, *, event_id: str, kind: str) -> dict[str, Any] | None:
         row = self.conn.execute(
-            _VERDICT_HANDOFF_STATE_SQL,
-            (int(deadline_ms), _HANDOFF_STATE_LIMIT, int(deadline_ms), _HANDOFF_STATE_LIMIT),
+            "SELECT * FROM news_delivery_queue WHERE event_id = %s AND kind = %s",
+            (event_id, kind),
         ).fetchone()
-        return {
-            "pending": int(row["pending"] or 0) if row else 0,
-            "oldest_pending_at_ms": int(row["oldest_pending_at_ms"])
-            if row and row["oldest_pending_at_ms"] is not None
-            else None,
-            "expired": int(row["expired"] or 0) if row else 0,
-        }
+        return dict(row) if row else None
 
     def begin_delivery(self, *, event_id: str, kind: str, card: Mapping[str, Any], now_ms: int) -> str:
         """Returns 'new' when this process owns the send, otherwise the existing state."""

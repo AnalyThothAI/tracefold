@@ -17,13 +17,11 @@ DLX: Final = "news.dlx"
 
 Q_RAW: Final = "news.raw"
 Q_TRIAGE: Final = "news.triage"
-Q_DELIVER: Final = "news.deliver"
 Q_DEAD: Final = "news.dead"
 
 RK_RAW_LIVE: Final = "raw.opennews.{strategy_id}"
 RK_RAW_RECOVERY: Final = "raw.recovery.{strategy_id}"
 RK_EVENT: Final = "event.{dedupe_family}.{queue_priority}"
-RK_VERDICT_PUSH: Final = "verdict.push"
 
 # RabbitMQ 4.3 quorum queues count deliveries themselves; both headers below are broker-written and
 # read-only for Tracefold. `x-delivery-count` counts only counted failures and is absent on the first
@@ -36,7 +34,11 @@ ACQUIRED_COUNT_HEADER: Final = "x-acquired-count"
 _BODY_FIELDS: Final = frozenset({"schema_version", "kind", "message_id", "trace_id", "occurred_at_ms", "payload"})
 _IDENTIFIER_MAX_BYTES: Final = 128
 
-MessageKind = Literal["raw", "event", "verdict"]
+# Two kinds, and both are still published. A push Verdict's handoff to Delivery is a
+# `news_delivery_queue` row rather than a message, so `verdict` is not a kind this bus carries any
+# more -- and a `news.dead` envelope from before that cut can no longer be decoded, which is why the
+# deploy runbook drains the dead-letter queue of them first (#598 D2).
+MessageKind = Literal["raw", "event"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,7 +102,7 @@ def decode_body(body: bytes, *, routing_key: str, priority: int, headers: Mappin
     if set(raw) != _BODY_FIELDS:
         raise BusDecodeError("news_bus_fields_invalid")
     kind = raw.get("kind")
-    if kind not in {"raw", "event", "verdict"}:
+    if kind not in {"raw", "event"}:
         raise BusDecodeError("news_bus_kind_invalid")
     payload = raw.get("payload")
     if not isinstance(payload, dict) or _has_nonfinite(payload):
@@ -191,13 +193,11 @@ __all__ = [
     "DLX",
     "EXCHANGE",
     "Q_DEAD",
-    "Q_DELIVER",
     "Q_RAW",
     "Q_TRIAGE",
     "RK_EVENT",
     "RK_RAW_LIVE",
     "RK_RAW_RECOVERY",
-    "RK_VERDICT_PUSH",
     "BrokerBackpressure",
     "BrokerPublishFailure",
     "BrokerUnavailable",

@@ -22,7 +22,6 @@ from tracefold.app.workers.wiring.database import WorkerNewsDatabase
 from tracefold.news.bus import (
     RK_RAW_LIVE,
     RK_RAW_RECOVERY,
-    RK_VERDICT_PUSH,
     BusMessage,
     PermanentError,
     TransientError,
@@ -31,17 +30,10 @@ from tracefold.news.bus import (
 )
 from tracefold.news.models import ADMITTED_ADMISSIONS, TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.pipeline.admission import DeduperConsumer
-from tracefold.news.pipeline.delivery import DelivererConsumer
+from tracefold.news.pipeline.delivery import DelivererLoop
 from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.triage import TriageConsumer
 from tracefold.news.program.runtime import PROGRAM_VERSION
-from tracefold.news.storage.decisions import (
-    _HANDOFF_STATE_LIMIT as _VERDICT_HANDOFF_STATE_LIMIT,
-)
-from tracefold.news.storage.decisions import (
-    _VERDICT_HANDOFF_STATE_SQL,
-    UNPUBLISHED_VERDICT_CANDIDATES_SQL,
-)
 from tracefold.news.storage.events import (
     _EVENT_HANDOFF_STATE_SQL,
     UNPUBLISHED_EVENT_CANDIDATES_SQL,
@@ -200,9 +192,8 @@ def _triage(conn: Any, bus: FakeBus, *, judge: Any = None) -> TriageConsumer:
     )
 
 
-def _deliverer(conn: Any, bus: FakeBus) -> DelivererConsumer:
-    deliverer = DelivererConsumer(
-        bus=bus,
+def _deliverer(conn: Any) -> DelivererLoop:
+    deliverer = DelivererLoop(
         db=FakeWorkerDatabase(conn),
         sender=None,
         finite_operations=InlineFiniteOperations(),
@@ -544,10 +535,14 @@ def test_triage_without_model_is_fail_closed_and_only_objective_guards_push(conn
     assert weak_row["final_decision"] == "drop"
     assert weak_row["published_at_ms"] is None
 
-    routing = [(m.routing_key, m.payload["event_id"]) for m in bus.published]
-    assert routing == [(RK_VERDICT_PUSH, strong["event_id"])]  # one push lane; escalate is loudness, not a second lane
-    assert bus.published[0].message_id == f"push:{strong['event_id']}"
-    assert bus.published[0].payload["kind"] == "first"
+    # One card owed, queued in the verdict's own transaction; escalate is loudness, not a second lane.
+    assert bus.published == []
+    queued = conn.execute(
+        "SELECT event_id, kind, state, attempts FROM news_delivery_queue ORDER BY event_id"
+    ).fetchall()
+    assert [dict(row) for row in queued] == [
+        {"event_id": strong["event_id"], "kind": "first", "state": "pending", "attempts": 0}
+    ]
     context = conn.execute(
         "SELECT context_line, storyline_key FROM news_events WHERE event_id = %s", (strong["event_id"],)
     ).fetchone()
@@ -558,8 +553,8 @@ def test_triage_without_model_is_fail_closed_and_only_objective_guards_push(conn
     assert conn.execute("SELECT count(*) AS n FROM news_verdicts").fetchone()["n"] == 2
 
 
-def test_janitor_repairs_both_handoffs_after_confirmed_publish_marker_failure(conn) -> None:
-    event_id, policy_version = _ensure_handoff_facts(conn)
+def test_janitor_repairs_the_event_handoff_after_a_confirmed_publish_marker_failure(conn) -> None:
+    event_id, _policy_version = _ensure_handoff_facts(conn)
     stamp = now_ms()
     conn.execute(
         "UPDATE news_events SET opened_at_ms = %s, published_at_ms = NULL WHERE event_id = %s",
@@ -590,81 +585,14 @@ def test_janitor_repairs_both_handoffs_after_confirmed_publish_marker_failure(co
     ]
     assert event_marker is not None
 
-    conn.execute(
-        """
-        UPDATE news_verdicts SET created_at_ms = %s, published_at_ms = NULL
-         WHERE event_id = %s AND stage = 'triage' AND policy_version = %s
-        """,
-        (stamp - 60_000, event_id, policy_version),
-    )
-    conn.commit()
-    first_verdict_bus = FakeBus()
-    failing_verdict_db = FailOnceWorkerDatabase(conn, fail_once={"news_triage_mark_published"})
-    first_verdict = asyncio.run(
-        JanitorLoop(
-            db=failing_verdict_db,
-            cold_db=failing_verdict_db,
-            bus=first_verdict_bus,
-        ).repair_verdict_handoffs()
-    )
-    assert first_verdict == 1
-    assert (
-        conn.execute(
-            """
-        SELECT published_at_ms FROM news_verdicts
-         WHERE event_id = %s AND stage = 'triage' AND policy_version = %s
-        """,
-            (event_id, policy_version),
-        ).fetchone()["published_at_ms"]
-        is None
-    )
-
-    second_verdict_bus = FakeBus()
-    verdict_db = FakeWorkerDatabase(conn)
-    second_verdict = asyncio.run(
-        JanitorLoop(db=verdict_db, cold_db=verdict_db, bus=second_verdict_bus).repair_verdict_handoffs()
-    )
-    assert second_verdict == 1
-    assert first_verdict_bus.published[0].message_id == second_verdict_bus.published[0].message_id == f"push:{event_id}"
-    assert (
-        first_verdict_bus.published[0].payload
-        == second_verdict_bus.published[0].payload
-        == {
-            "event_id": event_id,
-            "kind": "first",
-        }
-    )
-    verdict_marker = conn.execute(
-        """
-        SELECT published_at_ms FROM news_verdicts
-         WHERE event_id = %s AND stage = 'triage' AND policy_version = %s
-        """,
-        (event_id, policy_version),
-    ).fetchone()["published_at_ms"]
-    assert verdict_marker is not None
-
     repos = repositories_for_connection(conn)
     with repos.transaction():
         assert repos.news.mark_event_published(event_id=event_id, now_ms=int(event_marker) + 1) is False
-        assert (
-            repos.news.mark_verdict_published(
-                event_id=event_id,
-                stage="triage",
-                policy_version=policy_version,
-                now_ms=int(verdict_marker) + 1,
-            )
-            is False
-        )
     unchanged = conn.execute(
-        """
-        SELECT e.published_at_ms AS event_marker, v.published_at_ms AS verdict_marker
-          FROM news_events e
-          JOIN news_verdicts v ON v.event_id = e.event_id AND v.stage = 'triage' AND v.policy_version = %s
-         WHERE e.event_id = %s
-        """,
-        (policy_version, event_id),
+        "SELECT published_at_ms AS event_marker FROM news_events WHERE event_id = %s",
+        (event_id,),
     ).fetchone()
-    assert unchanged["event_marker"] == event_marker and unchanged["verdict_marker"] == verdict_marker
+    assert unchanged["event_marker"] == event_marker
 
 
 def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(conn) -> None:
@@ -748,15 +676,6 @@ def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(
         (stamp - 120_000 - _EVENT_HANDOFF_STATE_LIMIT,),
     )
     conn.execute(
-        """
-        UPDATE news_verdicts verdict SET published_at_ms = NULL
-          FROM news_events event
-         WHERE event.event_id = verdict.event_id
-           AND event.event_id LIKE 'handoff-scale-%%' AND event.created_at_ms >= %s
-        """,
-        (stamp - 120_000 - _VERDICT_HANDOFF_STATE_LIMIT,),
-    )
-    conn.execute(
         "UPDATE news_events SET opened_at_ms = %s, published_at_ms = NULL WHERE event_id = %s",
         (stamp - 60_000, event_id),
     )
@@ -779,13 +698,6 @@ def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(
             (stamp - 15_000, stamp - 30 * 60_000, 50),
         ).fetchall()
     )
-    verdict_plan = "\n".join(
-        row["QUERY PLAN"]
-        for row in conn.execute(
-            "EXPLAIN (ANALYZE, BUFFERS) " + UNPUBLISHED_VERDICT_CANDIDATES_SQL,
-            (stamp - 15_000, stamp - 30 * 60_000, 50),
-        ).fetchall()
-    )
     event_state_plan = "\n".join(
         row["QUERY PLAN"]
         for row in conn.execute(
@@ -798,24 +710,8 @@ def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(
             ),
         ).fetchall()
     )
-    verdict_state_plan = "\n".join(
-        row["QUERY PLAN"]
-        for row in conn.execute(
-            "EXPLAIN (ANALYZE, BUFFERS) " + _VERDICT_HANDOFF_STATE_SQL,
-            (
-                stamp - 30 * 60_000,
-                _VERDICT_HANDOFF_STATE_LIMIT,
-                stamp - 30 * 60_000,
-                _VERDICT_HANDOFF_STATE_LIMIT,
-            ),
-        ).fetchall()
-    )
     repos = repositories_for_connection(conn)
     _, event_state = repos.news.event_handoff_scan(
-        older_than_ms=stamp - 15_000,
-        newer_than_ms=stamp - 30 * 60_000,
-    )
-    _, verdict_state = repos.news.verdict_handoff_scan(
         older_than_ms=stamp - 15_000,
         newer_than_ms=stamp - 30 * 60_000,
     )
@@ -840,21 +736,12 @@ def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(
     assert any(index in event_plan for index in ("ix_news_events_unpublished", "ix_news_events_current_opened")), (
         event_plan
     )
-    assert any(index in verdict_plan for index in ("ix_news_verdicts_unpublished_delivery", "news_verdicts_pkey")), (
-        verdict_plan
-    )
     assert any(
         index in event_state_plan for index in ("ix_news_events_unpublished", "ix_news_events_current_opened")
     ), event_state_plan
-    assert any(
-        index in verdict_state_plan for index in ("ix_news_verdicts_unpublished_delivery", "news_verdicts_pkey")
-    ), verdict_state_plan
     assert "Seq Scan on news_events" not in event_plan
-    assert "Seq Scan on news_verdicts" not in verdict_plan
     assert "Seq Scan on news_events" not in event_state_plan
-    assert "Seq Scan on news_verdicts" not in verdict_state_plan
     assert event_state["pending"] == _EVENT_HANDOFF_STATE_LIMIT
-    assert verdict_state["pending"] == _VERDICT_HANDOFF_STATE_LIMIT
 
 
 def test_handoff_scan_bounds_keep_the_deadline_in_pending_until_strict_expiry(conn) -> None:
@@ -896,39 +783,6 @@ def test_handoff_scan_bounds_keep_the_deadline_in_pending_until_strict_expiry(co
     )
     assert rows == [] and state["expired"] >= 1
 
-    conn.execute(
-        """
-        UPDATE news_verdicts SET created_at_ms = %s, published_at_ms = NULL
-         WHERE event_id = %s AND stage = 'triage' AND policy_version = %s
-        """,
-        (deadline, event_id, policy_version),
-    )
-    conn.commit()
-    rows, state = repos.news.verdict_handoff_scan(
-        older_than_ms=min_age_boundary,
-        newer_than_ms=deadline,
-        limit=1,
-    )
-    assert rows[0]["event_id"] == event_id
-    assert rows[0]["policy_version"] == policy_version
-    assert rows[0]["created_at_ms"] == deadline
-    assert {"queue_priority", "trace_id"} <= rows[0].keys()
-    assert state["pending"] >= 1
-
-    conn.execute(
-        """
-        UPDATE news_verdicts SET created_at_ms = %s
-         WHERE event_id = %s AND stage = 'triage' AND policy_version = %s
-        """,
-        (deadline - 1, event_id, policy_version),
-    )
-    conn.commit()
-    rows, state = repos.news.verdict_handoff_scan(
-        older_than_ms=min_age_boundary,
-        newer_than_ms=deadline,
-        limit=1,
-    )
-    assert rows == [] and state["expired"] >= 1
     conn.execute(
         "UPDATE news_events SET published_at_ms = %s WHERE event_id = %s",
         (stamp, event_id),
@@ -1083,8 +937,7 @@ def test_triage_materialization_and_canonical_json_run_outside_real_transactions
 
 
 def test_deliverer_without_sender_settles_terminal_delivery_unavailable(conn) -> None:
-    bus = FakeBus()
-    deliverer = _deliverer(conn, bus)
+    deliverer = _deliverer(conn)
     row = conn.execute(
         # Any delivering decision: #77 made the fixture's high-priority verdict a `push` rather than an
         # `escalate`, and the Deliverer treats both identically — escalate is loudness, not a second lane.
@@ -1097,22 +950,14 @@ def test_deliverer_without_sender_settles_terminal_delivery_unavailable(conn) ->
     event_id = str(row["event_id"])
     stamp = now_ms()
 
-    def _push(event: str) -> BusMessage:
-        return BusMessage(
-            kind="verdict",
-            message_id=f"push:{event}",
-            routing_key=RK_VERDICT_PUSH,
-            payload={"event_id": event, "kind": "first"},
-            trace_id=new_trace_id(),
-            occurred_at_ms=stamp,
-        )
+    del stamp
 
     async def scenario() -> None:
-        await deliverer.handle(_push(event_id))
-        await deliverer.handle(_push(event_id))  # redelivery: existing row keeps its terminal state
-        await deliverer.handle(_push(str(dropped["event_id"])))  # drop verdict never creates a delivery
+        await deliverer.deliver(event_id=event_id, kind="first")
+        await deliverer.deliver(event_id=event_id, kind="first")  # re-claim: the row keeps its terminal state
+        await deliverer.deliver(event_id=str(dropped["event_id"]), kind="first")  # a drop owes no card
         with pytest.raises(PermanentError, match="news_delivery_inputs_missing"):
-            await deliverer.handle(_push("does-not-exist"))
+            await deliverer.deliver(event_id="does-not-exist", kind="first")
 
     asyncio.run(scenario())
     conn.commit()
@@ -1130,7 +975,6 @@ def test_deliverer_without_sender_settles_terminal_delivery_unavailable(conn) ->
         }
     ]
     assert deliveries[0]["settled_at_ms"] is not None
-    assert bus.published == []
     repos = repositories_for_connection(conn)
     detail = repos.news.event_detail(event_id)
     assert detail is not None and detail["deliveries"][0]["state"] == "terminal"

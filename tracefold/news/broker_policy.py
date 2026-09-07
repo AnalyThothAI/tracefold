@@ -16,7 +16,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Final
 
-from .bus import DLX, Q_DEAD, Q_DELIVER, Q_RAW, Q_TRIAGE
+from .bus import DLX, Q_DEAD, Q_RAW, Q_TRIAGE
 
 # --- retry contract -------------------------------------------------------------------------------
 # Frozen from the pre-#400 TTL lane so the migration changes the mechanism, not the observable timing.
@@ -52,10 +52,10 @@ BROKER_BYTE_BUDGET: Final = 96 * MIB
 # Measured 2026-08-30 on the production broker and a 7-day PostgreSQL window. Envelope sizes are the
 # broker's own `message_bytes` (body plus AMQP properties and headers), rounded up; the raw figure is
 # the p99 of real published frames, and the two small queues carry a fixed-shape `{event_id}` payload.
-P99_ENVELOPE_BYTES: Final[dict[str, int]] = {Q_RAW: 2048, Q_TRIAGE: 512, Q_DELIVER: 512, Q_DEAD: 2048}
+P99_ENVELOPE_BYTES: Final[dict[str, int]] = {Q_RAW: 2048, Q_TRIAGE: 512, Q_DEAD: 2048}
 # Worst single minute observed over that window. `news.raw`'s peak is a Recovery backfill, which is
 # itself bounded to 1,000 published messages per 30-second run.
-PEAK_MESSAGES_PER_MINUTE: Final[dict[str, int]] = {Q_RAW: 2882, Q_TRIAGE: 111, Q_DELIVER: 7}
+PEAK_MESSAGES_PER_MINUTE: Final[dict[str, int]] = {Q_RAW: 2882, Q_TRIAGE: 111}
 # `news.dead` is terminal evidence rather than arrival-driven, so it is sized as a message count an
 # operator can still page through instead of as a backlog duration.
 DEAD_LETTER_EVIDENCE_MESSAGES: Final = 8192
@@ -63,7 +63,7 @@ DEAD_LETTER_EVIDENCE_MESSAGES: Final = 8192
 # The broker this contract was measured against and the version the definitions document declares.
 RABBIT_VERSION: Final = "4.3.5"
 
-BUSINESS_QUEUES: Final = (Q_RAW, Q_TRIAGE, Q_DELIVER)
+BUSINESS_QUEUES: Final = (Q_RAW, Q_TRIAGE)
 POLICY_QUEUES: Final = (*BUSINESS_QUEUES, Q_DEAD)
 POLICY_PRIORITY: Final = 10
 
@@ -86,9 +86,7 @@ def max_length_bytes(queue: str) -> int:
     return max(MIN_QUEUE_BYTES, _ceil_power_of_two_mib(computed))
 
 
-MAX_LENGTH_BYTES: Final[dict[str, int]] = {
-    queue: max_length_bytes(queue) for queue in (Q_RAW, Q_TRIAGE, Q_DELIVER, Q_DEAD)
-}
+MAX_LENGTH_BYTES: Final[dict[str, int]] = {queue: max_length_bytes(queue) for queue in (Q_RAW, Q_TRIAGE, Q_DEAD)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +118,7 @@ def _policy_name(name_prefix: str, name: str) -> str:
 
 
 def policies(*, name_prefix: str = "", delay_ms: int = RETRY_DELAY_MS) -> tuple[BrokerPolicy, ...]:
-    """The four policies that configure one News topology.
+    """The three policies that configure one News topology.
 
     Each policy names exactly one queue, so a prefixed test topology and the production topology never
     contend for the single policy RabbitMQ applies to a queue.
@@ -166,7 +164,7 @@ def policies(*, name_prefix: str = "", delay_ms: int = RETRY_DELAY_MS) -> tuple[
 def definitions_document(*, name_prefix: str = "", vhost: str = "/", delay_ms: int = RETRY_DELAY_MS) -> dict[str, Any]:
     """A RabbitMQ definitions document carrying only these policies.
 
-    Importing it through the management API's definitions endpoint adds or replaces the four policies
+    Importing it through the management API's definitions endpoint adds or replaces the three policies
     and leaves users, vhosts, permissions, exchanges and queues untouched.
     """
 

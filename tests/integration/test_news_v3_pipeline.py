@@ -35,6 +35,9 @@ NEWS_TABLES = {
     "news_event_assets",
     "news_verdicts",
     "news_deliveries",
+    # #598 D2: the push Verdict's handoff to Delivery, written in the verdict's own
+    # transaction and claimed with `FOR UPDATE SKIP LOCKED`. Work still owed, never a ledger.
+    "news_delivery_queue",
     "news_reviews",
     "news_external_miss_snapshots",
     "news_learning_artifacts",
