@@ -376,7 +376,8 @@ SELECT e.kind, o.horizon, o.reference_kind,
 
 # --- the console read models (#572 PR-3) ----------------------------------------------------------
 #
-# `/api/news/wallets` is four bounded statements and `/api/news/wallets/cards` is one. Each of them
+# `/api/news/wallets` is four bounded statements; `/api/news/wallets/cards` adds a second read when
+# both wallet and token are selected. Each of them
 # starts at a typed fact table on an indexed field and joins to the Item only where the Item is what is
 # being asked about, which is #570 A3's shape.
 
@@ -415,6 +416,14 @@ SELECT e.kind,
  WHERE e.event_at_ms >= %(from_ms)s
  GROUP BY e.kind
  ORDER BY e.kind
+"""
+
+WALLET_POSITION_FILLS_SQL: Final = """
+SELECT chain_id, tx_hash, log_index, block_number, wallet, token, token_symbol,
+       token_decimals, kind, amount_raw::text AS amount_raw, usd::text AS usd, event_at_ms
+  FROM news_market_wallet_fills
+ WHERE wallet = %s AND token = %s AND event_at_ms >= %s AND event_at_ms < %s
+ ORDER BY block_number DESC, log_index DESC LIMIT %s
 """
 
 # One bounded page with outcome-owned observation references; no fallback to historical entry prices.
@@ -1033,11 +1042,7 @@ class ChainTapeStorage:
     ) -> list[dict[str, Any]]:
         """All retained movements for one researched position, independent of alert thresholds."""
         rows = self.conn.execute(
-            """SELECT chain_id, tx_hash, log_index, block_number, wallet, token, token_symbol,
-                      token_decimals, kind, amount_raw::text AS amount_raw, usd::text AS usd, event_at_ms
-                 FROM news_market_wallet_fills
-                WHERE wallet = %s AND token = %s AND event_at_ms >= %s AND event_at_ms < %s
-                ORDER BY block_number DESC, log_index DESC LIMIT %s""",
+            WALLET_POSITION_FILLS_SQL,
             (wallet_address, token_address, int(from_ms), int(to_ms), max(1, min(200, int(limit)))),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -1200,6 +1205,7 @@ __all__ = [
     "WALLET_CARDS_BY_KIND_SQL",
     "WALLET_CARDS_SQL",
     "WALLET_FILLS_BY_KIND_SQL",
+    "WALLET_POSITION_FILLS_SQL",
     "WALLET_ROSTER_ROWS_SQL",
     "WALLET_TAPE_STATE_SQL",
     "ChainTapeStateRow",

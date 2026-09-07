@@ -151,10 +151,7 @@ describe("NewsWalletsPage", () => {
       "href",
       `https://robinhoodchain.blockscout.com/tx/0x${"2".repeat(64)}`,
     );
-    expect(screen.getByRole("button", { name: "买入" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+    expect(screen.getByRole("button", { name: "买入" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.queryByRole("link", { name: "减仓" })).not.toBeInTheDocument();
   });
 

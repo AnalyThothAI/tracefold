@@ -20,6 +20,7 @@ from .chain_tape import (
     WALLET_CARDS_BY_KIND_SQL,
     WALLET_CARDS_SQL,
     WALLET_FILLS_BY_KIND_SQL,
+    WALLET_POSITION_FILLS_SQL,
     WALLET_ROSTER_ROWS_SQL,
     WALLET_TAPE_STATE_SQL,
 )
@@ -329,7 +330,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
-        # #572 PR-3. The wallet console page's five statements, exactly as the two routes execute them.
+        # The wallet console page's six statements, including #614's optional wallet/token timeline.
         # They are registered because they are public reads over a table the tape appends to every two
         # seconds -- the one place in this flow where growth reaches a reader rather than a log line.
         ReadQuerySpec(
@@ -363,9 +364,23 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="news_wallet_cards",
             sql=WALLET_CARDS_SQL,
-            params={"from_ms": day_ago, "to_ms": int(now_ms), "limit": 100},
+            params={
+                "from_ms": day_ago,
+                "to_ms": int(now_ms),
+                "limit": 100,
+                "kind": None,
+                "wallet_address": None,
+                "token_address": None,
+            },
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_wallet_position_fills",
+            sql=WALLET_POSITION_FILLS_SQL,
+            params=("0x" + "1" * 40, "0x" + "2" * 40, day_ago, int(now_ms), 100),
+            max_read_return_amplification=20.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
             name="news_market_group_timeline",

@@ -6,8 +6,15 @@ import pytest
 from psycopg import OperationalError
 
 from tracefold.app.workers import root as workers_module
-from tracefold.app.workers.runtime import CHAIN_TAPE, MARKET_NOTIFICATIONS, CapabilityStates
+from tracefold.app.workers.runtime import (
+    CHAIN_TAPE,
+    MARKET_NOTIFICATIONS,
+    WALLET_DIGEST,
+    WALLET_RESEARCH,
+    CapabilityStates,
+)
 from tracefold.app.workers.task_contract import WorkerTask, worker_business_tasks
+from tracefold.app.workers.wiring.chain_tape import ChainTapeComposition
 from tracefold.app.workers.wiring.components import _capability_fault_reason
 from tracefold.app.workers.wiring.news import run_market_notifications
 from tracefold.news.bus import BrokerUnavailable
@@ -134,7 +141,9 @@ def test_every_news_ingestion_task_is_foundational_and_every_optional_one_owns_i
         news_pipeline=_AllStagesPipeline(),
         signal_lane=None,
         market_notifications=_StubMarketNotifications(),
-        chain_tape=_StubChainTape(),
+        chain_tape=ChainTapeComposition(
+            loop=_StubChainTape(), research=_StubChainTape(), digest=_StubChainTape(), poll_seconds=2.0
+        ),
     )
     by_name = {task.name: task for task in tasks}
 
@@ -150,6 +159,10 @@ def test_every_news_ingestion_task_is_foundational_and_every_optional_one_owns_i
     # information entry above is unchanged.
     assert by_name["news-chain-tape"].capability == CHAIN_TAPE
     assert by_name["news-chain-tape"].foundational is False
+    assert by_name["news-wallet-research"].capability == WALLET_RESEARCH
+    assert by_name["news-wallet-digest"].capability == WALLET_DIGEST
+    assert by_name["news-wallet-research"].foundational is False
+    assert by_name["news-wallet-digest"].foundational is False
     optional = [task.capability for task in tasks if not task.foundational]
     assert MARKET_NOTIFICATIONS in optional
     assert CHAIN_TAPE in optional
