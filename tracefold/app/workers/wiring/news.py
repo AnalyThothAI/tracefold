@@ -560,7 +560,13 @@ def _news_push_sender(settings: Settings) -> _ComposedPushSender:
         except (SecretFileError, OSError):
             return _ComposedPushSender(reason="news_item_push_telegram_bot_token_unavailable")
         try:
-            return _ComposedPushSender(sender=TelegramNewsPushSender(bot_token=bot_token, chat_id=chat_id))
+            return _ComposedPushSender(
+                sender=TelegramNewsPushSender(
+                    bot_token=bot_token,
+                    chat_id=chat_id,
+                    proxy_url=settings.news.push.telegram_proxy_url,
+                )
+            )
         except ValueError:
             # The private-channel shape now lives only here, where the code that talks to Telegram
             # keeps it. `Settings` reads the operator's number and stops there (#562 §5 row 8).

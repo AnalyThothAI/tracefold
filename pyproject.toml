@@ -10,7 +10,7 @@ dependencies = [
     # compatible version is DSPy's transitive responsibility rather than a second direct project contract.
     "dspy==3.3.1",
     "fastapi>=0.115.0",
-    "httpx>=0.27.0",
+    "httpx[socks]>=0.27.0",
     "loguru>=0.7.2",
     "nautilus_trader==1.231.0",
     "prometheus-client>=0.22.0",

@@ -22,13 +22,21 @@ import httpx
 import pytest
 
 from tracefold.integrations.telegram import (
+    _TELEGRAM_RESPONSE_MAX_BYTES,
     _TELEGRAM_TEXT_MAX,
+    _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS,
     TelegramDeliveryError,
     TelegramNewsPushSender,
     _fit_telegram_message,
     _plain_html_text,
 )
-from tracefold.news import ReaderDeliveryPresentation, ReaderMarketMovement, ReaderTradeTarget
+from tracefold.news import (
+    COMMIT_PHASE_NOT_SENT,
+    COMMIT_PHASE_UNKNOWN,
+    ReaderDeliveryPresentation,
+    ReaderMarketMovement,
+    ReaderTradeTarget,
+)
 from tracefold.news.delivery import news_reader_card
 from tracefold.news.feishu_card import feishu_card
 from tracefold.news.market_notifications import MarketObservation, MarketTrack, market_reader_card
@@ -207,7 +215,9 @@ def test_sender_posts_scannable_sections_and_links_the_normalized_source_text() 
     assert observed["link_preview_options"] == {"is_disabled": True}
     assert "reply_markup" not in observed
     assert methods == ["getChat", "getMe", "getChatMember", "sendMessage"]
-    assert all(total <= 5.0 for total in timeout_totals)
+    # The phases of one call run in sequence, so the four ceilings together are what has to fit
+    # inside the budget the caller is holding -- not each of them on its own (#604 N2).
+    assert all(total <= _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS for total in timeout_totals)
     assert receipt["provider"] == "telegram"
     assert receipt["message_id"] == 42
     assert len(str(receipt["target_sha256"])) == 64
@@ -1180,73 +1190,223 @@ def test_http_client_info_logs_never_include_the_bot_token(caplog: pytest.LogCap
     assert BOT_TOKEN not in caplog.text
 
 
+class _RecordedInnerTransport(httpx.BaseTransport):
+    """Stands in for the `httpx.HTTPTransport` the production transport delegates to.
+
+    It answers the way that transport answers -- a streaming response -- so what this exercises is the
+    real handoff and not a shape only a test produces.
+    """
+
+    def __init__(self) -> None:
+        self.kwargs: dict[str, Any] = {}
+        self.paths: list[str] = []
+        self.closed = False
+        self.failure: Exception | None = None
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        self.paths.append(request.url.path)
+        if self.failure is not None:
+            raise self.failure
+        method = request.url.path.rsplit("/", maxsplit=1)[-1]
+        results: dict[str, dict[str, object]] = {
+            "getChat": {"id": CHANNEL_ID, "type": "channel"},
+            "getMe": {"id": BOT_ID, "is_bot": True},
+            "getChatMember": {
+                "status": "administrator",
+                "user": {"id": BOT_ID, "is_bot": True},
+                "can_post_messages": True,
+            },
+            "sendMessage": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}},
+        }
+        body = json.dumps({"ok": True, "result": results[method]}).encode()
+        return httpx.Response(200, headers={"content-type": "application/json"}, content=iter([body]))
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _inner_transport(monkeypatch: pytest.MonkeyPatch) -> _RecordedInnerTransport:
+    """Make the `httpx.HTTPTransport` the sender builds for itself observable."""
+
+    recorded = _RecordedInnerTransport()
+
+    def build(**kwargs: Any) -> _RecordedInnerTransport:
+        recorded.kwargs = kwargs
+        return recorded
+
+    monkeypatch.setattr(httpx, "HTTPTransport", build)
+    return recorded
+
+
 def test_production_transport_injects_the_bot_token_only_in_the_wire_path(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    wire_paths: list[str] = []
-    connections: list[Any] = []
+    """The token exists only below httpx's URL layer -- which is the whole reason this transport exists.
 
-    class FakeResponse:
-        status = 200
-        reason = "OK"
+    What httpx logs, and what it puts in an exception repr, is the outer request, so the outer request
+    may never carry the credential. The transport underneath is httpx's own now (#604 N2), so this
+    reads the request it was actually handed rather than a hand-rolled connection's arguments.
+    """
 
-        def __init__(self, payload: dict[str, object]) -> None:
-            self.payload = payload
-
-        @staticmethod
-        def getheaders() -> list[tuple[str, str]]:
-            return [("content-type", "application/json")]
-
-        def read(self, _limit: int) -> bytes:
-            return json.dumps({"ok": True, "result": self.payload}).encode()
-
-    class FakeHTTPSConnection:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            self.response = FakeResponse({})
-            self.connected = False
-            connections.append(self)
-
-        def connect(self) -> None:
-            # #553 PR-2 made connecting its own step: a failure here provably wrote no request bytes,
-            # which is what lets a caller retry it without risking a second notification.
-            self.connected = True
-
-        def request(self, _verb: str, path: str, *, body: bytes, headers: dict[str, str]) -> None:
-            del body, headers
-            assert self.connected, "the transport must connect before it writes request bytes"
-            wire_paths.append(path)
-            method = path.rsplit("/", maxsplit=1)[-1]
-            payloads: dict[str, dict[str, object]] = {
-                "getChat": {"id": CHANNEL_ID, "type": "channel"},
-                "getMe": {"id": BOT_ID, "is_bot": True},
-                "getChatMember": {
-                    "status": "administrator",
-                    "user": {"id": BOT_ID, "is_bot": True},
-                    "can_post_messages": True,
-                },
-                "sendMessage": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}},
-            }
-            self.response = FakeResponse(payloads[method])
-
-        def getresponse(self) -> FakeResponse:
-            return self.response
-
-        def close(self) -> None:
-            return None
-
-    monkeypatch.setattr("tracefold.integrations.telegram.HTTPSConnection", FakeHTTPSConnection)
+    inner = _inner_transport(monkeypatch)
+    caplog.set_level(logging.INFO, logger="httpx")
     sender = TelegramNewsPushSender(bot_token=BOT_TOKEN, chat_id=CHANNEL_ID)
 
     sender.prepare()
     _send(sender, _card())
 
-    assert wire_paths == [
+    assert inner.paths == [
         f"/bot{BOT_TOKEN}/getChat",
         f"/bot{BOT_TOKEN}/getMe",
         f"/bot{BOT_TOKEN}/getChatMember",
         f"/bot{BOT_TOKEN}/sendMessage",
     ]
-    assert len(connections) == len(wire_paths)
+    assert BOT_TOKEN not in caplog.text
+    assert "https://api.telegram.org/sendMessage" in caplog.text
+    sender.close()
+    assert inner.closed is True
+
+
+def test_the_configured_proxy_is_the_route_the_transport_takes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#604 N2: without this the channel is unreachable from a host that needs a proxy, and silently so.
+
+    httpx reads `HTTPS_PROXY` only for a client that builds its own transport --
+    `allow_env_proxies = trust_env and transport is None` -- and this sender always supplies one, so
+    the operator's route has to arrive at the transport underneath explicitly or not at all.
+    """
+
+    inner = _inner_transport(monkeypatch)
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        proxy_url="socks5h://127.0.0.1:1080",
+    )
+
+    sender.prepare()
+
+    assert inner.kwargs["proxy"] == "socks5h://127.0.0.1:1080"
+    assert inner.kwargs["verify"] is True
+
+
+def test_no_configured_proxy_leaves_the_transport_reaching_telegram_directly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inner = _inner_transport(monkeypatch)
+    sender = TelegramNewsPushSender(bot_token=BOT_TOKEN, chat_id=CHANNEL_ID)
+
+    sender.prepare()
+
+    assert inner.kwargs["proxy"] is None
+
+
+def test_a_connect_failure_is_the_one_failure_a_retry_cannot_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No connection means no request byte, which is what lets the caller try again (#553, #604 N2)."""
+
+    inner = _inner_transport(monkeypatch)
+    inner.failure = httpx.ConnectError("connection refused")
+    sender = TelegramNewsPushSender(bot_token=BOT_TOKEN, chat_id=CHANNEL_ID)
+
+    with pytest.raises(TelegramDeliveryError) as failure:
+        sender.prepare()
+
+    assert failure.value.code == "news_delivery_telegram_preflight_transport_failed"
+    assert failure.value.commit_phase == COMMIT_PHASE_NOT_SENT
+    assert failure.value.retryable is True
+
+
+def test_a_read_timeout_after_the_write_cannot_claim_the_card_was_not_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Telegram may hold the message. Calling this `not_sent` is how a retry double-notifies a reader."""
+
+    inner = _inner_transport(monkeypatch)
+    sender = TelegramNewsPushSender(bot_token=BOT_TOKEN, chat_id=CHANNEL_ID)
+    sender.prepare()
+    inner.failure = httpx.ReadTimeout("timed out")
+
+    with pytest.raises(TelegramDeliveryError) as failure:
+        _send(sender, _card())
+
+    assert failure.value.code == "news_delivery_telegram_transport_failed"
+    assert failure.value.commit_phase == COMMIT_PHASE_UNKNOWN
+    assert failure.value.retryable is False
+
+
+def test_a_response_larger_than_the_bound_is_refused_while_it_streams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing this channel asks for has a megabyte of answer; the bound is checked as bytes arrive."""
+
+    inner = _inner_transport(monkeypatch)
+    sender = TelegramNewsPushSender(bot_token=BOT_TOKEN, chat_id=CHANNEL_ID)
+    monkeypatch.setattr(
+        inner,
+        "handle_request",
+        lambda _request: httpx.Response(200, content=iter([b"x" * (_TELEGRAM_RESPONSE_MAX_BYTES + 1)])),
+    )
+
+    with pytest.raises(TelegramDeliveryError) as failure:
+        sender.prepare()
+
+    assert failure.value.code == "news_delivery_telegram_preflight_transport_failed"
+    # The request was written and Telegram answered; only how much it answered was refused.
+    assert failure.value.commit_phase == COMMIT_PHASE_UNKNOWN
+
+
+def test_a_flood_limit_carries_the_wait_telegram_stated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#604 N2: Telegram answers a flood limit with the exact seconds; a fixed backoff is a guess."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        return httpx.Response(
+            429,
+            json={
+                "ok": False,
+                "error_code": 429,
+                "description": "Too Many Requests: retry after 7",
+                "parameters": {"retry_after": 7},
+            },
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+    )
+    sender.prepare()
+
+    with pytest.raises(TelegramDeliveryError) as failure:
+        _send(sender, _card())
+
+    assert failure.value.code == "news_delivery_telegram_http_failed"
+    assert failure.value.status_code == 429
+    assert failure.value.commit_phase == COMMIT_PHASE_NOT_SENT
+    assert failure.value.retryable is True
+    assert failure.value.retry_after_seconds == 7.0
+
+
+def test_a_flood_limit_that_states_no_wait_carries_none() -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        return httpx.Response(429, json={"ok": False, "error_code": 429})
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+    )
+    sender.prepare()
+
+    with pytest.raises(TelegramDeliveryError) as failure:
+        _send(sender, _card())
+
+    assert failure.value.retry_after_seconds is None
 
 
 def test_target_receipt_is_keyed_and_changes_when_the_bot_token_rotates() -> None:

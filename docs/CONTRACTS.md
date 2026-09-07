@@ -142,7 +142,8 @@ run; `news.broker.name_prefix` prefixes every exchange and queue name and
 (`concurrency`, `circuit_failures`, `circuit_open_seconds`), `news.push.*`
 (`enabled`, the mutually exclusive Feishu fields `feishu_webhook_url` and
 optional `feishu_signing_secret`, or Telegram fields
-`telegram_bot_token_file` and `telegram_chat_id`, plus
+`telegram_bot_token_file`, `telegram_chat_id` and the optional
+`telegram_proxy_url`, plus
 `min_interval_seconds`), and
 `news.venues.*` (`enabled`, public-data switches `binance`, `hyperliquid`,
 `okx`, `lighter`, `bitget`, reference-only `us_reference`, and `snapshot_period_hours`), and
@@ -151,7 +152,7 @@ optional `feishu_signing_secret`, or Telegram fields
 Lexicons, prefix tables, LSH geometry, the code-owned Program registry, and
 policy versions are image state. `tracefold config` exposes only redacted booleans, counts,
 model names, and watchlist symbols; it never prints the token, broker URL,
-keys, or webhook.
+keys, webhook, or proxy URL.
 
 Push delivery is available only when `news.push.enabled` is true, exactly one
 provider is complete, and Workers is running. Feishu requires a valid HTTPS custom-bot v2 URL.
