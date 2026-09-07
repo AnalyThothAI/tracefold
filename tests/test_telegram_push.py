@@ -1259,6 +1259,8 @@ def test_production_transport_injects_the_bot_token_only_in_the_wire_path(
     """
 
     inner = _inner_transport(monkeypatch)
+    # Earlier migrations may disable already-loaded loggers through Alembic's fileConfig.
+    monkeypatch.setattr(logging.getLogger("httpx"), "disabled", False)
     caplog.set_level(logging.INFO, logger="httpx")
     sender = TelegramNewsPushSender(bot_token=BOT_TOKEN, chat_id=CHANNEL_ID)
 

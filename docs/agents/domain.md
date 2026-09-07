@@ -5,8 +5,8 @@ backend architecture map.
 
 Before changing business behavior:
 
-1. identify the owning root interface: `tracefold.news` (the only business
-   capability since the Macro hard cut, #68);
+1. identify the owning root interface: `tracefold.news` or `tracefold.trading`;
+   these sibling capabilities are composed only by `tracefold.app`;
 2. trace provider input to PostgreSQL fact, durable target or broker queue,
    current row, and public consumer;
 3. preserve the glossary embodied by persisted fact names and public

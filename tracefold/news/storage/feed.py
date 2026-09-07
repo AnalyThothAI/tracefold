@@ -245,6 +245,11 @@ class FeedStorage:
             members=member_rows,
             verdicts=timeline_verdict_rows,
             deliveries=delivery_rows,
+            delivery_queue=(
+                None
+                if any(row["kind"] == "first" for row in deliveries)
+                else self.delivery_claim(event_id=event_id, kind="first")  # type: ignore[attr-defined]
+            ),
             now_ms=int(time.time() * 1000),
         )
         latest_triage = next((dict(v) for v in reversed(verdicts) if v["stage"] == "triage"), None)
@@ -717,6 +722,7 @@ def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
         published_at_ms=row.get("published_at_ms"),
         triage=outcome_triage,
         delivery=delivery,
+        delivery_queue={"state": row.get("delivery_queue_state"), "error_code": row.get("delivery_queue_error_code")},
         now_ms=now_ms,
     )
     return {

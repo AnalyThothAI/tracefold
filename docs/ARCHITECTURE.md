@@ -14,11 +14,16 @@ publications are derived state.
 
 ```text
 OpenNews Strategy WSS
-  -> tracefold workers (RabbitMQ is the News transport plane)
-  -> PostgreSQL material facts
-  -> single-writer read models
-  -> tracefold serve
-  -> HTTP / React
+  -> RabbitMQ news.raw -> Workers admission
+       -> PostgreSQL market Item + typed fact -> market notification loop
+       -> PostgreSQL editorial Item + Event -> RabbitMQ news.triage
+            -> PostgreSQL Verdict + delivery queue row (one transaction)
+            -> Workers delivery claim -> provider -> PostgreSQL delivery receipt
+  -> PostgreSQL read projections -> tracefold serve -> HTTP / React
+
+PostgreSQL News OI projection -> App mapper -> Trading Case + Signal (one transaction)
+  -> Nautilus Runtime <- authenticated OperatorIntent in PostgreSQL
+  -> venue / reconciliation -> PostgreSQL ExecutionObservation -> HTTP / React
 ```
 
 Beside that hot path runs one strictly bounded review plane, the Price Review
@@ -53,8 +58,8 @@ telemetry, and the one authenticated bounded operator-command append. That
 append opens its own short write transaction outside the read pool and owns no
 Runtime or venue semantics. `tracefold workers` initializes the bounded external
 capability, singleton runtime status, and the RabbitMQ-driven News consumers
-when News is enabled. News consumers recover by re-consuming durable broker
-queues plus database idempotency keys. There is no database wake plane, no
+when News is enabled. Admission and Triage recover through durable broker queues
+and database idempotency keys; Delivery claims its PostgreSQL queue. There is no database wake plane, no
 projection/EDF coordinator, no CPU-process lane, and no in-memory correctness
 dependency. Provider raw frames remain inputs until normalized and persisted
 as material facts.

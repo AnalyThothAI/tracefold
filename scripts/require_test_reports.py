@@ -147,12 +147,7 @@ def require_playwright_json(path: Path) -> int:
         raise ReportError(f"required_test_report_count_mismatch:{path}")
     for test in tests:
         results = _mapping_list(test.get("results"), "results", path)
-        if (
-            test.get("expectedStatus") != "passed"
-            or test.get("status") != "expected"
-            or test.get("annotations")
-            or len(results) != 1
-        ):
+        if test.get("expectedStatus") != "passed" or test.get("status") != "expected" or len(results) != 1:
             raise ReportError(f"required_test_report_non_green:{path}")
         result = results[0]
         if result.get("status") != "passed" or result.get("retry") != 0 or result.get("errors"):

@@ -298,6 +298,9 @@ class OiRuntimeDatabaseBridge:
         )
         self._step("audit", lambda: self._flush_audit(repos))
         self._refresh_current_state(repos)
+        self._step("day_start", lambda: self._refresh_day_start(repos))
+
+    def _refresh_day_start(self, repos: RepositorySession) -> None:
         with self._lock:
             equity = self._equity
         if equity is None:
@@ -353,7 +356,7 @@ class OiRuntimeDatabaseBridge:
         except (InterfaceError, OperationalError):
             raise
         except Exception as exc:
-            reason = f"{type(exc).__name__}: {str(exc).strip().splitlines()[0][:200]}"
+            reason = f"{type(exc).__name__}: {(str(exc).strip().splitlines() or [''])[0][:200]}"
             with self._lock:
                 changed = self._step_failures.get(name) != reason
                 self._step_failures[name] = reason

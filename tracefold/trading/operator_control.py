@@ -45,10 +45,10 @@ class ParsedOperatorCommand:
     status` and `GET /api/trading/status` are what answer that question.
     """
 
-    action: str | None = None
-    scope: str | None = None
-    reason: str | None = None
-    ttl_seconds: int | None = None
+    action: str
+    scope: str
+    reason: str
+    ttl_seconds: int
     market_key: str | None = None
     direction: Literal["long", "short"] | None = None
 
@@ -115,10 +115,6 @@ def prepare_parsed_operator_intent(
     codes are unchanged.
     """
 
-    if parsed.action is None or parsed.scope is None or parsed.reason is None:
-        raise OperatorCommandError("operator_command_has_no_intent")
-    if parsed.ttl_seconds is None:
-        raise OperatorCommandError("operator_command_invalid")
     command_id = canonical_sha256(
         {
             "contract": "operator-command-source-v1",

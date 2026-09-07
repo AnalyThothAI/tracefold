@@ -28,6 +28,7 @@ from tracefold.news.bus import (
     new_trace_id,
     now_ms,
 )
+from tracefold.news.market_review.instrument_storage import InstrumentsRepository
 from tracefold.news.models import ADMITTED_ADMISSIONS, TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.delivery import DelivererLoop
@@ -174,6 +175,29 @@ def _raw_messages() -> list[BusMessage]:
 
 def _deduper(conn: Any, bus: FakeBus) -> DeduperConsumer:
     return DeduperConsumer(bus=bus, db=FakeWorkerDatabase(conn), watchlist_symbols=WATCHLIST)
+
+
+def test_empty_instrument_catalog_is_cached_until_refresh(conn, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tracefold.news.pipeline import admission
+
+    stamp = now_ms()
+    monkeypatch.setattr(admission, "now_ms", lambda: stamp)
+    db = FakeWorkerDatabase(conn)
+    deduper = DeduperConsumer(bus=FakeBus(), db=db, watchlist_symbols=WATCHLIST)
+    message = _raw_messages()[0]
+    assert repositories_for_connection(conn).instruments.instrument_classes() == {}
+    conn.commit()
+
+    async def exercise() -> None:
+        nonlocal stamp
+        await deduper.handle(message)
+        await deduper.handle(message)
+        assert db.operations.count("news_admission_instruments") == 1
+        stamp += admission._INSTRUMENT_CACHE_TTL_MS
+        await deduper.handle(message)
+        assert db.operations.count("news_admission_instruments") == 2
+
+    asyncio.run(exercise())
 
 
 def _triage(conn: Any, bus: FakeBus, *, judge: Any = None) -> TriageConsumer:
@@ -809,6 +833,11 @@ def test_a_market_frame_that_matched_no_template_is_stored_raw_and_calls_no_mode
     """
 
     stamp = now_ms()
+
+    def unavailable_catalog(_self: Any) -> dict[str, str]:
+        raise RuntimeError("catalog unavailable")
+
+    monkeypatch.setattr(InstrumentsRepository, "instrument_classes", unavailable_catalog)
     bus = FakeBus()
     judge = ExplodingJudge()
     raw = BusMessage(

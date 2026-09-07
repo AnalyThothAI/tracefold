@@ -1080,6 +1080,29 @@ def test_a_crash_between_the_claim_and_the_ledger_row_leaves_the_card_claimable(
     repos = repositories_for_connection(conn)
     stamp = now_ms()
 
+    feed_kwargs = dict(
+        event_family=None,
+        change_state=None,
+        assertion_status=None,
+        source_authority=None,
+        subject_code=None,
+        final_decision=None,
+        event_kind=None,
+        admission=None,
+        search=None,
+        limit=100,
+        cursor=None,
+        now_ms=stamp + 3 * DELIVERY_RETRY_DELAY_MS,
+    )
+    # Only the first-card queue row describes the Event's reader outcome. A historical followup
+    # intent must neither duplicate the Event in a feed join nor overrule its pending first card.
+    repos.news.enqueue_delivery(event_id=event_id, kind="followup", now_ms=stamp)
+    repos.news.abandon_delivery_claim(event_id=event_id, kind="followup", error_code="old_followup", now_ms=stamp)
+    conn.commit()
+    pending = repos.news.list_feed(**feed_kwargs)
+    assert pending["counts"] == {"total": 1, "pushed": 0, "held": 0, "pending": 1}
+    assert pending["events"][0]["outcome"]["kind"] == "pending_delivery"
+
     def _claim(at_ms: int) -> list[dict[str, Any]]:
         claimed = repos.news.claim_due_deliveries(
             now_ms=at_ms,
@@ -1093,6 +1116,7 @@ def test_a_crash_between_the_claim_and_the_ledger_row_leaves_the_card_claimable(
     # First attempt: claimed, then the process dies before `begin_delivery`. No ledger row exists.
     assert [row["attempts"] for row in _claim(stamp)] == [1]
     assert _count(conn, "SELECT count(*) AS n FROM news_deliveries WHERE event_id = %s", (event_id,)) == 0
+
     assert _claim(stamp + DELIVERY_RETRY_DELAY_MS - 1) == [], "the lease is the wait, and it has not run out"
 
     # Second and third attempts arrive when the lease does, and the third is the last.
@@ -1101,7 +1125,7 @@ def test_a_crash_between_the_claim_and_the_ledger_row_leaves_the_card_claimable(
 
     # A fourth is not granted: the intent becomes this lane's dead letter, kept where it can be read.
     assert _claim(stamp + 3 * DELIVERY_RETRY_DELAY_MS) == []
-    assert _queue_rows(conn, event_id) == [
+    assert [row for row in _queue_rows(conn, event_id) if row["kind"] == "first"] == [
         {
             "kind": "first",
             "state": "dead",
@@ -1110,6 +1134,36 @@ def test_a_crash_between_the_claim_and_the_ledger_row_leaves_the_card_claimable(
         }
     ]
     assert _count(conn, "SELECT count(*) AS n FROM news_deliveries WHERE event_id = %s", (event_id,)) == 0
+
+    # A dead intent that never reached begin_delivery is still a terminal outcome. The reader and
+    # operator projections must not keep calling it pending just because no send ledger row exists.
+    projected_at = stamp + 3 * DELIVERY_RETRY_DELAY_MS
+    page = repos.news.list_feed(**feed_kwargs)
+    assert page["counts"] == {"total": 1, "pushed": 0, "held": 1, "pending": 0}
+    assert page["events"][0]["outcome"]["kind"] == "delivery_failed"
+    assert page["events"][0]["delivery"] is None, "an exhausted intent is not a fabricated send receipt"
+    assert repos.news.list_feed(outcome="pending", **feed_kwargs)["events"] == []
+    assert [row["event_id"] for row in repos.news.list_feed(outcome="held", **feed_kwargs)["events"]] == [event_id]
+    detail = repos.news.event_detail(event_id)
+    assert detail["outcome"]["kind"] == "delivery_failed"
+    assert detail["deliveries"] == []
+    status = repos.news.status_snapshot(now_ms=projected_at)["delivery"]
+    assert status["terminal_24h"] == 2, "status counts both failed cards; the Event feed describes its first card"
+    assert status["last_error_code"] == "news_delivery_attempts_exhausted"
+
+    # A late successful settlement is authoritative even when the exhausted claim still exists.
+    sender = _RecordingSender()
+    deliverer = DelivererLoop(
+        db=db, sender=sender, finite_operations=InlineFiniteOperations(), min_interval_seconds=0.0
+    )
+    asyncio.run(deliverer.deliver(event_id=event_id))
+    conn.commit()
+    delivered = repos.news.list_feed(**feed_kwargs)
+    assert delivered["counts"] == {"total": 1, "pushed": 1, "held": 0, "pending": 0}
+    assert delivered["events"][0]["outcome"]["kind"] == "delivered"
+    assert repos.news.event_detail(event_id)["outcome"]["kind"] == "delivered"
+    status = repos.news.status_snapshot(now_ms=projected_at)["delivery"]
+    assert (status["sent_24h"], status["terminal_24h"], status["last_error_code"]) == (1, 1, "old_followup")
 
 
 def test_a_deferred_delivery_keeps_its_intent_and_gives_up_with_the_reason_recorded(conn) -> None:
@@ -1283,6 +1337,9 @@ def test_a_provider_that_stays_broken_spends_three_attempts_and_leaves_both_rows
     delivery = repositories_for_connection(conn).news.delivery(event_id=event_id, kind="first")
     assert delivery is not None
     assert (delivery["state"], delivery["error_code"]) == ("terminal", "news_delivery_feishu_http_failed")
+    status = repositories_for_connection(conn).news.status_snapshot(now_ms=now_ms())["delivery"]
+    assert status["terminal_24h"] == 1, "the dead intent and terminal ledger are one failed card"
+    assert status["last_error_code"] == "news_delivery_feishu_http_failed"
 
     asyncio.run(deliverer.advance())
     conn.commit()
