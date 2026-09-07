@@ -779,6 +779,27 @@ class DecisionStorage:
         ).fetchone()
         return str(existing["state"]) if existing else "new"
 
+    def release_delivery(self, *, event_id: str, kind: str) -> bool:
+        """Give back a send this process owns and provably never made, so the next attempt can own it.
+
+        Only a `sending` row is releasable, and only by the attempt that just wrote it: the adapter
+        answered `not_sent`, so this row is not evidence that a reader saw anything -- it is a claim
+        on the identity, and the only thing `news_deliveries` has to say about a card nobody sent is
+        nothing. Holding it would make the retry read `sending` and settle the Event
+        `ambiguous_after_crash`, which is how a transient rate limit used to cost a reader the card.
+
+        `sent` and `terminal` rows are the ledger and the `state` predicate is what keeps them out of
+        reach: a receipted card and a settled failure are never released by anyone. A release that
+        does not commit leaves the `sending` row, and the next attempt reads it as the ambiguity it
+        is -- the same answer a process that died here has always earned (#604 N1).
+        """
+
+        cursor = self.conn.execute(
+            "DELETE FROM news_deliveries WHERE event_id = %s AND kind = %s AND state = 'sending'",
+            (event_id, kind),
+        )
+        return bool(cursor.rowcount)
+
     def settle_delivery(
         self,
         *,

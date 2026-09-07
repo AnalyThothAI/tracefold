@@ -39,7 +39,11 @@ from functools import partial
 from typing import Any, Final, Literal, Protocol
 from urllib.parse import urlsplit
 
-from .delivery_contracts import COMMIT_PHASE_NOT_SENT
+from .delivery_contracts import (
+    DELIVERY_FAILURE_RETRIABLE,
+    DELIVERY_FAILURE_UNKNOWN,
+    classify_delivery_failure,
+)
 from .feishu_card import feishu_card
 from .market_contracts import (
     MARKET_TRACK_FIELDS,
@@ -1270,22 +1274,18 @@ class MarketTurn:
 
 
 def classify_send_failure(exc: BaseException, *, attempts: int) -> SendOutcome:
-    """Three outcomes, and the difference between them is what the adapter could prove.
+    """This track's three delivery states, from the one shared reading of what the adapter proved.
 
-    `commit_phase = "not_sent"` is the adapter saying the request never reached the provider or the
-    provider answered with a refusal: a connect failure, an explicit rejection, a rate limit. Only
-    those are retried, and only while the attempt budget lasts.
-
-    Everything else is `unknown`, and that is the honest answer rather than a pessimistic one. A read
-    timeout means the request was written and the answer was not read -- the provider may well have
-    delivered it -- and a 5xx means the provider's own tier answered, not that it did nothing. Calling
-    either "not sent" and retrying would double-notify a reader (§5.2).
+    What the failure proved is `classify_delivery_failure`; what this track does about it is here.
+    A retriable failure becomes `pending` only while this track's own budget lasts, and a spent
+    budget is `failed` -- the same row state a refusal earns, because both are done trying.
     """
 
     code = str(getattr(exc, "code", "") or "") or f"market_send_failed:{type(exc).__name__}"
-    if str(getattr(exc, "commit_phase", "") or "") != COMMIT_PHASE_NOT_SENT:
+    failure = classify_delivery_failure(exc)
+    if failure == DELIVERY_FAILURE_UNKNOWN:
         return SendOutcome(state="unknown", error=code)
-    if bool(getattr(exc, "retryable", False)):
+    if failure == DELIVERY_FAILURE_RETRIABLE:
         delay = retry_delay_ms(attempts)
         if delay is not None:
             return SendOutcome(state="pending", error=code, retry_in_ms=delay)

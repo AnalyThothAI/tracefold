@@ -434,7 +434,23 @@ def test_delivery_adapters_never_import_the_market_notification_loop() -> None:
 
     from tracefold.news import delivery_contracts, market_notifications
 
-    assert set(delivery_contracts.__all__) == {"COMMIT_PHASE_NOT_SENT", "COMMIT_PHASE_UNKNOWN"}
+    assert set(delivery_contracts.__all__) == {
+        "COMMIT_PHASE_NOT_SENT",
+        "COMMIT_PHASE_UNKNOWN",
+        "DELIVERY_FAILURE_REFUSED",
+        "DELIVERY_FAILURE_RETRIABLE",
+        "DELIVERY_FAILURE_UNKNOWN",
+        "classify_delivery_failure",
+    }
+    # #604 N1: reading that vocabulary is one function, and both delivery loops call it. A second
+    # copy of "may this be sent again" is how the News lane came to settle a rate limit `terminal`
+    # while the market lane retried the same error from the same adapter. Neither loop reads the
+    # attributes itself any more, which is what stops the two answers drifting apart again.
+    assert [name for name in market_notifications.__all__ if name.startswith("DELIVERY_FAILURE")] == []
+    for loop_module in ("news/market_notifications.py", "news/pipeline/delivery.py"):
+        source = (SRC / loop_module).read_text(encoding="utf-8")
+        assert 'getattr(exc, "commit_phase"' not in source, loop_module
+        assert 'getattr(exc, "retryable"' not in source, loop_module
     assert [name for name in market_notifications.__all__ if name.startswith("COMMIT_PHASE")] == []
 
     loop = "tracefold.news.market_notifications"

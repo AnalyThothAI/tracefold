@@ -335,10 +335,14 @@ in `news_opennews_incidents`,
 and broker queues are control state. Retry attempts and terminal reasons are
 likewise queue policy, not facts. `news_verdicts` (Triage decisions bound to a
 policy version) are derived model outputs bound to frozen evidence; they are
-not material facts. `news_deliveries` is the one-attempt outbound ledger keyed
-by `(event_id, kind)`; there is no retry, lease, or backfill. Reader receipt
-truth is `news_deliveries.state = 'sent'`; a model decision, pending attempt,
-or missing delivery row never means that the reader saw a card.
+not material facts. `news_deliveries` is the outbound ledger keyed by
+`(event_id, kind)` and holds no retry, lease, or backfill of its own: the
+attempt budget and the lease belong to the `news_delivery_queue` row that lives
+until the ledger row exists (#598 D2). A `sent` or `terminal` row is final and
+is never sent again; the only row an attempt may take back is the `sending` row
+it wrote itself, and only when the provider proved the card never left (#604 N1).
+Reader receipt truth is `news_deliveries.state = 'sent'`; a model decision,
+pending attempt, or missing delivery row never means that the reader saw a card.
 `news_event_evidence_snapshots` freezes the exact fact unit and evidence
 version read by Triage so a later member cannot rewrite the meaning of an old
 verdict.
@@ -1709,13 +1713,20 @@ source and time only — no direction, magnitude or novelty the model never judg
 and no "模型不可用" copy; the degraded verdict's `headline_zh` is the wire headline
 too, so the console feed and the context line name the Event (issue #65). The
 行情 line still renders there: the price is our own fact, not the model's.
-AI copy is sanitized (URLs fall back to the code-owned title). There is no
-initial-send retry: `news_deliveries(event_id, kind)` (`kind` is always `first`) is
+AI copy is sanitized (URLs fall back to the code-owned title). The initial send
+is retried only where the provider proved it never happened:
+`news_deliveries(event_id, kind)` (`kind` is always `first`) is
 inserted as `sending` after provider prepare/preflight and before the single
 initial delivery HTTP call, then settled `sent`/`terminal`. The intent behind it
 lives in `news_delivery_queue` until that ledger row exists, and its three
-attempts are attempts to *reach* the ledger, never to send a second card: an
-attempt that got as far as `begin_delivery` never gets another (#598 D2). Telegram enrichment begins only after a successful
+attempts 30 s apart are spent on preflight and send failures the adapter can
+defend as `not_sent` and retriable — a connect failure, a rate limit — where the
+attempt gives its `sending` row back so the retry can own the identity again. A
+refusal settles `terminal` on the first attempt, and so does an unknown outcome
+such as a read timeout or a 5xx: the card may already be on a reader's screen and
+a second one is the worse answer. A spent budget leaves the ledger row `terminal`
+with the provider's last error code and the queue row `dead` with
+`news_delivery_attempts_exhausted` (#598 D2, #604 N1). Telegram enrichment begins only after a successful
 settlement. It records edit intent before provider I/O; update success confirms the ready card/receipt, while an
 uncertain update or post-provider persistence failure keeps the initial `sent` state and records edit ambiguity;
 interrupted rows are terminalized at startup. Recovery items, suppressed
