@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import inspect
+from collections.abc import Iterator
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from nautilus_trader.adapters.binance import BINANCE, BinanceAccountType
@@ -118,8 +121,19 @@ def test_paper_and_live_have_disjoint_profile_namespaces() -> None:
     assert paper_node.instance_id != live_node.instance_id
 
 
-def test_canonical_root_builds_one_real_binance_execution_client() -> None:
-    profile = replace(oi_profile("paper"), account_id=AccountId("BINANCE-USDT_FUTURES-master"))
+_MASTER_ACCOUNT_ID = AccountId("BINANCE-USDT_FUTURES-master")
+
+
+@pytest.fixture(name="real_execution_engine", scope="module")
+def _real_execution_engine() -> Iterator[Any]:
+    """The composition root's own live execution engine, built offline with throwaway credentials.
+
+    Nothing here talks to Binance: `_build_active_node` only constructs the node graph, so the real
+    `BinanceFuturesExecutionClient` this yields is the same object the Runtime process reaches into,
+    and the module builds it once because that construction is the expensive part.
+    """
+
+    profile = replace(oi_profile("paper"), account_id=_MASTER_ACCOUNT_ID)
     signals = ExecutionSignalClient(account_slot=profile.account_slot, execution_strategy="oi_nautilus_v1")
     strategy = OiNautilusStrategy(
         profile=profile,
@@ -149,8 +163,88 @@ def test_canonical_root_builds_one_real_binance_execution_client() -> None:
         loop=loop,
     )
     try:
-        client = single_binance_execution_client(node.kernel.exec_engine)
-        assert client.account_id == profile.account_id
+        yield node.kernel.exec_engine
     finally:
         node.dispose()
         loop.close()
+
+
+def test_canonical_root_builds_one_real_binance_execution_client(real_execution_engine: Any) -> None:
+    client = single_binance_execution_client(real_execution_engine)
+
+    assert client.account_id == _MASTER_ACCOUNT_ID
+
+
+# Preserved from the deleted `tests/architecture/test_nautilus_runtime_owner_matrix.py`: everything
+# else in that module restated the current wiring line by line, but this one boundary has no other
+# owner. Nautilus 1.231 exposes no public route to a complete private-account proof, so exactly one
+# module reaches into the adapter's privates and an upgrade has exactly one place to break. The list
+# now lives beside the real client this module already builds, because the rule that keeps every
+# other module off these names and the rule that proves the names still exist are the same list read
+# two ways: a member renamed upstream used to leave every test green and raise `RuntimeError` on the
+# Runtime's start-up path, possibly while the account held a position (#604 T1).
+_PRIVATE_NAUTILUS_ATTRIBUTES = (
+    "_clients",
+    "_active_symbols_cache",
+    "_get_binance_position_status_reports",
+    "_build_active_symbols",
+    "_parse_order_status_reports",
+    "_fetch_algo_orders",
+    "_parse_algo_order_report",
+)
+
+# Exactly the calls `load_complete_binance_account_reports` makes, in the argument shapes it makes
+# them, and whether it awaits the result.
+_PRIVATE_BINANCE_CALLS: tuple[tuple[str, tuple[object, ...], bool], ...] = (
+    ("_get_binance_position_status_reports", (), True),
+    ("_build_active_symbols", (None,), True),
+    ("_parse_order_status_reports", ([], None, None), False),
+    ("_fetch_algo_orders", (None,), True),
+    ("_parse_algo_order_report", (None, None, None), False),
+)
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_SOURCE_ROOT = _REPO_ROOT / "tracefold"
+_COMPAT_MODULE = _SOURCE_ROOT / "integrations" / "nautilus" / "oi_runtime" / "nautilus_1231_binance_compat.py"
+
+
+def test_private_nautilus_adapter_access_has_one_compatibility_seam() -> None:
+    violations = [
+        f"{path.relative_to(_SOURCE_ROOT).as_posix()}:{node.lineno}:{node.attr}"
+        for path in sorted(_SOURCE_ROOT.rglob("*.py"))
+        if path != _COMPAT_MODULE and "__pycache__" not in path.parts
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
+        if isinstance(node, ast.Attribute) and node.attr in _PRIVATE_NAUTILUS_ATTRIBUTES
+    ]
+
+    assert violations == []
+
+
+def test_every_private_member_the_account_proof_needs_exists_on_the_real_1231_client(
+    real_execution_engine: Any,
+) -> None:
+    """The seam's seven names, asserted against the objects the Runtime actually reaches into.
+
+    `tests/deploy/test_nautilus_dependency.py` pins the version and the wheel hash, which cannot
+    notice a rename inside it, and `tests/test_nautilus_reconciliation.py` proves the seam's
+    behaviour against a stand-in whose shape the test itself chose.
+    """
+
+    engine_attribute, *client_attributes = _PRIVATE_NAUTILUS_ATTRIBUTES
+    client = single_binance_execution_client(real_execution_engine)
+
+    assert hasattr(real_execution_engine, engine_attribute)
+    assert [name for name in client_attributes if not hasattr(client, name)] == []
+
+
+def test_every_private_call_the_account_proof_makes_binds_on_the_real_1231_client(
+    real_execution_engine: Any,
+) -> None:
+    """A member that survives a Nautilus upgrade under a changed signature is the same outage."""
+
+    client = single_binance_execution_client(real_execution_engine)
+
+    for name, arguments, awaited in _PRIVATE_BINANCE_CALLS:
+        member = getattr(client, name)
+        inspect.signature(member).bind(*arguments)
+        assert inspect.iscoroutinefunction(member) is awaited, name

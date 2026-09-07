@@ -15,11 +15,15 @@ from .state import ExecutionState, RuntimeEntryRequest, RuntimeExecutionState, R
 # Refusals that state the Runtime's own clock, not a verdict on the request. Each is answered by the
 # next private reconciliation, the next quote, or that day's baseline write, all of which happen
 # inside a Signal's TTL, so the Signal keeps no durable disposition and the next indexed poll offers
-# it again; `expires_at_ns` still closes it with a terminal `expired`. Everything not listed here is
-# terminal, including every deterministic refusal and every readiness gate a redelivery could only
-# re-answer the same way. Writing a disposition for these is what made five of 2026-09-02's six
-# Signals single-delivery deaths (#510 B); `market_subscription_pending` is the same shape for the
-# quote stream an admission just opened, and it stops being retryable after `QUOTE_WARMUP_NS`.
+# it again. The TTL bounds redelivery rather than writing a verdict: `UNRESOLVED_TRADE_SIGNALS_SQL`
+# only offers Signals whose `expires_at_ns` is still ahead of now, so one that lapses between two
+# polls is never handed back and never gets a durable disposition at all. `entry.handle`'s terminal
+# `expired` only lands on a request that was already dequeued when its TTL passed. Everything not
+# listed here is terminal, including every deterministic refusal and every readiness gate a
+# redelivery could only re-answer the same way. Writing a disposition for these is what made five of
+# 2026-09-02's six Signals single-delivery deaths (#510 B); `market_subscription_pending` is the same
+# shape for the quote stream an admission just opened, and it stops being retryable after
+# `QUOTE_WARMUP_NS`.
 RETRYABLE_ENTRY_REASONS: Final[frozenset[str]] = frozenset(
     {
         "account_stale",
@@ -33,6 +37,21 @@ RETRYABLE_ENTRY_REASONS: Final[frozenset[str]] = frozenset(
         "reconciliation_stale",
     }
 )
+
+
+# The venue's own words for a refusal, bounded by what `ExecutionObservationV1` metadata accepts for
+# one string. Truncating at the writer is what keeps a long refusal from failing the whole
+# observation's validation and sending it down the `audit_append_rejected` gap path instead.
+_MAX_VENUE_REASON_BYTES: Final[int] = 256
+
+
+def _venue_reason(reason: str) -> str:
+    """The venue's refusal text, cut to whole characters inside the metadata string bound."""
+
+    encoded = reason.encode("utf-8")
+    if len(encoded) <= _MAX_VENUE_REASON_BYTES:
+        return reason
+    return encoded[:_MAX_VENUE_REASON_BYTES].decode("utf-8", "ignore")
 
 
 class AuditBackpressure(RuntimeError):
@@ -176,8 +195,20 @@ class RuntimeObservationWriter:
             )
         )
 
-    def rejected_order_event(self, state: ExecutionState, leg: str, status: str, event: Any) -> None:
+    def rejected_order_event(self, state: ExecutionState, leg: str, status: str, event: Any, reason: str) -> None:
+        """One terminal venue verdict, in the venue's own words where it gave any.
+
+        The Runtime already read `reason` to tell an ambiguous outcome from a decided one and then
+        dropped it, so the one real rejection this account has seen recorded `{leg, status}` and
+        nothing an operator could answer "why" with (#604 T1). A venue that named no reason keeps the
+        key absent, which is a different fact from a venue that named an empty one.
+        """
+
         now_ns = self.event_ns(event)
+        summary: dict[str, str] = {"leg": leg, "status": status}
+        payload: dict[str, str] = {"client_order_id": event.client_order_id.value, "status": status}
+        if reason:
+            summary["reason"] = payload["reason"] = _venue_reason(reason)
         self._audit.offer(
             self._factory.create(
                 normalized_kind="order" if leg in {"entry", "exit"} else "protection",
@@ -185,8 +216,8 @@ class RuntimeObservationWriter:
                 occurred_at_ns=now_ns,
                 observed_at_ns=now_ns,
                 native_identity_references=(event.client_order_id.value,),
-                summary={"leg": leg, "status": status},
-                payload={"client_order_id": event.client_order_id.value, "status": status},
+                summary=summary,
+                payload=payload,
                 event_identity=status,
             )
         )
