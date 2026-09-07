@@ -214,8 +214,22 @@ esac
 set -eu
 : > "$TRACEFOLD_TEST_EXTERNAL_ACTIVITY"
 url=''
-for argument do url="$argument"; done
+fail_on_http_error=0
+for argument do
+  case "$argument" in -*f*) fail_on_http_error=1 ;; esac
+  url="$argument"
+done
 case "$url" in
+  *8767/readyz)
+    body="${TRACEFOLD_TEST_NAUTILUS_READYZ:-}"
+    # Nothing listening: curl exits 7 and prints no body.
+    [ -n "$body" ] || exit 7
+    # What the endpoint used to do with a payload whose ok is false, and what -f then did with it.
+    case "$body" in
+      *'"ok": false'*) [ "$fail_on_http_error" = 0 ] || exit 22 ;;
+    esac
+    printf '%s\\n' "$body"
+    ;;
   */readyz) printf '{"ok":true,"image_digest":"%s","runtime_manifest_sha":"%s"}\\n' \
     "$TRACEFOLD_TEST_READY_IMAGE" "$TRACEFOLD_TEST_READY_MANIFEST" ;;
   */) printf '<html></html>\\n' ;;
@@ -263,6 +277,9 @@ esac
         "TRACEFOLD_TEST_CAPABILITY_REFRESH": str(tmp_path / "capability-refresh"),
         "TRACEFOLD_TEST_BOOTSTRAP_ACCOUNT_ZERO": "ready",
         "TRACEFOLD_TEST_ACTIVE_CAPABILITY_SHA": "a" * 64,
+        "TRACEFOLD_TEST_NAUTILUS_READYZ": (
+            '{"ok": false, "execution_safe": false, "entry_block_reason": "startup_reconciliation_unproven"}'
+        ),
     }
     return repo, external_activity, services_stopped, env
 
@@ -1055,8 +1072,19 @@ def test_deploy_image_rejects_workers_ready_identity_mismatch(tmp_path: Path) ->
     assert "Tracefold deployed exact local image" not in result.stdout
 
 
-def test_deploy_image_rejects_missing_exact_active_deployment_receipt(tmp_path: Path) -> None:
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+def test_deploy_image_deploys_without_asking_the_learning_ledger_to_name_the_image(tmp_path: Path) -> None:
+    """The deploy proves itself, not a ledger the deploy it was blocking is what writes (#598 D5-h).
+
+    The removed gate read the newest `deployment_receipt` and `active_agent` rows out of
+    `news_learning_artifacts` and required both to name the requested image. Workers writes those
+    rows after it boots, so the gate asked a deployment to prove a fact produced by the deployment
+    itself; a News epoch changing under it, or ordinary lag, refused a correct exact-image deploy of
+    the previous image -- the one an operator reaches for during an incident. What the deploy can
+    prove about itself is kept and is asserted by the two tests above: every recreated container
+    runs the requested image ID, and Workers' own `/readyz` reports that digest.
+    """
+
+    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_RECEIPT"] = "mismatch"
 
     result = subprocess.run(
@@ -1068,9 +1096,10 @@ def test_deploy_image_rejects_missing_exact_active_deployment_receipt(tmp_path: 
         text=True,
     )
 
-    assert result.returncode != 0
-    assert "active/deployment receipt" in result.stderr
-    assert "Tracefold deployed exact local image" not in result.stdout
+    assert result.returncode == 0, result.stderr
+    assert f"Tracefold deployed exact local image {TEST_IMAGE_ID}." in result.stdout
+    assert "active/deployment receipt" not in result.stderr
+    assert services_stopped.exists()
 
 
 def test_deploy_image_allows_an_unrelated_untracked_research_notebook(tmp_path: Path) -> None:
@@ -1096,12 +1125,53 @@ def test_deploy_image_allows_an_unrelated_untracked_research_notebook(tmp_path: 
     assert services_stopped.exists()
 
 
-def test_make_down_refuses_to_delete_a_live_execution_runtime(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("readyz", "expected"),
+    (
+        (
+            '{"ok": false, "execution_safe": false, "entry_block_reason": "startup_reconciliation_unproven"}',
+            "startup_reconciliation_unproven",
+        ),
+        ("", "unreachable"),
+    ),
+    ids=("blocked-payload", "unreachable"),
+)
+def test_runtime_status_prints_the_readiness_payload_it_gets(tmp_path: Path, readyz: str, expected: str) -> None:
+    """`curl -fsS` threw away the body of every answer that mattered (#598 D5-b).
+
+    The runtime's `/readyz` answers 200 with the payload now, and this recipe prints it whatever it
+    says. An endpoint that cannot be reached is reported and the report continues: the container
+    state and health above it are what notice a dead process, and they still decide the exit status.
+    """
+
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
+    env["TRACEFOLD_TEST_EXECUTION_MODE"] = "paper"
+    env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
+    env["TRACEFOLD_TEST_NAUTILUS_READYZ"] = readyz
+
+    result = subprocess.run(
+        ["make", "runtime-status"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert expected in result.stdout
+    assert "nautilus readiness failed" not in result.stderr
+
+
+def test_make_down_stops_the_execution_runtime_itself_instead_of_refusing(tmp_path: Path) -> None:
     """`docker compose down` removes the project's containers and network, runtime included.
 
-    An operator reaching for `make down` while a position is open would take the exposure owner
-    with it and leave no container to restart, so the refusal names the one command that stops
-    trading deliberately (#537 PR-2).
+    That is why the runtime has to go first -- and for as long as `make down` exited 2 saying so, it
+    was a refusal that knew the exact command it wanted and would not run it (#598 D5-g). It runs
+    `runtime-down` itself now: the same recipe, so the same `-t 90` stop budget, so the runtime's
+    own `singleton.release()` still runs and the account-slot advisory lock is still released
+    before the network goes. Then it stops the stack, and it says which of the two it did.
     """
 
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
@@ -1109,9 +1179,12 @@ def test_make_down_refuses_to_delete_a_live_execution_runtime(tmp_path: Path) ->
 
     result = subprocess.run(["make", "down"], cwd=repo, env=env, capture_output=True, check=False, text=True)
 
-    assert result.returncode == 2
-    assert "run make runtime-down first" in result.stderr
-    assert not Path(env["TRACEFOLD_TEST_DOWN_ARGS"]).exists()
+    assert result.returncode == 0, result.stderr
+    assert "stopping the execution runtime first" in result.stdout
+    assert "run make runtime-down first" not in result.stderr
+    assert "-t 90 nautilus" in Path(env["TRACEFOLD_TEST_STOP_ARGS"]).read_text(encoding="utf-8")
+    assert Path(env["TRACEFOLD_TEST_NAUTILUS_REMOVED"]).exists()
+    assert Path(env["TRACEFOLD_TEST_DOWN_ARGS"]).read_text(encoding="utf-8").strip() == "compose down"
 
 
 def test_make_down_still_stops_the_stack_when_no_runtime_container_exists(tmp_path: Path) -> None:
@@ -1120,4 +1193,5 @@ def test_make_down_still_stops_the_stack_when_no_runtime_container_exists(tmp_pa
     result = subprocess.run(["make", "down"], cwd=repo, env=env, capture_output=True, check=False, text=True)
 
     assert result.returncode == 0, result.stderr
+    assert "no execution runtime container to stop." in result.stdout
     assert Path(env["TRACEFOLD_TEST_DOWN_ARGS"]).read_text(encoding="utf-8").strip() == "compose down"

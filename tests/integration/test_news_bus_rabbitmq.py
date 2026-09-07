@@ -25,14 +25,12 @@ import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from types import SimpleNamespace
 from urllib.parse import quote, unquote, urlsplit
 
 import aio_pika
 import pytest
 from aio_pika import DeliveryMode, ExchangeType
 
-from tracefold.app.cli.commands.db import _observe_drained_news_broker
 from tracefold.integrations.rabbitmq import (
     MANAGEMENT_READ_TIMEOUT_SECONDS,
     POLICY_EFFECTIVE_TIMEOUT_SECONDS,
@@ -176,19 +174,6 @@ async def _wait_for_depth(bus: RabbitMQBus, queue: str, expected: int, *, timeou
     assert (await bus.queue_depths())[bus.queue_name(queue)]["messages"] == expected
 
 
-def _genesis_settings(bus: RabbitMQBus) -> SimpleNamespace:
-    return SimpleNamespace(
-        news=SimpleNamespace(
-            broker=SimpleNamespace(
-                url=AMQP_URL,
-                name_prefix=bus.prefix,
-                connect_timeout_seconds=5,
-                management_url=MANAGEMENT_URL,
-            )
-        )
-    )
-
-
 def _management_json(path: str) -> object:
     username = unquote(_AMQP.username or "guest")
     password = unquote(_AMQP.password or "guest")
@@ -218,36 +203,6 @@ def test_the_broker_is_the_version_the_retry_contract_was_measured_against() -> 
 
     major, minor = (int(part) for part in _broker_version().split(".")[:2])
     assert (major, minor) >= (4, 3), f"native delayed retry needs RabbitMQ 4.3+, found {_broker_version()}"
-
-
-def test_genesis_preflight_observes_all_real_drained_queues() -> None:
-    async def scenario() -> None:
-        async with _bus(delay_ms=broker_policy.RETRY_DELAY_MS) as bus:
-            await bus.declare_topology()
-            observation = await _observe_drained_news_broker(_genesis_settings(bus))
-
-            assert set(observation["queues"]) == set(topology(bus.prefix).queue_names)
-            assert observation["totals"] == {
-                "ready": 0,
-                "unacked": 0,
-                "dead_letter": 0,
-                "stale_reference_count": 0,
-            }
-
-    asyncio.run(scenario())
-
-
-def test_genesis_preflight_rejects_a_real_nonempty_queue() -> None:
-    async def scenario() -> None:
-        async with _bus(delay_ms=broker_policy.RETRY_DELAY_MS) as bus:
-            await bus.declare_topology()
-            await bus.publish(_event("genesis:not-drained", {}))
-            await _wait_for_depth(bus, Q_TRIAGE, 1)
-
-            with pytest.raises(RuntimeError, match=rf"{bus.queue_name(Q_TRIAGE)}\.messages=0"):
-                await _observe_drained_news_broker(_genesis_settings(bus))
-
-    asyncio.run(scenario())
 
 
 def test_topology_is_three_business_queues_one_dlq_and_no_retry_lane() -> None:

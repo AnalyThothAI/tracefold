@@ -134,6 +134,8 @@ class NewsDurableEventTelemetryPort(Protocol):
         reason_class: NewsRabbitPublishFailureReason,
     ) -> None: ...
 
+    def set_news_broker_policy_drift(self, *, drifted: bool) -> None: ...
+
     def set_news_opennews_incident(
         self,
         *,

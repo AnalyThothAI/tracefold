@@ -47,7 +47,8 @@ docker compose exec -T workers tracefold trading status
 
 Disabled status reports `alive=false`, `execution_safe=false`, and
 `entries_armed=false`; `make runtime-status` fails closed if a container is
-still running in that mode.
+still running in that mode. It does not fail on the readiness payload itself:
+that is printed, whatever it says.
 Active safety additionally requires exactly one current account-slot owner,
 secure non-empty credential files, startup reconciliation, initialized
 Portfolio, no unexpected exposure, a fresh heartbeat, and the configured
@@ -217,8 +218,12 @@ the process/TradingNode/event loop; `execution_safe` proves existing exposure ca
 still be reconciled, protected, canceled, exited, flattened, and recovered;
 `entries_armed` alone permits new exposure. There are exactly these three, and
 `entries_armed` differs from `execution_safe` only by what an operator asked for.
-Nautilus `/readyz` requires the first two and deliberately stays green when
-entries are paused. The Runtime's own `entry_block_reason` is one of
+Nautilus `/readyz` reports `ok` from the first two and deliberately stays `true`
+when entries are paused. It answers 200 either way and the payload is the
+diagnosis; the container healthcheck asks `/healthz`, because a runtime that is
+alive but blocked is exactly the process an operator must be able to reach, and
+restarting the owner of an open position is not a repair. The Runtime's own
+`entry_block_reason` is one of
 `startup_reconciliation_unproven`, `reconciliation_stale`, `unexpected_exposure`,
 `singleton_lost`, `entries_paused` and `emergency_halted`, and the read
 projection adds only its own `disabled` / `runtime_*` reasons for a row that is
@@ -279,11 +284,19 @@ make logs
 make down
 ```
 
-`make up` preflights Git, `uv`, Docker, Compose, `curl`, an authenticated GitHub
+`make up` preflights Git, `uv`, Docker, Compose, an authenticated GitHub
 CLI, the project interpreter (3.13, matching the image), and daemon access; runs
 idempotent initialization; builds one shared Python/React image; starts
 PostgreSQL when absent; requires the one-shot migration to succeed; starts Serve
-and Workers; and then runs the same fail-closed application status gate. It does
+and Workers; and then runs the same fail-closed application status gate. That
+preflight is a prerequisite of exactly four entries — `up`, `deploy-image`,
+`db-migrate` and `runtime-build`, the ones that build an image, start the stack
+or migrate the database. It used to guard fourteen, including every way of
+looking at or stopping a running deployment, so an operator whose Docker daemon
+had died could not run `make logs` to find out why and one on the wrong
+interpreter could not run `make runtime-down` to stop trading. A read or a stop
+now fails, when it fails, on the real command. `curl` left the list for the same
+reason: the recipes that use it fail on their own `curl` line. It does
 not recreate a running PostgreSQL container, and it never names the `nautilus`
 service in any state: the execution runtime has its own image and its own
 lifecycle (below). If a Runtime is running and the source Alembic head is ahead
@@ -293,9 +306,13 @@ first, or set `TRACEFOLD_MIGRATE_UNDER_RUNTIME=1` deliberately. An image whose
 digest cannot be read is a hard failure, not a warning: every receipt it wrote
 would record `image_digest=unversioned`. On failure, use `make logs`. Operator
 config, two PostgreSQL password files, and named-volume data remain in place.
-`make down` stops containers without deleting that volume, and refuses while a
-`nautilus` container exists, because `docker compose down` would delete it along
-with the project network.
+`make down` stops containers without deleting that volume. `docker compose down`
+would delete the `nautilus` container along with the project network, so
+`make down` runs the `runtime-down` recipe itself first — the same `-t 90` stop,
+so `singleton.release()` still runs and the account-slot advisory lock is still
+released — and prints which of the two it did. It used to exit 2 and tell the
+operator to type `make runtime-down`, which is a refusal that knew the exact
+command it wanted and would not run it.
 
 All twelve published Compose bindings (`TRACEFOLD_{POSTGRES,RABBITMQ,RABBITMQ_MGMT,API,WORKERS,NAUTILUS}_{HOST,PORT}`)
 are declared once in the Makefile with Compose's own defaults and exported from
@@ -345,10 +362,21 @@ start with `oi_runtime_account_slot_already_owned`.
 
 `restart: unless-stopped` stays. A bounded `on-failure:N` gives up after N
 transient failures, and what it would give up on is the process protecting an
-open position. A crash loop on a stale image costs one `SELECT version_num` per
-attempt, because the runtime asserts the Alembic head before it takes the lock
-or builds a node — and `make runtime-up`'s pre-stop comparison keeps it from
-entering that loop at all.
+open position. A crash loop on an unreadable schema costs one `SELECT
+version_num` per attempt, because the runtime asserts the Alembic revision
+before it takes the lock or builds a node — and `make runtime-up`'s pre-stop
+comparison keeps it from entering that loop at all.
+
+That in-process assertion is a direction, not an equality: it refuses only a
+database *older* than the image, meaning one missing migrations the code was
+compiled against, decided by whether the live revision is an ancestor of the
+image's head. A database at the image's head or ahead of it starts, and logs
+both revisions. Being ahead is what the ordinary release order produces —
+`make up` migrates and `make runtime-up` does not — so head equality made the
+normal state of affairs a refusal to restart the process holding an open
+position. `make runtime-up`'s own pre-stop check still requires equality,
+because that one is an operator choosing to replace a running image and can be
+answered by choosing a different one.
 
 The cutover order for a release that changes both halves is
 `make runtime-build` -> `make up` -> `make runtime-up`. A release that does not
@@ -370,9 +398,16 @@ unknown non-empty cluster.
 RabbitMQ, migration, Serve, Workers, the Serve and Workers readiness endpoints,
 and the HTML console all pass. `runtime-status` is read-only and returns
 non-zero when the execution mode is `paper`/`live` and no container is running,
-when the container is unhealthy or its `/readyz` fails, or when the mode is
-`disabled` and a container is still running; it prints the running image and the
-readiness identity. Deployment targets call `status-app` only, so a Runtime that
+when the container is unhealthy, or when the mode is `disabled` and a container
+is still running; it prints the running image and the whole readiness payload.
+The runtime's `/readyz` answers 200 with that payload whatever it says, so the
+payload is what an operator gets: `execution_safe`, `entries_armed`,
+`entry_block_reason`, the position and order counts. It used to answer 503 when
+`ok` was false and `curl -fsS` then discarded the body, so the one endpoint that
+explains the process holding live exposure went silent exactly when it had
+something to say. An unreachable endpoint is reported and the report continues;
+the container state and health above it are what notice a dead process.
+Deployment targets call `status-app` only, so a Runtime that
 is deliberately down never fails a News release. Neither may be replaced by a
 liveness-only `curl` or a Compose command whose exit status ignores an unhealthy
 Worker.
@@ -420,7 +455,8 @@ recipe does. It classifies a recipe that runs `docker compose up`, `build` or
 asserts the derived set still contains the known entries so a derivation that
 stopped matching cannot pass by finding nothing. The three read-only preflights
 and the observe-or-stop targets (`down`, `status`, `logs`, the `*-shell` pair) are
-not classified, because they change nothing.
+not classified, because none of them puts new code in front of production —
+`make down` stops the execution runtime and then the stack, and builds nothing.
 The gate requires the primary checkout on `main`, a
 clean source tree, `HEAD` equal to both the local and live remote `origin/main`,
 and that exact SHA's latest `ci-gate` check to be completed and successful
@@ -441,8 +477,13 @@ this one stable check name rather than introduce another project-owned planner.
 The target accepts no tag, short ID or registry reference. It never builds or
 pulls, never touches the execution runtime, and it checks the checkout, Compose
 inputs, active config, three migration heads, deployment lock, recreated
-container IDs, Workers readiness and durable deployment receipt before reporting
-success. It does **not** require the image to carry current main's revision: the
+container IDs and Workers readiness before reporting success. It no longer reads
+`news_learning_artifacts` to require the newest `deployment_receipt` and
+`active_agent` rows to name the requested image: Workers writes those rows after
+it boots, so that gate asked a deployment to prove a fact the deployment it was
+blocking is what produces, and ordinary lag or a News epoch changing under it
+refused a correct exact-image deploy. It does **not** require the image to
+carry current main's revision: the
 image an operator needs during an incident is by definition the previous one, and
 the Alembic heads are the compatibility rule. A recorded previous image digest is only a
 candidate: local retention and schema compatibility are still required.
@@ -936,9 +977,10 @@ remains `admission=recovery`; the three market admissions
 `unsupported_market_contract`) are deleted and appear only on rows written
 before #553, whose Chinese labels `tracefold.news.outcome` still carries so the
 console can render them. The hard cut does not rewrite a
-verdict/delivery ledger before genesis. Migration `0336` then deletes that
-entire pre-genesis ledger and requires all News queues to be empty, including
-stale Event references, before it runs.
+verdict/delivery ledger before genesis. Migration `0336` deleted that entire
+pre-genesis ledger. It is pre-baseline, and the one-time drained-broker
+precondition it ran behind is gone with the `db migrate` preflight that observed
+it (#598 D5-d): `tracefold db migrate` is `upgrade_head` and nothing else.
 Migration `0336` deletes pre-cut deterministic rows that lacked durable typed
 success evidence. Current Admission and Triage therefore see only the current
 source contract.
@@ -1867,126 +1909,6 @@ Workers lock is held.
 The normative authoring checklist, required evidence, and 0330–0332 object
 authority/cost audit are in [the migration guide](MIGRATIONS.md). Published
 revision files are immutable; a correction is a forward revision.
-
-### News current-contract genesis (`0336`, one time)
-
-This is the destructive cut required by #398, not an ordinary retention run.
-Run it once, from the exact reviewed main SHA and image, with Serve, Workers and
-Nautilus stopped. It is irreversible in Alembic: the only rollback is restoring
-the verified pre-cut database snapshot and the matching broker snapshot before
-starting the old image. It never converts, backfills, translates, dual-reads or
-serves old News evidence.
-
-The migration owns this complete disposition. It compares the live set of all
-`public.news_%` tables, views, functions, triggers, sequences and foreign keys
-with its explicit before/after inventories; an added, missing or externally
-referenced object makes the transaction fail rather than widening it through
-`CASCADE`. Its schema digest also seals definitions, columns, constraints and
-indexes.
-
-| Disposition | Exact owners |
-| --- | --- |
-| Empty and reset identity | `news_agent_assignments`, `news_agent_runtime_manifests`, `news_canary_activations`, `news_deliveries`, `news_event_assets`, `news_event_bands`, `news_event_evidence_snapshots`, `news_event_members`, `news_event_reactions`, `news_events`, `news_external_miss_snapshots`, `news_ingest_state`, `news_items`, `news_learning_artifacts`, `news_learning_cases`, `news_learning_epochs`, `news_learning_retention_state`, `news_model_recordings`, `news_oi_signals`, `news_opennews_incidents`, `news_reviews`, `news_verdicts` |
-| Preserve rows and schema | `news_market_instrument_listing_events`, `news_market_instruments`, `news_market_liquidations`, `news_quote_snapshots`, `news_symbol_aliases` |
-| Drop permanently | both `current_contract_archive_only` columns; `news_current_events_v1`; `ix_news_events_current_opened`; `news_current_event_archive_guard`; all three archive-check triggers |
-| Recreate current-only | `news_review_task_source_v1`, `news_review_records_v1`, and the current verdict-evidence guard |
-| Keep current objects | `news_review_active_agent_v1`, `news_review_external_source_v1`, `news_review_pairwise_tasks_v1`, current validation/append-only functions and triggers; the incident sequence is reset with its table |
-| Preserve outside News evidence | every `trading_%` and Capital owner, every historical Alembic revision, and the complete Price/instrument rows named above |
-
-Phase 0 is fail-closed:
-
-1. Verify the branch is merged, the primary checkout is clean at that exact
-   successful-main-CI SHA, and `uv run tracefold config` reports only the
-   intended operator-owned paths and redacted configured state. Record the Git
-   SHA, Alembic revision, image ID, runtime revision, target runtime-manifest
-   SHA, `tracefold db audit`, and `tracefold news bus-check` output in the
-   maintenance record.
-2. Let Workers drain the four code-owned queues (`news.raw`, `news.triage`,
-   `news.deliver`, `news.dead`, with the configured prefix). Save
-   any dead-letter incident evidence, purge it with `tracefold news dlq purge`,
-   then stop Serve, Workers and Nautilus. Query RabbitMQ after the stop and
-   require `messages_ready=0` and `messages_unacknowledged=0` for all four
-   queues. With every queue empty, both the dead-letter count and stale Event
-   reference count are exactly zero.
-3. Take a restorable full PostgreSQL snapshot with the operator's normal backup
-   mechanism, restore it into an isolated database, and run `tracefold db
-   audit` there. Compute the SHA-256 of the immutable snapshot file only after
-   that restore succeeds. Also snapshot the RabbitMQ volume/topology if the
-   backup policy requires a whole-stack rollback. Do not continue with an
-   unverified or mutable snapshot.
-4. Prebuild the exact main image with
-   `TRACEFOLD_BUILD_REVISION=<40-hex-main-sha>`, inspect its full
-   `sha256:<64-hex>` image ID, export it as `TRACEFOLD_IMAGE_DIGEST`, then run
-   `docker compose run --rm --no-deps --entrypoint tracefold migrate db
-   news-genesis-manifest`. Record `data.runtime_manifest_sha` from that
-   read-only command as the expected target runtime-manifest SHA. The command
-   computes it inside that same configured image from the active operator
-   config, stable bundle, compiled candidate set, image ID and runtime revision.
-   Do not use a tag or a value from another build.
-5. Export one compact JSON value as
-   `TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON` with exactly these fields (no extra
-   keys), then run `make up`. The Makefile rechecks exact main CI, owns the
-   deployment lock, rebuilds or reuses the exact image, stops runtimes, and the
-   `migrate` service receives the JSON and image identity. Before changing the
-   database, `make up` independently computes the target manifest through the
-   same read-only image command. It runs migration only after
-   the broker policy import, reads every configured News queue after the
-   runtimes stop, and rejects a missing queue, consumer, policy/topology drift,
-   ready/unacked/delayed/dead-letter message, or a queue total that differs
-   from the JSON:
-
-   ```json
-   {
-     "mode": "maintenance_window",
-     "tested_git_sha": "<40 lowercase hex>",
-     "deployed_git_sha": "<same 40 lowercase hex>",
-     "image_digest": "sha256:<64 lowercase hex>",
-     "runtime_revision": "<same 40 lowercase hex>",
-     "runtime_manifest_sha": "<64 lowercase hex>",
-     "snapshot_sha256": "<64 lowercase hex>",
-     "snapshot_verified": true,
-     "queue_ready": 0,
-     "queue_unacked": 0,
-     "queue_dead_letter": 0,
-     "queue_stale_reference_count": 0
-   }
-   ```
-
-`0336` never infers freshness from mutable News or Trading rows. The migration
-command recognizes a fresh install only when `alembic_version` did not exist
-before the migration run; it still computes exact image/runtime identities and
-requires the same live empty-broker observation, but records the canonical empty
-snapshot digest because no pre-existing database state exists. Every existing
-database requires the operator JSON above. `0336` rejects a missing field,
-extra field, invalid identity, unverified snapshot, nonzero or unobserved queue
-count, a Git mismatch, an image/runtime-manifest mismatch or schema-object
-inventory drift before deleting anything.
-
-After deployment, require Alembic head `20260903_0359`; zero rows in every cleared
-owner except the single new `news_learning_artifacts(kind='epoch_reset')` row
-and fresh singleton rows in `news_ingest_state` and
-`news_learning_retention_state`;
-unchanged counts in all five preserved owners and all `trading_%` owners; no
-retired column/view/index/function/trigger; and no unvalidated `news_%`
-constraint. Recompute the receipt address from canonical
-`{kind: "epoch_reset", payload: ...}` and require it to equal `artifact_sha`.
-The payload must bind the exact Git/image/runtime manifest, pre/post News schema
-digests and counts, preserved counts, verified snapshot digest, the
-content-addressed live broker observation, zero queue and stale-canary counts,
-the full disposition, and
-`rollback=verified_snapshot_restore_only`.
-
-Start the exact image, then require Workers `/readyz` to publish the same target
-runtime-manifest SHA. `make up` always compares it with the pre-migration target
-for maintenance upgrades and fresh installs. Require all readiness endpoints
-green, the first new Event to
-complete the current evidence/verdict/delivery path, and a restart to preserve
-that result without recovering any pre-genesis identifier. Open a new review,
-dataset, candidate and canary epoch only from post-genesis evidence; the
-migration receipt is not evidence of model quality. The subsequent `0337`
-revision only grants Nautilus execution on `trading_canonical_jsonb(JSONB)`;
-`0338` removes the retired global readiness fields; `0339` then hard-cuts the
-migration identity without altering or reintroducing any News schema object.
 
 An existing volume at 0283 needs no new password or offline role bootstrap.
 Before its first 0284–0295 upgrade, take a restorable volume backup, stop Serve

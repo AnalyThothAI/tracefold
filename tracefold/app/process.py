@@ -44,11 +44,19 @@ def create_probe_app(
     title: str,
     readiness: Callable[[], dict[str, Any]],
     render_metrics: Callable[[], str] | None = None,
+    readiness_status_gate: bool = True,
 ) -> FastAPI:
     """Liveness, readiness and -- only where the process exports one -- a Prometheus route.
 
     `/healthz` never calls `readiness`: it answers whether the process is running at all. `/readyz`
-    answers the owner's question and is 200 or 503 on its `ok`, and nothing else.
+    answers the owner's question, and the owner chooses what the status code means.
+
+    Workers keeps the gate: a Compose healthcheck and `make up` both wait on that endpoint, so "not
+    ready" has to be a non-2xx there. The execution runtime turns it off (#598 D5-b). Its payload is
+    the whole diagnosis -- `execution_safe`, `entries_armed`, `entry_block_reason`, the position and
+    order counts -- and an operator asking `make runtime-status` what is wrong with the process that
+    owns live exposure was answered with a 503 whose body `curl -fsS` then threw away. `ok` still
+    says the same thing; it says it inside the payload, where it can be read.
     """
 
     app = FastAPI(title=title, docs_url=None, redoc_url=None, openapi_url=None)
@@ -60,7 +68,8 @@ def create_probe_app(
     @app.get("/readyz")
     async def readyz() -> JSONResponse:
         payload = readiness()
-        return JSONResponse(payload, status_code=200 if payload["ok"] else 503)
+        unavailable = readiness_status_gate and not payload["ok"]
+        return JSONResponse(payload, status_code=503 if unavailable else 200)
 
     if render_metrics is not None:
 

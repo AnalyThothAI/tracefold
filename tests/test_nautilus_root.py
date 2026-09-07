@@ -9,6 +9,7 @@ from typing import Any, cast
 from uuid import UUID
 
 import pytest
+from fastapi.testclient import TestClient
 from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
 from nautilus_trader.model.identifiers import InstrumentId
 from pydantic import ValidationError
@@ -322,6 +323,34 @@ def test_probe_readiness_requires_execution_safety_but_not_entry_arming() -> Non
         "heartbeat_at_ns",
     }
     assert set(nautilus_root._ProbeState.starting(oi_profile("paper")).readiness()) <= set(payload)
+
+
+def test_the_runtime_probe_serves_a_blocked_payload_with_200_not_an_empty_503() -> None:
+    """The endpoint an operator reads about live exposure always answers with what it knows.
+
+    `make runtime-status` fetched it with `curl -fsS`, so `ok=false` produced an empty body and a
+    curl exit code where the payload naming `execution_safe`, `entry_block_reason` and the position
+    counts was the whole answer (#598 D5-b). `ok` is unchanged; only the status code is.
+    """
+
+    blocked = _probe_payload(
+        replace(
+            _runtime_state(),
+            execution_safe=False,
+            entry_block_reason="startup_reconciliation_unproven",
+        )
+    )
+    server = nautilus_root._probe_server(lambda: blocked)
+    client = TestClient(server.config.app)
+
+    response = client.get("/readyz")
+
+    assert blocked["ok"] is False
+    assert response.status_code == 200
+    assert response.json() == blocked
+    assert response.json()["entry_block_reason"] == "startup_reconciliation_unproven"
+    # Liveness is what the Compose healthcheck asks, and it is unchanged.
+    assert client.get("/healthz").text == "ok\n"
 
 
 def test_reconciliation_observation_preserves_native_ids_and_flat_proof() -> None:

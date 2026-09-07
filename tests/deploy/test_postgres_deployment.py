@@ -101,12 +101,10 @@ def test_compose_keeps_processes_separate_but_uses_one_postgres_login() -> None:
     # must never be what keeps the exposure owner from coming back (#537 D4); the schema head is
     # asserted inside the process instead.
     assert services["nautilus"]["depends_on"] == {"postgres": {"condition": "service_healthy"}}
-    assert services["migrate"]["environment"] == {
-        "TRACEFOLD_IMAGE_DIGEST": "${TRACEFOLD_IMAGE_DIGEST:-}",
-        "TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON": "${TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON:-}",
-    }
+    # Image identity and nothing else. The News genesis preflight JSON that used to travel with it
+    # is deleted along with the `db migrate` broker check that read it (#598 D5-d).
+    assert services["migrate"]["environment"] == {"TRACEFOLD_IMAGE_DIGEST": "${TRACEFOLD_IMAGE_DIGEST:-}"}
     for service_name in ("serve", "workers", "nautilus"):
-        assert "TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON" not in services[service_name]["environment"]
         assert "rsshub" not in services[service_name]["depends_on"]
     for service_name in ("serve", "workers"):
         assert services[service_name]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
@@ -122,7 +120,9 @@ def test_compose_keeps_processes_separate_but_uses_one_postgres_login() -> None:
     assert services["nautilus"]["ports"] == [
         "${TRACEFOLD_NAUTILUS_HOST:-127.0.0.1}:${TRACEFOLD_NAUTILUS_PORT:-8767}:8767"
     ]
-    assert "http://127.0.0.1:8767/readyz" in services["nautilus"]["healthcheck"]["test"][3]
+    # Liveness, like Serve. The runtime's `/readyz` answers 200 with its payload now (#598 D5-b), so
+    # it cannot be a health signal, and a blocked-but-alive exposure owner must not be restarted.
+    assert "http://127.0.0.1:8767/healthz" in services["nautilus"]["healthcheck"]["test"][3]
     assert set(compose["secrets"]) == {"postgres_password", DATABASE_SECRET, "github_token"}
     assert compose["secrets"][DATABASE_SECRET]["file"] == "${HOME}/.tracefold/postgres_database_password"
 

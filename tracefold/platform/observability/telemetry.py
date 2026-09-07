@@ -178,6 +178,13 @@ class TelemetryRegistry:
             ("reason_class",),
             registry=self.registry,
         )
+        # A gauge, not a counter: this is the state the last Workers attach observed, and it is the
+        # whole replacement for the startup refusal that used to be the report (#598 D5-e).
+        self.news_broker_policy_drift = Gauge(
+            "tracefold_news_broker_policy_drift",
+            "Whether the last Workers broker attach found the effective policy off the checked-in contract.",
+            registry=self.registry,
+        )
         self.news_opennews_incident_open = Gauge(
             "tracefold_news_opennews_incident_open",
             "Current open OpenNews incidents by bounded provider and cause.",
@@ -380,6 +387,9 @@ class TelemetryRegistry:
             field="news_rabbitmq_publish_failure_reason",
         )
         self.news_rabbitmq_publish_failure_total.labels(reason_class=reason_label).inc()
+
+    def set_news_broker_policy_drift(self, *, drifted: bool) -> None:
+        self.news_broker_policy_drift.set(1 if drifted else 0)
 
     def set_news_opennews_incident(
         self,

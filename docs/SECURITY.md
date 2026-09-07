@@ -81,7 +81,13 @@ record a bounded intent and prove only durable recording.
 The Nautilus service is excluded from the default Compose model and remains
 absent while execution is disabled. Canonical paper/live deployment enables
 the explicit `execution` profile and requires Nautilus readiness (`alive &&
-execution_safe`, independent of whether new entries are armed). It alone has
+execution_safe`, independent of whether new entries are armed) — the `ok` field
+of a `/readyz` payload the endpoint now always serves with 200, so an operator
+reading it while the runtime is blocked gets the reason rather than an empty
+body (#598 D5-b). Readiness governs what the runtime does with the account, not
+whether an operator may reach or stop it: the container healthcheck is
+`/healthz`, and `make down` and `make runtime-down` take no preflight and no
+readiness answer before stopping the process. It alone has
 read-only mounts for the Binance pair; absent, empty, symlinked, oversized, or
 over-permissive files fail startup. Neither plaintext nor path enters
 PostgreSQL, HTTP, logs, artifacts, or Issues. No execution credential is

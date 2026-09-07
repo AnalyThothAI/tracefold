@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import re
 import threading
@@ -25,37 +24,22 @@ TEST_DATABASE_NAME = "tracefold_test"
 _CLONE_DATABASE_PATTERN = re.compile(r"tracefold_test_(?:baseline|case|migration)_[0-9a-f]{12}(?:_[0-9]+)?")
 _GENESIS_TEST_GIT_SHA = "1" * 40
 _GENESIS_TEST_IMAGE_DIGEST = "sha256:" + "2" * 64
-_GENESIS_TEST_RUNTIME_MANIFEST_SHA = "3" * 64
 APPLICATION_ROLE = "tracefold"
 _TEST_DATABASE_PASSWORD = "tracefold-test-database-password-0001"
 
 
 @contextmanager
 def news_genesis_test_evidence() -> Iterator[None]:
-    """Supply deterministic cutover evidence only while a test owns its database."""
+    """Supply the deterministic runtime identity a migration run reads, while a test owns its database.
+
+    The three `TRACEFOLD_NEWS_GENESIS_*` values that used to sit beside these two are gone with the
+    `db migrate` broker preflight that wrote them and the pre-baseline revision that read them
+    (#598 D5-d). What is left is the identity `runtime_identity()` reports, which is still real.
+    """
 
     values = {
         "TRACEFOLD_RUNTIME_REVISION": _GENESIS_TEST_GIT_SHA,
         "TRACEFOLD_IMAGE_DIGEST": _GENESIS_TEST_IMAGE_DIGEST,
-        "TRACEFOLD_NEWS_GENESIS_EXPECTED_RUNTIME_MANIFEST_SHA256": _GENESIS_TEST_RUNTIME_MANIFEST_SHA,
-        "TRACEFOLD_NEWS_GENESIS_BROKER_OBSERVATION_SHA256": "5" * 64,
-        "TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON": json.dumps(
-            {
-                "mode": "maintenance_window",
-                "tested_git_sha": _GENESIS_TEST_GIT_SHA,
-                "deployed_git_sha": _GENESIS_TEST_GIT_SHA,
-                "image_digest": _GENESIS_TEST_IMAGE_DIGEST,
-                "runtime_revision": _GENESIS_TEST_GIT_SHA,
-                "runtime_manifest_sha": _GENESIS_TEST_RUNTIME_MANIFEST_SHA,
-                "snapshot_sha256": "4" * 64,
-                "snapshot_verified": True,
-                "queue_ready": 0,
-                "queue_unacked": 0,
-                "queue_dead_letter": 0,
-                "queue_stale_reference_count": 0,
-            },
-            sort_keys=True,
-        ),
     }
     previous = {name: os.environ.get(name) for name in values}
     os.environ.update(values)
