@@ -17,20 +17,22 @@ from tracefold.platform.config.models import Settings, news_push_availability
 CHANNEL_ID = -1001234567890
 
 
-def _telegram_settings(tmp_path: Path, *, chat_id: object = CHANNEL_ID, proxy_url: object = None) -> Settings:
-    settings = Settings.model_validate(
-        {
-            "news": {
-                "enabled": True,
-                "push": {
-                    "enabled": True,
-                    "telegram_bot_token_file": "telegram_bot_token",
-                    "telegram_chat_id": chat_id,
-                    "telegram_proxy_url": proxy_url,
-                },
-            }
-        }
-    )
+def _telegram_settings(
+    tmp_path: Path,
+    *,
+    chat_id: object = CHANNEL_ID,
+    proxy_url: object = None,
+    min_interval_seconds: float | None = None,
+) -> Settings:
+    push: dict[str, object] = {
+        "enabled": True,
+        "telegram_bot_token_file": "telegram_bot_token",
+        "telegram_chat_id": chat_id,
+        "telegram_proxy_url": proxy_url,
+    }
+    if min_interval_seconds is not None:
+        push["min_interval_seconds"] = min_interval_seconds
+    settings = Settings.model_validate({"news": {"enabled": True, "push": push}})
     settings.set_config_dir(tmp_path)
     return settings
 
@@ -51,6 +53,51 @@ def test_telegram_push_requires_a_secure_token_file_and_private_channel(tmp_path
     assert availability.delivery_available is True
     assert availability.telegram_bot_token_file_configured is True
     assert availability.telegram_chat_id_configured is True
+
+
+def test_a_telegram_target_paced_for_feishu_is_reported_and_still_delivers(tmp_path: Path) -> None:
+    """#604 N3: provider-aware pacing is advice printed beside a working configuration, not a gate.
+
+    Telegram admits about 20 messages a minute to one chat. The 0.6 s default was chosen against
+    Feishu's custom bot, which admits about 100, so a deployment that switches provider and keeps the
+    number is refused by Telegram roughly four times in five. That is worth telling an operator and
+    it is not worth refusing their configuration over: the number stays theirs, delivery stays
+    available, and nothing in the process reads this field to decide anything.
+    """
+
+    token_file = tmp_path / "telegram_bot_token"
+    token_file.write_text("123456:abcdefghijklmnopqrstuvwxyzABCDE_12345\n", encoding="utf-8")
+    token_file.chmod(0o600)
+
+    default_paced = news_push_availability(_telegram_settings(tmp_path))
+    advised = news_push_availability(_telegram_settings(tmp_path, min_interval_seconds=3.0))
+
+    assert default_paced.pacing_warning == "news_item_push_telegram_interval_below_provider_rate"
+    assert default_paced.delivery_available is True
+    assert default_paced.reason is None
+    assert advised.pacing_warning is None
+    assert advised.delivery_available is True
+
+
+def test_a_feishu_target_at_its_own_safe_interval_is_never_advised_about_telegrams(tmp_path: Path) -> None:
+    settings = Settings.model_validate(
+        {
+            "news": {
+                "enabled": True,
+                "push": {
+                    "enabled": True,
+                    "feishu_webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/example",
+                },
+            }
+        }
+    )
+    settings.set_config_dir(tmp_path)
+
+    availability = news_push_availability(settings)
+
+    assert availability.provider == "feishu"
+    assert availability.pacing_warning is None
+    assert settings.news.push.min_interval_seconds == 0.6
 
 
 def test_telegram_push_fails_closed_when_token_file_permissions_are_open(tmp_path: Path) -> None:

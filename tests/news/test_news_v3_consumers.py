@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from decimal import Decimal
@@ -1284,12 +1285,13 @@ def _deliverer(
     price_fetcher_for: Any | None = None,
     progression_verifier: Any | None = None,
     tradability_verifier: Any | None = None,
+    min_interval_seconds: float = 0.0,
 ) -> DelivererLoop:
     return DelivererLoop(
         db=FakeWorkerDatabase(news, price=price),
         sender=sender,
         finite_operations=InlineFinite(),
-        min_interval_seconds=0.0,
+        min_interval_seconds=min_interval_seconds,
         candle_fetcher_for=candle_fetcher_for,
         price_fetcher_for=price_fetcher_for,
         progression_verifier=progression_verifier,
@@ -1476,6 +1478,77 @@ def test_deliverer_never_retries_a_send_whose_outcome_the_provider_did_not_repor
     settle = news.kwargs_of("settle_delivery")
     assert (settle["state"], settle["error_code"]) == ("terminal", "news_delivery_feishu_transport_unreadable")
     assert "release_delivery" not in news.names()
+
+
+def test_the_enrichment_edit_is_paced_by_the_same_entry_the_initial_send_uses() -> None:
+    """#604 N3: one process, one pacer, whether the outbound message is a send or an edit.
+
+    The Deliverer used to hold a second lock and a second stamp for its edit, so on Telegram -- which
+    edits every News card once -- the provider saw twice the rate the operator configured. Both calls
+    now queue at `InitialSendEntry`, which is what makes `min_interval_seconds` mean one thing.
+    """
+
+    interval = 0.05
+
+    class TimingSender(RecordingEditableSender):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.at: list[tuple[str, float]] = []
+
+        def send_card(self, card: Any, **kwargs: Any) -> dict[str, Any]:
+            self.at.append(("send", time.monotonic()))
+            return super().send_card(card, **kwargs)
+
+        def edit_card(self, receipt: Mapping[str, Any], card: Any, **kwargs: Any) -> dict[str, Any]:
+            self.at.append(("edit", time.monotonic()))
+            return super().edit_card(receipt, card, **kwargs)
+
+    async def scenario() -> TimingSender:
+        sender = TimingSender()
+        consumer = _deliverer(_delivery_news(), sender=sender, min_interval_seconds=interval)
+        await consumer.deliver(event_id="ev-strong")
+        await consumer.close()
+        return sender
+
+    sender = asyncio.run(scenario())
+
+    assert [operation for operation, _ in sender.at] == ["send", "edit"]
+    assert sender.at[1][1] - sender.at[0][1] >= interval
+    # And the loop keeps no pacing state of its own for anyone to forget about.
+    assert not hasattr(_deliverer(_delivery_news()), "_edit_lock")
+
+
+def test_a_deferred_claim_keeps_its_lease_unless_the_provider_asked_for_longer() -> None:
+    """#604 N3: `retry_after` may raise this lane's flat 30 s wait; nothing may lower it.
+
+    The claim already leased the row until one retry delay from now. A provider that answered a rate
+    limit with a number of its own is obeyed when the number is larger -- coming back sooner earns
+    another refusal and spends an attempt on nothing -- and `GREATEST` in `defer_delivery_claim` is
+    what makes every other deferral leave the lease exactly where the claim put it.
+    """
+
+    class RateLimited(TransientError):
+        retry_after_seconds = 120.0
+
+    class Ordinary(TransientError):
+        pass
+
+    def _deferred(failure: type[TransientError]) -> dict[str, Any]:
+        def refuse(**_kwargs: Any) -> None:
+            raise failure("the provider refused this attempt")
+
+        news = _delivery_news(latest_verdict=refuse, defer_delivery_claim=True)
+        consumer = _deliverer(news, sender=RecordingSender())
+        asyncio.run(consumer._deliver_claim(event_id="ev-strong", kind="first", attempts=1))
+        return news.kwargs_of("defer_delivery_claim")
+
+    advised = _deferred(RateLimited)
+    plain = _deferred(Ordinary)
+
+    # The advice is a due time in the future; the ordinary deferral asks for nothing beyond `now`, so
+    # `GREATEST` leaves the claim's own lease standing.
+    assert advised["next_attempt_at_ms"] - advised["now_ms"] == 120_000
+    assert plain["next_attempt_at_ms"] == plain["now_ms"]
 
 
 def test_deliverer_has_no_reader_count_input() -> None:

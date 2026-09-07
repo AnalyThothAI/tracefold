@@ -1317,8 +1317,24 @@ Diagnose News in this order:
    `hourly_cap_reached` error, but policy v7 never writes it.
    `delivery_available` is true only when the selected provider contract is
    complete and Workers is running. If push is explicitly enabled with an
-   absent or insecure Telegram token file, Workers fails startup; inspect
-   `workers_state` and Workers logs instead of treating the target as available.
+   absent or insecure Telegram token file, Workers keeps running and reports
+   `news_delivery` `unavailable`: read the fault as `news.push.reason` in
+   `uv run tracefold config` (`news_item_push_telegram_bot_token_unavailable`
+   here), correct the configuration and restart Workers. Reception, admission,
+   triage and the market loop are unaffected while it is wrong (#562 §5 row 1).
+
+   `news.push.min_interval_seconds` is the shortest gap between two outbound
+   messages, and one pacer holds it for every one of them — a first card, its
+   enrichment edit, and a market card all queue at the same lock, so the number
+   is the rate the provider sees rather than half of it (#604 N3). The default
+   0.6 s is chosen for Feishu's custom bot, which admits about 100 messages a
+   minute. Telegram admits about 20 to one chat, so a Telegram deployment
+   should set at least 3 s; `tracefold config` reports
+   `news.push.pacing_warning` =
+   `news_item_push_telegram_interval_below_provider_rate` when it is lower.
+   That is advice printed beside a working configuration and nothing else:
+   delivery stays available, the number stays the operator's, and no check
+   refuses it.
 
    Not every failure ends the card. A preflight or send failure the adapter can
    defend as not sent *and* retriable — a connect failure, a 429 — spends one of the

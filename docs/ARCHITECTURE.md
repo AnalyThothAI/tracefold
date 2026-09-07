@@ -2798,9 +2798,13 @@ ever.
 
 Sending goes through the one entry ordinary News uses. `InitialSendEntry` in
 `tracefold/news/pipeline/delivery.py` holds the operator's single
-`min_interval_seconds` and one lock, so both owners queue in arrival order and the
-provider never sees two sends at once. The market loop claims one card, releases
-its PostgreSQL connection, and only then calls the sender.
+`min_interval_seconds` and one lock, so every outbound message queues in arrival
+order and the provider never sees two at once. Every one means every one: a first
+card, the enrichment edit that follows it on an editable provider, and a market
+card. The Deliverer kept a second lock and a second stamp for its edit until
+#604 N3, which made the provider's real rate twice the configured number on
+Telegram. The market loop claims one card, releases its PostgreSQL connection,
+and only then calls the sender.
 
 The card carries the market's own price on the same terms the News card does.
 #553 kept market observations out of News's first-card preparation entirely, and

@@ -441,6 +441,10 @@ def test_delivery_adapters_never_import_the_market_notification_loop() -> None:
         "DELIVERY_FAILURE_RETRIABLE",
         "DELIVERY_FAILURE_UNKNOWN",
         "classify_delivery_failure",
+        # #604 N3: how long a refusal asked the caller to wait is the same kind of transport fact as
+        # what it proved about the message, so both lanes read it from here and neither from the other.
+        "RETRY_AFTER_MAX_SECONDS",
+        "retry_after_ms",
     }
     # #604 N1: reading that vocabulary is one function, and both delivery loops call it. A second
     # copy of "may this be sent again" is how the News lane came to settle a rate limit `terminal`

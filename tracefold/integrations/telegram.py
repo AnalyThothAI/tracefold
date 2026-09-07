@@ -590,6 +590,12 @@ def _telegram_message(
             ),
             _telegram_source_line(card, news=news),
             _telegram_link_line(card, news=news),
+            # The card's own identity line, which this channel used to be the only one to drop: a
+            # reader's screenshot named no Event, so an operator had nothing to look the card up by,
+            # and a market card with no console configured carries its detail id here or nowhere
+            # (#604 N3). It joins the footer rather than trailing it as a section of its own, so
+            # clipping cannot keep the id while giving up the source line above it.
+            _escape_html(card.note_text()),
         )
         if line
     ]
@@ -628,7 +634,15 @@ def _fit_telegram_message(sections: Sequence[str]) -> str:
 
 
 def _telegram_text_length(sections: Sequence[str]) -> int:
-    return len(_plain_html_text(_SECTION_SEPARATOR.join(sections).strip()))
+    """The length Telegram measures: UTF-16 code units of the text, with the markup taken out.
+
+    Python counts code points, and every emoji this renderer marks a card with -- 🟢 🔵 💠 🟠 🆕 🔄
+    🎯 🧭 🔗 -- is one code point and two UTF-16 units. A card trimmed to 4096 by the wrong unit was
+    still over the real bound, Telegram answered 400, and the whole delivery settled `terminal` with
+    the reader getting nothing (#604 N3).
+    """
+
+    return len(_plain_html_text(_SECTION_SEPARATOR.join(sections).strip()).encode("utf-16-le")) // 2
 
 
 def _header_icon(card: ReaderCard) -> str:

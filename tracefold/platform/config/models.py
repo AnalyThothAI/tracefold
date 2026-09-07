@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Final, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
@@ -790,6 +790,14 @@ class Settings(BaseModel):
         return token or None
 
 
+# Telegram admits about 20 messages a minute to one chat, so anything under three seconds is a rate
+# this deployment cannot sustain; Feishu's custom bot admits about 100, which is what the 0.6 s
+# default was chosen against. The number stays the operator's -- this is advice printed beside it,
+# never a bound on it (#604 N3).
+TELEGRAM_MIN_INTERVAL_ADVICE_SECONDS: Final = 3.0
+PACING_WARNING_TELEGRAM_INTERVAL: Final = "news_item_push_telegram_interval_below_provider_rate"
+
+
 @dataclass(frozen=True, slots=True)
 class NewsPushAvailability:
     requested: bool
@@ -802,6 +810,9 @@ class NewsPushAvailability:
     telegram_chat_id_configured: bool
     # Whether an outbound proxy is configured, and never which one: the URL may carry credentials.
     telegram_proxy_configured: bool
+    # Advice, not a fault. `reason` says why delivery is unavailable; this says the configuration is
+    # complete and will still be rate limited by the provider it names. Nothing reads it to decide.
+    pacing_warning: str | None
 
 
 def news_push_availability(settings: Settings, *, inspect_secret_file: bool = True) -> NewsPushAvailability:
@@ -839,11 +850,17 @@ def news_push_availability(settings: Settings, *, inspect_secret_file: bool = Tr
         reason = "news_item_push_feishu_webhook_missing"
     elif requested and provider == "feishu" and not is_feishu_webhook_url(push.feishu_webhook_url):
         reason = "news_item_push_feishu_webhook_invalid"
+    pacing_warning = (
+        PACING_WARNING_TELEGRAM_INTERVAL
+        if provider == "telegram" and push.min_interval_seconds < TELEGRAM_MIN_INTERVAL_ADVICE_SECONDS
+        else None
+    )
     return NewsPushAvailability(
         requested=requested,
         delivery_available=requested and reason is None,
         reason=reason,
         provider=provider,
+        pacing_warning=pacing_warning,
         feishu_webhook_url_configured=webhook_configured,
         feishu_signing_secret_configured=bool(push.feishu_signing_secret),
         telegram_bot_token_file_configured=token_file_configured,

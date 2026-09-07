@@ -728,15 +728,27 @@ class DecisionStorage:
         )
         return bool(cursor.rowcount)
 
-    def defer_delivery_claim(self, *, event_id: str, kind: str, error_code: str, now_ms: int) -> bool:
-        """Keep the claim's lease as the retry's wait and record why this attempt did not finish."""
+    def defer_delivery_claim(
+        self, *, event_id: str, kind: str, error_code: str, next_attempt_at_ms: int, now_ms: int
+    ) -> bool:
+        """Record why this attempt did not finish, and never bring its retry closer than the lease.
+
+        The claim already leased this row until one retry delay from now, and that lease is the wait.
+        `GREATEST` is what makes the caller's number advice rather than a schedule: a provider that
+        answered a rate limit with "not for another two minutes" moves the row later, and every other
+        deferral -- which passes the current stamp -- leaves the lease exactly where the claim put it
+        (#604 N3).
+        """
 
         cursor = self.conn.execute(
             """
-            UPDATE news_delivery_queue SET error_code = %s, updated_at_ms = %s
+            UPDATE news_delivery_queue
+               SET error_code = %s,
+                   next_attempt_at_ms = GREATEST(next_attempt_at_ms, %s),
+                   updated_at_ms = %s
              WHERE event_id = %s AND kind = %s AND state = 'pending'
             """,
-            (error_code, int(now_ms), event_id, kind),
+            (error_code, int(next_attempt_at_ms), int(now_ms), event_id, kind),
         )
         return bool(cursor.rowcount)
 

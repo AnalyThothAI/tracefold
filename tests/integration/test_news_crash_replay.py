@@ -1328,3 +1328,80 @@ def _queue_rows(conn: Any, event_id: str) -> list[dict[str, Any]]:
             (event_id,),
         ).fetchall()
     ]
+
+
+def test_a_providers_retry_after_moves_a_deferred_claim_later_and_never_sooner(conn) -> None:
+    """#604 N3: `retry_after` is advice this lane may take, and `GREATEST` is why it can only add.
+
+    The claim leases the row until one retry delay from now, and that lease is this lane's wait. A
+    provider that answered a rate limit with a number of its own -- Telegram's `parameters.retry_after`
+    or Feishu's `Retry-After` -- is obeyed when it asks for longer, because returning at 30 s against a
+    two-minute limit earns another refusal and spends an attempt on nothing. Every other deferral
+    passes the current stamp, and the row keeps exactly the due time the claim gave it.
+    """
+
+    bus = RecordingBus()
+    db = FaultInjectingDatabase(conn)
+    event_id = _pushable_event(conn, db, bus)
+    repos = repositories_for_connection(conn)
+    stamp = now_ms()
+
+    def _due_at() -> int:
+        row = conn.execute(
+            "SELECT next_attempt_at_ms FROM news_delivery_queue WHERE event_id = %s AND kind = 'first'",
+            (event_id,),
+        ).fetchone()
+        return int(dict(row)["next_attempt_at_ms"])
+
+    repos.news.claim_due_deliveries(
+        now_ms=stamp,
+        next_attempt_at_ms=stamp + DELIVERY_RETRY_DELAY_MS,
+        attempts_max=DELIVERY_ATTEMPTS_MAX,
+        limit=1,
+    )
+    conn.commit()
+    lease = _due_at()
+    assert lease == stamp + DELIVERY_RETRY_DELAY_MS
+
+    # A deferral that asks for nothing -- every failure but a rate limit -- leaves the lease standing.
+    repos.news.defer_delivery_claim(
+        event_id=event_id,
+        kind="first",
+        error_code="news_delivery_deferred:TransientError",
+        next_attempt_at_ms=stamp,
+        now_ms=stamp,
+    )
+    conn.commit()
+    assert _due_at() == lease, "a lane's own wait is never shortened by a deferral"
+
+    # A provider that named a longer wait moves the row, and the claim honours it: not due at the
+    # lease, due at the number the provider asked for.
+    repos.news.defer_delivery_claim(
+        event_id=event_id,
+        kind="first",
+        error_code="news_delivery_feishu_business_rate_limited",
+        next_attempt_at_ms=stamp + 120_000,
+        now_ms=stamp,
+    )
+    conn.commit()
+    assert _due_at() == stamp + 120_000
+    assert (
+        repos.news.claim_due_deliveries(
+            now_ms=lease,
+            next_attempt_at_ms=lease + DELIVERY_RETRY_DELAY_MS,
+            attempts_max=DELIVERY_ATTEMPTS_MAX,
+            limit=1,
+        )
+        == []
+    ), "the row is not due while the provider's wait is still running"
+    conn.commit()
+    assert [
+        row["attempts"]
+        for row in repos.news.claim_due_deliveries(
+            now_ms=stamp + 120_000,
+            next_attempt_at_ms=stamp + 120_000 + DELIVERY_RETRY_DELAY_MS,
+            attempts_max=DELIVERY_ATTEMPTS_MAX,
+            limit=1,
+        )
+    ] == [2]
+    conn.commit()

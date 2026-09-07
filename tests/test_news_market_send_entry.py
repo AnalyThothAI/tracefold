@@ -29,9 +29,17 @@ from tracefold.integrations.feishu import (
     generate_feishu_signature,
 )
 from tracefold.integrations.telegram import TelegramDeliveryError, TelegramNewsPushSender
-from tracefold.news.delivery_contracts import COMMIT_PHASE_NOT_SENT, COMMIT_PHASE_UNKNOWN
+from tracefold.news.delivery_contracts import (
+    COMMIT_PHASE_NOT_SENT,
+    COMMIT_PHASE_UNKNOWN,
+    RETRY_AFTER_MAX_SECONDS,
+)
 from tracefold.news.feishu_card import feishu_card
-from tracefold.news.market_notifications import SEND_ATTEMPTS_MAX, classify_send_failure
+from tracefold.news.market_notifications import (
+    SEND_ATTEMPTS_MAX,
+    SEND_RETRY_BACKOFF_MS,
+    classify_send_failure,
+)
 from tracefold.news.pipeline.delivery import InitialSendEntry
 from tracefold.news.reader_card import ReaderCard, ReaderCardHeader
 from tracefold.platform.observability import TelemetryRegistry
@@ -48,11 +56,17 @@ CARD_PAYLOAD = feishu_card(CARD)
 
 
 class _SlowSender:
-    """A sender whose one external call takes a measurable, fixed time."""
+    """A sender whose one external call takes a measurable, fixed time.
+
+    It edits as well as sends, because an edit is an outbound message to the same chat and the
+    provider counts it against the same rate. `at` records when each call actually reached the
+    provider, which is what a pacing assertion is about.
+    """
 
     def __init__(self, *, seconds: float) -> None:
         self.seconds = seconds
         self.calls: list[str] = []
+        self.at: list[tuple[str, float]] = []
         self.concurrent = 0
         self.max_concurrent = 0
 
@@ -61,9 +75,19 @@ class _SlowSender:
 
     def send_card(self, card: Any, *, channel_payload: Mapping[str, Any], presentation: Any = None) -> dict[str, Any]:
         del card, presentation
+        return self._call("send", channel_payload)
+
+    def edit_card(
+        self, receipt: Mapping[str, Any], card: Any, *, channel_payload: Mapping[str, Any], presentation: Any = None
+    ) -> dict[str, Any]:
+        del receipt, card, presentation
+        return self._call("edit", channel_payload)
+
+    def _call(self, operation: str, channel_payload: Mapping[str, Any]) -> dict[str, Any]:
         self.concurrent += 1
         self.max_concurrent = max(self.max_concurrent, self.concurrent)
         try:
+            self.at.append((operation, time.monotonic()))
             time.sleep(self.seconds)
             self.calls.append(str(channel_payload.get("owner")))
             return {"provider": "test", "owner": channel_payload.get("owner")}
@@ -114,6 +138,58 @@ async def _paces_both() -> None:
     finite.close()
     # Three gaps between four sends. Two independent pacers would have halved this.
     assert elapsed >= 3 * 0.05
+
+
+def test_an_edit_is_paced_behind_a_send_by_the_operators_one_interval() -> None:
+    """#604 N3: the enrichment edit used to have a pacer of its own, so the rate was twice the number.
+
+    Telegram edits every News card once, and the Deliverer's private `_edit_lock` and `_last_edit_at`
+    meant an edit could reach the provider in the same millisecond as an initial send. The operator
+    configures one interval because there is one chat being interrupted; this is that interval
+    holding for every outbound message, whichever owner produced it.
+    """
+
+    asyncio.run(_paces_an_edit())
+
+
+async def _paces_an_edit() -> None:
+    interval = 0.2
+    sender = _SlowSender(seconds=0.0)
+    entry, finite = await _entry(sender, min_interval_seconds=interval)
+    send = asyncio.create_task(entry.send_prepared_card(CARD, channel_payload={"owner": "news"}))
+    await asyncio.sleep(0)
+    edit = asyncio.create_task(
+        entry.send_prepared_edit(
+            {"provider": "telegram", "message_id": 7}, CARD, channel_payload={"owner": "news-edit"}
+        )
+    )
+    await asyncio.gather(send, edit)
+    finite.close()
+
+    assert [operation for operation, _ in sender.at] == ["send", "edit"]
+    assert sender.max_concurrent == 1
+    assert sender.at[1][1] - sender.at[0][1] >= interval
+
+
+def test_an_entry_without_an_editable_sender_refuses_the_edit_rather_than_pacing_nothing() -> None:
+    asyncio.run(_no_editable_sender())
+
+
+async def _no_editable_sender() -> None:
+    class _SendOnly:
+        def prepare(self) -> None:
+            return None
+
+        def send_card(self, card: Any, *, channel_payload: Mapping[str, Any], presentation: Any = None) -> Any:
+            raise AssertionError("an edit must never be answered by a send")
+
+        def close(self) -> None:
+            return None
+
+    entry, finite = await _entry(_SendOnly())
+    with pytest.raises(RuntimeError, match="news_delivery_editable_sender_unavailable"):
+        await entry.send_prepared_edit({"provider": "feishu"}, CARD, channel_payload={"owner": "news-edit"})
+    finite.close()
 
 
 def test_a_market_burst_never_starves_the_news_card_already_waiting() -> None:
@@ -570,6 +646,38 @@ def test_the_market_classifier_reads_the_adapters_own_evidence_end_to_end() -> N
         unknown = classify_send_failure(exc, attempts=1)
     assert unknown.state == "unknown"
     assert unknown.retry_in_ms is None
+
+
+def test_a_named_retry_after_raises_the_market_backoff_and_can_never_shorten_it() -> None:
+    """#604 N3: the ladder is this lane's floor, and a provider that named a wait is obeyed above it.
+
+    A 429 is the one failure where the provider knows the answer -- Telegram returns
+    `parameters.retry_after`, Feishu a `Retry-After` header -- and the adapters carry it on the error.
+    Coming back at 5 s against a 60 s limit spends the whole three-attempt budget on refusals and the
+    card settles `failed` without ever having been offered.
+    """
+
+    class _RateLimited(Exception):
+        code = "news_delivery_feishu_business_rate_limited"
+        commit_phase = COMMIT_PHASE_NOT_SENT
+        retryable = True
+
+        def __init__(self, retry_after_seconds: object) -> None:
+            super().__init__(self.code)
+            self.retry_after_seconds = retry_after_seconds
+
+    longer = classify_send_failure(_RateLimited(60), attempts=1)
+    shorter = classify_send_failure(_RateLimited(1), attempts=1)
+    absurd = classify_send_failure(_RateLimited(9_999), attempts=1)
+    unreadable = classify_send_failure(_RateLimited("soon"), attempts=1)
+
+    assert (longer.state, longer.retry_in_ms) == ("pending", 60_000)
+    # The ladder's own 5 s stands: advice may add to a wait and never take from one.
+    assert shorter.retry_in_ms == SEND_RETRY_BACKOFF_MS[0]
+    assert absurd.retry_in_ms == int(RETRY_AFTER_MAX_SECONDS * 1000)
+    assert unreadable.retry_in_ms == SEND_RETRY_BACKOFF_MS[0]
+    # And a spent budget is still a spent budget; nothing here buys another attempt.
+    assert classify_send_failure(_RateLimited(60), attempts=SEND_ATTEMPTS_MAX).state == "failed"
 
 
 def test_an_entry_with_no_sender_reports_it_rather_than_pretending_to_send() -> None:
