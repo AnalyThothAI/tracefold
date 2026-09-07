@@ -6721,9 +6721,41 @@
         "title": "StatusRuntimeData",
         "type": "object"
       },
+      "TradingAdmissionCountData": {
+        "additionalProperties": false,
+        "description": "How many frames admission answered this way in the window.\n\nA count, not a row: #589 PR-2 deleted a `decisions[]` that published one object per frame with its\nwhole evidence blob, 400 of them on every 15 s poll, and nothing rendered them. This is the\ndistribution the desk's funnel draws its top from -- at most a dozen `(status, reason)` pairs\nwhatever the window holds -- and no frame identity, evidence or Case link travels with it.\n`reason` is nullable because the ledger's own column is.",
+        "properties": {
+          "count": {
+            "minimum": 0.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "count"
+        ],
+        "title": "TradingAdmissionCountData",
+        "type": "object"
+      },
       "TradingCaseData": {
         "additionalProperties": false,
-        "description": "One frozen Case, as the drawer behind `?case=<id>` renders it.\n\nThe four measured OI numbers here were a second copy of what `policy_checks` already carries with\nthe threshold each was measured against, `policy_version` a second copy of `policy_id`, and\n`policy_decision` a required Literal over a nullable column -- exactly the shape that turned a\nstored `NULL` into a 500 on a read route (#532, #537 PR-5). `state` and `policy_reason` are the\nterminal answer; `base_symbol` is the identity the drawer titles itself with.",
+        "description": "One frozen Case, as the drawer behind `?case=<id>` renders it.\n\nThe four measured OI numbers here were a second copy of what `policy_checks` already carries with\nthe threshold each was measured against, `policy_version` a second copy of `policy_id`, and\n`policy_decision` a required Literal over a nullable column -- exactly the shape that turned a\nstored `NULL` into a 500 on a read route (#532, #537 PR-5). `policy_config` was the same duplicate\none level up: the frozen dictionary it published is where `policy_checks[].threshold` comes from,\nso every number that was actually tested is already on the row beside what it was measured against,\nand `policy_config_digest` still identifies the whole set (#604 T3). `state` and `policy_reason`\nare the terminal answer; `base_symbol` is the identity the drawer titles itself with.",
         "properties": {
           "base_symbol": {
             "title": "Base Symbol",
@@ -6803,13 +6835,6 @@
             "title": "Policy Checks",
             "type": "array"
           },
-          "policy_config": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "title": "Policy Config",
-            "type": "object"
-          },
           "policy_config_digest": {
             "anyOf": [
               {
@@ -6871,8 +6896,16 @@
       },
       "TradingCasesData": {
         "additionalProperties": false,
-        "description": "One bounded page of Cases plus the two durable 24 h distributions.\n\nThere is no `next_cursor` and no cursor parameter: the desk opens one Case at a time from\n`?case=<id>` and renders one 24 h count card, and no reader ever asked for a second page (#537 PR-5).",
+        "description": "The Case behind `?case_id=<id>`, plus the three durable 24 h distributions.\n\nThere is no `next_cursor` and no cursor parameter: the desk opens one Case at a time from\n`?case=<id>` and renders one 24 h count card, and no reader ever asked for a second page (#537 PR-5).\n`cases` is that one Case or nothing at all: without `case_id` it is empty, because the unconditional\n100-row page this route used to send on every poll was rendered by nothing and could not reach the\n`NO_TRADE` Cases an operator most wants to open (#604 T3). `complete` still says the answer was not\ntruncated, which for a primary-key read it never is.",
         "properties": {
+          "admission_counts_24h": {
+            "items": {
+              "$ref": "#/components/schemas/TradingAdmissionCountData"
+            },
+            "maxItems": 64,
+            "title": "Admission Counts 24H",
+            "type": "array"
+          },
           "cases": {
             "items": {
               "$ref": "#/components/schemas/TradingCaseData"
@@ -7056,6 +7089,17 @@
           "command_id": {
             "title": "Command Id",
             "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
           },
           "requested_at_ns": {
             "title": "Requested At Ns",
@@ -7410,6 +7454,17 @@
             ],
             "title": "Disposition Reason"
           },
+          "entry_filled_at_ns": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Filled At Ns"
+          },
           "entry_id": {
             "title": "Entry Id",
             "type": "string"
@@ -7470,6 +7525,28 @@
           "observed_at_ns": {
             "title": "Observed At Ns",
             "type": "integer"
+          },
+          "order_reject_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Reject Reason"
+          },
+          "position_closed_at_ns": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position Closed At Ns"
           },
           "realized_pnl_usd": {
             "anyOf": [
@@ -7546,9 +7623,13 @@
             },
             "title": "Executions",
             "type": "array"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/TradingRealizedTotalsData"
           }
         },
         "required": [
+          "totals",
           "complete"
         ],
         "title": "TradingExecutionsData",
@@ -7639,6 +7720,38 @@
           "passed"
         ],
         "title": "TradingPolicyCheckData",
+        "type": "object"
+      },
+      "TradingRealizedTotalsData": {
+        "additionalProperties": false,
+        "description": "What this account slot has realized, over the current UTC day and over its whole ledger.\n\nThe desk could only sum the realized column of the rows it was showing, so the one number an\noperator reconciles against the venue was the one number the console could not produce (#604 T3).\nBoth sums fold every `closed` position the slot has, manual entries included, because a manual\nentry is a trade this desk made. Decimal strings, like every other money field here.",
+        "properties": {
+          "closed_today": {
+            "minimum": 0.0,
+            "title": "Closed Today",
+            "type": "integer"
+          },
+          "closed_total": {
+            "minimum": 0.0,
+            "title": "Closed Total",
+            "type": "integer"
+          },
+          "realized_today_usd": {
+            "title": "Realized Today Usd",
+            "type": "string"
+          },
+          "realized_total_usd": {
+            "title": "Realized Total Usd",
+            "type": "string"
+          }
+        },
+        "required": [
+          "realized_today_usd",
+          "realized_total_usd",
+          "closed_today",
+          "closed_total"
+        ],
+        "title": "TradingRealizedTotalsData",
         "type": "object"
       },
       "TradingStatusData": {
@@ -8494,27 +8607,17 @@
     },
     "/api/trading/cases": {
       "get": {
+        "description": "One frozen Case by identity, beside the three durable 24 h distributions (#604 T3).\n\nThe list this route used to send is gone: 100 whole Cases on every 15 s poll, of which the desk\nrendered at most the one behind `?case=<id>`, and never the `NO_TRADE` Cases past the hundredth --\n553 of the 584 in a production day -- which are the ones an operator opens to ask why. A Case is\nreached by its own identity now, and no identity means no Case rather than a page nobody reads.\nThe two filters that narrowed that page went with it: `?underlying=` and `?state=` could only\nselect rows out of a list that is now always the caller's own Case or nothing.",
         "operationId": "get_trading_cases_api_trading_cases_get",
         "parameters": [
           {
             "in": "query",
-            "name": "underlying",
+            "name": "case_id",
             "required": false,
             "schema": {
               "default": "",
-              "maxLength": 32,
-              "title": "Underlying",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "state",
-            "required": false,
-            "schema": {
-              "default": "",
-              "maxLength": 16,
-              "title": "State",
+              "maxLength": 256,
+              "title": "Case Id",
               "type": "string"
             }
           }

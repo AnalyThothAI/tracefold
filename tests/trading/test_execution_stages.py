@@ -9,13 +9,15 @@ from tracefold.trading import ACCEPTED_ENTRY_DISPOSITIONS, command_stage, execut
 _NOW_NS = 1_900_000_000_000_000_000
 
 
-def _stage(**overrides: str | None) -> str:
-    facts: dict[str, str | None] = {
+def _stage(**overrides: str | int | None) -> str:
+    facts: dict[str, str | int | None] = {
         "disposition_reason": None,
         "order_status": None,
         "fill_quantity": None,
         "stop_trigger_price": None,
         "position_status": None,
+        "expires_at_ns": None,
+        "now_ns": _NOW_NS,
     }
     facts.update(overrides)
     return execution_stage(**facts)  # type: ignore[arg-type]
@@ -23,6 +25,27 @@ def _stage(**overrides: str | None) -> str:
 
 def test_a_signal_with_no_observation_yet_is_pending() -> None:
     assert _stage() == "pending"
+    assert _stage(expires_at_ns=_NOW_NS + 1) == "pending"
+
+
+def test_a_signal_that_never_got_a_disposition_expires_when_its_own_ttl_passes() -> None:
+    """#604 T3 (audit A4). The bridge that offers Signals to the Runtime anti-joins on
+    `expires_at_ns > now`, so a Signal refused for a retryable reason -- which writes no durable
+    disposition -- stops being offered the instant it expires and never receives one. `pending`
+    forever was the desk reading that hole as work still in flight.
+
+    The TTL is the Signal's own published clock and nothing else changes: the row is `pending` right
+    up to it, `expired` once past it, and a manual entry, whose Command carries its own TTL and whose
+    refusals are always written down, passes `None` and is untouched.
+    """
+
+    assert _stage(expires_at_ns=_NOW_NS) == "pending"
+    assert _stage(expires_at_ns=_NOW_NS - 1) == "expired"
+    # A Signal that did reach the venue is never re-read as expired by the clock: the venue fact wins.
+    assert _stage(expires_at_ns=_NOW_NS - 1, order_status="submitted_or_unknown") == "ordered"
+    assert _stage(expires_at_ns=_NOW_NS - 1, disposition_reason="entries_paused") == "rejected"
+    # A manual entry has no Signal TTL at all.
+    assert _stage(expires_at_ns=None) == "pending"
 
 
 @pytest.mark.parametrize(

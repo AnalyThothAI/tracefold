@@ -97,28 +97,9 @@ export function TradingCaseDetail({ item }: { item: TradingCase }) {
         ) : (
           <p className="trading-case-facts">
             这个案例在冻结逐条证据之前写入（#331 之前）。它的终局与规则仍然是{" "}
-            <code>{item.policy_reason ?? "—"}</code>，冻结配置在下方。
+            <code>{item.policy_reason ?? "—"}</code>，冻结配置由上方的摘要标识。
           </p>
         )}
-      </Card>
-
-      <Card flush hint="案例冻结时执行的整组数字" title="冻结策略配置">
-        <dl className="trading-case-facts">
-          {Object.entries(item.policy_config ?? {}).map(([key, value]) => (
-            <div className="trading-case-fact" key={key}>
-              <dt>
-                <code>{key}</code>
-              </dt>
-              <dd>{value}</dd>
-            </div>
-          ))}
-          {Object.keys(item.policy_config ?? {}).length === 0 ? (
-            <div className="trading-case-fact">
-              <dt>冻结配置</dt>
-              <dd>该案例未记录（#331 之前的清单版本）</dd>
-            </div>
-          ) : null}
-        </dl>
       </Card>
     </section>
   );

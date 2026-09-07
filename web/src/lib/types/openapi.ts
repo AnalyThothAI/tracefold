@@ -246,7 +246,17 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Trading Cases */
+        /**
+         * Get Trading Cases
+         * @description One frozen Case by identity, beside the three durable 24 h distributions (#604 T3).
+         *
+         *     The list this route used to send is gone: 100 whole Cases on every 15 s poll, of which the desk
+         *     rendered at most the one behind `?case=<id>`, and never the `NO_TRADE` Cases past the hundredth --
+         *     553 of the 584 in a production day -- which are the ones an operator opens to ask why. A Case is
+         *     reached by its own identity now, and no identity means no Case rather than a page nobody reads.
+         *     The two filters that narrowed that page went with it: `?underlying=` and `?state=` could only
+         *     select rows out of a list that is now always the caller's own Case or nothing.
+         */
         get: operations["get_trading_cases_api_trading_cases_get"];
         put?: never;
         post?: never;
@@ -2837,14 +2847,35 @@ export interface components {
             workers_runtime: components["schemas"]["WorkersRuntimeData"];
         };
         /**
+         * TradingAdmissionCountData
+         * @description How many frames admission answered this way in the window.
+         *
+         *     A count, not a row: #589 PR-2 deleted a `decisions[]` that published one object per frame with its
+         *     whole evidence blob, 400 of them on every 15 s poll, and nothing rendered them. This is the
+         *     distribution the desk's funnel draws its top from -- at most a dozen `(status, reason)` pairs
+         *     whatever the window holds -- and no frame identity, evidence or Case link travels with it.
+         *     `reason` is nullable because the ledger's own column is.
+         */
+        TradingAdmissionCountData: {
+            /** Count */
+            count: number;
+            /** Reason */
+            reason?: string | null;
+            /** Status */
+            status: string;
+        };
+        /**
          * TradingCaseData
          * @description One frozen Case, as the drawer behind `?case=<id>` renders it.
          *
          *     The four measured OI numbers here were a second copy of what `policy_checks` already carries with
          *     the threshold each was measured against, `policy_version` a second copy of `policy_id`, and
          *     `policy_decision` a required Literal over a nullable column -- exactly the shape that turned a
-         *     stored `NULL` into a 500 on a read route (#532, #537 PR-5). `state` and `policy_reason` are the
-         *     terminal answer; `base_symbol` is the identity the drawer titles itself with.
+         *     stored `NULL` into a 500 on a read route (#532, #537 PR-5). `policy_config` was the same duplicate
+         *     one level up: the frozen dictionary it published is where `policy_checks[].threshold` comes from,
+         *     so every number that was actually tested is already on the row beside what it was measured against,
+         *     and `policy_config_digest` still identifies the whole set (#604 T3). `state` and `policy_reason`
+         *     are the terminal answer; `base_symbol` is the identity the drawer titles itself with.
          */
         TradingCaseData: {
             /** Base Symbol */
@@ -2867,10 +2898,6 @@ export interface components {
             observed_at_ms: number;
             /** Policy Checks */
             policy_checks?: components["schemas"]["TradingPolicyCheckData"][];
-            /** Policy Config */
-            policy_config?: {
-                [key: string]: string;
-            };
             /** Policy Config Digest */
             policy_config_digest?: string | null;
             /** Policy Id */
@@ -2884,12 +2911,18 @@ export interface components {
         };
         /**
          * TradingCasesData
-         * @description One bounded page of Cases plus the two durable 24 h distributions.
+         * @description The Case behind `?case_id=<id>`, plus the three durable 24 h distributions.
          *
          *     There is no `next_cursor` and no cursor parameter: the desk opens one Case at a time from
          *     `?case=<id>` and renders one 24 h count card, and no reader ever asked for a second page (#537 PR-5).
+         *     `cases` is that one Case or nothing at all: without `case_id` it is empty, because the unconditional
+         *     100-row page this route used to send on every poll was rendered by nothing and could not reach the
+         *     `NO_TRADE` Cases an operator most wants to open (#604 T3). `complete` still says the answer was not
+         *     truncated, which for a primary-key read it never is.
          */
         TradingCasesData: {
+            /** Admission Counts 24H */
+            admission_counts_24h?: components["schemas"]["TradingAdmissionCountData"][];
             /** Cases */
             cases?: components["schemas"]["TradingCaseData"][];
             /** Complete */
@@ -2967,6 +3000,8 @@ export interface components {
             action: "pause_entries" | "resume_entries" | "emergency_halt" | "flatten" | "manual_entry";
             /** Command Id */
             command_id: string;
+            /** Reason */
+            reason?: string | null;
             /** Requested At Ns */
             requested_at_ns: number;
             /**
@@ -3125,6 +3160,8 @@ export interface components {
             direction: "long" | "short";
             /** Disposition Reason */
             disposition_reason?: string | null;
+            /** Entry Filled At Ns */
+            entry_filled_at_ns?: number | null;
             /** Entry Id */
             entry_id: string;
             /** Exit Price */
@@ -3139,6 +3176,10 @@ export interface components {
             market_key: string;
             /** Observed At Ns */
             observed_at_ns: number;
+            /** Order Reject Reason */
+            order_reject_reason?: string | null;
+            /** Position Closed At Ns */
+            position_closed_at_ns?: number | null;
             /** Realized Pnl Usd */
             realized_pnl_usd?: string | null;
             /**
@@ -3162,6 +3203,7 @@ export interface components {
             complete: boolean;
             /** Executions */
             executions?: components["schemas"]["TradingExecutionRowData"][];
+            totals: components["schemas"]["TradingRealizedTotalsData"];
         };
         /** TradingOperatorCommandReceiptData */
         TradingOperatorCommandReceiptData: {
@@ -3196,6 +3238,25 @@ export interface components {
             passed: boolean;
             /** Threshold */
             threshold: string;
+        };
+        /**
+         * TradingRealizedTotalsData
+         * @description What this account slot has realized, over the current UTC day and over its whole ledger.
+         *
+         *     The desk could only sum the realized column of the rows it was showing, so the one number an
+         *     operator reconciles against the venue was the one number the console could not produce (#604 T3).
+         *     Both sums fold every `closed` position the slot has, manual entries included, because a manual
+         *     entry is a trade this desk made. Decimal strings, like every other money field here.
+         */
+        TradingRealizedTotalsData: {
+            /** Closed Today */
+            closed_today: number;
+            /** Closed Total */
+            closed_total: number;
+            /** Realized Today Usd */
+            realized_today_usd: string;
+            /** Realized Total Usd */
+            realized_total_usd: string;
         };
         /**
          * TradingStatusData
@@ -3615,8 +3676,7 @@ export interface operations {
     get_trading_cases_api_trading_cases_get: {
         parameters: {
             query?: {
-                underlying?: string;
-                state?: string;
+                case_id?: string;
             };
             header?: never;
             path?: never;

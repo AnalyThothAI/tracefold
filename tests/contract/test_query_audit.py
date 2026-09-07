@@ -177,14 +177,21 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_status_funnel_totals",
         "news_status_learning_retention",
     )
-    # #510 PR-5a: a console read the route plans two ways is certified twice, because the audit must
-    # not certify a statement the route does not execute. #537 PR-5 deleted the three GET routes that
-    # had the other three pairs, so the Case read is the last one with an optional predicate.
+    # #604 T3: `/api/trading/cases` plans a primary-key Case read and three grouped 24 h counts. The
+    # windowed page and its filtered twin are still audited -- `tracefold trading cases [--state]`
+    # executes them -- but they are no longer statements this route runs, and certifying them under it
+    # would certify a plan it never executes.
     assert catalog.query_routes["/api/trading/cases"] == (
-        "trading_console_cases",
-        "trading_console_cases_filtered",
+        "trading_console_cases_by_id",
         "trading_case_counts",
         "trading_case_reason_counts",
+        "trading_gate_counts",
+    )
+    # #604 T3: the desk table's third statement is the only read on the page with no window at all.
+    assert catalog.query_routes["/api/trading/executions"] == (
+        "trading_console_executions",
+        "trading_console_commands",
+        "trading_realized_totals",
     )
     assert "/api/trading/signals" not in catalog.query_routes
     assert "/api/trading/execution/observations" not in catalog.query_routes
@@ -197,6 +204,8 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     assert not any(route.startswith("/api/trading/gate") for route in catalog.query_routes)
     query_names = {query.name for query in catalog.queries}
     assert {
+        "trading_console_cases",
+        "trading_console_cases_filtered",
         "trading_signal_ledger",
         "trading_observation_ledger",
         "trading_gate_decisions_since",
@@ -244,12 +253,14 @@ def test_trading_console_audit_explains_the_statements_the_routes_execute():
     conn = RecordingStatementConn()
     repository = TradingRepository(conn)
 
-    repository.console_cases(since_ms=since_ms, underlying_key=None, states=(), limit=101)
-    repository.console_cases(
-        since_ms=since_ms,
-        underlying_key="crypto:BTC",
-        states=("SIGNAL_EMITTED", "NO_TRADE"),
-        limit=101,
+    repository.console_case(case_id="0" * 32)
+    repository.console_cases(since_ms=since_ms, states=(), limit=101)
+    repository.console_cases(since_ms=since_ms, states=("SIGNAL_EMITTED", "NO_TRADE"), limit=101)
+    day_start_ns = (now_ms - now_ms % 86_400_000) * 1_000_000
+    repository.console_realized_totals(
+        account_slot="binance_usdm_primary",
+        day_start_ns=day_start_ns,
+        day_end_ns=day_start_ns + 86_400_000 * 1_000_000,
     )
     repository.console_operator_intents(since_ns=since_ns, action=None, limit=101)
     repository.console_operator_intents(since_ns=since_ns, action="flatten", limit=101)
@@ -260,8 +271,10 @@ def test_trading_console_audit_explains_the_statements_the_routes_execute():
     audited = [
         (queries[name].sql, queries[name].params)
         for name in (
+            "trading_console_cases_by_id",
             "trading_console_cases",
             "trading_console_cases_filtered",
+            "trading_realized_totals",
             "trading_console_commands",
             "trading_console_commands_filtered",
             "trading_signal_ledger",
@@ -270,9 +283,12 @@ def test_trading_console_audit_explains_the_statements_the_routes_execute():
     ]
     assert executed == audited
     # The filtered half really is a different statement, or registering it twice proves nothing.
-    assert audited[0][0] != audited[1][0]
-    assert "underlying_key = %(underlying)s" in audited[1][0]
-    assert "state = ANY(%(states)s)" in audited[1][0]
+    assert audited[1][0] != audited[2][0]
+    assert "state = ANY(%(states)s)" in audited[2][0]
+    # #604 T3: the identity read is a primary-key predicate and carries no window at all, and the
+    # totals read is shaped to the two partial recovery indexes rather than to a bare kind filter.
+    assert "case_id = %(case_id)s" in audited[0][0] and "created_at_ms >=" not in audited[0][0]
+    assert "signal_id IS NOT NULL OR command_id IS NOT NULL" in audited[3][0]
     # #537 PR-5: no keyset predicate anywhere. `/api/trading/cases` published a `next_cursor` no
     # reader ever sent back, and the three routes whose cursors were followed are gone.
     assert all("before_ms" not in sql and "before_ns" not in sql for sql, _ in audited)

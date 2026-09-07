@@ -32,15 +32,21 @@ export const useTradingStatusWithToken = (token: string) =>
     staleTime: 5_000,
   });
 
-export const useTradingCasesWithToken = (token: string, underlying?: string) =>
+/**
+ * The three durable 24 h distributions, plus the one Case behind `?case_id=` when a drawer is open.
+ *
+ * `/api/trading/cases` stopped sending a page of Cases (#604 T3): it answers one identity, or none.
+ * The poll continues either way, because the distributions beside it are what the funnel draws.
+ */
+export const useTradingCasesWithToken = (token: string, caseId?: string | null) =>
   useQuery({
     enabled: Boolean(token),
-    queryKey: queryKeys.tradingCases(underlying ?? ""),
+    queryKey: queryKeys.tradingCases(caseId ?? ""),
     queryFn: async () =>
       (
         await getApi<TradingCases>("/api/trading/cases", {
-          etagKey: `trading-cases:${underlying ?? "all"}`,
-          params: underlying ? { underlying } : undefined,
+          etagKey: `trading-cases:${caseId ?? "none"}`,
+          params: caseId ? { case_id: caseId } : undefined,
           token,
         })
       ).data,

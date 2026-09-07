@@ -123,8 +123,11 @@ class TradingCaseData(ExactApiSchema):
     The four measured OI numbers here were a second copy of what `policy_checks` already carries with
     the threshold each was measured against, `policy_version` a second copy of `policy_id`, and
     `policy_decision` a required Literal over a nullable column -- exactly the shape that turned a
-    stored `NULL` into a 500 on a read route (#532, #537 PR-5). `state` and `policy_reason` are the
-    terminal answer; `base_symbol` is the identity the drawer titles itself with.
+    stored `NULL` into a 500 on a read route (#532, #537 PR-5). `policy_config` was the same duplicate
+    one level up: the frozen dictionary it published is where `policy_checks[].threshold` comes from,
+    so every number that was actually tested is already on the row beside what it was measured against,
+    and `policy_config_digest` still identifies the whole set (#604 T3). `state` and `policy_reason`
+    are the terminal answer; `base_symbol` is the identity the drawer titles itself with.
     """
 
     case_id: str
@@ -136,7 +139,6 @@ class TradingCaseData(ExactApiSchema):
     # Case whose manifest names no policy must render as that, not 500 the route (#532, #537 PR-3).
     policy_id: str | None = None
     policy_config_digest: str | None = None
-    policy_config: dict[str, str] = Field(default_factory=dict)
     policy_checks: list[TradingPolicyCheckData] = Field(default_factory=list)
     state: str
     policy_reason: str | None = None
@@ -147,16 +149,36 @@ class TradingCaseData(ExactApiSchema):
     decided_at_ms: int | None = None
 
 
+class TradingAdmissionCountData(ExactApiSchema):
+    """How many frames admission answered this way in the window.
+
+    A count, not a row: #589 PR-2 deleted a `decisions[]` that published one object per frame with its
+    whole evidence blob, 400 of them on every 15 s poll, and nothing rendered them. This is the
+    distribution the desk's funnel draws its top from -- at most a dozen `(status, reason)` pairs
+    whatever the window holds -- and no frame identity, evidence or Case link travels with it.
+    `reason` is nullable because the ledger's own column is.
+    """
+
+    status: str
+    reason: str | None = None
+    count: int = Field(ge=0)
+
+
 class TradingCasesData(ExactApiSchema):
-    """One bounded page of Cases plus the two durable 24 h distributions.
+    """The Case behind `?case_id=<id>`, plus the three durable 24 h distributions.
 
     There is no `next_cursor` and no cursor parameter: the desk opens one Case at a time from
     `?case=<id>` and renders one 24 h count card, and no reader ever asked for a second page (#537 PR-5).
+    `cases` is that one Case or nothing at all: without `case_id` it is empty, because the unconditional
+    100-row page this route used to send on every poll was rendered by nothing and could not reach the
+    `NO_TRADE` Cases an operator most wants to open (#604 T3). `complete` still says the answer was not
+    truncated, which for a primary-key read it never is.
     """
 
     cases: list[TradingCaseData] = Field(default_factory=list)
     state_counts_24h: dict[str, int] = Field(default_factory=dict)
     reason_counts_24h: dict[str, int] = Field(default_factory=dict)
+    admission_counts_24h: list[TradingAdmissionCountData] = Field(default_factory=list, max_length=64)
     complete: bool
     window_hours: int
 
@@ -182,9 +204,17 @@ class TradingExecutionRowData(ExactApiSchema):
     direction: Literal["long", "short"]
     observed_at_ns: int
     disposition_reason: str | None = None
+    # The venue's own words for a refused entry order, recorded by the Runtime rather than summarised
+    # (#604 T1). Absent on every row written before it recorded them, and on every order it did not
+    # refuse.
+    order_reject_reason: str | None = None
     fill_quantity: str | None = None
     fill_avg_price: str | None = None
     stop_trigger_price: str | None = None
+    # The two instants a holding time is the distance between: the entry's first fill and the close of
+    # the position it opened. `observed_at_ns` is when the Signal was written, which is neither.
+    entry_filled_at_ns: int | None = None
+    position_closed_at_ns: int | None = None
     exit_price: str | None = None
     realized_pnl_usd: str | None = None
     exit_reason: Literal["stop_filled", "flatten", "unclaimed_flatten"] | None = None
@@ -203,11 +233,32 @@ class TradingExecutionCommandRowData(ExactApiSchema):
     action: Literal["pause_entries", "resume_entries", "emergency_halt", "flatten", "manual_entry"]
     requested_at_ns: int
     stage: CommandStage
+    # Why the Runtime refused it, straight from the same `control_disposition` `stage` is read off.
+    # The statement already selected this column and the derivation dropped it, so the desk printed
+    # "Runtime rejected" with no way to say what for (#604 T3). `None` while the Command is still
+    # open, and on every Command that was accepted.
+    reason: str | None = None
+
+
+class TradingRealizedTotalsData(ExactApiSchema):
+    """What this account slot has realized, over the current UTC day and over its whole ledger.
+
+    The desk could only sum the realized column of the rows it was showing, so the one number an
+    operator reconciles against the venue was the one number the console could not produce (#604 T3).
+    Both sums fold every `closed` position the slot has, manual entries included, because a manual
+    entry is a trade this desk made. Decimal strings, like every other money field here.
+    """
+
+    realized_today_usd: str
+    realized_total_usd: str
+    closed_today: int = Field(ge=0)
+    closed_total: int = Field(ge=0)
 
 
 class TradingExecutionsData(ExactApiSchema):
     executions: list[TradingExecutionRowData] = Field(default_factory=list)
     commands: list[TradingExecutionCommandRowData] = Field(default_factory=list)
+    totals: TradingRealizedTotalsData
     complete: bool
 
 

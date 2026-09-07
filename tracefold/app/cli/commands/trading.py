@@ -66,7 +66,6 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                 "ok": True,
                 "data": trading.console_cases(
                     since_ms=now_ms - _WINDOW_MS,
-                    underlying_key=None,
                     states=(state,) if state else (),
                     limit=int(getattr(args, "limit", 20) or 20),
                 ),

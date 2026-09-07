@@ -40,8 +40,11 @@ import "./trading.css";
  */
 export function TradingPage({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
+  // The drawer's identity is read before the queries, because `/api/trading/cases` answers one Case by
+  // `case_id` now and sends none without it (#604 T3).
+  const selectedCaseId = searchParams.get("case");
   const statusQuery = useTradingStatusWithToken(token);
-  const casesQuery = useTradingCasesWithToken(token);
+  const casesQuery = useTradingCasesWithToken(token, selectedCaseId);
   const executionsQuery = useTradingExecutionsWithToken(token);
   const status = statusQuery.data;
 
@@ -66,7 +69,6 @@ export function TradingPage({ token }: { token: string }) {
   const cases = casesQuery.data?.cases ?? [];
   const executions = executionsQuery.data?.executions ?? [];
   const commands = executionsQuery.data?.commands ?? [];
-  const selectedCaseId = searchParams.get("case");
   const selectedCase = selectedCaseId
     ? cases.find((item) => item.case_id === selectedCaseId)
     : undefined;
