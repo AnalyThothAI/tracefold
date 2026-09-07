@@ -145,7 +145,7 @@ the final decision, Program failure is fail-closed, and every verdict row stores
 model intent next to the rule baseline. The Predictors have no tools, agent
 loop, retrieval, filesystem, shell, subagent or write capability; their only
 outbound capability is the configured DSPy LM endpoint. One Event
-persists one final judgment and one card — the two internal calls do not restore the
+persists one final judgment and one card — the three Predictors do not restore the
 Analyst stage removed in #57. The card's Chinese text is the Triage verdict's
 `headline_zh` and `why_zh`; no separate title, translation, or follow-up
 provider exists. Item identity, Event identity, Gate admission, storyline keys,
@@ -154,8 +154,8 @@ provider exists. Item identity, Event identity, Gate admission, storyline keys,
 The only loadable semantic image is one content-addressed
 `news_program_strategy_artifact_v1` JSON document carried in the application
 image as `<program_sha256>.json` and selected by its code-owned registry. It
-holds a schema version and the two complete Predictor instructions;
-`program_sha256` is the canonical hash of exactly those three values, and the
+holds a schema version and the three complete Predictor instructions;
+`program_sha256` is the canonical hash of exactly those four values, and the
 loader re-verifies it. That check is not tamper-proofing — it is the property the
 cohort model rests on, since a file whose bytes disagree with its identity would
 make "which Program produced this evidence" unanswerable.
@@ -192,8 +192,8 @@ Everything else the Program runs on — the graph, Signatures, the Adapter, the
 normalizer and assembler, the model route, the token and deadline budgets — is
 code, proved by shipping the image. Its identity travels beside the artifact as
 the computed `envelope_sha256`; `docs/ARCHITECTURE.md` describes the model.
-The taxonomy optimizer may replace only the EventSemantics instruction; it
-copies ReaderCard byte-identically into the complete two-instruction candidate,
+The taxonomy optimizer may replace only the Taxonomy instruction; it
+copies EventSemantics and ReaderCard byte-identically into the complete candidate,
 so no demo or endpoint path exists to reach a provider. Production candidate
 images pass normal code review and are shipped in the registry; a database
 candidate is not executable merely because it was persisted, and Prompt-era
@@ -205,9 +205,9 @@ sealed image, the launcher, the metered proxy sidecar, the seccomp policy, the
 tariff, the three-party `CompilerBuildAttestation` and the runner. That platform
 answered one question — *where were these two strings produced* — and its threat
 model was "the optimizer might return code". It cannot: public `dspy.GEPA`
-optimizes the one named EventSemantics `dspy.Predict`, and `run_gepa` refuses a
-winner that is not exactly that one Predict with empty demos before it restores
-the unchanged ReaderCard instruction. Proving provenance was never what made a
+optimizes the one Taxonomy `dspy.Predict`, and `run_gepa` refuses a
+winner that is not exactly one Predict with empty demos before it restores
+the unchanged EventSemantics and ReaderCard instructions. Proving provenance was never what made a
 candidate safe to ship.
 
 What actually bounds the job is what it holds, and that is now a short list.
@@ -224,8 +224,8 @@ in the same report. Reflection alone has the code-owned 32k-token ceiling. The t
 semantic judge, no ReaderCard call, no tool or code-generation authority, and no private DSPy API.
 
 Every terminal state writes `news_optimization_run_report_v4`; only `ADVANCE` also writes
-`news_prompt_candidate_v2`. The only mutable field is the EventSemantics instruction. ReaderCard is copied
-byte-identically, and the report publishes before/after hashes, bytes, estimated tokens, growth and diff
+`news_prompt_candidate_v2`. The only mutable field is the Taxonomy instruction. EventSemantics and ReaderCard
+are copied byte-identically, and the report publishes before/after hashes, bytes, estimated tokens, growth and diff
 beside the public native GEPA parent/score/subscore state, GEPA best index and Tracefold admitted index.
 Every candidate is compared directly with accepted Gold rather than with another model output, and the
 admitted one is GEPA's own best when strictly above the seed. Registration independently re-applies the
@@ -396,12 +396,12 @@ from the canonical receipt; #562 §5 row 5 removed `deleteMessage` from the Adap
 Adapter rejects a receipt with a different provider, target digest, invalid message ID, or missing original send
 timestamp. It independently verifies the edit response still names the configured channel and same message ID.
 The typed receipt has an exact allowlist (`provider`, `message_id`, `pushed_at_ms`, `target_sha256`, and optional
-`edited_at_ms` / `deleted_at_ms`); extra provider text, URLs, or metadata fail validation. Storage binds
+`edited_at_ms`); extra provider text, URLs, or metadata fail validation. Storage binds
 `pushed_at_ms` as well as
 message and target identity before accepting either edit intent or settlement.
 The Bot API transport allowlist contains only the fixed preflight methods, `sendMessage`
-and `editMessageText`; arbitrary bot methods and destinations remain impossible. Each operation uses a seven-second application budget; every HTTP
-phase is capped at 1.25 seconds and later calls stop when the monotonic budget is
+and `editMessageText`; arbitrary bot methods and destinations remain impossible. Each operation uses a seven-second application budget; HTTP
+phase timeouts are capped by the remaining budget and later calls stop when the monotonic budget is
 exhausted. Socket timeouts are inactivity limits rather than a strict wall-clock
 guarantee, so DNS or a continuously slow peer can outlive that budget. A timed-out
 preflight thread still cannot progress into a later send.
@@ -421,9 +421,10 @@ may persist the final rendered card plus only provider lifecycle timestamps in t
 persists price-provider requests, arbitrary URLs, channel IDs, or credentials.
 Persisted delivery rows store the
 rendered card (code facts plus sanitized AI copy) for audit but never provider
-credentials or signatures. There is exactly one initial provider-send attempt
-after the durable `sending` row and no retry; a crash between send and ack
-terminalizes as `ambiguous_after_crash`. An enrichment or edit failure cannot retract, retry, or terminalize that
+credentials or signatures. A provider failure proved `not_sent` and retryable
+uses the PostgreSQL queue's three-attempt budget; an unknown outcome is never
+resent. A crash between send and ack terminalizes as `ambiguous_after_crash`.
+An enrichment or edit failure cannot retract, retry, or terminalize that
 initial send. The desired replacement is durable before `editMessageText`; a provider/settlement uncertainty is
 recorded as edit ambiguity. Startup must reconcile inherited intents before consuming, and a bounded runtime sweep
 retries stale reconciliation after transient database failures. Error logs contain only a sanitized exception class
@@ -456,11 +457,10 @@ Ask before changing authentication, authorisation, billing, or data-deletion beh
 
 ## Frontend API token
 
-The read-only `ws_token` reaches the browser through `/api/bootstrap`. Do not
-embed it in committed source. It cannot authorize a Command. The separate
-operator write token is never returned by an API, committed, logged, or stored
-in browser persistence; an operator pastes it into the Trading desk for the
-current page session.
+The single `ws_token` reaches the browser through `/api/bootstrap`. Do not
+embed it in committed source. The console uses it as a bearer header for reads
+and operator Commands. Query-token transport remains read-only; there is no
+separate operator write token. See the HTTP contract above.
 
 The canonical Compose deployment mounts this as a single file. An atomic
 host-side replacement does not update the inode already bound into the running

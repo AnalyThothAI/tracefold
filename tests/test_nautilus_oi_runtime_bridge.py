@@ -11,6 +11,7 @@ from typing import Any
 from uuid import UUID
 
 import psycopg
+import pytest
 from loguru import logger
 
 from tests.helpers.nautilus_oi_runtime_process import (
@@ -178,7 +179,8 @@ def test_a_failing_audit_step_never_stops_the_command_read_and_logs_one_cause_on
     assert records.count("OI Runtime database bridge step failed (audit)") == 0
 
 
-def test_a_transient_audit_failure_leaves_the_batch_queued_without_killing_the_bridge() -> None:
+@pytest.mark.parametrize("message", ["statement timeout", "", " \n "])
+def test_a_transient_audit_failure_leaves_the_batch_queued_without_killing_the_bridge(message: str) -> None:
     profile = oi_profile()
     factory = ObservationFactory(
         account_slot=profile.account_slot,
@@ -196,7 +198,7 @@ def test_a_transient_audit_failure_leaves_the_batch_queued_without_killing_the_b
 
     class _Unavailable(_FakeTrading):
         def append_execution_observations(self, prepared: PreparedExecutionObservationBatch) -> tuple[int, ...]:
-            raise TimeoutError("statement timeout")
+            raise TimeoutError(message)
 
     trading = _Unavailable(rejected_event_ids=frozenset())
     repos: Any = SimpleNamespace(trading=trading, transaction=nullcontext)
@@ -207,8 +209,9 @@ def test_a_transient_audit_failure_leaves_the_batch_queued_without_killing_the_b
     bridge = _bridge(audit=audit, signals=signals)
 
     bridge._cycle(repos)
+    bridge._cycle(repos)
 
-    assert trading.command_reads == 1
+    assert trading.command_reads == 2
     assert bridge.fatal_error is None
     assert audit_queued_count(audit) == 1
     assert audit.failure_reason == "audit_append_failed"

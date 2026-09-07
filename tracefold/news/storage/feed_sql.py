@@ -20,6 +20,7 @@ _VERDICT_HANDOFF_LIVE_SQL: Final = (
 _PENDING_CORE_SQL: Final = (
     "COALESCE(d.state = 'sending', false) OR ("
     "d.state IS NULL"
+    " AND q.state IS DISTINCT FROM 'dead'"
     f" AND e.admission IN ({ADMITTED_SQL})"
     " AND ((t.final_decision IS NULL AND ("
     f"{_EVENT_HANDOFF_LIVE_SQL}"
@@ -179,6 +180,15 @@ STATUS_PIPELINE_SQL: Final = """
 """
 
 STATUS_DELIVERY_SQL: Final = """
+    WITH terminal AS NOT MATERIALIZED (
+      SELECT event_id, error_code, settled_at_ms FROM news_deliveries WHERE state = 'terminal'
+      UNION ALL
+      SELECT q.event_id, q.error_code, q.settled_at_ms FROM news_delivery_queue q
+       WHERE q.state = 'dead'
+         AND NOT EXISTS (
+           SELECT 1 FROM news_deliveries d WHERE d.event_id = q.event_id AND d.kind = q.kind
+         )
+    )
     SELECT
       (SELECT count(*) FROM news_deliveries d
          JOIN news_events e ON e.event_id = d.event_id
@@ -186,12 +196,11 @@ STATUS_DELIVERY_SQL: Final = """
       (SELECT count(*) FROM news_deliveries d
          JOIN news_events e ON e.event_id = d.event_id
         WHERE d.state = 'sent' AND d.settled_at_ms >= %s) AS sent_1h,
-      (SELECT count(*) FROM news_deliveries d
+      (SELECT count(*) FROM terminal d
          JOIN news_events e ON e.event_id = d.event_id
-        WHERE d.state = 'terminal' AND d.settled_at_ms >= %s) AS terminal_24h,
-      (SELECT d.error_code FROM news_deliveries d
+        WHERE d.settled_at_ms >= %s) AS terminal_24h,
+      (SELECT d.error_code FROM terminal d
          JOIN news_events e ON e.event_id = d.event_id
-        WHERE d.state = 'terminal'
         ORDER BY d.settled_at_ms DESC NULLS LAST LIMIT 1) AS last_error_code,
       (SELECT percentile_cont(0.5)
          WITHIN GROUP (ORDER BY (d.settled_at_ms - i.observed_at_ms)::double precision)
@@ -312,7 +321,8 @@ def feed_page_sql(where_sql: str) -> str:
                t.verdict ->> 'direction' AS direction, (t.verdict ->> 'magnitude')::int AS magnitude,
                t.verdict ->> 'headline_zh' AS headline_zh, t.verdict ->> 'scope' AS scope,
                t.verdict AS triage_verdict, t.editorial AS model_editorial,
-               d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms, d.error_code AS delivery_error_code
+               d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms, d.error_code AS delivery_error_code,
+               q.state AS delivery_queue_state, q.error_code AS delivery_queue_error_code
           FROM clock CROSS JOIN news_events e
           JOIN news_items i ON i.item_id = e.leader_item_id
           JOIN LATERAL (
@@ -333,6 +343,7 @@ def feed_page_sql(where_sql: str) -> str:
              ORDER BY v.created_at_ms DESC LIMIT 1
           ) t ON true
           LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'
+          LEFT JOIN news_delivery_queue q ON q.event_id = e.event_id AND q.kind = 'first'
          WHERE {where_sql}
          ORDER BY e.opened_at_ms DESC, e.event_id DESC
          LIMIT %s
@@ -367,6 +378,7 @@ def feed_counts_sql(where_sql: str) -> str:
              ORDER BY v.created_at_ms DESC LIMIT 1
           ) t ON true
           LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'
+          LEFT JOIN news_delivery_queue q ON q.event_id = e.event_id AND q.kind = 'first'
          WHERE {where_sql}
     """  # noqa: S608
 

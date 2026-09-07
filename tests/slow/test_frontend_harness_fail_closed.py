@@ -528,8 +528,20 @@ def test_real_vitest_faults_cannot_pass_the_required_pipeline(source: str) -> No
     assert result.returncode != 0 or guard_error is not None or lint_errors, result.stdout + result.stderr
 
 
-def test_real_playwright_native_report_accepts_one_plain_pass_without_a_browser() -> None:
-    source = 'import { test } from "@playwright/test";\ntest("plain pass", async () => {});\n'
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import { test } from "@playwright/test";\ntest("plain pass", async () => {});\n',
+        (
+            'import { test } from "@playwright/test";\n'
+            'test("annotated pass", async ({}, info) => {\n'
+            '  info.annotations.push({ type: "issue", description: "#613" });\n'
+            "});\n"
+        ),
+    ],
+    ids=["plain", "issue-annotation"],
+)
+def test_real_playwright_native_report_accepts_one_plain_pass_without_a_browser(source: str) -> None:
     result, count, error = _run_playwright_native_source(source)
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -541,6 +553,7 @@ def test_real_playwright_native_report_accepts_one_plain_pass_without_a_browser(
     "source",
     [
         'import { test } from "@playwright/test";\ntest.skip("disabled", async () => {});\n',
+        'import { test } from "@playwright/test";\ntest.fixme("unfinished", async () => {});\n',
         (
             'import { expect, test } from "@playwright/test";\n'
             'test("expected failure", async () => { test.fail(); expect(1).toBe(2); });\n'
@@ -554,6 +567,7 @@ def test_real_playwright_faults_cannot_pass_the_required_pipeline(source: str) -
     lint_errors = [message for message in _lint_required_test_source(source) if message.get("severity") == 2]
 
     assert result.returncode != 0 or guard_error is not None or lint_errors, result.stdout + result.stderr
+    assert guard_error is not None
 
 
 def test_real_playwright_flaky_retry_is_non_green() -> None:

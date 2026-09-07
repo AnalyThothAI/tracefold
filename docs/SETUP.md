@@ -44,8 +44,8 @@ The optional Binance execution runtime is **not** part of this lifecycle. It has
 its own image (`tracefold-runtime:<sha>`) and its own targets —
 `make runtime-build`, `runtime-up`, `runtime-restart`, `runtime-status`,
 `runtime-logs`, `runtime-down` — so a News, Serve or Workers release cannot
-restart the process that owns a live account. `make up` never names it, and
-`make down` refuses while its container exists. See `OPERATIONS.md`.
+restart the process that owns a live account. `make up` never names it;
+`make down` stops it before stopping the remaining stack. See `OPERATIONS.md`.
 
 ### Upgrading across a removed config key
 

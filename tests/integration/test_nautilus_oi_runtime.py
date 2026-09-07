@@ -39,6 +39,7 @@ from tracefold.app.nautilus.oi_runtime import (
 from tracefold.app.operator_control import persist_operator_intent
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
+from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.integrations.nautilus.oi_runtime.state import RuntimeControlSnapshot, deterministic_client_order_id
@@ -703,6 +704,69 @@ def test_account_slot_lock_is_single_session_and_loss_fails_closed() -> None:
             first_conn.close()
         second.release()
         second_conn.close()
+
+
+def test_day_start_write_failure_preserves_commands_and_projection_until_recovery() -> None:
+    """A real rejected baseline transaction must not terminate the operator's input bridge."""
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repos = repositories_for_connection(conn)
+        _control_row(repos.trading)
+        profile = oi_profile()
+        factory = ObservationFactory(profile.account_slot, "oi_nautilus_v1")
+        signals = ExecutionSignalClient(account_slot=profile.account_slot, execution_strategy="oi_nautilus_v1")
+        projector = _bridge_projector()
+        projector.start(repos)
+        baselines: list[DayStartBaseline] = []
+        bridge = OiRuntimeDatabaseBridge(
+            settings=Settings(ws_token="613-day-start", storage=postgres_settings_storage()),
+            profile=profile,
+            signals=signals,
+            audit=AuditSink(factory=factory),
+            update_day_start=baselines.append,
+            singleton=_bridge_singleton(),
+            projector=projector,
+        )
+        bridge.set_equity(Decimal("1000"), NOW_NS)
+        conn.execute(
+            """
+            ALTER TABLE trading_execution_observations ADD CONSTRAINT test_day_start_rejected
+            CHECK (summary->>'risk_fact' IS DISTINCT FROM 'day_start_equity')
+            """
+        )
+
+        for suffix, action in (("a", "pause_entries"), ("b", "flatten")):
+            command = _append_command(repos.trading, suffix=suffix, action=action)
+            heartbeat = projector.current.heartbeat_at_ns + 1_000_000_000
+            projected = replace(projector.current, heartbeat_at_ns=heartbeat, updated_at_ns=heartbeat)
+            projector.offer(projected)
+
+            bridge._cycle(repos)
+
+            received = signals.next_command_nowait()
+            assert received is not None
+            assert (received.command_id, received.action) == (command.value.command_id, action)
+            assert repos.trading.execution_runtime_state(profile.account_slot) == projected
+            assert baselines == []
+            assert conn.execute("SELECT count(*) AS n FROM trading_execution_observations").fetchone() == {"n": 0}
+
+        conn.execute("ALTER TABLE trading_execution_observations DROP CONSTRAINT test_day_start_rejected")
+        bridge.set_equity(Decimal("900"), NOW_NS + 1)
+        bridge._cycle(repos)
+
+        assert len(baselines) == 1
+        assert baselines[0].equity_usd == Decimal("900")
+        stored = repos.trading.execution_observation(baselines[0].event_id)
+        assert stored is not None
+        assert stored[1]["summary"]["equity_usd_decimal"] == "900"
+        # A later equity does not rewrite the recovered day's immutable baseline.
+        bridge.set_equity(Decimal("800"), NOW_NS + 2)
+        bridge._cycle(repos)
+        assert len(baselines) == 1
+        assert repos.trading.execution_observation(baselines[0].event_id) == stored
+    finally:
+        conn.close()
 
 
 def test_day_start_baseline_is_append_only_and_restart_reads_original_equity() -> None:

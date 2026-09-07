@@ -90,6 +90,7 @@ def event_timeline(
     members: Sequence[Mapping[str, Any]],
     verdicts: Sequence[Mapping[str, Any]],
     deliveries: Sequence[Mapping[str, Any]],
+    delivery_queue: Mapping[str, Any] | None = None,
     now_ms: int | None = None,
 ) -> tuple[Outcome, list[dict[str, Any]]]:
     """Return ``(outcome, steps)``; steps are in pipeline order and only include stages that happened."""
@@ -102,6 +103,7 @@ def event_timeline(
         published_at_ms=event.get("published_at_ms"),
         triage=latest,
         delivery=delivery,
+        delivery_queue=delivery_queue,
         now_ms=now_ms,
     )
     steps: list[dict[str, Any]] = []

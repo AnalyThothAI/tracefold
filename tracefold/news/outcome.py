@@ -125,6 +125,7 @@ DELIVERY_ERROR_ZH: Final[dict[str, str]] = {
     "hourly_cap_reached": "已达每小时推送上限",
     "ambiguous_after_crash": "发送状态不确定（进程中断），不重发",
     "news_delivery_settlement_unavailable": "发送后未能记录结果",
+    "news_delivery_attempts_exhausted": "投递尝试已耗尽，未送达",
 }
 
 DEDUPE_FAMILY_ZH: Final[dict[str, str]] = {
@@ -264,6 +265,7 @@ def event_outcome(
     published_at_ms: int | None,
     triage: Mapping[str, Any] | None,
     delivery: Mapping[str, Any] | None,
+    delivery_queue: Mapping[str, Any] | None = None,
     opened_at_ms: int | None = None,
     now_ms: int | None = None,
 ) -> Outcome:
@@ -271,7 +273,8 @@ def event_outcome(
 
     ``triage`` needs ``final_decision``, ``override_rule``, ``throttled_by``, ``degraded``, ``error_code``,
     ``created_at_ms`` and ``published_at_ms``;
-    ``delivery`` needs ``state`` and ``error_code``. Missing rows are ``None``.
+    ``delivery`` and ``delivery_queue`` need ``state`` and ``error_code``. The queue supplies a
+    terminal outcome only before a real delivery row exists. Missing rows are ``None``.
     """
 
     state = str((delivery or {}).get("state") or "")
@@ -289,6 +292,9 @@ def event_outcome(
         if state == "terminal":
             return _outcome("delivery_failed", "未送达", delivery_error_zh((delivery or {}).get("error_code")))
         return _outcome("pending_delivery", "推送中", rule_zh)
+
+    if (delivery_queue or {}).get("state") == "dead":
+        return _outcome("delivery_failed", "未送达", delivery_error_zh((delivery_queue or {}).get("error_code")))
 
     admission_text = str(admission or "")
     if admission_text == "recovery":

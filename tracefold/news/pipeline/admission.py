@@ -1059,7 +1059,7 @@ def _member_result(
         member_score = _member_score(repos, item_id)
         stronger = (
             member_score > leader_score
-            or (bool(gate.grounded_assets) and _strong_tag(gate))
+            or bool(gate.grounded_assets)
             or member_score >= _STRONG_MEMBER_SCORE
             or (bool(reporting_origin) and reporting_origin != str(row["leader_origin"] or ""))
         )
@@ -1092,15 +1092,6 @@ def _member_result(
         title=title,
         evidence_focus_changed=stronger,
     )
-
-
-def _strong_tag(gate: GateVerdict) -> bool:
-    """A later member that adds objective grounding to a previously suppressed Event.
-
-    Queue priority is deliberately absent: it schedules broker work and has no editorial authority.
-    """
-
-    return bool(gate.grounded_assets) or bool(gate.watchlist_hits)
 
 
 def _member_score(repos: Any, item_id: str) -> float:
@@ -1178,16 +1169,18 @@ class DeduperConsumer:
         self._classes: Mapping[str, str] | None = None
         self._classes_at_ms = 0
 
-    def _current_instrument_classes(self, repos: Any, *, now: int) -> Mapping[str, str] | None:
+    async def _current_instrument_classes(self, *, now: int) -> Mapping[str, str] | None:
         """Cached instrument classes for the Gate, refreshed at most once per `_INSTRUMENT_CACHE_TTL_MS`."""
 
-        if self._classes is not None and now - self._classes_at_ms < _INSTRUMENT_CACHE_TTL_MS:
-            return self._classes
-        classes = repos.instruments.instrument_classes()
-        self._classes_at_ms = now
+        if self._classes is None or now - self._classes_at_ms >= _INSTRUMENT_CACHE_TTL_MS:
+            self._classes = await self.db.read(
+                "news_admission_instruments",
+                lambda repos: repos.instruments.instrument_classes(),
+                timeout_seconds=1.0,
+            )
+            self._classes_at_ms = now
         # An empty universe means no snapshot has landed: fall back to the prefix heuristic, not to "no assets".
-        self._classes = classes or None
-        return self._classes
+        return self._classes or None
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         await self.bus.consume(Q_RAW, self.handle, prefetch=1, stop_event=stop_event)
@@ -1215,10 +1208,9 @@ class DeduperConsumer:
         ingest_mode = "recovery" if str(message.payload.get("ingest_mode")) == "recovery" else "live"
         observed = int(message.payload.get("observed_at_ms") or message.occurred_at_ms or now_ms())
         stamp = now_ms()
-        instrument_classes = await self.db.read(
-            "news_admission_instruments",
-            lambda repos: self._current_instrument_classes(repos, now=stamp),
-            timeout_seconds=1.0,
+        source_contracts = classify_source_contracts(event.provider_metadata)
+        instrument_classes = (
+            await self._current_instrument_classes(now=stamp) if market_route(source_contracts) is None else None
         )
         prepared_frame = _prepare_frame(
             event=event,
@@ -1227,6 +1219,7 @@ class DeduperConsumer:
             watchlist_symbols=self.watchlist_symbols,
             text_override=None,
             instrument_classes=instrument_classes,
+            source_contracts=source_contracts,
         )
         if prepared_frame.market is not None:
             # The whole market lane: one transaction, Item and typed fact together, live and
