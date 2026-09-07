@@ -50,15 +50,15 @@ def test_worker_reads_the_secure_token_and_binds_the_configured_channel(
     captured: dict[str, Any] = {}
     sender = object()
 
-    def build_sender(*, bot_token: str, chat_id: int | str) -> object:
-        captured.update(bot_token=bot_token, chat_id=chat_id)
+    def build_sender(*, bot_token: str, chat_id: int | str, proxy_url: str | None) -> object:
+        captured.update(bot_token=bot_token, chat_id=chat_id, proxy_url=proxy_url)
         return sender
 
     monkeypatch.setattr(news_wiring, "TelegramNewsPushSender", build_sender)
 
     composed = news_wiring._news_push_sender(_settings(tmp_path))
     assert composed.sender is sender and composed.reason is None
-    assert captured == {"bot_token": BOT_TOKEN, "chat_id": CHANNEL_ID}
+    assert captured == {"bot_token": BOT_TOKEN, "chat_id": CHANNEL_ID, "proxy_url": None}
 
 
 def test_worker_does_not_construct_a_sender_from_an_insecure_token_file(
@@ -124,8 +124,8 @@ def test_a_public_channel_name_is_the_target_the_adapter_is_given(
     captured: dict[str, Any] = {}
     sender = object()
 
-    def build_sender(*, bot_token: str, chat_id: int | str) -> object:
-        captured.update(bot_token=bot_token, chat_id=chat_id)
+    def build_sender(*, bot_token: str, chat_id: int | str, proxy_url: str | None) -> object:
+        captured.update(bot_token=bot_token, chat_id=chat_id, proxy_url=proxy_url)
         return sender
 
     monkeypatch.setattr(news_wiring, "TelegramNewsPushSender", build_sender)
@@ -135,7 +135,37 @@ def test_a_public_channel_name_is_the_target_the_adapter_is_given(
     composed = news_wiring._news_push_sender(settings)
 
     assert composed.sender is sender and composed.reason is None
-    assert captured == {"bot_token": BOT_TOKEN, "chat_id": "@tracefold_feed"}
+    assert captured == {"bot_token": BOT_TOKEN, "chat_id": "@tracefold_feed", "proxy_url": None}
+
+
+def test_the_configured_proxy_is_handed_to_the_adapter_that_makes_the_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#604 N2: a host that cannot reach `api.telegram.org` directly configures the route that can.
+
+    Nothing between the operator and the socket reads the environment for this: the sender always
+    builds its own transport, and httpx only consults `HTTPS_PROXY` for a client that builds one for
+    itself. The proxy therefore has to travel this way or not at all.
+    """
+
+    token_file = tmp_path / "telegram_bot_token"
+    token_file.write_text(BOT_TOKEN, encoding="utf-8")
+    token_file.chmod(0o600)
+    captured: dict[str, Any] = {}
+    sender = object()
+
+    def build_sender(*, bot_token: str, chat_id: int | str, proxy_url: str | None) -> object:
+        captured.update(bot_token=bot_token, chat_id=chat_id, proxy_url=proxy_url)
+        return sender
+
+    monkeypatch.setattr(news_wiring, "TelegramNewsPushSender", build_sender)
+    settings = _settings(tmp_path)
+    settings.news.push.telegram_proxy_url = "socks5h://127.0.0.1:1080"
+
+    composed = news_wiring._news_push_sender(settings)
+
+    assert composed.sender is sender and composed.reason is None
+    assert captured["proxy_url"] == "socks5h://127.0.0.1:1080"
 
 
 def test_a_chat_target_of_no_known_shape_is_a_delivery_reason_not_a_dead_process(tmp_path: Path) -> None:

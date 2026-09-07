@@ -10,15 +10,14 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit
 
 import httpx
 
 from tracefold.news import COMMIT_PHASE_NOT_SENT, COMMIT_PHASE_UNKNOWN, ReaderCard, ReaderDeliveryPresentation
+from tracefold.platform.validation import is_feishu_webhook_url
 
 FEISHU_WEBHOOK_REQUEST_MAX_BYTES = 20 * 1024
 FEISHU_WEBHOOK_RATE_LIMIT_CODE = 11232
-_FEISHU_WEBHOOK_PATH_PREFIX = "/open-apis/bot/v2/hook/"
 _FEISHU_TIMEOUT_SECONDS = 6.5
 
 
@@ -38,12 +37,16 @@ class FeishuDeliveryError(RuntimeError):
         status_code: int | None = None,
         commit_phase: str = COMMIT_PHASE_UNKNOWN,
         retryable: bool = False,
+        retry_after_seconds: float | None = None,
     ) -> None:
         super().__init__(code)
         self.code = code
         self.status_code = status_code
         self.commit_phase = commit_phase
         self.retryable = retryable
+        # What the provider itself said the wait should be, when it said anything. A fixed backoff is
+        # a guess; this is the number Feishu answered with.
+        self.retry_after_seconds = retry_after_seconds
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +67,7 @@ class FeishuWebhookClient:
     ) -> None:
         normalized_url = str(webhook_url or "").strip()
         normalized_secret = str(signing_secret or "").strip()
-        if not _is_feishu_webhook_url(normalized_url):
+        if not is_feishu_webhook_url(normalized_url):
             raise ValueError("news_push_feishu_webhook_url_invalid")
         self._webhook_url = normalized_url
         self._signing_secret = normalized_secret or None
@@ -121,12 +124,14 @@ class FeishuWebhookClient:
             raise FeishuDeliveryError("feishu_transport_failed") from None
 
         status_code = int(response.status_code)
+        retry_after = _retry_after_seconds(response)
         if status_code == 429:
             raise FeishuDeliveryError(
                 "feishu_http_failed",
                 status_code=status_code,
                 commit_phase=COMMIT_PHASE_NOT_SENT,
                 retryable=True,
+                retry_after_seconds=retry_after,
             )
         if status_code >= 500:
             # Deliberately not "not sent". A 5xx is Feishu's own tier answering, and it can answer
@@ -151,6 +156,7 @@ class FeishuWebhookClient:
                 status_code=status_code,
                 commit_phase=COMMIT_PHASE_NOT_SENT,
                 retryable=True,
+                retry_after_seconds=retry_after,
             )
         if code != 0:
             raise FeishuDeliveryError(
@@ -174,25 +180,17 @@ def generate_feishu_signature(*, timestamp_seconds: int, signing_secret: str) ->
     return base64.b64encode(digest).decode("ascii")
 
 
-def _is_feishu_webhook_url(value: str) -> bool:
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    """The wait Feishu stated for itself, when it stated one. Only the delta-seconds form is read."""
+
+    raw = response.headers.get("retry-after")
+    if raw is None:
+        return None
     try:
-        parsed = urlsplit(value)
-        port = parsed.port
+        seconds = float(raw.strip())
     except ValueError:
-        return False
-    hook_id = parsed.path.removeprefix(_FEISHU_WEBHOOK_PATH_PREFIX)
-    return bool(
-        parsed.scheme == "https"
-        and parsed.hostname == "open.feishu.cn"
-        and port in {None, 443}
-        and parsed.username is None
-        and parsed.password is None
-        and not parsed.query
-        and not parsed.fragment
-        and parsed.path.startswith(_FEISHU_WEBHOOK_PATH_PREFIX)
-        and hook_id
-        and "/" not in hook_id
-    )
+        return None
+    return seconds if seconds > 0 else None
 
 
 # httpx raises these before any request byte is written: no connection, no proxy, no route. Every
@@ -210,11 +208,13 @@ class NewsPushExternalError(RuntimeError):
         status_code: int | None = None,
         commit_phase: str = COMMIT_PHASE_UNKNOWN,
         retryable: bool = False,
+        retry_after_seconds: float | None = None,
     ) -> None:
         self.code = code
         self.status_code = status_code
         self.commit_phase = commit_phase
         self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
         super().__init__(code)
 
 
@@ -254,6 +254,7 @@ class FeishuNewsPushSender:
                 status_code=exc.status_code,
                 commit_phase=exc.commit_phase,
                 retryable=exc.retryable,
+                retry_after_seconds=exc.retry_after_seconds,
             ) from None
         return {"provider": "feishu", "code": receipt.code, "status_code": receipt.status_code}
 

@@ -40,7 +40,9 @@ the optional `llm.news_reader_card_fallback.api_key` (dedicated ReaderCard
 fallback endpoint),
 `news.broker.url` (carries the broker credentials), `news.push.feishu_webhook_url` and the optional
 `news.push.feishu_signing_secret`, the Telegram bot-token file named by
-`news.push.telegram_bot_token_file`, the two PostgreSQL password files
+`news.push.telegram_bot_token_file`, the optional
+`news.push.telegram_proxy_url` (a proxy URL commonly carries its own
+credentials), the two PostgreSQL password files
 (bootstrap and the shared `tracefold` application login), and the Binance files
 named by `trading.execution.credentials.api_key_file` / `api_secret_file`.
 Trading owns no Telegram credential: #528 deleted the Telegram control ingress

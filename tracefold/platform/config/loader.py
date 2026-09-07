@@ -111,6 +111,10 @@ news:
     feishu_signing_secret:
     telegram_bot_token_file:
     telegram_chat_id:
+    # #604: how Workers reaches api.telegram.org when it cannot reach it directly. Empty means
+    # directly. http://, https://, socks5:// or socks5h:// with a host and no path. Never reported
+    # back by `tracefold config`, which says only whether one is configured.
+    telegram_proxy_url:
     min_interval_seconds: 0.6
   policy:
     restatement_drop: true

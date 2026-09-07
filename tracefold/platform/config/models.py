@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import re
 from dataclasses import dataclass
 from decimal import Decimal
@@ -11,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator,
 
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.paths import app_home, app_log_path
+from tracefold.platform.validation import SOCKS_PROXY_URL_SCHEMES, is_feishu_webhook_url, proxy_url_scheme
 
 _TELEGRAM_BOT_TOKEN_RE = re.compile(r"^[0-9]{6,15}:[A-Za-z0-9_-]{30,80}$")
 
@@ -205,9 +207,13 @@ class NewsPushSettings(BaseModel):
     feishu_signing_secret: str | None = None
     telegram_bot_token_file: str | None = None
     telegram_chat_id: int | str | None = None
+    # How this process reaches `api.telegram.org` when it cannot reach it directly. Empty means
+    # directly. It is read as written and never reported back: a proxy URL commonly carries
+    # credentials, so `tracefold config` says only whether one is configured.
+    telegram_proxy_url: str | None = Field(default=None, repr=False)
     min_interval_seconds: float = 0.6
 
-    @field_validator("feishu_webhook_url", "feishu_signing_secret", mode="before")
+    @field_validator("feishu_webhook_url", "feishu_signing_secret", "telegram_proxy_url", mode="before")
     @classmethod
     def parse_optional_secret(cls, value: Any) -> str | None:
         normalized = str(value or "").strip()
@@ -794,6 +800,8 @@ class NewsPushAvailability:
     feishu_signing_secret_configured: bool
     telegram_bot_token_file_configured: bool
     telegram_chat_id_configured: bool
+    # Whether an outbound proxy is configured, and never which one: the URL may carry credentials.
+    telegram_proxy_configured: bool
 
 
 def news_push_availability(settings: Settings, *, inspect_secret_file: bool = True) -> NewsPushAvailability:
@@ -807,6 +815,7 @@ def news_push_availability(settings: Settings, *, inspect_secret_file: bool = Tr
         else bool(push.telegram_bot_token_file)
     )
     telegram_configured = bool(push.telegram_bot_token_file or push.telegram_chat_id)
+    proxy_scheme = proxy_url_scheme(push.telegram_proxy_url)
     provider: Literal["feishu", "telegram"] | None = (
         None if feishu_configured == telegram_configured else "feishu" if feishu_configured else "telegram"
     )
@@ -819,9 +828,16 @@ def news_push_availability(settings: Settings, *, inspect_secret_file: bool = Tr
         reason = "news_item_push_telegram_bot_token_unavailable"
     elif requested and provider == "telegram" and push.telegram_chat_id is None:
         reason = "news_item_push_telegram_chat_id_missing"
+    elif requested and provider == "telegram" and push.telegram_proxy_url is not None and proxy_scheme is None:
+        # Named here rather than left to the sender: httpx refuses an unroutable proxy with an error
+        # this process could not translate into one capability's fact, and a channel that silently
+        # ignored the proxy an operator configured would be the worse answer of the two.
+        reason = "news_item_push_telegram_proxy_invalid"
+    elif requested and provider == "telegram" and proxy_scheme in SOCKS_PROXY_URL_SCHEMES and not _socks_supported():
+        reason = "news_item_push_telegram_proxy_socks_unsupported"
     elif requested and not webhook_configured and provider != "telegram":
         reason = "news_item_push_feishu_webhook_missing"
-    elif requested and provider == "feishu" and not _is_feishu_webhook_url(push.feishu_webhook_url):
+    elif requested and provider == "feishu" and not is_feishu_webhook_url(push.feishu_webhook_url):
         reason = "news_item_push_feishu_webhook_invalid"
     return NewsPushAvailability(
         requested=requested,
@@ -832,6 +848,7 @@ def news_push_availability(settings: Settings, *, inspect_secret_file: bool = Tr
         feishu_signing_secret_configured=bool(push.feishu_signing_secret),
         telegram_bot_token_file_configured=token_file_configured,
         telegram_chat_id_configured=push.telegram_chat_id is not None,
+        telegram_proxy_configured=push.telegram_proxy_url is not None,
     )
 
 
@@ -878,27 +895,15 @@ def news_model_availability(settings: Settings) -> NewsModelAvailability:
     )
 
 
-def _is_feishu_webhook_url(value: str | None) -> bool:
-    if value is None:
-        return False
-    parsed = urlsplit(value)
-    try:
-        port = parsed.port
-    except ValueError:
-        return False
-    hook_id = parsed.path.removeprefix("/open-apis/bot/v2/hook/")
-    return bool(
-        parsed.scheme == "https"
-        and parsed.hostname == "open.feishu.cn"
-        and port in {None, 443}
-        and parsed.username is None
-        and parsed.password is None
-        and not parsed.query
-        and not parsed.fragment
-        and hook_id
-        and hook_id != parsed.path
-        and "/" not in hook_id
-    )
+def _socks_supported() -> bool:
+    """Whether this build can speak SOCKS at all; httpx needs `socksio` and raises `ImportError` without it.
+
+    An `ImportError` out of a sender constructor is what #562 §5 row 1 stopped happening: it is not a
+    `ValueError`, so it escapes the composition seam and takes reception, triage and the market loop
+    down with the process. One capability marked `unavailable` beside a running process is the answer.
+    """
+
+    return importlib.util.find_spec("socksio") is not None
 
 
 def _telegram_bot_token_file_configured(path: Path | None) -> bool:

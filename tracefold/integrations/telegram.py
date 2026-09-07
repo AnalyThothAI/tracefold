@@ -19,11 +19,9 @@ import hashlib
 import hmac
 import html
 import re
-import ssl
 import time
 from collections.abc import Callable, Mapping, Sequence
 from decimal import Decimal
-from http.client import HTTPException, HTTPSConnection
 from typing import Any, Final
 from urllib.parse import quote, urlsplit
 
@@ -47,7 +45,15 @@ _TELEGRAM_API_ORIGIN = "https://api.telegram.org"
 _TELEGRAM_TIMEOUT_SECONDS = 6.5
 _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS = 7.0
 _TELEGRAM_MIN_REQUEST_BUDGET_SECONDS = 0.05
-_TELEGRAM_MAX_PHASE_TIMEOUT_SECONDS = 1.25
+# What one Bot API call may spend in each phase, summing to the whole call budget above. The single
+# 1.25 s this replaces covered the TCP connect, the TLS handshake and every read alike, which is a
+# quarter of what the Feishu webhook gives itself and less than two round trips to another
+# continent -- so the phase that carries the handshake gets the largest share after the read, and
+# the write of one small JSON body gets the smallest.
+_TELEGRAM_CONNECT_TIMEOUT_SECONDS = 2.5
+_TELEGRAM_READ_TIMEOUT_SECONDS = 3.5
+_TELEGRAM_WRITE_TIMEOUT_SECONDS = 0.5
+_TELEGRAM_POOL_TIMEOUT_SECONDS = 0.5
 _TELEGRAM_TEXT_MAX = 4096
 _TELEGRAM_RESPONSE_MAX_BYTES = 1024 * 1024
 _SOURCE_URL_MAX_LENGTH = 2_048
@@ -99,12 +105,16 @@ class TelegramDeliveryError(RuntimeError):
         status_code: int | None = None,
         commit_phase: str = COMMIT_PHASE_UNKNOWN,
         retryable: bool = False,
+        retry_after_seconds: float | None = None,
     ) -> None:
         super().__init__(code)
         self.code = code
         self.status_code = status_code
         self.commit_phase = commit_phase
         self.retryable = retryable
+        # What Telegram itself said the wait should be, when it said anything. A fixed backoff is a
+        # guess; this is the number the provider answered with.
+        self.retry_after_seconds = retry_after_seconds
 
 
 # Raised by httpx before any request byte is written. Every other transport failure happened at or
@@ -113,61 +123,61 @@ _PRE_CONNECT_FAILURES = (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyEr
 
 
 class _TelegramHTTPSBotTransport(httpx.BaseTransport):
-    """Inject the credential below httpx's URL/logging layer."""
+    """Inject the credential below httpx's URL/logging layer, and let httpx be the transport.
 
-    def __init__(self, bot_token: str) -> None:
+    The outer client only ever names the bare method (`/sendMessage`), which is what httpx logs at
+    INFO and what an exception repr carries; the token appears for the first time on the request
+    handed to the inner transport. That much is unchanged and is the whole reason this class exists.
+
+    What it no longer does is open the connection itself. A hand-rolled `http.client.HTTPSConnection`
+    knows nothing about a proxy, and neither does the client wrapping it -- httpx reads the
+    environment's proxy only for a client that builds its own transport (`allow_env_proxies =
+    trust_env and transport is None`), so this channel had no route out of a host that needs one and
+    no configuration key to give it one. It also opened a fresh TLS connection per call, and turned
+    every failure into one of two exceptions, so the caller's "did this write any bytes?" question
+    was answered by a translation rather than by the failure itself. The inner transport is httpx's
+    own: it takes the operator's proxy explicitly, keeps a connection pool across the preflight's
+    three calls and the send, and raises the connect/read/write exceptions the caller already
+    classifies (#604 N2).
+    """
+
+    def __init__(self, bot_token: str, *, proxy_url: str | None = None) -> None:
         self._bot_token = bot_token
-        self._ssl_context = ssl.create_default_context()
+        self._transport = httpx.HTTPTransport(proxy=proxy_url, verify=True, retries=0)
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         method = request.url.path.strip("/")
         if method not in _BOT_API_METHODS or request.method != "POST":
             raise httpx.TransportError("telegram_transport_request_invalid", request=request)
-        phase_timeouts = request.extensions.get("timeout") or {}
-        configured_timeouts = [
-            float(value)
-            for value in phase_timeouts.values()
-            if isinstance(value, int | float) and not isinstance(value, bool) and float(value) > 0
-        ]
-        socket_timeout = min(configured_timeouts, default=_TELEGRAM_MAX_PHASE_TIMEOUT_SECONDS)
-        connection = HTTPSConnection(
-            "api.telegram.org",
-            443,
-            timeout=socket_timeout,
-            context=self._ssl_context,
+        # The origin is this module's, not the caller's, so no request built anywhere else can carry
+        # the token somewhere else. The phase timeouts travel in `extensions` and are honoured by the
+        # inner transport natively.
+        response = self._transport.handle_request(
+            httpx.Request(
+                "POST",
+                f"{_TELEGRAM_API_ORIGIN}/bot{self._bot_token}/{method}",
+                headers=request.headers,
+                content=request.read(),
+                extensions=request.extensions,
+            )
         )
         try:
-            # Connecting is its own step so its failure is its own exception. Everything below has
-            # already written request bytes, and cannot claim the message did not arrive.
-            try:
-                connection.connect()
-            except (HTTPException, OSError) as exc:
-                raise httpx.ConnectError("telegram_transport_connect_failed", request=request) from exc
-            connection.request(
-                "POST",
-                f"/bot{self._bot_token}/{method}",
-                body=request.read(),
-                headers=dict(request.headers),
-            )
-            provider_response = connection.getresponse()
-            body = provider_response.read(_TELEGRAM_RESPONSE_MAX_BYTES + 1)
-            if len(body) > _TELEGRAM_RESPONSE_MAX_BYTES:
-                raise httpx.TransportError("telegram_transport_response_too_large", request=request)
-            return httpx.Response(
-                status_code=int(provider_response.status),
-                headers=provider_response.getheaders(),
-                content=body,
-                extensions={
-                    "http_version": b"HTTP/1.1",
-                    "reason_phrase": str(provider_response.reason or "").encode("ascii", errors="replace"),
-                },
-            )
-        except TimeoutError as exc:
-            raise httpx.TimeoutException("telegram_transport_timeout", request=request) from exc
-        except (HTTPException, OSError) as exc:
-            raise httpx.TransportError("telegram_transport_failed", request=request) from exc
+            body = bytearray()
+            for chunk in response.iter_raw():
+                body += chunk
+                if len(body) > _TELEGRAM_RESPONSE_MAX_BYTES:
+                    raise httpx.TransportError("telegram_transport_response_too_large", request=request)
         finally:
-            connection.close()
+            response.close()
+        return httpx.Response(
+            status_code=response.status_code,
+            headers=response.headers,
+            content=bytes(body),
+            extensions=response.extensions,
+        )
+
+    def close(self) -> None:
+        self._transport.close()
 
 
 class TelegramNewsPushSender:
@@ -178,6 +188,7 @@ class TelegramNewsPushSender:
         *,
         bot_token: str,
         chat_id: int | str,
+        proxy_url: str | None = None,
         transport: httpx.BaseTransport | None = None,
         monotonic: Callable[[], float] | None = None,
         wall_clock_ms: Callable[[], int] | None = None,
@@ -199,7 +210,9 @@ class TelegramNewsPushSender:
         self._target_validated = False
         self._monotonic = monotonic or time.monotonic
         self._wall_clock_ms = wall_clock_ms or (lambda: int(time.time() * 1000))
-        selected_transport = transport if transport is not None else _TelegramHTTPSBotTransport(normalized_token)
+        selected_transport = (
+            transport if transport is not None else _TelegramHTTPSBotTransport(normalized_token, proxy_url=proxy_url)
+        )
         self._client = httpx.Client(
             base_url=f"{_TELEGRAM_API_ORIGIN}/",
             timeout=httpx.Timeout(_TELEGRAM_TIMEOUT_SECONDS),
@@ -437,16 +450,19 @@ class TelegramNewsPushSender:
             raise TelegramDeliveryError(
                 f"{error_prefix}_budget_exhausted", commit_phase=COMMIT_PHASE_NOT_SENT, retryable=True
             )
-        phase_timeout = min(_TELEGRAM_MAX_PHASE_TIMEOUT_SECONDS, remaining / 4)
+        # The phases of one call run in sequence, so their ceilings share what is left of the caller's
+        # deadline instead of each claiming it whole: a call starting with two seconds left answers
+        # inside those two seconds, and the preflight's three calls stay inside one budget.
+        scale = min(1.0, remaining / _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS)
         try:
             response = self._client.post(
                 method,
                 json=dict(payload),
                 timeout=httpx.Timeout(
-                    connect=phase_timeout,
-                    read=phase_timeout,
-                    write=phase_timeout,
-                    pool=phase_timeout,
+                    connect=_TELEGRAM_CONNECT_TIMEOUT_SECONDS * scale,
+                    read=_TELEGRAM_READ_TIMEOUT_SECONDS * scale,
+                    write=_TELEGRAM_WRITE_TIMEOUT_SECONDS * scale,
+                    pool=_TELEGRAM_POOL_TIMEOUT_SECONDS * scale,
                 ),
             )
         except _PRE_CONNECT_FAILURES:
@@ -463,6 +479,7 @@ class TelegramNewsPushSender:
                 status_code=status_code,
                 commit_phase=COMMIT_PHASE_NOT_SENT,
                 retryable=True,
+                retry_after_seconds=_retry_after_seconds(response),
             )
         if status_code >= 500:
             # Telegram's own tier answered. It can answer that way after accepting the message.
@@ -485,6 +502,20 @@ class TelegramNewsPushSender:
 
     def close(self) -> None:
         self._client.close()
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    """The wait Telegram stated for itself. It answers a flood limit with the exact number of seconds."""
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    parameters = payload.get("parameters") if isinstance(payload, Mapping) else None
+    seconds = parameters.get("retry_after") if isinstance(parameters, Mapping) else None
+    if isinstance(seconds, bool) or not isinstance(seconds, int | float):
+        return None
+    return float(seconds) if seconds > 0 else None
 
 
 def _telegram_message(

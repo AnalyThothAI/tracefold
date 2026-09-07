@@ -205,8 +205,16 @@ verifies the bot is an administrator allowed to post. Every later provider
 response is checked against the numeric ID Telegram itself answered with.
 Invite links, personal chats, groups, and supergroups are rejected before the
 first message; a channel with a public `@name` is the operator's own publishing
-decision and is accepted. Feishu and Telegram fields may not be
-configured together while push is enabled. An enabled but incomplete or insecure
+decision and is accepted. The optional `news.push.telegram_proxy_url` is how
+Workers reaches `api.telegram.org` from a host that cannot reach it directly:
+an `http://`, `https://`, `socks5://` or `socks5h://` URL with a host and no
+path. Unset means directly, and no environment variable substitutes for it --
+the adapter always supplies its own transport, which is exactly the case where
+httpx does not read `HTTPS_PROXY`. A URL of any other shape, or a SOCKS URL in
+a build without the `socksio` codec, is reported as `news_delivery:
+unavailable` beside a running process. It may carry credentials, so
+`tracefold config` reports only whether one is configured. Feishu and Telegram
+fields may not be configured together while push is enabled. An enabled but incomplete or insecure
 provider configuration is reported as `news_delivery: unavailable` with its
 reason, beside a running process that keeps receiving, admitting and triaging;
 it is not silently treated as disabled. Serve never mounts or reads the bot
@@ -269,6 +277,8 @@ news:
     enabled: true
     telegram_bot_token_file: "telegram_bot_token"
     telegram_chat_id: -1001234567890
+    # Optional. Only when this host cannot reach api.telegram.org directly:
+    # telegram_proxy_url: "socks5h://127.0.0.1:1080"
     # Alternative provider (do not configure both):
     # feishu_webhook_url: "<Feishu v2 webhook>"
     # feishu_signing_secret:

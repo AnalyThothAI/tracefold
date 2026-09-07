@@ -437,6 +437,7 @@ class CliTests(unittest.TestCase):
                 "feishu_signing_secret_configured": False,
                 "telegram_bot_token_file_configured": False,
                 "telegram_chat_id_configured": False,
+                "telegram_proxy_configured": False,
                 "min_interval_seconds": 0.6,
             },
         )
@@ -534,6 +535,7 @@ class CliTests(unittest.TestCase):
                 "feishu_signing_secret": None,
                 "telegram_bot_token_file": None,
                 "telegram_chat_id": None,
+                "telegram_proxy_url": None,
                 "min_interval_seconds": 0.6,
             },
         )

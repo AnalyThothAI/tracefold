@@ -118,6 +118,9 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                         "feishu_signing_secret_configured": (push_availability.feishu_signing_secret_configured),
                         "telegram_bot_token_file_configured": (push_availability.telegram_bot_token_file_configured),
                         "telegram_chat_id_configured": push_availability.telegram_chat_id_configured,
+                        # Whether, never which: a proxy URL commonly carries credentials, and this
+                        # report is what an operator pastes into an issue.
+                        "telegram_proxy_configured": push_availability.telegram_proxy_configured,
                         "min_interval_seconds": settings.news.push.min_interval_seconds,
                     },
                 },
