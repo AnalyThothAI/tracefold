@@ -361,9 +361,12 @@ class OiNautilusStrategy(Strategy):
         if routed is None:
             return
         state, leg = routed
-        reason = str(getattr(event, "reason", "")).lower()
+        # The venue's own words, kept verbatim for the observation and lowered only for the match
+        # below; recording them is the only way an operator can answer "why" after the fact (#604 T1).
+        reason = str(getattr(event, "reason", ""))
+        lowered = reason.lower()
         order = order_for_event(state, event.client_order_id, leg)
-        if status == "rejected" and order is not None and any(token in reason for token in _AMBIGUOUS_REASONS):
+        if status == "rejected" and order is not None and any(token in lowered for token in _AMBIGUOUS_REASONS):
             self._request_reconciliation("protection_ambiguity" if leg == "protection" else "unknown_outcome")
             if leg == "entry":
                 self._entry.mark_unknown(state)
@@ -378,7 +381,7 @@ class OiNautilusStrategy(Strategy):
                 self._exits.flatten(state.position_id)
             return
         self._route_known_terminal(state, event.client_order_id, leg)
-        self._observation_writer.rejected_order_event(state, leg, status, event)
+        self._observation_writer.rejected_order_event(state, leg, status, event, reason)
 
     def _route_known_terminal(self, state: ExecutionState, client_order_id: Any, leg: str) -> None:
         if leg == "entry":

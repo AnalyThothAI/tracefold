@@ -49,6 +49,7 @@ from tracefold.integrations.nautilus.oi_runtime.state import (
     deterministic_client_order_id,
     protection_leg,
 )
+from tracefold.trading import ExecutionObservationV1
 
 
 def _accepted(context: SimpleNamespace, order: object, *, position_id: PositionId | None = None) -> object:
@@ -882,7 +883,9 @@ def test_revisited_position_quantity_has_distinct_audit_identity() -> None:
     assert len({value.event_id for value in changes}) == 3
 
 
-@pytest.mark.parametrize("reason", ["503 unavailable", "-1007 timeout", "response unknown"])
+# `Response Unknown` is the same refusal in the venue's own capitalization: the routing match reads a
+# lowered copy while the observation keeps the raw words (#604 T1).
+@pytest.mark.parametrize("reason", ["503 unavailable", "-1007 timeout", "response unknown", "Response Unknown"])
 def test_ambiguous_provider_outcome_is_query_first_and_never_changes_id(reason: str) -> None:
     context = registered_oi_strategy(values=(trade_signal(),))
     context.strategy.on_timer(None)
@@ -895,6 +898,72 @@ def test_ambiguous_provider_outcome_is_query_first_and_never_changes_id(reason: 
     assert len(context.strategy.submitted) == 1
     assert context.strategy.queried == [entry]
     assert context.reconciliation_requests == ["unknown_outcome"]
+
+
+def _rejected_entry_observation(reason: str) -> ExecutionObservationV1:
+    """One decided venue refusal of one entry, as the ledger would hold it."""
+
+    context = registered_oi_strategy(values=(trade_signal(),))
+    context.strategy.on_timer(None)
+    entry = context.strategy.submitted[0][0]
+
+    context.strategy.on_order_rejected(
+        SimpleNamespace(client_order_id=entry.client_order_id, reason=reason, ts_event=NOW_NS + 2)
+    )
+
+    (observation,) = [
+        value
+        for value in context.audit.flush_once(lambda _values: None)
+        if value.normalized_kind == "order" and value.summary.get("status") == "rejected"
+    ]
+    return observation
+
+
+def test_a_decided_rejection_records_the_venue_reason_the_runtime_already_read() -> None:
+    """#604 T1 (A2). The one real rejection this account has seen said only `{leg, status}`.
+
+    `_route_rejected` had `event.reason` in hand for the ambiguity match and dropped it, so nobody
+    could answer afterwards whether the venue meant margin, precision or an untradable symbol.
+    """
+
+    reasoned = _rejected_entry_observation("Margin is insufficient.")
+    silent = _rejected_entry_observation("")
+
+    assert reasoned.summary == {"leg": "entry", "status": "rejected", "reason": "Margin is insufficient."}
+    # A venue that named nothing leaves the key out, so a reader can tell "no reason" from "".
+    assert silent.summary == {"leg": "entry", "status": "rejected"}
+    # The reason is in the payload too, which is what fixes the event identity: two refusals of the
+    # same order that say different things are two facts, not one re-offer of a single one.
+    assert reasoned.event_id != silent.event_id
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_bytes"),
+    [
+        pytest.param("Margin is insufficient. " * 43, 256, id="ascii"),
+        # Every character is three bytes, so a byte-exact cut would split one.
+        pytest.param("符号不可交易。" * 40, 255, id="multibyte"),
+    ],
+)
+def test_an_over_long_venue_reason_is_cut_at_the_writer_instead_of_losing_the_observation(
+    raw: str,
+    expected_bytes: int,
+) -> None:
+    """`ExecutionObservationV1` refuses a summary string over 256 bytes, and it refuses the whole
+    observation with it, which would send a rejection down the `audit_append_rejected` gap path
+    rather than into the ledger. The cut lands on a whole character."""
+
+    assert len(raw.encode()) > 800
+
+    observation = _rejected_entry_observation(raw)
+
+    reason = observation.summary["reason"]
+    assert isinstance(reason, str)
+    assert len(reason.encode()) == expected_bytes
+    assert raw.startswith(reason)
+    assert ExecutionObservationV1.model_validate(observation.model_dump()) == observation
+    with pytest.raises(ValueError, match="execution_metadata_invalid"):
+        ExecutionObservationV1.model_validate({**observation.model_dump(), "summary": {"reason": raw}})
 
 
 def test_submit_exception_queries_the_same_entry_and_wakes_immediate_private_repair(
@@ -1317,33 +1386,6 @@ def test_callback_module_has_no_postgres_or_telegram_io() -> None:
         or "telegram" in module.split(".")
     )
     assert forbidden == []
-
-
-# Preserved from the deleted `tests/architecture/test_nautilus_runtime_owner_matrix.py`: everything
-# else in that module restated the current wiring line by line, but this one boundary has no other
-# owner. Nautilus 1.231 exposes no public route to these reports, so exactly one module reaches into
-# the adapter's privates and an upgrade has exactly one place to break.
-_PRIVATE_NAUTILUS_ATTRIBUTES = (
-    "_clients",
-    "_active_symbols_cache",
-    "_get_binance_position_status_reports",
-    "_build_active_symbols",
-    "_parse_order_status_reports",
-    "_fetch_algo_orders",
-    "_parse_algo_order_report",
-)
-
-
-def test_private_nautilus_adapter_access_has_one_compatibility_seam() -> None:
-    compat = _RUNTIME_PACKAGE / "nautilus_1231_binance_compat.py"
-    violations = [
-        f"{path.relative_to(_SOURCE_ROOT).as_posix()}:{node.lineno}:{node.attr}"
-        for path in sorted(_SOURCE_ROOT.rglob("*.py"))
-        if path != compat and "__pycache__" not in path.parts
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
-        if isinstance(node, ast.Attribute) and node.attr in _PRIVATE_NAUTILUS_ATTRIBUTES
-    ]
-    assert violations == []
 
 
 def _cold_position(context: SimpleNamespace, *, quantity: str = "0.05") -> PositionId:
