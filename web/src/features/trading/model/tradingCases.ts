@@ -39,22 +39,38 @@ export function funnelSteps(
   const states = cases?.state_counts_24h ?? {};
   const frames = (cases?.admission_counts_24h ?? []).reduce((sum, item) => sum + item.count, 0);
   const decided = Object.values(states).reduce((sum, value) => sum + value, 0);
-  const accepted = executions.filter((row) => !REFUSED_STAGES.has(row.stage)).length;
-  const filled = executions.filter((row) => row.fill_quantity != null).length;
-  const closed = executions.filter((row) => row.stage === "closed").length;
+  const venue = entrySplit(executions);
   return [
     { key: "frames", label: "帧", value: frames, side: "lane" },
     { key: "cases", label: "成案", value: decided, side: "lane" },
     { key: "no_trade", label: "不交易", value: states.NO_TRADE ?? 0, side: "lane" },
     { key: "emitted", label: "发出", value: states.SIGNAL_EMITTED ?? 0, side: "lane" },
-    { key: "accepted", label: "受理", value: accepted, side: "venue" },
-    { key: "filled", label: "成交", value: filled, side: "venue" },
-    { key: "closed", label: "平仓", value: closed, side: "venue" },
+    { key: "accepted", label: "受理", value: venue.accepted, side: "venue" },
+    { key: "filled", label: "成交", value: venue.filled, side: "venue" },
+    { key: "closed", label: "平仓", value: venue.closed, side: "venue" },
   ];
 }
 
-/** The two stages that mean the entry never reached the venue, as `tracefold/trading/stages.py` derives them. */
-const REFUSED_STAGES = new Set(["rejected", "expired"]);
+/**
+ * How far the venue took the entries in the window, counted once for the two blocks that state it.
+ *
+ * `rejected` and `expired` are the stages that mean the entry never reached the venue at all, as
+ * `tracefold/trading/stages.py` derives them; everything else is an entry the Runtime accepted.
+ */
+export function entrySplit(executions: readonly TradingExecutionRow[]): {
+  accepted: number;
+  closed: number;
+  filled: number;
+  refused: number;
+} {
+  const refused = executions.filter((row) => row.stage === "rejected" || row.stage === "expired");
+  return {
+    accepted: executions.length - refused.length,
+    closed: executions.filter((row) => row.stage === "closed").length,
+    filled: executions.filter((row) => row.fill_quantity != null).length,
+    refused: refused.length,
+  };
+}
 
 type FunnelReasonRow = { count: number; key: string; label: string };
 
@@ -83,7 +99,7 @@ export function admissionRefusalRows(
     .map((item) => ({
       count: item.count,
       key: `${item.status}:${item.reason ?? ""}`,
-      reason: item.reason,
+      reason: item.reason ?? null,
       status: item.status,
     }));
 }

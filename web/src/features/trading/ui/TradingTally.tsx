@@ -6,10 +6,8 @@ import type {
   TradingExecutionRow,
   TradingRealizedTotals,
 } from "../api/tradingQueries";
+import { entrySplit } from "../model/tradingCases";
 import { moneyLabel, moneyTone } from "../model/tradingLabels";
-
-/** The two stages that mean the entry never reached the venue (`tracefold/trading/stages.py`). */
-const REFUSED_STAGES = new Set(["rejected", "expired"]);
 
 /**
  * ② Today, in four numbers: what the account made, what it risked, and what is still on it (#604 T4).
@@ -38,7 +36,7 @@ export function TradingTally({
   totals: TradingRealizedTotals | undefined;
 }) {
   const account = execution?.current_account;
-  const refused = executions.filter((row) => REFUSED_STAGES.has(row.stage)).length;
+  const venue = entrySplit(executions);
   const unread = executionsPending ? "读取中" : executionsFailed ? "读取失败" : "UNAVAILABLE";
   return (
     <Card data-block="tally" hint="已实现含手工入场；服务端按 UTC 日界聚合" title="今日战况">
@@ -62,7 +60,7 @@ export function TradingTally({
           <small>今日入场</small>
           <b>{executionsPending || executionsFailed ? unread : executions.length}</b>
           <small>
-            受理 {executions.length - refused} · 拒绝 {refused}
+            受理 {venue.accepted} · 拒绝 {venue.refused}
           </small>
         </span>
         <span
