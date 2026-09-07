@@ -1026,8 +1026,10 @@ OpenNews account Strategy WSS (whatever the account has enabled; no local allowl
      -> policy-v13 decide() -> news_verdicts (editorial + runtime manifest)
      -> news_delivery_queue row in the same transaction (push/escalate); no broker publish
   -> Deliverer loop (Workers task, 1 s poll): claim a due row with FOR UPDATE SKIP LOCKED,
-     one configured-provider attempt per Event (kind first); the row is deleted once
-     news_deliveries has it, and `dead` after three attempts 30 s apart
+     one configured-provider attempt per claim (kind first); the row is deleted once
+     news_deliveries has it, and `dead` after three attempts 30 s apart. A preflight or
+     send failure the adapter proved was not sent and retriable costs one attempt, not
+     the card; a refusal or an unknown outcome settles news_deliveries terminal at once
   -> RabbitMQ 4.3 native delayed retry inside each business queue: TransientError is a counted return
      (30 s delay, terminal after 3 total attempts), DeferError is an uncounted return (same delay);
      q:news.dead (at-least-once) for decode/PermanentError/exhausted-transient terminal cases
@@ -1317,6 +1319,24 @@ Diagnose News in this order:
    complete and Workers is running. If push is explicitly enabled with an
    absent or insecure Telegram token file, Workers fails startup; inspect
    `workers_state` and Workers logs instead of treating the target as available.
+
+   Not every failure ends the card. A preflight or send failure the adapter can
+   defend as not sent *and* retriable — a connect failure, a 429 — spends one of the
+   intent's three attempts, comes back 30 s later, and writes no `news_deliveries`
+   row at all in the meantime. A refusal the same adapter calls not sent but
+   permanent — a bad channel, a card over the provider's size limit — settles
+   `terminal` on the first attempt, because waiting cannot fix it. An *unknown*
+   outcome — a read timeout, a provider 5xx — also settles `terminal` on the first
+   attempt, and deliberately: the request was written and the answer was not read,
+   so the card may already be on a reader's screen and a retry would put a second
+   one there. Which of the three a row was is not readable from `last_error_code`
+   alone: `news_delivery_feishu_http_failed` is both a 429 that is retried and a 5xx
+   that is not, and `news_delivery_feishu_transport_failed` is both a connect failure
+   that is retried and a read timeout that is not — the decision is the adapter's own
+   evidence about the request, not its error string. A card that ran out of attempts
+   is `terminal` here with the provider's last error code and `dead` in
+   `news_delivery_queue` with `news_delivery_attempts_exhausted`; the queue `SELECT`
+   in the cutover section above is how you find it.
 
    A market push card carries its 打开明细 button only when this deployment has
    named its console. `api.public_url` is that name — the origin a reader outside

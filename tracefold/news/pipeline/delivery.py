@@ -13,6 +13,7 @@ from typing import Any, ClassVar, Final, Protocol, runtime_checkable
 
 from ..bus import DeferError, PermanentError, TransientError, now_ms
 from ..delivery import card_assets, news_reader_card, reader_market_movements, reader_trade_targets
+from ..delivery_contracts import DELIVERY_FAILURE_RETRIABLE, classify_delivery_failure
 from ..feishu_card import feishu_card
 from ..market_review.pricing import (
     QUOTE_READ_TIMEOUT_SECONDS,
@@ -71,6 +72,17 @@ _DELIVERY_SENDS_PER_TURN = 20
 _DELIVERY_POLL_SECONDS = 1.0
 
 logger = logging.getLogger(__name__)
+
+
+class _ProviderNotSent(TransientError):
+    """A provider failure the adapter proved never reached a reader, carried back to the claim.
+
+    Transient is exactly what it is: the queue row keeps its lease, spends one of its three attempts
+    and comes back due one `DELIVERY_RETRY_DELAY_MS` later. It is its own type only so the claim can
+    record the provider's own code on the row instead of the name of this class -- an operator
+    reading a pending intent sees `news_delivery_feishu_business_rate_limited`, not that something
+    deferred it.
+    """
 
 
 def _claim_due(repos: Any, *, now_ms: int) -> list[dict[str, Any]]:
@@ -542,15 +554,23 @@ class DelivererLoop:
         `dead`: this lane's `news.dead`, kept in place instead of in a broker. Or the attempt did not
         finish, and the row keeps the lease the claim gave it, until the budget the broker policy used
         to enforce is spent.
+
+        The attempt the claim just spent is what `deliver` is told, so a provider failure the adapter
+        proved was never sent can choose between the second and the third of those (#604 N1).
         """
 
         try:
-            await self.deliver(event_id=event_id, kind=kind)
+            await self.deliver(event_id=event_id, kind=kind, attempts=attempts)
         except PermanentError as exc:
             # The broker rejected these without requeue and they became dead letters. The row becomes
             # `dead` in place instead, which is the same answer with the evidence left where an
             # operator can read it.
             await self._abandon_claim(event_id, kind, str(exc) or "news_delivery_refused")
+            return
+        except _ProviderNotSent as exc:
+            # The provider's own code rather than this lane's, because that is the whole diagnosis:
+            # a rate limit and a dead channel are the same row state and different operator actions.
+            await self._retry_or_abandon(event_id, kind, attempts, str(exc))
             return
         except (TransientError, DeferError) as exc:
             await self._retry_or_abandon(event_id, kind, attempts, f"news_delivery_deferred:{type(exc).__name__}")
@@ -598,8 +618,16 @@ class DelivererLoop:
                 ),
             )
 
-    async def deliver(self, *, event_id: str, kind: str = DELIVERY_KIND_FIRST) -> None:
-        """One claimed intent: `begin_delivery`, render, send, settle. Unchanged from the consumer."""
+    async def deliver(
+        self, *, event_id: str, kind: str = DELIVERY_KIND_FIRST, attempts: int = DELIVERY_ATTEMPTS_MAX
+    ) -> None:
+        """One claimed intent: `begin_delivery`, render, send, settle.
+
+        `attempts` is the attempt this claim already spent, and the only thing it decides is whether a
+        failure the adapter proved was *not sent* is worth another one. It defaults to the whole
+        budget, so a caller with no queue row behind it -- a recovery, a test driving one delivery --
+        gets exactly one attempt and settles on it, which is what this method always did.
+        """
 
         stamp = now_ms()
         bundle = await self.db.read("news_delivery_load", lambda repos: self._load(repos, event_id, stamp))
@@ -627,7 +655,17 @@ class DelivererLoop:
             )
         except Exception as exc:
             prepare_error_code = getattr(exc, "code", None) or f"news_delivery_failed:{type(exc).__name__}"
+            # A preflight that provably never reached the provider costs the intent one attempt, not
+            # the card: nothing has been written and nothing has been sent, so the claim keeps its
+            # lease and this Event is due again one delay later. A refusal and an unknown outcome
+            # settle here as they always have -- the target is wrong in a way waiting cannot fix, or
+            # the process cannot say what happened, and neither earns a second call.
+            retriable = classify_delivery_failure(exc) == DELIVERY_FAILURE_RETRIABLE
+            if retriable and attempts < DELIVERY_ATTEMPTS_MAX:
+                raise _ProviderNotSent(prepare_error_code) from exc
             await self._settle_direct(event_id, kind, prepare_error_code, stamp)
+            if retriable:
+                raise PermanentError("news_delivery_attempts_exhausted") from exc
             return
         # Only query a quote after every policy return above. A quote failure
         # never changes the delivery decision.
@@ -699,6 +737,8 @@ class DelivererLoop:
             return
         error_code: str | None = None
         receipt: dict[str, Any] | None = None
+        # Whether the failure below was a retriable one on the last attempt this intent had.
+        exhausted = False
         try:
             # The shared entry paces this send and serialises it against the market loop's. News
             # keeps reading `code` and nothing else about the failure, exactly as before.
@@ -714,6 +754,18 @@ class DelivererLoop:
             receipt = dict(result)
         except Exception as exc:
             error_code = getattr(exc, "code", None) or f"news_delivery_failed:{type(exc).__name__}"
+            # Same three answers as the preflight above, one step later and with a row to give back.
+            # The adapter proved this card never reached the provider, so the `sending` row it wrote
+            # is a claim on the identity and not evidence of anything: released, the retry re-owns it;
+            # held, the retry would read `sending` and settle the Event `ambiguous_after_crash`.
+            if classify_delivery_failure(exc) == DELIVERY_FAILURE_RETRIABLE:
+                if attempts < DELIVERY_ATTEMPTS_MAX:
+                    await self.db.tx(
+                        "news_delivery_release",
+                        lambda repos: repos.news.release_delivery(event_id=event_id, kind=kind),
+                    )
+                    raise _ProviderNotSent(error_code) from exc
+                exhausted = True
         settled_state = "sent" if error_code is None else "terminal"
         try:
             settlement_recorded = await self.db.tx(
@@ -732,6 +784,11 @@ class DelivererLoop:
         if not settlement_recorded:
             logger.warning("News delivery settlement failed: news_delivery_settlement_conflict")
             return
+        if exhausted:
+            # The budget is spent on a card nobody ever received. The ledger row above carries the
+            # provider's last word, and the intent becomes this lane's dead letter under the same
+            # code an attempt no process finished earns.
+            raise PermanentError("news_delivery_attempts_exhausted")
         if (
             progressive_sender is None
             or settled_state != "sent"

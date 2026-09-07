@@ -42,6 +42,7 @@ from tracefold.news.bus import (
     PermanentError,
     TransientError,
 )
+from tracefold.news.delivery_contracts import COMMIT_PHASE_NOT_SENT, COMMIT_PHASE_UNKNOWN
 from tracefold.news.market_review.pricing import Candle, PriceInstrument, PricePoint
 from tracefold.news.models import (
     TRIAGE_POLICY_VERSION,
@@ -1357,16 +1358,34 @@ def test_deliverer_prepares_the_provider_before_creating_the_sending_row() -> No
     assert order == ["prepare", "begin", "send"]
 
 
-def test_deliverer_settles_a_preflight_failure_without_calling_send() -> None:
-    class PreflightError(RuntimeError):
-        code = "news_delivery_telegram_preflight_transport_failed"
+class _FailingPrepareSender(RecordingSender):
+    """A provider whose target check fails, saying what that failure proved about the message."""
 
-    class FailingPrepareSender(RecordingSender):
-        def prepare(self) -> None:
-            raise PreflightError
+    def __init__(self, error: BaseException) -> None:
+        super().__init__()
+        self._error = error
+
+    def prepare(self) -> None:
+        raise self._error
+
+
+def _provider_error(code: str, *, commit_phase: str, retryable: bool = False) -> RuntimeError:
+    """The adapters' own error shape, in the two attributes every delivery loop reads (#604 N1)."""
+
+    error = RuntimeError(code)
+    error.code = code  # type: ignore[attr-defined]
+    error.commit_phase = commit_phase  # type: ignore[attr-defined]
+    error.retryable = retryable  # type: ignore[attr-defined]
+    return error
+
+
+def test_deliverer_settles_a_refused_preflight_without_calling_send() -> None:
+    """A target the provider refuses is settled on the spot: waiting cannot make a bad channel good."""
 
     news = _delivery_news()
-    sender = FailingPrepareSender()
+    sender = _FailingPrepareSender(
+        _provider_error("news_delivery_telegram_preflight_bot_not_admin", commit_phase=COMMIT_PHASE_NOT_SENT)
+    )
 
     asyncio.run(_deliverer(news, sender=sender).deliver(event_id="ev-strong"))
 
@@ -1374,8 +1393,89 @@ def test_deliverer_settles_a_preflight_failure_without_calling_send() -> None:
     settle = news.kwargs_of("settle_delivery")
     assert begin["card"] == {}
     assert settle["state"] == "terminal"
-    assert settle["error_code"] == "news_delivery_telegram_preflight_transport_failed"
+    assert settle["error_code"] == "news_delivery_telegram_preflight_bot_not_admin"
     assert sender.cards == []
+
+
+def test_deliverer_keeps_an_intent_whose_preflight_provably_never_reached_the_provider() -> None:
+    """#604 N1. A rate limit or a connect failure on the target check is not this card's ending.
+
+    It used to be: any preflight exception was settled `terminal`, the queue row was deleted behind
+    it, and the reader never saw a card that nothing was wrong with. The attempt is spent, no ledger
+    row is written at all, and the claim's own lease brings the Event back.
+    """
+
+    news = _delivery_news()
+    sender = _FailingPrepareSender(
+        _provider_error(
+            "news_delivery_telegram_preflight_transport_failed",
+            commit_phase=COMMIT_PHASE_NOT_SENT,
+            retryable=True,
+        )
+    )
+
+    with pytest.raises(TransientError, match="news_delivery_telegram_preflight_transport_failed"):
+        asyncio.run(_deliverer(news, sender=sender).deliver(event_id="ev-strong", attempts=1))
+
+    assert "begin_delivery" not in news.names()
+    assert "settle_delivery" not in news.names()
+    assert sender.cards == []
+
+
+def test_deliverer_gives_the_sending_row_back_when_the_card_provably_never_left() -> None:
+    """#604 N1. The `sending` row is a claim on the identity, not evidence a reader saw anything."""
+
+    class RateLimitedSender(RecordingSender):
+        def send_card(self, card: Any, **kwargs: Any) -> dict[str, Any]:
+            raise _provider_error(
+                "news_delivery_feishu_business_rate_limited", commit_phase=COMMIT_PHASE_NOT_SENT, retryable=True
+            )
+
+    news = _delivery_news()
+
+    with pytest.raises(TransientError, match="news_delivery_feishu_business_rate_limited"):
+        asyncio.run(_deliverer(news, sender=RateLimitedSender()).deliver(event_id="ev-strong", attempts=2))
+
+    assert news.kwargs_of("begin_delivery")["kind"] == "first"
+    assert news.kwargs_of("release_delivery") == {"event_id": "ev-strong", "kind": "first"}
+    assert "settle_delivery" not in news.names(), "nothing is settled while the intent still has attempts"
+
+
+def test_deliverer_settles_the_last_attempt_terminal_and_makes_the_intent_a_dead_letter() -> None:
+    """#604 N1. The budget is spent: the ledger takes the provider's last word, the intent dies."""
+
+    class RateLimitedSender(RecordingSender):
+        def send_card(self, card: Any, **kwargs: Any) -> dict[str, Any]:
+            raise _provider_error(
+                "news_delivery_feishu_business_rate_limited", commit_phase=COMMIT_PHASE_NOT_SENT, retryable=True
+            )
+
+    news = _delivery_news()
+
+    with pytest.raises(PermanentError, match="news_delivery_attempts_exhausted"):
+        asyncio.run(_deliverer(news, sender=RateLimitedSender()).deliver(event_id="ev-strong", attempts=3))
+
+    settle = news.kwargs_of("settle_delivery")
+    assert (settle["state"], settle["error_code"]) == ("terminal", "news_delivery_feishu_business_rate_limited")
+    assert "release_delivery" not in news.names(), "the ledger row is the evidence now, not a released claim"
+
+
+def test_deliverer_never_retries_a_send_whose_outcome_the_provider_did_not_report() -> None:
+    """#604 N1. A read timeout may already be on a reader's screen; a second card is the worse answer."""
+
+    class UnreadableSender(RecordingSender):
+        def send_card(self, card: Any, **kwargs: Any) -> dict[str, Any]:
+            raise _provider_error(
+                "news_delivery_feishu_transport_unreadable", commit_phase=COMMIT_PHASE_UNKNOWN, retryable=True
+            )
+
+    news = _delivery_news()
+
+    asyncio.run(_deliverer(news, sender=UnreadableSender()).deliver(event_id="ev-strong", attempts=1))
+
+    settle = news.kwargs_of("settle_delivery")
+    assert (settle["state"], settle["error_code"]) == ("terminal", "news_delivery_feishu_transport_unreadable")
+    assert "release_delivery" not in news.names()
 
 
 def test_deliverer_has_no_reader_count_input() -> None:

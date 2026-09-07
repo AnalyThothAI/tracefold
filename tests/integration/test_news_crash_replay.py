@@ -1147,6 +1147,179 @@ def test_a_deferred_delivery_keeps_its_intent_and_gives_up_with_the_reason_recor
     assert sender.sent == [], "a dead intent is never claimed again"
 
 
+class _ClassifiedFailureSender:
+    """A provider that fails the way a real adapter fails: saying what its failure proved.
+
+    `commit_phase` and `retryable` are the two attributes `FeishuDeliveryError` and
+    `TelegramDeliveryError` already carry, and they are the entire input to the Deliverer's decision.
+    Nothing else about this double matters -- the seam under test is the PostgreSQL queue state
+    machine, not an HTTP client, so the provider is in memory and the rows are real.
+    """
+
+    def __init__(self, *, code: str, commit_phase: str, retryable: bool) -> None:
+        self.sent: list[dict[str, Any]] = []
+        self.attempts = 0
+        self.recovered = False
+        self._code = code
+        self._commit_phase = commit_phase
+        self._retryable = retryable
+
+    def prepare(self) -> None:
+        return None
+
+    def send_card(self, card: Any, *, channel_payload: Mapping[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        del card
+        self.attempts += 1
+        if self.recovered:
+            self.sent.append(dict(channel_payload))
+            return {"provider": "test", "message_id": len(self.sent), "pushed_at_ms": now_ms()}
+        error = RuntimeError(self._code)
+        error.code = self._code
+        error.commit_phase = self._commit_phase
+        error.retryable = self._retryable
+        raise error
+
+    def close(self) -> None:
+        return None
+
+
+def _make_due(conn: Any) -> None:
+    """Bring the lease forward. Real time is the only thing this test is not willing to spend."""
+
+    conn.execute("UPDATE news_delivery_queue SET next_attempt_at_ms = 0 WHERE state = 'pending'")
+    conn.commit()
+
+
+def test_a_rate_limited_card_keeps_its_intent_and_reaches_the_reader_when_the_provider_recovers(conn) -> None:
+    """#604 N1. A failure the adapter proved never left costs the intent one attempt, not the card.
+
+    Live evidence for the shape of this: two Feishu cards were lost in six days, one to
+    `news_delivery_feishu_business_rate_limited` and one to `news_delivery_feishu_http_failed`. Both
+    were settled `terminal` on the spot and their queue rows deleted behind them, so the three
+    attempts `news_delivery_queue` exists to spend were never spent on the failure it was built for.
+
+    What the row must show between the two attempts is the whole fix: `pending`, one attempt gone,
+    due again a delay later, and *no* `news_deliveries` row at all -- the `sending` row this attempt
+    wrote is given back, because the retry has to be able to own that identity again.
+    """
+
+    bus = RecordingBus()
+    db = FaultInjectingDatabase(conn)
+    sender = _ClassifiedFailureSender(
+        code="news_delivery_feishu_business_rate_limited", commit_phase="not_sent", retryable=True
+    )
+    event_id = _pushable_event(conn, db, bus)
+    deliverer = DelivererLoop(
+        db=db, sender=sender, finite_operations=InlineFiniteOperations(), min_interval_seconds=0.0
+    )
+    stamp = now_ms()
+
+    asyncio.run(deliverer.advance())
+    conn.commit()
+
+    assert sender.attempts == 1 and sender.sent == []
+    assert _queue_rows(conn, event_id) == [
+        {
+            "kind": "first",
+            "state": "pending",
+            "attempts": 1,
+            "error_code": "news_delivery_feishu_business_rate_limited",
+        }
+    ]
+    due_at = conn.execute(
+        "SELECT next_attempt_at_ms FROM news_delivery_queue WHERE event_id = %s AND kind = 'first'",
+        (event_id,),
+    ).fetchone()["next_attempt_at_ms"]
+    assert due_at >= stamp + DELIVERY_RETRY_DELAY_MS, "the claim's lease is the retry's wait"
+    assert _count(conn, "SELECT count(*) AS n FROM news_deliveries WHERE event_id = %s", (event_id,)) == 0
+
+    # The lease is the only thing between the reader and the card, and nothing else was needed.
+    sender.recovered = True
+    _make_due(conn)
+    asyncio.run(deliverer.advance())
+    conn.commit()
+
+    assert len(sender.sent) == 1, "the card the old code lost"
+    assert _queue_rows(conn, event_id) == []
+    deliveries = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT kind, state, error_code FROM news_deliveries WHERE event_id = %s", (event_id,)
+        ).fetchall()
+    ]
+    assert deliveries == [{"kind": "first", "state": "sent", "error_code": None}]
+
+
+def test_a_provider_that_stays_broken_spends_three_attempts_and_leaves_both_rows_readable(conn) -> None:
+    """#604 N1. The budget ends the card, and the two rows say different halves of why.
+
+    `news_deliveries` is the reader-facing ledger and takes the provider's last word. The intent
+    becomes this lane's dead letter under the same code an attempt no process finished earns, which
+    is what an operator greps for when a channel has been refusing everything.
+    """
+
+    bus = RecordingBus()
+    db = FaultInjectingDatabase(conn)
+    sender = _ClassifiedFailureSender(code="news_delivery_feishu_http_failed", commit_phase="not_sent", retryable=True)
+    event_id = _pushable_event(conn, db, bus)
+    deliverer = DelivererLoop(
+        db=db, sender=sender, finite_operations=InlineFiniteOperations(), min_interval_seconds=0.0
+    )
+
+    for _ in range(DELIVERY_ATTEMPTS_MAX):
+        asyncio.run(deliverer.advance())
+        conn.commit()
+        _make_due(conn)
+
+    assert sender.attempts == DELIVERY_ATTEMPTS_MAX and sender.sent == []
+    assert _queue_rows(conn, event_id) == [
+        {
+            "kind": "first",
+            "state": "dead",
+            "attempts": DELIVERY_ATTEMPTS_MAX,
+            "error_code": "news_delivery_attempts_exhausted",
+        }
+    ]
+    delivery = repositories_for_connection(conn).news.delivery(event_id=event_id, kind="first")
+    assert delivery is not None
+    assert (delivery["state"], delivery["error_code"]) == ("terminal", "news_delivery_feishu_http_failed")
+
+    asyncio.run(deliverer.advance())
+    conn.commit()
+    assert sender.attempts == DELIVERY_ATTEMPTS_MAX, "a dead intent is never claimed again"
+
+
+def test_a_send_whose_outcome_the_provider_never_reported_is_terminal_after_one_attempt(conn) -> None:
+    """#604 N1. A read timeout may already be on a reader's screen, so the budget is not for it.
+
+    This is the line the retry must not cross, and it is the reason the classification is the
+    adapter's own evidence rather than "did it raise": one more attempt here would put a second card
+    in front of a reader who already has the first.
+    """
+
+    bus = RecordingBus()
+    db = FaultInjectingDatabase(conn)
+    sender = _ClassifiedFailureSender(
+        code="news_delivery_feishu_transport_unreadable", commit_phase="unknown", retryable=True
+    )
+    event_id = _pushable_event(conn, db, bus)
+    deliverer = DelivererLoop(
+        db=db, sender=sender, finite_operations=InlineFiniteOperations(), min_interval_seconds=0.0
+    )
+
+    asyncio.run(deliverer.advance())
+    conn.commit()
+    _make_due(conn)
+    asyncio.run(deliverer.advance())
+    conn.commit()
+
+    assert sender.attempts == 1, "the intent was finished on its first attempt, not retried"
+    assert _queue_rows(conn, event_id) == [], "a settled delivery is no longer owed"
+    delivery = repositories_for_connection(conn).news.delivery(event_id=event_id, kind="first")
+    assert delivery is not None
+    assert (delivery["state"], delivery["error_code"]) == ("terminal", "news_delivery_feishu_transport_unreadable")
+
+
 def _queue_rows(conn: Any, event_id: str) -> list[dict[str, Any]]:
     return [
         dict(row)
