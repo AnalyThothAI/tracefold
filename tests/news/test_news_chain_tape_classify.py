@@ -99,7 +99,7 @@ def _synthetic(name: str) -> _Receipt:
 
 
 def _classify(receipt: _Receipt, wallets: tuple[str, ...]) -> Any:
-    return classify_receipt(
+    outcome = classify_receipt(
         receipt,
         roster_wallets=wallets,
         chain_id=CHAIN_ID,
@@ -108,6 +108,14 @@ def _classify(receipt: _Receipt, wallets: tuple[str, ...]) -> Any:
         classified_at_ms=NOW + 900,
         roster_version=7,
     )
+    # `news_market_wallet_fills` refuses any other shape (`trade_cash_check`, `cash_pair_check`): a
+    # classifier that produced one would fault the live lane on the first such receipt, which is
+    # exactly what the shared-sell shape did on 2026-09-08 (#614). Every classification in this
+    # module is held to the ledger's own rule.
+    for fill in outcome.fills:
+        assert (fill.kind == "transfer_out") == (fill.cash_token is None), fill
+        assert (fill.cash_token is None) == (fill.cash_amount_raw is None), fill
+    return outcome
 
 
 def _decimals(fill: Any, decimals: int) -> Decimal:
@@ -169,9 +177,11 @@ def test_two_bought_assets_keep_both_fills_without_spending_the_same_cash_twice(
 
     outcome = _classify(receipt, (BUY_WALLET,))
 
-    assert [(fill.kind, fill.token) for fill in outcome.fills] == [("buy", MADETEST), ("buy", FSD)]
-    assert all(fill.cash_amount_raw is None for fill in outcome.fills)
-    assert outcome.unknown == 0
+    # One cash leg, two bought tokens: the receipt does not say how the cash split, and the ledger
+    # refuses a buy without its cash. Neither is recorded as a trade and both are counted unknown
+    # rather than one of them silently spending the whole cash leg twice.
+    assert outcome.fills == ()
+    assert outcome.unknown == 2
 
 
 def test_a_gift_beside_a_real_buy_never_borrows_its_swap_or_cash() -> None:
@@ -201,9 +211,34 @@ def test_a_shared_buy_keeps_each_tracked_recipient_but_does_not_assign_the_whole
 
     outcome = _classify(receipt, wallets)
 
-    assert [(fill.kind, fill.wallet) for fill in outcome.fills] == [("buy", wallet) for wallet in wallets]
-    assert all(fill.cash_amount_raw is None for fill in outcome.fills)
-    assert outcome.unknown == 0
+    # Two token legs claim the same cash leg, so the receipt proves neither recipient's price. A buy
+    # without its cash cannot be stored (`trade_cash_check`), and a buy with the whole route's cash
+    # would overstate what this wallet paid, so neither inbound leg is recorded as a trade; the swap
+    # they both touched is counted as unknown instead of silently priced.
+    assert outcome.fills == ()
+    assert outcome.unknown == len(wallets)
+
+
+def test_a_shared_sell_is_two_movements_and_never_a_sell_without_its_cash() -> None:
+    """F2P for the 2026-09-08 hotfix (#614): the shape that faulted the live chain-tape lane.
+
+    Two tracked wallets each hand the executor some FSD inside one receipt, and the executor collects
+    one stablecoin leg for both. The classifier used to keep both legs as `sell` and drop the cash it
+    could not split, and `news_market_wallet_fills` refused the first such row on the spot
+    (`trade_cash_check`), which stopped the lane. A cash leg the receipt cannot allocate makes neither
+    leg a trade: each is the outbound movement it provably was, and the swap is counted unknown.
+    """
+
+    receipt = _recorded("receipt_sell_fsd.json")
+    receipt = replace(receipt, logs=(*receipt.logs, _transfer(FSD, BUY_WALLET, EXECUTOR, 5_000, 60)))
+
+    outcome = _classify(receipt, (SELL_WALLET, BUY_WALLET))
+
+    assert sorted((fill.kind, fill.wallet) for fill in outcome.fills) == sorted(
+        [("transfer_out", SELL_WALLET), ("transfer_out", BUY_WALLET)]
+    )
+    assert all(fill.cash_token is None and fill.cash_amount_raw is None for fill in outcome.fills)
+    assert outcome.unknown == 2
 
 
 def test_a_receipt_of_another_wallets_trade_produces_nothing() -> None:
