@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tracefold.trading import ACCEPTED_ENTRY_DISPOSITIONS, command_stage, execution_stage
+from tracefold.trading import ACCEPTED_ENTRY_DISPOSITIONS, execution_stage
 
 _NOW_NS = 1_900_000_000_000_000_000
 
@@ -121,43 +121,3 @@ def test_an_entry_order_without_its_disposition_row_is_still_ordered() -> None:
     """The order observation and the disposition are two appends; a read between them is not `pending`."""
 
     assert _stage(order_status="submitted_or_unknown") == "ordered"
-
-
-def test_a_command_with_no_disposition_is_recorded_until_its_own_ttl_closes_it() -> None:
-    assert (
-        command_stage(disposition=None, disposition_reason=None, expires_at_ns=_NOW_NS + 1, now_ns=_NOW_NS)
-        == "recorded"
-    )
-    assert command_stage(disposition=None, disposition_reason=None, expires_at_ns=_NOW_NS, now_ns=_NOW_NS) == "expired"
-
-
-def test_only_the_runtimes_own_flat_proof_completes_a_flatten() -> None:
-    accepted = command_stage(
-        disposition="accepted",
-        disposition_reason="flatten_pending",
-        expires_at_ns=_NOW_NS + 1,
-        now_ns=_NOW_NS,
-    )
-    completed = command_stage(
-        disposition="completed",
-        disposition_reason="binance_account_flat",
-        expires_at_ns=_NOW_NS + 1,
-        now_ns=_NOW_NS,
-    )
-    assert (accepted, completed) == ("accepted", "completed")
-
-
-def test_a_refused_command_separates_its_own_expiry_from_every_other_refusal() -> None:
-    assert (
-        command_stage(disposition="rejected", disposition_reason="expired", expires_at_ns=_NOW_NS + 1, now_ns=_NOW_NS)
-        == "expired"
-    )
-    assert (
-        command_stage(
-            disposition="rejected",
-            disposition_reason="account_slot_mismatch",
-            expires_at_ns=_NOW_NS + 1,
-            now_ns=_NOW_NS,
-        )
-        == "rejected"
-    )

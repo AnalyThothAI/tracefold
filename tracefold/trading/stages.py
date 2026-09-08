@@ -1,8 +1,6 @@
-"""How far one entry and one operator Command got, derived from durable facts alone.
+"""Execution progress derived from durable entry facts for the read-only monitor.
 
-The console renders a stage word, and the words are a closed vocabulary; deriving them here rather
-than in the browser is what makes them the same words in `/api/trading/executions`, the CLI and any
-later reader. Nothing here reads a database, a clock it was not handed, or a live venue.
+Nothing here reads a database, a clock it was not handed, or a live venue.
 """
 
 from __future__ import annotations
@@ -10,7 +8,6 @@ from __future__ import annotations
 from typing import Literal
 
 ExecutionStage = Literal["pending", "rejected", "expired", "ordered", "filled", "protected", "closed"]
-CommandStage = Literal["recorded", "accepted", "rejected", "completed", "expired"]
 
 # Every terminal entry disposition that means "this Signal or manual Command became an order".
 # Everything else the Runtime writes is a refusal; the retryable clock refusals never reach a durable
@@ -64,33 +61,8 @@ def execution_stage(
     return "rejected"
 
 
-def command_stage(
-    *,
-    disposition: str | None,
-    disposition_reason: str | None,
-    expires_at_ns: int,
-    now_ns: int,
-) -> CommandStage:
-    """How far one operator Command got, from its `control_disposition` alone.
-
-    Never from a venue observation: a flatten converges the whole account slot, so the orders it
-    produces belong to whatever exposure was there rather than to the Command. The Runtime's own
-    `binance_account_flat` completion is the only fact that says the slot actually went flat.
-    """
-
-    if disposition is None:
-        return "expired" if expires_at_ns <= now_ns else "recorded"
-    if disposition == "completed" and disposition_reason == "binance_account_flat":
-        return "completed"
-    if disposition == "rejected":
-        return "expired" if disposition_reason == "expired" else "rejected"
-    return "accepted"
-
-
 __all__ = [
     "ACCEPTED_ENTRY_DISPOSITIONS",
-    "CommandStage",
     "ExecutionStage",
-    "command_stage",
     "execution_stage",
 ]

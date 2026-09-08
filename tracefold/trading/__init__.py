@@ -30,9 +30,7 @@ from .operator_control import (
 )
 from .stages import (
     ACCEPTED_ENTRY_DISPOSITIONS,
-    CommandStage,
     ExecutionStage,
-    command_stage,
     execution_stage,
 )
 from .storage.execution_stream import (
@@ -49,7 +47,6 @@ __all__ = [
     "MARKET_KEY_PATTERN",
     "MAX_OBSERVATION_APPEND_BATCH",
     "MAX_OBSERVATION_APPEND_BYTES",
-    "CommandStage",
     "ExecutionAccountOrder",
     "ExecutionAccountPosition",
     "ExecutionAccountSnapshot",
@@ -60,7 +57,6 @@ __all__ = [
     "OperatorIntentV1",
     "PreparedOperatorIntent",
     "TradeSignalV1",
-    "command_stage",
     "execution_stage",
     "market_key",
     "parse_operator_command",

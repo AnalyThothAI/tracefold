@@ -323,7 +323,6 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
         "MARKET_KEY_PATTERN",
         "MAX_OBSERVATION_APPEND_BATCH",
         "MAX_OBSERVATION_APPEND_BYTES",
-        "CommandStage",
         "ExecutionAccountOrder",
         "ExecutionAccountPosition",
         "ExecutionAccountSnapshot",
@@ -334,7 +333,6 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
         "OperatorIntentV1",
         "PreparedOperatorIntent",
         "TradeSignalV1",
-        "command_stage",
         "execution_stage",
         # #604 T2. The one spelling of the market identity the Signal carries and the Runtime's route
         # catalogue is keyed on. `app/nautilus/root.py` wrote the same f-string by hand.
