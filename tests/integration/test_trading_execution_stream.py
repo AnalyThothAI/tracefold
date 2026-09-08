@@ -474,11 +474,24 @@ def test_a_hand_built_observation_batch_writes_nothing() -> None:
 def test_account_slot_advisory_lock_has_one_session_owner() -> None:
     first = connect_postgres_test(read_only=False)
     second = connect_postgres_test(read_only=False)
+    first_pid = first.info.backend_pid
     try:
         assert TradingRepository(first).try_acquire_execution_account_slot("binance_usdm_primary") is True
         assert TradingRepository(second).try_acquire_execution_account_slot("binance_usdm_primary") is False
         first.close()
         first = None
+        # Client close sends Terminate without waiting for backend cleanup. Observe the actual
+        # server-side release before checking handoff; acquiring the lock itself is never retried.
+        deadline = time.monotonic() + 5
+        while (
+            second.execute(
+                "SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND pid = %s AND granted",
+                (first_pid,),
+            ).fetchone()
+            is not None
+        ):
+            assert time.monotonic() < deadline, "closed account-slot session retained its advisory lock"
+            time.sleep(0.01)
         assert TradingRepository(second).try_acquire_execution_account_slot("binance_usdm_primary") is True
     finally:
         if first is not None:
