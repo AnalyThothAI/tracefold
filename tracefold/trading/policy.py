@@ -209,7 +209,7 @@ class AlphaPolicy:
                 f"{oi.oi_change_bps / 100:.2f}%，鲸鱼占比 {oi.whale_oi_ratio_bps / 100:.2f}%，"
                 f"价格已确认方向 {confirmed / 100:.2f}%"
             ),
-            invalidation="价格跌破冻结止损，或持仓时限到期",
+            invalidation="价格跌破冻结止损",
             checks=tuple(checks),
             policy_id=self.policy_id,
             policy_version=self.policy_version,
