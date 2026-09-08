@@ -403,7 +403,7 @@ or a live path is unmentioned.
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
 | News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/wallets`, `/api/news/wallets/cards` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, market observations read straight from `news_items` and their typed facts, one observation with its group timeline, four-layer status, bounded quotes, one symbol's identity, and the chain wallet tape's own state — its roster, its ingest position, and every card it opened with the price receipt taken after it |
-| Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/executions`, `POST /api/trading/execution/commands` | one owner per question the console asks: current execution/account readiness, frozen Case decisions, and the folded per-entry execution table with its Command ledger. Three GETs and one bounded POST append. #537 PR-5 deleted `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections, and #589 PR-2 the two `GET /api/trading/gate*` admission reads — five more public shapes over ledgers `/api/trading/executions` already reads folded or that no browser surface called, all still readable through `tracefold trading signals \| observations \| commands \| gate` |
+| Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/executions` | one owner per question the console asks: current execution/account readiness, frozen Case decisions, and the folded per-entry execution table. Three GETs; no write authority. #537 PR-5 deleted `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections, and #589 PR-2 the two `GET /api/trading/gate*` admission reads — five more public shapes over ledgers `/api/trading/executions` already reads folded or that no browser surface called, all still readable through `tracefold trading signals \| observations \| commands \| gate` |
 
 The public API is exactly the paths in `docs/generated/openapi.json` plus
 `/healthz`, `/readyz`, and `/metrics`; the table above says which owner answers
@@ -419,6 +419,8 @@ with no alias, redirect, or feature flag.
   `/api/trading/execution/observations` and `/api/trading/execution/state`
   (#537 PR-5), and `/api/trading/gate` and `/api/trading/gate/{event_id}`
   (#589 PR-2);
+- the manual console command route: `POST /api/trading/execution/commands`
+  (#624); both GET and POST return `404` with no compatibility handler;
 - the console mounts `/app` and `/app/*` (#589 PR-5). They answer the same
   `404`: the SPA has no `app` route, so serving `index.html` there returned the
   console's own "404 Not Found" screen under a `200`.
@@ -1256,8 +1258,8 @@ Runtime facts, and status carries readiness plus bounded totals.
 
 - `GET /api/trading/executions` — the desk table (#528 PR-1, PR-3).
   Optional case_id selects that Case's retained Signal executions before
-  limiting, outside the ordinary 24-hour window. Commands and account totals
-  keep their own scopes; manual entries have no Case and are excluded from
+  limiting, outside the ordinary 24-hour window. Account totals
+  keep their own scope; manual entries have no Case and are excluded from
   a Case-specific execution list. One row per
   entry identity in a bounded 24-hour window: a `TradeSignalV1`, or a
   `manual_entry` Command, which is the identity the Runtime correlates that
@@ -1282,39 +1284,16 @@ Runtime facts, and status carries readiness plus bounded totals.
   between, and `order_reject_reason`, the venue's own words on an entry order it
   refused, absent on every row the Runtime wrote before it recorded them
   (#604 T1).
-  The same response carries `commands[]`, one row per operator Command in the
-  same window — a manual entry appears there too, as the instruction record —
-  each carrying a
-  `stage ∈ {recorded, accepted, rejected, completed, expired}` read from
-  its `control_disposition` alone, `completed` only on a flatten whose
-  disposition reason is `binance_account_flat`. `reason` repeated the text the
-  operator typed into the field above the ledger and `operator_identity` was the
-  constant `operator-console` on every row a browser wrote. No venue observation
-  is attached to a Command row: a flatten converges the whole account slot, so
-  the orders it produces belong to the exposure, not to the Command. Each Command
-  row also carries the `reason` its own `control_disposition` gives — the same
-  column `stage` is read off, which the derivation used to drop, so the desk said
-  "Runtime rejected" with no way to say what for (#604 T3). Beside the two
-  ledgers travels `totals`: `realized_today_usd`, `realized_total_usd`,
+  The response also carries account `totals`: `realized_today_usd`, `realized_total_usd`,
   `closed_today` and `closed_total`, folded over every `closed` position this
   account slot has, manual entries included, the day half-open on the server's
   own UTC clock. It is the one read on the response with no 24 h window, because
   a running realized result bounded by a window answers a different question from
   the one an operator reconciles against the venue. Bounded to
   100 entry rows with a `complete` flag and no cursor.
-- `POST /api/trading/execution/commands` — the sole browser write. It requires
-  the session `ws_token` in `Authorization: Bearer` plus
-  `application/json`, rejects query-token auth,
-  bounds the body to 2 KiB, and accepts exactly lowercase UUID `request_id`,
-  millisecond `requested_at_ms`, and the shared closed slash-command `text`.
-  The browser surface admits `/pause reason`, `/resume reason`,
-  and `/flatten account TTL`; `/halt`, `/long`, `/short`, and
-  every capital/order parameter are rejected. Stable request ID and clock must
-  be preserved on a retry. The append runs in one bounded short transaction
-  outside Serve's seven-connection read-only pool. Success returns
-  `truth=intent_recorded_not_runtime_or_venue`; only later Runtime Observations
-  may establish acceptance, order, fill, completion, expiry, rejection, or a
-  fresh private flat proof.
+- The HTTP console is read-only (#624). Operator commands are available through
+  the local CLI only. The former browser command route, command request/receipt
+  schemas, and the orphan `commands[]` control ledger payload are removed.
 - The admission ledger has no HTTP route. `GET /api/trading/gate` and
   `GET /api/trading/gate/{event_id}` were deleted in #589 PR-2: `/news/oi` was
   their one browser reader and #553 PR-1 deleted that console page with the OI
@@ -1371,9 +1350,8 @@ adds exact table counts for offline migration or restore evidence. Since
 contract; the two registries stay separate so "exactly these tables" remains a
 per-capability claim.
 `db query-audit` covers bounded reads for `/readyz`, `/api/status`, and every
-News and Trading GET. Its write-route set contains exactly
-`/api/trading/execution/commands`; that same path remains independently listed
-with its GET plan. Any second write route fails the public-surface contract.
+News and Trading GET. Its write-route set is empty. Any HTTP write route
+fails the public-surface contract.
 `/healthz`, `/metrics`, and `/api/bootstrap` are declared no-SQL routes.
 
 `news bus-check` connects, declares the topology idempotently, and prints

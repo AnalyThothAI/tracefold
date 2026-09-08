@@ -4,7 +4,6 @@ export type RequestOptions = {
   token?: string;
   params?: Record<string, string | number | boolean | null | undefined>;
   etagKey?: string;
-  body?: unknown;
   headers?: Record<string, string>;
 };
 
@@ -42,20 +41,6 @@ export async function getApi<T>(
   path: string,
   options: RequestOptions = {},
 ): Promise<ApiResponse<T>> {
-  return requestApi<T>(path, { ...options, method: "GET" });
-}
-
-export async function postApi<T>(
-  path: string,
-  options: RequestOptions & { body: unknown },
-): Promise<ApiResponse<T>> {
-  return requestApi<T>(path, { ...options, method: "POST" });
-}
-
-async function requestApi<T>(
-  path: string,
-  options: RequestOptions & { method: "GET" | "POST" },
-): Promise<ApiResponse<T>> {
   /*
    * Same origin, always: the console is served by the API process itself. `vite.config.ts` proxies `/api`
    * to the dev server's backend, so development crosses no origin either, and #589 PR-5 deleted the
@@ -76,11 +61,9 @@ async function requestApi<T>(
   const cached = options.etagKey ? etagCache.get(options.etagKey) : undefined;
   if (cached) headers["If-None-Match"] = cached.etag;
 
-  if (options.body !== undefined) headers["Content-Type"] = "application/json";
   const response = await fetch(url, {
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
     headers,
-    method: options.method,
+    method: "GET",
   });
   if (response.status === 304 && cached) {
     return cached.body as ApiResponse<T>;

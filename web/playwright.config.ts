@@ -28,6 +28,7 @@ const desktop = specs(
   "sidebar-navigation.spec.ts",
   "topbar-layout.spec.ts",
   "trading-desk.spec.ts",
+  "trading-status.spec.ts",
 );
 const tablet = specs(...everyViewport, "tablet-shell.spec.ts");
 const mobile = specs(

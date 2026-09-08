@@ -76,9 +76,9 @@ There is no Trading webhook. The Workers probe serves `/healthz`, `/readyz` and
 `/metrics` and nothing else; `POST /telegram/control`, its secret-token header,
 its chat/user allowlists and its command grammar were deleted with the ingress
 in #528, having never been enabled in production. `tracefold trading issue` on
-the host is the one manual operator ingress, authenticated by the local OS uid,
-and `POST /api/trading/execution/commands` is the one console ingress. Both
-record a bounded intent and prove only durable recording.
+the host is the sole operator ingress, authenticated by the local OS uid. It
+records a bounded intent and proves only durable recording. The HTTP console
+has no command ingress or mutation authority (#624).
 
 The Nautilus service is excluded from the default Compose model and remains
 absent while execution is disabled. Canonical paper/live deployment enables
@@ -280,12 +280,9 @@ process name.
 
 Database access still has mechanical boundaries. Stable `application_name`
 values attribute sessions. The internet-facing Serve HTTP pool sets
-connection-level read-only mode. Its sole mutation,
-`POST /api/trading/execution/commands`, is semaphore-bounded and opens one
-separate short-lived connection and explicit transaction that can append only
-the existing closed `OperatorIntentV1` grammar; it has no Nautilus, Binance,
-quantity, notional, leverage, or venue authority. The review CLI likewise uses
-a separate short-lived connection and explicit transaction. PK/FK/UNIQUE,
+connection-level read-only mode. Serve has no separate write connection or
+operator-command append path (#624). Local operator and review CLIs use their
+own short-lived connections and explicit transactions. PK/FK/UNIQUE,
 business CHECKs, conditional updates, append-only/state-machine triggers,
 maintenance locks, and repository transaction ownership remain authoritative;
 internal role permission denial is not a business invariant. Runtime code does

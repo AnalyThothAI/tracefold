@@ -15,7 +15,6 @@ import {
   newsWalletsFixture,
 } from "@tests/fixtures/newsFixture";
 import {
-  TRADING_NOW_MS,
   tradingCasesForCaseId,
   tradingExecutionFixture,
   tradingExecutionsFixture,
@@ -117,16 +116,6 @@ export async function installMockApi(
     }
     if (path === "/api/trading/executions") {
       return fulfill(route, options.tradingExecutions ?? tradingExecutionsFixture());
-    }
-    if (path === "/api/trading/execution/commands") {
-      return fulfill(route, {
-        command_id: "a".repeat(64),
-        disposition: "awaiting_runtime",
-        reason: null,
-        requested_at_ns: TRADING_NOW_MS * 1_000_000,
-        seq: 7,
-        truth: "intent_recorded_not_runtime_or_venue",
-      });
     }
     if (path.startsWith("/api/news/symbols/")) {
       return fulfill(

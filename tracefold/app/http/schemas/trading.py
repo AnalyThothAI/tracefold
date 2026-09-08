@@ -1,4 +1,4 @@
-"""Trading read contracts plus the bounded operator-command request and receipt."""
+"""Read-only trading monitoring contracts."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from tracefold.trading import CommandStage, ExecutionStage
+from tracefold.trading import ExecutionStage
 
 from .common import ExactApiSchema
 
@@ -226,32 +226,13 @@ class TradingExecutionRowData(ExactApiSchema):
     stage: ExecutionStage
 
 
-class TradingExecutionCommandRowData(ExactApiSchema):
-    """One operator Command's progress, read from its `control_disposition` alone.
-
-    Action, stage and clock: the ACT block's ledger rows. `operator_identity` is the constant
-    `operator-console` for every browser write and `reason` is the text the same operator just typed
-    into the field above the ledger (#537 PR-5).
-    """
-
-    command_id: str
-    action: Literal["pause_entries", "resume_entries", "emergency_halt", "flatten", "manual_entry"]
-    requested_at_ns: int
-    stage: CommandStage
-    # Why the Runtime refused it, straight from the same `control_disposition` `stage` is read off.
-    # The statement already selected this column and the derivation dropped it, so the desk printed
-    # "Runtime rejected" with no way to say what for (#604 T3). `None` while the Command is still
-    # open, and on every Command that was accepted.
-    reason: str | None = None
-
-
 class TradingRealizedTotalsData(ExactApiSchema):
     """What this account slot has realized, over the current UTC day and over its whole ledger.
 
     The desk could only sum the realized column of the rows it was showing, so the one number an
     operator reconciles against the venue was the one number the console could not produce (#604 T3).
     Both sums fold every `closed` position the slot has, manual entries included, because a manual
-    entry is a trade this desk made. Decimal strings, like every other money field here.
+    entry is a retained trade in this account. Decimal strings, like every other money field here.
     """
 
     realized_today_usd: str
@@ -262,24 +243,8 @@ class TradingRealizedTotalsData(ExactApiSchema):
 
 class TradingExecutionsData(ExactApiSchema):
     executions: list[TradingExecutionRowData] = Field(default_factory=list)
-    commands: list[TradingExecutionCommandRowData] = Field(default_factory=list)
     totals: TradingRealizedTotalsData
     complete: bool
-
-
-class TradingOperatorCommandRequestData(ExactApiSchema):
-    request_id: str = Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-    requested_at_ms: int = Field(gt=0)
-    text: str = Field(min_length=1, max_length=512)
-
-
-class TradingOperatorCommandReceiptData(ExactApiSchema):
-    command_id: str
-    seq: int
-    requested_at_ns: int
-    disposition: Literal["awaiting_runtime"]
-    reason: str | None = None
-    truth: Literal["intent_recorded_not_runtime_or_venue"]
 
 
 __all__ = [name for name in globals() if name.startswith("Trading")]

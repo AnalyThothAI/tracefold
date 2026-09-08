@@ -258,26 +258,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/trading/execution/commands": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Post Operator Intent
-         * @description Persist one bounded console intent; Runtime and venue outcomes remain separate facts.
-         */
-        post: operations["post_operator_intent_api_trading_execution_commands_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/trading/executions": {
         parameters: {
             query?: never;
@@ -287,7 +267,7 @@ export interface paths {
         };
         /**
          * Get Trading Executions
-         * @description Today's desk table: one row per entry identity, plus one per operator Command (#528 PR-3).
+         * @description One retained row per entry identity with its audited venue outcome.
          */
         get: operations["get_trading_executions_api_trading_executions_get"];
         put?: never;
@@ -493,16 +473,6 @@ export interface components {
         /** ApiEnvelope[TradingExecutionsData] */
         ApiEnvelope_TradingExecutionsData_: {
             data?: components["schemas"]["TradingExecutionsData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[TradingOperatorCommandReceiptData] */
-        ApiEnvelope_TradingOperatorCommandReceiptData_: {
-            data?: components["schemas"]["TradingOperatorCommandReceiptData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -3145,32 +3115,6 @@ export interface components {
             /** Unknown Orders Count */
             unknown_orders_count: number;
         };
-        /**
-         * TradingExecutionCommandRowData
-         * @description One operator Command's progress, read from its `control_disposition` alone.
-         *
-         *     Action, stage and clock: the ACT block's ledger rows. `operator_identity` is the constant
-         *     `operator-console` for every browser write and `reason` is the text the same operator just typed
-         *     into the field above the ledger (#537 PR-5).
-         */
-        TradingExecutionCommandRowData: {
-            /**
-             * Action
-             * @enum {string}
-             */
-            action: "pause_entries" | "resume_entries" | "emergency_halt" | "flatten" | "manual_entry";
-            /** Command Id */
-            command_id: string;
-            /** Reason */
-            reason?: string | null;
-            /** Requested At Ns */
-            requested_at_ns: number;
-            /**
-             * Stage
-             * @enum {string}
-             */
-            stage: "recorded" | "accepted" | "rejected" | "completed" | "expired";
-        };
         /** TradingExecutionOrderData */
         TradingExecutionOrderData: {
             /** Client Order Id */
@@ -3358,34 +3302,11 @@ export interface components {
         };
         /** TradingExecutionsData */
         TradingExecutionsData: {
-            /** Commands */
-            commands?: components["schemas"]["TradingExecutionCommandRowData"][];
             /** Complete */
             complete: boolean;
             /** Executions */
             executions?: components["schemas"]["TradingExecutionRowData"][];
             totals: components["schemas"]["TradingRealizedTotalsData"];
-        };
-        /** TradingOperatorCommandReceiptData */
-        TradingOperatorCommandReceiptData: {
-            /** Command Id */
-            command_id: string;
-            /**
-             * Disposition
-             * @constant
-             */
-            disposition: "awaiting_runtime";
-            /** Reason */
-            reason?: string | null;
-            /** Requested At Ns */
-            requested_at_ns: number;
-            /** Seq */
-            seq: number;
-            /**
-             * Truth
-             * @constant
-             */
-            truth: "intent_recorded_not_runtime_or_venue";
         };
         /** TradingPolicyCheckData */
         TradingPolicyCheckData: {
@@ -3407,7 +3328,7 @@ export interface components {
          *     The desk could only sum the realized column of the rows it was showing, so the one number an
          *     operator reconciles against the venue was the one number the console could not produce (#604 T3).
          *     Both sums fold every `closed` position the slot has, manual entries included, because a manual
-         *     entry is a trade this desk made. Decimal strings, like every other money field here.
+         *     entry is a retained trade in this account. Decimal strings, like every other money field here.
          */
         TradingRealizedTotalsData: {
             /** Closed Today */
@@ -3881,37 +3802,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    post_operator_intent_api_trading_execution_commands_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    /** Request Id */
-                    request_id: string;
-                    /** Requested At Ms */
-                    requested_at_ms: number;
-                    /** Text */
-                    text: string;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_TradingOperatorCommandReceiptData_"];
                 };
             };
         };

@@ -7,7 +7,7 @@ import { installMockApi } from "@tests/e2e/support/mockApi";
 
 test("positions lead the desk; execution opens a keyboard-dismissible Case and restores focus", async ({
   page,
-}, testInfo) => {
+}) => {
   await installMockApi(page);
   await page.goto("/trading");
   await expect(page.getByRole("heading", { name: "交易执行" })).toBeVisible();
@@ -15,16 +15,12 @@ test("positions lead the desk; execution opens a keyboard-dismissible Case and r
   await expect(safety.getByText("执行服务在线")).toBeVisible();
   await expect(page.getByRole("heading", { name: "当前仓位与保护" })).toBeVisible();
   for (const name of ["暂停新入场", "恢复新入场", "平掉账户仓位"]) {
-    const control = page.getByRole("button", { name });
-    await expect(control).toBeVisible();
-    if (testInfo.project.name.startsWith("mobile-")) {
-      expect((await control.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(48);
-    }
+    await expect(page.getByRole("button", { name })).toHaveCount(0);
   }
   const blocks = await page
     .locator("[data-block]")
     .evaluateAll((elements) => elements.map((e) => e.getAttribute("data-block")));
-  expect(blocks).toEqual(["safety", "exposure", "controls", "tally"]);
+  expect(blocks).toEqual(["safety", "exposure", "tally"]);
   await page.getByRole("button", { name: "执行记录", exact: true }).click();
   await expect(page.locator(".trading-ledger-row")).toHaveCount(4);
   await expectNoDocumentHorizontalOverflow(page);

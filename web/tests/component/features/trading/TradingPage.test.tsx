@@ -5,7 +5,6 @@ import {
   TRADING_NOW_MS,
   tradingCaseFixture,
   tradingCasesFixture,
-  tradingCommandRowFixture,
   tradingCurrentAccountFixture,
   tradingExecutionRowFixture,
   tradingExecutionsFixture,
@@ -84,9 +83,9 @@ describe("TradingPage", () => {
     renderTrading();
 
     const safety = await screen.findByLabelText("执行安全状态");
-    expect(within(safety).getAllByText("过期")).toHaveLength(3);
+    expect(within(safety).getAllByText("待确认")).toHaveLength(3);
     expect(within(safety).queryByText("是")).toBeNull();
-    expect(screen.getByText(/本次读取的事实已过期/)).toBeVisible();
+    expect(screen.getByText(/状态待确认：未取得有效期内的新状态/)).toBeVisible();
   });
 
   it("keeps the ledger readable when the readiness projection is the read that failed", async () => {
@@ -285,67 +284,6 @@ describe("TradingPage", () => {
     expect(within(open).getAllByText("Trigger 9800")).toHaveLength(2);
   });
 
-  it("writes a Command with no second confirmation and reads back the Runtime's own answer", async () => {
-    vi.stubGlobal("crypto", {
-      randomUUID: () => "11111111-1111-4111-8111-111111111111",
-    });
-    let posted: unknown;
-    let authorization: string | null = null;
-    server.use(
-      http.get(/.*\/api\/trading\/status$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: tradingStatusFixture({ execution: tradingLiveExecutionFixture() }),
-        }),
-      ),
-      http.get(/.*\/api\/trading\/executions$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: tradingExecutionsFixture({
-            commands: [
-              tradingCommandRowFixture({
-                action: "resume_entries",
-                command_id: "d".repeat(64),
-                reason: "daily_loss_limit",
-                stage: "rejected",
-              }),
-              tradingCommandRowFixture({
-                action: "flatten",
-                command_id: "b".repeat(64),
-                stage: "completed",
-              }),
-            ],
-          }),
-        }),
-      ),
-      http.post(/.*\/api\/trading\/execution\/commands$/, async ({ request }) => {
-        authorization = request.headers.get("authorization");
-        posted = await request.json();
-        return HttpResponse.json({ ok: true, data: commandReceipt("a".repeat(64)) });
-      }),
-    );
-    renderTrading();
-
-    // A refusal with a reason on it: `disposition_reason` was selected and then discarded (#604 T3).
-    const rejected = (await screen.findByText("Runtime 拒绝")).closest(
-      ".trading-command-row",
-    ) as HTMLElement;
-    expect(within(rejected).getByText("daily_loss_limit")).toBeVisible();
-    expect(screen.getByText("已完成 · 私有对账证明")).toBeVisible();
-
-    fireEvent.click(screen.getByRole("button", { name: "恢复新入场" }));
-    expect(screen.queryByRole("alertdialog")).toBeNull();
-    await waitFor(() => expect(posted).toBeDefined());
-    expect(authorization).toBe("Bearer test-token");
-    expect(posted).toMatchObject({
-      request_id: "11111111-1111-4111-8111-111111111111",
-      text: "/resume operator console",
-    });
-    expect(await screen.findByText(/操作已记录/)).toHaveTextContent(
-      "这不代表执行器已受理、订单已完成或已经成交",
-    );
-  });
-
   it("reads no admission ledger and no Signal list", async () => {
     /*
      * #537 PR-5. The desk downloaded up to 400 `decisions[]` from `/api/trading/gate` every 15 s and
@@ -377,59 +315,9 @@ describe("TradingPage", () => {
 
     expect(await screen.findByText("执行账本读取失败，不能据此断言为空。")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "持仓与订单" }));
-    expect(screen.getByText("Command账本读取失败，不能据此断言为空。")).toBeVisible();
     expect(screen.getByText(/执行账本读取失败；保留其余已验证事实。/)).toBeVisible();
     // The safety strip is a different read and keeps answering.
     expect(screen.getByLabelText("执行安全状态")).toBeVisible();
-  });
-
-  it("reuses the exact command envelope after an unknown submission result", async () => {
-    let uuidCalls = 0;
-    vi.stubGlobal("crypto", {
-      randomUUID: () => {
-        uuidCalls += 1;
-        return "33333333-3333-4333-8333-333333333333";
-      },
-    });
-    const bodies: unknown[] = [];
-    let attempts = 0;
-    server.use(
-      http.get(/.*\/api\/trading\/status$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: tradingStatusFixture({ execution: tradingLiveExecutionFixture() }),
-        }),
-      ),
-      http.post(/.*\/api\/trading\/execution\/commands$/, async ({ request }) => {
-        bodies.push(await request.json());
-        attempts += 1;
-        if (attempts === 1) {
-          return HttpResponse.json({ ok: false, error: "service_busy" }, { status: 503 });
-        }
-        return HttpResponse.json({ ok: true, data: commandReceipt("c".repeat(64)) });
-      }),
-    );
-    renderTrading();
-
-    fireEvent.click(await screen.findByRole("button", { name: "恢复新入场" }));
-    expect(await screen.findByText(/提交结果未知/)).toHaveTextContent(
-      "复用同一 request ID、时钟和文本",
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "恢复新入场" }));
-    await waitFor(() => expect(bodies).toHaveLength(2));
-
-    expect(uuidCalls).toBe(1);
-    expect(bodies[1]).toEqual(bodies[0]);
-  });
-
-  it("locks every control while execution.mode is disabled", async () => {
-    renderTrading();
-
-    expect(await screen.findByText(/控制已锁定/)).toBeVisible();
-    expect(screen.getByRole("button", { name: "暂停新入场" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "恢复新入场" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "平掉账户仓位" })).toBeDisabled();
   });
 
   it("says the window is empty rather than failed when the ledgers answer with nothing", async () => {
@@ -447,7 +335,7 @@ describe("TradingPage", () => {
       http.get(/.*\/api\/trading\/executions$/, () =>
         HttpResponse.json({
           ok: true,
-          data: tradingExecutionsFixture({ commands: [], executions: [] }),
+          data: tradingExecutionsFixture({ executions: [] }),
         }),
       ),
     );
@@ -456,7 +344,6 @@ describe("TradingPage", () => {
     // One vocabulary for every ledger on the page (#537 PR-5): one subject word, three sentences.
     expect(await screen.findByText("当前 24 小时窗口没有执行。")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "持仓与订单" }));
-    expect(screen.getByText("当前 24 小时窗口没有Command。")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "策略判定" }));
     expect(await screen.findByText("当前筛选下没有策略判定。")).toBeVisible();
   });
@@ -478,49 +365,6 @@ describe("TradingPage", () => {
     expect(await screen.findByText("本窗口已截断；未列出的入场不能解释为没有发生。")).toBeVisible();
     expect(screen.getByText("crypto:perp:BTC:USDT")).toBeVisible();
   });
-
-  it("renders every Command stage the server can derive, including a rejection", async () => {
-    server.use(
-      http.get(/.*\/api\/trading\/executions$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: tradingExecutionsFixture({
-            commands: [
-              tradingCommandRowFixture({ stage: "accepted" }),
-              tradingCommandRowFixture({
-                action: "resume_entries",
-                command_id: "d".repeat(64),
-                reason: "runtime_stopped",
-                stage: "rejected",
-              }),
-              tradingCommandRowFixture({
-                action: "flatten",
-                command_id: "e".repeat(64),
-                stage: "expired",
-              }),
-              // A CLI manual entry: the console cannot issue one, and the ledger still names it.
-              tradingCommandRowFixture({
-                action: "manual_entry",
-                command_id: "f".repeat(64),
-                stage: "accepted",
-              }),
-            ],
-          }),
-        }),
-      ),
-    );
-    renderTrading();
-
-    const commands = (await screen.findByText("Runtime 拒绝")).closest(
-      ".trading-command-list",
-    ) as HTMLElement;
-    expect(within(commands).getAllByText("Runtime 受理")).toHaveLength(2);
-    expect(within(commands).getByText("已过期")).toBeVisible();
-    expect(within(commands).getByText("手动方向")).toBeVisible();
-    expect(within(commands).getByText("runtime_stopped")).toBeVisible();
-    // A Command the Runtime accepted has no refusal to explain.
-    expect(within(commands).getAllByText("—")).toHaveLength(3);
-  });
 });
 
 function casesFor(requestUrl: string) {
@@ -530,17 +374,6 @@ function casesFor(requestUrl: string) {
   return {
     ...counts,
     cases: caseId === "case-gone" ? [] : [tradingCaseFixture({ case_id: caseId })],
-  };
-}
-
-function commandReceipt(commandId: string) {
-  return {
-    command_id: commandId,
-    disposition: "awaiting_runtime",
-    reason: null,
-    requested_at_ns: 1,
-    seq: 7,
-    truth: "intent_recorded_not_runtime_or_venue",
   };
 }
 

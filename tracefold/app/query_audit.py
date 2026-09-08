@@ -131,7 +131,6 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     "/api/trading/executions": (
         "trading_console_executions",
         "trading_console_scope_executions",
-        "trading_console_commands",
         "trading_realized_totals",
     ),
 }
@@ -144,9 +143,8 @@ PUBLIC_NO_SQL_ROUTES = frozenset(
     }
 )
 
-# #475 PR-E adds exactly one bounded append to the existing Command aggregate. The path is also a GET;
-# recording it in both sets keeps the read plan and the write authority independently explicit.
-PUBLIC_WRITE_ROUTES: frozenset[str] = frozenset({"/api/trading/execution/commands"})
+# #624: Serve exposes only reads; a future mutation must change this explicit authority inventory.
+PUBLIC_WRITE_ROUTES: frozenset[str] = frozenset()
 
 
 def query_audit_catalog(

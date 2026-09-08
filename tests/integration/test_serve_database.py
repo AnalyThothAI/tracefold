@@ -1,16 +1,47 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import psycopg
 import pytest
+from fastapi.testclient import TestClient
 
 from tests.postgres_test_utils import postgres_settings_storage
+from tests.postgres_test_utils import test_postgres_dsn as postgres_dsn
+from tracefold.app.http.app import create_app
 from tracefold.app.serve_database import ServeDatabase
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
+
+
+def test_http_monitoring_cannot_append_manual_intents(tmp_path) -> None:
+    """Cross the real HTTP / Serve / PostgreSQL boundary with a formerly valid command."""
+    settings = Settings(ws_token="read-only-test", storage=postgres_settings_storage())
+    settings.set_config_dir(tmp_path)
+    with psycopg.connect(postgres_dsn()) as conn:
+        before = conn.execute("SELECT count(*) FROM trading_operator_intents").fetchone()
+    with TestClient(create_app(settings=settings)) as client:
+        headers = {"Authorization": "Bearer read-only-test"}
+        for text in ("/pause investigation", "/resume investigation complete", "/flatten account 30"):
+            response = client.post(
+                "/api/trading/execution/commands",
+                headers=headers,
+                json={
+                    "request_id": "11111111-1111-4111-8111-111111111111",
+                    "requested_at_ms": int(time.time() * 1000),
+                    "text": text,
+                },
+            )
+            assert response.status_code == 404
+        for path in ("status", "cases", "executions"):
+            response = client.get(f"/api/trading/{path}", headers=headers)
+            assert response.status_code == 200
+            assert response.json()["ok"] is True
+    with psycopg.connect(postgres_dsn()) as conn:
+        assert conn.execute("SELECT count(*) FROM trading_operator_intents").fetchone() == before
 
 
 def test_serve_session_policy_is_applied_at_connect_time() -> None:

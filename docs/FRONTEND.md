@@ -2,7 +2,7 @@
 
 > **Scope.** Owns the `web/` architecture, layer responsibilities, component conventions, and the UI verification gate. Backend layer boundaries live in `ARCHITECTURE.md`; public HTTP contracts live in `CONTRACTS.md`; install and run commands live in `SETUP.md`.
 
-The React operator console is a News workbench plus one actionable Alpha/Execution desk. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/wallets`, `/api/news/wallets/cards`, `/api/trading/status`, `/api/trading/cases`, and `/api/trading/executions` over HTTP — fourteen reads and one write, which is every `/api/` path the server publishes. The two market reads arrived with #553 PR-1: OI frames, liquidations, smart-money prints and market sources we have no parser for are stored facts rather than Events, so the Event feed cannot serve them and `/api/news/status` no longer counts them. The two wallet reads arrived with #572 PR-3 and answer a different question from the market list: not "what observations arrived" but "what is the chain tape doing" — its roster, its ingest position, and the buy candidates, their evidence and +15m/+1h/+4h price observations. `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections were deleted in #537 PR-5: no browser surface called any of the three, they were three more public shapes over the ledgers `/api/trading/executions` already reads folded, and `tracefold trading signals | observations | commands` reads the same repository directly. `GET /api/trading/gate` and `GET /api/trading/gate/{event_id}` were deleted in #589 PR-2 on the same terms: the OI frame table joined each admission row to its Event on the same line, #553 PR-1 removed that join with the Events themselves, and `tracefold trading gate [--source-key KEY] [--since-ms N]` reads the same two admission-ledger statements directly. Every operation is a read except the exact authenticated `POST /api/trading/execution/commands`, which can append only pause, resume, or account-flatten intents in the existing closed grammar. It cannot submit an order or accept quantity, notional, leverage, venue, or direction. There is no WebSocket client, no separate Search route, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
+The React operator console is a News workbench plus one read-only Alpha/Execution monitor. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/wallets`, `/api/news/wallets/cards`, `/api/trading/status`, `/api/trading/cases`, and `/api/trading/executions` over HTTP — fourteen reads, which is every `/api/` path the server publishes. The two market reads arrived with #553 PR-1: OI frames, liquidations, smart-money prints and market sources we have no parser for are stored facts rather than Events, so the Event feed cannot serve them and `/api/news/status` no longer counts them. The two wallet reads arrived with #572 PR-3 and answer a different question from the market list: not "what observations arrived" but "what is the chain tape doing" — its roster, its ingest position, and the buy candidates, their evidence and +15m/+1h/+4h price observations. `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections were deleted in #537 PR-5: no browser surface called any of the three, they were three more public shapes over the ledgers `/api/trading/executions` already reads folded, and `tracefold trading signals | observations | commands` reads the same repository directly. `GET /api/trading/gate` and `GET /api/trading/gate/{event_id}` were deleted in #589 PR-2 on the same terms: the OI frame table joined each admission row to its Event on the same line, #553 PR-1 removed that join with the Events themselves, and `tracefold trading gate [--source-key KEY] [--since-ms N]` reads the same two admission-ledger statements directly. Every operation is a read. The console manual command route and controls were removed in #624. There is no WebSocket client, no separate Search route, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
 
 ## Source Layer Map (`web/src/`)
 
@@ -76,7 +76,7 @@ the route components into the eager shell chunk.
   `case` for News Event detail, one document centred at 1000px whose hero leads with the
   model's market direction. The archetype governs measure, hierarchy and density, never
   data ownership or business inference.
-- **Data ownership.** Feature-owned API hooks, page hooks, and controller hooks own server reads/writes. Route modules and presentational UI components consume those feature hooks and must not call `useQuery`, `useMutation`, `useInfiniteQuery`, `getApi`, `postApi`, or `queryClient.set*` directly. The frontend architecture lane enforces this boundary for `web/src/routes` and `web/src/features/*/ui`.
+- **Data ownership.** Feature-owned API hooks, page hooks, and controller hooks own server reads. Route modules and presentational UI components consume those feature hooks and must not call `useQuery`, `useMutation`, `useInfiniteQuery`, `getApi`, or `queryClient.set*` directly. The frontend architecture lane enforces this boundary for `web/src/routes` and `web/src/features/*/ui`.
 - **URL state.** Shareable route options (News feed `q`/filters/sort) live in
   the URL and their owning route-state helpers. No route
   carries hidden same-session scroll or selection state that would not survive
@@ -84,10 +84,8 @@ the route components into the eager shell chunk.
 - **Transport.** The browser talks HTTP only. `useAppSession` reads
   `/api/bootstrap` (`{ws_token}`) once and installs the bearer token on
   `lib/api/client`; feature hooks poll `/api/news/*` on
-  code-owned intervals with ETag revalidation. The Trading desk's three Command
-  buttons write with that same bearer: the separate 0600 operator write token
-  and the Live `CONFIRM` re-entry went with #520 PR-B, and one credential for
-  the read and the one bounded append is the whole authority model. There is no `/ws` client, no
+  code-owned intervals with ETag revalidation. Trading monitoring is read-only
+  and the bearer grants no console mutation. There is no `/ws` client, no
   socket provider, no live-market cache patching, and no subscription registry;
   the shell status pill derives only from `/api/status.runtime`.
 - **Topbar search.** The single topbar search box is News-only: its label is
@@ -384,8 +382,8 @@ the route components into the eager shell chunk.
   say. A horizon that has not matured reads `未到期`, never `0.00%`.
 
   `/trading` is 交易执行 (#621). The safety strip always precedes three
-  URL-owned tabs: 持仓与订单 (default), 执行记录 and 策略判定. Positions,
-  protection and controls precede daily totals in the default tab at every
+  URL-owned tabs: 持仓与订单 (default), 执行记录 and 策略判定. Positions
+  and protection precede daily totals in the default tab at every
   width. Execution rows retain the venue-derived stages, exact decimals and
   the existing nine-column panel with internal scrolling.
 
@@ -405,9 +403,12 @@ the route components into the eager shell chunk.
   Status, execution and decision reads fail independently. Fact expiry uses
   the server's absolute deadline and schedules a re-render even if no poll
   succeeds. An empty positions array does not prove a flat account.
-  The existing command grammar, authentication and retry identity are
-  unchanged. Pause/resume/flatten labels describe the requested action;
-  a successful append claims only that the request was recorded.
+  Live status refreshes every second while visible, and always revalidates on
+  window focus. Historical reads retain their 15-second interval. An expired
+  projection says 状态待确认, masks the safety answers and protection claims,
+  and labels retained positions/orders as the last read. The page does not infer
+  a runtime transition from a missed refresh or flash an updating indicator on
+  every live status poll. Manual execution controls and mutations are absent.
 
   **One empty-ledger vocabulary.** Every ledger on the page says the same three
   sentences about its own subject word: reading, unreadable, or empty. Three
@@ -419,8 +420,7 @@ the route components into the eager shell chunk.
   genuinely empty batch remain different page states. The responsive desk uses
   cards at desktop, tablet, and phone widths; the ledger's nine-column table
   scrolls inside its own panel and never widens the document. At `767px` and
-  below the tab order remains the same; the three write controls take a 48px
-  row, and the ledger stops being a table: each entry is a card whose cells print
+  below the tab order remains the same, and the ledger stops being a table: each entry is a card whose cells print
   the header they lost from `data-label`, because a horizontal scroll inside a
   phone card hides eight of the nine columns.
 
@@ -434,7 +434,7 @@ the route components into the eager shell chunk.
   nothing.
 
   Polling: Feed every 3 seconds; 市场事实's group list every 10 seconds; Quote,
-  Event detail, Status and the trading reads every 15 seconds (one shared News
+  Event detail, News Status and trading history every 15 seconds (one shared News
   status query feeds the Feed header, the topbar health lamp, 市场事实's ingest
   strip and `/news/status`). The three Trading reads run on `/trading` alone
   (#553 PR-1): the shell polled `/api/trading/status` on
@@ -647,19 +647,17 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
    The box has no submit button: `Enter` submits, and the visible `/` keycap is inert on every route.
 3. Verify visible loading/empty/error states are structured, labelled, and non-overlapping.
 4. Confirm no failing `/api/*` requests and no WebSocket connection attempt in the browser session.
-   On `/trading`, verify disabled controls; alive-but-unsafe and safe-but-paused
-   states; a protected position; pending/failed protection; an unknown order; a
-   Command at each of `recorded / accepted / rejected / completed / expired` with
-   the Runtime's reason on the refused ones; a Signal row at `rejected`,
-   `expired` and `closed`; and the three safety words reading `过期` once
-   `facts_expire_at_ms` has passed. Confirm Resume and Flatten write on one click
-   with no dialog, and that every success message still denies Runtime/venue
-   completion. With `/api/trading/status` failing, confirm the ledger, the funnel
-   and the controls still render and only the two blocks that read it say so.
+   On `/trading`, verify disabled, alive-but-unsafe and safe-but-paused states;
+   protected positions, failed protection and unknown orders; and Signal rows
+   at rejected, expired and closed. Observe healthy status beyond 30 seconds
+   without freshness flicker. Interrupt status reads until the server deadline
+   passes: safety answers must become 待确认 with a clear last-read disclosure.
+   Restore reads and verify recovery. Historical execution and decision reads
+   must remain usable throughout, and no manual execution controls may render.
 5. Confirm the topbar shows no status pill while `/api/status.runtime.ok` is
    true and shows the first runtime reason when it is not, and that the feed
    header shows no health pill while `health.overall` is `ok`.
-6. At `390px`, confirm there is no sidebar trigger, the bottom tab bar shows every destination with 48px targets and clears the home indicator, `.topbar` / `.center-column` / the bar do not overlap, Event rows read as separate cards with no select box and no expand caret, the funnel tiles and task tabs scroll horizontally inside themselves without giving the page a horizontal scroll, `/` lands on the News list, the approved tabs/time/filter controls remain reachable, and no retired Tape/task bar exists. On `/trading`, confirm the safety strip, the tally band, the funnel, the loop ledger's per-entry cards, the exposure disclosure and the three 48px control buttons remain reachable without page-level horizontal overflow.
+6. At `390px`, confirm there is no sidebar trigger, the bottom tab bar shows every destination with 48px targets and clears the home indicator, `.topbar` / `.center-column` / the bar do not overlap, Event rows read as separate cards with no select box and no expand caret, the funnel tiles and task tabs scroll horizontally inside themselves without giving the page a horizontal scroll, `/` lands on the News list, the approved tabs/time/filter controls remain reachable, and no retired Tape/task bar exists. On `/trading`, confirm the safety strip, the tally band, the funnel, the loop ledger's per-entry cards, the exposure disclosure remain reachable without page-level horizontal overflow.
 7. At tablet width around `834px`, confirm the desktop sidebar is not mounted, the topbar trigger opens the drawer, drawer route navigation and topbar search still work, and the News list and no-overflow contract remain intact.
    At `1280px` and above, confirm `/news` keeps the sidebar fixed in the frame with no trigger, other routes
    retain the shared fold trigger, all three destinations are present and 交易 carries its mode word,

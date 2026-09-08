@@ -160,17 +160,13 @@ after its fill is what proves the position survived a restart.
 
 ### Trading operator control
 
-There are two operator ingresses and no `trading.control` configuration block.
-`tracefold trading issue`, run **inside the Workers container**, is the manual
-one, authenticated by the container OS uid; `POST
-/api/trading/execution/commands` is the console one, authenticated by the
-bootstrap `ws_token`. The CLI reaches PostgreSQL over the compose network, which
-is the only network on which the configured DSN resolves (#537 D1). #528 deleted the Telegram control
-webhook, its allowlists and its secret file, and both never-run Trading
-notification senders: none of them had ever been enabled in production, and the
-delivery ledger they wrote to held zero rows. A config that still carries a
-`trading.control` or `trading.notifications` block now fails to load — delete
-the block.
+The sole operator ingress is `tracefold trading issue`, run **inside the Workers
+container** and authenticated by the container OS uid. The CLI reaches PostgreSQL
+over the compose network, where the configured DSN resolves. The web console is
+read-only: its manual controls and HTTP command endpoint were removed in #624.
+There is no `trading.control` configuration block or Telegram control webhook.
+The retired `trading.control` and `trading.notifications` blocks fail config
+validation and must be deleted from older configs.
 
 The closed commands are `/status`, `/pause REASON`, `/resume REASON`,
 `/halt REASON`, `/flatten account TTL_SECONDS`, and optional
@@ -183,10 +179,10 @@ An accepted emergency halt is sticky for the Runtime lifetime: `/resume` is
 explicitly rejected as `emergency_halt_sticky` and cannot manufacture a resumed
 state.
 
-A CLI `ok` and a console receipt prove only the PostgreSQL intent. With no
+A CLI `ok` proves only the PostgreSQL intent. With no
 Runtime running, the intent remains `awaiting_runtime` until its TTL passes;
 ingress never fabricates a terminal Runtime Observation.
-Inspect `trading commands` or `/api/trading/execution/commands` for the command disposition and
+Inspect `trading commands` for the command disposition and
 `trading observations` for later Runtime facts. The only valid evidence ladder
 is: intent recorded, Runtime accepted, order accepted, fill observed, and
 `account_flat=true` on the current execution projection within its

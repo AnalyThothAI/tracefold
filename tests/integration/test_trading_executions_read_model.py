@@ -99,7 +99,9 @@ def _executions(tmp_path: Path) -> dict[str, object]:
     with TestClient(create_app(settings=settings)) as client:
         response = client.get("/api/trading/executions", headers={"Authorization": f"Bearer {TOKEN}"})
     assert response.status_code == 200, response.text
-    return response.json()["data"]
+    data = response.json()["data"]
+    assert "commands" not in data
+    return data
 
 
 def test_a_stopped_out_signal_is_one_closed_row_with_its_exit_price_and_realized_result(
@@ -189,12 +191,12 @@ def test_a_flattened_signal_names_the_operator_exit_and_its_command_stays_record
     assert row["realized_pnl_usd"] is not None
     assert row["fill_quantity"] == "0.049"
 
-    command = next(item for item in data["commands"] if item["command_id"] == _FLATTEN_COMMAND_ID)
+    command = next(item for item in _operator_intents() if item["command_id"] == _FLATTEN_COMMAND_ID)
     # A flatten writes no `control_disposition` until the private report proves the slot went flat,
     # and this harness runs no reconciliation. `recorded` is the honest answer: the exposure this
     # Command closed is on the Signal row above, and reading it back onto the Command would be
     # exactly the venue correlation #528 C deleted.
-    assert command["stage"] == "recorded"
+    assert command["disposition"] is None
     assert command["action"] == "flatten"
 
 
@@ -234,15 +236,23 @@ def test_a_manual_entry_is_its_own_row_and_carries_the_same_close_facts_as_a_sig
     assert row["stop_trigger_price"] is not None
     assert {"disposition", "order_status", "position_status", "last_observed_at_ns"}.isdisjoint(row)
 
-    # `commands[]` is unchanged: the same manual entry is still one instruction record beside the
-    # execution row it produced, and the flatten that closed it is another.
-    command = next(item for item in data["commands"] if item["command_id"] == _MANUAL_ENTRY_COMMAND_ID)
+    # Removing the console control ledger must not erase retained operator facts.
+    commands = _operator_intents()
+    command = next(item for item in commands if item["command_id"] == _MANUAL_ENTRY_COMMAND_ID)
     assert command["action"] == "manual_entry"
-    assert command["stage"] == "accepted"
-    assert {item["command_id"] for item in data["commands"]} == {
+    assert command["disposition"] == "accepted"
+    assert {item["command_id"] for item in commands} == {
         _MANUAL_ENTRY_COMMAND_ID,
         _MANUAL_FLATTEN_COMMAND_ID,
     }
+
+
+def _operator_intents() -> list[dict[str, object]]:
+    conn = connect_postgres_test(read_only=True)
+    try:
+        return TradingRepository(conn).console_operator_intents(since_ns=0, action=None, limit=100)
+    finally:
+        conn.close()
 
 
 def _seed_manual_entry() -> None:

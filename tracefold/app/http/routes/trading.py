@@ -1,9 +1,9 @@
-"""Trading reads plus the one authenticated bounded operator-command append.
+"""Read-only trading monitoring; operator commands have no HTTP ingress (#624).
 
-Three reads and one write. `GET /api/trading/signals` and the two `GET /api/trading/execution/*`
+Three reads. `GET /api/trading/signals` and the two `GET /api/trading/execution/*`
 projections were three more public shapes over ledgers the desk already reads folded: the Signal list
 is `executions[]` with its venue outcome attached, the raw observation stream is what that fold reads,
-and the Command list is `executions[].commands`. Nothing in the browser called any of the three, and
+and the Command list was the console control ledger. Nothing in the browser called any of the three, and
 `tracefold trading signals | observations | commands` reads the same repository directly (#537 PR-5).
 
 `GET /api/trading/gate` and `GET /api/trading/gate/{event_id}` left on the same terms (#589 PR-2).
@@ -25,25 +25,17 @@ import re
 import time
 from typing import Annotated, Any, Final, Literal
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
-from pydantic import ValidationError
-from starlette.concurrency import run_in_threadpool
 
 from tracefold.app.execution_status import execution_readiness_projection
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
-from tracefold.trading import (
-    OperatorCommandError,
-    command_stage,
-    execution_stage,
-    parse_operator_command,
-    prepare_parsed_operator_intent,
-)
+from tracefold.trading import execution_stage
 
-from ..dependencies import _authenticated_runtime, _authenticated_write_runtime, _validate_query_params
+from ..dependencies import _authenticated_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest
 from ..read_cursor import decode_read_cursor, encode_read_cursor
-from ..responses import _etagged, _validated_json
+from ..responses import _etagged
 from ..schemas import common as api_schemas
 from ..schemas import trading as trading_schemas
 
@@ -51,7 +43,6 @@ router = APIRouter()
 _StatusEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingStatusData]
 _CasesEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingCasesData]
 _ExecutionsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingExecutionsData]
-_CommandReceiptEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingOperatorCommandReceiptData]
 
 _WINDOW_MS: Final = 24 * 3_600_000
 _DAY_MS: Final = 86_400_000
@@ -61,16 +52,6 @@ _OI_METRIC_VERSION: Final = OI_METRIC_VERSION
 # identity alphabet the rest of the Trading ledgers use so a Case frozen under an older naming still
 # opens. It is a primary key, so anything outside it cannot name a row and is refused rather than read.
 _CASE_ID: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$")
-_CONSOLE_COMMAND_ACTIONS: Final = frozenset({"pause_entries", "resume_entries", "flatten"})
-_MAX_COMMAND_REQUEST_BYTES: Final = 2_048
-_COMMAND_REQUEST_OPENAPI: Final = {
-    "requestBody": {
-        "required": True,
-        "content": {
-            "application/json": {"schema": trading_schemas.TradingOperatorCommandRequestData.model_json_schema()}
-        },
-    }
-}
 
 
 @router.get("/trading/status", response_model=_StatusEnvelope)
@@ -171,7 +152,7 @@ def get_trading_cases(
 
 @router.get("/trading/executions", response_model=_ExecutionsEnvelope)
 def get_trading_executions(request: Request, case_id: Annotated[str, Query(max_length=256)] = "") -> Response:
-    """Today's desk table: one row per entry identity, plus one per operator Command (#528 PR-3)."""
+    """One retained row per entry identity with its audited venue outcome."""
 
     _validate_query_params(request, supported={"token", "case_id"})
     runtime = _authenticated_runtime(request)
@@ -183,7 +164,6 @@ def get_trading_executions(request: Request, case_id: Annotated[str, Query(max_l
         rows = repos.trading.console_executions(
             since_ns=0 if identity else since_ns, limit=_ROW_LIMIT + 1, case_id=identity
         )
-        commands = repos.trading.console_operator_intents(since_ns=since_ns, action=None, limit=_ROW_LIMIT)
         # Midnight UTC of the instant this request was served, and the next one. One clock, floored
         # once, so "today" is the same day for the sums and the counts; bounded on both sides because
         # `occurred_at_ns` is the venue's clock and a venue running ahead of this host would otherwise
@@ -197,68 +177,11 @@ def get_trading_executions(request: Request, case_id: Annotated[str, Query(max_l
     return _etagged(
         {
             "executions": [_execution(row, now_ns=now_ns) for row in rows[:_ROW_LIMIT]],
-            "commands": [_execution_command(row, now_ns=now_ns) for row in commands],
             "totals": _totals(totals),
             "complete": len(rows) <= _ROW_LIMIT,
         },
         request,
         envelope=_ExecutionsEnvelope,
-    )
-
-
-@router.post(
-    "/trading/execution/commands",
-    response_model=_CommandReceiptEnvelope,
-    openapi_extra=_COMMAND_REQUEST_OPENAPI,
-)
-async def post_operator_intent(
-    request: Request,
-    runtime: Annotated[Any, Depends(_authenticated_write_runtime)],
-) -> Response:
-    """Persist one bounded console intent; Runtime and venue outcomes remain separate facts."""
-
-    _validate_query_params(request, supported=set())
-    body = bytearray()
-    async for chunk in request.stream():
-        body.extend(chunk)
-        if len(body) > _MAX_COMMAND_REQUEST_BYTES:
-            raise ApiBadRequest("operator_command_request_too_large")
-    try:
-        command = trading_schemas.TradingOperatorCommandRequestData.model_validate_json(bytes(body))
-    except ValidationError:
-        raise ApiBadRequest("operator_command_request_invalid") from None
-    requested_at_ns = command.requested_at_ms * 1_000_000
-    now_ns = time.time_ns()
-    try:
-        parsed = parse_operator_command(command.text)
-        if parsed.action not in _CONSOLE_COMMAND_ACTIONS:
-            raise OperatorCommandError("operator_console_action_unsupported")
-        prepared = prepare_parsed_operator_intent(
-            parsed,
-            source="http:operator-console:v1",
-            source_command_id=command.request_id,
-            account_slot=runtime.settings.trading.execution.account_slot,
-            operator_identity="operator-console",
-            authentication_identity="http-operator-write-token:v1",
-            requested_at_ns=requested_at_ns,
-            now_ns=now_ns,
-        )
-    except OperatorCommandError as exc:
-        raise ApiBadRequest(exc.code, field="text") from None
-    receipt = await run_in_threadpool(runtime.persist_operator_intent, prepared)
-    return _validated_json(
-        _CommandReceiptEnvelope,
-        {
-            "ok": True,
-            "data": {
-                "command_id": receipt.command_id,
-                "seq": receipt.seq,
-                "requested_at_ns": requested_at_ns,
-                "disposition": receipt.disposition,
-                "reason": receipt.reason,
-                "truth": "intent_recorded_not_runtime_or_venue",
-            },
-        },
     )
 
 
@@ -328,22 +251,6 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
             expires_at_ns=_int_or_none(row.get("expires_at_ns")),
             now_ns=now_ns,
         ),
-    }
-
-
-def _execution_command(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
-    disposition_reason = _string_or_none(row.get("disposition_reason"))
-    return {
-        "command_id": str(row["command_id"]),
-        "action": str(row["action"]),
-        "requested_at_ns": int(row["requested_at_ns"]),
-        "stage": command_stage(
-            disposition=_string_or_none(row.get("disposition")),
-            disposition_reason=disposition_reason,
-            expires_at_ns=int(row["expires_at_ns"]),
-            now_ns=now_ns,
-        ),
-        "reason": disposition_reason,
     }
 
 

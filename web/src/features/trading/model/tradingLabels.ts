@@ -149,31 +149,6 @@ export const EXECUTION_SOURCE_ZH: Record<string, string> = {
   signal: "Signal",
 };
 
-/** The five stages `tracefold/trading/stages.py:command_stage` derives from `control_disposition` alone. */
-export const COMMAND_STAGE_ZH: Record<string, string> = {
-  recorded: "已持久化",
-  accepted: "Runtime 受理",
-  rejected: "Runtime 拒绝",
-  completed: "已完成 · 私有对账证明",
-  expired: "已过期",
-};
-
-/**
- * The closed operator grammar, as `trading_operator_intents.action` stores it.
- *
- * All five, not the three the console can issue. `commands[]` on `/api/trading/executions` is every
- * Command in the window whatever wrote it, which is the point of that read: the manual entry an
- * operator typed at the CLI is the one ingress the whole chain has been proven with, and its row on
- * this desk must not render as a bare `manual_entry` because the browser has no button for it.
- */
-export const COMMAND_ACTION_ZH: Record<string, string> = {
-  emergency_halt: "紧急停止",
-  flatten: "Flatten account",
-  manual_entry: "手动方向",
-  pause_entries: "Pause entries",
-  resume_entries: "Resume / Arm",
-};
-
 /** The three exits `ProtectionCoordinator` can witness, as the `position/closed` observation records them. */
 export const EXIT_REASON_ZH: Record<string, string> = {
   flatten: "flatten 退出",

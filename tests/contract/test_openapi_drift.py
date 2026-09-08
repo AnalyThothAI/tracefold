@@ -52,9 +52,8 @@ def test_openapi_json_matches_committed_artefact(tmp_path: Path) -> None:
 def test_public_api_is_status_news_trading_and_macro_only() -> None:
     """#47 removed Radar, #50 removed the GMGN lane: no market/search/token/live routes or schemas remain.
 
-    `/api/trading/*` is an exact allowlist, named individually rather than by prefix. The sole write
-    appends a bounded Command; the browser still cannot place, amend, or cancel an order. A prefix
-    wildcard would let a second mutation route join without anyone reading this line.
+    `/api/trading/*` is an exact read-only allowlist, named individually rather than by prefix.
+    The browser has no manual command or order authority (#624).
     """
 
     from tracefold.app.http.app import create_app
@@ -72,20 +71,14 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
         # `/api/trading/execution/*` projections were three more shapes over the same ledgers the
         # desk reads already folded, and nothing in the browser called any of them (#537 PR-5).
         "/api/trading/cases",
-        "/api/trading/execution/commands",
         # #528 PR-1: the desk table. One row per entry folded from the Runtime's own observations,
-        # plus the Command rows beside it; it appends nothing and adds no aggregate.
+        # with account-wide realized totals; it appends nothing.
         "/api/trading/executions",
     }
-    # Every path except the one Command append is read-only. The ordinary Serve pool still enforces
-    # connection-level read-only mode; the command append owns a separate bounded transaction.
-    for path in (
-        "/api/trading/status",
-        "/api/trading/cases",
-        "/api/trading/executions",
-    ):
+    # The public surface and the Serve database pool are read-only (#624).
+    for path in api_paths:
         assert set(schema["paths"][path]) == {"get"}, path
-    assert set(schema["paths"]["/api/trading/execution/commands"]) == {"post"}
+    assert "/api/trading/execution/commands" not in schema["paths"]
     for retired in (
         "/api/token-radar",
         "/api/stocks-radar",
