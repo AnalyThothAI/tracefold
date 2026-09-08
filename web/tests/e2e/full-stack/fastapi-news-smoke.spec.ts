@@ -89,7 +89,7 @@ test("The market page renders the observation the broker delivered, parsed and r
   // the same frame the smoke published, read back through `/api/news/market` and rendered.
   const marketResponsePromise = page.waitForResponse(isMarketResponse);
 
-  const documentResponse = await page.goto("/news/market");
+  const documentResponse = await page.goto("/news/market?kind=liquidation");
   expect(documentResponse?.ok()).toBe(true);
 
   const marketResponse = await marketResponsePromise;
@@ -105,14 +105,18 @@ test("The market page renders the observation the broker delivered, parsed and r
     "The smoke fixture must seed one market observation.",
   ).toBe(true);
 
-  await expect(page.getByRole("heading", { name: "市场事实" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "市场研究" })).toBeVisible();
   const liquidation = page.locator('.news-market-row[data-kind="liquidation"]');
   await expect(liquidation).toHaveCount(1);
-  await expect(liquidation).toContainText("BTC Large Short Liquidation 4.55M at $118000");
+  await expect(liquidation).toContainText("4,550,000");
   // Two independent answers on the same row: what the parser read, and what the notification owner
   // recorded. Both are printed from the server's own strings, and neither is derived from the other.
-  await expect(liquidation.locator('[data-flag="parse"][data-status="parsed"]')).toBeVisible();
-  await expect(liquidation.locator('[data-flag="push"]')).toBeVisible();
+  await liquidation.getByRole("button", { expanded: false }).click();
+  await page.getByText("原始记录、解析与通知依据").click();
+  await expect(
+    page.locator('.news-market-detail [data-flag="parse"][data-status="parsed"]').first(),
+  ).toBeVisible();
+  await expect(page.locator('.news-market-detail [data-flag="push"]').first()).toBeVisible();
 
   // The Event feed never carries it, which is the whole point of the cut.
   const feedResponse = await page.request.get("/api/news/feed?limit=100", {
@@ -171,3 +175,36 @@ function firstNonEmptyString(...values: unknown[]): string | null {
   }
   return null;
 }
+
+test("research reads persisted wallet segments and links OI to its frozen decision", async ({
+  page,
+}) => {
+  await page.goto("/news/wallets");
+  const rows = page.locator(".news-wallet-research-row");
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toContainText("3,000");
+  await rows.first().getByRole("button").click();
+  await expect(page.getByLabel("观察后价格")).toContainText("+10.00%");
+  await page.getByRole("link", { name: "展开本段 3 次观察" }).click();
+  await expect(rows).toHaveCount(3);
+  await page.reload();
+  await expect(rows).toHaveCount(3);
+  await rows.first().getByRole("button").click();
+  await page.getByRole("link", { name: "原始观察与交易依据" }).click();
+  await expect(page.getByRole("heading", { name: "市场观察依据" })).toBeVisible();
+  await expect(page.getByText("原始记录、解析与通知依据")).toBeVisible();
+
+  await page.goto("/news/market");
+  const oi = page.locator('.news-market-row[data-kind="oi"]').first();
+  await expect(oi).toContainText("+6.71%");
+  await expect(oi).toContainText("5 分钟");
+  await oi.getByRole("button", { expanded: false }).click();
+  await page.getByRole("link", { name: "查看这条观察的策略判定" }).click();
+  await expect(page.getByRole("heading", { name: "这条观察关联的策略判定" })).toBeVisible();
+  const decision = page.locator(".trading-case-list-row");
+  await expect(decision).toHaveCount(1);
+  await decision.click();
+  await expect(page.getByRole("dialog", { name: "策略判定依据" })).toContainText(
+    "browser-research-case",
+  );
+});

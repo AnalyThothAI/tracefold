@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response
@@ -42,6 +42,7 @@ from tracefold.trading import (
 
 from ..dependencies import _authenticated_runtime, _authenticated_write_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest
+from ..read_cursor import decode_read_cursor, encode_read_cursor
 from ..responses import _etagged, _validated_json
 from ..schemas import common as api_schemas
 from ..schemas import trading as trading_schemas
@@ -96,37 +97,71 @@ def get_trading_status(request: Request) -> Response:
 @router.get("/trading/cases", response_model=_CasesEnvelope)
 def get_trading_cases(
     request: Request,
-    # Wider than the identity itself, so an id one character too long is refused by `_case_id` with
-    # the same 400 and the same word as every other malformed identity rather than by the framework.
     case_id: Annotated[str, Query(max_length=256)] = "",
+    view: Literal["summary", "list"] = "summary",
+    state: Literal["", "PENDING", "RUNNING", "NO_TRADE", "SIGNAL_EMITTED", "BLOCKED"] = "",
+    asset: Annotated[str, Query(max_length=64)] = "",
+    reason: Annotated[str, Query(max_length=128)] = "",
+    source_item_id: Annotated[str, Query(max_length=64, pattern=r"^([0-9a-f]{64})?$")] = "",
+    cursor: Annotated[str, Query(max_length=512)] = "",
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
 ) -> Response:
-    """One frozen Case by identity, beside the three durable 24 h distributions (#604 T3).
-
-    The list this route used to send is gone: 100 whole Cases on every 15 s poll, of which the desk
-    rendered at most the one behind `?case=<id>`, and never the `NO_TRADE` Cases past the hundredth --
-    553 of the 584 in a production day -- which are the ones an operator opens to ask why. A Case is
-    reached by its own identity now, and no identity means no Case rather than a page nobody reads.
-    The two filters that narrowed that page went with it: `?underlying=` and `?state=` could only
-    select rows out of a list that is now always the caller's own Case or nothing.
-    """
-
-    _validate_query_params(request, supported={"case_id", "token"})
+    """Frozen decisions by identity or a scope-bound keyset list; distributions remain independent."""
+    _validate_query_params(
+        request, supported={"case_id", "token", "view", "state", "asset", "reason", "source_item_id", "cursor", "limit"}
+    )
     identity = _case_id(case_id)
+    if identity and (state or asset or reason or source_item_id or cursor):
+        raise ApiBadRequest("trading_cases_scope_invalid", field="case_id")
+    scope = [state, asset.strip().upper(), reason, source_item_id, view]
+    position = decode_read_cursor(cursor, scope, error="trading_cases_cursor_invalid")
     runtime = _authenticated_runtime(request)
     now_ms = int(time.time() * 1000)
-    since_ms = now_ms - _WINDOW_MS
+    window_to = position[0] if position else now_ms
+    since_ms = 0 if source_item_id else window_to - _WINDOW_MS
+    filters = dict(
+        states=(state,) if state else (),
+        to_ms=window_to,
+        asset=asset.strip().upper() or None,
+        reason=reason or None,
+        source_item_id=source_item_id or None,
+    )
     with runtime.repositories() as repos:
-        row = None if identity is None else repos.trading.console_case(case_id=identity)
-        states = repos.trading.case_counts(since_ms=since_ms)
-        reasons = repos.trading.case_reason_counts(since_ms=since_ms)
-        admissions = repos.trading.gate_counts(since_ms=since_ms)
+        if identity:
+            row = repos.trading.console_case(case_id=identity)
+            rows = [] if row is None else [row]
+            total = len(rows)
+        elif view == "list" or source_item_id:
+            rows = repos.trading.console_cases(
+                since_ms=since_ms,
+                limit=limit + 1,
+                cursor_at_ms=position[2] if position else None,
+                cursor_id=position[3] if position else "",
+                **filters,
+            )
+            total = repos.trading.console_case_total(since_ms=since_ms, **filters)
+        else:
+            rows, total = [], 0
+        states = repos.trading.case_counts(since_ms=now_ms - _WINDOW_MS)
+        reasons = repos.trading.case_reason_counts(since_ms=now_ms - _WINDOW_MS)
+        admissions = repos.trading.gate_counts(since_ms=now_ms - _WINDOW_MS)
+    next_cursor = None
+    if len(rows) > limit:
+        last = rows[limit - 1]
+        next_cursor = encode_read_cursor(
+            scope, to_ms=window_to, value=0, at_ms=last["case_created_at_ms"], identity=last["case_id"]
+        )
     return _etagged(
         {
-            "cases": [] if row is None else [_case(row)],
+            "cases": [_case(row) for row in rows[:limit]],
+            "total": total,
+            "next_cursor": next_cursor,
+            "window_from_ms": since_ms,
+            "window_to_ms": window_to,
             "state_counts_24h": states,
             "reason_counts_24h": reasons,
             "admission_counts_24h": admissions,
-            "complete": True,
+            "complete": next_cursor is None,
             "window_hours": _WINDOW_MS // 3_600_000,
         },
         request,
@@ -135,16 +170,19 @@ def get_trading_cases(
 
 
 @router.get("/trading/executions", response_model=_ExecutionsEnvelope)
-def get_trading_executions(request: Request) -> Response:
+def get_trading_executions(request: Request, case_id: Annotated[str, Query(max_length=256)] = "") -> Response:
     """Today's desk table: one row per entry identity, plus one per operator Command (#528 PR-3)."""
 
-    _validate_query_params(request, supported={"token"})
+    _validate_query_params(request, supported={"token", "case_id"})
     runtime = _authenticated_runtime(request)
+    identity = _case_id(case_id)
     now_ms = int(time.time() * 1000)
     now_ns = now_ms * 1_000_000
     since_ns = (now_ms - _WINDOW_MS) * 1_000_000
     with runtime.repositories() as repos:
-        rows = repos.trading.console_executions(since_ns=since_ns, limit=_ROW_LIMIT + 1)
+        rows = repos.trading.console_executions(
+            since_ns=0 if identity else since_ns, limit=_ROW_LIMIT + 1, case_id=identity
+        )
         commands = repos.trading.console_operator_intents(since_ns=since_ns, action=None, limit=_ROW_LIMIT)
         # Midnight UTC of the instant this request was served, and the next one. One clock, floored
         # once, so "today" is the same day for the sums and the counts; bounded on both sides because
@@ -229,11 +267,14 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
     manifest: dict[str, Any] = manifest_value if isinstance(manifest_value, dict) else {}
     contexts_value = manifest.get("contexts")
     contexts: dict[str, Any] = contexts_value if isinstance(contexts_value, dict) else {}
+    oi_value = contexts.get("oi")
+    oi = oi_value if isinstance(oi_value, dict) else {}
     market_value = contexts.get("market")
     market: dict[str, Any] = market_value if isinstance(market_value, dict) else {}
     return {
         "case_id": str(row["case_id"]),
         "event_id": _oi_event_id(row.get("primary_source_key")),
+        "source_item_id": _string_or_none(oi.get("source_item_id")),
         "base_symbol": _base_symbol(row.get("underlying_key")),
         "market_key": manifest.get("market_key"),
         "manifest_version": manifest.get("manifest_version"),

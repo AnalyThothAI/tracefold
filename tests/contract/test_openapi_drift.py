@@ -306,7 +306,17 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "unknown",
         "unavailable",
     ]
-    assert set(components["NewsMarketFiltersData"]["properties"]) == {"kind", "from_ms", "to_ms", "limit"}
+    assert set(components["NewsMarketFiltersData"]["properties"]) == {
+        "kind",
+        "from_ms",
+        "to_ms",
+        "limit",
+        "asset",
+        "provider",
+        "venue",
+        "measurement_definition",
+        "sort",
+    }
     # Two independent pairs, on the group and on the Item alike: what the parser proved, and what the
     # sender did. A client cannot derive either from the other, which is why neither is folded away.
     assert {"parse_status", "parse_error"} <= set(components["NewsMarketObservationData"]["properties"])

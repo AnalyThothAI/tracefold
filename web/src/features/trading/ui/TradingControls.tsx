@@ -88,7 +88,7 @@ export function TradingControls({
     <Card
       data-block="controls"
       flush
-      hint="按钮只写入 Command；进度是 Runtime 自己的 control_disposition"
+      hint="操作只记录请求；执行进度由执行器回执确认"
       title="执行控制"
     >
       <section aria-label="执行控制" className="trading-control-panel">
@@ -106,17 +106,17 @@ export function TradingControls({
             onClick={() => issue("pause")}
             variant="caution"
           >
-            Pause entries
+            暂停新入场
           </ActionButton>
           <ActionButton
             disabled={disabled || !entriesPaused}
             onClick={() => issue("resume")}
             variant="positive"
           >
-            Resume / Arm
+            恢复新入场
           </ActionButton>
           <ActionButton disabled={disabled} onClick={() => issue("flatten")} variant="negative">
-            Flatten account
+            平掉账户仓位
           </ActionButton>
         </div>
         {mode === "disabled" ? (
@@ -126,8 +126,8 @@ export function TradingControls({
         ) : null}
         {command.data ? (
           <p aria-live="polite" className="trading-control-message">
-            Command 已持久化 · {command.data.command_id.slice(0, 12)}；这不代表 Runtime
-            受理、订单或成交。
+            操作已记录 · {command.data.command_id.slice(0, 12)}
+            ；这不代表执行器已受理、订单已完成或已经成交。
           </p>
         ) : null}
         {command.isError ? (

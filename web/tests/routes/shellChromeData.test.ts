@@ -23,7 +23,7 @@ describe("route-aware shell figures", () => {
     ]);
   });
 
-  it("prints no chrome figure on 市场事实, because status has none to give", () => {
+  it("prints no chrome figure on 市场研究, because status has none to give", () => {
     /*
      * #553 PR-1. The figure here read `pipeline.telemetry_parsed_24h`, which is not a status field any
      * more: market intake is counted off the stored observations and reported per kind by

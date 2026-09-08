@@ -570,6 +570,29 @@ def test_a_token_dexscreener_does_not_index_is_an_answer_and_not_a_failure() -> 
     assert asyncio.run(_with(client, work)) is None
 
 
+def test_a_deeper_quote_side_pool_cannot_price_the_requested_base_token() -> None:
+    document = json.loads(json.dumps(_fixture("dexscreener_fsd_tokens.json")))
+    document["pairs"].insert(
+        0,
+        {
+            "chainId": "robinhood",
+            "baseToken": {"address": "0x" + "ab" * 20},
+            "quoteToken": {"address": FSD},
+            "priceUsd": "181.77",
+            "liquidity": {"usd": 1_800_000_000},
+        },
+    )
+    client = DexScreenerClient(
+        base_url="https://dex.test",
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=document)),
+    )
+
+    async def work(session: DexScreenerClient) -> Any:
+        return await session.token_price(FSD)
+
+    assert asyncio.run(_with(client, work)) == Decimal("0.0001088")
+
+
 def test_the_price_feed_has_the_same_bounded_failure_vocabulary_as_the_others() -> None:
     async def work(client: DexScreenerClient) -> Any:
         return await client.token_price(FSD)

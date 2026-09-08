@@ -113,7 +113,7 @@ the route components into the eager shell chunk.
 - **News routes.** `/news` is a decision-first scan surface over the flat
   Event feed from `/api/news/feed`; the browser never clusters, scores,
   triages, throttles, or reorders. The public News navigation contains
-  exactly `事件流`, `市场事实`, `链上钱包` and `交易`.
+  exactly `事件流`, `市场研究`, `钱包研究` and `交易执行`.
 
   `Alpha 判定` at `/news/alpha` was a fourth destination until #460. It read one
   endpoint — `/api/trading/cases` — and so does `/trading`, so the list of Cases
@@ -127,11 +127,11 @@ the route components into the eager shell chunk.
   `policy_config` under that table until #604 T3 removed the field from the
   contract: the threshold column already prints those numbers beside the
   condition each one was measured against. `/trading?case=<id>` opens one directly, and the desk's own Case
-  rows link that way. A `case` the rolling window has
-  already dropped says so and names the window rather than rendering nothing.
+  rows link that way. Identity lookup covers the retained Case; a missing identity
+  has an explicit empty state.
 
 
-  `/news/market` is `市场事实` (#553 PR-1, replacing `/news/oi` and the OI
+  `/news/market` is `市场研究` (#621, following #553 which replaced `/news/oi` and the OI
   audit before it). OI frames, liquidations, smart-money prints and market
   sources we have no parser for are not Events: they are observations, stored as
   facts, and this is the only browser surface that reads them. Nothing on the
@@ -139,10 +139,9 @@ the route components into the eager shell chunk.
   vocabulary does not apply here, and neither does the Signal lane's.
 
   It reads `/api/news/market` for the page and `/api/news/market/{item_id}` when
-  a reader expands one group. The list request carries `kind`, `limit` and a
-  `cursor`; the window is the endpoint's own default of the last 72 h, absolute
-  rather than a rolling offset, and neither `from_ms` nor `to_ms` is browser
-  state yet. Consecutive observations of one `group_key` arrive collapsed to
+  a reader expands one group. The URL carries kind, time window, asset and
+  measurement scope, sort and pagination. The initial window is 72 h;
+  pagination anchors absolute bounds so a moving clock cannot shift a page. Consecutive observations of one `group_key` arrive collapsed to
   their newest member with the run's `observation_count` and its first/last
   clock, so a liquidation cascade is one row that says how deep it went rather
   than four hundred.
@@ -161,18 +160,17 @@ the route components into the eager shell chunk.
   verdict to join on and nothing an admission read could answer. #589 PR-2
   deleted the two `/api/trading/gate*` routes for that reason.
 
-  **Parse and push are two answers, never one column.** `parse_status` /
+  **Parse and push remain independent evidence.** `parse_status` /
   `parse_error` say what the parser could read out of the provider's record;
   `notification_status` / `notification_reason` say what the notification owner
-  did with it. A record that parsed cleanly and was never pushed, and one that
-  never parsed at all, are different operational states, so they never share a
-  cell, a colour or a word. `notification_status`, `notification_reason` and
+  did with it. Their separate fields live in the expanded collection and
+  delivery disclosure, below the research evidence. `notification_status`, `notification_reason` and
   `parse_error` are open server strings and are printed verbatim — the operator
   greps them, and a Chinese gloss invented in the browser would either rename
   one or silently swallow a value this build has not seen. There is no
   page-level "is push wired" banner (#553 PR-2): one group can be `sent` while
   another is `merging` in the same moment, so a single banner would be a second,
-  weaker answer to a question every row already answers. The expanded detail adds
+  weaker answer than the retained receipt for each observation. The expanded detail adds
   the card's own numbers — its trigger reason, how many observations it spoke
   for, how many attempts it took, and which provider answered — because "sent"
   without them cannot be checked against the timeline beside it.
@@ -185,77 +183,64 @@ the route components into the eager shell chunk.
   its own at `/news/wallets`, which answers what the *tape* is doing rather than
   what one observation said.
 
-  `/news/wallets` is `链上钱包`, with buy research first (#614). The candidate
-  table precedes the tape metrics and roster. It reads two independent endpoints:
-  `/api/news/wallets/cards` for observations, price outcomes and scoped raw actions, and
-  `/api/news/wallets` for the supporting tape state and current roster. Neither
-  successful read is required to render the other. Refresh failures keep that
-  read's previous data with an explicit stale message.
+  Market research defaults to OI. The row leads with typed change, actual
+  measurement window, USD notional and venue/instrument. It describes a
+  discrete provider observation; it draws no continuous OI history and
+  does not infer long/short direction from OI alone. Numeric sorting requires
+  a proven matching provider, venue and measurement definition. The whole
+  selected time window is filtered before sorting, with stable tie-breaking.
+  Collection/parse/notification counts are secondary and explicitly describe
+  the full time window before asset/definition filtering.
 
-  The URL owns `window=24h|72h|7d`, `kind=buy|all|exit|crowding|digest`,
-  `wallet_address` and `token_address`. Absent or invalid kind means the page's
-  default `buy`; `kind=all` is the explicit UI state that omits the API kind
-  filter. The API's own default remains unfiltered. Address filters accept exact
-  20-byte EVM addresses and normalize case. `token_address` never uses the
-  reserved authentication parameter `token`. Every filter changes the request,
-  query key and ETag key; a window change preserves the chosen identities.
-  Wallet and token links narrow the same page, while the combined link opens
-  that wallet/token observation timeline with all kinds. When both exact addresses
-  are present, the same response also supplies `fills[]`: the current window's
-  retained buys, sells and transfers, independently of the card kind and notification
-  thresholds. The `交易流水` table therefore includes small sells without exit cards.
-  It follows descending block/log order and shares the bounded page limit (at most
-  200). Quantities use the stored decimal count without JavaScript number rounding;
-  absent decimals show the raw integer explicitly. Missing dollar values stay
-  unknown. Valid chain-4663 transaction hashes link only to the
-  [officially listed Blockscout explorer](https://docs.robinhood.com/chain/connecting/).
-  This is retained history within the chosen window and limit, not a full position ledger.
+  `/news/wallets` is 钱包研究 (#621). 买入动向 is the default tab;
+  跟踪钱包 contains the current roster with provider-performance and holding-size
+  ranks kept separate. The existing theme, shared primitives and News Event
+  feed/detail/search remain unchanged.
 
-  All returned candidates render whether they were sent or suppressed. Buy rows
-  show their stored stage (`first_observed`, `new_position`, `add`, `reentry`,
-  `unknown`), priced cumulative amount, mean price of the priced fills, unpriced
-  buy count, observation price, selection
-  reason, buy count, observation time and history coverage start. A first
-  observation is labelled `观察期首次买入`, never promoted to a verified new
-  position. Delivery and selection reasons remain the owner's open strings.
-  No wallet rank, stage, price return or selection is inferred in the browser.
+  Research rows answer identity, stored stage, cumulative priced amount,
+  post-observation price result and time. The default view collapses buys by
+  persisted chain/wallet/token/segment identity before pagination. Amounts
+  use the latest observation in each segment, never a sum of cumulative
+  snapshots. The four metrics come from full-scope server aggregates, with
+  chain-qualified wallet and token counts. A 25-row page cannot redefine them.
 
-  The `+15m`, `+1h` and `+4h` columns render server-returned basis points and
-  source. The price-reference field is visible beside each buy or exit; a
-  missing reference says `未记录`. An unavailable price says `无价`, while a
-  missing receipt is `—`, and neither becomes zero. Digest rows retain their
-  exact sentences and model/program material-selection attribution. Every observation links to
-  `/news/market/{item_id}`; expanded buy observations on the market page show
-  the same stage, quantities, price distinction, provenance and timeline link.
+  The URL owns window, kind, exact wallet/token addresses, chain, segment,
+  view, cursor and the anchored end time. A segment expands to its individual
+  observations; the wallet/token action view includes buys, sells and transfers.
+  Raw-fill truncation is explicit. Details retain the source Item identity,
+  observed reference, priced-fill average, historical coverage and each
+  horizon's target and actual sample time. Missing, not due, pending,
+  unavailable and unverified price identity have separate labels. A first
+  observation never claims a proven new position; post-observation price
+  change never claims wallet P&L or executable return.
 
-  The four supporting metrics describe the last 24 hours: stored fill kinds,
-  candidate/card kinds and delivery count, unpriced trade share, and tape
-  position. Per-kind distinct wallet or token counts are not summed into a
-  purported unique total. The roster is the current version, with quality and
-  holding-size ranks shown separately; membership does not claim validated
-  profitability. Clicking a roster wallet opens its observation timeline.
+  The two endpoint reads fail independently and retain their own last good
+  data. Collection health is a disclosure below the research rows. The
+  original observation opens at `/news/market/:itemId` with a return link
+  to the filtered research page. Explorer links remain limited to validated
+  chain-4663 transaction hashes.
 
   `raw` is a shape, not a failure. An `unknown_market` source has no parser at
   all, and its record is retained with its provider line and its stated reason —
   which is why the per-kind strip puts `raw` beside `parsed` rather than under
   it. That strip is `sources[]`, counted off the stored facts in the same
-  response as the rows, so the summary and the rows cannot disagree about what
-  the window holds. Its second line is the receipt half — `merged`, `sent`,
+  response as the rows. It describes all facts in the time window; kind,
+  asset and measurement filters narrow the rows, not this intake summary. Its second line is the receipt half — `merged`, `sent`,
   `failed`, `unknown` — drawn quieter than the intake because it answers a
   different question: what a reader was actually told about what arrived. Every kind keeps a tile whether or not it sent anything:
   「这个来源 72 小时没发过东西」 is the answer a reader came for.
 
-  The four kind chips write `?kind=` as the server's own comma-separated subset
+  The five kind chips write `?kind=` as the server's own comma-separated subset
   and each selection is a real request, because `sources[]` describes the whole window
   and a browser-side split would leave the strip disagreeing with the rows under
-  it. A subset that narrows nothing — empty, or all four — is the absence of the
+  it. A subset that narrows nothing — empty, or all five — is the absence of the
   filter rather than a spelled-out list, so it shares one query key and one
   `filters.kind` with the unfiltered page. Expanding a group is one request for
   the group's whole retained timeline, never one per member, and it is not
   polled: a stored provider payload cannot change.
 
-  The row shows the provider's own line, the parser's subject when it read one,
-  and the stored columns in the expansion. It re-parses nothing: deriving a
+  Rows lead with the stored subject and typed research evidence. The provider's
+  raw line and technical columns remain available in the expansion. It re-parses nothing: deriving a
   number from `title` in the browser would be the ingest parser running a second
   time, drifting from the stored fact the moment either side changed. It draws
   no open-interest curve — the provider emits a record only when its own trigger
@@ -396,86 +381,31 @@ the route components into the eager shell chunk.
   pipeline dropped it and it moved 3%" is the one thing the conclusion cannot
   say. A horizon that has not matured reads `未到期`, never `0.00%`.
 
-  `/trading` is the Alpha/Execution operator desk: **six blocks in one column
-  over three endpoints, plus a Case drawer that opens on demand** (#604 T4).
-  The order is the order an operator asks the questions in.
+  `/trading` is 交易执行 (#621). The safety strip always precedes three
+  URL-owned tabs: 持仓与订单 (default), 执行记录 and 策略判定. Positions,
+  protection and controls precede daily totals in the default tab at every
+  width. Execution rows retain the venue-derived stages, exact decimals and
+  the existing nine-column panel with internal scrolling.
 
-  1. **安全条** — `/api/trading/status`. Three words: `ALIVE`, `SAFE`, `ARMED`,
-     the last carrying the blocking reason through `ENTRY_BLOCK_REASON_ZH`;
-     under them `execution.routes_count` and the account slot. `FLAT` was a
-     fourth word and is a footnote of block 5 now: `account_flat` stays false
-     with zero positions, so the tile read `NOT PROVEN` around the clock, and a
-     permanently amber quarter of the safety strip is a warning nobody can act
-     on. It qualifies an empty position list, which is where it now sits.
-  2. **今日战况** — `executions.totals` plus `execution.current_account`. Today's
-     and all-time realized results as the server summed them (manual entries
-     included, and the caption says so), the entries in the window split into
-     accepted and refused, and the positions and orders on the account. The
-     page used to print a third number instead: the sum of the realized column
-     over the rows it happened to be showing, which is neither.
-  3. **24h 漏斗** — `/api/trading/cases`. Seven counts, 帧 → 成案 → 不交易 → 发出
-     → 受理 → 成交 → 平仓. The first four are that read's own aggregates —
-     `admission_counts_24h` is how many frames admission looked at at all
-     (#604 T3) — and the last three are counted from the execution rows below,
-     which is the only place the venue's answer per entry exists. Under the
-     strip, the largest refusals in Chinese through `policyReasonLabel`,
-     `ADMISSION_STATUS_ZH` and `ADMISSION_REASON_ZH`; the page printed the raw
-     keys, so those translations could never reach a reader. They are counts and
-     not links: neither distribution publishes an identity, and a `NO_TRADE`
-     Case has no execution row to carry one, so the desk holds no `case_id` for
-     any of them and does not invent one.
-  4. **回路账本** — `/api/trading/executions`. Nine columns: time, market (with
-     direction and `source` as one chip), `disposition_reason` through
-     `SIGNAL_DISPOSITION_ZH` with `order_reject_reason` verbatim beneath it,
-     `stage`, fill quantity and average price, stop trigger, exit price and
-     reason, and the realized PnL with the holding interval under it. That
-     interval is `entry_filled_at_ns` to `position_closed_at_ns` (#604 T3) — a
-     dash when either clock is absent, never measured against `now`. The
-     realized number is coloured on the market axis, red for a profit and green
-     for a loss; direction was a column of one constant word and paid for it.
-     A manual entry renders beside a Signal with the same columns and no Case
-     identity (#528 PR-3); a Signal row's market cell is the link that opens its
-     Case.
-  5. **敞口与保护** — `/api/trading/status`, closed while the account holds
-     nothing and opened by a position, an order, or `unexpected_exposure`.
-     Equity, UTC-day drawdown, aggregate risk, private reconcile age, the
-     inflight/unknown order counts, then each position with quantity, entry,
-     mark, unrealized PnL and its protection trigger and coverage. An unhealthy
-     audit and unowned exposure are alert lines rather than tiles: `audit_healthy`
-     is true around the clock, so the tile was a constant occupying a cell.
-  6. **执行控制** — `POST /api/trading/execution/commands` to write, and the
-     `commands[]` of `/api/trading/executions` to read back. Pause, Resume /
-     Arm and Flatten, with **no confirmation dialog**: none of the three can
-     submit an entry, and a modal in front of them taught readers that clicking
-     through it was the dangerous act. `execution.mode=disabled` locks all
-     three; all three write with the session token the page already holds (the
-     pasted write token and the Live `CONFIRM` re-entry went with #520 PR-B). A
-     successful POST says only that the Command was persisted. Each Command row
-     is action, the server's `stage` — `recorded / accepted / rejected /
-     completed / expired`, derived from `control_disposition` alone — the
-     Runtime's own `reason` for refusing or expiring it (#604 T3), and its
-     clock.
+  The decision tab shows independent 24-hour distributions, then a 25-row
+  server-filtered list with state, asset, reason and a scope-bound keyset cursor.
+  Clicking a reason narrows the list. These distributions are not a conversion
+  funnel assembled from unrelated frame, Case and execution populations.
+  A Case opens in the shared Drawer, supports Escape and restores opener focus.
+  Its conditions and values come from the frozen manifest and policy checks.
 
-  **Three independent reads, three independent failures.** `/api/trading/status`
-  used to gate the page: it was read first and a cold error returned one error
-  panel, so a 5xx on the readiness projection blanked a perfectly readable
-  execution ledger. It answers blocks 1 and 5 and half of 2 now, and nothing
-  else waits on it. Each block states its own unreadable answer in the desk's one
-  ledger vocabulary, and the stale banner names which ledger broke while keeping
-  the two that did not.
+  An OI observation links by persisted source Item ID to retained Cases,
+  including those older than 24 hours. Missing links are explicit; the UI
+  never guesses by symbol or nearby time. A signal-emitting Case links to
+  its own retained execution records, with the different scope stated and
+  a control to return to the ordinary 24-hour list.
 
-  **The Case drawer** is `/api/trading/cases?case_id=<id>`, opened by
-  `?case=<id>` — the deep link the ledger's Signal rows publish. That query is
-  disabled until a reader asks for one, and does not poll, because a frozen Case
-  cannot change; the polled read carries the three count distributions and an
-  empty `cases[]` (#604 T3): `state_counts_24h`, the policy-reason counts, and
-  `admission_counts_24h` — a count per `(status, reason)` pair over the
-  admission ledger, which is the funnel's top and not the per-frame
-  `decisions[]` #589 PR-2 deleted. There is no pagination and no cursor. The drawer shows one Case's terminal answer and the
-  frozen per-check evidence, and says so when the Case is outside the 24 h window
-  rather than rendering nothing. The frozen-configuration card went with the
-  contract field: the evidence table's threshold column already prints those
-  numbers beside the condition each was measured against.
+  Status, execution and decision reads fail independently. Fact expiry uses
+  the server's absolute deadline and schedules a re-render even if no poll
+  succeeds. An empty positions array does not prove a flat account.
+  The existing command grammar, authentication and retry identity are
+  unchanged. Pause/resume/flatten labels describe the requested action;
+  a successful append claims only that the request was recorded.
 
   **One empty-ledger vocabulary.** Every ledger on the page says the same three
   sentences about its own subject word: reading, unreadable, or empty. Three
@@ -487,8 +417,7 @@ the route components into the eager shell chunk.
   genuinely empty batch remain different page states. The responsive desk uses
   cards at desktop, tablet, and phone widths; the ledger's nine-column table
   scrolls inside its own panel and never widens the document. At `767px` and
-  below the block order becomes 安全条 → 敞口与保护 → 执行控制 → 今日战况 → 回路账本
-  → 漏斗 — alive, exposed, act, then read — the three write controls take a 48px
+  below the tab order remains the same; the three write controls take a 48px
   row, and the ledger stops being a table: each entry is a card whose cells print
   the header they lost from `data-label`, because a horizontal scroll inside a
   phone card hides eight of the nine columns.
@@ -571,7 +500,7 @@ the route components into the eager shell chunk.
   open interest rising is not price rising (#104). Only `favicon.svg` and
   the sidebar's `BrandMark` may be filled shapes; they are the same path on the
   same indigo tile, so the tab and the frame are one face.
-- **Shell navigation.** `AppSidebar` is a purpose-built 204px aside — one component for the in-frame sidebar and the drawer body, so the two presentations cannot disagree about what exists or which destination is current. `CockpitShell` picks the frame by mounting, not by hiding: from `(min-width: 1280px)` the sidebar is in-frame and stays there. From `768px` to `1279px` the same sidebar is the left `Drawer`; below `768px` `AppBottomNav` takes over. The nav carries four working surfaces in one `Workbench` group — `事件流` `/news`, `市场事实` `/news/market`, `链上钱包` `/news/wallets`, `交易` `/trading`. `System · 数据健康` held one entry and went with it (#553 PR-1): 市场事实 is a reading surface for what the venues reported, not a frame-parse audit, and whether the pipeline is telling the truth is the topbar lamp's question on every page. The feed entry shows the 24 h received count; the other three carry none — `/api/news/status` reports no market intake any more, and the destination prints the per-kind figures itself. A count clipped the 204px row's label to one glyph (#460), and the `tradingEnvironment` badge that replaced it — the lane's last-Case clock and the execution mode — cost every News route a 15 s poll of `/api/trading/status` for two words the desk itself states first (#537 PR-5). Counts are compacted and `aria-hidden`. `/` redirects to `/news`; topbar search always opens a fresh News scope. Public SPA routes are `/`, `/news`, `/news/market`, `/news/wallets`, `/news/status`, `/news/symbols/:base`, `/news/events/:eventId`, and `/trading`; retired routes, including `/news/oi`, `/news/alpha` and `/news/leverage`, resolve through the standard not-found route. Operational diagnosis remains on API/CLI surfaces and there is no browser Ops route.
+- **Shell navigation.** `AppSidebar` is a purpose-built 204px aside — one component for the in-frame sidebar and the drawer body, so the two presentations cannot disagree about what exists or which destination is current. `CockpitShell` picks the frame by mounting, not by hiding: from `(min-width: 1280px)` the sidebar is in-frame and stays there. From `768px` to `1279px` the same sidebar is the left `Drawer`; below `768px` `AppBottomNav` takes over. The nav carries four working surfaces in one `Workbench` group — `事件流` `/news`, `市场研究` `/news/market`, `钱包研究` `/news/wallets`, `交易执行` `/trading`. `System · 数据健康` held one entry and went with it (#553 PR-1): 市场事实 is a reading surface for what the venues reported, not a frame-parse audit, and whether the pipeline is telling the truth is the topbar lamp's question on every page. The feed entry shows the 24 h received count; the other three carry none — `/api/news/status` reports no market intake any more, and the destination prints the per-kind figures itself. A count clipped the 204px row's label to one glyph (#460), and the `tradingEnvironment` badge that replaced it — the lane's last-Case clock and the execution mode — cost every News route a 15 s poll of `/api/trading/status` for two words the desk itself states first (#537 PR-5). Counts are compacted and `aria-hidden`. `/` redirects to `/news`; topbar search always opens a fresh News scope. Public SPA routes are `/`, `/news`, `/news/market`, `/news/market/:itemId`, `/news/wallets`, `/news/status`, `/news/symbols/:base`, `/news/events/:eventId`, and `/trading`; retired routes, including `/news/oi`, `/news/alpha` and `/news/leverage`, resolve through the standard not-found route. Operational diagnosis remains on API/CLI surfaces and there is no browser Ops route.
 - **No keyboard layer.** The console has no command palette, no `?` shortcut panel, and no document-level key bindings at all; #82's keyboard layer was cut whole. Every action the palette collapsed — the three destinations, the four feed task tabs, a `symbol` filter — is already a control on the page, so the layer bought a second way to reach what one click reached and a list that had to be kept in sync with the routes; the toolbar was even advertising an `X 复制标注` binding that nothing implemented. The cut removed `shared/ui/CommandPalette`, `shared/ui/ShortcutsDialog`, `features/cockpit/ui/appShortcuts.ts` and `features/news/state/useFeedCursor.ts` together with the shell's own `keydown` listener, the `--surface-cursor` token and every `<kbd>` hint. Do not reintroduce a `document.addEventListener("keydown", ...)` in shell or route code, and do not restore the `⌘K` topbar button: keyboard access is the platform's — real controls, real tab order, `Enter` on a form, and Radix's own `Esc`.
 - **Scrolling.** `body` remains locked for the app shell. `.center-column` is the shell-managed route scroll container. No retired table, bottom deck, controls row, or mobile task-bar reserves height. Route-level nested scrollers are allowed only when they are intentionally bounded and covered by Playwright overflow/reachability assertions.
 - **Breakpoint policy.** Desktop density starts at `1280px`. Tablet uses a single route column from `768px` through `1279px`. Mobile rules are `max-width: 767px` and must appear late enough in the cascade to win over base and desktop/tablet rules. Use container queries for local card/panel behavior when component width matters more than viewport width.

@@ -11,8 +11,8 @@ describe("routeReferrerFromState", () => {
         to: "/news?outcome=held&hours=168",
       },
     );
-    expect(routeReferrerFromState({ label: "市场事实", to: "/news/market" })).toEqual({
-      label: "市场事实",
+    expect(routeReferrerFromState({ label: "市场研究", to: "/news/market" })).toEqual({
+      label: "市场研究",
       to: "/news/market",
     });
   });

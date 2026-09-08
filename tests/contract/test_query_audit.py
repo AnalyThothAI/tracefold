@@ -160,6 +160,7 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     # never planning the widest scan on the public surface.
     assert catalog.query_routes["/api/news/market"] == (
         "news_market_groups",
+        "news_market_oi_ranked",
         "news_market_sources",
         "news_market_delivery_summary",
     )
@@ -192,6 +193,10 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     # would certify a plan it never executes.
     assert catalog.query_routes["/api/trading/cases"] == (
         "trading_console_cases_by_id",
+        "trading_console_cases",
+        "trading_console_cases_filtered",
+        "trading_console_scope_cases",
+        "trading_console_scope_totals",
         "trading_case_counts",
         "trading_case_reason_counts",
         "trading_gate_counts",
@@ -199,6 +204,7 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     # #604 T3: the desk table's third statement is the only read on the page with no window at all.
     assert catalog.query_routes["/api/trading/executions"] == (
         "trading_console_executions",
+        "trading_console_scope_executions",
         "trading_console_commands",
         "trading_realized_totals",
     )
@@ -373,18 +379,13 @@ def test_wallet_cards_audit_binds_every_production_filter() -> None:
     conn = RecordingStatementConn()
     NewsRepository(conn).chain_tape_cards(from_ms=now_ms - 86_400_000, to_ms=now_ms, limit=100)
 
-    assert query.params == {
-        "from_ms": now_ms - 86_400_000,
-        "to_ms": now_ms,
-        "limit": 100,
-        "kind": None,
-        "wallet_address": None,
-        "token_address": None,
-    }
+    from tracefold.news.storage.wallet_research import WALLET_RESEARCH_SQL, research_params
+
+    assert query.params == research_params(from_ms=now_ms - 86_400_000, to_ms=now_ms, limit=100)
     assert conn.statements == [(query.sql, query.params)]
     assert set(re.findall(r"%\((\w+)\)s", query.sql)) == set(query.params)
-    assert query.sql == chain_tape.WALLET_CARDS_SQL
-    assert _executed_constants(ChainTapeStorage, "chain_tape_cards") == {"WALLET_CARDS_SQL"}
+    assert query.sql == WALLET_RESEARCH_SQL
+    assert _executed_constants(ChainTapeStorage, "chain_tape_cards") == {"WALLET_RESEARCH_SQL"}
     assert query.max_scanned_rows == BOUNDED_WINDOW_SCAN_BUDGET
     assert query.max_read_return_amplification == 20.0
 
@@ -400,14 +401,18 @@ def test_wallet_position_fills_audit_executes_the_same_bounded_statement_as_stor
         wallet_address=wallet, token_address=token, from_ms=now_ms - 86_400_000, to_ms=now_ms, limit=100
     )
 
-    assert query.params == (wallet, token, now_ms - 86_400_000, now_ms, 100)
+    assert query.params == (wallet, token, now_ms - 86_400_000, now_ms, None, None, 100)
     assert conn.statements == [(query.sql, query.params)]
     assert query.sql.count("%s") == len(query.params)
     assert query.sql == chain_tape.WALLET_POSITION_FILLS_SQL
     assert _executed_constants(ChainTapeStorage, "chain_tape_wallet_fills") == {"WALLET_POSITION_FILLS_SQL"}
     assert query.max_scanned_rows == INDEXED_ROW_SCAN_BUDGET
     assert query.max_read_return_amplification == 20.0
-    assert PUBLIC_ROUTE_QUERY_COVERAGE["/api/news/wallets/cards"] == ("news_wallet_cards", "news_wallet_position_fills")
+    assert PUBLIC_ROUTE_QUERY_COVERAGE["/api/news/wallets/cards"] == (
+        "news_wallet_cards",
+        "news_wallet_research_totals",
+        "news_wallet_position_fills",
+    )
 
 
 def test_status_audit_reads_its_sql_from_the_production_module_only():

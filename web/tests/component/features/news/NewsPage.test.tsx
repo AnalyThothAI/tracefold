@@ -491,7 +491,7 @@ describe("NewsPage", () => {
     /*
      * The channel control offers the two Event kinds and nothing else (#553 PR-1). OI 帧 / 强平 /
      * 未支持市场 were removed with the Events themselves — the observations behind those words are on
-     * 市场事实 and cannot be reached by an `event_kind` filter at all.
+     * 市场研究 and cannot be reached by an `event_kind` filter at all.
      */
     for (const label of ["新闻", "上币/下币"]) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();

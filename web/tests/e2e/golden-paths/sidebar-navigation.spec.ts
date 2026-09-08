@@ -34,9 +34,9 @@ test.describe("desktop sidebar navigation", () => {
     expect(column?.x ?? 0).toBeGreaterThanOrEqual(panel?.width ?? 0);
 
     await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "交易" })).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "市场事实" })).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "链上钱包" })).toBeVisible();
+    await expect(primaryNavigation.getByRole("link", { name: "交易执行" })).toBeVisible();
+    await expect(primaryNavigation.getByRole("link", { name: "市场研究" })).toBeVisible();
+    await expect(primaryNavigation.getByRole("link", { name: "钱包研究" })).toBeVisible();
     // #256/#460/#553 PR-1/#572 PR-3: four working surfaces in one group, with neither Alpha 判定 nor
     // ReviewDesk.
     await expect(primaryNavigation.getByRole("link")).toHaveCount(4);
@@ -47,7 +47,7 @@ test.describe("desktop sidebar navigation", () => {
      * clock and the execution mode — cost every News route a 15 s poll of `/api/trading/status` for two
      * words the desk states first (#537 PR-5), and no destination carries a badge now.
      */
-    await expect(primaryNavigation.getByRole("link", { name: "交易" })).toHaveText("交易");
+    await expect(primaryNavigation.getByRole("link", { name: "交易执行" })).toHaveText("交易执行");
     await expect(primaryNavigation.getByRole("link", { name: "Macro" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "Ops" })).toHaveCount(0);
 
@@ -62,9 +62,9 @@ test.describe("desktop sidebar navigation", () => {
     await page.goto("/news");
 
     const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
-    await primaryNavigation.getByRole("link", { name: "市场事实" }).click();
+    await primaryNavigation.getByRole("link", { name: "市场研究" }).click();
     await expect(page).toHaveURL(/\/news\/market$/);
-    await expect(primaryNavigation.getByRole("link", { name: "市场事实" })).toHaveAttribute(
+    await expect(primaryNavigation.getByRole("link", { name: "市场研究" })).toHaveAttribute(
       "aria-current",
       "page",
     );

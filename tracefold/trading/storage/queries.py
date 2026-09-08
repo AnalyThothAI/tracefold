@@ -72,27 +72,31 @@ def console_cases_statement(
     since_ms: int,
     states: tuple[str, ...] = (),
     limit: int,
+    to_ms: int = 2**63 - 1,
+    asset: str | None = None,
+    reason: str | None = None,
+    source_item_id: str | None = None,
+    cursor_at_ms: int | None = None,
+    cursor_id: str = "",
+    count_only: bool = False,
 ) -> tuple[str, dict[str, Any]]:
-    """`tracefold trading cases [--state]`: one bounded window of frozen Cases, newest first.
-
-    There is no keyset predicate any more: the response published a `next_cursor` no reader ever sent
-    back, and the desk opens one Case from `?case=<id>` rather than paging a list (#537 PR-5). The
-    `underlying_key` predicate went with the browser page that was its only caller: `GET
-    /api/trading/cases` answers by identity now, and the CLI narrows by state alone (#604 T3).
-    """
-
-    predicates = ["created_at_ms >= %(since)s"]
-    params: dict[str, Any] = {"since": int(since_ms), "limit": int(limit)}
-    if states:
-        predicates.append("state = ANY(%(states)s)")
-        params["states"] = list(states)
-    sql = f"""
-        SELECT {_CASE_COLUMNS}
-          FROM trading_cases
-         WHERE {" AND ".join(predicates)}
-         ORDER BY created_at_ms DESC, case_id DESC
-         LIMIT %(limit)s
-    """  # noqa: S608 -- predicates are fixed fragments; all values remain bound
+    predicates = ["created_at_ms >= %(since)s", "created_at_ms < %(to_ms)s"]
+    params: dict[str, Any] = {"since": since_ms, "to_ms": to_ms, "limit": limit}
+    for expression, key, value in (
+        ("state = ANY(%(states)s)", "states", list(states) if states else None),
+        ("underlying_key = %(asset)s", "asset", f"crypto:{asset}" if asset else None),
+        ("policy_reason = %(reason)s", "reason", reason),
+        ("manifest #>> '{contexts,oi,source_item_id}' = %(source_item_id)s", "source_item_id", source_item_id),
+    ):
+        if value is not None:
+            predicates.append(expression)
+            params[key] = value
+    if cursor_at_ms is not None and not count_only:
+        predicates.append("(created_at_ms, case_id) < (%(cursor_at)s, %(cursor_id)s)")
+        params.update(cursor_at=cursor_at_ms, cursor_id=cursor_id)
+    columns = "count(*) AS total" if count_only else _CASE_COLUMNS
+    order = "" if count_only else "ORDER BY created_at_ms DESC, case_id DESC LIMIT %(limit)s"
+    sql = f"SELECT {columns} FROM trading_cases WHERE {' AND '.join(predicates)} {order}"  # noqa: S608
     return sql, params
 
 
@@ -125,7 +129,9 @@ def observation_ledger_statement(*, since_ns: int, limit: int) -> tuple[str, dic
     return sql, {"since": int(since_ns), "limit": int(limit)}
 
 
-def console_executions_statement(*, since_ns: int, limit: int) -> tuple[str, dict[str, Any]]:
+def console_executions_statement(
+    *, since_ns: int, limit: int, case_id: str | None = None
+) -> tuple[str, dict[str, Any]]:
     """`GET /api/trading/executions`: one row per entry identity, its whole venue outcome folded in.
 
     An entry identity is what the Runtime correlates its `order`, `fill`, `protection` and `position`
@@ -166,6 +172,7 @@ def console_executions_statement(*, since_ns: int, limit: int) -> tuple[str, dic
                  expires_at_ns
             FROM trading_trade_signals
            WHERE observed_at_ns >= %(since)s
+             AND (%(case_id)s::text IS NULL OR case_id = %(case_id)s)
            ORDER BY observed_at_ns DESC, signal_id DESC
            LIMIT %(limit)s
         ),
@@ -178,7 +185,7 @@ def console_executions_statement(*, since_ns: int, limit: int) -> tuple[str, dic
                  requested_at_ns AS observed_at_ns,
                  NULL::bigint AS expires_at_ns
             FROM trading_operator_intents
-           WHERE action = 'manual_entry'
+           WHERE action = 'manual_entry' AND %(case_id)s::text IS NULL
              AND requested_at_ns >= %(since)s
            ORDER BY requested_at_ns DESC, command_id DESC
            LIMIT %(limit)s
@@ -264,7 +271,7 @@ def console_executions_statement(*, since_ns: int, limit: int) -> tuple[str, dic
           FROM folded
          ORDER BY observed_at_ns DESC, entry_id DESC
     """
-    return sql, {"since": int(since_ns), "limit": int(limit)}
+    return sql, {"since": int(since_ns), "limit": int(limit), "case_id": case_id}
 
 
 def console_realized_totals_statement(
@@ -377,9 +384,14 @@ class QueryStorage:
         since_ms: int,
         states: tuple[str, ...],
         limit: int,
+        **filters: Any,
     ) -> list[dict[str, Any]]:
-        sql, params = console_cases_statement(since_ms=since_ms, states=states, limit=limit)
+        sql, params = console_cases_statement(since_ms=since_ms, states=states, limit=limit, **filters)
         return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
+
+    def console_case_total(self, *, since_ms: int, **filters: Any) -> int:
+        sql, params = console_cases_statement(since_ms=since_ms, count_only=True, limit=1, **filters)
+        return int(self.conn.execute(sql, params).fetchone()["total"])
 
     def console_case(self, *, case_id: str) -> dict[str, Any] | None:
         """The one frozen Case behind `?case_id=<id>`. There is at most one: it is the primary key."""
@@ -405,8 +417,8 @@ class QueryStorage:
         sql, params = console_operator_intents_statement(since_ns=since_ns, action=action, limit=limit)
         return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
 
-    def console_executions(self, *, since_ns: int, limit: int) -> list[dict[str, Any]]:
-        sql, params = console_executions_statement(since_ns=since_ns, limit=limit)
+    def console_executions(self, *, since_ns: int, limit: int, case_id: str | None = None) -> list[dict[str, Any]]:
+        sql, params = console_executions_statement(since_ns=since_ns, limit=limit, case_id=case_id)
         return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
 
     def console_realized_totals(self, *, account_slot: str, day_start_ns: int, day_end_ns: int) -> dict[str, Any]:

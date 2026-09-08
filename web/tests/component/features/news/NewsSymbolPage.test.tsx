@@ -152,7 +152,7 @@ describe("NewsSymbolPage", () => {
   it("filters every persisted Event kind on one clock", async () => {
     /*
      * Two kinds since #553 PR-1: an Event is editorial. The OI 帧 / 强平 / 未支持市场 lanes went with the
-     * Events behind them — those records are market observations on 市场事实, and this page must not offer
+     * Events behind them — those records are market observations on 市场研究, and this page must not offer
      * a tab that can only ever count zero.
      */
     server.use(

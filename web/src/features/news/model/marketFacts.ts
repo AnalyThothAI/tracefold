@@ -15,9 +15,9 @@ import {
  */
 
 const MARKET_KIND_LABELS: Record<NewsMarketKind, string> = {
-  oi: "OI",
-  liquidation: "清算",
-  smart_money: "聪明钱",
+  oi: "OI 异动",
+  liquidation: "强平",
+  smart_money: "大户合约动作",
   unknown_market: "原文",
   wallet: "链上钱包",
 };
@@ -158,4 +158,10 @@ export function mergeMarketGroups(
     }
   }
   return [...byRun.values()];
+}
+
+export function oiWindowLabel(observation: NewsMarketObservation): string {
+  return observation.measurement_contract_status === "proven" && observation.measurement_window_ms
+    ? `${observation.measurement_window_ms / 60_000} 分钟`
+    : "测量窗口未确认";
 }

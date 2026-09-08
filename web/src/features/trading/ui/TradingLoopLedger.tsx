@@ -35,6 +35,7 @@ import {
  * translating it would put words in the exchange's mouth.
  */
 export function TradingLoopLedger({
+  caseFiltered = false,
   complete,
   failed,
   onOpenCase,
@@ -42,6 +43,7 @@ export function TradingLoopLedger({
   rows,
   selectedCaseId,
 }: {
+  caseFiltered?: boolean;
   complete: boolean;
   failed: boolean;
   onOpenCase: (caseId: string) => void;
@@ -55,7 +57,7 @@ export function TradingLoopLedger({
       data-block="ledger"
       flush
       hint={`入场 ${rows.length}（Signal ${rows.length - manual} · 手工 ${manual}）`}
-      title="回路账本 · 24h"
+      title={caseFiltered ? "关联执行记录" : "执行记录 · 最近 24 小时"}
     >
       {rows.length ? (
         <div className="trading-ledger-table">
@@ -123,7 +125,9 @@ export function TradingLoopLedger({
         </div>
       ) : (
         <EmptyNote className="trading-empty-note">
-          {ledgerSentence({ failed, pending, subject: "执行" })}
+          {caseFiltered && !failed && !pending
+            ? "该策略判定没有保留的执行记录。"
+            : ledgerSentence({ failed, pending, subject: "执行" })}
         </EmptyNote>
       )}
       {rows.length && !complete ? (

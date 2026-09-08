@@ -1,4 +1,5 @@
 import { Card } from "@shared/ui/Card";
+import { Link } from "react-router-dom";
 
 import type { TradingCase } from "../api/tradingQueries";
 import { caseChecks, caseVerdict } from "../model/tradingCases";
@@ -41,7 +42,11 @@ export function TradingCaseDetail({ item }: { item: TradingCase }) {
           <div className="trading-case-fact">
             <dt>触发来源</dt>
             <dd>
-              <code>{item.event_id ?? "—"}</code>
+              {item.source_item_id ? (
+                <Link to={`/news/market/${item.source_item_id}`}>查看原始 OI 观察</Link>
+              ) : (
+                "来源身份未记录"
+              )}
             </dd>
           </div>
           <div className="trading-case-fact">
@@ -65,8 +70,16 @@ export function TradingCaseDetail({ item }: { item: TradingCase }) {
             <dd>{bpsPercent(item.pre_move_bps)}</dd>
           </div>
           <div className="trading-case-fact">
-            <dt>Signal</dt>
-            <dd>{item.state === "SIGNAL_EMITTED" ? "已发出，见今日执行" : "未发出"}</dd>
+            <dt>入场信号</dt>
+            <dd>
+              {item.state === "SIGNAL_EMITTED" ? (
+                <Link to={`/trading?tab=executions&execution_case=${item.case_id}`}>
+                  已发出 · 查看关联执行记录
+                </Link>
+              ) : (
+                "未发出"
+              )}
+            </dd>
           </div>
         </dl>
       </Card>

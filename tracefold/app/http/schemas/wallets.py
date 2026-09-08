@@ -102,6 +102,28 @@ class NewsWalletsData(ExactApiSchema):
     window_to_ms: int
 
 
+class NewsWalletOutcomeData(ExactApiSchema):
+    horizon: Literal["15m", "1h", "4h"]
+    status: Literal[
+        "not_scheduled", "not_due", "pending", "unavailable", "missing_reference", "identity_unverified", "measured"
+    ]
+    source: str | None
+    price: str | None
+    sampled_at_ms: int | None
+    reference_price: str | None
+    reference_at_ms: int | None
+    target_at_ms: int | None
+    return_bps: int | None
+
+
+class NewsWalletResearchTotalsData(ExactApiSchema):
+    segments: int
+    observations: int
+    wallets: int
+    tokens: int
+    priced_buy_usd: str
+
+
 class NewsWalletCardData(ExactApiSchema):
     """A retained observation, its selection evidence and frozen-reference price outcomes.
 
@@ -110,6 +132,17 @@ class NewsWalletCardData(ExactApiSchema):
     """
 
     item_id: str
+    chain_id: int
+    segment_key: str
+    research_id: str
+    observation_count: int
+    first_event_at_ms: int
+    mark_source: str | None
+    price_status: Literal["missing", "verified", "identity_unverified"]
+    price_quote: Literal["USD"]
+    price_unit: Literal["token"]
+    price_source_at_ms: int | None
+    outcomes: list[NewsWalletOutcomeData]
     kind: WalletCardKindLiteral
     stage: WalletBuyStageLiteral | None = None
     selection_reason: str | None = None
@@ -138,12 +171,6 @@ class NewsWalletCardData(ExactApiSchema):
     delivery_key: str | None = None
     delivery_state: Literal["pending", "sending", "sent", "failed", "unknown", "unavailable"] | None = None
     settled_at_ms: int | None = None
-    outcome_15m_source: str | None = None
-    return_15m_bps: int | None = None
-    outcome_1h_source: str | None = None
-    return_1h_bps: int | None = None
-    outcome_4h_source: str | None = None
-    return_4h_bps: int | None = None
     # Present on a digest and on nothing else: the sentences it was sent with, and whether the model
     # selected their material; the program renders the sentences.
     digest_lines: list[str] | None = None
@@ -171,6 +198,10 @@ class NewsWalletCardsData(ExactApiSchema):
     """One bounded page of cards, newest first, inside the window the caller asked for."""
 
     cards: list[NewsWalletCardData]
+    totals: NewsWalletResearchTotalsData
+    next_cursor: str | None
+    view: Literal["segments", "observations"]
+    fills_complete: bool
     fills: list[NewsWalletFillData]
     window: str
     window_from_ms: int

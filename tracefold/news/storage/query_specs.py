@@ -18,7 +18,6 @@ from ..source_contracts import MARKET_KINDS
 from .chain_tape import (
     TAPE_STATE_ID,
     WALLET_CARDS_BY_KIND_SQL,
-    WALLET_CARDS_SQL,
     WALLET_FILLS_BY_KIND_SQL,
     WALLET_POSITION_FILLS_SQL,
     WALLET_ROSTER_ROWS_SQL,
@@ -60,6 +59,7 @@ from .operations import (
     RECOVERY_BACKLOG_LIMIT,
     pending_recovery_incidents_statement,
 )
+from .wallet_research import WALLET_RESEARCH_SQL, WALLET_RESEARCH_TOTALS_SQL, research_params
 
 
 def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
@@ -279,7 +279,42 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="news_market_groups",
             sql=MARKET_GROUPS_SQL,
-            params=(list(MARKET_KINDS), week_ago, now_ms, now_ms, "", MARKET_WINDOW_ROW_CAP, 51),
+            params={
+                "kinds": list(MARKET_KINDS),
+                "from_ms": week_ago,
+                "to_ms": now_ms,
+                "cursor_at": now_ms,
+                "cursor_id": "",
+                "cursor_value": 2**63 - 1,
+                "cap": MARKET_WINDOW_ROW_CAP,
+                "limit": 51,
+                "asset": None,
+                "provider": None,
+                "venue": None,
+                "definition": None,
+                "sort": "latest",
+            },
+            max_read_return_amplification=100.0,
+            max_scanned_rows=MARKET_WINDOW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_market_oi_ranked",
+            sql=MARKET_GROUPS_SQL,
+            params={
+                "kinds": ["oi"],
+                "from_ms": week_ago,
+                "to_ms": now_ms,
+                "cursor_at": now_ms,
+                "cursor_id": "",
+                "cursor_value": 2**63 - 1,
+                "cap": MARKET_WINDOW_ROW_CAP,
+                "limit": 51,
+                "asset": "BTC",
+                "provider": "fsd",
+                "venue": "binance",
+                "definition": "audit-proven-window",
+                "sort": "oi_change",
+            },
             max_read_return_amplification=100.0,
             max_scanned_rows=MARKET_WINDOW_SCAN_BUDGET,
         ),
@@ -363,22 +398,22 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         ReadQuerySpec(
             name="news_wallet_cards",
-            sql=WALLET_CARDS_SQL,
-            params={
-                "from_ms": day_ago,
-                "to_ms": int(now_ms),
-                "limit": 100,
-                "kind": None,
-                "wallet_address": None,
-                "token_address": None,
-            },
+            sql=WALLET_RESEARCH_SQL,
+            params=research_params(from_ms=day_ago, to_ms=int(now_ms), limit=100),
             max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_wallet_research_totals",
+            sql=WALLET_RESEARCH_TOTALS_SQL,
+            params=research_params(from_ms=day_ago, to_ms=int(now_ms)),
+            max_read_return_amplification=100.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
             name="news_wallet_position_fills",
             sql=WALLET_POSITION_FILLS_SQL,
-            params=("0x" + "1" * 40, "0x" + "2" * 40, day_ago, int(now_ms), 100),
+            params=("0x" + "1" * 40, "0x" + "2" * 40, day_ago, int(now_ms), None, None, 100),
             max_read_return_amplification=20.0,
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),

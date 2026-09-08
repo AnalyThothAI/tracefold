@@ -68,6 +68,11 @@ export type NewsWalletCardFilters = {
   kind: NewsWalletCardKind | "all";
   walletAddress: string;
   tokenAddress: string;
+  chainId?: number;
+  segmentKey?: string;
+  view?: "segments" | "observations";
+  cursor?: string;
+  toMs?: number;
 };
 export type NewsWalletFillKind = NewsWalletFillTotal["kind"];
 
@@ -146,7 +151,7 @@ export const NEWS_WALLETS_REFETCH_MS = 10_000;
 /** The closed window vocabulary `/api/news/wallets/cards` accepts. */
 export const NEWS_WALLET_CARD_WINDOWS = ["24h", "72h", "7d"] as const;
 export type NewsWalletCardWindow = (typeof NEWS_WALLET_CARD_WINDOWS)[number];
-export const NEWS_WALLET_CARDS_PAGE_SIZE = 100;
+export const NEWS_WALLET_CARDS_PAGE_SIZE = 25;
 
 const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: string | null) =>
   (
@@ -204,15 +209,27 @@ const marketKindParam = (kinds: readonly NewsMarketKind[]): string | null =>
     ? NEWS_MARKET_KINDS.filter((kind) => kinds.includes(kind)).join(",")
     : null;
 
+export type MarketResearchFilters = {
+  asset?: string;
+  provider?: string;
+  venue?: string;
+  measurement_definition?: string;
+  sort?: "latest" | "oi_change" | "oi_value";
+  from_ms?: number;
+  to_ms?: number;
+};
+
 const fetchNewsMarket = async (
   token: string,
   kinds: readonly NewsMarketKind[],
   cursor: string | null,
+  filters: MarketResearchFilters = {},
 ) =>
   (
     await getApi<NewsMarket>("/api/news/market", {
-      etagKey: `news-market:${marketKindParam(kinds) ?? "all"}:${cursor ?? "first"}`,
+      etagKey: `news-market:${marketKindParam(kinds) ?? "all"}:${cursor ?? "first"}:${JSON.stringify(filters)}`,
       params: {
+        ...filters,
         cursor,
         // Absent rather than the full list when nothing is narrowed: the server's default window is every
         // kind, and a request that spells all four out would report `filters.kind` back as a narrowing the
@@ -232,11 +249,15 @@ const fetchNewsMarket = async (
  * `/api/news/status`: it is counted off the stored facts, so the strip and the rows under it cannot
  * disagree about what the window holds.
  */
-export const useNewsMarketWithToken = (token: string, kinds: readonly NewsMarketKind[]) =>
+export const useNewsMarketWithToken = (
+  token: string,
+  kinds: readonly NewsMarketKind[],
+  filters: MarketResearchFilters = {},
+) =>
   useQuery({
     enabled: Boolean(token),
-    queryKey: queryKeys.newsMarket(marketKindParam(kinds) ?? ""),
-    queryFn: () => fetchNewsMarket(token, kinds, null),
+    queryKey: [...queryKeys.newsMarket(marketKindParam(kinds) ?? ""), filters],
+    queryFn: () => fetchNewsMarket(token, kinds, null, filters),
     refetchInterval: NEWS_MARKET_REFETCH_MS,
     staleTime: 2_000,
   });
@@ -253,11 +274,15 @@ export const useNewsMarketHistoryWithToken = (
   kinds: readonly NewsMarketKind[],
   firstCursor: string | null,
   enabled: boolean,
+  filters: MarketResearchFilters = {},
 ) =>
   useInfiniteQuery({
     enabled: Boolean(token && firstCursor && enabled),
-    queryKey: queryKeys.newsMarketHistory(marketKindParam(kinds) ?? "", firstCursor ?? ""),
-    queryFn: ({ pageParam }) => fetchNewsMarket(token, kinds, pageParam),
+    queryKey: [
+      ...queryKeys.newsMarketHistory(marketKindParam(kinds) ?? "", firstCursor ?? ""),
+      filters,
+    ],
+    queryFn: ({ pageParam }) => fetchNewsMarket(token, kinds, pageParam, filters),
     initialPageParam: firstCursor ?? "",
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
     staleTime: Number.POSITIVE_INFINITY,
@@ -313,27 +338,36 @@ export const useNewsWalletsWithToken = (token: string) =>
 export const useNewsWalletCardsWithToken = (token: string, filters: NewsWalletCardFilters) =>
   useQuery({
     enabled: Boolean(token),
-    queryKey: queryKeys.newsWalletCards(
-      filters.window,
-      filters.kind,
-      filters.walletAddress,
-      filters.tokenAddress,
-    ),
+    queryKey: [
+      ...queryKeys.newsWalletCards(
+        filters.window,
+        filters.kind,
+        filters.walletAddress,
+        filters.tokenAddress,
+      ),
+      filters,
+    ],
     queryFn: async () =>
       (
         await getApi<NewsWalletCards>("/api/news/wallets/cards", {
-          etagKey: `news-wallet-cards:${filters.window}:${filters.kind}:${filters.walletAddress}:${filters.tokenAddress}`,
+          etagKey: `news-wallet-research:${JSON.stringify(filters)}`,
           params: {
             limit: NEWS_WALLET_CARDS_PAGE_SIZE,
             window: filters.window,
             kind: filters.kind === "all" ? undefined : filters.kind,
             wallet_address: filters.walletAddress || undefined,
             token_address: filters.tokenAddress || undefined,
+            chain_id: filters.chainId,
+            segment_key: filters.segmentKey,
+            view: filters.view,
+            cursor: filters.cursor,
+            to_ms: filters.toMs,
           },
           token,
         })
       ).data,
-    refetchInterval: NEWS_WALLETS_REFETCH_MS,
+    refetchInterval:
+      filters.cursor || filters.view === "observations" ? false : NEWS_WALLETS_REFETCH_MS,
     staleTime: 2_000,
   });
 

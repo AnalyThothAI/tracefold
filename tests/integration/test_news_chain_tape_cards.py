@@ -402,7 +402,7 @@ def test_unsent_candidate_receipts_use_observation_price_and_expired_horizons_st
     clock = _Clock()
     db, chain, site = _Db(conn), _Chain(), _Site()
     site.token_marks = {MADETEST: _Mark(token=MADETEST, symbol="MADETEST", mark=1.5, liquidity=10_000)}
-    prices = _Prices({MADETEST: Decimal("1.2")})
+    prices = _Prices({MADETEST: Decimal("1.5")})
     buy = _fill(
         wallet=SELL_WALLET,
         token=MADETEST,
@@ -416,6 +416,7 @@ def test_unsent_candidate_receipts_use_observation_price_and_expired_horizons_st
     _seed(conn, [_member(SELL_WALLET, handle="buyer")], [buy])
     asyncio.run(_deriver(db, chain, site, prices, clock).advance())
     clock.advance(900_000)
+    prices.prices[MADETEST] = Decimal("1.2")
     result = asyncio.run(_deriver(db, chain, site, prices, clock).take_outcomes([]))
     assert (result.outcomes, result.unavailable) == (1, 0)
     row = _rows(conn, "SELECT * FROM news_market_wallet_outcomes")[0]
@@ -425,7 +426,7 @@ def test_unsent_candidate_receipts_use_observation_price_and_expired_horizons_st
     cards = repositories_for_connection(conn).news.chain_tape_cards(
         from_ms=NOW - 10_000, to_ms=clock() + 1, limit=10, kind="buy"
     )
-    assert cards[0]["return_15m_bps"] == -2000
+    assert cards[0]["outcomes"][0]["return_bps"] == -2000
     clock.advance(3_600_000 + OUTCOME_GIVE_UP_MS)
     result = asyncio.run(_deriver(db, chain, site, prices, clock).take_outcomes([]))
     assert (result.outcomes, result.unavailable) == (0, 1)
@@ -502,7 +503,7 @@ def test_a_live_exit_becomes_an_item_a_card_and_a_price_receipt(conn) -> None:
     assert prices.calls == [FSD]
     outcome = _rows(conn, "SELECT * FROM news_market_wallet_outcomes WHERE horizon='1h'")[0]
     assert outcome["delivery_key"] == delivery["delivery_key"]
-    assert (outcome["horizon"], outcome["source"]) == ("1h", "dexscreener")
+    assert (outcome["horizon"], outcome["source"]) == ("1h", "dexscreener_base_token_v1")
     assert Decimal(outcome["price"]) == Decimal("0.00019")
 
     # The four-hour horizon is not due yet, and "not due" is the absence of a row.
@@ -1188,7 +1189,7 @@ def test_the_smallest_price_the_column_can_hold_is_still_a_receipt(conn) -> None
     assert (receipts.outcomes, receipts.unavailable) == (1, 0)
     row = _rows(conn, "SELECT price, source FROM news_market_wallet_outcomes")[0]
     assert Decimal(row["price"]) == OUTCOME_PRICE_MIN
-    assert row["source"] == "dexscreener"
+    assert row["source"] == "dexscreener_base_token_v1"
 
 
 def test_a_row_postgresql_refuses_faults_its_research_stage_and_leaves_the_fill_pending(conn) -> None:

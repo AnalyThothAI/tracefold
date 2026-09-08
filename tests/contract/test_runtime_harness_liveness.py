@@ -53,6 +53,7 @@ def test_browser_success_fails_when_workers_exited_after_persisting_the_fact(
     monkeypatch.setattr(run_full_stack_smoke.subprocess, "run", run_playwright)
     monkeypatch.setattr(run_full_stack_smoke, "_require_resources", lambda *_args: None)
     monkeypatch.setattr(run_full_stack_smoke, "_reset_postgres", lambda *_args: None)
+    monkeypatch.setattr(run_full_stack_smoke, "seed_research", lambda *_args: None)
     monkeypatch.setattr(run_full_stack_smoke, "_unused_port", lambda: 43101)
     monkeypatch.setattr(run_full_stack_smoke, "_wait_for_http", lambda *_args: None)
     monkeypatch.setattr(run_full_stack_smoke, "_wait_for_logged_port", lambda *_args: 43102)
@@ -119,6 +120,7 @@ def test_browser_success_fails_when_serve_readiness_regresses(
     monkeypatch.setattr(run_full_stack_smoke.subprocess, "run", run_playwright)
     monkeypatch.setattr(run_full_stack_smoke, "_require_resources", lambda *_args: None)
     monkeypatch.setattr(run_full_stack_smoke, "_reset_postgres", lambda *_args: None)
+    monkeypatch.setattr(run_full_stack_smoke, "seed_research", lambda *_args: None)
     monkeypatch.setattr(run_full_stack_smoke, "_unused_port", lambda: 43301)
     monkeypatch.setattr(run_full_stack_smoke, "_wait_for_http", lambda *_args: None)
     monkeypatch.setattr(run_full_stack_smoke, "_wait_for_logged_port", lambda *_args: 43302)
@@ -211,6 +213,7 @@ def test_final_readiness_fails_if_workers_exit_during_the_serve_check(
     monkeypatch.setattr(module.httpx, "get", readiness)
     if harness == "browser":
         monkeypatch.setattr(module, "_reset_postgres", lambda *_args: None)
+        monkeypatch.setattr(module, "seed_research", lambda *_args: None)
         monkeypatch.setattr(module, "_require_resources", lambda *_args: None)
         monkeypatch.setattr(module, "_publish_opennews", _async_noop)
         monkeypatch.setattr(module, "_wait_for_service_fact", lambda *_args: None)

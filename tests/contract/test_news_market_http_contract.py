@@ -50,6 +50,7 @@ def _observation(item_id: str, *, market_kind: str, group_key: str, **overrides:
         event_at_ms=1_800_000_000_000,
         received_at_ms=1_800_000_001_000,
         provider="opennews",
+        measurement_contract_status="unproven",
         historical=False,
         # The second, independent pair. Nothing was attempted for this observation, so it names the
         # rule that is holding it rather than a send outcome it does not have.
@@ -197,6 +198,7 @@ class _FakeNewsRepository:
         cursor_received_at_ms: int,
         cursor_item_id: str,
         limit: int,
+        **filters: Any,
     ) -> tuple[list[dict[str, Any]], bool]:
         self.calls.append(
             (
@@ -208,6 +210,7 @@ class _FakeNewsRepository:
                     "cursor_received_at_ms": cursor_received_at_ms,
                     "cursor_item_id": cursor_item_id,
                     "limit": limit,
+                    **filters,
                 },
             )
         )
@@ -362,7 +365,17 @@ def test_the_default_market_window_is_the_last_72_hours_forwarded_as_absolute_bo
     assert forwarded["to_ms"] - forwarded["from_ms"] == MARKET_WINDOW_DEFAULT_MS
     assert MARKET_WINDOW_DEFAULT_MS == 72 * 60 * 60_000
     filters = response.json()["data"]["filters"]
-    assert filters == {"kind": None, "from_ms": forwarded["from_ms"], "to_ms": forwarded["to_ms"], "limit": 50}
+    assert filters == {
+        "kind": None,
+        "from_ms": forwarded["from_ms"],
+        "to_ms": forwarded["to_ms"],
+        "limit": 50,
+        "sort": "latest",
+        "asset": None,
+        "provider": None,
+        "venue": None,
+        "measurement_definition": None,
+    }
     # The per-kind intake summary describes the same window, never a second one of its own.
     assert news.calls[1] == ("market_sources", {"from_ms": forwarded["from_ms"], "to_ms": forwarded["to_ms"]})
 

@@ -19,11 +19,11 @@ describe("AppBottomNav", () => {
     );
     expect(links.map((link) => link.textContent?.trim())).toEqual([
       "事件流",
-      "市场事实",
-      "链上钱包",
+      "市场研究",
+      "钱包研究",
       // The phone bar shows the label alone: the sidebar's Demo chip is secondary to the 48px thumb
       // target has no room for it. The page states the mode in a labelled figure either way.
-      "交易",
+      "交易执行",
     ]);
   });
 
@@ -33,14 +33,14 @@ describe("AppBottomNav", () => {
     // The same `isActive` predicate the sidebar uses, so the two presentations cannot disagree about where
     // the reader is. `NavLink` would decide by prefix and light up both.
     expect(screen.getByRole("link", { name: "事件流" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("link", { name: "市场事实" })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("link", { name: "市场研究" })).not.toHaveAttribute("aria-current");
     expect(screen.getAllByRole("link", { current: "page" })).toHaveLength(1);
   });
 
-  it("marks 市场事实 current on the market route", () => {
+  it("marks 市场研究 current on the market route", () => {
     renderBottomNav("/news/market");
 
-    expect(screen.getByRole("link", { name: "市场事实" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "市场研究" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("link", { name: "事件流" })).not.toHaveAttribute("aria-current");
   });
 

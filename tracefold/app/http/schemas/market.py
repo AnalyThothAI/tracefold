@@ -37,6 +37,8 @@ class NewsMarketObservationData(ExactApiSchema):
     raw_instrument: str | None = None
     symbol: str | None = None
     measurement_definition: str | None = None
+    measurement_window_ms: int | None = None
+    measurement_contract_status: Literal["proven", "unproven"] | None = None
     direction: str | None = None
     oi_change_bps: int | None = None
     oi_value_usd: int | None = None
@@ -167,6 +169,12 @@ class NewsMarketFiltersData(ExactApiSchema):
     from_ms: int
     to_ms: int
     limit: int
+
+    asset: str | None = None
+    provider: str | None = None
+    venue: str | None = None
+    measurement_definition: str | None = None
+    sort: Literal["latest", "oi_change", "oi_value"] = "latest"
 
 
 class NewsMarketData(ExactApiSchema):

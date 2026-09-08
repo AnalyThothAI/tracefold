@@ -57,7 +57,12 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     # #553. Three statements per list request -- the collapsed page, the per-kind intake summary and
     # the per-kind receipt summary beside it -- and four per detail request, because the card that
     # spoke for an observation and the observations it covered are each their own bounded read.
-    "/api/news/market": ("news_market_groups", "news_market_sources", "news_market_delivery_summary"),
+    "/api/news/market": (
+        "news_market_groups",
+        "news_market_oi_ranked",
+        "news_market_sources",
+        "news_market_delivery_summary",
+    ),
     "/api/news/market/{item_id}": (
         "news_market_item",
         "news_market_item_delivery",
@@ -72,7 +77,7 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_wallet_fill_totals",
         "news_wallet_card_totals",
     ),
-    "/api/news/wallets/cards": ("news_wallet_cards", "news_wallet_position_fills"),
+    "/api/news/wallets/cards": ("news_wallet_cards", "news_wallet_research_totals", "news_wallet_position_fills"),
     # Three reads per request, and all three are named: `is_tradeable` runs its own statement and a
     # manifest that omitted it would let `db query-audit --analyze` report full coverage of a public route
     # while never planning one of its queries.
@@ -108,11 +113,14 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     # One statement over `trading_cases`, where the two 24 h `count(*)` scans this route also ran on
     # every 15 s poll were rendered nowhere the desk still has (#537 PR-5).
     "/api/trading/status": ("trading_status_latest_case",),
-    # #604 T3. Four statements, and only one of them reads a Case: the identity lookup behind
-    # `?case_id=`. The windowed page and its filtered twin are still audited below because `tracefold
-    # trading cases` still runs them -- they stopped being this route's plans, not statements.
+    # #621 adds scope-bound Case browsing alongside retained identity lookup and the independent
+    # 24 h distributions. Both filtered and count plans are audited before pagination.
     "/api/trading/cases": (
         "trading_console_cases_by_id",
+        "trading_console_cases",
+        "trading_console_cases_filtered",
+        "trading_console_scope_cases",
+        "trading_console_scope_totals",
         "trading_case_counts",
         "trading_case_reason_counts",
         "trading_gate_counts",
@@ -122,6 +130,7 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     # the only numbers on the page not bounded by that window.
     "/api/trading/executions": (
         "trading_console_executions",
+        "trading_console_scope_executions",
         "trading_console_commands",
         "trading_realized_totals",
     ),
@@ -251,6 +260,48 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                 states=("SIGNAL_EMITTED", "NO_TRADE"),
                 limit=101,
             ),
+        ),
+        *tuple(
+            ReadQuerySpec(
+                name=name,
+                sql=sql,
+                params=params,
+                max_read_return_amplification=20.0,
+                max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+            )
+            for name, (sql, params) in (
+                (
+                    "trading_console_scope_cases",
+                    console_cases_statement(
+                        since_ms=0,
+                        to_ms=now_ms,
+                        limit=26,
+                        states=("NO_TRADE",),
+                        asset="BTC",
+                        reason="test_floor",
+                        source_item_id="a" * 64,
+                        cursor_at_ms=now_ms,
+                        cursor_id="z",
+                    ),
+                ),
+                (
+                    "trading_console_scope_totals",
+                    console_cases_statement(
+                        since_ms=0,
+                        to_ms=now_ms,
+                        limit=1,
+                        states=("NO_TRADE",),
+                        asset="BTC",
+                        reason="test_floor",
+                        source_item_id="a" * 64,
+                        count_only=True,
+                    ),
+                ),
+                (
+                    "trading_console_scope_executions",
+                    console_executions_statement(since_ns=0, limit=101, case_id="0" * 32),
+                ),
+            )
         ),
         ReadQuerySpec(
             name="trading_case_counts",

@@ -7,12 +7,10 @@ provider reported even when the model is unconfigured, the sender is down and Tr
 
 from __future__ import annotations
 
-import base64
-import binascii
 import re
 import time
 from collections.abc import Mapping
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, Literal
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
@@ -21,6 +19,7 @@ from tracefold.news import MARKET_KINDS, MARKET_PAGE_MAX, MARKET_WINDOW_DEFAULT_
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest
+from ..read_cursor import decode_read_cursor, encode_read_cursor
 from ..responses import _etagged, _json
 from ..schemas import common as api_schemas
 from ..schemas import market as market_schemas
@@ -48,7 +47,12 @@ def get_news_market(
     from_ms: Annotated[int, Query(ge=0)] = 0,
     to_ms: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=MARKET_PAGE_MAX)] = 50,
-    cursor: Annotated[str, Query(max_length=200)] = "",
+    cursor: Annotated[str, Query(max_length=512)] = "",
+    asset: Annotated[str, Query(max_length=64)] = "",
+    provider: Annotated[str, Query(max_length=128)] = "",
+    venue: Annotated[str, Query(max_length=128)] = "",
+    measurement_definition: Annotated[str, Query(max_length=256)] = "",
+    sort: Literal["latest", "oi_change", "oi_value"] = "latest",
 ) -> Response:
     """Market observations in one window, consecutive observations of a group collapsed.
 
@@ -64,17 +68,45 @@ def get_news_market(
     and is not a precondition for reading the observation.
     """
 
-    _validate_query_params(request, supported={"kind", "from_ms", "to_ms", "limit", "cursor", "token"})
+    _validate_query_params(
+        request,
+        supported={
+            "kind",
+            "from_ms",
+            "to_ms",
+            "limit",
+            "cursor",
+            "token",
+            "asset",
+            "provider",
+            "venue",
+            "measurement_definition",
+            "sort",
+        },
+    )
     kinds = _parse_kinds(kind)
     if from_ms > _MAX_MS or to_ms > _MAX_MS:
         raise ApiBadRequest("news_market_window_invalid", field="to_ms" if to_ms > _MAX_MS else "from_ms")
-    window_to = int(to_ms) if to_ms else int(time.time() * 1000)
+    asset = asset.strip().upper()
+    scope = [kinds, from_ms, asset, provider, venue, measurement_definition, sort]
+    position = decode_read_cursor(cursor, scope, error="news_market_cursor_invalid")
+    if sort != "latest" and (
+        kinds != ("oi",)
+        or not provider
+        or not venue
+        or not measurement_definition
+        or "unproven" in measurement_definition
+    ):
+        raise ApiBadRequest("news_market_sort_scope_required", field="sort")
+    window_to = position[0] if position else int(to_ms) if to_ms else int(time.time() * 1000)
+    if position and to_ms and to_ms != window_to:
+        raise ApiBadRequest("news_market_cursor_invalid", field="cursor")
     window_from = int(from_ms) if from_ms else window_to - MARKET_WINDOW_DEFAULT_MS
     if window_from >= window_to:
         raise ApiBadRequest("news_market_window_invalid", field="from_ms")
     if window_to - window_from > MARKET_WINDOW_MAX_MS:
         raise ApiBadRequest("news_market_window_too_wide", field="to_ms")
-    cursor_received_at_ms, cursor_item_id = _decode_cursor(cursor)
+    cursor_received_at_ms, cursor_item_id = (position[2], position[3]) if position else (2**63 - 1, "~")
     runtime = _authenticated_runtime(request)
     with runtime.repositories() as repos:
         groups, scan_truncated = repos.news.market_groups(
@@ -84,6 +116,12 @@ def get_news_market(
             cursor_received_at_ms=cursor_received_at_ms,
             cursor_item_id=cursor_item_id,
             limit=int(limit) + 1,
+            asset=asset or None,
+            provider=provider or None,
+            venue=venue or None,
+            definition=measurement_definition or None,
+            sort=sort,
+            cursor_value=position[1] if position else 2**63 - 1,
         )
         sources = repos.news.market_sources(from_ms=window_from, to_ms=window_to)
     page = [_group_view(group) for group in groups[: int(limit)]]
@@ -92,7 +130,17 @@ def get_news_market(
         # The next page starts below the *oldest* member of the last run returned. Anchoring on the
         # newest member would re-scan the rest of that run and emit the same group twice.
         last = page[-1]
-        next_cursor = _encode_cursor(int(last["oldest_received_at_ms"]), str(last["oldest_item_id"]))
+        latest = last["latest"]
+        value = (
+            abs(latest["oi_change_bps"]) if sort == "oi_change" else latest["oi_value_usd"] if sort == "oi_value" else 0
+        )
+        next_cursor = encode_read_cursor(
+            scope,
+            to_ms=window_to,
+            value=value,
+            at_ms=int(last["oldest_received_at_ms"]) if sort == "latest" else latest["received_at_ms"],
+            identity=str(last["oldest_item_id"]) if sort == "latest" else latest["item_id"],
+        )
     return _etagged(
         {
             "groups": page,
@@ -103,6 +151,11 @@ def get_news_market(
                 "from_ms": window_from,
                 "to_ms": window_to,
                 "limit": int(limit),
+                "asset": asset or None,
+                "provider": provider or None,
+                "venue": venue or None,
+                "measurement_definition": measurement_definition or None,
+                "sort": sort,
             },
             "scan_truncated": scan_truncated,
         },
@@ -204,26 +257,6 @@ def _parse_kinds(value: str) -> tuple[str, ...]:
     if any(part not in MARKET_KINDS for part in kinds):
         raise ApiBadRequest("news_market_kind_invalid", field="kind")
     return kinds
-
-
-def _encode_cursor(received_at_ms: int, item_id: str) -> str:
-    return base64.urlsafe_b64encode(f"{received_at_ms}|{item_id}".encode()).decode().rstrip("=")
-
-
-def _decode_cursor(cursor: str) -> tuple[int, str]:
-    """The first page starts above every row, so an absent cursor is the open upper bound."""
-
-    if not cursor:
-        return _CURSOR_MAX_RECEIVED_AT_MS, ""
-    padded = cursor + "=" * (-len(cursor) % 4)
-    try:
-        received_at_ms, _, item_id = base64.urlsafe_b64decode(padded.encode()).decode().partition("|")
-        position = int(received_at_ms)
-    except (ValueError, UnicodeDecodeError, binascii.Error) as exc:
-        raise ApiBadRequest("news_market_cursor_invalid", field="cursor") from exc
-    if not 0 <= position <= _MAX_MS:
-        raise ApiBadRequest("news_market_cursor_invalid", field="cursor")
-    return position, item_id
 
 
 __all__ = ["router"]
