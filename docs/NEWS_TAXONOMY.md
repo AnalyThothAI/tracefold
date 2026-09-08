@@ -179,17 +179,21 @@ GEPA student is the single `taxonomy` Predict; the admitted candidate is GEPA's
 own `best_idx` when its selection score is strictly above the seed's, otherwise
 the run is `NO_OP`. The held-out measurement is the same scalar over a window
 frozen after registration, which GEPA neither reflected on nor selected against:
-a taxonomy-only candidate's holdout is decided by `taxonomy_overall` and the four
-axis deltas rather than by blind pairwise preference, because taxonomy reaches
+a taxonomy-only candidate's holdout is decided by the four-axis exact rate and
+the axis deltas rather than by blind pairwise preference, because taxonomy reaches
 neither the verdict, the card nor Delivery and both arms would show the reviewer
 the same card. Since #567 each of those deltas is measured per cluster against
 the same elected representatives and reported with its bootstrap 95 % interval
 (the profile's own seed 112, 2,000 replicates), so an axis counts as a regression
-only when its whole interval lies below zero and the candidate as an improvement
-only when `taxonomy_overall`'s whole interval lies above zero — one cluster of
-311 flipping is noise, not a release FAIL — and the same issue raised the release
-profile's `mean_total_tokens_growth_pct` guardrail from 0.10 to 0.25, leaving the
-call and provider-cost caps at 0.10.
+only when its whole interval lies below zero — one cluster of 311 flipping is
+noise, not a release FAIL — and the same issue raised the release profile's
+`mean_total_tokens_growth_pct` guardrail from 0.10 to 0.25, leaving the call and
+provider-cost caps at 0.10. Since #626 the primary metric of this class is
+`four_axis_exact_accuracy`, and the candidate counts as an improvement only when
+that rate's whole interval lies above zero: a card is correctly classified only
+when all four of its axes are, whereas the `taxonomy_overall` mean it replaced
+nets a gain on one axis against a slip on another. That mean and every axis
+interval stay published for the receipt.
 
 The public chain is the existing `news learning readiness` followed by one
 `news learning run`; Dataset forms of `baseline` and standalone `optimize` do

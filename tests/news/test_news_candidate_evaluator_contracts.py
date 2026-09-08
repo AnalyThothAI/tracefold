@@ -614,6 +614,18 @@ def _candidate_breaks_assertion() -> tuple[dict[str, Any], dict[str, Any]]:
     return _axes(), _axes(assertion_status="claimed")
 
 
+def _candidate_completes_a_card() -> tuple[dict[str, Any], dict[str, Any]]:
+    """A card Stable classified all but one axis right, which the candidate gets fully right."""
+
+    return _axes(assertion_status="claimed"), _axes()
+
+
+def _candidate_worsens_an_already_wrong_card() -> tuple[dict[str, Any], dict[str, Any]]:
+    """A card neither arm classifies correctly, on which the candidate loses a second axis."""
+
+    return _axes(event_family="other"), _axes(event_family="other", assertion_status="claimed")
+
+
 def test_one_cluster_slipping_among_many_is_not_a_taxonomy_axis_regression() -> None:
     """#567: the per-axis rule is the paired bootstrap interval, not the sign of a mean.
 
@@ -621,7 +633,9 @@ def test_one_cluster_slipping_among_many_is_not_a_taxonomy_axis_regression() -> 
     wrong, one cluster loses an assertion status Stable had right, and the rest are already exact. Under
     #548 the single slip made `assertion_status_accuracy` negative and the whole release a FAIL. The
     interval around that delta reaches zero — a corpus this size cannot tell one flipped cluster from
-    noise — so the axis is not a regression, while `taxonomy_overall` clears zero and the holdout passes.
+    noise — so the axis is not a regression, while the candidate makes eleven more cards fully correct
+    than it breaks, so the four-axis exact rate that admits it since #626 clears zero and the holdout
+    passes.
     """
 
     evidence = _taxonomy_evidence(
@@ -630,7 +644,7 @@ def test_one_cluster_slipping_among_many_is_not_a_taxonomy_axis_regression() -> 
         + [_exact_pair() for _ in range(27)]
     )
 
-    assert evidence["schema"] == "tracefold.news.taxonomy_release_evidence.v3"
+    assert evidence["schema"] == "tracefold.news.taxonomy_release_evidence.v4"
     # The point delta really is negative on that axis, and the evidence still says so.
     assert evidence["delta"]["assertion_status_accuracy"] < 0
     assert evidence["regressed_axes"] == ["assertion_status_accuracy"]
@@ -640,11 +654,77 @@ def test_one_cluster_slipping_among_many_is_not_a_taxonomy_axis_regression() -> 
     assert slip["delta"] == pytest.approx(-1 / 40)
     assert slip["lower"] < 0 <= slip["upper"]
     assert evidence["interval_regressed_axes"] == []
-    # The aggregate is above zero with the whole interval above it.
-    overall = evidence["axis_interval_95"]["taxonomy_overall"]
-    assert overall["lower"] > 0
+    # Twelve cards become fully correct and one stops being so, so the primary is above zero with its
+    # whole interval above it; here the overall mean agrees, and #626 keeps publishing it for the receipt.
+    exact = evidence["axis_interval_95"]["four_axis_exact_accuracy"]
+    assert exact["delta"] == pytest.approx(11 / 40)
+    assert exact["lower"] > 0
+    assert evidence["four_axis_exact_improved"] is True
+    assert evidence["axis_interval_95"]["taxonomy_overall"]["lower"] > 0
     assert evidence["taxonomy_overall_improved"] is True
     assert candidate_evaluator_module._taxonomy_only_release_codes(evidence, stage="holdout") == ((), ())
+
+
+def test_a_holdout_passes_on_the_four_axis_exact_rate_when_the_overall_mean_nets_to_zero() -> None:
+    """#626: the primary of a taxonomy-only candidate is the share of cards whose four axes are all right.
+
+    This is candidate `5c559c44…` in miniature. Ten cards of forty that Stable got all but one axis right
+    on become fully correct, ten cards neither arm classifies correctly lose a second axis, and
+    `taxonomy_overall` — a mean of five per-axis means — nets those two movements to exactly zero. What a
+    reader gets is ten more correctly classified cards and not one fewer, which is what the exact rate
+    measures and, on this corpus, the only one of the two readings that can be told apart from zero.
+    """
+
+    evidence = _taxonomy_evidence(
+        [_candidate_completes_a_card() for _ in range(10)]
+        + [_candidate_worsens_an_already_wrong_card() for _ in range(10)]
+        + [_exact_pair() for _ in range(20)]
+    )
+
+    overall = evidence["axis_interval_95"]["taxonomy_overall"]
+    assert overall["delta"] == pytest.approx(0.0)
+    assert overall["lower"] < 0 <= overall["upper"]
+    assert evidence["taxonomy_overall_improved"] is False
+    exact = evidence["axis_interval_95"]["four_axis_exact_accuracy"]
+    assert exact["delta"] == pytest.approx(10 / 40)
+    assert exact["lower"] > 0
+    assert evidence["four_axis_exact_improved"] is True
+    # `assertion_status` both gained and lost ten cards, so no axis regressed and nothing fails.
+    assert evidence["axis_interval_95"]["assertion_status_accuracy"]["delta"] == pytest.approx(0.0)
+    assert evidence["interval_regressed_axes"] == []
+    assert candidate_evaluator_module._taxonomy_only_release_codes(evidence, stage="holdout") == ((), ())
+
+
+def test_an_overall_gain_that_makes_no_card_fully_correct_leaves_the_holdout_unknown() -> None:
+    """#626: raising the mean without a reader seeing one more correct card is not an improvement.
+
+    Ten cards of forty are wrong on two axes and the candidate fixes one of them. `taxonomy_overall` rises
+    by a quarter of those ten with its whole interval above zero — the reading that admitted a candidate
+    until #626 — while every one of those cards stays misclassified, so the exact rate does not move at
+    all and the holdout is UNKNOWN rather than a promotion.
+    """
+
+    evidence = _taxonomy_evidence(
+        [(_axes(event_family="other", change_state="effective"), _axes(event_family="other")) for _ in range(10)]
+        + [_exact_pair() for _ in range(30)]
+    )
+
+    overall = evidence["axis_interval_95"]["taxonomy_overall"]
+    assert overall["delta"] == pytest.approx(10 * 0.25 / 40)
+    assert overall["lower"] > 0
+    assert evidence["taxonomy_overall_improved"] is True
+    assert evidence["axis_interval_95"]["four_axis_exact_accuracy"] == {
+        "delta": 0.0,
+        "lower": 0.0,
+        "upper": 0.0,
+        "n": 40,
+    }
+    assert evidence["four_axis_exact_improved"] is False
+    assert evidence["interval_regressed_axes"] == []
+    assert candidate_evaluator_module._taxonomy_only_release_codes(evidence, stage="holdout") == (
+        ("four_axis_exact_not_improved",),
+        (),
+    )
 
 
 def test_an_axis_whose_whole_interval_is_below_zero_is_a_taxonomy_axis_regression() -> None:
@@ -659,29 +739,32 @@ def test_an_axis_whose_whole_interval_is_below_zero_is_a_taxonomy_axis_regressio
     assert evidence["interval_regressed_axes"] == ["change_state_accuracy", "four_axis_exact_accuracy"]
     blockers, failures = candidate_evaluator_module._taxonomy_only_release_codes(evidence, stage="holdout")
     assert failures == ("candidate_taxonomy_axis_regression",)
-    assert blockers == ("taxonomy_overall_not_improved",)
+    # #626: the exact rate is one of the axes the interval rule reads, so a regression on it both fails
+    # the release and refuses the admission the same code now names.
+    assert blockers == ("four_axis_exact_not_improved",)
 
 
-def test_an_overall_interval_that_crosses_zero_leaves_the_holdout_unknown() -> None:
-    """#567: one gain and one loss in forty clusters is not evidence of an improvement, and not a FAIL."""
+def test_a_four_axis_exact_interval_that_crosses_zero_leaves_the_holdout_unknown() -> None:
+    """#567, #626: one card gained and one lost in forty is not evidence of an improvement, and not a FAIL."""
 
     evidence = _taxonomy_evidence(
         [_candidate_fixes_family(), _candidate_breaks_assertion()] + [_exact_pair() for _ in range(38)],
     )
 
-    overall = evidence["axis_interval_95"]["taxonomy_overall"]
-    assert overall["delta"] == pytest.approx(0.0)
-    assert overall["lower"] < 0 <= overall["upper"]
+    exact = evidence["axis_interval_95"]["four_axis_exact_accuracy"]
+    assert exact["delta"] == pytest.approx(0.0)
+    assert exact["lower"] < 0 <= exact["upper"]
+    assert evidence["four_axis_exact_improved"] is False
     assert evidence["taxonomy_overall_improved"] is False
     assert evidence["interval_regressed_axes"] == []
     assert candidate_evaluator_module._taxonomy_only_release_codes(evidence, stage="holdout") == (
-        ("taxonomy_overall_not_improved",),
+        ("four_axis_exact_not_improved",),
         (),
     )
 
 
 def test_a_taxonomy_only_holdout_keeps_its_empty_gold_and_cluster_floor_blockers() -> None:
-    """#548's two UNKNOWN blockers survive #567: the interval decides quality, not sample adequacy."""
+    """#548's two UNKNOWN blockers survive #567 and #626: the interval decides quality, not adequacy."""
 
     codes = candidate_evaluator_module._taxonomy_only_release_codes
     floor = int(_PROFILE["validation"]["primary_clusters_min"])
@@ -692,7 +775,7 @@ def test_a_taxonomy_only_holdout_keeps_its_empty_gold_and_cluster_floor_blockers
         (),
     )
     assert codes(_taxonomy_evidence([]), stage="holdout") == (
-        ("taxonomy_release_evidence_empty", "taxonomy_overall_not_improved"),
+        ("taxonomy_release_evidence_empty", "four_axis_exact_not_improved"),
         (),
     )
     # The 30-cluster floor is the validation profile's, so the offline screen does not read it.

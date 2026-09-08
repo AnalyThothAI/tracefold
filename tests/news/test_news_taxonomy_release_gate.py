@@ -51,7 +51,7 @@ def test_release_taxonomy_evidence_blocks_on_any_per_axis_regression() -> None:
         {"review-1": {"payload": {"taxonomy": gold, "first_bad_owner": None}}},
     )
 
-    assert evidence["schema"] == "tracefold.news.taxonomy_release_evidence.v3"
+    assert evidence["schema"] == "tracefold.news.taxonomy_release_evidence.v4"
     assert evidence["regressed_axes"] == ["event_family_accuracy", "four_axis_exact_accuracy"]
     assert evidence["delta"]["event_family_accuracy"] == -1.0
     # #567: the same two axes, read as intervals. Every cluster here regressed, so the interval is the
@@ -93,6 +93,8 @@ def test_release_taxonomy_evidence_allows_improvement_and_carries_no_control_ver
         "axis_interval_95",
         "interval_regressed_axes",
         "taxonomy_overall_improved",
+        # #626: the reading that admits a taxonomy-only candidate, published beside the mean it replaced.
+        "four_axis_exact_improved",
     }
 
 

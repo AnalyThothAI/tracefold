@@ -2002,11 +2002,15 @@ delivery decision, so the blind-pairwise stages show both arms the identical car
 and can only report a coin flip; for that class the holdout's primary is the
 per-axis taxonomy evidence the evaluator already computes, read since #567 as the
 paired per-cluster bootstrap 95 % interval the profile's own `bootstrap` block
-defines — an axis regresses only when its whole interval is below zero, the
-candidate improves only when `taxonomy_overall`'s whole interval is above zero,
-over at least `primary_clusters_min`
+defines — an axis regresses only when its whole interval is below zero and, since
+#626, the candidate improves only when `four_axis_exact_accuracy`'s whole interval
+is above zero, over at least `primary_clusters_min`
 Gold-bearing clusters — a PASS advances straight to promotion, and evaluation
 requires a live Program because recordings are addressed by whole-program SHA.
+That exact rate is the primary metric for this class because a card is correctly
+classified only when all four of its axes are, where the `taxonomy_overall` mean
+it replaced nets a gain on one axis against a slip on another; the mean and every
+`axis_interval_95` stay published as receipt evidence.
 The resource guardrails are unchanged except that #567 moved
 `mean_total_tokens_growth_pct` to 0.25 while the call and provider-cost caps that
 actually bill stay at 0.10.

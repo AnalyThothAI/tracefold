@@ -126,9 +126,14 @@ def _taxonomy_release_evidence(
     Two per-axis readings come out of that one population and they are not interchangeable. `delta` and
     `regressed_axes` are the sign test #501 wrote, and they still decide the axis failure of a candidate
     that also moves a reader-facing Predictor — that class is judged by blind pairwise preference, and the
-    sign test is a cheap veto beside it. `axis_interval_95`, `interval_regressed_axes` and
-    `taxonomy_overall_improved` are #567's paired bootstrap, and they are the whole decision for a
-    taxonomy-only candidate, whose *only* held-out evidence these axes are.
+    sign test is a cheap veto beside it. `axis_interval_95`, `interval_regressed_axes`,
+    `four_axis_exact_improved` and `taxonomy_overall_improved` are #567's paired bootstrap, and they are
+    the whole decision for a taxonomy-only candidate, whose *only* held-out evidence these axes are.
+
+    Which of those two improvement readings admits that candidate is #626's answer: `four_axis_exact`,
+    the share of clusters where all four axes are right at once, because that is the card a reader sees
+    as correctly classified, while the `taxonomy_overall` mean nets one axis's gain against another's
+    slip. Both are published — the mean is receipt evidence, the exact rate is the gate.
     """
 
     eligible: list[dict[str, Any]] = []
@@ -183,7 +188,7 @@ def _taxonomy_release_evidence(
     ]
     intervals = _taxonomy_axis_intervals(rows["stable"], rows["candidate"])
     return {
-        "schema": "tracefold.news.taxonomy_release_evidence.v3",
+        "schema": "tracefold.news.taxonomy_release_evidence.v4",
         "stable": stable_summary,
         "candidate": candidate_summary,
         "delta": delta,
@@ -196,6 +201,9 @@ def _taxonomy_release_evidence(
         ],
         "taxonomy_overall_improved": bool(
             (overall := intervals["taxonomy_overall"]) is not None and float(overall["lower"]) > 0
+        ),
+        "four_axis_exact_improved": bool(
+            (exact := intervals["four_axis_exact_accuracy"]) is not None and float(exact["lower"]) > 0
         ),
     }
 
@@ -272,7 +280,11 @@ def _taxonomy_primary_result(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "candidate_taxonomy_overall": evidence["candidate"]["taxonomy_overall"],
         "taxonomy_overall_delta": delta.get("taxonomy_overall"),
         "taxonomy_overall_interval_95": intervals.get("taxonomy_overall"),
+        # Both improvement readings, published side by side: since #626 the four-axis exact rate is the
+        # one the gate below reads and the overall mean is receipt evidence. The interval behind the
+        # exact rate is already in `axis_interval_95`, so it is not repeated as its own key.
         "taxonomy_overall_improved": bool(evidence["taxonomy_overall_improved"]),
+        "four_axis_exact_improved": bool(evidence["four_axis_exact_improved"]),
         "axis_delta": {axis: delta.get(axis) for axis in _TAXONOMY_RELEASE_AXES},
         "axis_interval_95": {axis: intervals.get(axis) for axis in _TAXONOMY_RELEASE_AXES},
         # The axes the interval calls regressions, which is what the gate below reads. The axes whose
@@ -288,14 +300,25 @@ def _taxonomy_only_release_codes(
     *,
     stage: str,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """The blockers and failures a taxonomy-only candidate's held-out primary produces (#548, #567).
+    """The blockers and failures a taxonomy-only candidate's held-out primary produces (#548, #567, #626).
 
     Every reading is the paired per-cluster bootstrap interval, never the sign of a mean. An axis
     REGRESSES only when its interval lies entirely below zero; the candidate IMPROVES only when
-    `taxonomy_overall`'s interval lies entirely above zero. PASS is improved with no axis regressed, FAIL
-    is any axis regressed, and an overall interval that crosses zero with nothing regressed is UNKNOWN
-    under the existing `taxonomy_overall_not_improved`. Empty Gold, or fewer Gold-bearing clusters than
-    the profile's `primary_clusters_min`, stays UNKNOWN as before.
+    `four_axis_exact_accuracy`'s interval lies entirely above zero. PASS is improved with no axis
+    regressed, FAIL is any axis regressed, and an exact-rate interval that crosses zero with nothing
+    regressed is UNKNOWN under `four_axis_exact_not_improved`. Empty Gold, or fewer Gold-bearing clusters
+    than the profile's `primary_clusters_min`, stays UNKNOWN as before.
+
+    #626 moved that admission from `taxonomy_overall` to the four-axis exact rate. The overall score is a
+    mean of five per-axis means, so a candidate that fixes many `event_family` mistakes and loses a couple
+    of `change_state` ones nets out near zero on it — which is exactly what candidate `5c559c44…` did over
+    311 clusters: overall +0.0125 with an interval crossing zero, while the share of cards whose four axes
+    were *all* right rose 0.434 → 0.495, interval [+0.003, +0.116]. A card is correctly classified only
+    when every axis on it is correct, so the exact rate is what a reader experiences and the only one of
+    the two that a corpus this size could separate from zero. The overall mean and every axis interval
+    stay published for the receipt; they simply no longer decide. The per-axis regression rule is
+    untouched, `four_axis_exact_accuracy` included: an axis whose whole interval is below zero is still a
+    FAIL, so this admission cannot be bought by trading one axis away.
 
     #548 compared the two means directly, which made this class's only evidence a zero-tolerance test:
     candidate `3f7d1e12…` raised four axes and the four-axis exact rate by 6.1 points over 311 clusters
@@ -316,8 +339,8 @@ def _taxonomy_only_release_codes(
         blockers.append("validation_primary_review_insufficient")
     if evidence["interval_regressed_axes"]:
         failures.append("candidate_taxonomy_axis_regression")
-    if not evidence["taxonomy_overall_improved"]:
-        blockers.append("taxonomy_overall_not_improved")
+    if not evidence["four_axis_exact_improved"]:
+        blockers.append("four_axis_exact_not_improved")
     return tuple(blockers), tuple(failures)
 
 
