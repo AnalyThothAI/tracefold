@@ -1549,10 +1549,22 @@ For the taxonomy Gold → Candidate workflow (#501 PR-D, drafter routes #534):
    card: `news learning freeze --role validation --candidate ...` projects the
    same accepted Gold the development freeze does and publishes
    `counts.primary_cluster_n`, and `news learning evaluate --stage
-   offline|holdout --live-program` passes when `taxonomy_overall` is strictly
-   above Stable with no negative axis delta (a holdout PASS advances straight to
-   promotion), fails on any axis regression, and is UNKNOWN with empty Gold or
-   fewer than `primary_clusters_min` Gold-bearing clusters. `--live-program` is
+   offline|holdout --live-program` reads, per axis and for `taxonomy_overall`,
+   the paired per-cluster candidate-minus-Stable delta and its bootstrap 95 %
+   interval under the profile's own `bootstrap` block (seed 112, 2,000
+   replicates), published in the evidence as `axis_interval_95` with `delta`,
+   `lower`, `upper` and `n`: since #567 an axis is a regression only when its
+   whole interval lies below zero, the candidate improved only when
+   `taxonomy_overall`'s whole interval lies above zero, so it PASSES on improved
+   with nothing regressed (a holdout PASS advances straight to promotion), FAILS
+   on any regressed axis, and is UNKNOWN — `taxonomy_overall_not_improved` — when
+   the overall interval crosses zero, as it still is with empty Gold or fewer
+   than `primary_clusters_min` Gold-bearing clusters. #567 also moved
+   `guardrails.mean_total_tokens_growth_pct` from 0.10 to 0.25 while
+   `mean_call_growth_pct` and `mean_provider_cost_growth_pct` stay at 0.10,
+   because on a local task model with ~94 % prompt-cache hits and an unchanged
+   p95 a 10 % prompt-length cap was a stricter gate than the cost it guards.
+   `--live-program` is
    required for this class — recordings are addressed by whole-program SHA, so a
    replay misses every Predictor — and without it the command fails closed with
    `news_release_taxonomy_only_requires_live_program`.

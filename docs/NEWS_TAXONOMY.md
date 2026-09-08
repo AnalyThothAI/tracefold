@@ -182,7 +182,14 @@ frozen after registration, which GEPA neither reflected on nor selected against:
 a taxonomy-only candidate's holdout is decided by `taxonomy_overall` and the four
 axis deltas rather than by blind pairwise preference, because taxonomy reaches
 neither the verdict, the card nor Delivery and both arms would show the reviewer
-the same card.
+the same card. Since #567 each of those deltas is measured per cluster against
+the same elected representatives and reported with its bootstrap 95 % interval
+(the profile's own seed 112, 2,000 replicates), so an axis counts as a regression
+only when its whole interval lies below zero and the candidate as an improvement
+only when `taxonomy_overall`'s whole interval lies above zero — one cluster of
+311 flipping is noise, not a release FAIL — and the same issue raised the release
+profile's `mean_total_tokens_growth_pct` guardrail from 0.10 to 0.25, leaving the
+call and provider-cost caps at 0.10.
 
 The public chain is the existing `news learning readiness` followed by one
 `news learning run`; Dataset forms of `baseline` and standalone `optimize` do

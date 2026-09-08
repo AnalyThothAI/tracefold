@@ -2001,10 +2001,16 @@ EventSemantics and ReaderCard instructions are byte-identical to its parent —
 derived from the registered write-set, never declared — moves no verdict, card or
 delivery decision, so the blind-pairwise stages show both arms the identical card
 and can only report a coin flip; for that class the holdout's primary is the
-per-axis taxonomy evidence the evaluator already computes (strictly above Stable
-on `taxonomy_overall`, no axis below it, over at least `primary_clusters_min`
-Gold-bearing clusters), a PASS advances straight to promotion, and evaluation
+per-axis taxonomy evidence the evaluator already computes, read since #567 as the
+paired per-cluster bootstrap 95 % interval the profile's own `bootstrap` block
+defines — an axis regresses only when its whole interval is below zero, the
+candidate improves only when `taxonomy_overall`'s whole interval is above zero,
+over at least `primary_clusters_min`
+Gold-bearing clusters — a PASS advances straight to promotion, and evaluation
 requires a live Program because recordings are addressed by whole-program SHA.
+The resource guardrails are unchanged except that #567 moved
+`mean_total_tokens_growth_pct` to 0.25 while the call and provider-cost caps that
+actually bill stay at 0.10.
 
 Metric v8 (`tracefold.news.production_action_trade_relevance_v8`) uses the one
 version-bound production-action projection shared by baseline, failure-cluster
