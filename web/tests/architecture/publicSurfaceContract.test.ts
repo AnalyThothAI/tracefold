@@ -36,7 +36,7 @@ describe("public browser surface", () => {
 
   it("keeps the runtime API facade to GET plus the one POST transport", () => {
     expect(Object.keys(apiClient)).toEqual(
-      expect.arrayContaining(["getApi", "postApi", "getBootstrap", "getAuthToken", "setAuthToken"]),
+      expect.arrayContaining(["getApi", "getBootstrap", "getAuthToken", "setAuthToken"]),
     );
     expect(apiClient).not.toHaveProperty("putApi");
     expect(apiClient).not.toHaveProperty("patchApi");

@@ -1,7 +1,6 @@
 import type {
   TradingCase,
   TradingCases,
-  TradingExecutionCommand,
   TradingExecutionReadiness,
   TradingExecutionRow,
   TradingExecutions,
@@ -220,15 +219,6 @@ export function tradingExecutionsFixture(
   overrides: Partial<TradingExecutions> = {},
 ): TradingExecutions {
   return {
-    commands: [
-      tradingCommandRowFixture(),
-      tradingCommandRowFixture({
-        action: "flatten",
-        command_id: "b".repeat(64),
-        requested_at_ns: (TRADING_NOW_MS - 60_000) * 1_000_000,
-        stage: "completed",
-      }),
-    ],
     complete: true,
     executions: [
       tradingExecutionRowFixture(),
@@ -302,19 +292,6 @@ export function tradingExecutionsFixture(
       realized_today_usd: "-13.80",
       realized_total_usd: "56.40",
     },
-    ...overrides,
-  };
-}
-
-export function tradingCommandRowFixture(
-  overrides: Partial<TradingExecutionCommand> = {},
-): TradingExecutionCommand {
-  return {
-    action: "pause_entries",
-    command_id: "9".repeat(64),
-    reason: null,
-    requested_at_ns: TRADING_NOW_MS * 1_000_000,
-    stage: "recorded",
     ...overrides,
   };
 }

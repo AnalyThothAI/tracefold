@@ -54,9 +54,8 @@ authoritative Binance flatness, and start entry-paused until an authenticated
 durable resume. RabbitMQ remains News-only.
 
 `tracefold serve` initializes public HTTP/static, read repositories, serve
-telemetry, and the one authenticated bounded operator-command append. That
-append opens its own short write transaction outside the read pool and owns no
-Runtime or venue semantics. `tracefold workers` initializes the bounded external
+telemetry, and no operator write path. Its database pool is read-only and it
+owns no Runtime or venue semantics. `tracefold workers` initializes the bounded external
 capability, singleton runtime status, and the RabbitMQ-driven News consumers
 when News is enabled. Admission and Triage recover through durable broker queues
 and database idempotency keys; Delivery claims its PostgreSQL queue. There is no database wake plane, no
@@ -2390,23 +2389,19 @@ reduce-only market close bounded to three attempts for every unowned one, and a
 cancel for every remaining resting order. `complete_from_reconciliation` still
 requires the later Binance private flat proof.
 
-**One closed operator-control grammar, two ingresses.** `tracefold trading
-issue` on the host carries the local OS uid; `POST
-/api/trading/execution/commands` carries the bootstrap `ws_token`. The Workers
-probe serves `/healthz`, `/readyz` and `/metrics` and nothing else — #528
-deleted `POST /telegram/control`, its secret header and its chat/user
-allowlists, which no production deployment had ever enabled. `/pause`,
-`/resume`, `/halt`, account-only `/flatten`, and short-lived `/long` / `/short`
-map to `OperatorIntentV1`; the grammar contains no quantity, notional, leverage,
-venue or order parameter. Each ingress appends the intent before replying and never
-manufactures a disposition — only the Runtime may
-append accepted, rejected or completed control Observations. Pause blocks only
-new entries; halt is sticky, rejects resume, and does not mean flatten; flatten
-pauses entries and does not complete until a later fresh reconciliation proves
-flat. The console's only mutation, header-authenticated `POST
-/api/trading/execution/commands`, reuses that same parser, TTL, confirmation,
-idempotent request identity and Runtime consumer, and admits only
-pause/resume/flatten. HTTP success proves persistence and nothing else.
+**One closed operator-control grammar, one local ingress.** The operator CLI,
+`tracefold trading issue`, carries the local OS uid. The HTTP console is read-only
+and has no command route or dedicated write connection (#624). The Workers probe
+serves only `/healthz`, `/readyz` and `/metrics`; the Telegram control webhook
+was removed in #528.
+
+`/pause`, `/resume`, `/halt`, account-only `/flatten`, and short-lived `/long` /
+`/short` map to `OperatorIntentV1`; the grammar contains no quantity, notional,
+leverage, venue or order parameter. The CLI appends an intent before replying;
+only the Runtime may append accepted, rejected or completed control Observations.
+Pause blocks new entries; halt is sticky and rejects resume; flatten pauses
+entries and completes only after a later fresh reconciliation proves flat.
+Historical manual entries remain audited execution facts in the read-only console.
 
 **Control state belongs to the account slot and survives every deploy.**
 `trading_execution_runtime_control_state` is keyed by `account_slot`; the

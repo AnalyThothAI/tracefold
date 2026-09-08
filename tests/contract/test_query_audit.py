@@ -171,8 +171,8 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_market_group_timeline",
     )
     assert "/api/news/review" not in catalog.query_routes
-    # #475 PR-E adds one exact append-only operator control route; every other public route stays read-only.
-    assert catalog.write_routes == {"/api/trading/execution/commands"}
+    # #624: the HTTP surface has no operator write authority.
+    assert catalog.write_routes == frozenset()
     assert catalog.query_routes["/api/news/status"] == (
         "workers_runtime",
         "news_status_ingest",
@@ -205,12 +205,11 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     assert catalog.query_routes["/api/trading/executions"] == (
         "trading_console_executions",
         "trading_console_scope_executions",
-        "trading_console_commands",
         "trading_realized_totals",
     )
     assert "/api/trading/signals" not in catalog.query_routes
     assert "/api/trading/execution/observations" not in catalog.query_routes
-    # The Command path is a write now and only a write: its GET went with the other two (#537 PR-5).
+    # #624: the retired Command path is neither a write nor a read.
     assert "/api/trading/execution/commands" not in catalog.query_routes
     # #589 PR-2. The admission ledger's two routes are gone and `tracefold trading gate` is what runs
     # their statements now. A statement stops being audited when nothing executes it, not when a route

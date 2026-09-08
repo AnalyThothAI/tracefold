@@ -17,7 +17,6 @@ import { useTradingFactExpiry } from "../state/useTradingFactExpiry";
 
 import { TradingCaseDetail } from "./TradingCaseDetail";
 import { TradingCaseList } from "./TradingCaseList";
-import { TradingControls } from "./TradingControls";
 import { TradingDecisionSummary } from "./TradingDecisionSummary";
 import { TradingLoopLedger } from "./TradingLoopLedger";
 import { TradingExposure, TradingSafetyStrip } from "./TradingRisk";
@@ -51,7 +50,6 @@ export function TradingPage({ token }: { token: string }) {
   const caseQuery = useTradingCaseWithToken(token, selectedCaseId);
   const status = statusQuery.data;
   const executions = executionsQuery.data?.executions ?? [];
-  const commands = executionsQuery.data?.commands ?? [];
 
   const stale = useTradingFactExpiry(status?.execution.facts_expire_at_ms);
   const opener = useRef<HTMLElement | null>(null);
@@ -101,18 +99,18 @@ export function TradingPage({ token }: { token: string }) {
   ].filter(Boolean);
 
   return (
-    <PageShell archetype="scan" className="trading-shell" label="可操作交易台">
+    <PageShell archetype="scan" className="trading-shell" label="交易执行监控">
       <header className="trading-page-header">
         <div className="trading-heading-copy">
           <h1>交易执行</h1>
-          <p>先核对当前仓位与保护，再查看执行记录和策略判定。</p>
+          <p>自动交易运行监控 · 当前仓位与保护、执行记录和策略判定。</p>
         </div>
         {/*
          * `EXECUTION paper` is a constant and no longer wears the caution colour. Amber is what the desk
          * says when something needs an operator, and spending it on a word that has not changed since the
          * lane started taught readers to ignore it (#604 T4).
          */}
-        <div className="trading-heading-aside" data-tone={stale ? "caution" : undefined}>
+        <div className="trading-heading-aside">
           <span>最近策略判定 {caseClock(status?.decision.last_case_at_ms)}</span>
           <small>
             {status?.execution.mode === "live"
@@ -135,7 +133,7 @@ export function TradingPage({ token }: { token: string }) {
           void casesQuery.refetch();
           void executionsQuery.refetch();
         }}
-        updating={statusQuery.isFetching || casesQuery.isFetching || executionsQuery.isFetching}
+        updating={casesQuery.isFetching || executionsQuery.isFetching}
       >
         <div className="trading-body">
           {selectedCaseId ? (
@@ -214,14 +212,6 @@ export function TradingPage({ token }: { token: string }) {
               ) : (
                 <EmptyNote>当前仓位与保护暂不可读。</EmptyNote>
               )}
-              <TradingControls
-                commands={commands}
-                commandsFailed={executionsQuery.isError}
-                commandsPending={executionsQuery.isPending}
-                entriesPaused={status?.execution.entries_paused ?? false}
-                mode={status?.execution.mode ?? "disabled"}
-                token={token}
-              />
               <TradingTally
                 execution={status?.execution}
                 executions={executions}

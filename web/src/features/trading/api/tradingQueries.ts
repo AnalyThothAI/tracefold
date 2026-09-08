@@ -1,7 +1,7 @@
-import { getApi, postApi } from "@lib/api/client";
+import { getApi } from "@lib/api/client";
 import type { components } from "@lib/types/openapi";
 import { queryKeys } from "@shared/query/queryKeys";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 
 type TradingSchemas = components["schemas"];
 
@@ -12,12 +12,12 @@ export type TradingCase = TradingSchemas["TradingCaseData"];
 export type TradingPolicyCheck = TradingSchemas["TradingPolicyCheckData"];
 export type TradingExecutions = TradingSchemas["TradingExecutionsData"];
 export type TradingExecutionRow = TradingSchemas["TradingExecutionRowData"];
-export type TradingExecutionCommand = TradingSchemas["TradingExecutionCommandRowData"];
 export type TradingRealizedTotals = TradingSchemas["TradingRealizedTotalsData"];
 export type TradingAdmissionCount = TradingSchemas["TradingAdmissionCountData"];
-export type TradingOperatorCommandReceipt = TradingSchemas["TradingOperatorCommandReceiptData"];
 
 export const TRADING_REFETCH_MS = 15_000;
+// Runtime heartbeat facts last at most 5 s; live status must refresh before that budget ends.
+export const TRADING_STATUS_REFETCH_MS = 1_000;
 
 export const useTradingStatusWithToken = (token: string) =>
   useQuery({
@@ -30,8 +30,9 @@ export const useTradingStatusWithToken = (token: string) =>
           token,
         })
       ).data,
-    refetchInterval: TRADING_REFETCH_MS,
-    staleTime: 5_000,
+    refetchInterval: TRADING_STATUS_REFETCH_MS,
+    staleTime: 0,
+    refetchOnWindowFocus: "always",
   });
 
 /**
@@ -103,31 +104,6 @@ export const useTradingExecutionsWithToken = (token: string, caseId?: string) =>
     refetchInterval: TRADING_REFETCH_MS,
     staleTime: 5_000,
   });
-
-export const useIssueTradingCommandWithToken = (token: string) => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationKey: ["trading-operator-command"],
-    mutationFn: async (command: { requestId: string; requestedAtMs: number; text: string }) =>
-      (
-        await postApi<TradingOperatorCommandReceipt>("/api/trading/execution/commands", {
-          body: {
-            request_id: command.requestId,
-            requested_at_ms: command.requestedAtMs,
-            text: command.text,
-          },
-          token,
-        })
-      ).data,
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.tradingExecutions() }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.tradingStatus() }),
-      ]);
-    },
-    retry: false,
-  });
-};
 
 export const useTradingCaseListWithToken = (
   token: string,

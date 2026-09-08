@@ -599,52 +599,6 @@
         "title": "ApiEnvelope[TradingExecutionsData]",
         "type": "object"
       },
-      "ApiEnvelope_TradingOperatorCommandReceiptData_": {
-        "additionalProperties": false,
-        "properties": {
-          "data": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TradingOperatorCommandReceiptData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Field"
-          },
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "ApiEnvelope[TradingOperatorCommandReceiptData]",
-        "type": "object"
-      },
       "ApiEnvelope_TradingStatusData_": {
         "additionalProperties": false,
         "properties": {
@@ -7668,61 +7622,6 @@
         "title": "TradingExecutionAccountData",
         "type": "object"
       },
-      "TradingExecutionCommandRowData": {
-        "additionalProperties": false,
-        "description": "One operator Command's progress, read from its `control_disposition` alone.\n\nAction, stage and clock: the ACT block's ledger rows. `operator_identity` is the constant\n`operator-console` for every browser write and `reason` is the text the same operator just typed\ninto the field above the ledger (#537 PR-5).",
-        "properties": {
-          "action": {
-            "enum": [
-              "pause_entries",
-              "resume_entries",
-              "emergency_halt",
-              "flatten",
-              "manual_entry"
-            ],
-            "title": "Action",
-            "type": "string"
-          },
-          "command_id": {
-            "title": "Command Id",
-            "type": "string"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason"
-          },
-          "requested_at_ns": {
-            "title": "Requested At Ns",
-            "type": "integer"
-          },
-          "stage": {
-            "enum": [
-              "recorded",
-              "accepted",
-              "rejected",
-              "completed",
-              "expired"
-            ],
-            "title": "Stage",
-            "type": "string"
-          }
-        },
-        "required": [
-          "command_id",
-          "action",
-          "requested_at_ns",
-          "stage"
-        ],
-        "title": "TradingExecutionCommandRowData",
-        "type": "object"
-      },
       "TradingExecutionOrderData": {
         "additionalProperties": false,
         "properties": {
@@ -8203,13 +8102,6 @@
       "TradingExecutionsData": {
         "additionalProperties": false,
         "properties": {
-          "commands": {
-            "items": {
-              "$ref": "#/components/schemas/TradingExecutionCommandRowData"
-            },
-            "title": "Commands",
-            "type": "array"
-          },
           "complete": {
             "title": "Complete",
             "type": "boolean"
@@ -8230,53 +8122,6 @@
           "complete"
         ],
         "title": "TradingExecutionsData",
-        "type": "object"
-      },
-      "TradingOperatorCommandReceiptData": {
-        "additionalProperties": false,
-        "properties": {
-          "command_id": {
-            "title": "Command Id",
-            "type": "string"
-          },
-          "disposition": {
-            "const": "awaiting_runtime",
-            "title": "Disposition",
-            "type": "string"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason"
-          },
-          "requested_at_ns": {
-            "title": "Requested At Ns",
-            "type": "integer"
-          },
-          "seq": {
-            "title": "Seq",
-            "type": "integer"
-          },
-          "truth": {
-            "const": "intent_recorded_not_runtime_or_venue",
-            "title": "Truth",
-            "type": "string"
-          }
-        },
-        "required": [
-          "command_id",
-          "seq",
-          "requested_at_ns",
-          "disposition",
-          "truth"
-        ],
-        "title": "TradingOperatorCommandReceiptData",
         "type": "object"
       },
       "TradingPolicyCheckData": {
@@ -8321,7 +8166,7 @@
       },
       "TradingRealizedTotalsData": {
         "additionalProperties": false,
-        "description": "What this account slot has realized, over the current UTC day and over its whole ledger.\n\nThe desk could only sum the realized column of the rows it was showing, so the one number an\noperator reconciles against the venue was the one number the console could not produce (#604 T3).\nBoth sums fold every `closed` position the slot has, manual entries included, because a manual\nentry is a trade this desk made. Decimal strings, like every other money field here.",
+        "description": "What this account slot has realized, over the current UTC day and over its whole ledger.\n\nThe desk could only sum the realized column of the rows it was showing, so the one number an\noperator reconciles against the venue was the one number the console could not produce (#604 T3).\nBoth sums fold every `closed` position the slot has, manual entries included, because a manual\nentry is a retained trade in this account. Decimal strings, like every other money field here.",
         "properties": {
           "closed_today": {
             "minimum": 0.0,
@@ -9523,66 +9368,9 @@
         ]
       }
     },
-    "/api/trading/execution/commands": {
-      "post": {
-        "description": "Persist one bounded console intent; Runtime and venue outcomes remain separate facts.",
-        "operationId": "post_operator_intent_api_trading_execution_commands_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": false,
-                "properties": {
-                  "request_id": {
-                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "title": "Request Id",
-                    "type": "string"
-                  },
-                  "requested_at_ms": {
-                    "exclusiveMinimum": 0.0,
-                    "title": "Requested At Ms",
-                    "type": "integer"
-                  },
-                  "text": {
-                    "maxLength": 512,
-                    "minLength": 1,
-                    "title": "Text",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "request_id",
-                  "requested_at_ms",
-                  "text"
-                ],
-                "title": "TradingOperatorCommandRequestData",
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_TradingOperatorCommandReceiptData_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Post Operator Intent",
-        "tags": [
-          "api"
-        ]
-      }
-    },
     "/api/trading/executions": {
       "get": {
-        "description": "Today's desk table: one row per entry identity, plus one per operator Command (#528 PR-3).",
+        "description": "One retained row per entry identity with its audited venue outcome.",
         "operationId": "get_trading_executions_api_trading_executions_get",
         "parameters": [
           {

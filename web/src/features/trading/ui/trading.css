@@ -190,8 +190,7 @@
   }
 
   .trading-position-list,
-  .trading-current-order-list,
-  .trading-command-list {
+  .trading-current-order-list {
     display: grid;
     gap: 8px;
   }
@@ -287,93 +286,8 @@
     box-shadow: inset 0 0 0 1px var(--signal-caution-border);
   }
 
-  .trading-control-panel {
-    display: grid;
-    grid-template-columns: minmax(220px, 1fr) auto;
-    gap: 10px 14px;
-    align-items: end;
-    min-width: 0;
-    padding: 12px 14px;
-  }
-
-  .trading-control-reason {
-    display: grid;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .trading-control-reason span {
-    color: var(--text-subtle);
-    font-size: var(--font-size-mono-meta);
-    line-height: 1.45;
-  }
-
-  .trading-control-reason input {
-    width: 100%;
-    min-width: 0;
-    min-height: 32px;
-    padding: 0 9px;
-    border: 0;
-    border-radius: var(--radius-sm);
-    outline: none;
-    background: var(--surface-raised);
-    box-shadow: var(--ring-control);
-    color: var(--text-primary);
-    font: var(--type-meta);
-  }
-
-  .trading-control-reason input:focus {
-    box-shadow: var(--ring-control), var(--focus-halo);
-  }
-
-  .trading-control-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    justify-content: flex-end;
-  }
-
-  .trading-control-message {
-    grid-column: 1 / -1;
-    margin: 0;
-    color: var(--text-secondary);
-    font-size: var(--font-size-mono-meta);
-  }
-
-  .trading-command-list {
-    padding: 0 14px 12px;
-  }
-
-  .trading-command-row {
-    display: grid;
-    grid-template-columns: minmax(120px, 0.7fr) auto minmax(0, 1.2fr) minmax(0, 0.8fr);
-    gap: 6px 12px;
-    align-items: baseline;
-    min-width: 0;
-    padding: 8px 0;
-    border-bottom: 1px solid var(--border-faint);
-    font-size: var(--font-size-mono-meta);
-  }
-
-  .trading-command-row:last-child {
-    border-bottom: 0;
-  }
-
-  .trading-command-row b {
-    color: var(--text-primary);
-    font-size: var(--font-size-meta);
-  }
-
-  .trading-command-row span {
-    min-width: 0;
-    overflow-wrap: anywhere;
-    color: var(--text-subtle);
-  }
-
   /*
-   * The server's own stage word, and the only place the desk colours one. `completed` is the private
-   * reconciliation proving the slot flat and `closed` is a position with a realized number on it — those
-   * two have finished; the rest are still moving or were refused, and the caution wash says which.
+   * The server owns execution stages; closed positions have a realized outcome.
    */
   .trading-stage {
     justify-self: start;
@@ -385,7 +299,6 @@
     white-space: nowrap;
   }
 
-  .trading-stage[data-stage="completed"],
   .trading-stage[data-stage="closed"] {
     box-shadow: inset 0 0 0 1px var(--signal-done);
     color: var(--signal-done);
@@ -582,17 +495,8 @@
       width: 100%;
     }
 
-    .trading-control-panel,
-    .trading-command-row,
     .trading-position-row {
       grid-template-columns: minmax(0, 1fr);
-    }
-
-    .trading-control-actions {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr);
-      /* A thumb finds a 48px row; the button stretches into it rather than restyling the shared control. */
-      grid-auto-rows: minmax(48px, auto);
     }
 
     .trading-protection-strip {

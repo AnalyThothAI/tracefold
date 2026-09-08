@@ -22,7 +22,7 @@ import {
  *
  * `stale` is the page's one freshness comparison — `Date.now() > execution.facts_expire_at_ms`, the instant
  * the server itself published as the end of this projection's budget. Past it the safety words are not what
- * the response says they are, so they read 过期 rather than the browser recomputing a heartbeat age and a
+ * the response says they are, so they read 待确认 rather than the browser recomputing a heartbeat age and a
  * reconciliation age of its own and disagreeing with the server about both.
  */
 export function TradingSafetyStrip({
@@ -57,13 +57,17 @@ export function TradingSafetyStrip({
         <Metric
           eyebrow="允许新增仓位"
           value={safety(execution.entries_armed, stale)}
-          caption={stale ? "事实已过期" : entryBlockReasonLabel(execution.entry_block_reason)}
+          caption={stale ? "等待新状态" : entryBlockReasonLabel(execution.entry_block_reason)}
           tone={!stale && execution.entries_armed ? "accent" : "caution"}
         />
       </MetricRow>
+      {stale ? (
+        <p role="status" className="trading-alert-line" data-tone="caution">
+          状态待确认：未取得有效期内的新状态，无法确认当前运行状态；下方保留上次读取的仓位与订单。
+        </p>
+      ) : null}
       <p className="trading-routes-line">
         可执行市场 {execution.routes_count} 个 · 账户槽位 <code>{execution.account_slot}</code>
-        {stale ? " · 本次读取的事实已过期" : ""}
       </p>
     </div>
   );
@@ -98,7 +102,7 @@ export function TradingExposure({
         <summary>
           <span>
             仓位 {positions.length} · 挂单 {account?.open_orders_count ?? "—"} · 保护{" "}
-            {protectionStatusLabel(execution.protection_status)}
+            {stale ? "待确认" : protectionStatusLabel(execution.protection_status)}
           </span>
           <small>
             {open
@@ -111,7 +115,7 @@ export function TradingExposure({
 
         {execution.unexpected_exposure ? (
           <p className="trading-alert-line" data-tone="alert">
-            Runtime 报告了无主敞口；在处置之前不要解除 ARMED 之外的任何限制。
+            Runtime 报告了无主敞口；当前敞口需要由运维核查。
           </p>
         ) : null}
         {account != null && !account.audit_healthy ? (
@@ -185,7 +189,13 @@ export function TradingExposure({
                   </b>
                   <span>Qty {position.protection_quantity ?? "—"}</span>
                   <span>Trigger {position.protection_trigger_price ?? "—"}</span>
-                  <span>{position.protection_full_coverage ? "全部覆盖" : "未全部覆盖"}</span>
+                  <span>
+                    {stale
+                      ? "覆盖情况待确认"
+                      : position.protection_full_coverage
+                        ? "全部覆盖"
+                        : "未全部覆盖"}
+                  </span>
                 </div>
               </article>
             ))}
@@ -239,6 +249,6 @@ function Fact({ label, value, warn = false }: { label: string; value: ReactNode;
 }
 
 function safety(value: boolean, stale: boolean): string {
-  if (stale) return "过期";
+  if (stale) return "待确认";
   return value ? "是" : "否";
 }

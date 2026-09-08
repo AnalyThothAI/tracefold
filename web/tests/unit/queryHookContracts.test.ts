@@ -12,7 +12,7 @@ import {
   useNewsQuotesWithToken,
 } from "@features/news/api/newsQueries";
 import {
-  TRADING_REFETCH_MS,
+  TRADING_STATUS_REFETCH_MS,
   useTradingStatusWithToken,
 } from "@features/trading/api/tradingQueries";
 import { queryKeys } from "@shared/query/queryKeys";
@@ -55,7 +55,7 @@ describe("query hook category contracts", () => {
       useObservedQuery: () => useNewsFeedWithToken("token", baseFilters),
     },
     {
-      interval: TRADING_REFETCH_MS,
+      interval: TRADING_STATUS_REFETCH_MS,
       key: queryKeys.tradingStatus(),
       name: "Trading status",
       useObservedQuery: () => useTradingStatusWithToken("token"),

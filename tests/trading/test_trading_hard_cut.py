@@ -30,7 +30,7 @@ def test_retired_execution_configuration_fails_closed(retired: dict[str, object]
 
 
 def test_public_http_is_case_execution_and_readiness_only() -> None:
-    """#537 PR-5, #589 PR-2. Three reads and one write; every retired execution surface stays deleted.
+    """#537 PR-5, #589 PR-2. Three reads; every retired execution surface stays deleted.
 
     The Signal list and the raw observation stream were two more public shapes over the ledgers
     `/api/trading/executions` already reads folded, and nothing in the browser called either. The two
@@ -45,9 +45,8 @@ def test_public_http_is_case_execution_and_readiness_only() -> None:
         "/api/trading/status",
         "/api/trading/cases",
         "/api/trading/executions",
-        "/api/trading/execution/commands",
     }
-    assert set(schema["paths"]["/api/trading/execution/commands"]) == {"post"}
+    assert "/api/trading/execution/commands" not in paths
     for retired in ("/api/trading/gate", "/api/trading/gate/{event_id}"):
         assert retired not in paths, retired
 

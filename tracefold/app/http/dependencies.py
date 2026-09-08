@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hmac
 import time
 from typing import Any
 
@@ -18,27 +17,6 @@ def _authenticated_runtime(request: Request) -> Any:
     request_token = _request_token(request)
     if not runtime.settings.ws_token or request_token != runtime.settings.ws_token:
         raise ApiUnauthorized()
-    return runtime
-
-
-def _authenticated_write_runtime(request: Request) -> Any:
-    """Authenticate a mutation from the bearer header only; query tokens stay reads only.
-
-    The one write route takes the same session token the reads take (#520 PR-B). A second 0600 file
-    split nothing an attacker could reach separately - both credentials live on the same LAN host and
-    are pasted into the same console - and its only reliable effect was a console that could read but
-    not flatten. What still holds: a URL-visible `?token=` never writes, and the body must be JSON.
-    """
-
-    runtime = _runtime(request)
-    authorization = request.headers.get("authorization", "")
-    scheme, _, value = authorization.partition(" ")
-    supplied = value.strip() if scheme.lower() == "bearer" else ""
-    expected = runtime.settings.ws_token or ""
-    if not supplied or not supplied.isascii() or not expected or not hmac.compare_digest(supplied, expected):
-        raise ApiUnauthorized()
-    if request.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
-        raise ApiBadRequest("content_type_json_required")
     return runtime
 
 
