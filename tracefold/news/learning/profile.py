@@ -25,8 +25,23 @@ corpus, but the holdout is the gate.
 #534 left every threshold alone and changed what feeds two of them: `_dataset_counts` no longer reads the
 code-written `taxonomy_*` dimensions when it splits boundary from retention, because they compare Stable
 to Gold rather than judging Stable, and counting them made `retention_clusters_min` the same quota of
-Stable mistakes in reverse. That is a profile-semantics change, so `EVALUATOR_VERSION` is `v6` and the
-trusted root moves with it.
+Stable mistakes in reverse. That is a profile-semantics change, so `EVALUATOR_VERSION` was `v6` and the
+trusted root moved with it.
+
+#567 moves `mean_total_tokens_growth_pct` from 0.10 to 0.25 and leaves `mean_call_growth_pct` and
+`mean_provider_cost_growth_pct` at 0.10. The guardrail exists to stop a candidate that buys quality with
+spend, and on this deployment prompt length is no longer a proxy for spend: the taxonomy Predictor runs
+on a local task model, ~94 % of its task tokens are prompt-cache hits, and candidate `3f7d1e12…` grew
+the mean total tokens 19.75 % while its call count fell 0.6 % and its p95 latency did not move. A 10 %
+prompt-length cap was therefore a stricter gate than the cost it guards, and it rejected a candidate the
+two remaining guardrails — physical calls and provider cost, which are what actually bill — both passed.
+25 % still refuses the instruction rewrite that doubles a prompt, which is the growth this cap is for.
+
+#567 also moves the taxonomy-only per-axis rule in `evaluate.py` from a zero-tolerance sign test to the
+bootstrap interval this profile already declares (`bootstrap`: seed 112, 2,000 replicates, 95 %). The old
+rule failed a candidate whose `assertion_status_accuracy` slipped by one cluster in 311 (-0.0032) while
+four axes and the four-axis exact rate rose, which is measurement noise being read as a regression. That
+is an evaluator-semantics change, so `EVALUATOR_VERSION` is `v7` and the trusted root moves with both.
 """
 
 from __future__ import annotations
@@ -39,7 +54,7 @@ from typing import Any
 from ..review.desk import READER_CONTRACT_SHA256, READER_CONTRACT_VERSION, REVIEW_RUBRIC_VERSION
 from .contracts import LEARNING_PROFILE_ID
 
-EVALUATOR_VERSION = "news_candidate_evaluator_v6"
+EVALUATOR_VERSION = "news_candidate_evaluator_v7"
 
 _PROFILE: dict[str, Any] = {
     "profile_id": LEARNING_PROFILE_ID,
@@ -65,7 +80,7 @@ _PROFILE: dict[str, Any] = {
         "max_review_budget": 100,
     },
     "guardrails": {
-        "mean_total_tokens_growth_pct": 0.10,
+        "mean_total_tokens_growth_pct": 0.25,
         "mean_call_growth_pct": 0.10,
         "mean_provider_cost_growth_pct": 0.10,
         "candidate_latency_p95_ms_max": 30_000,

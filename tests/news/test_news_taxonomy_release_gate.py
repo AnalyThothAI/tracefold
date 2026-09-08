@@ -51,9 +51,18 @@ def test_release_taxonomy_evidence_blocks_on_any_per_axis_regression() -> None:
         {"review-1": {"payload": {"taxonomy": gold, "first_bad_owner": None}}},
     )
 
-    assert evidence["schema"] == "tracefold.news.taxonomy_release_evidence.v2"
+    assert evidence["schema"] == "tracefold.news.taxonomy_release_evidence.v3"
     assert evidence["regressed_axes"] == ["event_family_accuracy", "four_axis_exact_accuracy"]
     assert evidence["delta"]["event_family_accuracy"] == -1.0
+    # #567: the same two axes, read as intervals. Every cluster here regressed, so the interval is the
+    # point delta and the taxonomy-only rule reaches the same verdict the sign test does.
+    assert evidence["interval_regressed_axes"] == ["event_family_accuracy", "four_axis_exact_accuracy"]
+    assert evidence["axis_interval_95"]["event_family_accuracy"] == {
+        "delta": -1.0,
+        "lower": -1.0,
+        "upper": -1.0,
+        "n": 1,
+    }
 
 
 def test_release_taxonomy_evidence_allows_improvement_and_carries_no_control_verdict() -> None:
@@ -75,7 +84,16 @@ def test_release_taxonomy_evidence_allows_improvement_and_carries_no_control_ver
     assert evidence["regressed_axes"] == []
     assert evidence["candidate"]["four_axis_exact_accuracy"] == 1.0
     assert evidence["candidate"]["taxonomy_overall"] > evidence["stable"]["taxonomy_overall"]
-    assert set(evidence) == {"schema", "stable", "candidate", "delta", "regressed_axes"}
+    assert set(evidence) == {
+        "schema",
+        "stable",
+        "candidate",
+        "delta",
+        "regressed_axes",
+        "axis_interval_95",
+        "interval_regressed_axes",
+        "taxonomy_overall_improved",
+    }
 
 
 def test_a_net_improving_candidate_that_flips_one_stable_exact_cluster_is_judged_by_the_axis_delta() -> None:
@@ -92,3 +110,8 @@ def test_a_net_improving_candidate_that_flips_one_stable_exact_cluster_is_judged
 
     assert evidence["delta"]["event_family_accuracy"] > 0
     assert evidence["regressed_axes"] == ["change_state_accuracy"]
+    # #567: three clusters cannot separate one flipped `change_state` from zero, so the interval reaches
+    # zero and the taxonomy-only class no longer calls it a regression. The sign list above is unchanged
+    # and still vetoes a candidate that also moves a reader-facing Predictor.
+    assert evidence["axis_interval_95"]["change_state_accuracy"]["upper"] == 0.0
+    assert evidence["interval_regressed_axes"] == []

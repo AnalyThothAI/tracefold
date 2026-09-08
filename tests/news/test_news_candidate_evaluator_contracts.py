@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Sequence
+from typing import Any
 
 import pytest
 
@@ -561,52 +563,161 @@ def test_taxonomy_only_is_read_off_the_write_set_not_declared() -> None:
     assert not _patch().changes(parent)
 
 
-def _taxonomy_evidence(
-    *,
-    cluster_n: int,
-    overall_delta: float | None,
-    regressed_axes: tuple[str, ...] = (),
-) -> dict[str, object]:
-    return {
-        "stable": {"cluster_n": cluster_n, "taxonomy_overall": 0.7},
-        "candidate": {
-            "cluster_n": cluster_n,
-            "taxonomy_overall": None if overall_delta is None else 0.7 + overall_delta,
-        },
-        "delta": {"taxonomy_overall": overall_delta},
-        "regressed_axes": list(regressed_axes),
+_GOLD_AXES: dict[str, Any] = {
+    "subject_codes": ["medtop:20000205"],
+    "event_family": "product_service_change",
+    "change_state": "announced",
+    "assertion_status": "confirmed",
+}
+
+
+def _axes(**overrides: Any) -> dict[str, Any]:
+    return {**_GOLD_AXES, **overrides}
+
+
+def _taxonomy_evidence(pairs: Sequence[tuple[dict[str, Any], dict[str, Any]]]) -> dict[str, Any]:
+    """The evaluator's own release evidence over one (stable, candidate) answer per independent cluster."""
+
+    def arm(axes: dict[str, Any]) -> dict[str, Any]:
+        taxonomy = news_taxonomy(**axes, source_authority="reputable_secondary").model_dump(mode="json")
+        return {"editorial": {"taxonomy": taxonomy}}
+
+    observations = [
+        {
+            "case_ref": {
+                "case_id": f"case-{index}",
+                "cluster_id": f"cluster-{index}",
+                "review_id": f"review-{index}",
+            },
+            "stable": arm(stable),
+            "candidate": arm(candidate),
+        }
+        for index, (stable, candidate) in enumerate(pairs)
+    ]
+    reviews = {
+        f"review-{index}": {"payload": {"taxonomy": _GOLD_AXES, "first_bad_owner": None}} for index in range(len(pairs))
     }
+    return candidate_evaluator_module._taxonomy_release_evidence(observations, reviews)
 
 
-def test_a_taxonomy_only_holdout_passes_only_on_a_strict_per_axis_improvement() -> None:
-    """#548: the per-axis evidence the evaluator already computes is the whole held-out primary."""
+def _exact_pair() -> tuple[dict[str, Any], dict[str, Any]]:
+    """A cluster both arms answer exactly right: it contributes a zero to every paired delta."""
+
+    return _axes(), _axes()
+
+
+def _candidate_fixes_family() -> tuple[dict[str, Any], dict[str, Any]]:
+    return _axes(event_family="other"), _axes()
+
+
+def _candidate_breaks_assertion() -> tuple[dict[str, Any], dict[str, Any]]:
+    return _axes(), _axes(assertion_status="claimed")
+
+
+def test_one_cluster_slipping_among_many_is_not_a_taxonomy_axis_regression() -> None:
+    """#567: the per-axis rule is the paired bootstrap interval, not the sign of a mean.
+
+    This is candidate `3f7d1e12…` in miniature. Twelve clusters of forty gain the event family Stable got
+    wrong, one cluster loses an assertion status Stable had right, and the rest are already exact. Under
+    #548 the single slip made `assertion_status_accuracy` negative and the whole release a FAIL. The
+    interval around that delta reaches zero — a corpus this size cannot tell one flipped cluster from
+    noise — so the axis is not a regression, while `taxonomy_overall` clears zero and the holdout passes.
+    """
+
+    evidence = _taxonomy_evidence(
+        [_candidate_fixes_family() for _ in range(12)]
+        + [_candidate_breaks_assertion()]
+        + [_exact_pair() for _ in range(27)]
+    )
+
+    assert evidence["schema"] == "tracefold.news.taxonomy_release_evidence.v3"
+    # The point delta really is negative on that axis, and the evidence still says so.
+    assert evidence["delta"]["assertion_status_accuracy"] < 0
+    assert evidence["regressed_axes"] == ["assertion_status_accuracy"]
+    # Its interval reaches zero, so the axis is not called a regression.
+    slip = evidence["axis_interval_95"]["assertion_status_accuracy"]
+    assert slip["n"] == 40
+    assert slip["delta"] == pytest.approx(-1 / 40)
+    assert slip["lower"] < 0 <= slip["upper"]
+    assert evidence["interval_regressed_axes"] == []
+    # The aggregate is above zero with the whole interval above it.
+    overall = evidence["axis_interval_95"]["taxonomy_overall"]
+    assert overall["lower"] > 0
+    assert evidence["taxonomy_overall_improved"] is True
+    assert candidate_evaluator_module._taxonomy_only_release_codes(evidence, stage="holdout") == ((), ())
+
+
+def test_an_axis_whose_whole_interval_is_below_zero_is_a_taxonomy_axis_regression() -> None:
+    """#567: a real regression is one the corpus can separate from zero, and this one fails closed."""
+
+    evidence = _taxonomy_evidence(
+        [(_axes(), _axes(change_state="effective")) for _ in range(40)],
+    )
+
+    interval = evidence["axis_interval_95"]["change_state_accuracy"]
+    assert interval["delta"] == -1.0 and interval["upper"] < 0
+    assert evidence["interval_regressed_axes"] == ["change_state_accuracy", "four_axis_exact_accuracy"]
+    blockers, failures = candidate_evaluator_module._taxonomy_only_release_codes(evidence, stage="holdout")
+    assert failures == ("candidate_taxonomy_axis_regression",)
+    assert blockers == ("taxonomy_overall_not_improved",)
+
+
+def test_an_overall_interval_that_crosses_zero_leaves_the_holdout_unknown() -> None:
+    """#567: one gain and one loss in forty clusters is not evidence of an improvement, and not a FAIL."""
+
+    evidence = _taxonomy_evidence(
+        [_candidate_fixes_family(), _candidate_breaks_assertion()] + [_exact_pair() for _ in range(38)],
+    )
+
+    overall = evidence["axis_interval_95"]["taxonomy_overall"]
+    assert overall["delta"] == pytest.approx(0.0)
+    assert overall["lower"] < 0 <= overall["upper"]
+    assert evidence["taxonomy_overall_improved"] is False
+    assert evidence["interval_regressed_axes"] == []
+    assert candidate_evaluator_module._taxonomy_only_release_codes(evidence, stage="holdout") == (
+        ("taxonomy_overall_not_improved",),
+        (),
+    )
+
+
+def test_a_taxonomy_only_holdout_keeps_its_empty_gold_and_cluster_floor_blockers() -> None:
+    """#548's two UNKNOWN blockers survive #567: the interval decides quality, not sample adequacy."""
 
     codes = candidate_evaluator_module._taxonomy_only_release_codes
     floor = int(_PROFILE["validation"]["primary_clusters_min"])
 
-    # Strictly above Stable with no axis below it: nothing blocks and nothing fails, so the report passes.
-    assert codes(_taxonomy_evidence(cluster_n=floor, overall_delta=0.04), stage="holdout") == ((), ())
-    # Any axis regression is a FAIL, whatever the aggregate did.
-    assert codes(
-        _taxonomy_evidence(cluster_n=floor, overall_delta=0.02, regressed_axes=("change_state_accuracy",)),
-        stage="holdout",
-    ) == ((), ("candidate_taxonomy_axis_regression",))
-    # Matching Stable exactly is not evidence of an improvement.
-    assert codes(_taxonomy_evidence(cluster_n=floor, overall_delta=0.0), stage="holdout") == (
-        ("taxonomy_overall_not_improved",),
-        (),
-    )
-    # Below the profile's primary floor, and with no Gold at all, the holdout stays UNKNOWN.
-    assert codes(_taxonomy_evidence(cluster_n=floor - 1, overall_delta=0.04), stage="holdout") == (
+    assert codes(_taxonomy_evidence([_candidate_fixes_family() for _ in range(floor)]), stage="holdout") == ((), ())
+    assert codes(_taxonomy_evidence([_candidate_fixes_family() for _ in range(floor - 1)]), stage="holdout") == (
         ("validation_primary_review_insufficient",),
         (),
     )
-    assert codes(_taxonomy_evidence(cluster_n=0, overall_delta=None), stage="holdout") == (
+    assert codes(_taxonomy_evidence([]), stage="holdout") == (
         ("taxonomy_release_evidence_empty", "taxonomy_overall_not_improved"),
         (),
     )
     # The 30-cluster floor is the validation profile's, so the offline screen does not read it.
-    assert codes(_taxonomy_evidence(cluster_n=1, overall_delta=0.04), stage="offline") == ((), ())
+    assert codes(_taxonomy_evidence([_candidate_fixes_family()]), stage="offline") == ((), ())
+
+
+def test_the_token_guardrail_admits_a_fifth_more_prompt_and_still_refuses_a_third() -> None:
+    """#567: prompt length stopped being a proxy for spend, so the cap it enforces moved to 25 %.
+
+    Candidate `3f7d1e12…` grew mean total tokens 19.75 % while its physical call count fell 0.6 %, its p95
+    latency did not move and ~94 % of its task tokens were prompt-cache hits on a local model. The two
+    guardrails that bill — calls and provider cost — stay at 10 % and are what refuse a candidate that
+    actually costs more.
+    """
+
+    regressed = candidate_evaluator_module._mean_regressed
+    tokens = float(_PROFILE["guardrails"]["mean_total_tokens_growth_pct"])
+    assert tokens == 0.25
+    assert not regressed([10_000] * 8, [12_000] * 8, growth_pct=tokens)
+    assert regressed([10_000] * 8, [13_000] * 8, growth_pct=tokens)
+
+    for guardrail in ("mean_call_growth_pct", "mean_provider_cost_growth_pct"):
+        cap = float(_PROFILE["guardrails"][guardrail])
+        assert cap == 0.10
+        assert regressed([10_000] * 8, [12_000] * 8, growth_pct=cap)
 
 
 def test_a_taxonomy_only_holdout_pass_promotes_without_shadow_or_canary() -> None:

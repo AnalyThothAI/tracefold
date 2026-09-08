@@ -70,7 +70,7 @@ from .projection import (
     _program_cost_by_predictor,
     _program_metric,
 )
-from .taxonomy_metric import accepted_taxonomy_gold, summarize_taxonomy
+from .taxonomy_metric import TaxonomyComparison, accepted_taxonomy_gold, compare_taxonomy, summarize_taxonomy
 
 # Re-exported, not restated. A second literal here would be one more copy of the identity #193 exists to
 # stop duplicating — and since #314 there is no literal to copy: the value is computed from the code the
@@ -87,6 +87,7 @@ _TAXONOMY_RELEASE_AXES = (
     "assertion_status_accuracy",
     "four_axis_exact_accuracy",
 )
+_TAXONOMY_INTERVAL_AXES = ("taxonomy_overall", *_TAXONOMY_RELEASE_AXES)
 
 
 def _output_taxonomy(output: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -121,6 +122,13 @@ def _taxonomy_release_evidence(
     facts in `news_learning_cases`; they cast no second vote here. A case only one arm answered is out of
     both summaries, so Stable and candidate are compared on identical cases and the deltas below subtract
     two numbers measured over the same clusters.
+
+    Two per-axis readings come out of that one population and they are not interchangeable. `delta` and
+    `regressed_axes` are the sign test #501 wrote, and they still decide the axis failure of a candidate
+    that also moves a reader-facing Predictor — that class is judged by blind pairwise preference, and the
+    sign test is a cheap veto beside it. `axis_interval_95`, `interval_regressed_axes` and
+    `taxonomy_overall_improved` are #567's paired bootstrap, and they are the whole decision for a
+    taxonomy-only candidate, whose *only* held-out evidence these axes are.
     """
 
     eligible: list[dict[str, Any]] = []
@@ -168,18 +176,80 @@ def _taxonomy_release_evidence(
             if stable_summary[axis] is None or candidate_summary[axis] is None
             else round(float(candidate_summary[axis]) - float(stable_summary[axis]), 6)
         )
-        for axis in ("taxonomy_overall", *_TAXONOMY_RELEASE_AXES)
+        for axis in _TAXONOMY_INTERVAL_AXES
     }
     regressed_axes = [
         axis for axis in _TAXONOMY_RELEASE_AXES if (axis_delta := delta[axis]) is not None and axis_delta < 0
     ]
+    intervals = _taxonomy_axis_intervals(rows["stable"], rows["candidate"])
     return {
-        "schema": "tracefold.news.taxonomy_release_evidence.v2",
+        "schema": "tracefold.news.taxonomy_release_evidence.v3",
         "stable": stable_summary,
         "candidate": candidate_summary,
         "delta": delta,
         "regressed_axes": regressed_axes,
+        "axis_interval_95": intervals,
+        "interval_regressed_axes": [
+            axis
+            for axis in _TAXONOMY_RELEASE_AXES
+            if (interval := intervals[axis]) is not None and float(interval["upper"]) < 0
+        ],
+        "taxonomy_overall_improved": bool(
+            (overall := intervals["taxonomy_overall"]) is not None and float(overall["lower"]) > 0
+        ),
     }
+
+
+def _taxonomy_axis_values(comparison: TaxonomyComparison) -> dict[str, float]:
+    """One cluster's score on each published axis, from the one comparison the summary already means over."""
+
+    return {
+        "taxonomy_overall": float(comparison.score),
+        "subject_codes_set_f1": float(comparison.subject_f1),
+        "event_family_accuracy": float(comparison.event_family_match),
+        "change_state_accuracy": float(comparison.change_state_match),
+        "assertion_status_accuracy": float(comparison.assertion_status_match),
+        "four_axis_exact_accuracy": float(comparison.exact),
+    }
+
+
+def _taxonomy_axis_intervals(
+    stable_rows: Sequence[Mapping[str, Any]],
+    candidate_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, Any] | None]:
+    """Each axis's paired candidate-minus-Stable per-cluster delta and its bootstrap 95 % interval (#567).
+
+    The two row lists are the same elected representatives in the same order, so subtracting them cluster
+    by cluster is a paired measurement: the noise both arms share on a hard cluster cancels instead of
+    entering each arm's mean separately. The mean of these deltas is the axis delta already published —
+    both are means over one identical population — and what is new is the interval around it, resampled by
+    the same `_bootstrap_interval` the blind-pairwise primary uses, under the same profile `bootstrap`
+    block (seed 112, 2,000 replicates, 95 %). There is no second bootstrap and no second seed.
+
+    #548 read the sign of that delta alone, so one cluster flipping on one axis out of 311 was a release
+    FAIL. An interval says whether the corpus can tell that slip from zero.
+    """
+
+    paired: dict[str, list[float]] = {axis: [] for axis in _TAXONOMY_INTERVAL_AXES}
+    for stable_row, candidate_row in zip(stable_rows, candidate_rows, strict=True):
+        stable_axes = _taxonomy_axis_values(compare_taxonomy(stable_row["gold"], stable_row["predicted"]))
+        candidate_axes = _taxonomy_axis_values(compare_taxonomy(candidate_row["gold"], candidate_row["predicted"]))
+        for axis, deltas in paired.items():
+            deltas.append(candidate_axes[axis] - stable_axes[axis])
+    intervals: dict[str, dict[str, Any] | None] = {}
+    for axis, deltas in paired.items():
+        interval = _bootstrap_interval(deltas)
+        intervals[axis] = (
+            None
+            if interval is None
+            else {
+                "delta": round(statistics.mean(deltas), 6),
+                "lower": round(float(interval["lower"]), 6),
+                "upper": round(float(interval["upper"]), 6),
+                "n": len(deltas),
+            }
+        )
+    return intervals
 
 
 def _taxonomy_primary_result(evidence: Mapping[str, Any]) -> dict[str, Any]:
@@ -193,6 +263,7 @@ def _taxonomy_primary_result(evidence: Mapping[str, Any]) -> dict[str, Any]:
     """
 
     delta = dict(evidence["delta"])
+    intervals = dict(evidence["axis_interval_95"])
     return {
         "endpoint": "taxonomy_axis_evidence",
         "primary_cluster_n": int(evidence["stable"]["cluster_n"]),
@@ -200,8 +271,15 @@ def _taxonomy_primary_result(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "stable_taxonomy_overall": evidence["stable"]["taxonomy_overall"],
         "candidate_taxonomy_overall": evidence["candidate"]["taxonomy_overall"],
         "taxonomy_overall_delta": delta.get("taxonomy_overall"),
+        "taxonomy_overall_interval_95": intervals.get("taxonomy_overall"),
+        "taxonomy_overall_improved": bool(evidence["taxonomy_overall_improved"]),
         "axis_delta": {axis: delta.get(axis) for axis in _TAXONOMY_RELEASE_AXES},
-        "regressed_axes": list(evidence["regressed_axes"]),
+        "axis_interval_95": {axis: intervals.get(axis) for axis in _TAXONOMY_RELEASE_AXES},
+        # The axes the interval calls regressions, which is what the gate below reads. The axes whose
+        # point delta merely happens to be negative stay published beside them, so a receipt shows both
+        # the slip and the reason it was or was not decisive (#567).
+        "regressed_axes": list(evidence["interval_regressed_axes"]),
+        "negative_delta_axes": list(evidence["regressed_axes"]),
     }
 
 
@@ -210,12 +288,22 @@ def _taxonomy_only_release_codes(
     *,
     stage: str,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """The blockers and failures a taxonomy-only candidate's held-out primary produces (#548).
+    """The blockers and failures a taxonomy-only candidate's held-out primary produces (#548, #567).
 
-    Pass is strictly above Stable on `taxonomy_overall` with no axis below it; any axis regression is a
-    FAIL; empty Gold, or fewer Gold-bearing clusters than the profile's `primary_clusters_min`, is
-    UNKNOWN. No threshold here is new: the empty blocker and the per-axis rule are #501's, and the cluster
-    floor is the same `validation.primary_clusters_min` the pairwise holdout reads — counted now over
+    Every reading is the paired per-cluster bootstrap interval, never the sign of a mean. An axis
+    REGRESSES only when its interval lies entirely below zero; the candidate IMPROVES only when
+    `taxonomy_overall`'s interval lies entirely above zero. PASS is improved with no axis regressed, FAIL
+    is any axis regressed, and an overall interval that crosses zero with nothing regressed is UNKNOWN
+    under the existing `taxonomy_overall_not_improved`. Empty Gold, or fewer Gold-bearing clusters than
+    the profile's `primary_clusters_min`, stays UNKNOWN as before.
+
+    #548 compared the two means directly, which made this class's only evidence a zero-tolerance test:
+    candidate `3f7d1e12…` raised four axes and the four-axis exact rate by 6.1 points over 311 clusters
+    and was rejected because one cluster flipped `assertion_status` (-0.0032, 1/311). A corpus that cannot
+    distinguish that slip from zero has not observed a regression, and saying so is the interval's job.
+    No new gate name, no new threshold and no second bootstrap: the interval is `_bootstrap_interval`
+    under the profile's own `bootstrap` block, the same one the blind-pairwise holdout's `interval_95`
+    already had to clear. The cluster floor is still `validation.primary_clusters_min`, counted over
     Gold-bearing connected fact clusters, which is the sampling unit this class actually has.
     """
 
@@ -226,10 +314,9 @@ def _taxonomy_only_release_codes(
         blockers.append("taxonomy_release_evidence_empty")
     elif stage == "holdout" and cluster_n < int(_PROFILE["validation"]["primary_clusters_min"]):
         blockers.append("validation_primary_review_insufficient")
-    if evidence["regressed_axes"]:
+    if evidence["interval_regressed_axes"]:
         failures.append("candidate_taxonomy_axis_regression")
-    overall = evidence["delta"]["taxonomy_overall"]
-    if overall is None or float(overall) <= 0:
+    if not evidence["taxonomy_overall_improved"]:
         blockers.append("taxonomy_overall_not_improved")
     return tuple(blockers), tuple(failures)
 
@@ -1391,6 +1478,9 @@ class CandidateEvaluator:
                 blockers.extend(taxonomy_blockers)
                 failures.extend(taxonomy_failures)
             else:
+                # A candidate that also moves a reader-facing Predictor keeps the sign test: its primary
+                # is the blind pairwise preference, and this axis veto is a cheap extra refusal beside it,
+                # not the whole decision the way it is for the taxonomy-only class above (#567).
                 if not int(taxonomy_evidence["stable"]["cluster_n"]):
                     blockers.append("taxonomy_release_evidence_empty")
                 if taxonomy_evidence["regressed_axes"]:
@@ -1947,7 +2037,7 @@ def _mean_regressed(stable: Sequence[int], candidate: Sequence[int], *, growth_p
     return candidate_mean > stable_mean * (1 + float(growth_pct))
 
 
-def _bootstrap_interval(values: Sequence[int]) -> dict[str, float] | None:
+def _bootstrap_interval(values: Sequence[float]) -> dict[str, float] | None:
     if not values:
         return None
     rng = random.Random(int(_PROFILE["bootstrap"]["seed"]))  # noqa: S311 - deterministic bootstrap

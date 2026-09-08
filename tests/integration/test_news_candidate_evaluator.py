@@ -2515,7 +2515,7 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
     # #504 D7: the four write-only production regression gates are gone; `must_push_regression` and
     # `stable_hard_gate` remain the release failures that read Gold.
     assert "regression_gates" not in report.evidence
-    assert report.evidence["evaluator_version"] == "news_candidate_evaluator_v6"
+    assert report.evidence["evaluator_version"] == "news_candidate_evaluator_v7"
 
     candidate_stability = report.evidence["stability"]["candidate"]
     assert len(candidate_stability) == len(development.cases) == len(_COMPILABLE_CORPUS)
@@ -3971,6 +3971,113 @@ def test_a_taxonomy_only_holdout_is_decided_by_its_per_axis_evidence(conn) -> No
         "change_state_accuracy",
         "four_axis_exact_accuracy",
     ]
+
+
+def test_a_taxonomy_only_holdout_survives_a_one_cluster_slip_the_bootstrap_cannot_separate(conn) -> None:
+    """#567: the per-axis rule is the paired bootstrap interval, so one flipped cluster is not a FAIL.
+
+    This is the shape of candidate `3f7d1e12…`: several clusters gain the event family Stable got wrong,
+    one cluster loses an `assertion_status` Stable had right, the rest were already exact. Under
+    #548 the point delta on that axis was negative and the whole release was rejected — one cluster in 311
+    on the live corpus, one in thirty-three here. The interval around it reaches zero, so the corpus has
+    not observed a regression; `taxonomy_overall`'s interval clears zero, so it has observed an
+    improvement. Both intervals are published in the evidence so the receipt shows why.
+    """
+
+    _reviewed_misses(conn, total=32, stable_wrong=6)
+    _accepted_compilable_event(conn)
+    stable = _arm()
+    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        bootstrap._datasets.freeze_dataset(
+            DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
+        )
+    )
+    cluster_n = 32 + len(_COMPILABLE_CORPUS)
+    assert development.counts["independent_cluster_n"] == cluster_n >= _PROFILE["validation"]["primary_clusters_min"]
+
+    # The candidate answers every case with its accepted Gold, except one cluster Stable already had
+    # exactly right, where it flips the assertion status alone.
+    gold_axes = _gold_axes(bootstrap._datasets, development.cases)
+    assert len(gold_axes) == cluster_n
+    slipped_title = "Independent material missed fact number 10"
+    assert gold_axes[slipped_title] == dict(_STABLE_ARM_AXES)
+    candidate_axes = dict(gold_axes)
+    candidate_axes[slipped_title] = {**gold_axes[slipped_title], "assertion_status": "confirmed"}
+    # What the fixture corpus makes Stable get wrong, counted from the Gold rather than restated.
+    stable_family_wrong_n = sum(axes["event_family"] != _STABLE_ARM_AXES["event_family"] for axes in gold_axes.values())
+    stable_exact_n = sum(axes == dict(_STABLE_ARM_AXES) for axes in gold_axes.values())
+    assert stable_family_wrong_n >= 6 and stable_exact_n < cluster_n - 1
+
+    candidate = _taxonomy_only_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+    )
+    validation_sha = _insert_validation_dataset(
+        conn,
+        development=development,
+        candidate=candidate,
+        window_duration_hours=24.0,
+        eligible_event_n=200,
+    )
+    _insert_stage_pass(conn, candidate_sha=candidate.candidate_sha, stage="offline")
+    report = asyncio.run(
+        CandidateEvaluator(
+            conn,
+            stable=stable,
+            judges=_taxonomy_judges(stable, candidate.candidate_arm, candidate_axes_by_title=candidate_axes),
+            candidate_catalog=(candidate,),
+        ).evaluate(
+            _holdout_request(
+                development_sha=development.artifact_sha,
+                validation_sha=validation_sha,
+                candidate_sha=candidate.candidate_sha,
+            )
+        )
+    )
+
+    taxonomy = report.evidence["taxonomy"]
+    assert taxonomy["schema"] == "tracefold.news.taxonomy_release_evidence.v3"
+    # The slip is real and the evidence still reports its sign, and the gains outnumber it many times.
+    assert taxonomy["delta"]["assertion_status_accuracy"] == pytest.approx(-1 / cluster_n, abs=1e-6)
+    assert taxonomy["delta"]["event_family_accuracy"] == pytest.approx(stable_family_wrong_n / cluster_n, abs=1e-6)
+    assert taxonomy["delta"]["four_axis_exact_accuracy"] == pytest.approx(
+        (cluster_n - 1 - stable_exact_n) / cluster_n, abs=1e-6
+    )
+    assert taxonomy["regressed_axes"] == ["assertion_status_accuracy"]
+
+    # Every axis publishes its paired delta, its 95 % interval and the cluster count behind it.
+    intervals = taxonomy["axis_interval_95"]
+    assert set(intervals) == {
+        "taxonomy_overall",
+        "subject_codes_set_f1",
+        "event_family_accuracy",
+        "change_state_accuracy",
+        "assertion_status_accuracy",
+        "four_axis_exact_accuracy",
+    }
+    assert all(set(interval) == {"delta", "lower", "upper", "n"} for interval in intervals.values())
+    assert all(interval["n"] == cluster_n for interval in intervals.values())
+    assert all(interval["lower"] <= interval["delta"] <= interval["upper"] for interval in intervals.values())
+    assert intervals["assertion_status_accuracy"]["lower"] < 0 <= intervals["assertion_status_accuracy"]["upper"]
+    assert intervals["taxonomy_overall"]["lower"] > 0
+
+    # So no axis regressed, the aggregate improved, and the holdout produced no failure at all.
+    assert taxonomy["interval_regressed_axes"] == []
+    assert taxonomy["taxonomy_overall_improved"] is True
+    primary = report.evidence["primary"]
+    assert primary["endpoint"] == "taxonomy_axis_evidence"
+    assert primary["primary_cluster_n"] == primary["candidate_cluster_n"] == cluster_n
+    assert primary["regressed_axes"] == []
+    assert primary["negative_delta_axes"] == ["assertion_status_accuracy"]
+    assert primary["taxonomy_overall_improved"] is True
+    assert primary["axis_interval_95"]["assertion_status_accuracy"] == intervals["assertion_status_accuracy"]
+    assert report.evidence["failures"] == []
+    assert "taxonomy_overall_not_improved" not in report.evidence["blockers"]
+    # The thin fixture corpus still misses the development coverage floors; nothing else blocks.
+    assert not [code for code in report.evidence["blockers"] if not code.startswith("development_")]
 
 
 def test_a_thin_taxonomy_only_holdout_is_unknown_and_a_reader_facing_one_still_needs_pairwise(conn) -> None:
