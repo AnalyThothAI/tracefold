@@ -18,7 +18,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 /**
- * 市场事实 (#553 PR-1).
+ * 市场研究 (#553 PR-1).
  *
  * The page exists because OI frames, liquidations, smart-money prints and unparsed market sources stopped
  * being Events: they are stored observations read through `/api/news/market`, and everything the console
@@ -65,13 +65,13 @@ describe("NewsMarketPage", () => {
     );
 
     renderMarket();
-    await screen.findByRole("heading", { name: "市场事实" });
+    await screen.findByRole("heading", { name: "市场研究" });
 
     await waitFor(() => expect(paths).toContain("/api/news/market"));
     expect(paths.filter((path) => path.startsWith("/api/trading"))).toEqual([]);
     // And the observations are on screen while that is true, so "Trading is unavailable" is not a
     // state this page can be in: it never asks.
-    expect(await screen.findByText(/WIF OI Rise 6.71%/)).toBeInTheDocument();
+    expect(await screen.findByText("+6.71%")).toBeInTheDocument();
     expect(document.querySelectorAll(".news-market-row")).toHaveLength(3);
   });
 
@@ -89,7 +89,7 @@ describe("NewsMarketPage", () => {
 
     renderMarket();
 
-    expect(await screen.findByText(/WIF OI Rise 6.71%/)).toBeInTheDocument();
+    expect(await screen.findByText("+6.71%")).toBeInTheDocument();
     expect(await screen.findByText("状态未知")).toBeInTheDocument();
     expect(screen.getByText(/未受影响/)).toBeInTheDocument();
     expect(document.querySelectorAll(".news-market-row")).toHaveLength(3);
@@ -102,13 +102,14 @@ describe("NewsMarketPage", () => {
      * and both are true at the same moment.
      */
     renderMarket();
-    await screen.findByText(/WIF OI Rise 6.71%/);
+    await screen.findByText("+6.71%");
 
     expect(screen.queryByText("推送通道")).not.toBeInTheDocument();
-    // Printed as written, never glossed: the operator greps these strings.
+    const rows = screen.getAllByRole("button", { expanded: false });
+    expect(rows[0]).not.toHaveTextContent("sent");
+    fireEvent.click(rows[0]);
+    expect(await screen.findByText("原始记录、解析与通知依据")).toBeInTheDocument();
     expect(screen.getAllByText("sent").length).toBeGreaterThan(0);
-    expect(screen.getByText("merging")).toBeInTheDocument();
-    expect(screen.getByText("liquidation_followup_window_open")).toBeInTheDocument();
   });
 
   it("renders the frozen card and the observations it covered, not just their count", async () => {
@@ -159,19 +160,19 @@ describe("NewsMarketPage", () => {
     const rows = await screen.findAllByRole("button", { expanded: false });
 
     // A record that parsed cleanly and was never pushed is not a parse failure, and the row says both.
-    const oi = rows[0];
-    expect(within(oi).getByText("解析")).toBeInTheDocument();
-    expect(within(oi).getByText("已解析")).toBeInTheDocument();
-    expect(within(oi).getByText("推送")).toBeInTheDocument();
-    expect(within(oi).getByText("sent")).toBeInTheDocument();
-    expect(oi.querySelectorAll(".news-market-flag")).toHaveLength(2);
+    fireEvent.click(rows[0]);
+    await screen.findByText("原始记录、解析与通知依据");
+    const detail = document.querySelector(".news-market-raw-evidence") as HTMLElement;
+    expect(within(detail).getAllByText("已解析").length).toBeGreaterThan(0);
+    expect(within(detail).getAllByText("推送")[0]).toBeInTheDocument();
+    expect(detail.querySelectorAll(".news-market-flag")).toHaveLength(2);
   });
 
   it("keeps a retained-but-unparsed observation on screen with its own reason", async () => {
     // An `unknown_market` source has no parser at all: the record is stored raw and the row is the only
     // place an operator sees it. Dropping it, or reading numbers out of its title, are both inventions.
     renderMarket();
-    await screen.findByText(/WIF OI Rise 6.71%/);
+    await screen.findByText("+6.71%");
 
     const raw = document.querySelector('.news-market-row[data-kind="unknown_market"]');
     expect(raw).not.toBeNull();
@@ -233,7 +234,7 @@ describe("NewsMarketPage", () => {
     // The kind's own word, not the raw server token and not a blank cell.
     expect(row).toHaveTextContent("链上钱包");
     expect(row).toHaveTextContent("FSD");
-    expect(within(row as HTMLElement).getByText("sent")).toBeInTheDocument();
+    expect(within(row as HTMLElement).getByText("查看依据")).toBeInTheDocument();
     // And the summary strip names it beside the four the provider sends.
     const sources = await screen.findByLabelText("来源汇总");
     expect(within(sources).getByTitle(/链上钱包/)).toBeInTheDocument();
@@ -352,16 +353,20 @@ describe("NewsMarketPage", () => {
     );
 
     renderMarket();
-    await screen.findByText(/WIF OI Rise 6.71%/);
-    await waitFor(() => expect(observed).toContain(""));
+    await screen.findByText("+6.71%");
+    await waitFor(() => expect(observed).toContain("oi"));
+    fireEvent.click(screen.getByRole("button", { name: "OI 异动" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "清算" }));
+    fireEvent.click(await screen.findByRole("button", { name: "强平" }));
 
     await waitFor(() => expect(observed).toContain("liquidation"));
     expect(screen.getByTestId("location").textContent).toBe("/news/market?kind=liquidation");
     await waitFor(() => expect(document.querySelectorAll(".news-market-row")).toHaveLength(1));
-    expect(screen.getByRole("button", { name: "清算" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "OI" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "强平" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "OI 异动" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
   });
 
   it("summarizes each source over the whole window, raw beside parsed rather than under it", async () => {
@@ -387,7 +392,7 @@ describe("NewsMarketPage", () => {
     expect(await screen.findByText("供应商原文")).toBeInTheDocument();
     expect(screen.getByText("已入库字段")).toBeInTheDocument();
     expect(screen.getByText("PROVIDER_PARAMS")).toBeInTheDocument();
-    expect(screen.getByText(/本组时间线/)).toBeInTheDocument();
+    expect(screen.getByText(/本组离散观察/)).toBeInTheDocument();
     // The trace is stored columns read back, never a number derived in the browser.
     expect(screen.getByText("oi_change_bps")).toBeInTheDocument();
     expect(screen.getByText("671")).toBeInTheDocument();
@@ -403,7 +408,7 @@ describe("NewsMarketPage", () => {
     renderMarket();
     expect(await screen.findByText("这个窗口里没有符合当前筛选的市场观测。")).toBeInTheDocument();
     // The filter is still reachable: the window was empty, not the page.
-    expect(screen.getByRole("button", { name: "OI" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "OI 异动" })).toBeInTheDocument();
   });
 
   it("offers a retry when the market read itself fails, and shows nothing it did not read", async () => {

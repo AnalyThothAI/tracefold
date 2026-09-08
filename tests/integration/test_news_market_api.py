@@ -255,7 +255,17 @@ def test_the_market_list_collapses_orders_and_pages_through_the_real_envelope(ap
         narrowed = client.get(f"/api/news/market?{window}&kind=liquidation", headers=AUTH)
 
     assert first.status_code == 200
-    assert page["filters"] == {"kind": None, "from_ms": NOW - 1, "to_ms": NOW + 10, "limit": 2}
+    assert page["filters"] == {
+        "kind": None,
+        "from_ms": NOW - 1,
+        "to_ms": NOW + 10,
+        "limit": 2,
+        "asset": None,
+        "provider": None,
+        "venue": None,
+        "measurement_definition": None,
+        "sort": "latest",
+    }
     # Newest first: the wallet print, then the liquidation. The two OI frames are one run and collapse
     # onto the second page as a single group carrying both.
     assert [group["latest"]["item_id"] for group in page["groups"]] == [wallet_item, liquidation_item]
@@ -620,7 +630,7 @@ def test_the_wallet_cards_route_publishes_each_card_with_its_receipts_and_bounds
     card = data["cards"][0]
     assert (card["kind"], card["basis"], card["ratio_bps"]) == ("exit", "chain_balance", 10_000)
     # Nothing has been sent, so there is no card to have a receipt: absent, not zero.
-    assert (card["delivery_key"], card["return_1h_bps"], card["digest_lines"]) == (None, None, None)
+    assert (card["delivery_key"], card["outcomes"][1]["return_bps"], card["digest_lines"]) == (None, None, None)
 
     assert refused.status_code == 400
     assert refused.json()["error"] == "news_wallets_window_invalid"
@@ -699,8 +709,9 @@ def test_buy_candidates_keep_unsent_outcomes_and_exact_identity_filters(app, con
     assert (row["kind"], row["stage"], row["selection_reason"]) == ("buy", "first_observed", "below_min_usd")
     assert (row["buy_count"], row["unpriced_buys"]) == (2, 1)
     assert (row["delivery_key"], row["settled_at_ms"]) == (None, None)
-    assert row["return_15m_bps"] == -2000
-    assert row["outcome_15m_source"] == "dexscreener"
+    assert row["outcomes"][0]["return_bps"] is None
+    assert row["outcomes"][0]["status"] == "identity_unverified"
+    assert row["outcomes"][0]["source"] == "dexscreener"
     assert row["price_reference"] == "observed"
     assert row["observed_at_ms"] == at_ms + 1
     assert row["history_from_ms"] == at_ms - 86_400_000
@@ -830,3 +841,156 @@ def test_wallet_token_timeline_keeps_small_sells_and_transfers_without_cards(app
     assert [row["kind"] for row in limited.json()["data"]["fills"]] == ["transfer_out", "sell"]
     assert single.json()["data"]["fills"] == []
     assert unauthorized.status_code == 401
+
+
+def test_wallet_research_collapses_before_paging_and_owns_each_outcome_anchor(app, conn) -> None:
+    from tracefold.news.wallet_contracts import VERIFIED_WALLET_PRICE_SOURCE
+
+    now = int(time.time() * 1000)
+    wallet = "0x69326e48f68500fb6cf3b3a7da640737b9cc347b"
+    token = "0x8de9018c1bb82884245f06dede9fe2bebabd1e18"
+    identities = []
+    for index in range(3):
+        stamp = now - 4_000_000 + index
+        identities.append(
+            _admit_wallet_observation(
+                conn,
+                at_ms=stamp,
+                kind="buy",
+                segment_key="segment-one",
+                tx_hash="0x" + str(index + 1) * 64,
+                usd=Decimal((index + 1) * 1000),
+                mark_price=Decimal("2"),
+                evidence={
+                    "log_index": index,
+                    "buy_count": index + 1,
+                    "observed_at_ms": stamp,
+                    "price_reference": "observed",
+                    "mark_source": VERIFIED_WALLET_PRICE_SOURCE,
+                    "price_chain_id": 4663,
+                    "price_token": token,
+                    "price_quote": "USD",
+                    "price_unit": "token",
+                },
+            )
+        )
+    other = _admit_wallet_observation(
+        conn,
+        at_ms=now - 5_000_000,
+        kind="buy",
+        segment_key="segment-two",
+        usd=Decimal("4000"),
+        evidence={"log_index": 0},
+    )
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.news.chain_tape_record_outcome(
+            WalletOutcome(
+                item_id=identities[-1],
+                horizon="15m",
+                price=Decimal("2.2"),
+                at_ms=now - 3_000_000,
+                source=VERIFIED_WALLET_PRICE_SOURCE,
+                reference_price=Decimal("2"),
+                reference_at_ms=now - 4_000_000 + 2,
+                target_at_ms=now - 3_100_000 + 2,
+            )
+        )
+    conn.commit()
+    with TestClient(app) as client:
+        params = {"kind": "buy", "wallet_address": wallet, "token_address": token, "limit": 1, "to_ms": now}
+        first = client.get("/api/news/wallets/cards", headers=AUTH, params=params)
+        assert first.status_code == 200, first.text
+        data = first.json()["data"]
+        assert data["totals"] == {
+            "segments": 2,
+            "observations": 4,
+            "wallets": 1,
+            "tokens": 1,
+            "priced_buy_usd": "7000.0000000000",
+        }
+        row = data["cards"][0]
+        assert row["item_id"] == identities[-1]
+        assert row["observation_count"] == 3
+        assert Decimal(row["usd"]) == 3000
+        assert row["outcomes"][0]["return_bps"] == 1000
+        assert row["outcomes"][1]["status"] == "pending"
+        assert row["outcomes"][2]["status"] == "not_due"
+        second = client.get("/api/news/wallets/cards", headers=AUTH, params={**params, "cursor": data["next_cursor"]})
+        assert second.status_code == 200, second.text
+        assert [row["item_id"] for row in second.json()["data"]["cards"]] == [other]
+        assert second.json()["data"]["totals"] == data["totals"]
+        changed = client.get(
+            "/api/news/wallets/cards", headers=AUTH, params={**params, "kind": "exit", "cursor": data["next_cursor"]}
+        )
+        assert changed.status_code == 400
+        timeline = client.get(
+            "/api/news/wallets/cards",
+            headers=AUTH,
+            params={**params, "limit": 10, "view": "observations", "segment_key": "segment-one"},
+        )
+        assert [row["item_id"] for row in timeline.json()["data"]["cards"]] == list(reversed(identities))
+
+
+def test_oi_sort_requires_a_comparable_scope_and_pages_without_losing_ties(app, conn) -> None:
+    for index, (symbol, change) in enumerate((("BTC", "4"), ("ETH", "9"), ("SOL", "9"))):
+        _admit(
+            conn,
+            _frame(
+                record_id=8_100_000 + index,
+                text=f"{symbol} OI Rise {change}%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%",
+                strategy_id=1019,
+                strategy_name="OI Event Monitor",
+                source_type="market",
+                at_ms=NOW + index,
+            ),
+            at_ms=NOW + index,
+        )
+    with TestClient(app) as client:
+        params = {"kind": "oi", "from_ms": NOW - 1, "to_ms": NOW + 10}
+        latest = client.get("/api/news/market", headers=AUTH, params=params).json()["data"]["groups"][0]["latest"]
+        assert latest["measurement_window_ms"] == 300000
+        assert latest["measurement_contract_status"] == "proven"
+        refused = client.get("/api/news/market", headers=AUTH, params={**params, "sort": "oi_change"})
+        assert refused.status_code == 400
+        scope = {
+            **params,
+            "sort": "oi_change",
+            "provider": latest["provider"],
+            "venue": latest["source_venue"],
+            "measurement_definition": latest["measurement_definition"],
+            "limit": 1,
+        }
+        first = client.get("/api/news/market", headers=AUTH, params=scope)
+        assert first.status_code == 200, first.text
+        data = first.json()["data"]
+        assert data["groups"][0]["latest"]["symbol"] == "SOL"
+        second = client.get("/api/news/market", headers=AUTH, params={**scope, "cursor": data["next_cursor"]})
+        assert second.status_code == 200, second.text
+        assert second.json()["data"]["groups"][0]["latest"]["symbol"] == "ETH"
+        filtered = client.get("/api/news/market", headers=AUTH, params={**params, "asset": "btc"}).json()["data"]
+        assert [g["latest"]["symbol"] for g in filtered["groups"]] == ["BTC"]
+
+
+def test_wallet_segments_do_not_merge_equal_symbols_addresses_on_different_chains(app, conn) -> None:
+    now = int(time.time() * 1000)
+    for chain in (4663, 4664):
+        _admit_wallet_observation(
+            conn,
+            at_ms=now - 1000,
+            kind="buy",
+            chain_id=chain,
+            segment_key="same-segment",
+            usd=Decimal("1000"),
+            evidence={"log_index": 0},
+        )
+    with TestClient(app) as client:
+        data = client.get("/api/news/wallets/cards", headers=AUTH, params={"kind": "buy"}).json()["data"]
+        assert len(data["cards"]) == data["totals"]["segments"] == 2
+        assert data["totals"]["wallets"] == data["totals"]["tokens"] == 2
+        assert len({row["research_id"] for row in data["cards"]}) == 2
+        selected = client.get("/api/news/wallets/cards", headers=AUTH, params={"kind": "buy", "chain_id": 4663}).json()[
+            "data"
+        ]
+        assert [row["chain_id"] for row in selected["cards"]] == [4663]
+        assert selected["totals"]["segments"] == 1

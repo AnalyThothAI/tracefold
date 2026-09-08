@@ -20,7 +20,7 @@ test("mobile shell exposes News navigation around the News landing", async ({ pa
   const navigation = page.getByRole("navigation", { name: "Primary navigation" });
   await expect(navigation).toBeVisible();
   await expect(navigation.getByRole("link", { name: "事件流" })).toBeVisible();
-  await expect(navigation.getByRole("link", { name: "市场事实" })).toBeVisible();
+  await expect(navigation.getByRole("link", { name: "市场研究" })).toBeVisible();
   // #207: 流水线状态 kept its route and lost its slot; the topbar lamp is the way in, on every frame.
   await expect(navigation.getByRole("link", { name: "流水线状态" })).toHaveCount(0);
   await expect(navigation.getByRole("link", { name: "Radar" })).toHaveCount(0);

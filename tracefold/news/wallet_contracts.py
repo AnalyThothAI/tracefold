@@ -62,6 +62,8 @@ WALLET_OUTCOME_HORIZONS: Final[tuple[tuple[OutcomeHorizon, int], ...]] = (
 # row rather than a silence: "we looked and could not price it" is a different fact from "not due yet",
 # and the absence of a row is what "not due yet" means.
 OUTCOME_UNAVAILABLE: Final = "unavailable"
+# A new source identity attests the adapter checked chain and base-token address.
+VERIFIED_WALLET_PRICE_SOURCE: Final = "dexscreener_base_token_v1"
 # The smallest figure the receipt column can hold. `price` is `numeric(38,18)`, so anything under half
 # of this rounds to zero on the way in and the column's own `price > 0` refuses the row -- which is the
 # same defect as a price of zero, one representation further down. It is reachable: the recorded

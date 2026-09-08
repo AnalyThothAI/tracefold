@@ -5,8 +5,9 @@ import { useShellRouteContext } from "./shellRouteContext";
 
 export function Component() {
   const { token } = useShellRouteContext();
-  const { base, eventId } = useParams();
+  const { base, eventId, itemId } = useParams();
   const location = useLocation();
+  if (itemId) return <NewsPage itemId={itemId} token={token} view="market-item" />;
   if (eventId) return <NewsPage eventId={eventId} token={token} view="event" />;
   if (base) return <NewsPage base={base} token={token} view="symbol" />;
   if (location.pathname === "/news/status") return <NewsPage token={token} view="status" />;

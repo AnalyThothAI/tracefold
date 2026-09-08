@@ -1,8 +1,7 @@
 import { ActionButton } from "@shared/ui/ActionButton";
 import { EmptyNote } from "@shared/ui/EmptyNote";
 import * as PageState from "@shared/ui/PageState";
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import {
   NEWS_MARKET_KINDS,
@@ -24,6 +23,8 @@ import {
 import { clockTime, displayTime, formatCount } from "../../model/newsLabels";
 import { formatPrice } from "../../model/newsPrice";
 import { walletCardLabel, walletHistoryPath, walletStageLabel } from "../../model/walletFacts";
+
+import { MarketObservationMetrics, OiEvidence } from "./OiEvidence";
 
 import "./newsMarketGroupTable.css";
 
@@ -125,7 +126,8 @@ export function NewsMarketGroupTable({
 }
 
 function GroupRow({ group, token }: { group: NewsMarketGroup; token: string }) {
-  const [open, setOpen] = useState(false);
+  const [params, setParams] = useSearchParams();
+  const open = params.get("item") === group.latest.item_id;
   const latest = group.latest;
   return (
     <article
@@ -136,7 +138,12 @@ function GroupRow({ group, token }: { group: NewsMarketGroup; token: string }) {
       <button
         aria-expanded={open}
         className="news-market-row-main"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          const next = new URLSearchParams(params);
+          if (open) next.delete("item");
+          else next.set("item", latest.item_id);
+          setParams(next, { replace: true });
+        }}
         type="button"
       >
         <span className="news-market-row-head">
@@ -156,10 +163,10 @@ function GroupRow({ group, token }: { group: NewsMarketGroup; token: string }) {
             {clockTime(group.first_event_at_ms)} → {clockTime(group.last_event_at_ms)}
           </span>
           <span className="news-market-spacer" />
-          <ParseChip observation={latest} />
-          <PushChip reason={group.notification_reason} status={group.notification_status} />
+          <small>{open ? "收起依据" : "查看依据"}</small>
+          {latest.parse_status === "raw" ? <ParseChip observation={latest} /> : null}
         </span>
-        <span className="news-market-title">{latest.title}</span>
+        <MarketObservationMetrics observation={latest} />
       </button>
       {open ? <GroupDetail itemId={latest.item_id} token={token} /> : null}
     </article>
@@ -292,7 +299,7 @@ function cardLines(card: Record<string, unknown> | undefined): string[] {
  * The detail endpoint carries the group's retained timeline, so expanding is one request rather than one
  * per member, and the list itself never loads a payload a reader has not asked for.
  */
-function GroupDetail({ itemId, token }: { itemId: string; token: string }) {
+export function GroupDetail({ itemId, token }: { itemId: string; token: string }) {
   const itemQuery = useNewsMarketItemWithToken(token, itemId);
   if (itemQuery.isLoading && !itemQuery.data) {
     return (
@@ -313,40 +320,47 @@ function GroupDetail({ itemId, token }: { itemId: string; token: string }) {
   const params = Object.entries(item.provider_params);
   return (
     <div className="news-market-detail">
-      <div className="news-market-detail-panel">
-        {/*
-         * A wallet digest has no provider line to show: nothing reported it, this process computed it
-         * from stored fills. What it has instead is the sentences it was sent with, and they are the
-         * first thing a reader who opened this row came for (#572 PR-3).
-         */}
-        <DigestLines lines={item.observation.wallet_digest_lines} />
-        <WalletBuyEvidence observation={item.observation} />
-        <small className="news-market-detail-label">供应商原文</small>
-        <code className="news-market-raw">{item.raw_first_line || item.observation.title}</code>
-        {item.description ? <p className="news-market-description">{item.description}</p> : null}
-        <small className="news-market-detail-label">PROVIDER_PARAMS</small>
-        {params.length ? (
-          <TraceList entries={params.map(([key, value]) => [key, String(value)])} />
-        ) : (
-          <p className="news-market-detail-empty">这条记录没有随附的供应商参数。</p>
-        )}
-      </div>
+      <OiEvidence observation={item.observation} />
+      <details className="news-market-raw-evidence">
+        <summary>原始记录、解析与通知依据</summary>
+        <div className="news-market-detail-panel">
+          <ParseChip observation={item.observation} />
+          <PushChip reason={item.notification_reason} status={item.notification_status} />
+          {/*
+           * A wallet digest has no provider line to show: nothing reported it, this process computed it
+           * from stored fills. What it has instead is the sentences it was sent with, and they are the
+           * first thing a reader who opened this row came for (#572 PR-3).
+           */}
+          <DigestLines lines={item.observation.wallet_digest_lines} />
+          <WalletBuyEvidence observation={item.observation} />
+          <small className="news-market-detail-label">供应商原文</small>
+          <code className="news-market-raw">{item.raw_first_line || item.observation.title}</code>
+          {item.description ? <p className="news-market-description">{item.description}</p> : null}
+          <small className="news-market-detail-label">PROVIDER_PARAMS</small>
+          {params.length ? (
+            <TraceList entries={params.map(([key, value]) => [key, String(value)])} />
+          ) : (
+            <p className="news-market-detail-empty">这条记录没有随附的供应商参数。</p>
+          )}
+        </div>
 
+        <div className="news-market-detail-panel">
+          <small className="news-market-detail-label">已入库字段</small>
+          <TraceList entries={marketObservationTrace(item.observation)} />
+          <small className="news-market-detail-label">推送</small>
+          <TraceList entries={notificationTrace(item)} />
+          {item.notification_delivery ? (
+            <SentSnapshot
+              covered={item.notification_covered_item_ids ?? []}
+              delivery={item.notification_delivery}
+            />
+          ) : null}
+        </div>
+      </details>
       <div className="news-market-detail-panel">
-        <small className="news-market-detail-label">已入库字段</small>
-        <TraceList entries={marketObservationTrace(item.observation)} />
-        <small className="news-market-detail-label">推送</small>
-        <TraceList entries={notificationTrace(item)} />
-        {item.notification_delivery ? (
-          <SentSnapshot
-            covered={item.notification_covered_item_ids ?? []}
-            delivery={item.notification_delivery}
-          />
-        ) : null}
-      </div>
-
-      <div className="news-market-detail-panel">
-        <small className="news-market-detail-label">本组时间线 · {item.timeline.length}</small>
+        <small className="news-market-detail-label">
+          本组离散观察 · 最多 200 条 · · {item.timeline.length}
+        </small>
         <ol className="news-market-timeline">
           {item.timeline.map((observation) => (
             <li
@@ -362,7 +376,7 @@ function GroupDetail({ itemId, token }: { itemId: string; token: string }) {
               <span className="news-market-timeline-status" data-status={observation.parse_status}>
                 {marketParseLabel(observation.parse_status)}
               </span>
-              <span className="news-market-timeline-title">{observation.title}</span>
+              <MarketObservationMetrics observation={observation} />
             </li>
           ))}
         </ol>

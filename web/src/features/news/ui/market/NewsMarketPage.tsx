@@ -5,11 +5,12 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import {
+  type MarketResearchFilters,
   useNewsMarketHistoryWithToken,
   useNewsMarketWithToken,
   useNewsStatusWithToken,
 } from "../../api/newsQueries";
-import { mergeMarketGroups, nextMarketParams, parseMarketKinds } from "../../model/marketFacts";
+import { mergeMarketGroups, parseMarketKinds } from "../../model/marketFacts";
 import { optionalTime } from "../../model/newsLabels";
 import { NewsPageHeader } from "../chrome/NewsChrome";
 
@@ -42,9 +43,25 @@ import "./newsMarket.css";
  */
 export function NewsMarketPage({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
-  const kinds = parseMarketKinds(searchParams.get("kind"));
-  const kindKey = kinds.join(",");
-  const marketQuery = useNewsMarketWithToken(token, kinds);
+  const kinds = searchParams.has("kind")
+    ? parseMarketKinds(searchParams.get("kind"))
+    : ["oi" as const];
+  const researchFilters: MarketResearchFilters = {
+    asset: searchParams.get("asset") || undefined,
+    provider: searchParams.get("provider") || undefined,
+    venue: searchParams.get("venue") || undefined,
+    measurement_definition: searchParams.get("measurement_definition") || undefined,
+    sort:
+      searchParams.get("sort") === "oi_change"
+        ? "oi_change"
+        : searchParams.get("sort") === "oi_value"
+          ? "oi_value"
+          : "latest",
+    from_ms: searchParams.get("from_ms") ? Number(searchParams.get("from_ms")) : undefined,
+    to_ms: searchParams.get("to_ms") ? Number(searchParams.get("to_ms")) : undefined,
+  };
+  const kindKey = kinds.join(",") + JSON.stringify(researchFilters);
+  const marketQuery = useNewsMarketWithToken(token, kinds, researchFilters);
   /*
    * The wire behind the facts, and the one question the stored rows cannot answer: an empty window is a
    * quiet market or a dropped connection, and only `/api/news/status` knows which. It is a supporting read
@@ -67,7 +84,13 @@ export function NewsMarketPage({ token }: { token: string }) {
     setMoreRequested(false);
   }, [anchor?.kindKey, firstPage, kindKey]);
   const anchorCursor = anchor?.kindKey === kindKey ? anchor.cursor : null;
-  const historyQuery = useNewsMarketHistoryWithToken(token, kinds, anchorCursor, moreRequested);
+  const historyQuery = useNewsMarketHistoryWithToken(
+    token,
+    kinds,
+    anchorCursor,
+    moreRequested,
+    researchFilters,
+  );
   const pages = historyQuery.data?.pages ?? [];
   /*
    * Freshest page first, so a run that gained an observation between "load more" and the next poll
@@ -77,10 +100,10 @@ export function NewsMarketPage({ token }: { token: string }) {
   const hasMore = Boolean(moreRequested ? historyQuery.hasNextPage : anchorCursor);
 
   return (
-    <PageShell archetype="scan" className="news-market-shell" label="市场事实">
+    <PageShell archetype="scan" className="news-market-shell" label="市场研究">
       <NewsPageHeader
-        subtitle="OpenNews 的市场观测按事实入库：持仓异动、强平、聪明钱，以及没有解析器的原文来源。这一页只答「收到了什么、解析成什么、推没推」。"
-        title="市场事实"
+        subtitle="先看哪个市场发生变化，再核对测量口径和原始依据。OI 表示未平仓合约规模，增减本身不判断多空。"
+        title="市场研究"
       />
 
       {marketQuery.isLoading && !firstPage ? (
@@ -106,11 +129,105 @@ export function NewsMarketPage({ token }: { token: string }) {
           updating={marketQuery.isFetching}
         >
           <div className="news-market-body">
-            <div className="news-market-notes">
-              <IngestNote query={statusQuery} />
-            </div>
-
-            <NewsMarketSources selected={kinds} sources={firstPage.sources} />
+            <form
+              className="news-market-research-filters"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const form = new FormData(event.currentTarget);
+                const next = new URLSearchParams(searchParams);
+                const asset = String(form.get("asset") ?? "")
+                  .trim()
+                  .toUpperCase();
+                if (asset) next.set("asset", asset);
+                else next.delete("asset");
+                next.delete("item");
+                setSearchParams(next);
+              }}
+            >
+              <div className="news-market-research-window" role="group" aria-label="市场观察窗口">
+                {[24, 72, 168].map((hours) => (
+                  <button
+                    type="button"
+                    className="news-market-kind-filter"
+                    key={hours}
+                    aria-pressed={
+                      Math.round(
+                        (firstPage.filters.to_ms - firstPage.filters.from_ms) / 3600000,
+                      ) === hours
+                    }
+                    data-active={
+                      Math.round(
+                        (firstPage.filters.to_ms - firstPage.filters.from_ms) / 3600000,
+                      ) === hours || undefined
+                    }
+                    onClick={() => {
+                      const next = new URLSearchParams(searchParams);
+                      const to = Date.now();
+                      next.set("from_ms", String(to - hours * 3600000));
+                      next.set("to_ms", String(to));
+                      next.delete("item");
+                      setSearchParams(next);
+                    }}
+                  >
+                    {hours === 168 ? "7d" : `${hours}h`}
+                  </button>
+                ))}
+              </div>
+              <label>
+                品种
+                <input
+                  name="asset"
+                  placeholder="如 BTC · 精确品种"
+                  defaultValue={researchFilters.asset}
+                  key={researchFilters.asset}
+                />
+              </label>
+              <button type="submit" className="news-market-kind-filter">
+                筛选
+              </button>
+              <label>
+                排序
+                <select
+                  value={researchFilters.sort}
+                  onChange={(event) => {
+                    const next = new URLSearchParams(searchParams);
+                    next.set("sort", event.target.value);
+                    setSearchParams(next);
+                  }}
+                >
+                  <option value="latest">最新观察</option>
+                  <option value="oi_change" disabled={!researchFilters.measurement_definition}>
+                    OI 变化绝对值
+                  </option>
+                  <option value="oi_value" disabled={!researchFilters.measurement_definition}>
+                    OI 名义价值
+                  </option>
+                </select>
+              </label>
+              {researchFilters.measurement_definition ? (
+                <button
+                  type="button"
+                  className="news-market-kind-filter"
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams);
+                    ["provider", "venue", "measurement_definition", "sort"].forEach((key) =>
+                      next.delete(key),
+                    );
+                    setSearchParams(next);
+                  }}
+                >
+                  清除比较口径
+                </button>
+              ) : (
+                <small>展开一条 OI，选择同口径比较后可按数值排序。</small>
+              )}
+            </form>
+            {researchFilters.measurement_definition ? (
+              <p className="news-market-note">
+                比较范围：{researchFilters.provider} · {researchFilters.venue} ·{" "}
+                {researchFilters.measurement_definition}；不代表全市场排名。
+              </p>
+            ) : null}
 
             <NewsMarketGroupTable
               groups={groups}
@@ -119,7 +236,14 @@ export function NewsMarketPage({ token }: { token: string }) {
               loadingMore={
                 historyQuery.isFetchingNextPage || (moreRequested && historyQuery.isLoading)
               }
-              onKindsChange={(next) => setSearchParams(nextMarketParams(next), { replace: true })}
+              onKindsChange={(kinds) => {
+                const next = new URLSearchParams(searchParams);
+                next.set("kind", kinds.length ? kinds.join(",") : "all");
+                ["provider", "venue", "measurement_definition", "sort", "item"].forEach((key) =>
+                  next.delete(key),
+                );
+                setSearchParams(next);
+              }}
               onLoadMore={() => {
                 if (!moreRequested) setMoreRequested(true);
                 else void historyQuery.fetchNextPage();
@@ -129,10 +253,15 @@ export function NewsMarketPage({ token }: { token: string }) {
               token={token}
             />
 
-            <SourceLine
-              note="推送状态、解析状态与来源计数都来自这一次读取，没有第二个端点参与"
-              path="GET /api/news/market → groups[] · sources[]"
-            />
+            <details className="news-market-panel news-market-data-disclosure">
+              <summary>采集、解析与通知详情</summary>
+              <IngestNote query={statusQuery} />
+              <NewsMarketSources selected={kinds} sources={firstPage.sources} />
+              <SourceLine
+                note="来源计数是完整时间窗口，未应用品种与口径筛选；解析与通知分别记录。"
+                path="GET /api/news/market"
+              />
+            </details>
           </div>
         </PageState.Stale>
       ) : null}

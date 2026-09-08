@@ -7,54 +7,43 @@ test.beforeEach(async ({ page }) => {
   await installMockApi(page);
 });
 
-test("buy research keeps unsent observations and distinct price bases readable", async ({
+test("buy research separates cumulative amount, observed reference and measured outcomes", async ({
   page,
 }) => {
   await page.goto("/news/wallets");
-  const candidates = page.getByRole("region", { name: "钱包卡片" });
-  await expect(candidates.getByRole("button", { name: "买入", exact: true })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-  await expect(candidates.getByText("观察期首次买入")).toBeVisible();
-  await expect(candidates.getByText("记录原因：buy_below_min_usd")).toBeVisible();
-  await expect(candidates.getByText("价格基准：observed")).toBeVisible();
-  await expect(candidates.getByRole("columnheader", { name: "已计价均价" })).toBeAttached();
-  await expect(candidates.getByRole("columnheader", { name: "观察价" })).toBeAttached();
-  await expect(candidates.getByText("-20.00%")).toBeAttached();
-  await expect(candidates.getByRole("link", { name: "减仓", exact: true })).toHaveCount(0);
+  const row = page.locator(".news-wallet-research-row").first();
+  await expect(row).toContainText("观察期首次买入");
+  await row.getByRole("button").click();
+  await expect(
+    page.getByText("观察后价格变化不代表钱包盈亏或跟单收益。", { exact: false }),
+  ).toBeVisible();
+  await expect(page.getByText("已计价成交均价", { exact: true })).toBeVisible();
+  await expect(page.getByText("观察价 · USD / token", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("观察后价格")).toContainText("-20.00%");
   await expectNoDocumentHorizontalOverflow(page);
 });
 
-test("wallet and token timeline filters survive window changes and a reload", async ({ page }) => {
+test("wallet and token filters survive window changes, reload and raw-detail return", async ({
+  page,
+}) => {
   const buy = newsWalletBuyFixture();
   await page.goto("/news/wallets");
-  await page.getByRole("link", { name: "同钱包与代币的后续变化" }).click();
-  await expect(page).toHaveURL(
-    new RegExp(`kind=all&wallet_address=${buy.wallet}&token_address=${buy.token}`),
-  );
+  await page.locator(".news-wallet-research-row").first().getByRole("button").click();
+  await page.getByRole("link", { name: "同钱包与代币的买卖 / 转出" }).click();
   await page.getByRole("button", { name: "7d", exact: true }).click();
-  await expect(page).toHaveURL(
-    new RegExp(`window=7d&kind=all&wallet_address=${buy.wallet}&token_address=${buy.token}`),
-  );
   await page.reload();
   await expect(page.getByRole("textbox", { name: "钱包地址" })).toHaveValue(buy.wallet);
   await expect(page.getByRole("textbox", { name: "代币合约" })).toHaveValue(buy.token);
-  await expect(page.getByRole("button", { name: "全部", exact: true })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-  await expect(page.getByRole("link", { name: "减仓", exact: true })).toBeAttached();
+  expect(new URL(page.url()).searchParams.get("chain_id")).toBe(String(buy.chain_id));
   const fills = page.getByRole("region", { name: "交易流水" });
   await expect(fills.getByText("卖出", { exact: true })).toBeAttached();
   await expect(fills.getByText("转出", { exact: true })).toBeAttached();
   await expect(fills.getByText("1.234567890123456789").first()).toBeAttached();
   await page.getByRole("button", { name: "买入", exact: true }).click();
-  await expect(page.getByRole("link", { name: "减仓", exact: true })).toHaveCount(0);
   await expect(fills.getByText("卖出", { exact: true })).toBeAttached();
-  await expect(fills.getByText("转出", { exact: true })).toBeAttached();
-  await page.getByRole("button", { name: "全部", exact: true }).click();
-  await page.getByRole("button", { name: "清除地址", exact: true }).click();
-  await expect(page).toHaveURL(/\/news\/wallets\?window=7d&kind=all$/);
+  await page.getByRole("button", { name: "全部观察", exact: true }).click();
+  await page.getByRole("button", { name: "清除筛选", exact: true }).click();
+  expect(new URL(page.url()).searchParams.get("kind")).toBe("all");
+  expect(new URL(page.url()).searchParams.has("wallet_address")).toBe(false);
   await expectNoDocumentHorizontalOverflow(page);
 });

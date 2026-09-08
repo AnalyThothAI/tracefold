@@ -20,6 +20,8 @@ from urllib.parse import urlsplit
 import httpx
 import psycopg
 
+from tests.browser.research_seed import seed_research
+
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DSN = "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"
 DEFAULT_AMQP_URL = "amqp://tracefold:tracefold@127.0.0.1:5672/"
@@ -48,6 +50,7 @@ def main() -> int:
     amqp_url = os.environ.get("TRACEFOLD_TEST_AMQP_URL", DEFAULT_AMQP_URL)
     _require_resources(dsn, amqp_url)
     _reset_postgres(dsn)
+    seed_research(dsn)
 
     with tempfile.TemporaryDirectory(prefix="tracefold-browser-smoke-") as raw_tmp:
         tmp = Path(raw_tmp)

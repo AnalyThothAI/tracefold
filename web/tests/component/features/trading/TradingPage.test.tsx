@@ -56,12 +56,12 @@ describe("TradingPage", () => {
      */
     renderTrading();
 
-    expect(await screen.findByRole("heading", { name: "Trading Desk" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "交易执行" })).toBeVisible();
     const safety = screen.getByLabelText("执行安全状态");
-    expect(within(safety).getAllByText("NO")).toHaveLength(3);
+    expect(within(safety).getAllByText("否")).toHaveLength(3);
     expect(within(safety).queryByText("NOT PROVEN")).toBeNull();
     expect(within(safety).getByText("执行通道未启用")).toBeVisible();
-    expect(screen.getByText(/Runtime 可执行市场 0 个/)).toBeVisible();
+    expect(screen.getByText(/可执行市场 0 个/)).toBeVisible();
   });
 
   it("degrades every safety word once the server's own expiry instant has passed", async () => {
@@ -85,7 +85,7 @@ describe("TradingPage", () => {
 
     const safety = await screen.findByLabelText("执行安全状态");
     expect(within(safety).getAllByText("过期")).toHaveLength(3);
-    expect(within(safety).queryByText("YES")).toBeNull();
+    expect(within(safety).queryByText("是")).toBeNull();
     expect(screen.getByText(/本次读取的事实已过期/)).toBeVisible();
   });
 
@@ -100,11 +100,12 @@ describe("TradingPage", () => {
         HttpResponse.json({ ok: false, error: "status_unavailable" }, { status: 500 }),
       ),
     );
-    renderTrading();
+    renderTrading("/trading?tab=executions");
 
     expect(await screen.findByText("crypto:perp:BTC:USDT")).toBeVisible();
-    expect(screen.getByRole("heading", { name: "回路账本 · 24h" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "24h 漏斗" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "执行记录 · 最近 24 小时" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "策略判定" }));
+    expect(await screen.findByRole("heading", { name: "最近 24 小时 · 判定分布" })).toBeVisible();
     expect(screen.getByText(/执行状态账本读取失败；保留其余已验证事实。/)).toBeVisible();
     // The blocks that read `/status` say so in the same vocabulary rather than rendering a false answer.
     expect(screen.getByText("执行状态账本读取失败，不能据此断言为空。")).toBeVisible();
@@ -125,7 +126,7 @@ describe("TradingPage", () => {
         return HttpResponse.json({ ok: true, data: casesFor(request.url) });
       }),
     );
-    renderTrading();
+    renderTrading("/trading?tab=executions");
 
     const row = (await screen.findByText("crypto:perp:BTC:USDT")).closest(
       ".trading-ledger-row",
@@ -137,7 +138,7 @@ describe("TradingPage", () => {
   });
 
   it("opens the Case a Signal row authored in the drawer, keyed on the URL", async () => {
-    const { router } = renderTrading();
+    const { router } = renderTrading("/trading?tab=executions");
 
     const row = (await screen.findByText("crypto:perp:BTC:USDT")).closest(
       ".trading-ledger-row",
@@ -145,29 +146,29 @@ describe("TradingPage", () => {
     fireEvent.click(within(row).getByRole("button", { name: "crypto:perp:BTC:USDT" }));
 
     expect(await screen.findByRole("region", { name: "案例 HYPE" })).toBeVisible();
-    expect(screen.getByLabelText("案例抽屉")).toHaveTextContent("case-btc");
+    expect(screen.getByRole("dialog", { name: "策略判定依据" })).toHaveTextContent("case-btc");
     expect(screen.getByText("whale_oi_ratio_bps")).toBeVisible();
     expect(screen.getByText("未通过")).toBeVisible();
     // #604 T3 removed `policy_config`: the evidence table's 阈值 column already prints those numbers.
     expect(screen.queryByRole("heading", { name: "冻结策略配置" })).toBeNull();
-    expect(router.search).toBe("?case=case-btc");
+    expect(router.search).toBe("?tab=executions&case=case-btc");
 
     fireEvent.click(screen.getByRole("button", { name: "关闭" }));
-    await waitFor(() => expect(screen.queryByLabelText("案例抽屉")).toBeNull());
-    expect(router.search).toBe("");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "策略判定依据" })).toBeNull());
+    expect(router.search).toBe("?tab=executions");
   });
 
   it("says a deep-linked Case is outside the window rather than showing nothing", async () => {
     renderTrading("/trading?case=case-gone");
 
-    expect(await screen.findByLabelText("案例抽屉")).toHaveTextContent(
-      "这个案例不在当前 24 小时窗口。",
+    expect(await screen.findByRole("dialog", { name: "策略判定依据" })).toHaveTextContent(
+      "未找到保留的策略判定。",
     );
     expect(screen.queryByRole("region", { name: /^案例 / })).toBeNull();
   });
 
   it("colours a realized result on the market axis and times the position from two clocks", async () => {
-    renderTrading();
+    renderTrading("/trading?tab=executions");
 
     const closed = await screen.findByText("crypto:perp:BTC:USDT");
     const row = closed.closest(".trading-ledger-row") as HTMLElement;
@@ -189,7 +190,7 @@ describe("TradingPage", () => {
   });
 
   it("prints a dash for an entry that never filled, and the venue's own rejection words", async () => {
-    renderTrading();
+    renderTrading("/trading?tab=executions");
 
     const unmapped = (await screen.findByText("crypto:perp:NVDA:USDT")).closest(
       ".trading-ledger-row",
@@ -226,21 +227,17 @@ describe("TradingPage", () => {
      * `POLICY_RULE_ZH` could never reach a reader. The funnel's own top is `admission_counts_24h`, which is
      * the only account the desk can give of a frame that never became a Case at all.
      */
-    renderTrading();
+    renderTrading("/trading?tab=decisions");
 
-    const funnel = (await screen.findByRole("heading", { name: "24h 漏斗" })).closest(
-      "section",
-    ) as HTMLElement;
-    const strip = within(funnel).getByLabelText("24h 漏斗");
-    expect(within(strip).getByText("帧").nextSibling).toHaveTextContent("12");
-    expect(within(strip).getByText("成案").nextSibling).toHaveTextContent("7");
+    const funnel = (
+      await screen.findByRole("heading", { name: "最近 24 小时 · 判定分布" })
+    ).closest("section") as HTMLElement;
+    const strip = within(funnel).getByLabelText("策略判定分布");
     expect(within(strip).getByText("不交易").nextSibling).toHaveTextContent("5");
-    expect(within(strip).getByText("发出").nextSibling).toHaveTextContent("1");
-    expect(within(strip).getByText("受理").nextSibling).toHaveTextContent("2");
-    expect(within(strip).getByText("成交").nextSibling).toHaveTextContent("2");
-    expect(within(strip).getByText("平仓").nextSibling).toHaveTextContent("2");
-
-    expect(within(funnel).getByText("不交易 · 鲸鱼占比未超过地板")).toBeVisible();
+    expect(within(strip).getByText("已发出信号").nextSibling).toHaveTextContent("1");
+    expect(within(strip).getByText("判定受阻").nextSibling).toHaveTextContent("1");
+    expect(within(funnel).getByText("鲸鱼占比未超过地板")).toBeVisible();
+    fireEvent.click(within(funnel).getByText("来源准入分布 · 未成案的来源记录"));
     expect(within(funnel).getByText("准入拒绝 · 持仓价值低于地板")).toBeVisible();
     expect(within(funnel).getByText("过期 · 触发已陈旧")).toBeVisible();
     expect(within(funnel).queryByText("smart_money_ratio_below_or_equal_floor")).toBeNull();
@@ -249,7 +246,7 @@ describe("TradingPage", () => {
   it("opens the exposure block only when the account holds something", async () => {
     renderTrading();
 
-    const closed = (await screen.findByRole("heading", { name: "敞口与保护" })).closest(
+    const closed = (await screen.findByRole("heading", { name: "当前仓位与保护" })).closest(
       "section",
     ) as HTMLElement;
     expect(closed.querySelector("details")).not.toHaveAttribute("open");
@@ -275,7 +272,7 @@ describe("TradingPage", () => {
     );
     renderTrading();
 
-    const open = (await screen.findByRole("heading", { name: "敞口与保护" })).closest(
+    const open = (await screen.findByRole("heading", { name: "当前仓位与保护" })).closest(
       "section",
     ) as HTMLElement;
     expect(open.querySelector("details")).toHaveAttribute("open");
@@ -336,7 +333,7 @@ describe("TradingPage", () => {
     expect(within(rejected).getByText("daily_loss_limit")).toBeVisible();
     expect(screen.getByText("已完成 · 私有对账证明")).toBeVisible();
 
-    fireEvent.click(screen.getByRole("button", { name: "Resume / Arm" }));
+    fireEvent.click(screen.getByRole("button", { name: "恢复新入场" }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
     await waitFor(() => expect(posted).toBeDefined());
     expect(authorization).toBe("Bearer test-token");
@@ -344,8 +341,8 @@ describe("TradingPage", () => {
       request_id: "11111111-1111-4111-8111-111111111111",
       text: "/resume operator console",
     });
-    expect(await screen.findByText(/Command 已持久化/)).toHaveTextContent(
-      "这不代表 Runtime 受理、订单或成交",
+    expect(await screen.findByText(/操作已记录/)).toHaveTextContent(
+      "这不代表执行器已受理、订单已完成或已经成交",
     );
   });
 
@@ -362,7 +359,7 @@ describe("TradingPage", () => {
         return HttpResponse.json({ ok: false, error: "unexpected" }, { status: 500 });
       }),
     );
-    renderTrading();
+    renderTrading("/trading?tab=executions");
 
     await screen.findByText("crypto:perp:BTC:USDT");
     expect(unexpected).toEqual([]);
@@ -376,9 +373,10 @@ describe("TradingPage", () => {
         HttpResponse.json({ ok: false, error: "executions_unavailable" }, { status: 503 }),
       ),
     );
-    renderTrading();
+    renderTrading("/trading?tab=executions");
 
     expect(await screen.findByText("执行账本读取失败，不能据此断言为空。")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "持仓与订单" }));
     expect(screen.getByText("Command账本读取失败，不能据此断言为空。")).toBeVisible();
     expect(screen.getByText(/执行账本读取失败；保留其余已验证事实。/)).toBeVisible();
     // The safety strip is a different read and keeps answering.
@@ -413,12 +411,12 @@ describe("TradingPage", () => {
     );
     renderTrading();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Resume / Arm" }));
+    fireEvent.click(await screen.findByRole("button", { name: "恢复新入场" }));
     expect(await screen.findByText(/提交结果未知/)).toHaveTextContent(
       "复用同一 request ID、时钟和文本",
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Resume / Arm" }));
+    fireEvent.click(screen.getByRole("button", { name: "恢复新入场" }));
     await waitFor(() => expect(bodies).toHaveLength(2));
 
     expect(uuidCalls).toBe(1);
@@ -429,9 +427,9 @@ describe("TradingPage", () => {
     renderTrading();
 
     expect(await screen.findByText(/控制已锁定/)).toBeVisible();
-    expect(screen.getByRole("button", { name: "Pause entries" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Resume / Arm" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Flatten account" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "暂停新入场" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "恢复新入场" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "平掉账户仓位" })).toBeDisabled();
   });
 
   it("says the window is empty rather than failed when the ledgers answer with nothing", async () => {
@@ -453,12 +451,14 @@ describe("TradingPage", () => {
         }),
       ),
     );
-    renderTrading();
+    renderTrading("/trading?tab=executions");
 
     // One vocabulary for every ledger on the page (#537 PR-5): one subject word, three sentences.
     expect(await screen.findByText("当前 24 小时窗口没有执行。")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "持仓与订单" }));
     expect(screen.getByText("当前 24 小时窗口没有Command。")).toBeVisible();
-    expect(screen.getByText("当前 24 小时窗口没有Case。")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "策略判定" }));
+    expect(await screen.findByText("当前筛选下没有策略判定。")).toBeVisible();
   });
 
   it("names a truncated execution window without dropping the rows it did read", async () => {
@@ -473,7 +473,7 @@ describe("TradingPage", () => {
         }),
       ),
     );
-    renderTrading();
+    renderTrading("/trading?tab=executions");
 
     expect(await screen.findByText("本窗口已截断；未列出的入场不能解释为没有发生。")).toBeVisible();
     expect(screen.getByText("crypto:perp:BTC:USDT")).toBeVisible();

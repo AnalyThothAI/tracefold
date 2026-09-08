@@ -88,14 +88,15 @@ export const useTradingCaseWithToken = (token: string, caseId: string | null) =>
  * far one entry got. `totals` is the same ledger's realized sum over today and over all time (#604 T3):
  * the desk states the two numbers the server added up rather than summing the rows it happens to hold.
  */
-export const useTradingExecutionsWithToken = (token: string) =>
+export const useTradingExecutionsWithToken = (token: string, caseId?: string) =>
   useQuery({
     enabled: Boolean(token),
-    queryKey: queryKeys.tradingExecutions(),
+    queryKey: [...queryKeys.tradingExecutions(), caseId ?? ""],
     queryFn: async () =>
       (
         await getApi<TradingExecutions>("/api/trading/executions", {
-          etagKey: "trading-executions",
+          etagKey: `trading-executions:${caseId ?? ""}`,
+          params: { case_id: caseId },
           token,
         })
       ).data,
@@ -127,3 +128,22 @@ export const useIssueTradingCommandWithToken = (token: string) => {
     retry: false,
   });
 };
+
+export const useTradingCaseListWithToken = (
+  token: string,
+  filters: Record<string, string | undefined>,
+) =>
+  useQuery({
+    enabled: Boolean(token),
+    queryKey: [...queryKeys.tradingCases("browse"), filters],
+    queryFn: async () =>
+      (
+        await getApi<TradingCases>("/api/trading/cases", {
+          etagKey: `trading-case-list:${JSON.stringify(filters)}`,
+          params: { ...filters, limit: 25 },
+          token,
+        })
+      ).data,
+    refetchInterval: filters.cursor ? false : TRADING_REFETCH_MS,
+    staleTime: 5_000,
+  });

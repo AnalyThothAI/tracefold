@@ -115,6 +115,13 @@ export function parseWalletFilters(params: URLSearchParams): NewsWalletCardFilte
     kind,
     walletAddress: address("wallet_address"),
     tokenAddress: address("token_address"),
+    ...(params.get("chain_id") && /^\d+$/.test(params.get("chain_id")!)
+      ? { chainId: Number(params.get("chain_id")) }
+      : {}),
+    ...(params.get("segment_key") ? { segmentKey: params.get("segment_key")! } : {}),
+    ...(params.get("view") === "observations" ? { view: "observations" as const } : {}),
+    ...(params.get("cursor") ? { cursor: params.get("cursor")! } : {}),
+    ...(params.get("to_ms") ? { toMs: Number(params.get("to_ms")) } : {}),
   };
 }
 
@@ -124,6 +131,11 @@ export function nextWalletParams(filters: NewsWalletCardFilters): URLSearchParam
   if (filters.kind !== "buy") params.set("kind", filters.kind);
   if (filters.walletAddress) params.set("wallet_address", filters.walletAddress);
   if (filters.tokenAddress) params.set("token_address", filters.tokenAddress);
+  if (filters.chainId) params.set("chain_id", String(filters.chainId));
+  if (filters.segmentKey) params.set("segment_key", filters.segmentKey);
+  if (filters.view) params.set("view", filters.view);
+  if (filters.cursor) params.set("cursor", filters.cursor);
+  if (filters.toMs) params.set("to_ms", String(filters.toMs));
   return params;
 }
 
@@ -161,4 +173,29 @@ export function walletCardMeasure(card: NewsWalletCard): string {
   }
   if (card.kind === "crowding") return `${card.peer_wallets} 个地址`;
   return card.digest_model_used ? "模型选材" : "程序选材";
+}
+
+const OUTCOME_LABELS: Record<NewsWalletCard["outcomes"][number]["status"], string> = {
+  not_scheduled: "未安排采样",
+  not_due: "未到观察时点",
+  pending: "等待采样",
+  unavailable: "未取得价格",
+  missing_reference: "缺观察基准",
+  identity_unverified: "价格待核实",
+  measured: "已取得价格",
+};
+export function walletOutcomeLabel(outcome: NewsWalletCard["outcomes"][number]): string {
+  return OUTCOME_LABELS[outcome.status];
+}
+export function walletSelectionLabel(reason: string | null | undefined): string {
+  if (!reason) return "未记录通知原因";
+  const known: Record<string, string> = {
+    selected: "已达到通知条件",
+    below_minimum: "未达通知金额",
+    same_window: "同窗金额未再次翻倍",
+    history: "历史观察",
+    stale: "观察到达较晚",
+    unpriced: "成交金额未计价",
+  };
+  return known[reason] ?? `未识别原因：${reason}`;
 }

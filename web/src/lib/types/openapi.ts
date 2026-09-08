@@ -247,14 +247,7 @@ export interface paths {
         };
         /**
          * Get Trading Cases
-         * @description One frozen Case by identity, beside the three durable 24 h distributions (#604 T3).
-         *
-         *     The list this route used to send is gone: 100 whole Cases on every 15 s poll, of which the desk
-         *     rendered at most the one behind `?case=<id>`, and never the `NO_TRADE` Cases past the hundredth --
-         *     553 of the 584 in a production day -- which are the ones an operator opens to ask why. A Case is
-         *     reached by its own identity now, and no identity means no Case rather than a page nobody reads.
-         *     The two filters that narrowed that page went with it: `?underlying=` and `?state=` could only
-         *     select rows out of a list that is now always the caller's own Case or nothing.
+         * @description Frozen decisions by identity or a scope-bound keyset list; distributions remain independent.
          */
         get: operations["get_trading_cases_api_trading_cases_get"];
         put?: never;
@@ -1420,14 +1413,28 @@ export interface components {
         };
         /** NewsMarketFiltersData */
         NewsMarketFiltersData: {
+            /** Asset */
+            asset?: string | null;
             /** From Ms */
             from_ms: number;
             /** Kind */
             kind?: string | null;
             /** Limit */
             limit: number;
+            /** Measurement Definition */
+            measurement_definition?: string | null;
+            /** Provider */
+            provider?: string | null;
+            /**
+             * Sort
+             * @default latest
+             * @enum {string}
+             */
+            sort: "latest" | "oi_change" | "oi_value";
             /** To Ms */
             to_ms: number;
+            /** Venue */
+            venue?: string | null;
         };
         /**
          * NewsMarketGroupData
@@ -1524,8 +1531,12 @@ export interface components {
              * @enum {string}
              */
             market_kind: "oi" | "liquidation" | "smart_money" | "unknown_market" | "wallet";
+            /** Measurement Contract Status */
+            measurement_contract_status?: ("proven" | "unproven") | null;
             /** Measurement Definition */
             measurement_definition?: string | null;
+            /** Measurement Window Ms */
+            measurement_window_ms?: number | null;
             /** Notification Reason */
             notification_reason: string;
             /** Notification Status */
@@ -2507,6 +2518,8 @@ export interface components {
             basis?: ("chain_balance" | "site_reported") | null;
             /** Buy Count */
             buy_count?: number | null;
+            /** Chain Id */
+            chain_id: number;
             /**
              * Closed
              * @default false
@@ -2524,6 +2537,8 @@ export interface components {
             entry_price?: string | null;
             /** Event At Ms */
             event_at_ms: number;
+            /** First Event At Ms */
+            first_event_at_ms: number;
             /**
              * Handle
              * @default
@@ -2540,14 +2555,14 @@ export interface components {
             kind: "buy" | "exit" | "crowding" | "digest";
             /** Mark Price */
             mark_price?: string | null;
+            /** Mark Source */
+            mark_source: string | null;
+            /** Observation Count */
+            observation_count: number;
             /** Observed At Ms */
             observed_at_ms?: number | null;
-            /** Outcome 15M Source */
-            outcome_15m_source?: string | null;
-            /** Outcome 1H Source */
-            outcome_1h_source?: string | null;
-            /** Outcome 4H Source */
-            outcome_4h_source?: string | null;
+            /** Outcomes */
+            outcomes: components["schemas"]["NewsWalletOutcomeData"][];
             /**
              * Peer Wallets
              * @default 0
@@ -2557,16 +2572,31 @@ export interface components {
             position_usd?: string | null;
             /** Premium Bps */
             premium_bps?: number | null;
+            /**
+             * Price Quote
+             * @constant
+             */
+            price_quote: "USD";
             /** Price Reference */
             price_reference?: string | null;
+            /** Price Source At Ms */
+            price_source_at_ms: number | null;
+            /**
+             * Price Status
+             * @enum {string}
+             */
+            price_status: "missing" | "verified" | "identity_unverified";
+            /**
+             * Price Unit
+             * @constant
+             */
+            price_unit: "token";
             /** Ratio Bps */
             ratio_bps?: number | null;
-            /** Return 15M Bps */
-            return_15m_bps?: number | null;
-            /** Return 1H Bps */
-            return_1h_bps?: number | null;
-            /** Return 4H Bps */
-            return_4h_bps?: number | null;
+            /** Research Id */
+            research_id: string;
+            /** Segment Key */
+            segment_key: string;
             /** Selection Reason */
             selection_reason?: string | null;
             /** Settled At Ms */
@@ -2631,8 +2661,18 @@ export interface components {
             cards: components["schemas"]["NewsWalletCardData"][];
             /** Fills */
             fills: components["schemas"]["NewsWalletFillData"][];
+            /** Fills Complete */
+            fills_complete: boolean;
             /** Limit */
             limit: number;
+            /** Next Cursor */
+            next_cursor: string | null;
+            totals: components["schemas"]["NewsWalletResearchTotalsData"];
+            /**
+             * View
+             * @enum {string}
+             */
+            view: "segments" | "observations";
             /** Window */
             window: string;
             /** Window From Ms */
@@ -2711,6 +2751,46 @@ export interface components {
              * Wallets
              * @default 0
              */
+            wallets: number;
+        };
+        /** NewsWalletOutcomeData */
+        NewsWalletOutcomeData: {
+            /**
+             * Horizon
+             * @enum {string}
+             */
+            horizon: "15m" | "1h" | "4h";
+            /** Price */
+            price: string | null;
+            /** Reference At Ms */
+            reference_at_ms: number | null;
+            /** Reference Price */
+            reference_price: string | null;
+            /** Return Bps */
+            return_bps: number | null;
+            /** Sampled At Ms */
+            sampled_at_ms: number | null;
+            /** Source */
+            source: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "not_scheduled" | "not_due" | "pending" | "unavailable" | "missing_reference" | "identity_unverified" | "measured";
+            /** Target At Ms */
+            target_at_ms: number | null;
+        };
+        /** NewsWalletResearchTotalsData */
+        NewsWalletResearchTotalsData: {
+            /** Observations */
+            observations: number;
+            /** Priced Buy Usd */
+            priced_buy_usd: string;
+            /** Segments */
+            segments: number;
+            /** Tokens */
+            tokens: number;
+            /** Wallets */
             wallets: number;
         };
         /**
@@ -2968,6 +3048,8 @@ export interface components {
             policy_reason?: string | null;
             /** Pre Move Bps */
             pre_move_bps?: number | null;
+            /** Source Item Id */
+            source_item_id?: string | null;
             /** State */
             state: string;
         };
@@ -2989,6 +3071,8 @@ export interface components {
             cases?: components["schemas"]["TradingCaseData"][];
             /** Complete */
             complete: boolean;
+            /** Next Cursor */
+            next_cursor?: string | null;
             /** Reason Counts 24H */
             reason_counts_24h?: {
                 [key: string]: number;
@@ -2997,8 +3081,23 @@ export interface components {
             state_counts_24h?: {
                 [key: string]: number;
             };
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Window From Ms
+             * @default 0
+             */
+            window_from_ms: number;
             /** Window Hours */
             window_hours: number;
+            /**
+             * Window To Ms
+             * @default 0
+             */
+            window_to_ms: number;
         };
         /**
          * TradingDecisionRuntimeData
@@ -3514,6 +3613,11 @@ export interface operations {
                 to_ms?: number;
                 limit?: number;
                 cursor?: string;
+                asset?: string;
+                provider?: string;
+                venue?: string;
+                measurement_definition?: string;
+                sort?: "latest" | "oi_change" | "oi_value";
             };
             header?: never;
             path?: never;
@@ -3691,6 +3795,11 @@ export interface operations {
                 kind?: ("buy" | "exit" | "crowding" | "digest") | null;
                 wallet_address?: string | null;
                 token_address?: string | null;
+                chain_id?: number | null;
+                segment_key?: string | null;
+                view?: "segments" | "observations";
+                cursor?: string;
+                to_ms?: number;
             };
             header?: never;
             path?: never;
@@ -3742,6 +3851,13 @@ export interface operations {
         parameters: {
             query?: {
                 case_id?: string;
+                view?: "summary" | "list";
+                state?: "" | "PENDING" | "RUNNING" | "NO_TRADE" | "SIGNAL_EMITTED" | "BLOCKED";
+                asset?: string;
+                reason?: string;
+                source_item_id?: string;
+                cursor?: string;
+                limit?: number;
             };
             header?: never;
             path?: never;
@@ -3802,7 +3918,9 @@ export interface operations {
     };
     get_trading_executions_api_trading_executions_get: {
         parameters: {
-            query?: never;
+            query?: {
+                case_id?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3816,6 +3934,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_TradingExecutionsData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

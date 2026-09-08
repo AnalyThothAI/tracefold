@@ -392,3 +392,118 @@
     line-height: 1.5;
   }
 }
+
+@layer app.features {
+  .news-oi-observation-metrics {
+    display: grid;
+    grid-template-columns: 1fr 1.4fr 1.1fr;
+    gap: 24px;
+    width: 100%;
+    padding-top: 12px;
+  }
+  .news-oi-observation-metrics > span {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .news-oi-observation-metrics small {
+    font-size: var(--font-size-meta);
+    color: var(--text-muted);
+  }
+  .news-oi-observation-metrics b {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-metric);
+    color: var(--text-primary);
+  }
+  .news-oi-evidence {
+    grid-column: 1 / -1;
+    padding: 4px 16px 16px;
+  }
+  .news-oi-evidence p {
+    line-height: 1.7;
+    color: var(--text-secondary);
+  }
+  .news-oi-evidence-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+  .news-oi-evidence-actions a {
+    color: var(--accent-primary);
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+  .news-market-raw-evidence {
+    grid-column: 1 / -1;
+  }
+  .news-market-raw-evidence > summary,
+  .news-market-data-disclosure > summary {
+    padding: 16px;
+    min-height: 44px;
+    cursor: pointer;
+  }
+  .news-market-research-filters {
+    display: grid;
+    grid-template-columns: auto minmax(130px, 1fr) auto minmax(140px, 1fr);
+    align-items: end;
+    gap: 12px;
+    padding: 14px;
+    background: var(--surface-panel);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--ring-panel);
+  }
+  .news-market-research-window {
+    display: flex;
+    align-items: center;
+    background: var(--surface-slot);
+    border-radius: var(--radius-sm);
+    min-height: 36px;
+  }
+  .news-market-research-filters label {
+    display: grid;
+    gap: 6px;
+    color: var(--text-secondary);
+  }
+  .news-market-research-filters input,
+  .news-market-research-filters select {
+    background: var(--surface-panel);
+    color: var(--text-primary);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    min-height: 36px;
+    padding: 6px 10px;
+  }
+  .news-market-research-filters small {
+    grid-column: 1 / -1;
+    color: var(--text-muted);
+  }
+  @media (max-width: 599px) {
+    .news-oi-observation-metrics {
+      grid-template-columns: 1fr 1.2fr;
+      gap: 16px;
+    }
+    .news-oi-observation-metrics > span:last-child {
+      grid-column: 1 / -1;
+    }
+    .news-market-research-filters {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+    .news-market-research-window {
+      grid-column: 1 / -1;
+      justify-content: space-around;
+    }
+    .news-market-research-filters label:last-of-type {
+      grid-column: 1 / -1;
+    }
+    .news-market-research-filters input {
+      width: 100%;
+      min-width: 0;
+    }
+    .news-market-research-filters input,
+    .news-market-research-filters select {
+      min-height: 44px;
+    }
+  }
+}

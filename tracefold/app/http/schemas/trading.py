@@ -131,6 +131,7 @@ class TradingCaseData(ExactApiSchema):
     """
 
     case_id: str
+    source_item_id: str | None = None
     event_id: str | None = None
     base_symbol: str
     market_key: str | None = None
@@ -176,6 +177,10 @@ class TradingCasesData(ExactApiSchema):
     """
 
     cases: list[TradingCaseData] = Field(default_factory=list)
+    total: int = 0
+    next_cursor: str | None = None
+    window_from_ms: int = 0
+    window_to_ms: int = 0
     state_counts_24h: dict[str, int] = Field(default_factory=dict)
     reason_counts_24h: dict[str, int] = Field(default_factory=dict)
     admission_counts_24h: list[TradingAdmissionCountData] = Field(default_factory=list, max_length=64)

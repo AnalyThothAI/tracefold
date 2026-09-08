@@ -70,8 +70,8 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
          * a figure the destination states in full the moment it opens.
          */
         icon: TelemetryPulseIcon,
-        isActive: (pathname) => pathname === "/news/market",
-        label: "市场事实",
+        isActive: (pathname) => pathname === "/news/market" || pathname.startsWith("/news/market/"),
+        label: "市场研究",
         to: newsMarketPath(),
       },
       {
@@ -83,7 +83,7 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
          */
         icon: WhaleShareIcon,
         isActive: (pathname) => pathname === "/news/wallets",
-        label: "链上钱包",
+        label: "钱包研究",
         to: newsWalletsPath(),
       },
       {
@@ -96,7 +96,7 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
          */
         icon: TradeFlowIcon,
         isActive: (pathname) => pathname === "/trading",
-        label: "交易",
+        label: "交易执行",
         to: tradingPath(),
       },
     ],

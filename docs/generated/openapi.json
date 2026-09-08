@@ -2984,6 +2984,17 @@
       "NewsMarketFiltersData": {
         "additionalProperties": false,
         "properties": {
+          "asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset"
+          },
           "from_ms": {
             "title": "From Ms",
             "type": "integer"
@@ -3003,9 +3014,52 @@
             "title": "Limit",
             "type": "integer"
           },
+          "measurement_definition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measurement Definition"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "sort": {
+            "default": "latest",
+            "enum": [
+              "latest",
+              "oi_change",
+              "oi_value"
+            ],
+            "title": "Sort",
+            "type": "string"
+          },
           "to_ms": {
             "title": "To Ms",
             "type": "integer"
+          },
+          "venue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Venue"
           }
         },
         "required": [
@@ -3260,6 +3314,21 @@
             "title": "Market Kind",
             "type": "string"
           },
+          "measurement_contract_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "proven",
+                  "unproven"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measurement Contract Status"
+          },
           "measurement_definition": {
             "anyOf": [
               {
@@ -3270,6 +3339,17 @@
               }
             ],
             "title": "Measurement Definition"
+          },
+          "measurement_window_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measurement Window Ms"
           },
           "notification_reason": {
             "title": "Notification Reason",
@@ -5986,6 +6066,10 @@
             ],
             "title": "Buy Count"
           },
+          "chain_id": {
+            "title": "Chain Id",
+            "type": "integer"
+          },
           "closed": {
             "default": false,
             "title": "Closed",
@@ -6061,6 +6145,10 @@
             "title": "Event At Ms",
             "type": "integer"
           },
+          "first_event_at_ms": {
+            "title": "First Event At Ms",
+            "type": "integer"
+          },
           "handle": {
             "default": "",
             "title": "Handle",
@@ -6102,6 +6190,21 @@
             ],
             "title": "Mark Price"
           },
+          "mark_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mark Source"
+          },
+          "observation_count": {
+            "title": "Observation Count",
+            "type": "integer"
+          },
           "observed_at_ms": {
             "anyOf": [
               {
@@ -6113,38 +6216,12 @@
             ],
             "title": "Observed At Ms"
           },
-          "outcome_15m_source": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Outcome 15M Source"
-          },
-          "outcome_1h_source": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Outcome 1H Source"
-          },
-          "outcome_4h_source": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Outcome 4H Source"
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/NewsWalletOutcomeData"
+            },
+            "title": "Outcomes",
+            "type": "array"
           },
           "peer_wallets": {
             "default": 0,
@@ -6173,6 +6250,11 @@
             ],
             "title": "Premium Bps"
           },
+          "price_quote": {
+            "const": "USD",
+            "title": "Price Quote",
+            "type": "string"
+          },
           "price_reference": {
             "anyOf": [
               {
@@ -6183,6 +6265,31 @@
               }
             ],
             "title": "Price Reference"
+          },
+          "price_source_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Source At Ms"
+          },
+          "price_status": {
+            "enum": [
+              "missing",
+              "verified",
+              "identity_unverified"
+            ],
+            "title": "Price Status",
+            "type": "string"
+          },
+          "price_unit": {
+            "const": "token",
+            "title": "Price Unit",
+            "type": "string"
           },
           "ratio_bps": {
             "anyOf": [
@@ -6195,38 +6302,13 @@
             ],
             "title": "Ratio Bps"
           },
-          "return_15m_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Return 15M Bps"
+          "research_id": {
+            "title": "Research Id",
+            "type": "string"
           },
-          "return_1h_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Return 1H Bps"
-          },
-          "return_4h_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Return 4H Bps"
+          "segment_key": {
+            "title": "Segment Key",
+            "type": "string"
           },
           "selection_reason": {
             "anyOf": [
@@ -6327,6 +6409,17 @@
         },
         "required": [
           "item_id",
+          "chain_id",
+          "segment_key",
+          "research_id",
+          "observation_count",
+          "first_event_at_ms",
+          "mark_source",
+          "price_status",
+          "price_quote",
+          "price_unit",
+          "price_source_at_ms",
+          "outcomes",
           "kind",
           "event_at_ms",
           "window_from_ms",
@@ -6395,9 +6488,35 @@
             "title": "Fills",
             "type": "array"
           },
+          "fills_complete": {
+            "title": "Fills Complete",
+            "type": "boolean"
+          },
           "limit": {
             "title": "Limit",
             "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/NewsWalletResearchTotalsData"
+          },
+          "view": {
+            "enum": [
+              "segments",
+              "observations"
+            ],
+            "title": "View",
+            "type": "string"
           },
           "window": {
             "title": "Window",
@@ -6414,6 +6533,10 @@
         },
         "required": [
           "cards",
+          "totals",
+          "next_cursor",
+          "view",
+          "fills_complete",
           "fills",
           "window",
           "window_from_ms",
@@ -6562,6 +6685,157 @@
           "kind"
         ],
         "title": "NewsWalletFillTotalData",
+        "type": "object"
+      },
+      "NewsWalletOutcomeData": {
+        "additionalProperties": false,
+        "properties": {
+          "horizon": {
+            "enum": [
+              "15m",
+              "1h",
+              "4h"
+            ],
+            "title": "Horizon",
+            "type": "string"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          },
+          "reference_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference At Ms"
+          },
+          "reference_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Price"
+          },
+          "return_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Bps"
+          },
+          "sampled_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sampled At Ms"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "status": {
+            "enum": [
+              "not_scheduled",
+              "not_due",
+              "pending",
+              "unavailable",
+              "missing_reference",
+              "identity_unverified",
+              "measured"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "target_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target At Ms"
+          }
+        },
+        "required": [
+          "horizon",
+          "status",
+          "source",
+          "price",
+          "sampled_at_ms",
+          "reference_price",
+          "reference_at_ms",
+          "target_at_ms",
+          "return_bps"
+        ],
+        "title": "NewsWalletOutcomeData",
+        "type": "object"
+      },
+      "NewsWalletResearchTotalsData": {
+        "additionalProperties": false,
+        "properties": {
+          "observations": {
+            "title": "Observations",
+            "type": "integer"
+          },
+          "priced_buy_usd": {
+            "title": "Priced Buy Usd",
+            "type": "string"
+          },
+          "segments": {
+            "title": "Segments",
+            "type": "integer"
+          },
+          "tokens": {
+            "title": "Tokens",
+            "type": "integer"
+          },
+          "wallets": {
+            "title": "Wallets",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "segments",
+          "observations",
+          "wallets",
+          "tokens",
+          "priced_buy_usd"
+        ],
+        "title": "NewsWalletResearchTotalsData",
         "type": "object"
       },
       "NewsWalletRosterData": {
@@ -7165,6 +7439,17 @@
             ],
             "title": "Pre Move Bps"
           },
+          "source_item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Item Id"
+          },
           "state": {
             "title": "State",
             "type": "string"
@@ -7203,6 +7488,17 @@
             "title": "Complete",
             "type": "boolean"
           },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
           "reason_counts_24h": {
             "additionalProperties": {
               "type": "integer"
@@ -7217,8 +7513,23 @@
             "title": "State Counts 24H",
             "type": "object"
           },
+          "total": {
+            "default": 0,
+            "title": "Total",
+            "type": "integer"
+          },
+          "window_from_ms": {
+            "default": 0,
+            "title": "Window From Ms",
+            "type": "integer"
+          },
           "window_hours": {
             "title": "Window Hours",
+            "type": "integer"
+          },
+          "window_to_ms": {
+            "default": 0,
+            "title": "Window To Ms",
             "type": "integer"
           }
         },
@@ -8595,8 +8906,67 @@
             "required": false,
             "schema": {
               "default": "",
-              "maxLength": 200,
+              "maxLength": 512,
               "title": "Cursor",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asset",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 64,
+              "title": "Asset",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "provider",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 128,
+              "title": "Provider",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "venue",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 128,
+              "title": "Venue",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "measurement_definition",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 256,
+              "title": "Measurement Definition",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "latest",
+              "enum": [
+                "latest",
+                "oi_change",
+                "oi_value"
+              ],
+              "title": "Sort",
               "type": "string"
             }
           }
@@ -8896,6 +9266,78 @@
               ],
               "title": "Token Address"
             }
+          },
+          {
+            "in": "query",
+            "name": "chain_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "exclusiveMaximum": 9223372036854775808,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Chain Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "segment_key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Segment Key"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": "segments",
+              "enum": [
+                "segments",
+                "observations"
+              ],
+              "title": "View",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 512,
+              "title": "Cursor",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to_ms",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "exclusiveMaximum": 9223372036854775808,
+              "minimum": 0,
+              "title": "To Ms",
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -8949,7 +9391,7 @@
     },
     "/api/trading/cases": {
       "get": {
-        "description": "One frozen Case by identity, beside the three durable 24 h distributions (#604 T3).\n\nThe list this route used to send is gone: 100 whole Cases on every 15 s poll, of which the desk\nrendered at most the one behind `?case=<id>`, and never the `NO_TRADE` Cases past the hundredth --\n553 of the 584 in a production day -- which are the ones an operator opens to ask why. A Case is\nreached by its own identity now, and no identity means no Case rather than a page nobody reads.\nThe two filters that narrowed that page went with it: `?underlying=` and `?state=` could only\nselect rows out of a list that is now always the caller's own Case or nothing.",
+        "description": "Frozen decisions by identity or a scope-bound keyset list; distributions remain independent.",
         "operationId": "get_trading_cases_api_trading_cases_get",
         "parameters": [
           {
@@ -8961,6 +9403,95 @@
               "maxLength": 256,
               "title": "Case Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": "summary",
+              "enum": [
+                "summary",
+                "list"
+              ],
+              "title": "View",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "default": "",
+              "enum": [
+                "",
+                "PENDING",
+                "RUNNING",
+                "NO_TRADE",
+                "SIGNAL_EMITTED",
+                "BLOCKED"
+              ],
+              "title": "State",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asset",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 64,
+              "title": "Asset",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 128,
+              "title": "Reason",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source_item_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 64,
+              "pattern": "^([0-9a-f]{64})?$",
+              "title": "Source Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 512,
+              "title": "Cursor",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
             }
           }
         ],
@@ -9053,6 +9584,19 @@
       "get": {
         "description": "Today's desk table: one row per entry identity, plus one per operator Command (#528 PR-3).",
         "operationId": "get_trading_executions_api_trading_executions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "case_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 256,
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -9063,6 +9607,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Get Trading Executions",

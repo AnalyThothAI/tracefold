@@ -352,7 +352,7 @@ def test_case_reads_its_policy_identity_off_the_manifest(client: tuple[TestClien
     }.isdisjoint(case)
 
 
-def test_cases_answers_one_identity_and_never_a_page(client: tuple[TestClient, _Trading]) -> None:
+def test_cases_summary_does_not_fetch_rows_and_identity_reads_one_case(client: tuple[TestClient, _Trading]) -> None:
     """#604 T3. A Case is reached by its own identity, and no identity means no Case.
 
     The route used to send the newest 100 whole Cases on every 15 s poll and the desk rendered at most
@@ -371,6 +371,10 @@ def test_cases_answers_one_identity_and_never_a_page(client: tuple[TestClient, _
         "admission_counts_24h",
         "complete",
         "window_hours",
+        "total",
+        "next_cursor",
+        "window_from_ms",
+        "window_to_ms",
     }
     # No identity, no Case -- and no Case read at all.
     assert data["cases"] == []
@@ -600,17 +604,10 @@ def test_retired_execution_routes_are_absent_and_current_routes_are_authenticate
         assert api.get(path).status_code == 401
 
 
-def test_the_two_list_filters_left_with_the_list_they_narrowed(client: tuple[TestClient, _Trading]) -> None:
-    """#604 T3. `?underlying=` and `?state=` could only select rows out of a page that is gone.
-
-    `tracefold trading cases --state` still narrows the windowed page, on its own statement; what no
-    longer exists is a browser parameter that filters an always-empty list.
-    """
-
+def test_cases_rejects_obsolete_underlying_and_invalid_state(client: tuple[TestClient, _Trading]) -> None:
     api, trading = client
-    for parameter in ("state", "underlying"):
-        refused = api.get("/api/trading/cases", params={"token": TOKEN, parameter: "emitted"})
-        assert refused.status_code == 400, parameter
+    assert api.get("/api/trading/cases", params={"token": TOKEN, "underlying": "BTC"}).status_code == 400
+    assert api.get("/api/trading/cases", params={"token": TOKEN, "state": "emitted"}).status_code == 422
     assert [name for name, _ in trading.calls if name == "console_cases"] == []
 
 

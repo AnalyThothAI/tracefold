@@ -15,7 +15,7 @@ describe("AppSidebar", () => {
     const headings = within(navigation).getAllByRole("heading", { level: 2 });
     /*
      * #256 split the list into a workbench and a data-health group; #553 PR-1 emptied the second one.
-     * 市场事实 is a reading surface, not a frame-parse audit: it answers what the venues reported, and
+     * 市场研究 is a reading surface, not a frame-parse audit: it answers what the venues reported, and
      * whether the pipeline itself is telling the truth is the topbar lamp's question on every page.
      */
     expect(headings.map((heading) => heading.textContent?.trim())).toEqual(["Workbench"]);
@@ -30,8 +30,8 @@ describe("AppSidebar", () => {
     // #207: every slot is a working surface. 流水线状态 kept its route and lost its slot — a healthy
     // pipeline made it a click that answers "everything is fine". #256 removed 学习复盘 outright: the
     // ReviewDesk is a CLI lane now. #460 removed Alpha 判定, whose Cases and frozen evidence are both
-    // on 交易. #553 PR-1 renamed the telemetry audit to 市场事实 and moved it up beside the feed, and
-    // #572 PR-3 added 链上钱包 beside it: the market list answers what observations arrived, and that
+    // on 交易. #553 PR-1 renamed the telemetry audit to 市场研究 and moved it up beside the feed, and
+    // #572 PR-3 added 钱包研究 beside it: the market list answers what observations arrived, and that
     // page answers what the chain tape itself is doing.
     expect(links.map((link) => link.getAttribute("href"))).toEqual([
       "/news",
@@ -42,21 +42,21 @@ describe("AppSidebar", () => {
     expect(links[0].textContent).toContain("事件流");
     expect(links[0].textContent).toContain("1.4k");
     /*
-     * 市场事实 carries no count. `/api/news/status` reports the editorial funnel and nothing about market
+     * 市场研究 carries no count. `/api/news/status` reports the editorial funnel and nothing about market
      * intake since #553 PR-1, and the destination prints the per-kind figures itself the moment it opens.
      */
-    expect(links[1].textContent?.trim()).toBe("市场事实");
+    expect(links[1].textContent?.trim()).toBe("市场研究");
     /*
-     * 链上钱包 carries none either: every figure it could show is read from its own endpoint, and the
+     * 钱包研究 carries none either: every figure it could show is read from its own endpoint, and the
      * page leads with exactly those tiles.
      */
-    expect(links[2].textContent?.trim()).toBe("链上钱包");
+    expect(links[2].textContent?.trim()).toBe("钱包研究");
     /*
      * 交易 carries neither a count nor a badge. At 204px a count clipped the label to one glyph
      * (#460), and the `tradingEnvironment` badge that replaced it cost every News route a 15 s poll of
      * `/api/trading/status` for a clock and the word `paper` the desk itself states (#537 PR-5).
      */
-    expect(links[3].textContent?.trim()).toBe("交易");
+    expect(links[3].textContent?.trim()).toBe("交易执行");
   });
 
   it("no longer offers the retired ReviewDesk destination", () => {
@@ -74,7 +74,7 @@ describe("AppSidebar", () => {
     // is a fact about the Runtime rather than about where the link goes.
     renderSidebar();
 
-    expect(screen.getByRole("link", { name: "交易" })).toHaveAttribute("href", "/trading");
+    expect(screen.getByRole("link", { name: "交易执行" })).toHaveAttribute("href", "/trading");
     expect(document.querySelector(".cockpit-app-sidebar-badge")).toBeNull();
   });
 
@@ -84,8 +84,8 @@ describe("AppSidebar", () => {
     renderSidebar({ counts: { events: 1463 } });
 
     expect(screen.getByRole("link", { name: "事件流" })).toHaveAttribute("href", "/news");
-    expect(screen.getByRole("link", { name: "市场事实" })).toHaveAttribute("href", "/news/market");
-    expect(screen.getByRole("link", { name: "链上钱包" })).toHaveAttribute("href", "/news/wallets");
+    expect(screen.getByRole("link", { name: "市场研究" })).toHaveAttribute("href", "/news/market");
+    expect(screen.getByRole("link", { name: "钱包研究" })).toHaveAttribute("href", "/news/wallets");
   });
 
   it("carries no health chrome of its own", () => {
@@ -106,12 +106,12 @@ describe("AppSidebar", () => {
     expect(screen.getAllByRole("link", { current: "page" })).toHaveLength(1);
   });
 
-  it("marks only 市场事实 current on the market route", () => {
+  it("marks only 市场研究 current on the market route", () => {
     // `/news` is a prefix of `/news/market`, so a link that decides for itself by prefix would leave two
     // destinations announcing themselves as the current page.
     renderSidebar({ route: "/news/market" });
 
-    expect(screen.getByRole("link", { name: "市场事实" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "市场研究" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("link", { name: "事件流" })).not.toHaveAttribute("aria-current");
     expect(screen.getAllByRole("link", { current: "page" })).toHaveLength(1);
   });

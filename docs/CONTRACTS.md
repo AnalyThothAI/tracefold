@@ -625,16 +625,22 @@ every Event this code can open.
   `news_market_window_too_wide` (`field: to_ms`). That span bounds what one
   request may scan, not how far back the data goes: any window inside the
   retention is readable. `limit` is 1..100 (`MARKET_PAGE_MAX`), default 50;
-  outside that range FastAPI returns 422. `cursor` is the opaque base64url
-  `received_at_ms|item_id` position of the previous page's last group — a
-  position, not a filter — and an undecodable one is 400
-  `news_market_cursor_invalid` (`field: cursor`). Any other query parameter is
-  400 `unsupported_query_param` naming that parameter.
+  outside that range FastAPI returns 422. Optional asset, provider, venue
+  and measurement_definition narrow the persisted observations.
+  `sort=latest|oi_change|oi_value` defaults to latest. Numeric sorting requires
+  kind=oi and an explicit provider/venue/proven measurement definition;
+  otherwise 400 news_market_sort_scope_required. Typed measurement_window_ms
+  and measurement_contract_status disclose whether the window is proven.
+  Numeric sorting filters the full bounded window before collapse and ordering,
+  never a limited first page. The latest sort retains its per-scan 5,000-row cap
+  and explicit scan_truncated flag.
 
-  Collapsing is a property of the whole window rather than of a page, so the
-  window is read first under the `MARKET_WINDOW_ROW_CAP` of 5,000 rows and the
-  groups are paged out of it; otherwise one group would appear twice with two
-  different counts either side of a page boundary. The group key is per kind and
+  Cursors bind the filters, sort and fixed end time; positions include sort
+  value, receive time and Item ID for stable ties. Mismatched or malformed
+  cursors are 400 news_market_cursor_invalid. A latest page resumes below
+  its final run's oldest observation. The per-scan cap can split a longer run,
+  which is disclosed rather than treated as a complete history.
+ The group key is per kind and
   is computed in SQL: OI is provider, venue, native instrument and measurement
   definition; liquidation replaces the definition with the liquidated side;
   smart money is provider, Strategy id, trader label, account address, venue,
@@ -693,48 +699,43 @@ every Event this code can open.
   happened for is absent rather than zeroed — unlike the market surface's
   `sources[]`, these are counts of what the tape did rather than a per-source
   inventory a reader is owed either way.
-- `GET /api/news/wallets/cards?window=...&limit=...` returns stored research
-  observations newest first, including candidates that were never notified (#614).
-  `window` is `24h|72h|7d`, default `24h`; invalid values return 400
-  `news_wallets_window_invalid`. `limit` is 1..200, default 100 (422 outside it).
-  Optional `kind=buy|exit|crowding|digest`, `wallet_address`, and `token_address`
-  narrow the ledger query before limiting it. Invalid kind or address returns 422.
-  Omitted kind returns all kinds;
-  the console explicitly defaults to buy. With both exact address filters, `fills[]`
-  contains the bounded raw buy/sell/transfer-out ledger in descending block/log order,
-  regardless of the card kind filter. Otherwise `fills` is empty. Quantities retain raw
-  integer text and optional decimals; missing price/precision stays unknown.
-  Address filters identify wallet/token,
-  while `token` remains authentication. Unsupported query parameters return 400.
+- `GET /api/news/wallets/cards` reads persisted research facts (#621).
+  `window=24h|72h|7d` defaults to 24h; `limit=1..200` defaults to 100
+  (the UI requests 25). Optional kind, exact wallet/token addresses,
+  chain_id and segment_key filter before grouping. The authentication
+  parameter remains `token`; the asset filter is `token_address`.
+  `view=segments|observations` defaults to segments. Buy segment identity
+  is chain + wallet + token + persisted segment key; all other observations
+  keep their Item identity. The latest event-time/Item tuple supplies the
+  segment snapshot. `totals` covers the full scope before pagination:
+  segments, observations, unique chain-qualified wallets/tokens and the sum
+  of latest cumulative priced buy amounts. It is not wallet total exposure.
 
-  Buy rows carry `stage` (`first_observed|new_position|add|reentry|unknown`),
-  `selection_reason`, `buy_count`, `unpriced_buys`, `observed_at_ms`,
-  `history_from_ms` and `price_reference`. Stage requires evidence of the balance
-  before the exact transfer; absence of retained history alone is never zero.
-  Amount and entry mean include only priced fills; unpriced counts disclose
-  incomplete coverage. Reaching the configured amount selects a notification,
-  with another in the same window only after the selected cumulative amount
-  doubles. Every candidate retains its own transaction identity and evidence.
-  Independent exit notifications default off; exit facts stay available.
+  `cursor` binds filters and a fixed `to_ms`, with an event-time/Item
+  keyset. Changed scope is 400; `next_cursor=null` ends the list.
+  Exact wallet + token filters also return bounded raw `fills[]`,
+  independently of observation kind; `fills_complete=false` discloses
+  truncation. Quantities retain exact integer text and optional decimals.
 
-  `digest_lines` and `digest_model_used` occur on digest rows only. Model-used
-  means model-selected buy fact IDs: every final line is rendered by the program,
-  including identity, direction and arithmetic. Overall window totals are separate
-  full-window queries, never inferred from the bounded buy detail list.
+  Rows retain buy stage, counts, priced-fill mean, observed reference,
+  history coverage, source and original Item identity. `outcomes[]`
+  replaces the former flat horizon fields. Each 15m/1h/4h outcome carries
+  reference/target/actual sample clocks, raw prices, source, nullable return
+  and a status: not_scheduled, not_due, pending, unavailable,
+  missing_reference, identity_unverified or measured. Only measured
+  returns are numeric, rounded to integral bps and clamped to ±10,000,000.
+  Zero is a measured flat price, never a missing-data placeholder.
 
-  The 15m, 1h and 4h return figures use each outcome's persisted observation price,
-  never the lead wallet's entry or an assumed delivery-time quote. Outcome rows
-  retain reference/target/actual sampling times and source. Returns are clamped
-  to ±10,000,000 bps; they describe observed prices, not executable returns.
-  A missed grace interval or unavailable quote is recorded as `unavailable`;
-  an absent outcome means pending, which includes not-due and unprocessed work.
-  A measured outcome without a reference price still has a source and a null
-  return. Legacy delivery receipts preserve unknown reference prices after the
-  hard cut. Every observed candidate can receive outcomes whether it was sent
-  or not; no notification-success selection is applied. A persisted attempt checkpoint
-  rotates unpriced candidates behind untried work within each horizon budget.
+  `price_status=verified` requires the pinned
+  `dexscreener_base_token_v1` source plus matching chain/token/USD/unit
+  evidence; it attests identity checks, not market-price accuracy.
+  Both reference and later sample must carry that verified identity before
+  a return is comparable. The adapter selects only matching base-token
+  pools. Provider quote time remains null when absent. Legacy unverified
+  receipts preserve raw values and never acquire invented provenance.
+  No historical fact is rewritten. Digest lines retain their program-rendered
+  sentences and model-selection attribution.
 
-  `item_id` links to `/api/news/market/{item_id}`, the common observation detail.
 - `GET /api/news/market/{item_id}` returns one observation in full: the
   observation itself, the stored `provider_params` payload, the card that spoke
   for it (`notification_delivery`, or `null`), the Items that card covered, and
@@ -1238,34 +1239,26 @@ Runtime facts, and status carries readiness plus bounded totals.
   freshness budgets — so a reader compares one instant against its own clock
   instead of running a timer per rule. Serve reads no secret file and constructs
   no provider client.
-- `GET /api/trading/cases?case_id={id}` — one frozen Case by identity, and the
-  drawer behind `/trading?case=<id>`. `cases` is that Case or nothing: an
-  unknown id is an empty answer rather than an error, and a malformed one is
-  `400 trading_cases_case_id_invalid`. Without `case_id` there are no Cases at
-  all (#604 T3): the unconditional 100-row page this route used to send on every
-  15 s poll was rendered by nothing, and the `NO_TRADE` Cases past the hundredth
-  — 553 of the 584 in a production day — were the ones it could never reach.
-  `?underlying=` and `?state=` went with that page, because both could only
-  narrow a list that no longer exists; `tracefold trading cases [--state]` reads
-  the windowed page directly. Every number a Case row publishes is the frozen one
-  it was decided on: `policy_checks` (check, operator, threshold, measured,
-  passed) and the policy identity read off the manifest, never today's
-  thresholds. `market_key` is venue-neutral. Beside the Case travel three durable
-  24 h distributions: `state_counts_24h`, `reason_counts_24h`, and
-  `admission_counts_24h`, a `{status, reason, count}` per admission answer over
-  the frames the lane looked at — the funnel's top, and a `count(*)` rather than
-  the per-frame `decisions[]` #589 PR-2 deleted. `complete` stays, and there is
-  **no cursor**: the response published a `next_cursor` no reader ever sent back
-  (#537 PR-5). The ten fields deleted from a Case row had no reader anywhere —
-  `underlying_key` (the row publishes `base_symbol`), `source_venue`,
-  `trigger_kind`, `policy_version` (a second copy of `policy_id`), the four
-  measured OI numbers `policy_checks` already carries beside the threshold each
-  was measured against, `policy_decision`, a required `Literal` over a nullable
-  column, which is exactly the shape that turns a stored `NULL` into a 500 on a
-  read route (#532), and `policy_config`, the frozen dictionary
-  `policy_checks[].threshold` is drawn from and `policy_config_digest` already
-  identifies (#604 T3).
-- `GET /api/trading/executions` — the desk table (#528 PR-1, PR-3). One row per
+- `GET /api/trading/cases` defaults to summary-only 24-hour state, reason
+  and admission distributions. `case_id` reads one retained frozen Case,
+  with unknown identity returning an empty list. `view=list` reads
+  25 rows by default (limit 1..100), optionally filtered by state, asset,
+  reason and source_item_id. `total`, `next_cursor`, window_from_ms and
+  window_to_ms describe the list scope; distributions remain the current
+  independent 24-hour aggregates. Cursors bind filter scope and end time,
+  ordering by created_at_ms and case_id. Normal browsing covers 24 hours;
+  source_item_id browsing covers retention and uses the manifest's exact
+  contexts.oi.source_item_id. No symbol/time inference is permitted.
+  Identity lookup cannot be mixed with list filters. Invalid state is 422;
+  stale/mismatched cursor is 400. The obsolete underlying filter stays
+  unsupported. Frozen policy identity and per-check measurements remain
+  the evidence shown in a Case, and source_item_id may be null.
+
+- `GET /api/trading/executions` — the desk table (#528 PR-1, PR-3).
+  Optional case_id selects that Case's retained Signal executions before
+  limiting, outside the ordinary 24-hour window. Commands and account totals
+  keep their own scopes; manual entries have no Case and are excluded from
+  a Case-specific execution list. One row per
   entry identity in a bounded 24-hour window: a `TradeSignalV1`, or a
   `manual_entry` Command, which is the identity the Runtime correlates that
   entry's facts under. Each row folds its own `signal_disposition` or

@@ -57,6 +57,8 @@ class MarketObservationRow(TypedDict):
     source_venue: str | None
     raw_instrument: str | None
     symbol: str | None
+    measurement_window_ms: int | None
+    measurement_contract_status: str | None
     measurement_definition: str | None
     direction: str | None
     oi_change_bps: int | None
@@ -181,6 +183,9 @@ _OBSERVATIONS_SQL = f"""
            COALESCE(o.raw_instrument, l.raw_instrument, w.raw_instrument, e.token) AS raw_instrument,
            COALESCE(o.symbol, l.symbol, w.symbol, e.token_symbol) AS symbol,
            o.measurement_definition,
+           o.measurement_window_ms,
+           CASE WHEN o.source_contract_version IS NOT NULL AND o.measurement_window_ms > 0
+                THEN 'proven' WHEN o.source_item_id IS NOT NULL THEN 'unproven' END AS measurement_contract_status,
            o.direction,
            o.oi_change_bps,
            o.oi_value_usd,
@@ -302,6 +307,8 @@ _OBSERVATION_KEYS: Final[tuple[str, ...]] = (
     "raw_instrument",
     "symbol",
     "measurement_definition",
+    "measurement_window_ms",
+    "measurement_contract_status",
     "direction",
     "oi_change_bps",
     "oi_value_usd",
@@ -366,13 +373,17 @@ INTERNAL_OBSERVATION_KEYS: Final[frozenset[str]] = frozenset({"wallet_window_fro
 MARKET_GROUPS_SQL = f"""
     WITH observations AS MATERIALIZED (
       SELECT * FROM ({_OBSERVATIONS_SQL}
-         WHERE i.market_kind IS NOT NULL
-           AND i.market_kind = ANY(%s)
-           AND i.observed_at_ms >= %s
-           AND i.observed_at_ms < %s
-           AND (i.observed_at_ms, i.item_id) < (%s, %s)
-         ORDER BY i.observed_at_ms DESC, i.item_id DESC
-         LIMIT %s) AS windowed
+         WHERE i.market_kind = ANY(%(kinds)s)
+           AND i.observed_at_ms >= %(from_ms)s AND i.observed_at_ms < %(to_ms)s
+      ) AS windowed
+      WHERE (%(asset)s::text IS NULL OR upper(symbol) = %(asset)s)
+        AND (%(provider)s::text IS NULL OR provider = %(provider)s)
+        AND (%(venue)s::text IS NULL OR source_venue = %(venue)s)
+        AND (%(definition)s::text IS NULL OR measurement_definition = %(definition)s)
+        AND (%(sort)s = 'latest' OR measurement_contract_status = 'proven')
+        AND (%(sort)s != 'latest' OR (received_at_ms, item_id) < (%(cursor_at)s, %(cursor_id)s))
+      ORDER BY received_at_ms DESC, item_id DESC
+      LIMIT CASE WHEN %(sort)s = 'latest' THEN %(cap)s::integer END
     ), islands AS (
       SELECT observations.*,
              row_number() OVER (ORDER BY received_at_ms DESC, item_id DESC)
@@ -380,23 +391,25 @@ MARKET_GROUPS_SQL = f"""
         FROM observations
     ), collapsed AS (
       SELECT group_key, island, count(*) AS observation_count,
-             min(event_at_ms) AS first_event_at_ms,
-             max(event_at_ms) AS last_event_at_ms,
+             min(event_at_ms) AS first_event_at_ms, max(event_at_ms) AS last_event_at_ms,
              (array_agg(item_id ORDER BY received_at_ms DESC, item_id DESC))[1] AS latest_item_id,
              (array_agg(item_id ORDER BY received_at_ms ASC, item_id ASC))[1] AS oldest_item_id,
-             max(received_at_ms) AS sort_received_at_ms,
-             min(received_at_ms) AS oldest_received_at_ms,
+             max(received_at_ms) AS sort_received_at_ms, min(received_at_ms) AS oldest_received_at_ms,
              (SELECT count(*) FROM observations) AS scanned
-        FROM islands
-       GROUP BY group_key, island
+        FROM islands GROUP BY group_key, island
+    ), ranked AS (
+      SELECT c.observation_count, c.first_event_at_ms, c.last_event_at_ms,
+             c.oldest_received_at_ms, c.oldest_item_id, c.scanned, i.*,
+             CASE WHEN %(sort)s = 'oi_change' THEN abs(i.oi_change_bps::bigint)
+                  WHEN %(sort)s = 'oi_value' THEN i.oi_value_usd
+                  ELSE i.received_at_ms END AS sort_value
+      FROM collapsed c JOIN islands i ON i.item_id = c.latest_item_id
     )
-    SELECT c.observation_count, c.first_event_at_ms, c.last_event_at_ms,
-           c.oldest_received_at_ms, c.oldest_item_id, c.scanned, i.*
-      FROM collapsed c
-      JOIN islands i ON i.item_id = c.latest_item_id
-     ORDER BY c.sort_received_at_ms DESC, c.latest_item_id DESC
-     LIMIT %s
-"""  # noqa: S608 -- the only interpolation is this module's own observation projection
+    SELECT * FROM ranked
+    WHERE %(sort)s = 'latest'
+       OR (sort_value, received_at_ms, item_id) < (%(cursor_value)s, %(cursor_at)s, %(cursor_id)s)
+    ORDER BY sort_value DESC, received_at_ms DESC, item_id DESC LIMIT %(limit)s
+"""  # noqa: S608 -- module-owned projection; all filters and positions are bound
 
 # The second `news_items` reference is a primary-key lookup for the three columns only the detail page
 # needs. Widening the shared observation projection with them would put a provider payload into every
@@ -689,6 +702,12 @@ class MarketStorage:
         cursor_received_at_ms: int,
         cursor_item_id: str,
         limit: int,
+        asset: str | None = None,
+        provider: str | None = None,
+        venue: str | None = None,
+        definition: str | None = None,
+        sort: str = "latest",
+        cursor_value: int = 2**63 - 1,
     ) -> tuple[list[MarketGroupRow], bool]:
         """One page of collapsed groups, newest observation first, and whether the scan hit its cap.
 
@@ -704,15 +723,21 @@ class MarketStorage:
         # window and passing against the very shape this replaced.
         rows = self.conn.execute(
             MARKET_GROUPS_SQL,
-            (
-                list(kinds or MARKET_KINDS),
-                int(from_ms),
-                int(to_ms),
-                int(cursor_received_at_ms),
-                cursor_item_id,
-                MARKET_WINDOW_ROW_CAP,
-                int(limit),
-            ),
+            {
+                "kinds": list(kinds or MARKET_KINDS),
+                "from_ms": from_ms,
+                "to_ms": to_ms,
+                "cursor_at": cursor_received_at_ms,
+                "cursor_id": cursor_item_id,
+                "cursor_value": cursor_value,
+                "cap": MARKET_WINDOW_ROW_CAP,
+                "limit": limit,
+                "asset": asset,
+                "provider": provider,
+                "venue": venue,
+                "definition": definition,
+                "sort": sort,
+            },
         ).fetchall()
         groups = [
             MarketGroupRow(
@@ -733,7 +758,7 @@ class MarketStorage:
             for row in rows
         ]
         scanned = int(rows[0]["scanned"]) if rows else 0
-        return groups, scanned >= MARKET_WINDOW_ROW_CAP
+        return groups, sort == "latest" and scanned >= MARKET_WINDOW_ROW_CAP
 
     def market_item(self, *, item_id: str) -> dict[str, Any] | None:
         """One market Item with its stored provider payload. Not bound by the list's window."""

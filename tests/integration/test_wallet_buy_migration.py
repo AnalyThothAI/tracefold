@@ -92,4 +92,4 @@ def test_legacy_receipts_keep_trigger_identity_and_unknown_reference(postgres_mi
         assert old_fill["derived_at_ms"] == old_fill["classified_at_ms"] == stamp
         cards = repositories_for_connection(conn).news.chain_tape_cards(from_ms=START, to_ms=stamp + 1, limit=10)
         assert len(cards) == 1
-        assert cards[0]["return_1h_bps"] is None
+        assert cards[0]["outcomes"][1]["return_bps"] is None

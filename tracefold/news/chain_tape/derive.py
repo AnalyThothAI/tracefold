@@ -20,6 +20,7 @@ from ..wallet_contracts import (
     OUTCOME_GIVE_UP_MS,
     OUTCOME_PRICE_MIN,
     OUTCOME_UNAVAILABLE,
+    VERIFIED_WALLET_PRICE_SOURCE,
     WalletBalance,
     WalletCheck,
     WalletEvent,
@@ -262,7 +263,9 @@ class WalletCardDeriver(TapePasses):
         entry = None
         if context["priced_raw"] > 0 and fill.token_decimals is not None:
             entry = usd * (Decimal(10) ** fill.token_decimals) / context["priced_raw"]
-        mark = _mark(marks.get(fill.token))
+        verified_mark = await self._price(fill.token, errors)
+        mark = verified_mark if verified_mark is not None else _mark(marks.get(fill.token))
+        observed_at_ms = self._clock()
         evidence = {
             "log_index": fill.log_index,
             "fills": context["fills"],
@@ -275,7 +278,18 @@ class WalletCardDeriver(TapePasses):
             "history_from_ms": context["history_from_ms"],
             "history_complete": False,
             "price_reference": "observed" if mark is not None else None,
-            "mark_source": SITE_PRICE_SOURCE if mark is not None else None,
+            "mark_source": (
+                VERIFIED_WALLET_PRICE_SOURCE
+                if verified_mark is not None
+                else SITE_PRICE_SOURCE
+                if mark is not None
+                else None
+            ),
+            "price_chain_id": fill.chain_id,
+            "price_token": fill.token,
+            "price_quote": "USD",
+            "price_unit": "token",
+            "price_source_at_ms": None,
             "notification_price": None,
             "notification_price_at_ms": None,
             "rank_quality": member.rank_quality,
@@ -539,7 +553,7 @@ class WalletCardDeriver(TapePasses):
             expired = self._clock() - row["target_at_ms"] >= OUTCOME_GIVE_UP_MS
             price = None if expired else await self._price(str(row["token"]), errors)
             sampled_at_ms = self._clock()
-            source = "dexscreener"
+            source = VERIFIED_WALLET_PRICE_SOURCE
             if price is None and not expired:
                 if marks is None:
                     marks = await self._marks(errors)
@@ -599,7 +613,7 @@ class WalletCardDeriver(TapePasses):
         if self.prices is None:
             return None
         answer = await self._call(PRICE_SOURCE, lambda: self.prices.token_price(token), errors)  # type: ignore[union-attr]
-        return answer if isinstance(answer, Decimal) else None
+        return answer if isinstance(answer, Decimal) and answer.is_finite() and answer >= OUTCOME_PRICE_MIN else None
 
     # ------------------------------------------------------------------ provider context
     async def _bags(self, handle: str, errors: list[str]) -> tuple[Any, ...] | None:

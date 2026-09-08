@@ -17,6 +17,7 @@ describe("public browser surface", () => {
       "news",
       "news/events/:eventId",
       "news/market",
+      "news/market/:itemId",
       "news/status",
       "news/symbols/:base",
       "news/wallets",

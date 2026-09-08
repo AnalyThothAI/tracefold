@@ -128,49 +128,6 @@
     font-size: var(--font-size-mono-meta);
   }
 
-  /*
-   * The Case drawer `?case=<id>` opens: the one Case a reader asked for, above the desk rather than
-   * inside a list of every Case in the window (#537 PR-5).
-   */
-  .trading-case-drawer {
-    display: grid;
-    gap: 8px;
-    min-width: 0;
-    padding: 10px;
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-md);
-    background: var(--surface-raised);
-  }
-
-  .trading-case-drawer-bar {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: baseline;
-    justify-content: space-between;
-    min-width: 0;
-  }
-
-  .trading-case-drawer-bar code {
-    overflow-wrap: anywhere;
-    color: var(--text-subtle);
-    font: var(--type-mono-meta);
-  }
-
-  .trading-case-drawer-bar button {
-    padding: 3px 10px;
-    border: 1px solid var(--border-faint);
-    border-radius: var(--radius-xs);
-    background: transparent;
-    color: var(--text-secondary);
-    font: var(--type-mono-meta);
-    cursor: pointer;
-  }
-
-  .trading-case-drawer-bar button:hover {
-    background: var(--surface-hover);
-  }
-
   /* The Case a Signal row authored, opened in the drawer above rather than navigated away to. */
   .trading-case-link {
     padding: 0;
@@ -502,41 +459,6 @@
     color: var(--text-primary);
   }
 
-  /* ③ The 24 h funnel: seven counts in one line, with the lane / venue seam marked rather than narrated. */
-  .trading-funnel {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px 6px;
-    align-items: baseline;
-    padding: 12px 14px 4px;
-  }
-
-  .trading-funnel-step {
-    display: flex;
-    gap: 6px;
-    align-items: baseline;
-    min-width: 0;
-    padding: 4px 9px;
-    border-radius: var(--radius-pill);
-    background: var(--surface-raised);
-    box-shadow: inset 0 0 0 1px var(--border-faint);
-    font-size: var(--font-size-mono-meta);
-  }
-
-  .trading-funnel-step[data-side="venue"] {
-    box-shadow: inset 0 0 0 1px var(--signal-done-border);
-  }
-
-  .trading-funnel-step small {
-    color: var(--text-subtle);
-  }
-
-  .trading-funnel-step b {
-    color: var(--text-primary);
-    font: var(--type-mono-meta);
-    font-variant-numeric: tabular-nums;
-  }
-
   .trading-count-list {
     display: grid;
     gap: 1px;
@@ -644,30 +566,6 @@
     }
 
     /* The drawer keeps order 0: a reader who arrived on `?case=<id>` asked for that Case first. */
-    .trading-body > [data-block="safety"],
-    .trading-body > .trading-empty-note {
-      order: 1;
-    }
-
-    .trading-body > [data-block="exposure"] {
-      order: 2;
-    }
-
-    .trading-body > [data-block="controls"] {
-      order: 3;
-    }
-
-    .trading-body > [data-block="tally"] {
-      order: 4;
-    }
-
-    .trading-body > [data-block="ledger"] {
-      order: 5;
-    }
-
-    .trading-body > [data-block="funnel"] {
-      order: 6;
-    }
 
     .trading-safety-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -750,6 +648,90 @@
 
     .trading-ledger-market {
       grid-column: 1 / -1;
+    }
+  }
+}
+
+@layer app.features {
+  .trading-research-tabs,
+  .trading-research-toolbar {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: end;
+  }
+  .trading-research-tabs > button {
+    background: var(--surface-panel);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    min-height: 44px;
+    padding: 8px 16px;
+    cursor: pointer;
+  }
+  .trading-research-tabs > button[data-active] {
+    color: var(--accent-primary);
+    border-color: var(--accent-border);
+    background: var(--accent-soft);
+  }
+  .trading-research-toolbar {
+    padding: 16px;
+  }
+  .trading-research-toolbar label {
+    display: grid;
+    gap: 6px;
+  }
+  .trading-research-toolbar input,
+  .trading-research-toolbar select {
+    min-height: 36px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--surface-root);
+    color: var(--text-primary);
+    padding: 6px 10px;
+  }
+  .trading-case-list-row {
+    display: grid;
+    grid-template-columns: 90px minmax(0, 1fr) auto;
+    gap: 16px;
+    width: 100%;
+    padding: 18px;
+    text-align: left;
+    background: transparent;
+    border: 0;
+    border-top: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+  .trading-case-list-row:hover {
+    background: var(--surface-hover);
+  }
+  .trading-case-list-row small {
+    color: var(--text-muted);
+  }
+  button.trading-count-row {
+    width: 100%;
+    background: transparent;
+    border: 0;
+    color: var(--text-primary);
+    text-align: left;
+    cursor: pointer;
+    min-height: 44px;
+  }
+  .trading-admission-details > summary {
+    padding: 16px;
+    cursor: pointer;
+    min-height: 44px;
+  }
+  @media (max-width: 599px) {
+    .trading-case-list-row {
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+    .trading-research-toolbar input,
+    .trading-research-toolbar select {
+      min-height: 44px;
+      max-width: 100%;
     }
   }
 }

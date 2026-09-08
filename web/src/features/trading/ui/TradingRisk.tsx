@@ -43,27 +43,26 @@ export function TradingSafetyStrip({
        */}
       <MetricRow className="trading-safety-grid" columns={3} label="执行安全状态">
         <Metric
-          eyebrow="ALIVE"
+          eyebrow="执行服务在线"
           value={safety(execution.alive, stale)}
-          caption="进程 / Node / event loop"
+          caption="执行进程与事件循环"
           tone={!stale && execution.alive ? "accent" : "caution"}
         />
         <Metric
-          eyebrow="SAFE"
+          eyebrow="当前仓位可保护 / 退出"
           value={safety(execution.execution_safe, stale)}
-          caption="现有 exposure 可保护和退出"
+          caption="不代表账户资料完整"
           tone={!stale && execution.execution_safe ? "accent" : "caution"}
         />
         <Metric
-          eyebrow="ARMED"
+          eyebrow="允许新增仓位"
           value={safety(execution.entries_armed, stale)}
           caption={stale ? "事实已过期" : entryBlockReasonLabel(execution.entry_block_reason)}
           tone={!stale && execution.entries_armed ? "accent" : "caution"}
         />
       </MetricRow>
       <p className="trading-routes-line">
-        Runtime 可执行市场 {execution.routes_count} 个 · 账户槽位{" "}
-        <code>{execution.account_slot}</code>
+        可执行市场 {execution.routes_count} 个 · 账户槽位 <code>{execution.account_slot}</code>
         {stale ? " · 本次读取的事实已过期" : ""}
       </p>
     </div>
@@ -94,14 +93,20 @@ export function TradingExposure({
   const orders = account?.orders ?? [];
   const open = positions.length > 0 || orders.length > 0 || execution.unexpected_exposure;
   return (
-    <Card data-block="exposure" flush title="敞口与保护">
+    <Card data-block="exposure" flush title="当前仓位与保护">
       <details className="trading-exposure" open={open}>
         <summary>
           <span>
             仓位 {positions.length} · 挂单 {account?.open_orders_count ?? "—"} · 保护{" "}
             {protectionStatusLabel(execution.protection_status)}
           </span>
-          <small>{open ? "账户上有敞口" : "无敞口，展开查看账户事实"}</small>
+          <small>
+            {open
+              ? "当前账户仓位与订单"
+              : !stale && execution.account_flat_proven
+                ? "已核实空仓"
+                : "未见仓位，账户为空尚未证实"}
+          </small>
         </summary>
 
         {execution.unexpected_exposure ? (
@@ -116,22 +121,22 @@ export function TradingExposure({
         ) : null}
 
         <div className="trading-fact-grid">
-          <Fact label="Equity" value={moneyLabel(account?.equity_usd)} />
+          <Fact label="账户权益" value={moneyLabel(account?.equity_usd)} />
           <Fact
-            label="当日 Drawdown"
+            label="当日回撤"
             value={
               account?.daily_drawdown_usd == null
-                ? "UNAVAILABLE"
+                ? "未取得"
                 : `${moneyLabel(account.daily_drawdown_usd)} · ${bpsPercent(account.daily_drawdown_bps)}`
             }
             warn={Number(account?.daily_drawdown_usd ?? 0) > 0}
           />
-          <Fact label="Aggregate risk" value={moneyLabel(account?.aggregate_risk_usd)} />
+          <Fact label="总风险金额" value={moneyLabel(account?.aggregate_risk_usd)} />
           <Fact
-            label="Private reconcile age"
+            label="私有对账距今"
             value={
               execution.reconciliation_age_ms == null
-                ? "UNAVAILABLE"
+                ? "未取得"
                 : `${execution.reconciliation_age_ms.toLocaleString("en-US")} ms`
             }
             warn={
@@ -140,11 +145,11 @@ export function TradingExposure({
           />
           <Fact
             label="账户事实"
-            value={account?.complete ? "COMPLETE" : account ? "PARTIAL" : "UNAVAILABLE"}
+            value={account?.complete ? "完整" : account ? "部分资料缺失" : "未取得"}
             warn={!account?.complete}
           />
           <Fact
-            label="Inflight / Unknown"
+            label="处理中 / 未知订单"
             value={`${account?.inflight_orders_count ?? "—"} / ${account?.unknown_orders_count ?? "—"}`}
             warn={Boolean(account?.unknown_orders_count)}
           />
@@ -157,30 +162,30 @@ export function TradingExposure({
                 <div className="trading-position-identity">
                   <b>{position.instrument_id}</b>
                   <span data-tone={position.side === "long" ? "long" : "short"}>
-                    {position.side.toUpperCase()}
+                    {position.side === "long" ? "多仓" : "空仓"}
                   </span>
-                  {!position.owned ? <span data-tone="alert">UNCLAIMED</span> : null}
+                  {!position.owned ? <span data-tone="alert">归属未确认</span> : null}
                 </div>
                 <div className="trading-position-facts">
-                  <Fact label="Qty" value={position.quantity} />
-                  <Fact label="Entry" value={position.entry_price} />
-                  <Fact label="Mark" value={position.mark_price ?? "UNAVAILABLE"} />
+                  <Fact label="数量" value={position.quantity} />
+                  <Fact label="入场均价" value={position.entry_price} />
+                  <Fact label="标记价格" value={position.mark_price ?? "未取得"} />
                   <Fact
-                    label="Unrealized PnL"
+                    label="未实现盈亏"
                     value={moneyLabel(position.unrealized_pnl_usd)}
                     warn={position.unrealized_pnl_usd == null}
                   />
                 </div>
                 <div
                   className="trading-protection-strip"
-                  data-tone={position.protection_full_coverage ? "protected" : "caution"}
+                  data-tone={!stale && position.protection_full_coverage ? "protected" : "caution"}
                 >
-                  <b>{protectionStatusLabel(position.protection_status)}</b>
+                  <b>
+                    {stale ? "保护事实已过期" : protectionStatusLabel(position.protection_status)}
+                  </b>
                   <span>Qty {position.protection_quantity ?? "—"}</span>
                   <span>Trigger {position.protection_trigger_price ?? "—"}</span>
-                  <span>
-                    {position.protection_full_coverage ? "FULL COVERAGE" : "NOT FULLY COVERED"}
-                  </span>
+                  <span>{position.protection_full_coverage ? "全部覆盖" : "未全部覆盖"}</span>
                 </div>
               </article>
             ))}
@@ -209,7 +214,7 @@ export function TradingExposure({
                 </span>
                 <span>Trigger {order.trigger_price ?? "—"}</span>
                 <span data-tone={!order.owned ? "caution" : undefined}>
-                  {order.owned ? "OWNED" : "UNCLAIMED"}
+                  {order.owned ? "OWNED" : "归属未确认"}
                   {order.reduce_only ? " · REDUCE ONLY" : ""}
                 </span>
               </article>
@@ -235,5 +240,5 @@ function Fact({ label, value, warn = false }: { label: string; value: ReactNode;
 
 function safety(value: boolean, stale: boolean): string {
   if (stale) return "过期";
-  return value ? "YES" : "NO";
+  return value ? "是" : "否";
 }

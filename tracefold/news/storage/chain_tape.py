@@ -50,6 +50,7 @@ from ..wallet_contracts import (
     WalletOutcome,
 )
 from .sql_values import _dumps
+from .wallet_research import WALLET_RESEARCH_SQL, WALLET_RESEARCH_TOTALS_SQL, research_params, wallet_research_card
 
 TAPE_STATE_ID: Final = "chain_tape"
 
@@ -423,63 +424,9 @@ SELECT chain_id, tx_hash, log_index, block_number, wallet, token, token_symbol,
        token_decimals, kind, amount_raw::text AS amount_raw, usd::text AS usd, event_at_ms
   FROM news_market_wallet_fills
  WHERE wallet = %s AND token = %s AND event_at_ms >= %s AND event_at_ms < %s
- ORDER BY block_number DESC, log_index DESC LIMIT %s
+   AND (%s::bigint IS NULL OR chain_id = %s)
+ ORDER BY block_number DESC, log_index DESC, chain_id DESC, tx_hash DESC LIMIT %s
 """
-
-# One bounded page with outcome-owned observation references; no fallback to historical entry prices.
-WALLET_CARDS_SQL: Final = f"""
-WITH cards AS (
-  SELECT e.item_id, e.kind, e.handle, e.wallet, e.token, e.token_symbol, e.tone,
-         e.ratio_bps, e.basis, e.closed, e.peer_wallets, e.premium_bps,
-         e.usd, e.position_usd, e.entry_price, e.mark_price, e.evidence,
-         e.event_at_ms, e.window_from_ms, e.window_to_ms,
-         i.market_notify_delivery_key AS delivery_key
-    FROM news_market_wallet_events e
-    LEFT JOIN news_items i ON i.item_id = e.item_id
-   WHERE e.event_at_ms >= %(from_ms)s AND e.event_at_ms < %(to_ms)s
-     AND (%(kind)s::text IS NULL OR e.kind = %(kind)s)
-     AND (%(wallet_address)s::text IS NULL OR e.wallet = %(wallet_address)s)
-     AND (%(token_address)s::text IS NULL OR e.token = %(token_address)s)
-   ORDER BY e.event_at_ms DESC
-   LIMIT %(limit)s
-)
-SELECT c.item_id, c.kind, c.handle, c.wallet, c.token, c.token_symbol, c.tone,
-       c.ratio_bps, c.basis, c.closed, c.peer_wallets, c.premium_bps,
-       c.usd::text AS usd, c.position_usd::text AS position_usd,
-       c.entry_price::text AS entry_price, c.mark_price::text AS mark_price,
-       c.event_at_ms, c.window_from_ms, c.window_to_ms,
-       c.evidence->>'stage' AS stage, c.evidence->>'selection_reason' AS selection_reason,
-       (c.evidence->>'buy_count')::integer AS buy_count,
-       (c.evidence->>'unpriced_buys')::integer AS unpriced_buys,
-       (c.evidence->>'observed_at_ms')::bigint AS observed_at_ms,
-       (c.evidence->>'history_from_ms')::bigint AS history_from_ms,
-       c.evidence->>'price_reference' AS price_reference,
-       c.delivery_key, d.state AS delivery_state, d.settled_at_ms,
-       o15.source AS outcome_15m_source,
-       CASE WHEN o15.price IS NOT NULL AND o15.reference_price > 0
-            THEN LEAST(10000000, GREATEST(-10000000,
-                 round((o15.price / o15.reference_price - 1) * 10000)))::integer END AS return_15m_bps,
-       o1.source AS outcome_1h_source,
-       CASE WHEN o1.price IS NOT NULL AND o1.reference_price > 0
-            THEN LEAST(10000000, GREATEST(-10000000,
-                 round((o1.price / o1.reference_price - 1) * 10000)))::integer END AS return_1h_bps,
-       o4.source AS outcome_4h_source,
-       CASE WHEN o4.price IS NOT NULL AND o4.reference_price > 0
-            THEN LEAST(10000000, GREATEST(-10000000,
-                 round((o4.price / o4.reference_price - 1) * 10000)))::integer END AS return_4h_bps,
-       CASE WHEN c.kind = '{DIGEST_KIND}' THEN (
-              SELECT jsonb_agg(line ->> 'text' ORDER BY ord)
-                FROM jsonb_array_elements(c.evidence -> 'lines') WITH ORDINALITY AS t(line, ord)
-            ) END AS digest_lines,
-       CASE WHEN c.kind = '{DIGEST_KIND}'
-            THEN COALESCE((c.evidence ->> 'model_used') = 'true', false) END AS digest_model_used
-  FROM cards c
-  LEFT JOIN news_market_deliveries d ON d.delivery_key = c.delivery_key
-  LEFT JOIN news_market_wallet_outcomes o15 ON o15.item_id = c.item_id AND o15.horizon = '15m'
-  LEFT JOIN news_market_wallet_outcomes o1 ON o1.item_id = c.item_id AND o1.horizon = '1h'
-  LEFT JOIN news_market_wallet_outcomes o4 ON o4.item_id = c.item_id AND o4.horizon = '4h'
- ORDER BY c.event_at_ms DESC
-"""  # noqa: S608 -- the only interpolation is this repository's own code-owned kind literal
 
 
 class DueOutcomeRow(TypedDict):
@@ -1039,79 +986,27 @@ class ChainTapeStorage:
         from_ms: int,
         to_ms: int,
         limit: int,
+        chain_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """All retained movements for one researched position, independent of alert thresholds."""
         rows = self.conn.execute(
             WALLET_POSITION_FILLS_SQL,
-            (wallet_address, token_address, int(from_ms), int(to_ms), max(1, min(200, int(limit)))),
+            (wallet_address, token_address, int(from_ms), int(to_ms), chain_id, chain_id, max(1, min(201, int(limit)))),
         ).fetchall()
         return [dict(row) for row in rows]
 
     def chain_tape_cards(
-        self,
-        *,
-        from_ms: int,
-        to_ms: int,
-        limit: int,
-        kind: str | None = None,
-        wallet_address: str | None = None,
-        token_address: str | None = None,
+        self, *, from_ms: int, to_ms: int, limit: int, now_ms: int | None = None, **filters: Any
     ) -> list[dict[str, Any]]:
-        """One bounded page of wallet cards, each beside the two price receipts taken for it."""
+        params = research_params(from_ms=from_ms, to_ms=to_ms, limit=limit, **filters)
+        rows = self.conn.execute(WALLET_RESEARCH_SQL, params).fetchall()
+        return [wallet_research_card(dict(row), now_ms=to_ms if now_ms is None else now_ms) for row in rows]
 
-        rows = self.conn.execute(
-            WALLET_CARDS_SQL,
-            {
-                "from_ms": int(from_ms),
-                "to_ms": int(to_ms),
-                "limit": max(1, int(limit)),
-                "kind": kind,
-                "wallet_address": wallet_address,
-                "token_address": token_address,
-            },
-        ).fetchall()
-        return [
-            {
-                "item_id": str(row["item_id"]),
-                "kind": str(row["kind"]),
-                "handle": str(row["handle"] or ""),
-                "wallet": str(row["wallet"] or ""),
-                "token": str(row["token"] or ""),
-                "token_symbol": None if row["token_symbol"] is None else str(row["token_symbol"]),
-                "tone": str(row["tone"] or ""),
-                "ratio_bps": None if row["ratio_bps"] is None else int(row["ratio_bps"]),
-                "basis": None if row["basis"] is None else str(row["basis"]),
-                "closed": bool(row["closed"]),
-                "peer_wallets": int(row["peer_wallets"] or 0),
-                "premium_bps": None if row["premium_bps"] is None else int(row["premium_bps"]),
-                "usd": None if row["usd"] is None else str(row["usd"]),
-                "position_usd": None if row["position_usd"] is None else str(row["position_usd"]),
-                "entry_price": None if row["entry_price"] is None else str(row["entry_price"]),
-                "mark_price": None if row["mark_price"] is None else str(row["mark_price"]),
-                "event_at_ms": int(row["event_at_ms"]),
-                "window_from_ms": int(row["window_from_ms"]),
-                "window_to_ms": int(row["window_to_ms"]),
-                "stage": row["stage"],
-                "selection_reason": row["selection_reason"],
-                "buy_count": row["buy_count"],
-                "unpriced_buys": row["unpriced_buys"],
-                "observed_at_ms": row["observed_at_ms"],
-                "history_from_ms": row["history_from_ms"],
-                "price_reference": row["price_reference"],
-                "delivery_key": None if row["delivery_key"] is None else str(row["delivery_key"]),
-                "delivery_state": None if row["delivery_state"] is None else str(row["delivery_state"]),
-                "settled_at_ms": None if row["settled_at_ms"] is None else int(row["settled_at_ms"]),
-                "outcome_15m_source": row["outcome_15m_source"],
-                "return_15m_bps": row["return_15m_bps"],
-                "outcome_1h_source": None if row["outcome_1h_source"] is None else str(row["outcome_1h_source"]),
-                "return_1h_bps": None if row["return_1h_bps"] is None else int(row["return_1h_bps"]),
-                "outcome_4h_source": None if row["outcome_4h_source"] is None else str(row["outcome_4h_source"]),
-                "return_4h_bps": None if row["return_4h_bps"] is None else int(row["return_4h_bps"]),
-                "digest_lines": None if row["digest_lines"] is None else [str(line) for line in row["digest_lines"]],
-                "digest_model_used": None if row["digest_model_used"] is None else bool(row["digest_model_used"]),
-            }
-            for row in rows
-        ]
+    def chain_tape_research_totals(self, *, from_ms: int, to_ms: int, **filters: Any) -> dict[str, Any]:
+        row = self.conn.execute(
+            WALLET_RESEARCH_TOTALS_SQL, research_params(from_ms=from_ms, to_ms=to_ms, **filters)
+        ).fetchone()
+        return dict(row)
 
     # ------------------------------------------------------------------ roster
     def chain_tape_current_roster(self) -> RosterSnapshot | None:
@@ -1203,7 +1098,6 @@ def _unit_price(usd: Any, amount_raw: Any, decimals: Any) -> Decimal | None:
 __all__ = [
     "TAPE_STATE_ID",
     "WALLET_CARDS_BY_KIND_SQL",
-    "WALLET_CARDS_SQL",
     "WALLET_FILLS_BY_KIND_SQL",
     "WALLET_POSITION_FILLS_SQL",
     "WALLET_ROSTER_ROWS_SQL",

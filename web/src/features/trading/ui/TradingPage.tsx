@@ -1,6 +1,9 @@
+import { ActionButton } from "@shared/ui/ActionButton";
+import { Drawer } from "@shared/ui/Drawer";
 import { EmptyNote } from "@shared/ui/EmptyNote";
 import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
+import { useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import {
@@ -10,40 +13,36 @@ import {
   useTradingStatusWithToken,
 } from "../api/tradingQueries";
 import { caseClock, ledgerSentence } from "../model/tradingLabels";
+import { useTradingFactExpiry } from "../state/useTradingFactExpiry";
 
 import { TradingCaseDetail } from "./TradingCaseDetail";
+import { TradingCaseList } from "./TradingCaseList";
 import { TradingControls } from "./TradingControls";
-import { TradingFunnel } from "./TradingFunnel";
+import { TradingDecisionSummary } from "./TradingDecisionSummary";
 import { TradingLoopLedger } from "./TradingLoopLedger";
 import { TradingExposure, TradingSafetyStrip } from "./TradingRisk";
 import { TradingTally } from "./TradingTally";
 
 import "./trading.css";
 
-/**
- * The operator desk: six blocks in one column, and a Case drawer that opens on demand (#604 T4).
- *
- * The order is the order an operator asks the questions in. ① is it alive and armed, and if not why.
- * ② what has today's capital done. ③ what did the lane do above the account — frames, Cases, refusals.
- * ④ every entry in the window with what the venue did to it. ⑤ what is on the account right now, closed
- * while that is nothing. ⑥ the three writes, and every Command with the Runtime's answer.
- *
- * **Three independent reads, three independent failures.** `/api/trading/status` used to gate the whole
- * page: it was read first and a cold error returned one error panel, so a 5xx on the readiness projection
- * blanked a perfectly readable execution ledger. It answers ① ⑤ and half of ② now, and nothing else waits
- * on it. Each block states its own unreadable answer in the desk's one ledger vocabulary, and
- * `PageState.Stale` names which ledger broke while keeping the two that did not.
- *
- * The page runs no timer of its own and recomputes no freshness. `execution.facts_expire_at_ms` is the
- * instant the server published as the end of its own projection's budget, and one comparison against it
- * is the whole rule.
- */
+/** Three independent fact reads; positions, execution history and frozen decisions have distinct scopes. */
 export function TradingPage({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const statusQuery = useTradingStatusWithToken(token);
   const casesQuery = useTradingCasesWithToken(token);
-  const executionsQuery = useTradingExecutionsWithToken(token);
+  const executionsQuery = useTradingExecutionsWithToken(
+    token,
+    searchParams.get("tab") === "executions"
+      ? searchParams.get("execution_case") || undefined
+      : undefined,
+  );
   const selectedCaseId = searchParams.get("case");
+  const tab =
+    searchParams.get("tab") === "decisions"
+      ? "decisions"
+      : searchParams.get("tab") === "executions"
+        ? "executions"
+        : "positions";
   /*
    * The drawer's own read, and the only one that ever downloads a Case. It is disabled until a reader has
    * asked for one: the desk polled up to 100 frozen Cases with their checks attached every 15 s to render
@@ -53,6 +52,9 @@ export function TradingPage({ token }: { token: string }) {
   const status = statusQuery.data;
   const executions = executionsQuery.data?.executions ?? [];
   const commands = executionsQuery.data?.commands ?? [];
+
+  const stale = useTradingFactExpiry(status?.execution.facts_expire_at_ms);
+  const opener = useRef<HTMLElement | null>(null);
 
   const coldStatus = statusQuery.isPending && !status;
   const coldExecutions = executionsQuery.isPending && !executionsQuery.data;
@@ -77,8 +79,6 @@ export function TradingPage({ token }: { token: string }) {
    * projection at all (mode disabled, or no Runtime state), and every safety word below is already `false`
    * for that reason and says so.
    */
-  const expiresAtMs = status?.execution.facts_expire_at_ms;
-  const stale = expiresAtMs != null && Date.now() > expiresAtMs;
 
   const selectedCase = selectedCaseId
     ? caseQuery.data?.cases?.find((item) => item.case_id === selectedCaseId)
@@ -86,14 +86,17 @@ export function TradingPage({ token }: { token: string }) {
 
   const selectCase = (caseId: string | null) => {
     const params = new URLSearchParams(searchParams);
-    if (caseId) params.set("case", caseId);
-    else params.delete("case");
+    if (caseId) {
+      opener.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      params.set("case", caseId);
+    } else params.delete("case");
     setSearchParams(params, { replace: true });
   };
 
   const failed = [
     executionsQuery.isError ? "执行" : "",
-    casesQuery.isError ? "Case" : "",
+    casesQuery.isError ? "策略判定" : "",
     statusQuery.isError ? "执行状态" : "",
   ].filter(Boolean);
 
@@ -101,8 +104,8 @@ export function TradingPage({ token }: { token: string }) {
     <PageShell archetype="scan" className="trading-shell" label="可操作交易台">
       <header className="trading-page-header">
         <div className="trading-heading-copy">
-          <h1>Trading Desk</h1>
-          <p>先回答现有 exposure 是否安全，再决定是否允许新增 exposure。</p>
+          <h1>交易执行</h1>
+          <p>先核对当前仓位与保护，再查看执行记录和策略判定。</p>
         </div>
         {/*
          * `EXECUTION paper` is a constant and no longer wears the caution colour. Amber is what the desk
@@ -110,8 +113,16 @@ export function TradingPage({ token }: { token: string }) {
          * lane started taught readers to ignore it (#604 T4).
          */}
         <div className="trading-heading-aside" data-tone={stale ? "caution" : undefined}>
-          <span>ALPHA {caseClock(status?.decision.last_case_at_ms)}</span>
-          <small>EXECUTION {status?.execution.mode ?? "UNAVAILABLE"}</small>
+          <span>最近策略判定 {caseClock(status?.decision.last_case_at_ms)}</span>
+          <small>
+            {status?.execution.mode === "live"
+              ? "实盘模式"
+              : status?.execution.mode === "paper"
+                ? "模拟模式"
+                : status?.execution.mode === "disabled"
+                  ? "执行已停用"
+                  : "模式未取得"}
+          </small>
         </div>
       </header>
 
@@ -128,13 +139,21 @@ export function TradingPage({ token }: { token: string }) {
       >
         <div className="trading-body">
           {selectedCaseId ? (
-            <section aria-label="案例抽屉" className="trading-case-drawer">
-              <div className="trading-case-drawer-bar">
-                <code>{selectedCaseId}</code>
-                <button onClick={() => selectCase(null)} type="button">
+            <Drawer
+              title="策略判定依据"
+              open
+              modal={false}
+              width={680}
+              restoreFocusTo={opener.current}
+              onOpenChange={(open) => {
+                if (!open) selectCase(null);
+              }}
+              actions={
+                <ActionButton size="sm" onClick={() => selectCase(null)}>
                   关闭
-                </button>
-              </div>
+                </ActionButton>
+              }
+            >
               {selectedCase ? (
                 <TradingCaseDetail item={selectedCase} />
               ) : (
@@ -143,12 +162,12 @@ export function TradingPage({ token }: { token: string }) {
                     ? ledgerSentence({
                         failed: caseQuery.isError,
                         pending: caseQuery.isPending,
-                        subject: "Case",
+                        subject: "策略判定",
                       })
-                    : `这个案例不在当前 ${casesQuery.data?.window_hours ?? "—"} 小时窗口。`}
+                    : "未找到保留的策略判定。"}
                 </EmptyNote>
               )}
-            </section>
+            </Drawer>
           ) : null}
 
           {status ? (
@@ -163,40 +182,97 @@ export function TradingPage({ token }: { token: string }) {
             </EmptyNote>
           )}
 
-          <TradingTally
-            execution={status?.execution}
-            executions={executions}
-            executionsFailed={executionsQuery.isError}
-            executionsPending={executionsQuery.isPending}
-            totals={executionsQuery.data?.totals}
-          />
-
-          <TradingFunnel
-            cases={casesQuery.data}
-            executions={executions}
-            failed={casesQuery.isError}
-            pending={casesQuery.isPending}
-          />
-
-          <TradingLoopLedger
-            complete={executionsQuery.data?.complete ?? true}
-            failed={executionsQuery.isError}
-            onOpenCase={selectCase}
-            pending={executionsQuery.isPending}
-            rows={executions}
-            selectedCaseId={selectedCaseId}
-          />
-
-          {status ? <TradingExposure execution={status.execution} stale={stale} /> : null}
-
-          <TradingControls
-            commands={commands}
-            commandsFailed={executionsQuery.isError}
-            commandsPending={executionsQuery.isPending}
-            entriesPaused={status?.execution.entries_paused ?? false}
-            mode={status?.execution.mode ?? "disabled"}
-            token={token}
-          />
+          <div className="trading-research-tabs" role="group" aria-label="交易视图">
+            {(
+              [
+                ["positions", "持仓与订单"],
+                ["executions", "执行记录"],
+                ["decisions", "策略判定"],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                type="button"
+                key={value}
+                aria-pressed={tab === value}
+                data-active={tab === value || undefined}
+                onClick={() => {
+                  const next = new URLSearchParams(searchParams);
+                  next.set("tab", value);
+                  next.delete("cursor");
+                  next.delete("execution_case");
+                  setSearchParams(next);
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {tab === "positions" ? (
+            <>
+              {status ? (
+                <TradingExposure execution={status.execution} stale={stale} />
+              ) : (
+                <EmptyNote>当前仓位与保护暂不可读。</EmptyNote>
+              )}
+              <TradingControls
+                commands={commands}
+                commandsFailed={executionsQuery.isError}
+                commandsPending={executionsQuery.isPending}
+                entriesPaused={status?.execution.entries_paused ?? false}
+                mode={status?.execution.mode ?? "disabled"}
+                token={token}
+              />
+              <TradingTally
+                execution={status?.execution}
+                executions={executions}
+                executionsFailed={executionsQuery.isError}
+                executionsPending={executionsQuery.isPending}
+                totals={executionsQuery.data?.totals}
+              />
+            </>
+          ) : tab === "executions" ? (
+            <>
+              {searchParams.get("execution_case") ? (
+                <p className="source-line">
+                  仅查看判定 {searchParams.get("execution_case")} 的全部保留执行。
+                  <ActionButton
+                    size="sm"
+                    onClick={() => {
+                      const next = new URLSearchParams(searchParams);
+                      next.delete("execution_case");
+                      setSearchParams(next);
+                    }}
+                  >
+                    返回最近 24 小时
+                  </ActionButton>
+                </p>
+              ) : null}
+              <TradingLoopLedger
+                caseFiltered={!!searchParams.get("execution_case")}
+                complete={executionsQuery.data?.complete ?? true}
+                failed={executionsQuery.isError}
+                onOpenCase={selectCase}
+                pending={executionsQuery.isPending}
+                rows={executions}
+                selectedCaseId={selectedCaseId}
+              />
+            </>
+          ) : (
+            <>
+              <TradingDecisionSummary
+                cases={casesQuery.data}
+                failed={casesQuery.isError}
+                pending={casesQuery.isPending}
+                onReason={(reason) => {
+                  const next = new URLSearchParams(searchParams);
+                  next.set("reason", reason);
+                  next.delete("cursor");
+                  setSearchParams(next);
+                }}
+              />
+              <TradingCaseList token={token} onOpen={selectCase} />
+            </>
+          )}
         </div>
       </PageState.Stale>
     </PageShell>

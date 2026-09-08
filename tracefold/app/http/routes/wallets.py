@@ -8,13 +8,14 @@ numeric amounts cross the wire as exact text; the browser does not reconstruct t
 from __future__ import annotations
 
 import time
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, Literal
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest
+from ..read_cursor import decode_read_cursor, encode_read_cursor
 from ..responses import _etagged
 from ..schemas import common as api_schemas
 from ..schemas import wallets as wallet_schemas
@@ -78,6 +79,11 @@ def get_news_wallet_cards(
     kind: Annotated[wallet_schemas.WalletCardKindLiteral | None, Query()] = None,
     wallet_address: Annotated[str | None, Query(pattern=r"^0x[0-9a-fA-F]{40}$")] = None,
     token_address: Annotated[str | None, Query(pattern=r"^0x[0-9a-fA-F]{40}$")] = None,
+    chain_id: Annotated[int | None, Query(ge=1, lt=2**63)] = None,
+    segment_key: Annotated[str | None, Query(max_length=128)] = None,
+    view: Literal["segments", "observations"] = "segments",
+    cursor: Annotated[str, Query(max_length=512)] = "",
+    to_ms: Annotated[int, Query(ge=0, lt=2**63)] = 0,
 ) -> Response:
     """Retained observations, optionally narrowed by kind and exact wallet/token identity.
 
@@ -85,37 +91,78 @@ def get_news_wallet_cards(
     filter. A digest says whether the model selected its material; the program renders its sentences.
     """
 
-    _validate_query_params(request, supported={"window", "limit", "token", "kind", "wallet_address", "token_address"})
+    _validate_query_params(
+        request,
+        supported={
+            "window",
+            "limit",
+            "token",
+            "kind",
+            "wallet_address",
+            "token_address",
+            "chain_id",
+            "segment_key",
+            "view",
+            "cursor",
+            "to_ms",
+        },
+    )
     span = WALLET_CARD_WINDOWS.get(str(window or "24h"))
     if span is None:
         raise ApiBadRequest("news_wallets_window_invalid", field="window")
     runtime = _authenticated_runtime(request)
-    window_to = int(time.time() * 1000)
-    window_from = window_to - span
+    filters = dict(
+        kind=kind,
+        chain_id=chain_id,
+        segment_key=segment_key,
+        view=view,
+        wallet_address=wallet_address.lower() if wallet_address else None,
+        token_address=token_address.lower() if token_address else None,
+    )
+    scope = [window, filters]
+    position = decode_read_cursor(cursor, scope, error="news_wallets_cursor_invalid")
+    now_ms = int(time.time() * 1000)
+    window_to = position[0] if position else to_ms or now_ms
+    if position and to_ms and to_ms != window_to:
+        raise ApiBadRequest("news_wallets_cursor_invalid", field="cursor")
+    window_from = max(0, window_to - span)
     with runtime.repositories() as repos:
         cards = repos.news.chain_tape_cards(
             from_ms=window_from,
             to_ms=window_to,
-            limit=int(limit),
-            kind=kind,
-            wallet_address=wallet_address.lower() if wallet_address else None,
-            token_address=token_address.lower() if token_address else None,
+            now_ms=now_ms,
+            limit=int(limit) + 1,
+            cursor_at_ms=position[2] if position else None,
+            cursor_id=position[3] if position else "",
+            **filters,
         )
+        totals = repos.news.chain_tape_research_totals(from_ms=window_from, to_ms=window_to, **filters)
         fills = (
             repos.news.chain_tape_wallet_fills(
                 from_ms=window_from,
                 to_ms=window_to,
-                limit=int(limit),
+                limit=int(limit) + 1,
                 wallet_address=wallet_address.lower(),
                 token_address=token_address.lower(),
+                chain_id=chain_id,
             )
             if wallet_address and token_address
             else []
         )
+    next_cursor = None
+    if len(cards) > limit:
+        last = cards[limit - 1]
+        next_cursor = encode_read_cursor(
+            scope, to_ms=window_to, value=0, at_ms=last["event_at_ms"], identity=last["item_id"]
+        )
     return _etagged(
         {
-            "cards": cards,
-            "fills": fills,
+            "cards": cards[:limit],
+            "totals": totals,
+            "next_cursor": next_cursor,
+            "view": view,
+            "fills": fills[:limit],
+            "fills_complete": len(fills) <= limit,
             "window": str(window),
             "window_from_ms": window_from,
             "window_to_ms": window_to,

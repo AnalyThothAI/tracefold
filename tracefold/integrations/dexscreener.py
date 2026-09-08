@@ -2,14 +2,14 @@
 
 One endpoint, unauthenticated, one bounded attempt per call:
 `GET /latest/dex/tokens/{address}` answers with every pair that trades the token across every chain it
-indexes. The price this adapter returns is the `priceUsd` of the **deepest pool on Robinhood Chain** --
+indexes. The price is the `priceUsd` of the **deepest Robinhood Chain pool whose base token matches
+the requested contract** --
 a thin pool's last print is a number, not a price, and a token that also trades somewhere else must not
 be priced by somewhere else.
 
-This is a price *receipt*, never a trigger and never a gate: a card is already sent by the time anything
-here is called, and a failure leaves the receipt due rather than changing anything a reader was told.
-That is why there is no retry inside the adapter -- the caller's next turn is the retry, and after a day
-of them the horizon is banked as `unavailable` (#572 §11).
+This supplies observed reference prices and later price receipts, never a trigger or gate. A missing
+price does not suppress a buy observation. There is no retry inside the adapter; due outcome sampling
+retries on the caller's next turn, until the horizon is banked as `unavailable` (#572 §11).
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ class DexScreenerClient:
         pairs = payload.get("pairs") if isinstance(payload, Mapping) else None
         if not isinstance(pairs, Sequence) or isinstance(pairs, str | bytes):
             return None
-        return _deepest_price(pairs)
+        return _deepest_price(pairs, token=token)
 
     async def _get(self, path: str) -> Any:
         try:
@@ -108,7 +108,7 @@ class DexScreenerClient:
             raise DexScreenerError("dexscreener_payload_invalid") from None
 
 
-def _deepest_price(pairs: Sequence[Any]) -> Decimal | None:
+def _deepest_price(pairs: Sequence[Any], *, token: str) -> Decimal | None:
     """The `priceUsd` of the deepest Robinhood Chain pool among these pairs.
 
     Depth decides, and it decides on this chain only. Taking the first pair would let whichever pool the
@@ -119,6 +119,9 @@ def _deepest_price(pairs: Sequence[Any]) -> Decimal | None:
     best: tuple[Decimal, Decimal] | None = None
     for pair in pairs:
         if not isinstance(pair, Mapping) or str(pair.get("chainId") or "") != ROBINHOOD_CHAIN_SLUG:
+            continue
+        base = pair.get("baseToken")
+        if not isinstance(base, Mapping) or str(base.get("address") or "").lower() != token:
             continue
         price = _decimal(pair.get("priceUsd"))
         if price is None or price <= 0:
