@@ -22,12 +22,13 @@ import asyncio
 import json
 import os
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pytest
+from psycopg.errors import CheckViolation
 
 from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
@@ -36,7 +37,7 @@ from tracefold.news.chain_tape.derive import WalletCardDeriver
 from tracefold.news.chain_tape.digest_writer import WalletDigestWriter
 from tracefold.news.chain_tape.rules import WalletRules
 from tracefold.news.market_notifications import MarketNotificationLoop
-from tracefold.news.wallet_contracts import OUTCOME_GIVE_UP_MS, OUTCOME_PRICE_MIN, DigestLine
+from tracefold.news.wallet_contracts import OUTCOME_GIVE_UP_MS, OUTCOME_PRICE_MIN
 
 pytestmark = pytest.mark.integration
 
@@ -113,6 +114,11 @@ class _Chain:
         self.calls.append(key)
         # Everything else is outside the public node's ~10-minute state window.
         return self.balances.get(key)
+
+    async def balance_before_transfer(
+        self, token: str, wallet: str, *, block_number: int, log_index: int
+    ) -> int | None:
+        return self.balances.get((token, wallet, block_number - 1))
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,7 +272,14 @@ def _seed_fills(conn: Any, fills: Sequence[ClassifiedFill]) -> None:
 
 
 def _deriver(db: _Db, chain: _Chain, site: _Site, prices: _Prices, clock: _Clock) -> WalletCardDeriver:
-    return WalletCardDeriver(db=db, chain=chain, site=site, prices=prices, rules=WalletRules(), clock=clock)
+    return WalletCardDeriver(
+        db=db,
+        chain=chain,
+        site=site,
+        prices=prices,
+        rules=WalletRules(exit_notifications_enabled=True),
+        clock=clock,
+    )
 
 
 def _rows(conn: Any, statement: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
@@ -274,6 +287,152 @@ def _rows(conn: Any, statement: str, params: Sequence[Any] = ()) -> list[dict[st
 
 
 # ------------------------------------------------------------------------------------ the whole loop
+def test_single_wallet_buy_is_a_research_candidate_even_when_not_notified(conn) -> None:
+    clock = _Clock()
+    db, chain, site, prices = _Db(conn), _Chain(), _Site(), _Prices()
+    member = _member(SELL_WALLET, handle="buyer")
+    buy = _fill(
+        wallet=SELL_WALLET,
+        token=MADETEST,
+        kind="buy",
+        amount_raw=1_000 * UNIT,
+        usd="10",
+        event_at_ms=NOW - 1_000,
+        received_at_ms=NOW,
+        tx_hash="0x" + "61" * 32,
+        symbol="MADETEST",
+    )
+    _seed(conn, [member], [buy])
+    errors: list[str] = []
+    asyncio.run(_deriver(db, chain, site, prices, clock).derive((buy,), roster=_roster(conn), errors=errors))
+    candidates = _rows(conn, "SELECT * FROM news_market_wallet_events WHERE kind = 'buy'")
+    assert len(candidates) == 1
+    assert candidates[0]["evidence"]["selection_reason"] == "below_minimum"
+    assert candidates[0]["evidence"]["stage"] == "first_observed"
+    assert candidates[0]["evidence"]["observed_at_ms"] == NOW
+    sender = _Sender()
+    asyncio.run(MarketNotificationLoop(db=db, sender=sender, console_base_url=CONSOLE, clock=clock).advance())
+    assert not sender.cards
+
+
+@pytest.mark.parametrize("split", [False, True])
+def test_buy_threshold_repeats_and_restart_preserve_exact_candidates(conn, split) -> None:
+    clock = _Clock()
+    db, chain, site, prices = _Db(conn), _Chain(), _Site(), _Prices()
+    fills = [
+        _fill(
+            wallet=SELL_WALLET,
+            token=MADETEST,
+            kind="buy",
+            amount_raw=100 * UNIT,
+            usd=usd,
+            event_at_ms=NOW - 1_000,
+            received_at_ms=NOW,
+            tx_hash="0x" + f"{index:064x}",
+            log_index=index,
+            symbol="MADETEST",
+        )
+        for index, usd in enumerate(("600", "600", "100", "1300"), 1)
+    ]
+    _seed(conn, [_member(SELL_WALLET, handle="buyer")], [] if split else fills)
+    if split:
+        for fill in fills:
+            _seed_fills(conn, [fill])
+            asyncio.run(_deriver(db, chain, site, prices, clock).advance())
+    else:
+        asyncio.run(_deriver(db, chain, site, prices, clock).advance())
+    # Recreate the process and advance twice; persisted checkpoints carry progress.
+    asyncio.run(_deriver(db, chain, site, prices, clock).advance())
+    events = _rows(
+        conn, "SELECT * FROM news_market_wallet_events WHERE kind='buy' ORDER BY (evidence->>'log_index')::int"
+    )
+    assert [e["evidence"]["selection_reason"] for e in events] == [
+        "below_minimum",
+        "selected",
+        "same_window",
+        "selected",
+    ]
+    assert [int(e["usd"]) for e in events] == [600, 1200, 1300, 2600]
+    assert [e["evidence"]["buy_count"] for e in events] == [1, 2, 3, 4]
+    assert repositories_for_connection(conn).news.chain_tape_pending_fills() == []
+    assert len({e["item_id"] for e in events}) == 4
+
+
+@pytest.mark.parametrize(
+    ("balance", "prior", "expected"),
+    [
+        (None, False, "first_observed"),
+        (None, True, "unknown"),
+        (0, False, "new_position"),
+        (0, True, "reentry"),
+        (10 * UNIT, True, "add"),
+    ],
+)
+def test_buy_stage_requires_pre_transfer_balance_evidence(conn, balance, prior, expected) -> None:
+    clock = _Clock()
+    db, chain, site, prices = _Db(conn), _Chain(), _Site(), _Prices()
+    chain.balances[(MADETEST, SELL_WALLET, SELL_BLOCK - 1)] = balance
+    buy = _fill(
+        wallet=SELL_WALLET,
+        token=MADETEST,
+        kind="buy",
+        amount_raw=100 * UNIT,
+        usd="1500",
+        event_at_ms=NOW - 1000,
+        received_at_ms=NOW,
+        tx_hash="0x" + "61" * 32,
+    )
+    old = replace(
+        buy,
+        block_number=SELL_BLOCK - 1,
+        tx_hash="0x" + "60" * 32,
+        event_at_ms=NOW - 3_600_000,
+        received_at_ms=NOW - 3_600_000,
+    )
+    _seed(conn, [_member(SELL_WALLET, handle="buyer")], [old, buy] if prior else [buy])
+    errors: list[str] = []
+    asyncio.run(_deriver(db, chain, site, prices, clock).derive([buy], roster=_roster(conn), errors=errors))
+    assert errors == []
+    evidence = _rows(conn, "SELECT evidence FROM news_market_wallet_events WHERE kind='buy'")[0]["evidence"]
+    assert evidence["stage"] == expected
+    assert evidence["history_complete"] is False
+
+
+def test_unsent_candidate_receipts_use_observation_price_and_expired_horizons_stay_missing(conn) -> None:
+    clock = _Clock()
+    db, chain, site = _Db(conn), _Chain(), _Site()
+    site.token_marks = {MADETEST: _Mark(token=MADETEST, symbol="MADETEST", mark=1.5, liquidity=10_000)}
+    prices = _Prices({MADETEST: Decimal("1.2")})
+    buy = _fill(
+        wallet=SELL_WALLET,
+        token=MADETEST,
+        kind="buy",
+        amount_raw=10 * UNIT,
+        usd="10",
+        event_at_ms=NOW - 1000,
+        received_at_ms=NOW,
+        tx_hash="0x" + "62" * 32,
+    )
+    _seed(conn, [_member(SELL_WALLET, handle="buyer")], [buy])
+    asyncio.run(_deriver(db, chain, site, prices, clock).advance())
+    clock.advance(900_000)
+    result = asyncio.run(_deriver(db, chain, site, prices, clock).take_outcomes([]))
+    assert (result.outcomes, result.unavailable) == (1, 0)
+    row = _rows(conn, "SELECT * FROM news_market_wallet_outcomes")[0]
+    assert row["delivery_key"] is None
+    assert row["reference_price"] == Decimal("1.5")
+    assert (row["reference_at_ms"], row["target_at_ms"], row["at_ms"]) == (NOW, NOW + 900_000, NOW + 900_000)
+    cards = repositories_for_connection(conn).news.chain_tape_cards(
+        from_ms=NOW - 10_000, to_ms=clock() + 1, limit=10, kind="buy"
+    )
+    assert cards[0]["return_15m_bps"] == -2000
+    clock.advance(3_600_000 + OUTCOME_GIVE_UP_MS)
+    result = asyncio.run(_deriver(db, chain, site, prices, clock).take_outcomes([]))
+    assert (result.outcomes, result.unavailable) == (0, 1)
+    missed = _rows(conn, "SELECT * FROM news_market_wallet_outcomes WHERE horizon='1h'")[0]
+    assert missed["price"] is None and missed["source"] == "unavailable"
+
+
 def test_a_live_exit_becomes_an_item_a_card_and_a_price_receipt(conn) -> None:
     """#572 PR-2 end to end, on the recorded FSD sale that #572 §3.3 measured as a 100% exit."""
 
@@ -339,15 +498,73 @@ def test_a_live_exit_becomes_an_item_a_card_and_a_price_receipt(conn) -> None:
     clock.advance(3_600_000 + 1_000)
     receipts = asyncio.run(_deriver(db, chain, site, prices, clock).take_outcomes(errors))
 
-    assert (receipts.outcomes, receipts.unavailable) == (1, 0)
+    assert (receipts.outcomes, receipts.unavailable) == (1, 1)
     assert prices.calls == [FSD]
-    outcome = _rows(conn, "SELECT * FROM news_market_wallet_outcomes")[0]
+    outcome = _rows(conn, "SELECT * FROM news_market_wallet_outcomes WHERE horizon='1h'")[0]
     assert outcome["delivery_key"] == delivery["delivery_key"]
     assert (outcome["horizon"], outcome["source"]) == ("1h", "dexscreener")
     assert Decimal(outcome["price"]) == Decimal("0.00019")
 
     # The four-hour horizon is not due yet, and "not due" is the absence of a row.
-    assert len(_rows(conn, "SELECT * FROM news_market_wallet_outcomes")) == 1
+    assert len(_rows(conn, "SELECT * FROM news_market_wallet_outcomes")) == 2
+
+
+def test_exit_is_stored_but_does_not_notify_with_default_rules(conn) -> None:
+    clock = _Clock()
+    db, chain, site, prices = _Db(conn), _Chain(), _Site(), _Prices()
+    sell = _fill(
+        wallet=SELL_WALLET,
+        token=FSD,
+        kind="sell",
+        amount_raw=FSD_HELD_RAW,
+        usd=SALE_USD,
+        event_at_ms=NOW - 1000,
+        received_at_ms=NOW,
+        tx_hash=SELL_TX,
+    )
+    _seed(conn, [_member(SELL_WALLET, handle="seller")], [sell])
+    deriver = WalletCardDeriver(db=db, chain=chain, site=site, prices=prices, clock=clock)
+    result = asyncio.run(deriver.advance())
+    assert result.exits == 1
+    assert (
+        _rows(conn, "SELECT evidence FROM news_market_wallet_events")[0]["evidence"]["selection_reason"]
+        == "exit_disabled"
+    )
+    sender = _Sender()
+    asyncio.run(MarketNotificationLoop(db=db, sender=sender, clock=clock).advance())
+    assert sender.cards == []
+    assert len(_rows(conn, "SELECT * FROM news_market_wallet_fills")) == 1
+
+
+def test_database_refusal_rolls_back_candidate_and_checkpoint_then_replays(conn) -> None:
+    clock = _Clock()
+    db, chain, site, prices = _Db(conn), _Chain(), _Site(), _Prices()
+    buy = _fill(
+        wallet=SELL_WALLET,
+        token=MADETEST,
+        kind="buy",
+        amount_raw=1000 * UNIT,
+        usd="2000",
+        event_at_ms=NOW - 1000,
+        received_at_ms=NOW,
+        tx_hash="0x" + "63" * 32,
+    )
+    _seed(conn, [_member(SELL_WALLET, handle="buyer")], [buy])
+    # Refuse the actual PostgreSQL write after admission has opened the Item.
+    conn.execute("ALTER TABLE news_market_wallet_events ADD CONSTRAINT test_refuse_buy CHECK (kind <> 'buy')")
+    conn.commit()
+    errors: list[str] = []
+    with pytest.raises(CheckViolation):
+        asyncio.run(_deriver(db, chain, site, prices, clock).derive([buy], roster=_roster(conn), errors=errors))
+    assert errors == []
+    assert _rows(conn, "SELECT * FROM news_items") == []
+    assert len(repositories_for_connection(conn).news.chain_tape_pending_fills()) == 1
+    conn.execute("ALTER TABLE news_market_wallet_events DROP CONSTRAINT test_refuse_buy")
+    conn.commit()
+    result = asyncio.run(_deriver(db, chain, site, prices, clock).advance())
+    assert result.buys == 1
+    assert repositories_for_connection(conn).news.chain_tape_pending_fills() == []
+    assert len(_rows(conn, "SELECT * FROM news_items")) == 1
 
 
 def test_a_backfilled_fill_is_context_and_never_a_card(conn) -> None:
@@ -484,7 +701,7 @@ def test_three_roster_wallets_in_one_window_open_a_crowding_card(conn) -> None:
     )
 
     assert (derived.crowding, derived.exits) == (1, 0)
-    event = _rows(conn, "SELECT * FROM news_market_wallet_events")[0]
+    event = _rows(conn, "SELECT * FROM news_market_wallet_events WHERE kind='crowding'")[0]
     assert event["kind"] == "crowding"
     assert int(event["peer_wallets"]) == 3
     assert Decimal(event["peer_usd"]) == Decimal("7500")
@@ -498,13 +715,14 @@ def test_three_roster_wallets_in_one_window_open_a_crowding_card(conn) -> None:
     sender = _Sender()
     turn = asyncio.run(MarketNotificationLoop(db=db, sender=sender, console_base_url=CONSOLE, clock=clock).advance())
 
-    assert turn.sent == 1
-    body = sender.cards[0]["elements"][0]["content"]
+    assert turn.sent == 2
+    card = next(card for card in sender.cards if "拥挤" in card["header"]["title"]["content"])
+    body = card["elements"][0]["text"]["content"]
     assert "3 个名单地址买入" in body
     assert "领头 trader1" in body
     # The card's span is the window the rules folded together, not the single instant its Item carries:
     # one derived row stands for three wallets' first buys ten minutes apart.
-    assert sender.cards[0]["header"]["title"]["content"] == "链上钱包 · 拥挤 · 跟风偏晚 · MADETEST"
+    assert card["header"]["title"]["content"] == "链上钱包 · 拥挤 · 跟风偏晚 · MADETEST"
     assert body.splitlines()[0].endswith("05:03–05:12")
 
 
@@ -551,17 +769,17 @@ def test_a_wallet_item_reads_back_through_the_market_read_model(conn) -> None:
 
 
 class _Digest:
-    """A model that answers with two grounded lines, and counts how often it was asked."""
+    """A model that selects buy fact IDs and counts how often it was asked."""
 
-    def __init__(self, lines: Sequence[DigestLine] | None = None) -> None:
-        self.lines = tuple(lines or ())
+    def __init__(self, fact_ids: Sequence[str] | None = None) -> None:
+        self.fact_ids = tuple(fact_ids or ())
         self.calls = 0
         self.packs: list[str] = []
 
-    async def summarize(self, *, facts_json: str) -> Sequence[DigestLine]:
+    async def summarize(self, *, facts_json: str) -> Sequence[str]:
         self.calls += 1
         self.packs.append(facts_json)
-        return self.lines
+        return self.fact_ids
 
 
 def _digest_writer(db: _Db, clock: _Clock, program: Any = None, *, site: Any = None) -> WalletDigestWriter:
@@ -571,9 +789,8 @@ def _digest_writer(db: _Db, clock: _Clock, program: Any = None, *, site: Any = N
 def test_a_due_window_becomes_a_digest_item_and_a_feishu_card(conn) -> None:
     """#572 PR-3 end to end on real PostgreSQL: window rows in, one `wallet` Item out, one card sent.
 
-    The model answers with two lines whose every figure is in the facts it cites, so the card carries
-    the model's wording -- and the row records that it did, beside the pack the wording was checked
-    against.
+    The model selects an existing buy ID; the program renders the reader's exact factual text and
+    preserves the selection audit beside the pack.
     """
 
     clock = _Clock()
@@ -605,32 +822,27 @@ def test_a_due_window_becomes_a_digest_item_and_a_feishu_card(conn) -> None:
         ),
     ]
     _seed(conn, [seller], fills)
-    program = _Digest(
-        (
-            DigestLine(text="0xVantaa 买入 1 笔 $12,340.50，卖出 1 笔 $23,531.60", cites=("a1",)),
-            DigestLine(text="窗口内活跃名单地址 1 个，代币 1 个", cites=("w0",)),
-            DigestLine(text="合计买入 1 笔 $12,340.50，卖出 1 笔 $23,531.60", cites=("w1",)),
-        )
-    )
+    program = _Digest(("b1",))
     errors: list[str] = []
 
     result = asyncio.run(_digest_writer(db, clock, program, site=site).take_digest(roster=_roster(conn), errors=errors))
 
     assert errors == []
     assert (result.digests, result.model_called, result.model_used) == (1, True, True)
-    assert (result.lines_kept, result.lines_dropped) == (3, 0)
+    assert (result.lines_kept, result.lines_dropped) == (1, 0)
     assert program.calls == 1
-    # The pack the model saw is deterministic text built from the rows above, and the three cost bases
-    # #572 §5.3 names separately are all in it.
-    assert "观察期买入均价" in program.packs[0] and "净现金回收线" in program.packs[0]
+    assert "已计价部分均价" in program.packs[0] and "本窗口首笔买入后卖出" in program.packs[0]
+    assert "净现金回收线未知" in program.packs[0]
 
     event = _rows(conn, "SELECT * FROM news_market_wallet_events WHERE kind = 'digest'")[0]
     # A digest names no wallet and no token: the schema admits the empty pair for this kind alone.
     assert (event["wallet"], event["token"]) == ("", "")
     assert event["evidence"]["model_used"] is True
-    assert (event["evidence"]["lines_kept"], event["evidence"]["lines_dropped"]) == (3, 0)
+    assert (event["evidence"]["lines_kept"], event["evidence"]["lines_dropped"]) == (1, 0)
     assert len(event["evidence"]["pack_sha256"]) == 64
-    assert [line["text"] for line in event["evidence"]["lines"]] == [line.text for line in program.lines]
+    assert event["evidence"]["model_authority"] == "buy_fact_selection"
+    facts = {fact["id"]: fact["text"] for fact in event["evidence"]["facts"]}
+    assert all(line["text"] == facts[line["cites"][0]] for line in event["evidence"]["lines"])
     item = _rows(conn, "SELECT market_kind, market_notify_state FROM news_items")[0]
     assert (item["market_kind"], item["market_notify_state"]) == ("wallet", "pending")
 
@@ -647,11 +859,7 @@ def test_a_due_window_becomes_a_digest_item_and_a_feishu_card(conn) -> None:
 
 
 def test_an_ungrounded_answer_sends_the_template_instead(conn) -> None:
-    """The F2P #572 §5.4 asks for: one invented figure and the reader gets the computed sentences.
-
-    The model is asked -- the row records that -- and its whole answer is dropped, because a model that
-    invented one number has said nothing about what its other lines are worth.
-    """
+    """An invented fact ID is rejected and the computed buy template is sent instead."""
 
     clock = _Clock()
     db, site = _Db(conn), _Site()
@@ -672,7 +880,7 @@ def test_an_ungrounded_answer_sends_the_template_instead(conn) -> None:
             )
         ],
     )
-    program = _Digest((DigestLine(text="0xVantaa 买入 1 笔 $99,999.00", cites=("a1",)),))
+    program = _Digest(("b999",))
     errors: list[str] = []
 
     result = asyncio.run(_digest_writer(db, clock, program, site=site).take_digest(roster=_roster(conn), errors=errors))
@@ -681,8 +889,8 @@ def test_an_ungrounded_answer_sends_the_template_instead(conn) -> None:
     event = _rows(conn, "SELECT evidence FROM news_market_wallet_events WHERE kind = 'digest'")[0]
     assert event["evidence"]["model_used"] is False
     lines = [line["text"] for line in event["evidence"]["lines"]]
-    assert "$99,999.00" not in " ".join(lines)
-    assert any("合计买入 1 笔 $12,340.50" in line for line in lines)
+    assert "b999" not in " ".join(lines)
+    assert any("买入合计 1 笔，已计价 $12,340.50" in line for line in lines)
 
 
 def test_a_second_turn_inside_the_interval_writes_no_second_digest(conn) -> None:
@@ -723,7 +931,7 @@ def test_a_second_turn_inside_the_interval_writes_no_second_digest(conn) -> None
             _fill(
                 wallet=SELL_WALLET,
                 token=FSD,
-                kind="sell",
+                kind="buy",
                 amount_raw=2 * UNIT,
                 usd="3100",
                 event_at_ms=NOW + 3_600_000,
@@ -793,7 +1001,7 @@ def test_a_day_at_the_call_cap_still_writes_the_digest_from_the_template(conn) -
             )
         ],
     )
-    program = _Digest((DigestLine(text="窗口内活跃名单地址 1 个，代币 1 个", cites=("w0",)),))
+    program = _Digest(("b1",))
     writer = WalletDigestWriter(
         db=db,
         program=program,
@@ -812,7 +1020,7 @@ def test_a_day_at_the_call_cap_still_writes_the_digest_from_the_template(conn) -
             _fill(
                 wallet=SELL_WALLET,
                 token=FSD,
-                kind="sell",
+                kind="buy",
                 amount_raw=2 * UNIT,
                 usd="3100",
                 event_at_ms=NOW + 3_600_000,
@@ -829,7 +1037,7 @@ def test_a_day_at_the_call_cap_still_writes_the_digest_from_the_template(conn) -
 
 
 def test_a_digest_reads_back_through_the_wallets_console_read_model(conn) -> None:
-    """The page's own read: the digest's sentences and whether the model wrote them."""
+    """The page reads the same program-rendered facts and model-selection audit."""
 
     clock = _Clock()
     db, site = _Db(conn), _Site()
@@ -849,13 +1057,7 @@ def test_a_digest_reads_back_through_the_wallets_console_read_model(conn) -> Non
             )
         ],
     )
-    program = _Digest(
-        (
-            DigestLine(text="窗口内活跃名单地址 1 个，代币 1 个", cites=("w0",)),
-            DigestLine(text="合计买入 1 笔 $12,340.50", cites=("w1",)),
-            DigestLine(text="0xVantaa 买入 1 笔 $12,340.50", cites=("a1",)),
-        )
-    )
+    program = _Digest(("b1",))
     asyncio.run(_digest_writer(db, clock, program, site=site).take_digest(roster=_roster(conn), errors=[]))
 
     repos = repositories_for_connection(conn)
@@ -864,11 +1066,9 @@ def test_a_digest_reads_back_through_the_wallets_console_read_model(conn) -> Non
     roster = repos.news.chain_tape_roster_rows()
 
     assert [card["kind"] for card in cards] == ["digest"]
-    assert cards[0]["digest_lines"] == [
-        "窗口内活跃名单地址 1 个，代币 1 个",
-        "合计买入 1 笔 $12,340.50",
-        "0xVantaa 买入 1 笔 $12,340.50",
-    ]
+    assert any("买入合计 1 笔，已计价 $12,340.50" in line for line in cards[0]["digest_lines"])
+    assert any(SELL_WALLET in line and FSD in line and "买入 1 笔" in line for line in cards[0]["digest_lines"])
+    assert any("观察前余额与历史连续性未知" in line for line in cards[0]["digest_lines"])
     assert cards[0]["digest_model_used"] is True
     assert [(row["kind"], row["fills"]) for row in fills] == [("buy", 1)]
     assert [row["handle"] for row in roster] == ["0xVantaa"]
@@ -905,7 +1105,7 @@ def test_a_horizon_nothing_can_price_stays_due_briefly_and_is_then_recorded_unav
     asyncio.run(_deriver(db, chain, site, prices, clock).derive((sell,), roster=_roster(conn), errors=errors))
     asyncio.run(MarketNotificationLoop(db=db, sender=_Sender(), console_base_url=CONSOLE, clock=clock).advance())
 
-    clock.advance(3_600_000 + 1_000)
+    clock.advance(900_000 + 1_000)
     assert asyncio.run(_deriver(db, chain, site, prices, clock).take_outcomes(errors)).outcomes == 0
     assert _rows(conn, "SELECT * FROM news_market_wallet_outcomes") == []
 
@@ -914,14 +1114,15 @@ def test_a_horizon_nothing_can_price_stays_due_briefly_and_is_then_recorded_unav
     clock.advance(OUTCOME_GIVE_UP_MS)
     first = asyncio.run(_deriver(db, chain, site, prices, clock).take_outcomes(errors))
     assert (first.outcomes, first.unavailable) == (0, 1)
-    assert [row["horizon"] for row in _rows(conn, "SELECT horizon FROM news_market_wallet_outcomes")] == ["1h"]
+    assert [row["horizon"] for row in _rows(conn, "SELECT horizon FROM news_market_wallet_outcomes")] == ["15m"]
 
     clock.advance(4 * 3_600_000)
     receipts = asyncio.run(_deriver(db, chain, site, prices, clock).take_outcomes(errors))
 
-    assert receipts.unavailable == 1
+    assert receipts.unavailable == 2
     recorded = _rows(conn, "SELECT horizon, price, source FROM news_market_wallet_outcomes ORDER BY horizon")
     assert [(row["horizon"], row["price"], row["source"]) for row in recorded] == [
+        ("15m", None, "unavailable"),
         ("1h", None, "unavailable"),
         ("4h", None, "unavailable"),
     ]
@@ -956,7 +1157,7 @@ def test_a_price_the_receipt_column_cannot_hold_is_no_price_at_all(conn, name, p
     _card(conn, db, chain, site, prices, clock)
 
     errors: list[str] = []
-    clock.advance(3_600_000 + 1_000)
+    clock.advance(900_000 + 1_000)
     receipts = asyncio.run(_deriver(db, chain, site, prices, clock).take_outcomes(errors))
 
     assert (receipts.outcomes, receipts.unavailable) == (0, 0)
@@ -968,7 +1169,7 @@ def test_a_price_the_receipt_column_cannot_hold_is_no_price_at_all(conn, name, p
 
     assert banked.unavailable == 1
     row = _rows(conn, "SELECT horizon, price, source FROM news_market_wallet_outcomes")[0]
-    assert (row["horizon"], row["price"], row["source"]) == ("1h", None, "unavailable")
+    assert (row["horizon"], row["price"], row["source"]) == ("15m", None, "unavailable")
 
 
 def test_the_smallest_price_the_column_can_hold_is_still_a_receipt(conn) -> None:
@@ -981,7 +1182,7 @@ def test_the_smallest_price_the_column_can_hold_is_still_a_receipt(conn) -> None
     _card(conn, db, chain, site, prices, clock)
 
     errors: list[str] = []
-    clock.advance(3_600_000 + 1_000)
+    clock.advance(900_000 + 1_000)
     receipts = asyncio.run(_deriver(db, chain, site, prices, clock).take_outcomes(errors))
 
     assert (receipts.outcomes, receipts.unavailable) == (1, 0)
@@ -990,7 +1191,7 @@ def test_the_smallest_price_the_column_can_hold_is_still_a_receipt(conn) -> None
     assert row["source"] == "dexscreener"
 
 
-def test_a_row_postgresql_refuses_ends_the_pass_and_never_the_tape(conn) -> None:
+def test_a_row_postgresql_refuses_faults_its_research_stage_and_leaves_the_fill_pending(conn) -> None:
     """B1. The rules half must not be able to fault the ingestion half, whatever a write does.
 
     The database port translates an admission refusal and an overrun; anything else -- a constraint the
@@ -1018,10 +1219,9 @@ def test_a_row_postgresql_refuses_ends_the_pass_and_never_the_tape(conn) -> None
     _seed(conn, [seller], [sell])
 
     errors: list[str] = []
-    derived = asyncio.run(_deriver(db, chain, site, prices, clock).derive((sell,), roster=_roster(conn), errors=errors))
-
-    assert (derived.checks, derived.exits) == (0, 0)
-    assert errors == ["derive:news_chain_tape_wallet_cards:CheckViolation"]
+    with pytest.raises(CheckViolation):
+        asyncio.run(_deriver(db, chain, site, prices, clock).derive((sell,), roster=_roster(conn), errors=errors))
+    assert errors == []
     assert _rows(conn, "SELECT item_id FROM news_items") == []
 
 
@@ -1105,9 +1305,9 @@ def test_a_backlog_on_one_horizon_does_not_starve_the_other(conn) -> None:
     clock.advance(4 * 3_600_000 + OUTCOME_GIVE_UP_MS)
     receipts = asyncio.run(_deriver(db, chain, site, prices, clock).take_outcomes(errors))
 
-    assert receipts.unavailable == 2
+    assert receipts.unavailable == 3
     banked = _rows(conn, "SELECT horizon FROM news_market_wallet_outcomes ORDER BY horizon")
-    assert [row["horizon"] for row in banked] == ["1h", "4h"]
+    assert [row["horizon"] for row in banked] == ["15m", "1h", "4h"]
 
 
 def _card(conn: Any, db: Any, chain: Any, site: Any, prices: Any, clock: _Clock) -> None:
@@ -1131,10 +1331,6 @@ def _card(conn: Any, db: Any, chain: Any, site: Any, prices: Any, clock: _Clock)
     errors: list[str] = []
     asyncio.run(_deriver(db, chain, site, prices, clock).derive((sell,), roster=_roster(conn), errors=errors))
     asyncio.run(MarketNotificationLoop(db=db, sender=_Sender(), console_base_url=CONSOLE, clock=clock).advance())
-
-
-class CheckViolation(Exception):
-    """Stands in for the driver's own constraint error, which the database port does not translate."""
 
 
 class _Refusing(_Db):

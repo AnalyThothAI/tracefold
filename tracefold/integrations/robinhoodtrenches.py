@@ -1,4 +1,4 @@
-"""Read-only access to robinhoodtrenches.com, which is the roster's authority and nothing else (#572 PR-1).
+"""Read-only access to rhtrenches.com, which is the roster's authority and nothing else (#572 PR-1).
 
 The site is the only place that knows *which* wallets are worth following: the addresses are hand-curated
 by its operator, and the handle, follower count and seven-day statistics live nowhere on chain. What the
@@ -40,7 +40,7 @@ import httpx
 
 from tracefold.integrations.http_bounds import ResponseTooLarge, read_bounded
 
-ROBINHOODTRENCHES_BASE_URL: Final = "https://robinhoodtrenches.com"
+ROBINHOODTRENCHES_BASE_URL: Final = "https://rhtrenches.com"
 # Deliberate courtesy floor between two calls to one small site. Not a rate limit it published.
 PACE_SECONDS: Final = 0.25
 
@@ -230,6 +230,8 @@ class RobinhoodTrenchesClient:
         await self._pace()
         try:
             async with self._client.stream("GET", f"{self.base_url}{path}", params=dict(params)) as response:
+                if 300 <= response.status_code < 400:
+                    raise RosterProviderError("roster_redirect", status_code=response.status_code)
                 if missing_is_none and response.status_code == 404:
                     self._last_bytes = 0
                     return None

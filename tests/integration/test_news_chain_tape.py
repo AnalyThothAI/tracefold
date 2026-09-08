@@ -25,14 +25,13 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.bus import DeferError, TransientError
-from tracefold.news.chain_tape.classify import TRANSFER_TOPIC
 from tracefold.news.chain_tape.contracts import (
     BLOCK_COMPLETE_TX_INDEX,
     STABLE_CASH_TOKEN,
     USD_SOURCE_STABLE_CASH_LEG,
     RosterMember,
 )
-from tracefold.news.chain_tape.evm import normalize_address
+from tracefold.news.chain_tape.evm import TRANSFER_TOPIC, normalize_address
 from tracefold.news.chain_tape.loop import ChainTapeLoop
 from tracefold.news.pipeline.maintenance import JanitorLoop
 

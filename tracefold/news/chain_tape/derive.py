@@ -1,24 +1,8 @@
-"""Turning stored fills into observations a reader receives, and cards into price receipts (#572 PR-2).
+"""Derive durable buy research observations and time-bounded price receipts.
 
-This is the half of the tape that PR-1 deliberately did not write. It runs inside the same
-`ChainTapeLoop.advance()` turn, immediately after the fills of that turn are committed, and it is a
-straight line: verify the sells, ask `rules` whether anything is worth a card, gather the provider's own
-context for the ones that are, and open one ordinary market Item per card through the same
-`admit_market_item` transaction OI, liquidation and smart money go through.
-
-Three deliberate positions, all of them from #572's 2026-09-06 decision to close the loop rather than
-wait a calibration week:
-
-* **Freshness is the only suppression that matters here.** A fill whose block time is more than
-  `trigger_max_age_s` behind the moment this host read it is history -- which is exactly what the 24-hour
-  backfill is. It gives the cascade and crowding rules their context and can never send a card.
-* **Verification degrades, it does not block.** The chain's `balanceOf` at the block before the sell is
-  the denominator where the public node still holds that state; the provider's own bag plus the amount
-  just sold is the denominator where it does not; and where neither answers, the sale itself is the only
-  position anything can see. The card says which, in one short label, and goes out either way.
-* **Every external answer is optional.** A mark, a bag, a pool depth, a DexScreener price -- each one
-  costs its own line and nothing else. Nothing here waits on a provider to decide whether a reader is
-  told something the chain already proved.
+Ingestion commits fills first. This independently supervised worker resumes pending fills in chain
+order, commits each observation with its derivation checkpoint, and samples candidate outcomes whether
+or not a notification was sent. Optional provider context never invents historical ownership or price.
 """
 
 from __future__ import annotations
@@ -27,11 +11,13 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
+from itertools import groupby
 from typing import Any, Final, Protocol
 
 from ..pipeline.admission import admit_market_item, prepare_wallet_observation, wallet_item_id
 from ..telemetry import NewsExternalDataSource, NewsExternalDataTelemetryPort
 from ..wallet_contracts import (
+    OUTCOME_GIVE_UP_MS,
     OUTCOME_PRICE_MIN,
     OUTCOME_UNAVAILABLE,
     WalletBalance,
@@ -50,7 +36,7 @@ PRICE_SOURCE: Final[NewsExternalDataSource] = "dexscreener"
 # How many price receipts one turn may take, split evenly across the horizons so a backlog on one can
 # never starve the other. The horizons are an hour and four hours apart, so a handful per turn drains
 # any backlog in minutes while keeping ingestion the busy path.
-OUTCOMES_PER_TURN_MAX: Final = 4
+OUTCOMES_PER_TURN_MAX: Final = 6
 
 _DB_READ_TIMEOUT_SECONDS: Final = 5.0
 _DB_WRITE_TIMEOUT_SECONDS: Final = 10.0
@@ -66,6 +52,10 @@ class BalancePort(Protocol):
     def chain_id(self) -> int: ...
 
     async def balance_of(self, token: str, wallet: str, *, block_number: int) -> int | None: ...
+
+    async def balance_before_transfer(
+        self, token: str, wallet: str, *, block_number: int, log_index: int
+    ) -> int | None: ...
 
 
 class SiteContextPort(Protocol):
@@ -87,6 +77,7 @@ class DeriveResult:
     """What one derivation pass did, counted rather than logged, so a test can assert on a turn."""
 
     checks: int = 0
+    buys: int = 0
     exits: int = 0
     crowding: int = 0
     outcomes: int = 0
@@ -99,19 +90,19 @@ class _Plan:
 
     checks: list[WalletCheck] = field(default_factory=list)
     events: list[WalletEvent] = field(default_factory=list)
+    failed: bool = False
 
 
 class WalletCardDeriver(TapePasses):
     """The rules half of the tape: fills in, observations and receipts out.
 
     Its own object rather than more methods on the loop, because it has its own ports (the site's context
-    endpoints, a price feed) and its own bounded turn. The loop owns when it runs; this owns what it does.
+    endpoints, a price feed) and its own bounded turn. Workers supervises this stage independently of ingestion.
     """
 
     _read_timeout_seconds = _DB_READ_TIMEOUT_SECONDS
     _write_timeout_seconds = _DB_WRITE_TIMEOUT_SECONDS
     _failure_stage = "derive"
-    _failure_label = "derivation"
 
     def __init__(
         self,
@@ -133,6 +124,40 @@ class WalletCardDeriver(TapePasses):
         self._clock = clock
 
     # ------------------------------------------------------------------ the pass
+    async def advance(self) -> DeriveResult:
+        """Resume durable fill progress independently of ingestion and the model."""
+        errors: list[str] = []
+        pending = await self._read(
+            "news_chain_tape_pending_fills", lambda repos: repos.news.chain_tape_pending_fills(), errors
+        )
+        results: list[DeriveResult] = []
+        if pending is not FAILED:
+            for version, grouped in groupby(pending, key=lambda fill: fill.roster_version):
+
+                def read_roster(repos: Any, version: int = version) -> Any:
+                    return repos.news.chain_tape_roster_version(version)
+
+                roster = await self._read(
+                    "news_chain_tape_fill_roster",
+                    read_roster,
+                    errors,
+                )
+                if roster is FAILED or roster is None:
+                    break
+                results.append(await self.derive(tuple(grouped), roster=roster, errors=errors))
+                if errors:
+                    break
+        results.append(await self.take_outcomes(errors))
+        return DeriveResult(
+            **{name: sum(getattr(result, name) for result in results) for name in DeriveResult.__dataclass_fields__}
+        )
+
+    async def aclose(self) -> None:
+        for resource in (self.chain, self.site, self.prices):
+            close = getattr(resource, "aclose", None)
+            if close is not None:
+                await close()
+
     async def derive(
         self,
         fills: Sequence[ClassifiedFill],
@@ -140,43 +165,156 @@ class WalletCardDeriver(TapePasses):
         roster: RosterSnapshot,
         errors: list[str],
     ) -> DeriveResult:
-        """Read this turn's fills as observations. Every failure here is a missing line, never a fault."""
+        """Commit fills in order; transient database failures retain their pending checkpoint."""
 
-        live = tuple(
-            fill
-            for fill in fills
-            if is_live(event_at_ms=fill.event_at_ms, received_at_ms=fill.received_at_ms, rules=self.rules)
-        )
-        if not live:
+        if not fills:
             return DeriveResult()
         members = {member.wallet: member for member in roster.members}
         marks = await self._marks(errors)
-        plan = _Plan()
-        # Every live fill of this turn, and there is no cap here on purpose. The ingestion half already
-        # bounds the turn -- at most `receipts_per_turn_max` transactions are classified, and only the
-        # movements of the last few minutes are live -- so a second cap here would silently drop the
-        # newest movements of a busy turn and never look at them again: the fills are already classified,
-        # so the next turn's `fills` does not re-offer them.
-        for fill in live:
-            if fill.kind == "sell" and fill.wallet in members:
-                await self._sell(fill, member=members[fill.wallet], marks=marks, plan=plan, errors=errors)
-        seen_tokens: set[str] = set()
-        for fill in live:
-            if fill.kind != "buy" or fill.token in seen_tokens:
-                continue
-            seen_tokens.add(fill.token)
-            await self._crowding(fill, roster=roster, members=members, marks=marks, plan=plan, errors=errors)
-        if not plan.checks and not plan.events:
-            return DeriveResult()
-        if not await self._commit(plan, errors):
-            # Nothing committed, so nothing is reported. The counters on the tape's state row are what
-            # an operator reads as "this turn opened these cards"; a planned row that was rolled back
-            # opened nothing.
-            return DeriveResult()
+        observed_at_ms = self._clock()
+        committed: list[_Plan] = []
+        # Commit each fill and its checkpoint together: batching and retries cannot change the answer.
+        for fill in sorted(fills, key=lambda f: (f.block_number, f.log_index)):
+            plan = _Plan()
+            live = is_live(event_at_ms=fill.event_at_ms, received_at_ms=fill.received_at_ms, rules=self.rules) and (
+                self._clock() - fill.event_at_ms <= self.rules.trigger_max_age_ms
+            )
+            member = members.get(fill.wallet)
+            if fill.kind == "buy" and member is not None:
+                await self._buy(
+                    fill, member=member, marks=marks, observed_at_ms=observed_at_ms, plan=plan, errors=errors
+                )
+                if live:
+                    await self._crowding(
+                        fill,
+                        roster=roster,
+                        members=members,
+                        marks=marks,
+                        observed_at_ms=observed_at_ms,
+                        plan=plan,
+                        errors=errors,
+                    )
+            elif live and fill.kind == "sell" and member is not None:
+                await self._sell(
+                    fill, member=member, marks=marks, observed_at_ms=observed_at_ms, plan=plan, errors=errors
+                )
+            if plan.failed or not await self._commit(plan, errors, fill=fill):
+                break
+            committed.append(plan)
         return DeriveResult(
-            checks=len(plan.checks),
-            exits=sum(1 for event in plan.events if event.kind == "exit"),
-            crowding=sum(1 for event in plan.events if event.kind == "crowding"),
+            checks=sum(len(p.checks) for p in committed),
+            buys=sum(e.kind == "buy" for p in committed for e in p.events),
+            exits=sum(e.kind == "exit" for p in committed for e in p.events),
+            crowding=sum(e.kind == "crowding" for p in committed for e in p.events),
+        )
+
+    async def _buy(
+        self,
+        fill: ClassifiedFill,
+        *,
+        member: RosterMember,
+        marks: Mapping[str, Any],
+        observed_at_ms: int,
+        plan: _Plan,
+        errors: list[str],
+    ) -> None:
+        window_ms = self.rules.buy_window_s * 1_000
+        start = fill.event_at_ms // window_ms * window_ms
+        context = await self._read(
+            "news_chain_tape_buy_context",
+            lambda repos: repos.news.chain_tape_buy_context(fill, from_ms=start),
+            errors,
+        )
+        if context is FAILED:
+            plan.failed = True
+            return
+        balance = None
+        try:
+            balance = await self.chain.balance_before_transfer(
+                fill.token,
+                fill.wallet,
+                block_number=fill.block_number,
+                log_index=fill.log_index,
+            )
+        except Exception as exc:
+            errors.append(f"{CHAIN_SOURCE}:{type(exc).__name__}")
+        prior = int(context["prior_buys"])
+        stage = (
+            ("add" if balance > 0 else "reentry" if prior else "new_position")
+            if balance is not None
+            else ("unknown" if prior else "first_observed")
+        )
+        now = self._clock()
+        usd = context["buy_usd"]
+        previous = context["previous_selected_usd"]
+        if not is_live(event_at_ms=fill.event_at_ms, received_at_ms=fill.received_at_ms, rules=self.rules):
+            reason = "history"
+        elif now - fill.event_at_ms > self.rules.trigger_max_age_ms:
+            reason = "stale"
+        elif fill.usd is None:
+            reason = "unpriced"
+        elif usd < self.rules.buy_min_usd:
+            reason = "below_minimum"
+        elif previous is not None and usd < previous * 2:
+            reason = "same_window"
+        else:
+            reason = "selected"
+        entry = None
+        if context["priced_raw"] > 0 and fill.token_decimals is not None:
+            entry = usd * (Decimal(10) ** fill.token_decimals) / context["priced_raw"]
+        mark = _mark(marks.get(fill.token))
+        evidence = {
+            "log_index": fill.log_index,
+            "fills": context["fills"],
+            "stage": stage,
+            "selection_reason": reason,
+            "notify_eligible": reason == "selected",
+            "buy_count": context["buy_count"],
+            "unpriced_buys": context["unpriced"],
+            "observed_at_ms": observed_at_ms,
+            "history_from_ms": context["history_from_ms"],
+            "history_complete": False,
+            "price_reference": "observed" if mark is not None else None,
+            "mark_source": SITE_PRICE_SOURCE if mark is not None else None,
+            "notification_price": None,
+            "notification_price_at_ms": None,
+            "rank_quality": member.rank_quality,
+            "rank_whale": member.rank_whale,
+            "realized_pnl": str(member.realized_pnl),
+            "profit_factor": member.profit_factor,
+            "closed_trades": member.closed_trades,
+            "roster_version": fill.roster_version,
+        }
+        plan.events.append(
+            _identified(
+                WalletEvent(
+                    item_id="",
+                    kind="buy",
+                    chain_id=fill.chain_id,
+                    wallet=fill.wallet,
+                    handle=member.handle,
+                    followers=member.followers,
+                    token=fill.token,
+                    token_symbol=fill.token_symbol,
+                    token_decimals=fill.token_decimals,
+                    roster_version=fill.roster_version,
+                    window_from_ms=start,
+                    window_to_ms=fill.event_at_ms,
+                    segment_key=str(start),
+                    event_at_ms=fill.event_at_ms,
+                    received_at_ms=fill.received_at_ms,
+                    title=f"{member.handle} 买入 {fill.token_symbol or fill.token}",
+                    quantity_raw=context["buy_raw"],
+                    balance_before_raw=balance,
+                    usd=usd if context["priced_raw"] else None,
+                    entry_price=entry,
+                    mark_price=mark,
+                    liquidity_usd=_liquidity(marks.get(fill.token)),
+                    tx_hash=fill.tx_hash,
+                    block_number=fill.block_number,
+                    evidence=evidence,
+                )
+            )
         )
 
     # ------------------------------------------------------------------ exit
@@ -186,6 +324,7 @@ class WalletCardDeriver(TapePasses):
         *,
         member: RosterMember,
         marks: Mapping[str, Any],
+        observed_at_ms: int,
         plan: _Plan,
         errors: list[str],
     ) -> None:
@@ -240,6 +379,7 @@ class WalletCardDeriver(TapePasses):
             errors,
         )
         if context is FAILED:
+            plan.failed = True
             return
         (cascade_wallets, cascade_usd), previous, crowding_item = context
         card = decide_exit(
@@ -254,14 +394,25 @@ class WalletCardDeriver(TapePasses):
         )
         if card is None:
             return
+        event = _exit_event(
+            fill,
+            member=member,
+            card=card,
+            mark=mark,
+            entry_price=None if bag is None else tape_decimal(bag.avg_price),
+            crowding_item_id=crowding_item,
+        )
         plan.events.append(
-            _exit_event(
-                fill,
-                member=member,
-                card=card,
-                mark=mark,
-                entry_price=None if bag is None else tape_decimal(bag.avg_price),
-                crowding_item_id=crowding_item,
+            replace(
+                event,
+                evidence={
+                    **event.evidence,
+                    "notify_eligible": self.rules.exit_notifications_enabled,
+                    "selection_reason": "selected" if self.rules.exit_notifications_enabled else "exit_disabled",
+                    "observed_at_ms": observed_at_ms,
+                    "price_reference": "observed" if _mark(marks.get(fill.token)) is not None else None,
+                },
+                mark_price=_mark(marks.get(fill.token)),
             )
         )
 
@@ -319,6 +470,7 @@ class WalletCardDeriver(TapePasses):
         roster: RosterSnapshot,
         members: Mapping[str, RosterMember],
         marks: Mapping[str, Any],
+        observed_at_ms: int,
         plan: _Plan,
         errors: list[str],
     ) -> None:
@@ -327,33 +479,49 @@ class WalletCardDeriver(TapePasses):
             "news_chain_tape_crowding_context",
             lambda repos: (
                 repos.news.chain_tape_crowding_buyers(
-                    chain_id=fill.chain_id, token=fill.token, from_ms=window_from, to_ms=fill.event_at_ms
+                    chain_id=fill.chain_id,
+                    token=fill.token,
+                    from_ms=window_from,
+                    to_ms=fill.event_at_ms,
+                    through_block=fill.block_number,
+                    through_log=fill.log_index,
                 ),
                 repos.news.chain_tape_last_crowding(chain_id=fill.chain_id, token=fill.token),
             ),
             errors,
         )
         if context is FAILED:
+            plan.failed = True
             return
         buyers, previous = context
         card = decide_crowding(buyers=tuple(buyers), window_from_ms=window_from, previous=previous, rules=self.rules)
         if card is None:
             return
         lead = members.get(card.lead.wallet)
+        event = _crowding_event(
+            fill,
+            card=card,
+            lead=lead,
+            roster_version=roster.roster_version,
+            followers=sum(int(members[buyer.wallet].followers) for buyer in card.buyers if buyer.wallet in members),
+            liquidity=_liquidity(marks.get(fill.token)),
+        )
+        mark = _mark(marks.get(fill.token))
         plan.events.append(
-            _crowding_event(
-                fill,
-                card=card,
-                lead=lead,
-                roster_version=roster.roster_version,
-                followers=sum(int(members[buyer.wallet].followers) for buyer in card.buyers if buyer.wallet in members),
-                liquidity=_liquidity(marks.get(fill.token)),
+            replace(
+                event,
+                mark_price=mark,
+                evidence={
+                    **event.evidence,
+                    "observed_at_ms": observed_at_ms,
+                    "price_reference": "observed" if mark is not None else None,
+                },
             )
         )
 
     # ------------------------------------------------------------------ price receipts
     async def take_outcomes(self, errors: list[str]) -> DeriveResult:
-        """Fill in the +1h and +4h prices for cards already sent. Bounded, and never on the card path."""
+        """Sample all observed candidates at +15m/+1h/+4h, including unsent candidates."""
 
         stamp = self._clock()
         due = await self._read(
@@ -364,15 +532,26 @@ class WalletCardDeriver(TapePasses):
         if due is FAILED or not due:
             return DeriveResult()
         marks: Mapping[str, Any] | None = None
+        marks_fetched_at_ms: int | None = None
         written: list[WalletOutcome] = []
         for row in due:
-            price = await self._price(str(row["token"]), errors)
+            # Once outside the grace interval, a current quote cannot represent the missed horizon.
+            expired = self._clock() - row["target_at_ms"] >= OUTCOME_GIVE_UP_MS
+            price = None if expired else await self._price(str(row["token"]), errors)
+            sampled_at_ms = self._clock()
             source = "dexscreener"
-            if price is None:
+            if price is None and not expired:
                 if marks is None:
                     marks = await self._marks(errors)
+                    marks_fetched_at_ms = self._clock()
                 price = _mark(marks.get(str(row["token"])))
                 source = SITE_PRICE_SOURCE
+                sampled_at_ms = marks_fetched_at_ms if marks_fetched_at_ms is not None else self._clock()
+            completed_at_ms = self._clock()
+            expired = completed_at_ms - row["target_at_ms"] >= OUTCOME_GIVE_UP_MS
+            if expired:
+                price = None
+                sampled_at_ms = completed_at_ms
             if price is not None and price < OUTCOME_PRICE_MIN:
                 # A price of zero is not a price, and neither is one the receipt column cannot hold:
                 # `numeric(38,18)` rounds anything below half of `OUTCOME_PRICE_MIN` to zero, and the
@@ -382,24 +561,31 @@ class WalletCardDeriver(TapePasses):
                 # horizon stays due and is banked `unavailable` after the grace, like any other row
                 # nothing could price.
                 price = None
-            if price is None and not bool(row["expired"]):
+            if price is None and not expired:
                 # Still due. A horizon nothing could price yet is retried next turn rather than banked
                 # as a number nobody measured.
                 continue
             written.append(
                 WalletOutcome(
-                    delivery_key=str(row["delivery_key"]),
+                    item_id=row["item_id"],
+                    delivery_key=row["delivery_key"],
                     horizon=row["horizon"],
                     price=price,
-                    at_ms=stamp,
+                    at_ms=sampled_at_ms,
                     source=source if price is not None else OUTCOME_UNAVAILABLE,
+                    reference_price=row["reference_price"],
+                    reference_at_ms=row["reference_at_ms"],
+                    target_at_ms=row["target_at_ms"],
                 )
             )
-        if not written:
-            return DeriveResult()
+
+        def record(repos: Any) -> int:
+            repos.news.chain_tape_mark_outcome_attempted([row["item_id"] for row in due], now_ms=self._clock())
+            return sum(int(repos.news.chain_tape_record_outcome(row)) for row in written)
+
         stored = await self._write(
             "news_chain_tape_outcomes",
-            lambda repos: sum(int(repos.news.chain_tape_record_outcome(row)) for row in written),
+            record,
             errors,
         )
         if stored is FAILED:
@@ -431,7 +617,7 @@ class WalletCardDeriver(TapePasses):
         return {} if answer is FAILED or answer is None else answer
 
     # ------------------------------------------------------------------ storage
-    async def _commit(self, plan: _Plan, errors: list[str]) -> bool:
+    async def _commit(self, plan: _Plan, errors: list[str], *, fill: ClassifiedFill) -> bool:
         """One transaction: every check this pass made, and every Item and fact row it decided on.
 
         The Item and its typed fact are written by `admit_market_item`, which is the same function the
@@ -454,6 +640,7 @@ class WalletCardDeriver(TapePasses):
                     now_ms=event.received_at_ms,
                 )
                 opened += int(bool(result.fact_written))
+            repos.news.chain_tape_mark_derived(fill, now_ms=self._clock())
             return opened
 
         written = await self._write("news_chain_tape_wallet_cards", _write, errors)
@@ -577,7 +764,13 @@ def _crowding_event(
         liquidity_usd=liquidity,
         evidence={
             "buyers": [
-                {"wallet": buyer.wallet, "first_at_ms": buyer.first_at_ms, "usd": str(buyer.usd)}
+                {
+                    "wallet": buyer.wallet,
+                    "first_at_ms": buyer.first_at_ms,
+                    "usd": str(buyer.usd),
+                    "first_block": buyer.first_block,
+                    "first_log": buyer.first_log,
+                }
                 for buyer in card.buyers
             ],
             "lead": card.lead.wallet,
@@ -621,7 +814,8 @@ def _implied_price(fill: ClassifiedFill) -> Decimal | None:
 
 
 def _mark(row: Any) -> Decimal | None:
-    return None if row is None else tape_decimal(getattr(row, "mark", None))
+    value = None if row is None else tape_decimal(getattr(row, "mark", None))
+    return value if value is not None and value >= OUTCOME_PRICE_MIN else None
 
 
 def _liquidity(row: Any) -> Decimal | None:

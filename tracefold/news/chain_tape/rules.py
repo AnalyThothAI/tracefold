@@ -15,7 +15,7 @@ event study argued for -- after a followed wallet sells, other followed wallets 
 drifts down (#572 §3.2) -- and it is the reason a smaller position can still earn a card.
 
 **Crowding.** `crowding_n` roster wallets each put at least `crowding_min_usd` into the same token inside
-`crowding_window_s`, each of them opening the position in that window. The card carries the lead, the
+`crowding_window_s`. Existing holders' purchases also count. The card carries the earliest window buyer, the
 median follower's entry premium over the lead's price, and `late` when that premium reaches
 `crowding_premium_late_bps` -- because the measured median follow-on entry was +54% over the leader and
 the median outcome from there was negative (#572 §3.2).
@@ -59,6 +59,9 @@ class WalletRules:
     the point of shipping them is the receipt that says whether that projection held.
     """
 
+    exit_notifications_enabled: bool = False
+    buy_min_usd: Decimal = Decimal("1000")
+    buy_window_s: int = 900
     exit_ratio_bps: int = 3_000
     exit_min_position_usd: Decimal = Decimal("20000")
     exit_cascade_window_s: int = 7_200
@@ -124,15 +127,16 @@ class ExitCard:
 class CrowdingBuyer:
     """One roster wallet's participation in one crowding window.
 
-    `first_at_ms` is the wallet's first buy of this token in the whole retained tape, not its first buy
-    inside the window: a wallet that has been holding since yesterday did not just crowd into anything,
-    and counting it would turn every later purchase into a fresh signal.
+    `first_at_ms` is the wallet's first buy inside this window, not a claim about when ownership began.
+    Block and log coordinates preserve chain order when multiple buys share a timestamp.
     """
 
     wallet: str
     first_at_ms: int
     usd: Decimal
     price: Decimal | None
+    first_block: int = 0
+    first_log: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,9 +275,8 @@ def decide_crowding(
 ) -> CrowdingCard | None:
     """One token's window, read against the rule. The window is the caller's; the count is this one's.
 
-    Only wallets that both *opened* their position inside the window and put at least
-    `crowding_min_usd` into it are counted. Both halves matter: a wallet already holding is not crowding
-    in, and a $40 test buy is not a position.
+    Count wallets whose purchases inside the window reach `crowding_min_usd`. This includes additions
+    to existing holdings; it makes no claim about their earlier position history.
     """
 
     qualified = tuple(
@@ -281,7 +284,9 @@ def decide_crowding(
     )
     if len(qualified) < max(1, int(rules.crowding_n)):
         return None
-    ordered = tuple(sorted(qualified, key=lambda buyer: (buyer.first_at_ms, buyer.wallet)))
+    ordered = tuple(
+        sorted(qualified, key=lambda buyer: (buyer.first_at_ms, buyer.first_block, buyer.first_log, buyer.wallet))
+    )
     lead, followers = ordered[0], ordered[1:]
     premium = _median_premium_bps(lead, followers)
     late = premium is not None and premium >= int(rules.crowding_premium_late_bps)

@@ -1,14 +1,8 @@
-"""The chain wallet tape's two read routes (#572 PR-3).
+"""Public reads for chain wallet research and its supporting tape state.
 
-`/api/news/market` already publishes a wallet observation the way it publishes every other market
-kind. These two answer the question that surface cannot: what the *tape* is doing. Which wallets it
-follows and on which of the two lists, how far it has read and what its last turn said, what it stored
-and what share of it nothing could price, and -- for the cards it opened -- what the token did one and
-four hours after a reader was told.
-
-Neither route asks anything of the editorial pipeline, of Trading or of a model, and both are bounded
-by their own window. The card list links back to `/api/news/market/{item_id}`, which stays the one
-place a single observation is read in full.
+Buy candidates remain visible without a delivery. Their selection evidence and observed-price
+outcomes come from the stored facts, independently of the roster and ingestion state. PostgreSQL
+numeric amounts cross the wire as exact text; the browser does not reconstruct trading facts.
 """
 
 from __future__ import annotations
@@ -81,15 +75,17 @@ def get_news_wallet_cards(
     request: Request,
     window: Annotated[str, Query(max_length=8)] = "24h",
     limit: Annotated[int, Query(ge=1, le=WALLET_CARDS_PAGE_MAX)] = 100,
+    kind: Annotated[wallet_schemas.WalletCardKindLiteral | None, Query()] = None,
+    wallet_address: Annotated[str | None, Query(pattern=r"^0x[0-9a-fA-F]{40}$")] = None,
+    token_address: Annotated[str | None, Query(pattern=r"^0x[0-9a-fA-F]{40}$")] = None,
 ) -> Response:
-    """Cards the tape opened in the window, newest first, each beside its two price receipts.
+    """Retained observations, optionally narrowed by kind and exact wallet/token identity.
 
     Every card is published, sent or not: whether a reader was told is reported per row and is never a
-    filter. A digest carries its own sentences and says whether the model wrote them, which is the one
-    thing a reader of this page cannot get from the card itself.
+    filter. A digest says whether the model selected its material; the program renders its sentences.
     """
 
-    _validate_query_params(request, supported={"window", "limit", "token"})
+    _validate_query_params(request, supported={"window", "limit", "token", "kind", "wallet_address", "token_address"})
     span = WALLET_CARD_WINDOWS.get(str(window or "24h"))
     if span is None:
         raise ApiBadRequest("news_wallets_window_invalid", field="window")
@@ -97,10 +93,29 @@ def get_news_wallet_cards(
     window_to = int(time.time() * 1000)
     window_from = window_to - span
     with runtime.repositories() as repos:
-        cards = repos.news.chain_tape_cards(from_ms=window_from, to_ms=window_to, limit=int(limit))
+        cards = repos.news.chain_tape_cards(
+            from_ms=window_from,
+            to_ms=window_to,
+            limit=int(limit),
+            kind=kind,
+            wallet_address=wallet_address.lower() if wallet_address else None,
+            token_address=token_address.lower() if token_address else None,
+        )
+        fills = (
+            repos.news.chain_tape_wallet_fills(
+                from_ms=window_from,
+                to_ms=window_to,
+                limit=int(limit),
+                wallet_address=wallet_address.lower(),
+                token_address=token_address.lower(),
+            )
+            if wallet_address and token_address
+            else []
+        )
     return _etagged(
         {
             "cards": cards,
+            "fills": fills,
             "window": str(window),
             "window_from_ms": window_from,
             "window_to_ms": window_to,

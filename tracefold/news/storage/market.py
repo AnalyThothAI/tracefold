@@ -75,6 +75,13 @@ class MarketObservationRow(TypedDict):
     # The chain wallet family (#572 PR-2): what the tape derived, in the fields a card and the detail
     # page read. Every quantity crosses as exact text for the same reason the provider's do.
     wallet_kind: str | None
+    wallet_stage: str | None
+    wallet_selection_reason: str | None
+    wallet_buy_count: int | None
+    wallet_unpriced_buys: int | None
+    wallet_observed_at_ms: int | None
+    wallet_history_from_ms: int | None
+    wallet_notify_eligible: bool
     wallet_address: str | None
     wallet_handle: str | None
     wallet_followers: int | None
@@ -189,6 +196,15 @@ _OBSERVATIONS_SQL = f"""
            w.position_side,
            w.pnl_usd::text AS pnl_usd,
            e.kind AS wallet_kind,
+           e.evidence ->> 'stage' AS wallet_stage,
+           e.evidence ->> 'selection_reason' AS wallet_selection_reason,
+           (e.evidence ->> 'buy_count')::integer AS wallet_buy_count,
+           (e.evidence ->> 'unpriced_buys')::integer AS wallet_unpriced_buys,
+           (e.evidence ->> 'observed_at_ms')::bigint AS wallet_observed_at_ms,
+           (e.evidence ->> 'history_from_ms')::bigint AS wallet_history_from_ms,
+           CASE WHEN e.kind IN ('buy', 'exit')
+                THEN COALESCE(e.evidence ->> 'notify_eligible' = 'true', false)
+                ELSE true END AS wallet_notify_eligible,
            e.wallet AS wallet_address,
            e.handle AS wallet_handle,
            e.followers AS wallet_followers,
@@ -253,7 +269,7 @@ _OBSERVATIONS_SQL = f"""
                -- for an exit, the token alone for a crowding window) and the segment the rules put it
                -- in. The page and the loop must never disagree about which card a card follows.
                'wallet|' || e.kind || '|' || e.provider || '|'
-                     || CASE WHEN e.kind = 'exit' THEN e.wallet ELSE '' END
+                     || CASE WHEN e.kind IN ('buy', 'exit') THEN e.wallet ELSE '' END
                      || '|' || e.token || '|' || e.segment_key
              ELSE 'raw|' || i.market_kind || '|' || i.item_id
            END AS group_key
@@ -301,6 +317,13 @@ _OBSERVATION_KEYS: Final[tuple[str, ...]] = (
     "position_side",
     "pnl_usd",
     "wallet_kind",
+    "wallet_stage",
+    "wallet_selection_reason",
+    "wallet_buy_count",
+    "wallet_unpriced_buys",
+    "wallet_observed_at_ms",
+    "wallet_history_from_ms",
+    "wallet_notify_eligible",
     "wallet_address",
     "wallet_handle",
     "wallet_followers",
@@ -338,7 +361,7 @@ _OBSERVATION_KEYS: Final[tuple[str, ...]] = (
 # It is a named set rather than an accident. `ExactApiSchema` forbids an unknown key, so a column that
 # is neither published nor declared here turns every list response into a 500 -- which is exactly what
 # happened when this column was taken off the public schema and left in the projection.
-INTERNAL_OBSERVATION_KEYS: Final[frozenset[str]] = frozenset({"wallet_window_from_ms"})
+INTERNAL_OBSERVATION_KEYS: Final[frozenset[str]] = frozenset({"wallet_window_from_ms", "wallet_notify_eligible"})
 
 MARKET_GROUPS_SQL = f"""
     WITH observations AS MATERIALIZED (
@@ -493,6 +516,11 @@ MARKET_ADOPT_UNCLAIMED_SQL = """
        AND market_notify_delivery_key IS NULL
        AND market_notify_state = 'processed'
        AND observed_at_ms >= %s
+       AND (market_kind <> 'wallet' OR EXISTS (
+             SELECT 1 FROM news_market_wallet_events e
+              WHERE e.item_id = news_items.item_id
+                AND (e.kind NOT IN ('buy', 'exit') OR e.evidence ->> 'notify_eligible' = 'true')
+           ))
 """
 
 # Named rather than starred: this one is on a public route, and a star over a base relation is how a

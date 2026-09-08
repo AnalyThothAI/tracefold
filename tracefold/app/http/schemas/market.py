@@ -12,6 +12,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from .common import ExactApiSchema
+from .wallets import WalletBuyStageLiteral, WalletCardKindLiteral
 
 MarketKindLiteral = Literal["oi", "liquidation", "smart_money", "unknown_market", "wallet"]
 
@@ -55,7 +56,13 @@ class NewsMarketObservationData(ExactApiSchema):
     # The chain wallet family (#572 PR-2). Derived by this process from chain logs rather than reported
     # by a provider, which is why none of these has a counterpart on the four provider kinds. The
     # quantities and dollar figures cross as exact text for the same reason the provider's do.
-    wallet_kind: Literal["exit", "crowding", "digest"] | None = None
+    wallet_kind: WalletCardKindLiteral | None = None
+    wallet_stage: WalletBuyStageLiteral | None = None
+    wallet_selection_reason: str | None = None
+    wallet_buy_count: int | None = None
+    wallet_unpriced_buys: int | None = None
+    wallet_observed_at_ms: int | None = None
+    wallet_history_from_ms: int | None = None
     wallet_address: str | None = None
     wallet_handle: str | None = None
     wallet_followers: int | None = None

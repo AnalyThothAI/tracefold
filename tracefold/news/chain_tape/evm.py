@@ -7,6 +7,8 @@ second copy, the same way the venue adapters import the instrument vocabulary th
 
 from __future__ import annotations
 
+TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
 _HEX_DIGITS = frozenset("0123456789abcdef")
 
 
@@ -56,4 +58,4 @@ def transfer_amount(data: str) -> int | None:
     return int(body, 16)
 
 
-__all__ = ["address_topic", "normalize_address", "topic_address", "transfer_amount"]
+__all__ = ["TRANSFER_TOPIC", "address_topic", "normalize_address", "topic_address", "transfer_amount"]

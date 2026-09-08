@@ -58,10 +58,17 @@ export type NewsWalletRoster = NewsSchemas["NewsWalletRosterData"];
 export type NewsWalletRosterMember = NewsSchemas["NewsWalletRosterMemberData"];
 export type NewsWalletTapeState = NewsSchemas["NewsWalletTapeStateData"];
 export type NewsWalletFillTotal = NewsSchemas["NewsWalletFillTotalData"];
+export type NewsWalletFill = NewsSchemas["NewsWalletFillData"];
 export type NewsWalletCardTotal = NewsSchemas["NewsWalletCardTotalData"];
 export type NewsWalletCards = NewsSchemas["NewsWalletCardsData"];
 export type NewsWalletCard = NewsSchemas["NewsWalletCardData"];
 export type NewsWalletCardKind = NewsWalletCard["kind"];
+export type NewsWalletCardFilters = {
+  window: NewsWalletCardWindow;
+  kind: NewsWalletCardKind | "all";
+  walletAddress: string;
+  tokenAddress: string;
+};
 export type NewsWalletFillKind = NewsWalletFillTotal["kind"];
 
 export type NewsFeedOutcome = NewsOutcomeGroup;
@@ -298,21 +305,31 @@ export const useNewsWalletsWithToken = (token: string) =>
   });
 
 /**
- * The cards the tape opened in one window, each beside its +1h/+4h price receipt.
+ * Buy candidates and other observations, beside their +15m/+1h/+4h price receipts.
  *
  * Its own query rather than a field of the one above, so a slow card table cannot hold the header and a
- * window change re-requests only the table. The window is a closed server vocabulary, so it is part of
- * the key.
+ * filter change re-requests only the table. Every server filter is part of both cache identities.
  */
-export const useNewsWalletCardsWithToken = (token: string, window: NewsWalletCardWindow) =>
+export const useNewsWalletCardsWithToken = (token: string, filters: NewsWalletCardFilters) =>
   useQuery({
     enabled: Boolean(token),
-    queryKey: queryKeys.newsWalletCards(window),
+    queryKey: queryKeys.newsWalletCards(
+      filters.window,
+      filters.kind,
+      filters.walletAddress,
+      filters.tokenAddress,
+    ),
     queryFn: async () =>
       (
         await getApi<NewsWalletCards>("/api/news/wallets/cards", {
-          etagKey: `news-wallet-cards:${window}`,
-          params: { limit: NEWS_WALLET_CARDS_PAGE_SIZE, window },
+          etagKey: `news-wallet-cards:${filters.window}:${filters.kind}:${filters.walletAddress}:${filters.tokenAddress}`,
+          params: {
+            limit: NEWS_WALLET_CARDS_PAGE_SIZE,
+            window: filters.window,
+            kind: filters.kind === "all" ? undefined : filters.kind,
+            wallet_address: filters.walletAddress || undefined,
+            token_address: filters.tokenAddress || undefined,
+          },
           token,
         })
       ).data,

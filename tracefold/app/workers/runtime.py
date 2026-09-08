@@ -33,6 +33,8 @@ MARKET_NOTIFICATIONS = "market_notifications"
 # faults -- the followed wallets' on-chain fills -- rather than for the provider behind it, because a
 # second chain or a second roster site would not be a second capability.
 CHAIN_TAPE = "chain_tape"
+WALLET_RESEARCH = "wallet_research"
+WALLET_DIGEST = "wallet_digest"
 TRADING_SIGNAL_LANE = "trading_signal_lane"
 
 CapabilityStateName = Literal["running", "faulted", "unavailable", "disabled"]
@@ -331,6 +333,7 @@ def _required_text(value: object, field: str) -> str:
 
 
 __all__ = [
+    "CHAIN_TAPE",
     "MARKET_NOTIFICATIONS",
     "NEWS_DELIVERY",
     "NEWS_EDITORIAL",
@@ -340,6 +343,8 @@ __all__ = [
     "NEWS_REACTIONS",
     "SHARED_RESOURCE_FAILURES",
     "TRADING_SIGNAL_LANE",
+    "WALLET_DIGEST",
+    "WALLET_RESEARCH",
     "WORKERS_RUNTIME_STALE_AFTER_MS",
     "WORKERS_RUNTIME_VERSION",
     "CapabilityState",

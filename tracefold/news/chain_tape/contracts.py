@@ -110,15 +110,6 @@ class RosterSnapshot:
     def wallets(self) -> tuple[str, ...]:
         return tuple(member.wallet for member in self.members)
 
-    def membership_key(self) -> tuple[tuple[str, int | None, int | None], ...]:
-        """What "the roster changed" means: the members and their ranks, and nothing else.
-
-        Follower counts and P&L move every hour and are recorded, not versioned on: a new version every
-        hour would make `roster_version` on a fill meaningless as evidence of which list produced it.
-        """
-
-        return tuple(sorted((member.wallet, member.rank_quality, member.rank_whale) for member in self.members))
-
 
 @dataclass(frozen=True, slots=True)
 class TapeCursor:

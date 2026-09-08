@@ -538,6 +538,7 @@
 | `event_at_ms` | `BIGINT` | False | `None` |
 | `received_at_ms` | `BIGINT` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
+| `outcome_attempted_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_market_wallet_fills`
 
@@ -564,16 +565,22 @@
 | `classified_at_ms` | `BIGINT` | False | `None` |
 | `roster_version` | `BIGINT` | False | `None` |
 | `provider` | `TEXT` | False | `'robinhood_chain'::text` |
+| `derived_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_market_wallet_outcomes`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `delivery_key` | `TEXT` | False | `None` |
+| `delivery_key` | `TEXT` | True | `None` |
 | `horizon` | `TEXT` | False | `None` |
 | `price` | `NUMERIC(38, 18)` | True | `None` |
 | `at_ms` | `BIGINT` | False | `None` |
 | `source` | `TEXT` | False | `None` |
+| `item_id` | `TEXT` | False | `None` |
+| `reference_price` | `NUMERIC(38, 18)` | True | `None` |
+| `reference_at_ms` | `BIGINT` | False | `None` |
+| `target_at_ms` | `BIGINT` | False | `None` |
+| `reference_kind` | `TEXT` | False | `None` |
 
 ## `news_market_wallet_roster`
 

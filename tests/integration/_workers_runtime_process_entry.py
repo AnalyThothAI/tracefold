@@ -51,6 +51,8 @@ def _arguments() -> argparse.Namespace:
             "optional_task_fault",
             "market_notifications_fault",
             "chain_tape_fault",
+            "wallet_research_fault",
+            "wallet_digest_fault",
             "ingestion_task_fault",
             "trading_lane_fault",
             "schema_mismatch",
@@ -552,40 +554,45 @@ async def _main() -> None:
             )
 
         workers_wiring._wire_news_pipeline = wire_market_fault
-    elif arguments.mode == "chain_tape_fault":
-        # The real chain tape task: the real `run_chain_tape` wrapper, the real registration in
-        # `worker_business_tasks`, and the real `chain_tape` capability. Only `advance()` is replaced,
-        # because a program error inside it is the thing under test (#572 PR-1).
-        from tracefold.app.workers.runtime import CHAIN_TAPE
+    elif arguments.mode in {"chain_tape_fault", "wallet_research_fault", "wallet_digest_fault"}:
+        # The real task wrappers, registration and capability publication. Only the domain turn is
+        # replaced: its unexpected error must close that stage and leave both wallet siblings running.
+        from tracefold.app.workers.runtime import CHAIN_TAPE, WALLET_DIGEST, WALLET_RESEARCH
         from tracefold.app.workers.wiring.chain_tape import ChainTapeComposition
-        from tracefold.news.chain_tape import ChainTapeLoop
 
-        class _FailingChainTape(ChainTapeLoop):
-            def __init__(self) -> None:
+        failing_capability = arguments.mode.removesuffix("_fault")
+
+        class _WalletStage:
+            def __init__(self, capability: str) -> None:
+                self.capability = capability
                 self.turns = 0
-                self.closed = False
 
             async def aclose(self) -> None:
-                self.closed = True
+                print(f"{self.capability.upper()}_CLOSED", flush=True)
 
             async def advance(self) -> dict[str, Any]:
                 self.turns += 1
-                if self.turns < 2:
-                    # One healthy turn first, so the failure below is a loop failing in service rather
-                    # than one that never started.
+                if self.capability != failing_capability or self.turns < 2:
                     return {}
-                print("CHAIN_TAPE_ABOUT_TO_FAIL", flush=True)
-                raise RuntimeError("test_chain_tape_fault")
+                print(f"{self.capability.upper()}_ABOUT_TO_FAIL", flush=True)
+                raise RuntimeError(f"test_{self.capability}_fault")
 
-        async def wire_chain_tape_fault(**kwargs: Any) -> tuple[None, _TurnPipeline, None]:
+        async def wire_wallet_fault(**kwargs: Any) -> tuple[None, _TurnPipeline, None]:
             _declare_news_capabilities(kwargs["capabilities"], market=True)
-            kwargs["capabilities"].running(CHAIN_TAPE)
             return None, _TurnPipeline((("news-deduper", _fact_writer(kwargs["db"]), 1.0),)), None
 
-        workers_wiring._wire_news_pipeline = wire_chain_tape_fault
-        workers_wiring._wire_chain_tape = lambda **_kwargs: ChainTapeComposition(
-            loop=_FailingChainTape(), poll_seconds=0.2
-        )
+        def wire_wallet_stages(**kwargs: Any) -> ChainTapeComposition:
+            for capability in (CHAIN_TAPE, WALLET_RESEARCH, WALLET_DIGEST):
+                kwargs["capabilities"].running(capability)
+            return ChainTapeComposition(
+                loop=_WalletStage(CHAIN_TAPE),
+                research=_WalletStage(WALLET_RESEARCH),
+                digest=_WalletStage(WALLET_DIGEST),
+                poll_seconds=0.2,
+            )
+
+        workers_wiring._wire_news_pipeline = wire_wallet_fault
+        workers_wiring._wire_chain_tape = wire_wallet_stages
     elif arguments.mode == "ingestion_task_fault":
         # Reception and admission are the information entry, not a capability to switch off. A program
         # error there must still end the process, so the container restart that has always healed it
@@ -660,6 +667,8 @@ async def _main() -> None:
         "optional_task_fault",
         "market_notifications_fault",
         "chain_tape_fault",
+        "wallet_research_fault",
+        "wallet_digest_fault",
         "ingestion_task_fault",
         "trading_lane_fault",
         "push_misconfigured",

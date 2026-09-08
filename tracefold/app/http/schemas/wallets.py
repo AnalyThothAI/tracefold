@@ -1,14 +1,8 @@
-"""Public shapes for the chain wallet tape's own console page (#572 PR-3).
+"""Public reads for chain wallet research and its supporting tape state.
 
-Two narrow reads over tables `/api/news/market` already joins from the other side. The market surface
-answers "what observations arrived, of every kind"; this one answers "what is the tape doing" -- which
-wallets it follows and why, how far it has read, what it stored, and what the cards it sent were worth
-one and four hours later. Neither read asks anything of the editorial pipeline, of Trading or of a
-model, and both are answerable whenever PostgreSQL is.
-
-Every quantity that is a `numeric` in PostgreSQL crosses as its exact stored text, for the same reason
-the market surface's do: a JSON number would round a figure the ledger holds precisely, and the console
-renders these rather than computing with them.
+Buy candidates remain visible without a delivery. Their selection evidence and observed-price
+outcomes come from the stored facts, independently of the roster and ingestion state. PostgreSQL
+numeric amounts cross the wire as exact text; the browser does not reconstruct trading facts.
 """
 
 from __future__ import annotations
@@ -17,7 +11,8 @@ from typing import Literal
 
 from .common import ExactApiSchema
 
-WalletCardKindLiteral = Literal["exit", "crowding", "digest"]
+WalletCardKindLiteral = Literal["buy", "exit", "crowding", "digest"]
+WalletBuyStageLiteral = Literal["first_observed", "new_position", "add", "reentry", "unknown"]
 WalletFillKindLiteral = Literal["buy", "sell", "transfer_out"]
 
 
@@ -108,16 +103,21 @@ class NewsWalletsData(ExactApiSchema):
 
 
 class NewsWalletCardData(ExactApiSchema):
-    """One card the tape opened, with the two price receipts taken after it was sent.
+    """A retained observation, its selection evidence and frozen-reference price outcomes.
 
-    `return_1h_bps` / `return_4h_bps` are measured against the price the card itself printed -- the
-    chain's mark at the moment it fired, or the lead's entry for a crowding window -- and are absent
-    where the card carried no price to measure against or nothing could price the token. They are
-    #572 §11's receipt, not a gate: nothing in the code reads them.
+    A buy can have no delivery and still have outcomes. The paid entry price is distinct from the
+    observed market price; unavailable or historically unrecorded references never invent returns.
     """
 
     item_id: str
     kind: WalletCardKindLiteral
+    stage: WalletBuyStageLiteral | None = None
+    selection_reason: str | None = None
+    buy_count: int | None = None
+    unpriced_buys: int | None = None
+    observed_at_ms: int | None = None
+    history_from_ms: int | None = None
+    price_reference: str | None = None
     handle: str = ""
     wallet: str = ""
     token: str = ""
@@ -138,20 +138,40 @@ class NewsWalletCardData(ExactApiSchema):
     delivery_key: str | None = None
     delivery_state: Literal["pending", "sending", "sent", "failed", "unknown", "unavailable"] | None = None
     settled_at_ms: int | None = None
+    outcome_15m_source: str | None = None
+    return_15m_bps: int | None = None
     outcome_1h_source: str | None = None
     return_1h_bps: int | None = None
     outcome_4h_source: str | None = None
     return_4h_bps: int | None = None
     # Present on a digest and on nothing else: the sentences it was sent with, and whether the model
-    # wrote them or the deterministic template did.
+    # selected their material; the program renders the sentences.
     digest_lines: list[str] | None = None
     digest_model_used: bool | None = None
+
+
+class NewsWalletFillData(ExactApiSchema):
+    """A retained wallet/token action, whether or not it generated an observation."""
+
+    chain_id: int
+    tx_hash: str
+    log_index: int
+    block_number: int
+    wallet: str
+    token: str
+    token_symbol: str | None
+    token_decimals: int | None
+    kind: WalletFillKindLiteral
+    amount_raw: str
+    usd: str | None
+    event_at_ms: int
 
 
 class NewsWalletCardsData(ExactApiSchema):
     """One bounded page of cards, newest first, inside the window the caller asked for."""
 
     cards: list[NewsWalletCardData]
+    fills: list[NewsWalletFillData]
     window: str
     window_from_ms: int
     window_to_ms: int
@@ -162,6 +182,7 @@ __all__ = [
     "NewsWalletCardData",
     "NewsWalletCardTotalData",
     "NewsWalletCardsData",
+    "NewsWalletFillData",
     "NewsWalletFillTotalData",
     "NewsWalletRosterData",
     "NewsWalletRosterMemberData",

@@ -2319,3 +2319,33 @@ def test_clipping_gives_up_the_middle_before_the_title_or_the_footer() -> None:
     assert _fit_telegram_message(["title", block * 3, "footer"]) == "title\n\nfooter"
     # And the footer only when what is left is still over the bound -- a card always keeps one block.
     assert _fit_telegram_message([block * 3, "footer"]) == block * 3
+
+
+@pytest.mark.parametrize("wallet_kind", ["buy", "exit", "crowding", "digest"])
+def test_wallet_names_stay_literal_when_the_same_card_is_sent_to_telegram(wallet_kind: str) -> None:
+    handle = "[buyer](https://evil.example)"
+    symbol = "<at id=all></at>"
+    card = _market_card(
+        family="wallet",
+        track={"group_key": "wallet-safe-text", "market_kind": "wallet"},
+        observations=[
+            {
+                "item_id": "wallet-observation",
+                "market_kind": "wallet",
+                "parse_status": "parsed",
+                "title": "买入观察",
+                "event_at_ms": 1_788_600_000_000,
+                "received_at_ms": 1_788_600_001_000,
+                "wallet_kind": wallet_kind,
+                "wallet_handle": handle,
+                "symbol": symbol,
+                "wallet_digest_lines": (f"{handle} 买入 {symbol}，已计价 $1,000",),
+            }
+        ],
+    )
+    text = _sent_text(card)
+    assert handle in text
+    assert "&lt;at id=all&gt;&lt;/at&gt;" in text
+    assert symbol not in text
+    assert 'href="https://evil.example"' not in text
+    assert 'href="https://console.example.test/news/market/i1"' in text

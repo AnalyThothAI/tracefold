@@ -44,7 +44,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260907_0374"
+HEAD = "20260908_0375"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -142,6 +142,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260907_0374",
         "20260906_0373",
         "20260906_0372",
         "20260906_0371",
@@ -217,29 +218,8 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    # `20260906_0373` is the first refusal the walk to base meets. `20260907_0374` sits in front of it
-    # and is reversible on purpose -- it creates one table of work still owed, never a record of what a
-    # reader received, so dropping it is the honest reverse of creating it -- but the walk runs under
-    # one transactional-DDL migration context, so the refusal rolls its drop back with everything else
-    # and `news_delivery_queue` is still there afterwards. Narrowing the wallet kind vocabulary again
-    # would leave digest
-    # rows the CHECK rejects, and dropping them would delete summaries readers were sent.
-    # `20260906_0372` is the refusal immediately behind it: its events are the observations wallet
-    # cards were sent for, and the fills they were derived from expire on a 90-day retention the
-    # derived rows do not share. `20260906_0371` is behind that -- it deletes the alerting state of a
-    # rule that no longer exists, and re-creating those track rows would put groups back on a page as
-    # though a card were still coming for them. -- it deletes the alerting state of a rule
-    # that no longer exists, and re-creating those track rows would put groups back on a page as though
-    # a card were still coming for them. Then `20260906_0370`, whose smart-money facts are the only
-    # structured record of those provider reports and whose reason is false the moment it has run; then
-    # `20260906_0369`, whose wallet-tape fills are the only record of what a followed wallet did;
-    # `20260906_0368`, whose `observed_at_ms` rename and state table cannot be undone without losing
-    # which venue last answered; `20260905_0367`'s `round_started_at_ms`;
-    # `20260905_0366`'s notification to-do list and delivery receipts; and `20260905_0365`'s market
-    # facts. `20260905_0364`'s dropped capability column, `20260904_0363`'s restored view and
-    # `20260904_0362`'s re-added CHECKs are all reversible and all behind those, as are the two
-    # refusals that were in front before -- `20260904_0361` and `20260903_0357`.
-    with pytest.raises(RuntimeError, match="news_market_wallet_digest_downgrade_unsupported"):
+    # The buy/outcome hard cut preserves material observations and cannot be reversed.
+    with pytest.raises(RuntimeError, match="news_wallet_buy_research_downgrade_unsupported"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
     assert _table_exists("news_delivery_queue") is True

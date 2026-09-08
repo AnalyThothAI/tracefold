@@ -1,40 +1,32 @@
-"""The wallet digest without a database and without a network (#572 PR-3).
+"""Buy digest selection, truthful coverage and the audited model seam (#614).
 
-Three things are proved here, and they are the three the digest's whole design rests on:
-
-* the fact pack states every figure a reader can be shown, computed from stored sums alone -- including
-  the three cost bases #572 §5.3 insists on naming separately;
-* a model answer that states a figure the facts it cited do not carry is dropped *whole*, and the
-  deterministic template is what a reader gets;
-* the two conditions that stop a call happening at all -- an empty window and a spent day -- are the
-  writer's, not the model's.
-
-The one Signature is exercised through the same audited seam production uses, against a scripted
-delegate and then against the recording that delegate produced. No network, either way.
+SQL population and amount/quantity alignment are checked against PostgreSQL next door. These tests
+exercise the public fact/selection interface and the writer's own due-time and call-budget decisions.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import Any
 
 import dspy  # type: ignore[import-untyped]
 import pytest
+from pydantic import ValidationError
 
 from tracefold.news.bus import TransientError
 from tracefold.news.chain_tape.contracts import RosterMember, RosterSnapshot
 from tracefold.news.chain_tape.digest import (
     DIGEST_LINES_MAX,
-    DigestCardRow,
+    DigestFact,
     DigestOutcomeRow,
     DigestPack,
     DigestWindowRows,
+    DigestWindowTotals,
     LastDigest,
     TokenWindowFlow,
-    WalletWindowActivity,
     build_pack,
     ground,
     template_lines,
@@ -44,6 +36,7 @@ from tracefold.news.program.chain_tape_digest import (
     CHAIN_TAPE_DIGEST_MAX_TOKENS,
     CHAIN_TAPE_DIGEST_VERSION,
     ChainTapeDigestProgram,
+    DigestAnswer,
     WalletDigestSignature,
 )
 from tracefold.news.program.lm import (
@@ -59,46 +52,56 @@ from tracefold.news.program.lm import (
 from tracefold.news.wallet_contracts import DigestLine
 
 WALLET = "0x" + "11" * 20
-PEER = "0x" + "22" * 20
 FSD = "0x" + "aa" * 20
-UNIT = 10**18
 WINDOW_FROM = 1_788_600_000_000
 WINDOW_TO = WINDOW_FROM + 4 * 3_600_000
-HANDLES = {WALLET: "0xVantaa", PEER: "smol_intern"}
+HANDLES = {WALLET: "0xVantaa"}
+
+
+def _flow(**overrides: Any) -> TokenWindowFlow:
+    return replace(
+        TokenWindowFlow(
+            wallet=WALLET,
+            token=FSD,
+            token_symbol="FSD",
+            token_decimals=0,
+            window_buy_usd=Decimal("1000"),
+            window_buy_raw=1100,
+            priced_buy_raw=100,
+            buys=2,
+            unpriced_buys=1,
+            first_buy_at_ms=WINDOW_FROM + 1000,
+            last_buy_at_ms=WINDOW_FROM + 2000,
+            subsequent_sells=1,
+            subsequent_sell_usd=Decimal("100"),
+            history_from_ms=WINDOW_FROM - 1000,
+        ),
+        **overrides,
+    )
 
 
 def _rows(**overrides: Any) -> DigestWindowRows:
-    base: dict[str, Any] = {
-        "chain_id": 4663,
-        "activity": (
-            WalletWindowActivity(WALLET, 3, Decimal("12340.50"), 2, Decimal("23531.60"), 1, 0),
-            WalletWindowActivity(PEER, 1, Decimal("900"), 0, Decimal(0), 0, 1),
-        ),
-        "flows": (
-            TokenWindowFlow(
-                wallet=WALLET,
-                token=FSD,
-                token_symbol="FSD",
-                token_decimals=18,
-                window_buy_usd=Decimal("12340.50"),
-                window_buy_raw=4_000_000 * UNIT,
-                window_sell_usd=Decimal("23531.60"),
-                lifetime_buy_usd=Decimal("40000"),
-                lifetime_sell_usd=Decimal("23531.60"),
-                lifetime_buy_raw=10_000_000 * UNIT,
-                lifetime_sell_raw=6_000_000 * UNIT,
-                lifetime_out_raw=0,
+    return replace(
+        DigestWindowRows(
+            chain_id=4663,
+            totals=DigestWindowTotals(
+                buys=50,
+                buy_usd=Decimal("25000"),
+                buy_wallets=25,
+                buy_positions=25,
+                sells=30,
+                sell_usd=Decimal("3000000"),
+                active_wallets=26,
+                transfers_out=2,
+                unpriced=1,
+                cards=30,
+                sent_cards=29,
             ),
+            flows=(_flow(),),
+            outcomes=(DigestOutcomeRow("buy", "1h", "observed", 4, 3, 2, -512),),
         ),
-        "cards": (
-            DigestCardRow("exit", "0xVantaa", "FSD", 10_000, "chain_balance", 0, None, Decimal("23531.60"), "", True),
-        ),
-        "outcomes": (DigestOutcomeRow("1h", 4, 3, -512),),
-        "tokens": 7,
-        "unpriced": 2,
-    }
-    base.update(overrides)
-    return DigestWindowRows(**base)
+        **overrides,
+    )
 
 
 def _pack(**overrides: Any) -> DigestPack:
@@ -107,299 +110,84 @@ def _pack(**overrides: Any) -> DigestPack:
         window_from_ms=WINDOW_FROM,
         window_to_ms=WINDOW_TO,
         handles=HANDLES,
-        holding_costs={(WALLET, FSD): Decimal("0.0018")},
+        holding_costs={(WALLET, FSD): Decimal("8")},
     )
 
 
-# --- the fact pack --------------------------------------------------------------------------------
-def test_the_pack_names_the_three_cost_bases_separately_and_computes_each_from_its_own_sums() -> None:
-    """#572 §5.3: three questions, three numbers, and never an average of them.
+def test_same_numbers_cannot_license_a_changed_wallet_token_or_direction() -> None:
+    pack = DigestPack(WINDOW_FROM, WINDOW_TO, (DigestFact("b1", "Alice 买入 FSD $1,000"),))
+    swapped: Any = DigestLine(text="Bob 卖出 DOGE $1,000", cites=("b1",))
 
-    The window entry price is this window's dollars over this window's quantity ($12,340.50 / 4M). The
-    holding cost is the provider's own moving average and is nobody's arithmetic. The recovery line is
-    net cash still out over what is still held ((40,000 - 23,531.60) / 4M), which is a different
-    number from both and can be above or below either.
-    """
-
-    costs = next(fact for fact in _pack().facts if fact.id == "c1")
-
-    assert "观察期买入均价 $0.003085" in costs.text
-    assert "剩余持仓成本 $0.0018" in costs.text
-    assert "净现金回收线 $0.004117" in costs.text
+    assert ground(pack, (swapped,)).kept == 0
+    honest = ground(pack, ("b1",))
+    assert honest.accepted()
+    assert honest.lines == (DigestLine(text="Alice 买入 FSD $1,000", cites=("b1",)),)
 
 
-def test_a_cost_basis_the_provider_did_not_answer_is_stated_as_unknown_rather_than_dropped() -> None:
-    """A missing line reads as "no such position", which is a different claim from "we do not know"."""
+def test_full_totals_do_not_follow_the_number_of_selected_buy_details() -> None:
+    facts = _pack().by_id()
 
-    pack = build_pack(
-        _rows(),
-        window_from_ms=WINDOW_FROM,
-        window_to_ms=WINDOW_TO,
-        handles=HANDLES,
-        holding_costs={},
-    )
-
-    assert "剩余持仓成本 未知" in next(fact for fact in pack.facts if fact.id == "c1").text
+    assert "买入合计 50 笔" in facts["w0"].text
+    assert "25 个地址、25 个钱包代币组合" in facts["w0"].text
+    assert "1 / 25" in facts["w1"].text
+    assert "观测卡 30 张，其中已送达 29 张" in facts["w2"].text
 
 
-def test_a_recovery_line_below_zero_is_stated_as_the_negative_number_it_is() -> None:
-    """A wallet that has already taken out more than it put in owes nothing back, and the line says so.
+def test_buy_fact_identifies_token_wallet_amount_count_time_and_priced_mean() -> None:
+    fact = _pack().by_id()["b1"].text
 
-    (40,000 - 60,000) / 4M held = -$0.005. Not clamped and not hidden: #572 §5.3 says in as many words
-    that this figure can be negative, and a floor at zero would state a position that does not exist.
-    """
-
-    flow = _rows().flows[0]
-    pack = build_pack(
-        _rows(flows=(TokenWindowFlow(**{**_as_dict(flow), "lifetime_sell_usd": Decimal("60000")}),)),
-        window_from_ms=WINDOW_FROM,
-        window_to_ms=WINDOW_TO,
-        handles=HANDLES,
-        holding_costs={},
-    )
-
-    assert "净现金回收线 -$0.005" in next(fact for fact in pack.facts if fact.id == "c1").text
+    assert WALLET in fact and FSD in fact
+    assert "买入 2 笔，已计价 $1,000.00" in fact
+    assert "已计价部分均价 $10，" in fact  # 1000 / 100 priced units, never 1000 / 1100.
+    assert "未计价 1 笔" in fact
+    assert "建仓状态未知" in fact
 
 
-def test_a_position_with_nothing_left_states_its_net_cash_instead_of_a_recovery_line() -> None:
-    """There is no denominator to divide by, so the fact answers the question that is still open."""
+def test_missing_history_or_subsequent_sale_cannot_claim_a_closed_position() -> None:
+    pack = _pack(flows=(_flow(history_from_ms=WINDOW_FROM, subsequent_sell_usd=Decimal("9000")),))
+    text = " ".join(fact.text for fact in pack.facts)
 
-    flow = _rows().flows[0]
-    pack = build_pack(
-        _rows(flows=(TokenWindowFlow(**{**_as_dict(flow), "lifetime_sell_raw": 10_000_000 * UNIT}),)),
-        window_from_ms=WINDOW_FROM,
-        window_to_ms=WINDOW_TO,
-        handles=HANDLES,
-        holding_costs={},
-    )
-
-    assert "净现金回收线 已清空，净现金 -$16,468.40" in next(fact for fact in pack.facts if fact.id == "c1").text
+    assert "首笔买入后卖出 1 笔" in text
+    assert "剩余持仓未知" in text
+    assert "观察前余额与历史连续性未知" in text
+    assert "快照" in text and "净现金回收线未知" in text
+    assert "清空" not in text and "清仓" not in text
 
 
-def test_every_template_line_cites_the_one_fact_it_was_rendered_from() -> None:
-    """The template is the same evidence the model would have had to cite, and no more than eight.
+def test_an_entirely_unpriced_buy_has_unknown_mean_and_remains_a_buy_fact() -> None:
+    pack = _pack(flows=(_flow(window_buy_usd=Decimal(0), priced_buy_raw=0, unpriced_buys=2),))
 
-    It also has to ground against its own pack: the template is what a reader gets when the model does
-    not, so a template line the checker would refuse is a card nobody could publish.
-    """
+    assert "已计价部分均价 未知" in pack.by_id()["b1"].text
+    assert "未计价 2 笔" in pack.by_id()["b1"].text
 
-    pack = _pack()
+
+def test_five_buy_details_keep_their_budget_before_outcomes_or_related_sales() -> None:
+    flows = tuple(_flow(token=f"0x{index:040x}", token_symbol=f"T{index}") for index in range(12))
+    pack = _pack(flows=flows)
     lines = template_lines(pack)
-    ids = {fact.id for fact in pack.facts}
-    grounded = ground(pack, lines)
 
-    assert 0 < len(lines) <= DIGEST_LINES_MAX
-    assert all(len(line.cites) == 1 and line.cites[0] in ids for line in lines)
-    assert (grounded.lines, grounded.dropped) == (lines, 0)
+    assert [line.cites[0] for line in lines] == ["w0", "b1", "b2", "b3", "b4", "b5", "s1", "w1"]
+    assert len(lines) == DIGEST_LINES_MAX
+    assert all(line.text == pack.by_id()[line.cites[0]].text for line in lines)
 
 
-def test_the_template_reaches_the_receipts_and_the_cost_bases_before_it_lists_cards() -> None:
-    """The fallback is a summary, not the first eight facts of a pack ordered for a model.
+def test_model_only_reorders_known_buy_ids_and_cannot_select_unrelated_text() -> None:
+    pack = _pack(flows=tuple(_flow(token=f"t{i}") for i in range(12)))
+    selected = ground(pack, ("w2", "o1", "b12", "b1", "b1", "not-a-fact"))
 
-    The pack leads with cards because a model reads all of it and a card is what a reader was already
-    interrupted for. A reader of the template has had those cards; what only this card carries is the
-    +1h/+4h receipt and the three cost bases, and a slice of the pack would never reach either.
-    """
-
-    cards = tuple(
-        DigestCardRow("exit", f"trader{index}", "FSD", 4_000, "chain_balance", 0, None, None, "", True)
-        for index in range(12)
-    )
-    cited = [line.cites[0] for line in template_lines(_pack(cards=cards))]
-
-    assert cited[:3] == ["w0", "w1", "k0"]
-    assert "o1" in cited
-    assert "c1" in cited
-    # Twelve individual card facts are in the pack and none of them displaced a section.
-    assert not any(cite.startswith("k") and cite != "k0" for cite in cited)
+    assert (selected.kept, selected.dropped) == (2, 4)
+    assert [line.cites[0] for line in selected.lines] == ["w0", "b12", "b1", "b2", "b3", "b4", "s12", "w1"]
+    assert all(line.text == pack.by_id()[line.cites[0]].text for line in selected.lines)
 
 
-# --- grounding ------------------------------------------------------------------------------------
-def test_a_line_that_invents_a_number_is_dropped_and_the_lines_beside_it_are_kept() -> None:
-    """Per line, not per answer. `$23,531.60` is in the pack; `$23,900` is not.
+def test_outcomes_name_the_reference_and_comparable_population() -> None:
+    fact = _pack().by_id()["o1"].text
 
-    All-or-nothing was the first shape of this rule and it made the model dead weight: with any per-line
-    error rate at all, discarding eight good sentences over a ninth rounded figure means the card a
-    reader receives is the template almost every time. A line that grounds is exactly as true whatever
-    the line beside it did.
-    """
-
-    pack = _pack()
-    answer = (
-        DigestLine(text="0xVantaa 清仓 FSD，卖前持仓约 $23,900", cites=("k1",)),
-        DigestLine(text="窗口内退出卡 1 张", cites=("k0",)),
-    )
-
-    grounded = ground(pack, answer)
-
-    assert (grounded.kept, grounded.dropped) == (1, 1)
-    assert [line.text for line in grounded.lines] == ["窗口内退出卡 1 张"]
-    # One surviving line is a fragment, not a summary, so the caller renders the template instead.
-    assert grounded.accepted() is False
+    assert "buy +1h" in fact
+    assert "可比较 2 条，相对观察价中位 -5.12%" in fact
+    assert "发卡" not in fact
 
 
-def test_an_answer_that_mostly_grounds_is_accepted_with_its_offending_line_removed() -> None:
-    pack = _pack()
-    answer = (
-        DigestLine(text="窗口内活跃名单地址 2 个，代币 7 个", cites=("w0",)),
-        DigestLine(text="合计买入 4 笔 $13,240.50", cites=("w1",)),
-        DigestLine(text="0xVantaa 清仓 FSD 100%", cites=("k1",)),
-        DigestLine(text="其中已送达 9 张", cites=("k0",)),
-    )
-
-    grounded = ground(pack, answer)
-
-    assert (grounded.kept, grounded.dropped, grounded.accepted()) == (3, 1, True)
-    assert "9" not in " ".join(line.text for line in grounded.lines)
-
-
-def test_a_line_that_cites_a_fact_that_does_not_exist_is_dropped() -> None:
-    grounded = ground(_pack(), (DigestLine(text="退出卡 1 张", cites=("k9",)),))
-
-    assert (grounded.lines, grounded.kept, grounded.dropped) == ((), 0, 1)
-
-
-def test_a_figure_is_grounded_by_any_fact_the_line_cited_however_it_was_separated() -> None:
-    """`$23,531.60` and `23531.6` are the same figure; a card's `100%` is the pack's `100%`."""
-
-    pack = _pack()
-    answer = (
-        DigestLine(text="0xVantaa 清仓 FSD 100%，卖前持仓 23531.6 美元", cites=("k1",)),
-        DigestLine(text="窗口内活跃名单地址 2 个，代币 7 个", cites=("w0",)),
-        DigestLine(text="合计买入 4 笔 $13,240.50", cites=("w1",)),
-    )
-
-    assert ground(pack, answer).lines == answer
-
-
-def test_a_sign_flip_is_a_different_figure_and_the_line_that_states_it_is_dropped() -> None:
-    """Half this pack is returns and cash positions that fall either side of zero.
-
-    The +1h median came back at `-5.12%`. A line that reports it as `+5.12%` -- or drops the sign
-    entirely -- is not a rounding, it is the opposite claim, and a grammar that read them as one figure
-    would let it through.
-    """
-
-    pack = _pack()
-    flipped = DigestLine(text="+1h 回执中位 +5.12%", cites=("o1",))
-    unsigned = DigestLine(text="+1h 回执中位 5.12%", cites=("o1",))
-    honest = DigestLine(text="+1h 回执中位 -5.12%", cites=("o1",))
-
-    assert ground(pack, (flipped,)).kept == 0
-    assert ground(pack, (unsigned,)).kept == 0
-    assert ground(pack, (honest,)).lines == (honest,)
-
-
-def test_a_negative_dollar_figure_keeps_its_sign_through_the_currency_mark() -> None:
-    """`card_format.money` writes the sign outside the mark, so the grammar has to read across it.
-
-    A rule that started at the first digit would read `净现金 $189,000.00` and `净现金 -$189,000.00` as
-    the same figure -- a $378,000 swing on the net cash recovery line, which is the one dollar figure in
-    this pack that is routinely negative.
-    """
-
-    flow = _rows().flows[0]
-    pack = build_pack(
-        _rows(
-            flows=(
-                TokenWindowFlow(
-                    **{
-                        **_as_dict(flow),
-                        # Closed out, and it never got back what it put in: $229,000 in, $40,000 out.
-                        "lifetime_sell_raw": 10_000_000 * UNIT,
-                        "lifetime_buy_usd": Decimal("229000"),
-                        "lifetime_sell_usd": Decimal("40000"),
-                    }
-                ),
-            )
-        ),
-        window_from_ms=WINDOW_FROM,
-        window_to_ms=WINDOW_TO,
-        handles=HANDLES,
-        holding_costs={},
-    )
-    assert "净现金 -$189,000.00" in next(fact for fact in pack.facts if fact.id == "c1").text
-
-    honest = DigestLine(text="0xVantaa FSD 已清空，净现金 -$189,000.00", cites=("c1",))
-    dropped_sign = DigestLine(text="0xVantaa FSD 已清空，净现金 $189,000.00", cites=("c1",))
-    flipped = DigestLine(text="0xVantaa FSD 已清空，净现金 +$189,000.00", cites=("c1",))
-
-    assert ground(pack, (honest,)).lines == (honest,)
-    assert ground(pack, (dropped_sign,)).kept == 0
-    assert ground(pack, (flipped,)).kept == 0
-
-
-def test_a_clock_grounds_nothing_and_is_required_to_ground_nothing() -> None:
-    """`17:20-21:20` is a window, not a figure, and its digits mean nothing on their own.
-
-    Left in the allowed set it would let a line citing the window fact state `21 个地址` and pass. It is
-    removed from both sides, so quoting the window costs nothing and a count still has to be a count.
-    """
-
-    pack = _pack()
-
-    assert ground(pack, (DigestLine(text="窗口 17:20–21:20，代币 7 个", cites=("w0",)),)).kept == 1
-    assert ground(pack, (DigestLine(text="活跃名单地址 21 个", cites=("w0",)),)).kept == 0
-
-
-@pytest.mark.parametrize(
-    ("text", "kept"),
-    [
-        # A count in Chinese numerals is a figure no fact can be compared against.
-        ("窗口内有两个活跃地址", 0),
-        ("二十五笔买入", 0),
-        ("共三笔卖出", 0),
-        # And these are ordinary words. A rule that fired on the character alone would thin almost
-        # every digest by a sentence for the sake of `一`.
-        ("进一步观察这批地址", 1),
-        ("两者的口径并不相同", 1),
-        ("买卖口径一致", 1),
-    ],
-)
-def test_a_chinese_numeral_is_a_figure_only_where_it_counts_something(text: str, kept: int) -> None:
-    grounded = ground(_pack(), (DigestLine(text=text, cites=("w0",)),))
-
-    assert (grounded.kept, grounded.dropped) == (kept, 1 - kept)
-
-
-@pytest.mark.parametrize(
-    ("text", "kept"),
-    [
-        ("后市或将继续走弱", 0),
-        ("建议关注这批地址", 0),
-        ("值得关注的是卖出增多", 0),
-        # What a digest is for: what happened, in the window's own figures.
-        ("窗口内活跃名单地址 2 个，代币 7 个", 1),
-    ],
-)
-def test_a_line_that_forecasts_or_recommends_is_dropped(text: str, kept: int) -> None:
-    """The instruction already forbids these; this is what makes it enforceable.
-
-    No fact in the pack can license a claim about what comes next, so a line making one is ungrounded
-    in exactly the way an invented number is.
-    """
-
-    grounded = ground(_pack(), (DigestLine(text=text, cites=("w0",)),))
-
-    assert (grounded.kept, grounded.dropped) == (kept, 1 - kept)
-
-
-def test_a_misspelled_handle_is_as_ungrounded_as_an_invented_number() -> None:
-    """A `0x` identifier is one figure, whole. Half of an address is not the address."""
-
-    assert ground(_pack(), (DigestLine(text="0xVantea 清仓 FSD", cites=("k1",)),)).kept == 0
-
-
-def test_an_answer_longer_than_the_card_keeps_only_what_the_card_can_hold() -> None:
-    pack = _pack()
-    line = DigestLine(text="窗口内退出卡 1 张", cites=("k0",))
-
-    grounded = ground(pack, (line,) * (DIGEST_LINES_MAX + 2))
-
-    assert (grounded.kept, grounded.dropped) == (DIGEST_LINES_MAX, 2)
-
-
-# --- the writer's two refusals to call ------------------------------------------------------------
 @dataclass(slots=True)
 class _Db:
     """The News database port, answering with whatever the test staged. No connection anywhere."""
@@ -438,6 +226,9 @@ class _News:
     def chain_tape_last_digest(self, *, since_ms: int) -> Any:
         return self._db.state
 
+    def chain_tape_current_roster(self) -> RosterSnapshot:
+        return _roster()
+
     def chain_tape_digest_window(self, *, from_ms: int, to_ms: int) -> DigestWindowRows:
         assert self._db.rows is not None
         return self._db.rows
@@ -462,9 +253,9 @@ class _Program:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def summarize(self, *, facts_json: str) -> Sequence[DigestLine]:
+    async def summarize(self, *, facts_json: str) -> Sequence[str]:
         self.calls += 1
-        return (DigestLine(text="窗口内退出卡 1 张", cites=("k0",)),)
+        return ("b1",)
 
 
 def _roster() -> RosterSnapshot:
@@ -560,7 +351,6 @@ def test_a_day_at_its_call_cap_still_produces_the_digest_from_the_template() -> 
     assert errors == []
 
 
-# --- the one Signature, through the audited seam --------------------------------------------------
 def _program(delegate: ScriptedLM) -> ChainTapeDigestProgram:
     return ChainTapeDigestProgram(
         AuditedConfiguredLM(
@@ -574,43 +364,26 @@ def _program(delegate: ScriptedLM) -> ChainTapeDigestProgram:
     )
 
 
-_ANSWER = {
-    "digest": {
-        "lines": [
-            {"text_zh": "0xVantaa 清仓 FSD 100%", "cites": ["k1"]},
-            {"text_zh": "窗口内退出卡 1 张、拥挤卡 0 张", "cites": ["k0"]},
-        ]
-    }
-}
+_ANSWER = {"digest": {"fact_ids": ["b1"]}}
 
 
-def test_the_signature_runs_through_the_audited_seam_and_its_answer_grounds() -> None:
-    """One call, the pack in the prompt, and typed lines out that the pack itself accepts."""
-
+def test_the_signature_runs_through_the_audited_seam_and_returns_only_fact_ids() -> None:
     pack = _pack()
     delegate = ScriptedLM([_ANSWER])
 
-    lines = asyncio.run(_program(delegate).summarize(facts_json=pack.as_json()))
+    ids = asyncio.run(_program(delegate).summarize(facts_json=pack.as_json()))
 
+    assert ids == ("b1",)
     assert len(delegate.requests) == 1
     assert delegate.requests[0].config.max_tokens == CHAIN_TAPE_DIGEST_MAX_TOKENS
     rendered = "\n".join(
         part.text for message in delegate.requests[0].messages for part in message.parts if hasattr(part, "text")
     )
-    assert "0xVantaa 清仓 FSD 100%" in rendered
-    assert ground(pack, lines).lines == tuple(lines)
+    assert "建仓状态未知" in rendered
+    assert ground(pack, ids).accepted()
 
 
 def test_the_digest_signature_records_and_replays_with_no_delegate_at_all() -> None:
-    """The recorded-LM path #572 §5.4 asks for: this Signature's own call, replayed by request identity.
-
-    The Predictor is driven directly rather than through `ChainTapeDigestProgram` for one reason: the
-    Program opens its own ledger scope, and a recording is a receipt on a ledger the caller holds. What
-    is proved is the same thing either way -- the request this Signature renders and the answer it
-    parses survive a round trip through the seam's own recording, and a request the recording does not
-    address is a miss rather than a live call.
-    """
-
     pack = _pack()
     delegate = ScriptedLM([_ANSWER])
     ledger = LMCallLedger()
@@ -631,7 +404,6 @@ def test_the_digest_signature_records_and_replays_with_no_delegate_at_all() -> N
     recordings = {
         receipt.request_sha256: receipt.recording for receipt in ledger.receipts if receipt.recording is not None
     }
-
     assert recordings
     replay = RecordedLM(
         recordings,
@@ -640,21 +412,49 @@ def test_the_digest_signature_records_and_replays_with_no_delegate_at_all() -> N
         model_binding="chain_tape_digest.primary",
     )
     response = replay(request=delegate.requests[0])
-
-    assert '"text_zh"' in response.text
+    assert '"fact_ids"' in response.text
     other = dspy.LMRequest.from_call(model=delegate.model, messages=[{"role": "user", "content": "other"}])
     with pytest.raises(RecordedLMMiss):
         replay(request=other)
 
 
-def test_an_answer_that_is_not_chinese_is_refused_by_the_output_contract() -> None:
-    """A digest is Chinese reader copy. An English passthrough is a rejected output, not a card."""
-
-    delegate = ScriptedLM([{"digest": {"lines": [{"text_zh": "exit card sent", "cites": ["k0"]}]}}] * 2)
-
-    with pytest.raises(Exception, match=r"chain_tape_digest_line_not_chinese|adapter"):
-        asyncio.run(_program(delegate).summarize(facts_json=_pack().as_json()))
+def test_free_text_is_refused_by_the_model_output_contract() -> None:
+    with pytest.raises(ValidationError):
+        DigestAnswer.model_validate({"fact_ids": ["b1"], "lines": [{"text_zh": "Bob 卖出 FSD"}]})
 
 
-def _as_dict(flow: TokenWindowFlow) -> dict[str, Any]:
-    return {field: getattr(flow, field) for field in flow.__slots__}
+def test_sell_only_windows_do_not_send_a_buy_digest() -> None:
+    rows = _rows(totals=DigestWindowTotals(sells=20, sell_usd=Decimal("1000000")), flows=())
+    program = _Program()
+    writer = WalletDigestWriter(db=_Db(state=None, rows=rows), program=program, clock=lambda: WINDOW_TO)
+
+    result = asyncio.run(writer.take_digest(roster=_roster(), errors=[]))
+
+    assert result.digests == 0 and program.calls == 0
+
+
+def test_worker_advance_reads_its_roster_and_only_closes_its_owned_site_client() -> None:
+    class Bags:
+        closed = False
+
+        async def bags(self, handle: str) -> tuple[()]:
+            return ()
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    class SharedProgram(_Program):
+        async def aclose(self) -> None:
+            raise AssertionError("App owns the shared model runtime")
+
+    bags = Bags()
+    writer = WalletDigestWriter(
+        db=_Db(state=None, rows=_rows()), program=SharedProgram(), bags=bags, clock=lambda: WINDOW_TO
+    )
+
+    async def run() -> None:
+        assert (await writer.advance()).digests == 1
+        await writer.aclose()
+
+    asyncio.run(run())
+    assert bags.closed

@@ -759,14 +759,23 @@ export function newsWalletCardFixture(overrides: Partial<NewsWalletCard> = {}): 
     handle: "0xVantaa",
     item_id: "a".repeat(64),
     kind: "exit",
+    stage: null,
+    selection_reason: null,
+    buy_count: null,
+    unpriced_buys: null,
+    observed_at_ms: null,
+    history_from_ms: null,
+    price_reference: null,
     mark_price: "0.0025",
     outcome_1h_source: "dexscreener",
+    outcome_15m_source: null,
     outcome_4h_source: null,
     peer_wallets: 0,
     position_usd: "23531.60",
     premium_bps: null,
     ratio_bps: 10_000,
     return_1h_bps: -512,
+    return_15m_bps: null,
     return_4h_bps: null,
     settled_at_ms: NEWS_NOW_MS - 88_000,
     token: "0x8de9018c1bb82884245f06dede9fe2bebabd1e18",
@@ -780,9 +789,41 @@ export function newsWalletCardFixture(overrides: Partial<NewsWalletCard> = {}): 
   };
 }
 
+export function newsWalletBuyFixture(overrides: Partial<NewsWalletCard> = {}): NewsWalletCard {
+  return newsWalletCardFixture({
+    basis: null,
+    closed: false,
+    delivery_key: null,
+    delivery_state: null,
+    entry_price: "1",
+    event_at_ms: NEWS_NOW_MS - 1_200_000,
+    history_from_ms: NEWS_NOW_MS - 86_400_000,
+    item_id: "d".repeat(64),
+    kind: "buy",
+    mark_price: "1.5",
+    observed_at_ms: NEWS_NOW_MS - 1_190_000,
+    outcome_15m_source: "dexscreener",
+    outcome_1h_source: null,
+    position_usd: null,
+    price_reference: "observed",
+    ratio_bps: null,
+    return_15m_bps: -2_000,
+    return_1h_bps: null,
+    selection_reason: "buy_below_min_usd",
+    settled_at_ms: null,
+    stage: "first_observed",
+    buy_count: 2,
+    unpriced_buys: 0,
+    usd: "500",
+    ...overrides,
+  });
+}
+
 export function newsWalletCardsFixture(overrides: Partial<NewsWalletCards> = {}): NewsWalletCards {
   return {
+    fills: [],
     cards: [
+      newsWalletBuyFixture(),
       newsWalletCardFixture(),
       newsWalletCardFixture({
         basis: null,
@@ -805,9 +846,11 @@ export function newsWalletCardsFixture(overrides: Partial<NewsWalletCards> = {})
         closed: false,
         digest_lines: ["合计买入 62 笔 $394,120.55，卖出 44 笔 $309,002.10", "窗口内退出卡 4 张"],
         digest_model_used: true,
+        entry_price: null,
         handle: "",
         item_id: "c".repeat(64),
         kind: "digest",
+        mark_price: null,
         outcome_1h_source: "unavailable",
         position_usd: null,
         ratio_bps: null,
@@ -824,6 +867,35 @@ export function newsWalletCardsFixture(overrides: Partial<NewsWalletCards> = {})
     window_to_ms: NEWS_NOW_MS,
     ...overrides,
   };
+}
+
+/** Mirror endpoint filtering so a missing query parameter fails the browser assertion. */
+export function newsWalletCardsForParams(params: URLSearchParams): NewsWalletCards {
+  const data = newsWalletCardsFixture({ window: params.get("window") || "24h" });
+  data.cards = data.cards.filter(
+    (card) =>
+      (!params.get("kind") || card.kind === params.get("kind")) &&
+      (!params.get("wallet_address") || card.wallet === params.get("wallet_address")) &&
+      (!params.get("token_address") || card.token === params.get("token_address")),
+  );
+  const buy = newsWalletBuyFixture();
+  if (params.get("wallet_address") === buy.wallet && params.get("token_address") === buy.token) {
+    data.fills = (["transfer_out", "sell", "buy"] as const).map((kind, index) => ({
+      chain_id: 4663,
+      tx_hash: `0x${String(index + 1).repeat(64)}`,
+      log_index: 3 - index,
+      block_number: 55_432_990,
+      wallet: buy.wallet,
+      token: buy.token,
+      token_symbol: buy.token_symbol ?? null,
+      token_decimals: kind === "transfer_out" ? null : 18,
+      kind,
+      amount_raw: kind === "transfer_out" ? "7" : "1234567890123456789",
+      usd: kind === "transfer_out" ? null : "1.23",
+      event_at_ms: NEWS_NOW_MS - (index + 1) * 60_000,
+    }));
+  }
+  return data;
 }
 
 /** A wallet digest observation: no provider line, no subject, and its own sentences (#572 PR-3). */

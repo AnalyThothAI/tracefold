@@ -142,7 +142,7 @@ news:
     enabled: false
     rpc_url: "https://rpc.mainnet.chain.robinhood.com"
     poll_interval_s: 2.0
-    roster_provider_url: "https://robinhoodtrenches.com"
+    roster_provider_url: "https://rhtrenches.com"
     roster:
       min_closed_trades: 10
       min_profit_factor: 1.2

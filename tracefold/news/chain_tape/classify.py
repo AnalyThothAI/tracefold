@@ -1,27 +1,15 @@
-"""Read one receipt as what a roster wallet actually did (#572 §5.2, verified on chain 2026-09-06).
+"""Read roster-wallet movements through token paths in one receipt (#572, #614).
 
-The rules are short because the chain is unambiguous once three things are established: whether the
-receipt contains a swap at all, whether the wallet is the origin or the destination of the traded
-token, and where the cash went.
+A traded token must connect its terminal sender or recipient to an address emitting a recognized
+Swap. An unrelated gift cannot borrow another token's swap. Each terminal recipient is considered,
+including recipients outside the roster when checking cash allocation: several assets or recipients
+sharing the same funding remain visible trades with unknown cash, never several full-dollar copies.
 
-* **No swap in the receipt.** An outbound movement is a `transfer_out`; an inbound one is an airdrop or
-  dust and is *not stored at all* -- it is counted, because "how much of this stream is noise" is a real
-  question, and a row per unsolicited token would be most of the table (#570 capacity note).
-* **A swap, and the wallet is the first sender of the traded token.** A `sell`. The proceeds do not come
-  back to the wallet: trades are routed through an executor, and the money leg is the stablecoin
-  transfer *into that executor* in the same receipt.
-* **A swap, and the wallet is the final receiver of the traded token.** A `buy`, priced by the
-  stablecoin transfer into the same executor -- the amount that *entered* the route.
-* **A swap, but the wallet is neither end of the traded token's path**, or no cash leg reached the
-  executor: the receipt does not say what happened. Outbound is stored as `transfer_out`, inbound is
-  skipped, and both are counted as `unknown`.
-* **A swap, and the token the wallet moved is the pinned stablecoin.** That leg is the money, not the
-  position, so it is never a fill of its own. On a direct pool route -- one where the wallet trades with
-  the pool instead of through the executor -- the cash leg is a transfer to or from the wallet itself,
-  and reading it as a trade produced exactly the wrong answer: a `buy` of the stablecoin paid for in
-  the token being sold, and a `transfer_out` of the stablecoin used to buy. Both shapes are recorded
-  tests now. The stablecoin leg is skipped and *not* counted as noise, because the fill it belongs to is
-  either stored beside it or already counted as `unknown`.
+The supported routed settlement reads cash entering the wallet's counterparty. Direct buys also fit
+that shape; direct sells whose proceeds return to the wallet remain `transfer_out`. The pinned USDG
+leg is money, never a position of its own. Without a swap, inbound movements are counted and omitted,
+and outbound movements remain `transfer_out`. A token path is evidence of a route, not validation of a
+pool's authenticity or a complete account of arbitrary batch-executor economics.
 
 Two measured transactions anchor this, and both are recorded as fixtures:
 
@@ -39,6 +27,7 @@ moved once; the hops are the route's business.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
@@ -51,9 +40,7 @@ from .contracts import (
     ClassifiedFill,
     FillKind,
 )
-from .evm import normalize_address, topic_address, transfer_amount
-
-TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+from .evm import TRANSFER_TOPIC, normalize_address, topic_address, transfer_amount
 
 
 class ReceiptLike(Protocol):
@@ -199,12 +186,13 @@ def classify_receipt(
     transfers = transfers_in(receipt)
     if not transfers or not wallets:
         return ReceiptClassification(fills=())
-    swap = has_swap(receipt)
-    first_sent_at: dict[str, int] = {}
-    last_received_at: dict[str, int] = {}
-    for transfer in transfers:
-        first_sent_at.setdefault(transfer.token, transfer.log_index)
-        last_received_at[transfer.token] = transfer.log_index
+    pools = {
+        normalize_address(log.address)
+        for log in receipt.logs
+        if (topics := tuple(log.topics)) and topics[0] in SWAP_TOPICS
+    }
+    swap = bool(pools)
+    legs = _trade_legs(transfers, pools=pools)
 
     fills: list[ClassifiedFill] = []
     ignored_inbound = 0
@@ -221,17 +209,12 @@ def classify_receipt(
         if swap and transfer.token == STABLE_CASH_TOKEN:
             # The money side of somebody's trade, not a position of its own (see the module docstring).
             continue
-        kind, cash = _read(
-            transfer,
-            swap=swap,
-            outbound=outbound,
-            transfers=transfers,
-            first_sent_at=first_sent_at,
-            last_received_at=last_received_at,
+        key = (transfer.log_index, outbound)
+        cash = legs.get(key)
+        kind: FillKind | None = (
+            ("sell" if outbound else "buy") if key in legs else ("transfer_out" if outbound else None)
         )
         if kind is None:
-            if outbound:  # pragma: no cover - `_read` always names an outbound kind
-                continue
             if swap:
                 unknown += 1
             else:
@@ -261,33 +244,68 @@ def classify_receipt(
     return ReceiptClassification(fills=tuple(fills), ignored_inbound=ignored_inbound, unknown=unknown)
 
 
-def _read(
-    transfer: TokenTransfer,
-    *,
-    swap: bool,
-    outbound: bool,
-    transfers: Sequence[TokenTransfer],
-    first_sent_at: dict[str, int],
-    last_received_at: dict[str, int],
-) -> tuple[FillKind | None, CashLeg | None]:
-    if not swap:
-        return ("transfer_out", None) if outbound else (None, None)
-    at_the_end = (
-        first_sent_at.get(transfer.token) == transfer.log_index
-        if outbound
-        else last_received_at.get(transfer.token) == transfer.log_index
-    )
-    if not at_the_end:
-        return ("transfer_out", None) if outbound else (None, None)
-    counterparty = transfer.recipient if outbound else transfer.sender
-    cash = cash_leg(transfers, traded_token=transfer.token, counterparty=counterparty)
-    if cash is None:
-        return ("transfer_out", None) if outbound else (None, None)
-    return ("sell" if outbound else "buy"), cash
+def _trade_legs(transfers: Sequence[TokenTransfer], *, pools: set[str]) -> dict[tuple[int, bool], CashLeg | None]:
+    """Terminal token movements connected to a swap, with cash only where its allocation is unique.
+
+    Inspect every recipient, including wallets outside the roster: a tracked recipient of a shared
+    purchase did not pay the whole route's bill. A gift has no token path from a swap emitter and cannot
+    borrow an unrelated swap in the same receipt. This is a bounded receipt interpretation, not a pool
+    authenticity check or an allocation guess for an arbitrary batch executor.
+    """
+
+    if not pools:
+        return {}
+    sent = {(item.token, item.sender) for item in transfers}
+    received = {(item.token, item.recipient) for item in transfers}
+    legs: dict[tuple[int, bool], tuple[str, CashLeg | None]] = {}
+    for item in transfers:
+        if item.token == STABLE_CASH_TOKEN or item.amount_raw <= 0:
+            continue
+        for outbound in (True, False):
+            wallet = item.sender if outbound else item.recipient
+            other_movements = received if outbound else sent
+            if wallet in pools or (item.token, wallet) in other_movements:
+                continue
+            counterparty = item.recipient if outbound else item.sender
+            if not _reaches_pool(transfers, token=item.token, start=counterparty, outbound=outbound, pools=pools):
+                continue
+            cash = cash_leg(transfers, traded_token=item.token, counterparty=counterparty)
+            # A direct sale returning its cash to the wallet is still an outbound movement: the
+            # executor settlement rule has no dollar allocation for it. Preserve that existing limit.
+            if outbound and cash is None:
+                continue
+            legs[(item.log_index, outbound)] = (counterparty, cash)
+    claims = Counter((counterparty, cash.token) for counterparty, cash in legs.values() if cash is not None)
+    return {
+        key: cash if cash is not None and claims[(counterparty, cash.token)] == 1 else None
+        for key, (counterparty, cash) in legs.items()
+    }
+
+
+def _reaches_pool(
+    transfers: Sequence[TokenTransfer], *, token: str, start: str, outbound: bool, pools: set[str]
+) -> bool:
+    """Follow this token toward a swap for a sell, or back toward its source swap for a buy."""
+
+    pending = [start]
+    seen: set[str] = set()
+    while pending:
+        address = pending.pop()
+        if address in pools:
+            return True
+        if address in seen:
+            continue
+        seen.add(address)
+        for item in transfers:
+            if item.token != token:
+                continue
+            origin, destination = (item.sender, item.recipient) if outbound else (item.recipient, item.sender)
+            if origin == address and destination not in seen:
+                pending.append(destination)
+    return False
 
 
 __all__ = [
-    "TRANSFER_TOPIC",
     "CashLeg",
     "ReceiptClassification",
     "ReceiptLike",

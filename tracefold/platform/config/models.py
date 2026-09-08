@@ -436,6 +436,9 @@ class NewsChainTapeRulesSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    exit_notifications_enabled: bool = False
+    buy_min_usd: float = 1_000.0
+    buy_window_s: int = 900
     exit_ratio_bps: int = 3000
     exit_min_position_usd: float = 20_000.0
     exit_cascade_window_s: int = 7200
@@ -448,6 +451,8 @@ class NewsChainTapeRulesSettings(BaseModel):
 
     @model_validator(mode="after")
     def validate_bounds(self) -> NewsChainTapeRulesSettings:
+        if not 0 <= self.buy_min_usd <= 1e12 or not 60 <= self.buy_window_s <= 86_400:
+            raise ValueError("news_chain_tape_rules_buy_invalid")
         if not 0 <= self.exit_ratio_bps < 10_000:
             # Ten thousand would be "sold more than everything", which no sell can clear.
             raise ValueError("news_chain_tape_rules_exit_ratio_invalid")
@@ -509,7 +514,7 @@ class NewsChainTapeSettings(BaseModel):
     enabled: bool = False
     rpc_url: str = "https://rpc.mainnet.chain.robinhood.com"
     poll_interval_s: float = 2.0
-    roster_provider_url: str = "https://robinhoodtrenches.com"
+    roster_provider_url: str = "https://rhtrenches.com"
     roster: NewsChainTapeRosterSettings = Field(default_factory=NewsChainTapeRosterSettings)
     rules: NewsChainTapeRulesSettings = Field(default_factory=NewsChainTapeRulesSettings)
     digest: NewsChainTapeDigestSettings = Field(default_factory=NewsChainTapeDigestSettings)

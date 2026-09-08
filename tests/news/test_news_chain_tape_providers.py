@@ -28,8 +28,7 @@ from tracefold.integrations.robinhoodtrenches import (
     RobinhoodTrenchesClient,
     RosterProviderError,
 )
-from tracefold.news.chain_tape.classify import TRANSFER_TOPIC
-from tracefold.news.chain_tape.evm import address_topic
+from tracefold.news.chain_tape.evm import TRANSFER_TOPIC, address_topic
 from tracefold.news.chain_tape.rules import ratio_bps
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "chain_tape"
@@ -234,6 +233,54 @@ def test_a_block_outside_the_nodes_state_window_is_unknown_rather_than_zero() ->
     assert asyncio.run(_with(_chain(), work)) is None
 
 
+@pytest.mark.parametrize("case", ["complete", "missing_current", "removed", "unreadable", "conflict", "negative"])
+def test_balance_before_transfer_replays_prior_same_block_movements_and_requires_the_current_log(
+    case: str,
+) -> None:
+    """Replay the real balance/log payload, with earlier movements around its recorded log index."""
+
+    recorded = _fixture("getlogs_window.json")["from_side"]["result"][0]
+    earlier_in = {
+        **recorded,
+        "topics": [TRANSFER_TOPIC, address_topic("0x" + "1" * 40), address_topic(SELL_WALLET)],
+        "logIndex": "0x2",
+        "data": "0x" + format(30, "064x"),
+    }
+    earlier_out = {**recorded, "logIndex": "0x3", "data": "0x" + format(10, "064x")}
+    later = {**recorded, "logIndex": "0x9", "data": "0x" + format(99, "064x")}
+    unrelated = {**earlier_in, "address": STABLE, "logIndex": "0x1"}
+    if case == "removed":
+        earlier_in["removed"] = True
+    elif case == "unreadable":
+        earlier_in["data"] = "0xnot_a_quantity"
+    elif case == "negative":
+        earlier_out["data"] = "0x" + format(10**50, "064x")
+    logs = [earlier_in, earlier_out, later, unrelated]
+    if case != "missing_current":
+        logs.append(recorded)
+    if case == "conflict":
+        logs.append({**earlier_in, "data": "0x" + format(31, "064x")})
+    seen: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append(body)
+        if body["method"] == "eth_call":
+            return httpx.Response(200, json=_fixture("balance_of_fsd.json")["result"])
+        assert body["method"] == "eth_getLogs"
+        # Duplicate answers from the two topic queries must still count every movement once.
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": logs})
+
+    async def work(client: RobinhoodChainClient) -> Any:
+        return await client.balance_before_transfer(FSD, SELL_WALLET, block_number=55_432_994, log_index=6)
+
+    client = RobinhoodChainClient(rpc_url="https://rpc.test", transport=httpx.MockTransport(handler))
+    expected = 9_412_641_983_109_562_000_000_020 if case == "complete" else None
+    assert asyncio.run(_with(client, work)) == expected
+    assert seen[0]["params"][1] == FSD_BALANCE_BLOCK
+    assert all(call["params"][0]["fromBlock"] == call["params"][0]["toBlock"] == hex(55_432_994) for call in seen[1:])
+
+
 @pytest.mark.parametrize(
     ("status", "code"),
     [(403, "chain_rpc_blocked"), (429, "chain_rpc_rate_limited"), (500, "chain_rpc_http_error")],
@@ -331,6 +378,37 @@ def _roster(seen: list[httpx.Request] | None = None, *, pace_seconds: float = 0.
         transport=_roster_transport(seen),
         pace_seconds=pace_seconds,
     )
+
+
+def test_the_default_roster_host_reads_the_recorded_list_at_the_current_domain() -> None:
+    seen: list[httpx.Request] = []
+    client = RobinhoodTrenchesClient(transport=_roster_transport(seen), pace_seconds=0.0)
+
+    async def work(site: RobinhoodTrenchesClient) -> Any:
+        return await site.traders()
+
+    assert asyncio.run(_with(client, work))
+    assert seen[0].url.host == "rhtrenches.com"
+
+
+@pytest.mark.parametrize("status", [301, 302, 307, 308])
+def test_a_roster_redirect_is_explicit_and_never_followed(status: int) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(status, headers={"location": "https://different.test/api/traders"}, content=b"")
+
+    client = RobinhoodTrenchesClient(transport=httpx.MockTransport(handler), pace_seconds=0.0)
+
+    async def work(site: RobinhoodTrenchesClient) -> Any:
+        return await site.traders()
+
+    with pytest.raises(RosterProviderError) as failure:
+        asyncio.run(_with(client, work))
+
+    assert (failure.value.code, failure.value.status_code) == ("roster_redirect", status)
+    assert len(seen) == 1
 
 
 def _site_transport(*, fail_with: int | None = None) -> httpx.MockTransport:

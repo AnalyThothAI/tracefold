@@ -1,9 +1,8 @@
 """Read-only JSON-RPC access to Robinhood Chain (chain id 4663), for the News wallet tape (#572 PR-1).
 
-Five calls and nothing else: the head block, `eth_getLogs` over a block range, one transaction receipt,
-one block header for its timestamp, and the two ERC-20 metadata reads (`symbol`, `decimals`) behind a
-per-token cache. There is no signer, no nonce, no `eth_sendRawTransaction` and no account: this adapter
-can only read what the chain already published.
+Read the head, filtered logs, receipts, block timestamps, ERC-20 metadata and historical balances.
+There is no signer, no nonce, no `eth_sendRawTransaction` and no account: this adapter can only read
+what the chain already published.
 
 Three facts about the public endpoint decided the shape here:
 
@@ -14,7 +13,7 @@ Three facts about the public endpoint decided the shape here:
   re-reads from the durable high-water mark;
 * `eth_getLogs` answers a 100,000-block range filtered by a 35-address topic array in 1.1-1.7 s, while
   `eth_call` state older than ~6,100 blocks is gone. Logs are therefore the catch-up mechanism and state
-  is not, which is why nothing here reads a historical balance (#572 §3.3).
+  is not. Position checks can use recent balances and return unknown outside that window (#572 §3.3).
 
 `blockTimestamp` is present on a log but is always `0x0` on this endpoint, so the block's own header is
 what dates an event. Headers are immutable once mined, which is why they are cached for the process's
@@ -31,7 +30,13 @@ from typing import Any, Final
 import httpx
 
 from tracefold.integrations.http_bounds import ResponseTooLarge, read_bounded
-from tracefold.news.chain_tape.evm import normalize_address
+from tracefold.news.chain_tape.evm import (
+    TRANSFER_TOPIC,
+    address_topic,
+    normalize_address,
+    topic_address,
+    transfer_amount,
+)
 
 # The one chain this adapter speaks to. Carried on every stored fill so a second chain can never be
 # read as this one (#572 §5.2).
@@ -226,8 +231,8 @@ class RobinhoodChainClient:
         back as `None`, and the caller falls back to the provider's own reported bag and says so on the
         card. A revert is `None` for the same reason.
 
-        The block is `latest`-relative only in the sense that the caller chose it: the sell rule asks at
-        `block_number - 1`, so the answer is the balance the wallet held immediately before the trade.
+        At `block_number - 1` this is the next block's starting balance. A transfer-level check must
+        also replay preceding movements inside that block, as `balance_before_transfer` does below.
         """
 
         holder = normalize_address(wallet)
@@ -252,6 +257,60 @@ class RobinhoodChainClient:
             return int(word[2:], 16)
         except ValueError:
             return None
+
+    async def balance_before_transfer(
+        self, token: str, wallet: str, *, block_number: int, log_index: int
+    ) -> int | None:
+        """Block-start balance plus this wallet's preceding ERC-20 movements in the same block.
+
+        A second purchase in one block is an addition to the first. Reading only block minus one would
+        call both new positions. Require the current movement in the log answer; a missing, withdrawn,
+        conflicting or unreadable answer cannot attest a zero position. RPC transport failures retain
+        the adapter's usual bounded error vocabulary.
+        """
+
+        holder = normalize_address(wallet)
+        contract = normalize_address(token)
+        if not holder or not contract:
+            raise ValueError("chain_address_invalid")
+        if block_number <= 0 or log_index < 0:
+            return None
+        balance = await self.balance_of(contract, holder, block_number=block_number - 1)
+        if balance is None:
+            return None
+        movements: dict[int, ChainLog] = {}
+        for topics in ([TRANSFER_TOPIC, address_topic(holder)], [TRANSFER_TOPIC, None, address_topic(holder)]):
+            for item in await self.logs(from_block=block_number, to_block=block_number, topics=topics):
+                if item.address != contract:
+                    continue
+                if item.removed or item.block_number != block_number or len(item.topics) != 3:
+                    return None
+                if item.topics[0] != TRANSFER_TOPIC:
+                    return None
+                sender, recipient = topic_address(item.topics[1]), topic_address(item.topics[2])
+                if not sender or not recipient:
+                    return None
+                if holder not in {sender, recipient}:
+                    continue
+                previous = movements.get(item.log_index)
+                if previous is not None and previous != item:
+                    return None
+                movements[item.log_index] = item
+        if log_index not in movements:
+            return None
+        for index, item in sorted(movements.items()):
+            if index >= log_index:
+                break
+            amount = transfer_amount(item.data)
+            if amount is None:
+                return None
+            if topic_address(item.topics[1]) == holder:
+                balance -= amount
+            if topic_address(item.topics[2]) == holder:
+                balance += amount
+            if balance < 0:
+                return None
+        return balance
 
     async def _maybe_call(self, address: str, selector: str) -> str | None:
         try:

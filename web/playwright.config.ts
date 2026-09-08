@@ -17,7 +17,11 @@ const jsonOutput =
  * failure direction this lane wants.
  */
 const specs = (...names: string[]) => names.map((name) => `**/${name}`);
-const everyViewport = ["event-feed-controls.spec.ts", "price-plane.spec.ts"];
+const everyViewport = [
+  "event-feed-controls.spec.ts",
+  "price-plane.spec.ts",
+  "wallet-buy-research.spec.ts",
+];
 const desktop = specs(
   ...everyViewport,
   "news-event-drawer.spec.ts",
