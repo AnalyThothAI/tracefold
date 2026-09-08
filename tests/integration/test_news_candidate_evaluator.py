@@ -3924,6 +3924,9 @@ def test_a_taxonomy_only_holdout_is_decided_by_its_per_axis_evidence(conn) -> No
     assert primary["endpoint"] == "taxonomy_axis_evidence"
     assert primary["primary_cluster_n"] == cluster_n >= _PROFILE["validation"]["primary_clusters_min"]
     assert primary["taxonomy_overall_delta"] > 0
+    # #626: what admits this arm is that it makes cards fully correct, not that the mean rose.
+    assert primary["four_axis_exact_improved"] is True
+    assert primary["axis_interval_95"]["four_axis_exact_accuracy"]["lower"] > 0
     assert primary["regressed_axes"] == []
     assert report.evidence["taxonomy"]["candidate"]["taxonomy_overall"] == 1.0
     # No pairwise judgment exists and none is demanded; the only thing still short is the development
@@ -4039,7 +4042,7 @@ def test_a_taxonomy_only_holdout_survives_a_one_cluster_slip_the_bootstrap_canno
     )
 
     taxonomy = report.evidence["taxonomy"]
-    assert taxonomy["schema"] == "tracefold.news.taxonomy_release_evidence.v3"
+    assert taxonomy["schema"] == "tracefold.news.taxonomy_release_evidence.v4"
     # The slip is real and the evidence still reports its sign, and the gains outnumber it many times.
     assert taxonomy["delta"]["assertion_status_accuracy"] == pytest.approx(-1 / cluster_n, abs=1e-6)
     assert taxonomy["delta"]["event_family_accuracy"] == pytest.approx(stable_family_wrong_n / cluster_n, abs=1e-6)
@@ -4063,19 +4066,23 @@ def test_a_taxonomy_only_holdout_survives_a_one_cluster_slip_the_bootstrap_canno
     assert all(interval["lower"] <= interval["delta"] <= interval["upper"] for interval in intervals.values())
     assert intervals["assertion_status_accuracy"]["lower"] < 0 <= intervals["assertion_status_accuracy"]["upper"]
     assert intervals["taxonomy_overall"]["lower"] > 0
+    assert intervals["four_axis_exact_accuracy"]["lower"] > 0
 
-    # So no axis regressed, the aggregate improved, and the holdout produced no failure at all.
+    # So no axis regressed, the primary improved, and the holdout produced no failure at all. #626 made
+    # the four-axis exact rate that primary; the aggregate agrees here and stays in the receipt.
     assert taxonomy["interval_regressed_axes"] == []
+    assert taxonomy["four_axis_exact_improved"] is True
     assert taxonomy["taxonomy_overall_improved"] is True
     primary = report.evidence["primary"]
     assert primary["endpoint"] == "taxonomy_axis_evidence"
     assert primary["primary_cluster_n"] == primary["candidate_cluster_n"] == cluster_n
     assert primary["regressed_axes"] == []
     assert primary["negative_delta_axes"] == ["assertion_status_accuracy"]
+    assert primary["four_axis_exact_improved"] is True
     assert primary["taxonomy_overall_improved"] is True
     assert primary["axis_interval_95"]["assertion_status_accuracy"] == intervals["assertion_status_accuracy"]
     assert report.evidence["failures"] == []
-    assert "taxonomy_overall_not_improved" not in report.evidence["blockers"]
+    assert "four_axis_exact_not_improved" not in report.evidence["blockers"]
     # The thin fixture corpus still misses the development coverage floors; nothing else blocks.
     assert not [code for code in report.evidence["blockers"] if not code.startswith("development_")]
 
