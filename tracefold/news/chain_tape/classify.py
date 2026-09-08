@@ -276,9 +276,15 @@ def _trade_legs(transfers: Sequence[TokenTransfer], *, pools: set[str]) -> dict[
                 continue
             legs[(item.log_index, outbound)] = (counterparty, cash)
     claims = Counter((counterparty, cash.token) for counterparty, cash in legs.values() if cash is not None)
+    # A trade is a token leg *and* the cash that settled it: `news_market_wallet_fills` refuses a buy
+    # or sell without a cash token, and a cash token without an amount. A cash leg two token legs both
+    # claim has no allocation this receipt can prove, so neither leg is a trade here -- the outbound
+    # one is stored as the movement it provably was, the inbound one is not stored -- rather than a
+    # trade with an invented or missing price (#614 hotfix: the shared-sell shape faulted the live lane).
     return {
-        key: cash if cash is not None and claims[(counterparty, cash.token)] == 1 else None
+        key: cash
         for key, (counterparty, cash) in legs.items()
+        if cash is not None and claims[(counterparty, cash.token)] == 1
     }
 
 
