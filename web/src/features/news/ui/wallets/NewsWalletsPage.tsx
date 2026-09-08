@@ -199,7 +199,10 @@ export function NewsWalletsPage({ token }: { token: string }) {
                       onOpen={() => {
                         const next = new URLSearchParams(params);
                         if (params.get("item") === card.item_id) next.delete("item");
-                        else next.set("item", card.item_id);
+                        else {
+                          next.set("item", card.item_id);
+                          next.set("to_ms", String(data.window_to_ms));
+                        }
                         setParams(next, { replace: true });
                       }}
                     />
@@ -215,6 +218,11 @@ export function NewsWalletsPage({ token }: { token: string }) {
                       : data.totals.segments}{" "}
                     条
                   </small>
+                  {filters.toMs ? (
+                    <ActionButton size="sm" onClick={() => changeFilters(filters)}>
+                      回到最新
+                    </ActionButton>
+                  ) : null}
                   {filters.cursor ? (
                     <ActionButton
                       size="sm"

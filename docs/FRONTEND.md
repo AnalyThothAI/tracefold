@@ -205,7 +205,9 @@ the route components into the eager shell chunk.
   chain-qualified wallet and token counts. A 25-row page cannot redefine them.
 
   The URL owns window, kind, exact wallet/token addresses, chain, segment,
-  view, cursor and the anchored end time. A segment expands to its individual
+  view, cursor and the anchored end time. Opening wallet evidence anchors the
+  list window so a new cumulative observation cannot replace the selected row;
+  回到最新 explicitly resumes the moving window. A segment expands to its individual
   observations; the wallet/token action view includes buys, sells and transfers.
   Raw-fill truncation is explicit. Details retain the source Item identity,
   observed reference, priced-fill average, historical coverage and each

@@ -347,6 +347,16 @@ export const useNewsWalletCardsWithToken = (token: string, filters: NewsWalletCa
       ),
       filters,
     ],
+    placeholderData: (previous, query) => {
+      const previousFilters = query?.queryKey.at(-1) as NewsWalletCardFilters | undefined;
+      return previous &&
+        previousFilters &&
+        filters.toMs === previous.window_to_ms &&
+        JSON.stringify({ ...previousFilters, toMs: undefined }) ===
+          JSON.stringify({ ...filters, toMs: undefined })
+        ? previous
+        : undefined;
+    },
     queryFn: async () =>
       (
         await getApi<NewsWalletCards>("/api/news/wallets/cards", {

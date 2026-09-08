@@ -1,6 +1,6 @@
 import { NewsPage } from "@features/news";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import {
   newsWalletBuyFixture,
   newsWalletCardsFixture,
@@ -51,6 +51,48 @@ describe("wallet research", () => {
     expect(screen.getByText("观察价 · USD / token")).toBeVisible();
     expect(screen.getByTestId("location")).toHaveTextContent("item=");
     expect(screen.queryByText("已核实新仓")).toBeNull();
+  });
+
+  it("keeps the selected observation readable when newer segment facts arrive, until returning to latest", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let newerArrived = false;
+    let requestCount = 0;
+    server.use(
+      http.get(/.*\/api\/news\/wallets\/cards$/, ({ request }) => {
+        requestCount += 1;
+        const anchored = new URL(request.url).searchParams.has("to_ms");
+        return HttpResponse.json({
+          ok: true,
+          data: newsWalletCardsFixture({
+            cards: [
+              newsWalletBuyFixture(
+                newerArrived && !anchored
+                  ? { item_id: "e".repeat(64), handle: "newer-observation" }
+                  : { handle: "selected-observation" },
+              ),
+            ],
+          }),
+        });
+      }),
+    );
+    renderWallets("/news/wallets", client);
+    fireEvent.click(await screen.findByRole("button", { name: /selected-observation/ }));
+    expect(await screen.findByText("已计价成交均价")).toBeVisible();
+    newerArrived = true;
+    const beforeRefresh = requestCount;
+    await act(async () => {
+      await client.invalidateQueries();
+    });
+    await waitFor(() => expect(requestCount).toBeGreaterThan(beforeRefresh));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(screen.getByRole("button", { name: /selected-observation/ })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByText("已计价成交均价")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "回到最新" }));
+    expect(await screen.findByRole("button", { name: /newer-observation/ })).toBeVisible();
+    expect(screen.getByTestId("location")).not.toHaveTextContent("to_ms=");
   });
 
   it("keeps unverified prices out of the comparable return while exposing their raw evidence", async () => {
@@ -196,8 +238,10 @@ describe("wallet research", () => {
   });
 });
 
-function renderWallets(path = "/news/wallets") {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderWallets(
+  path = "/news/wallets",
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
