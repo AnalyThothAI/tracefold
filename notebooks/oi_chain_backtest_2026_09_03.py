@@ -50,8 +50,11 @@ from tracefold.integrations.venues.candles import (  # noqa: E402
 )
 from tracefold.integrations.venues.http import get_json, post_json, price_client  # noqa: E402
 from tracefold.trading.admission import ADMISSION_VERSION, AdmissionConfig  # noqa: E402
-from tracefold.trading.market_context import DEFAULT_PRICE_WINDOW  # noqa: E402
+from tracefold.trading.market_context import PriceWindow  # noqa: E402
 from tracefold.trading.policy import ALPHA_POLICY  # noqa: E402
+
+# The lane's own window (#537 PR-3 retired the module constant this receipt imported).
+DEFAULT_PRICE_WINDOW = PriceWindow()
 
 # ---------------------------------------------------------------------------
 # Pinned constants. A live read has no identity of its own, so the window is a
