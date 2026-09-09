@@ -512,6 +512,7 @@ class NewsChainTapeSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
+    notifications_enabled: bool = True
     rpc_url: str = "https://rpc.mainnet.chain.robinhood.com"
     poll_interval_s: float = 2.0
     roster_provider_url: str = "https://rhtrenches.com"

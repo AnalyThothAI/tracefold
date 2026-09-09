@@ -140,6 +140,7 @@ news:
   # market notification loop every other market card goes through. Off until an operator turns it on.
   chain_tape:
     enabled: false
+    notifications_enabled: true  # false keeps wallet research running without sending wallet cards
     rpc_url: "https://rpc.mainnet.chain.robinhood.com"
     poll_interval_s: 2.0
     roster_provider_url: "https://rhtrenches.com"

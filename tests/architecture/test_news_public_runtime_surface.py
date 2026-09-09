@@ -105,6 +105,7 @@ WRITE_REPOSITORY_METHODS = (
     "market_discard_delivery",
     "market_begin_send",
     "market_settle_delivery",
+    "market_stop_wallet_deliveries",
     "market_set_track_attempt",
     "market_set_track_anchor",
     "market_hold_unavailable",

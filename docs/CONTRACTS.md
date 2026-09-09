@@ -679,6 +679,10 @@ every Event this code can open.
 
   "Not pushed" is not a filter and never becomes one: whether a card was sent is
   reported per group and is not a precondition for reading the observation.
+  Wallet observations processed with notifications disabled read as `not_alerted` with reason
+  `wallet_notifications_disabled` while the track is muted. Previously pending cards stopped by that
+  policy retain their delivery row as `failed` with that reason and their original attempt evidence.
+  A later alert round may report earlier unclaimed observations as `uncovered`; it never adopts them.
 - `GET /api/news/wallets` returns the chain wallet tape's own state (#572 PR-3):
   its roster, its ingest position, and one day of fills and cards counted per
   kind. It takes no parameter but `token`; any other is 400

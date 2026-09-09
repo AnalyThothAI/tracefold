@@ -287,6 +287,140 @@ def _rows(conn: Any, statement: str, params: Sequence[Any] = ()) -> list[dict[st
 
 
 # ------------------------------------------------------------------------------------ the whole loop
+def test_wallet_mute_keeps_buy_research_digest_and_price_receipts(conn) -> None:
+    clock = _Clock()
+    db, chain, site = _Db(conn), _Chain(), _Site()
+    prices = _Prices({MADETEST: Decimal("0.0005")})
+    buy = _fill(
+        wallet=SELL_WALLET,
+        token=MADETEST,
+        kind="buy",
+        amount_raw=1_000 * UNIT,
+        usd="1500",
+        event_at_ms=NOW - 1000,
+        received_at_ms=NOW,
+        tx_hash="0x" + "61" * 32,
+        symbol="MADETEST",
+    )
+    buyers = [SELL_WALLET, "0x" + "22" * 20, "0x" + "33" * 20]
+    fills = [replace(buy, wallet=wallet, tx_hash="0x" + f"{index + 1:064x}") for index, wallet in enumerate(buyers)]
+    fills.append(
+        _fill(
+            wallet=SELL_WALLET,
+            token=FSD,
+            kind="sell",
+            amount_raw=FSD_HELD_RAW,
+            usd=SALE_USD,
+            event_at_ms=NOW - 500,
+            received_at_ms=NOW,
+            tx_hash=SELL_TX,
+        )
+    )
+    _seed(conn, [_member(wallet, handle=f"buyer-{index}") for index, wallet in enumerate(buyers)], fills)
+    research = _deriver(db, chain, site, prices, clock)
+    asyncio.run(research.advance())
+    assert asyncio.run(_digest_writer(db, clock, site=site).take_digest(roster=_roster(conn), errors=[])).digests == 1
+    facts = _rows(conn, "SELECT * FROM news_market_wallet_events ORDER BY item_id")
+    assert {row["kind"] for row in facts} == {"buy", "exit", "crowding", "digest"}
+    sender = _Sender()
+    loop = MarketNotificationLoop(db=db, sender=sender, clock=clock)
+    loop.wallet_notifications_enabled = False
+    asyncio.run(loop.start())
+    turn = asyncio.run(loop.advance())
+    assert (turn.sent, turn.intents, sender.cards) == (0, 0, [])
+    assert _rows(conn, "SELECT * FROM news_market_wallet_events ORDER BY item_id") == facts
+    assert repositories_for_connection(conn).news.chain_tape_pending_fills() == []
+    assert {
+        repositories_for_connection(conn).news.market_item(item_id=fact["item_id"])["notification_status"]
+        for fact in facts
+    } == {"not_alerted"}
+    clock.at_ms = NOW + 900_000
+    asyncio.run(research.take_outcomes([]))
+    assert _rows(conn, "SELECT * FROM news_market_wallet_outcomes")
+    # A new process with notifications enabled has no saved cards to catch up on.
+    resumed = MarketNotificationLoop(db=db, sender=sender, clock=clock)
+    asyncio.run(resumed.start())
+    assert asyncio.run(resumed.advance()).sent == 0
+    assert not sender.cards
+
+
+@pytest.mark.parametrize("prior", ["queued", "retry", "sent", "unknown"])
+def test_wallet_mute_stops_pending_cards_and_preserves_attempt_evidence(conn, prior) -> None:
+    from tests.integration.test_news_market_notifications import _Refused
+    from tests.integration.test_news_market_notifications import _Sender as OutcomeSender
+
+    clock = _Clock()
+    db, chain, site, prices = _Db(conn), _Chain(), _Site(), _Prices()
+    buy = _fill(
+        wallet=SELL_WALLET,
+        token=MADETEST,
+        kind="buy",
+        amount_raw=1_000 * UNIT,
+        usd="1500",
+        event_at_ms=NOW - 1000,
+        received_at_ms=NOW,
+        tx_hash="0x" + "61" * 32,
+        symbol="MADETEST",
+    )
+    _seed(conn, [_member(SELL_WALLET, handle="buyer")], [buy])
+    asyncio.run(_deriver(db, chain, site, prices, clock).advance())
+    before_sender = OutcomeSender(available=prior != "queued")
+    if prior in {"retry", "unknown"}:
+        before_sender.raise_with = _Refused(
+            "provider_failure", commit_phase="not_sent" if prior == "retry" else "unknown", retryable=True
+        )
+    asyncio.run(MarketNotificationLoop(db=db, sender=before_sender, clock=clock).advance())
+    before = _rows(conn, "SELECT * FROM news_market_deliveries")[0]
+    assert before["state"] == {"queued": "unavailable", "retry": "pending"}.get(prior, prior)
+    sender = _Sender()
+    muted = MarketNotificationLoop(db=db, sender=sender, clock=clock, wallet_notifications_enabled=False)
+    asyncio.run(muted.start())
+    asyncio.run(muted.advance())
+    after = _rows(conn, "SELECT * FROM news_market_deliveries")[0]
+    if prior in {"queued", "retry"}:
+        assert (after["state"], after["error"]) == ("failed", "wallet_notifications_disabled")
+        for field in ("attempts", "card", "receipt", "first_attempt_at_ms", "last_attempt_at_ms"):
+            assert after[field] == before[field]
+    else:
+        assert after == before
+    clock.at_ms += 60_000
+    assert asyncio.run(MarketNotificationLoop(db=db, sender=sender, clock=clock).advance()).sent == 0
+    assert not sender.cards
+
+
+def test_wallet_mute_does_not_adopt_silenced_observations_when_reenabled(conn) -> None:
+    clock = _Clock()
+    db, chain, site, prices = _Db(conn), _Chain(), _Site(), _Prices()
+    first = _fill(
+        wallet=SELL_WALLET,
+        token=MADETEST,
+        kind="buy",
+        amount_raw=1_000 * UNIT,
+        usd="1500",
+        event_at_ms=NOW - 1000,
+        received_at_ms=NOW,
+        tx_hash="0x" + "61" * 32,
+        symbol="MADETEST",
+    )
+    _seed(conn, [_member(SELL_WALLET, handle="buyer")], [first])
+    research = _deriver(db, chain, site, prices, clock)
+    asyncio.run(research.advance())
+    sender = _Sender()
+    muted = MarketNotificationLoop(db=db, sender=sender, clock=clock, wallet_notifications_enabled=False)
+    asyncio.run(muted.advance())
+    first_item = _rows(conn, "SELECT item_id FROM news_market_wallet_events")[0]["item_id"]
+    # Same receive millisecond and group: only the new candidate joins the new card.
+    second = replace(first, tx_hash="0x" + "62" * 32, log_index=first.log_index + 1, usd=Decimal("2000"))
+    _seed_fills(conn, [second])
+    asyncio.run(research.advance())
+    resumed = MarketNotificationLoop(db=db, sender=sender, clock=clock)
+    assert asyncio.run(resumed.advance()).sent == 1
+    assert _rows(conn, "SELECT market_notify_delivery_key FROM news_items WHERE item_id=%s", (first_item,)) == [
+        {"market_notify_delivery_key": None}
+    ]
+    assert _rows(conn, "SELECT covered_count FROM news_market_deliveries") == [{"covered_count": 1}]
+
+
 def test_single_wallet_buy_is_a_research_candidate_even_when_not_notified(conn) -> None:
     clock = _Clock()
     db, chain, site, prices = _Db(conn), _Chain(), _Site(), _Prices()
