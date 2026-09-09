@@ -55,6 +55,7 @@ from .market_contracts import (
     REASON_SEND_INTERRUPTED,
     REASON_SENDER_UNAVAILABLE,
     REASON_SMART_MONEY_ROUND,
+    REASON_WALLET_NOTIFICATIONS_DISABLED,
 )
 from .market_review.pricing import QUOTE_READ_TIMEOUT_SECONDS, parse_price
 from .reader_card import (
@@ -1331,6 +1332,7 @@ class MarketNotificationLoop:
         db: MarketNotificationDatabasePort,
         sender: PreparedCardSender,
         console_base_url: str | None = None,
+        wallet_notifications_enabled: bool = True,
         clock: Callable[[], int] | None = None,
     ) -> None:
         self.db = db
@@ -1338,6 +1340,7 @@ class MarketNotificationLoop:
         # The public origin of the operator console, when the deployment has one: `api.public_url`,
         # passed by the Workers wiring. `market_detail_url` decides what unset means for the card.
         self.console_base_url = console_base_url
+        self.wallet_notifications_enabled = wallet_notifications_enabled
         self._clock = clock or (lambda: int(time.time() * 1000))
 
     async def start(self) -> int:
@@ -1361,6 +1364,8 @@ class MarketNotificationLoop:
         """
 
         stamp = self._clock()
+        if not self.wallet_notifications_enabled:
+            await self.db.tx("news_market_notify_mute_wallet", partial(self._mute_wallet_pending, now_ms=stamp))
         backlog = await self.db.read(
             "news_market_notify_backlog",
             lambda repos: [
@@ -1402,6 +1407,18 @@ class MarketNotificationLoop:
             return 0
         row = news.market_track(group_key=identity.group_key, for_update=True)
         track = _track_from_row(row) if row is not None else None
+        if identity.family == "wallet" and not self.wallet_notifications_enabled:
+            state = replace(
+                _observed(_carry(track, identity), observations[-1]),
+                pending_reason=REASON_WALLET_NOTIFICATIONS_DISABLED,
+                open_delivery_key=None,
+                next_due_at_ms=None,
+            )
+            news.market_mark_processed(
+                item_ids=[observation.item_id for observation in observations], group_key=identity.group_key
+            )
+            news.market_save_track(track=_track_as_row(state), now_ms=now_ms)
+            return 0
         # The un-started intent is read from the deliveries themselves rather than from the track's
         # copy of its key: the unique index is what actually enforces "at most one", so it is also
         # what should answer whether one exists.
@@ -1440,8 +1457,27 @@ class MarketNotificationLoop:
                 group_key=identity.group_key,
                 delivery_key=open_key,
                 min_received_at_ms=state.round_started_at_ms,
+                # Muted wallet observations stay unclaimed even if a new observation has the same
+                # receive millisecond. Existing members of a pending card already carry its key.
+                item_ids=[observation.item_id for observation in observations] if identity.family == "wallet" else None,
             )
         return created
+
+    def _mute_wallet_pending(self, repos: Any, now_ms: int) -> None:
+        news = repos.news
+        groups = news.market_stop_wallet_deliveries(
+            reason=REASON_WALLET_NOTIFICATIONS_DISABLED, now_ms=now_ms, limit=BACKLOG_BATCH_MAX
+        )
+        for group_key in groups:
+            row = news.market_track(group_key=group_key, for_update=True)
+            if row is not None:
+                state = replace(
+                    _track_from_row(row),
+                    open_delivery_key=None,
+                    next_due_at_ms=None,
+                    pending_reason=REASON_WALLET_NOTIFICATIONS_DISABLED,
+                )
+                news.market_save_track(track=_track_as_row(state), now_ms=now_ms)
 
     # --- sending ---
 
@@ -1498,7 +1534,7 @@ class MarketNotificationLoop:
         # A sender exists again, so cards held for its absence become due. They were never attempted,
         # so no attempt was consumed and each group still has exactly one merged card.
         news.market_release_unavailable(now_ms=now_ms)
-        row = news.market_due_delivery(now_ms=now_ms)
+        row = news.market_due_delivery(now_ms=now_ms, wallet_notifications_enabled=self.wallet_notifications_enabled)
         if row is None:
             return None
         key = str(row["delivery_key"])

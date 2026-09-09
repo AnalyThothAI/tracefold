@@ -529,6 +529,7 @@ MARKET_ADOPT_UNCLAIMED_SQL = """
        AND market_notify_delivery_key IS NULL
        AND market_notify_state = 'processed'
        AND observed_at_ms >= %s
+       AND (%s::text[] IS NULL OR item_id = ANY(%s))
        AND (market_kind <> 'wallet' OR EXISTS (
              SELECT 1 FROM news_market_wallet_events e
               WHERE e.item_id = news_items.item_id
@@ -548,6 +549,7 @@ MARKET_DUE_DELIVERY_SQL = f"""
     SELECT {_DELIVERY_COLUMNS} FROM news_market_deliveries
      WHERE state = ANY (ARRAY['pending', 'unavailable'])
        AND next_attempt_at_ms <= %s
+       AND (%s OR market_kind <> 'wallet')
      ORDER BY next_attempt_at_ms, created_at_ms, delivery_key
      LIMIT 1
      FOR UPDATE SKIP LOCKED
@@ -556,6 +558,21 @@ MARKET_DUE_DELIVERY_SQL = f"""
 MARKET_DELIVERY_SQL = f"""
     SELECT {_DELIVERY_COLUMNS} FROM news_market_deliveries WHERE delivery_key = %s
 """  # noqa: S608 -- interpolates only this module's own column list
+
+# Stop only unfinished wallet cards. Attempts, frozen cards, receipts and their timestamps are
+# preserved; a policy stop consumes no external attempt and never rewrites a completed outcome.
+MARKET_STOP_WALLET_DELIVERIES_SQL = """
+    WITH pending AS (
+        SELECT delivery_key FROM news_market_deliveries
+         WHERE market_kind = 'wallet' AND state = ANY (ARRAY['pending', 'unavailable'])
+         ORDER BY next_attempt_at_ms, delivery_key
+         LIMIT %s FOR UPDATE SKIP LOCKED
+    )
+    UPDATE news_market_deliveries d
+       SET state = 'failed', error = %s, settled_at_ms = %s, updated_at_ms = %s
+      FROM pending p WHERE d.delivery_key = p.delivery_key
+    RETURNING d.group_key
+"""
 
 # The one un-started card of a group, read from the unique partial index that enforces there is at
 # most one. Asking the index rather than the track's copy of the key is what keeps two processes
@@ -888,7 +905,14 @@ class MarketStorage:
         ).fetchone()
         return row is not None
 
-    def market_adopt_unclaimed(self, *, group_key: str, delivery_key: str, min_received_at_ms: int) -> int:
+    def market_adopt_unclaimed(
+        self,
+        *,
+        group_key: str,
+        delivery_key: str,
+        min_received_at_ms: int,
+        item_ids: Sequence[str] | None = None,
+    ) -> int:
         """Hand this card every observation of the group's current round that none has spoken for.
 
         `min_received_at_ms` is where that round started. Observations below it were held by a rule
@@ -896,14 +920,23 @@ class MarketStorage:
         as exactly that, and they are not folded into a card about something else (#562 PR-F).
         """
 
-        cursor = self.conn.execute(MARKET_ADOPT_UNCLAIMED_SQL, (delivery_key, group_key, int(min_received_at_ms)))
+        selected = None if item_ids is None else list(item_ids)
+        cursor = self.conn.execute(
+            MARKET_ADOPT_UNCLAIMED_SQL, (delivery_key, group_key, int(min_received_at_ms), selected, selected)
+        )
         return int(cursor.rowcount or 0)
 
-    def market_due_delivery(self, *, now_ms: int) -> dict[str, Any] | None:
+    def market_due_delivery(self, *, now_ms: int, wallet_notifications_enabled: bool = True) -> dict[str, Any] | None:
         """Lock one due card for this process. `SKIP LOCKED` so two processes never take the same one."""
 
-        row = self.conn.execute(MARKET_DUE_DELIVERY_SQL, (int(now_ms),)).fetchone()
+        row = self.conn.execute(MARKET_DUE_DELIVERY_SQL, (int(now_ms), wallet_notifications_enabled)).fetchone()
         return None if row is None else dict(row)
+
+    def market_stop_wallet_deliveries(self, *, reason: str, now_ms: int, limit: int) -> list[str]:
+        rows = self.conn.execute(
+            MARKET_STOP_WALLET_DELIVERIES_SQL, (int(limit), reason, int(now_ms), int(now_ms))
+        ).fetchall()
+        return sorted({str(row["group_key"]) for row in rows})
 
     def market_delivery(self, *, delivery_key: str) -> dict[str, Any] | None:
         row = self.conn.execute(MARKET_DELIVERY_SQL, (delivery_key,)).fetchone()

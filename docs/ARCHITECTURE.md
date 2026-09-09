@@ -3012,7 +3012,11 @@ reads committed facts independently and retains its separate durable attempt/win
 
 Every followed-wallet buy can produce a durable `wallet` observation. Its evidence carries the wallet
 and token, contributing fills, observed time, original roster version and ranks, history boundary,
-priced amount and unpriced count. Observation and notification are separate decisions: `history`,
+priced amount and unpriced count. `news.chain_tape.notifications_enabled` controls only the existing
+market notification loop: false processes wallet observations without new intents and stops pending
+wallet cards, including retries, while all three wallet stages continue. Completed delivery evidence
+is retained, and re-enabling does not adopt observations processed while muted into new cards.
+Observation and notification are separate decisions: `history`,
 `stale`, `unpriced`, `below_minimum` and `same_window` explain why a candidate was not selected. Eligible
 buys aggregate by wallet/token and configured window; a later selection in that window requires the
 observed dollar total to double. `buy_min_usd` and `buy_window_s` are product thresholds, not an assertion

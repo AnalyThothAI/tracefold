@@ -388,6 +388,7 @@ class CliTests(unittest.TestCase):
             {
                 "enabled": False,
                 "rpc_url": "https://rpc.mainnet.chain.robinhood.com",
+                "notifications_enabled": True,
                 "poll_interval_s": 2.0,
                 "roster_provider_url": "https://rhtrenches.com",
                 "roster": {

@@ -234,6 +234,7 @@ async def _wire_news_pipeline(
         db=_MarketNotificationDatabase(news_db),
         sender=pipeline.deliverer.send_entry,
         console_base_url=settings.api.public_url,
+        wallet_notifications_enabled=settings.news.chain_tape.notifications_enabled,
     )
     capabilities.running(MARKET_NOTIFICATIONS)
     return bus, pipeline, market_notifications

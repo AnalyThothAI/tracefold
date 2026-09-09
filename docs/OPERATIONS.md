@@ -1757,6 +1757,7 @@ settings through `uv run tracefold config`; the chain block contains these value
 | Key | Default | What it decides |
 | --- | --- | --- |
 | `news.chain_tape.enabled` | `false` | whether wallet ingestion and research run; off disables all three wallet capabilities |
+| `news.chain_tape.notifications_enabled` | `true` | wallet card delivery only; false keeps ingestion, research, digests and price receipts running |
 | `news.chain_tape.rpc_url` | `https://rpc.mainnet.chain.robinhood.com` | read-only JSON-RPC endpoint |
 | `news.chain_tape.poll_interval_s` | `2.0` | App polling cadence for each wallet stage |
 | `news.chain_tape.roster_provider_url` | `https://rhtrenches.com` | current roster and context host; redirects are refused as `roster_redirect` |
@@ -1780,6 +1781,14 @@ settings through `uv run tracefold config`; the chain block contains these value
 | `news.chain_tape.digest.interval_s` | `14400` | time between summary windows |
 | `news.chain_tape.digest.max_calls_per_day` | `24` | model-call ceiling; `0` retains deterministic summaries without model calls |
 | `news.chain_tape.retention_days` | `90` | fill retention; Janitor removes bounded batches on its existing heavy slot |
+
+To silence wallet notifications, set `news.chain_tape.notifications_enabled: false` in the
+operator-owned config and restart Workers. Buy, exit, crowding and digest cards stop; other News and
+market cards keep their normal rules. New wallet observations are processed without a delivery intent
+and read as `not_alerted` / `wallet_notifications_disabled`. Pending and unavailable wallet cards,
+including retries not yet due, settle as `failed` with that reason without consuming an attempt;
+their frozen cards and attempt evidence remain. Completed outcomes are untouched. Re-enabling the
+flag does not replay muted observations or stopped cards; only new observations can join a new card.
 
 Thresholds are operating choices, not measured guarantees of buying skill or future returns. The
 roster is a union of quality and whale lists, and the settings cap each list at 200. Its sampling scope

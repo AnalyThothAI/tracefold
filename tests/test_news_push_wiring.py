@@ -229,6 +229,14 @@ def test_a_push_target_declared_against_disabled_news_is_a_capability_fault_not_
     }
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_wallet_notification_setting_reaches_the_market_loop(tmp_path: Path, enabled: bool) -> None:
+    settings = _settings(tmp_path)
+    settings.news.chain_tape.notifications_enabled = enabled
+    _, _, market = asyncio.run(_wire_news_pipeline_with_stub_bus(settings=settings, capabilities=CapabilityStates()))
+    assert market.wallet_notifications_enabled is enabled
+
+
 def _composed_pipeline(settings: Settings, capabilities: CapabilityStates) -> Any:
     """Compose the real News pipeline against a bus stub.
 

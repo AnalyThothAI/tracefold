@@ -69,6 +69,7 @@ REASON_ROUND_CLOSED: Final = "alert_round_ended_before_a_card"
 # is recorded, it is readable, and no rule is holding it because no rule ever will (#582 §3.2). The
 # read model tells it apart by having no track row at all, which is what `track_reason is None` says.
 REASON_UNSTRUCTURED: Final = "unstructured_record_not_alerted"
+REASON_WALLET_NOTIFICATIONS_DISABLED: Final = "wallet_notifications_disabled"
 
 # The track's own columns, named once. The upsert statement, the row reader and the row writer all
 # build from this tuple, so a column added to `MarketTrack` cannot reach one of them and miss another.
@@ -138,6 +139,8 @@ def notification_status(
         return "historical", REASON_HISTORICAL
     if track_reason is None:
         return "not_alerted", REASON_UNSTRUCTURED
+    if track_reason == REASON_WALLET_NOTIFICATIONS_DISABLED:
+        return "not_alerted", REASON_WALLET_NOTIFICATIONS_DISABLED
     if round_closed:
         return "uncovered", REASON_ROUND_CLOSED
     return "merging", str(track_reason or REASON_MERGING)
@@ -167,5 +170,6 @@ __all__ = [
     "REASON_SMART_MONEY_ROUND",
     "REASON_UNPROCESSED",
     "REASON_UNSTRUCTURED",
+    "REASON_WALLET_NOTIFICATIONS_DISABLED",
     "notification_status",
 ]

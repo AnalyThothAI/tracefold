@@ -289,6 +289,16 @@ def _notify_state(conn: Any, item_id: str) -> str | None:
 # --- facts are never rolled back by a notification --------------------------------------------
 
 
+def test_wallet_mute_keeps_other_market_notifications_running(conn) -> None:
+    clock, db, sender = _Clock(), _Db(conn), _Sender()
+    _oi_item(conn, "oi-mute-neighbor", at_ms=NOW, change_bps=600)
+    _liquidation_item(conn, "liquidation-mute-neighbor", at_ms=NOW, side="long")
+    _wallet_item(conn, "smart-money-mute-neighbor", at_ms=NOW, action="open", side="long")
+    loop = MarketNotificationLoop(db=db, sender=sender, clock=clock, wallet_notifications_enabled=False)
+    assert asyncio.run(loop.advance()).sent == 3
+    assert {row["market_kind"] for row in _deliveries(conn)} == {"oi", "liquidation", "smart_money"}
+
+
 def test_a_notification_failure_leaves_the_committed_fact_and_the_backlog_untouched(conn: Any) -> None:
     """The coupling the whole design exists to break: rules run in their own transaction.
 

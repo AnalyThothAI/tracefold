@@ -84,11 +84,18 @@ def test_the_flag_off_is_a_disabled_capability_and_no_task() -> None:
     assert set(capabilities.payload()) == {CHAIN_TAPE, WALLET_RESEARCH, WALLET_DIGEST}
 
 
-def test_the_flag_on_builds_one_loop_and_reports_the_capability_running(no_proxy_environment: None) -> None:
+@pytest.mark.parametrize("notifications_enabled", [True, False])
+def test_the_flag_on_builds_one_loop_and_reports_the_capability_running(
+    no_proxy_environment: None, notifications_enabled: bool
+) -> None:
     capabilities = CapabilityStates()
 
     composed = _wire_chain_tape(
-        settings=_settings(enabled=True, roster={"top_quality": 5, "top_whale_by_open_cost": 3}),
+        settings=_settings(
+            enabled=True,
+            notifications_enabled=notifications_enabled,
+            roster={"top_quality": 5, "top_whale_by_open_cost": 3},
+        ),
         db=object(),  # type: ignore[arg-type]
         capabilities=capabilities,
     )
