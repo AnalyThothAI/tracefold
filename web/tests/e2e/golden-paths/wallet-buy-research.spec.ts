@@ -27,10 +27,26 @@ test("wallet and token filters survive window changes, reload and raw-detail ret
   page,
 }) => {
   const buy = newsWalletBuyFixture();
+  // Make the seven-day response slower than the following reload, as it can be on a real connection.
+  await page.route("**/api/news/wallets/cards?**", async (route) => {
+    if (new URL(route.request().url()).searchParams.get("window") === "7d") {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    await route.fallback();
+  });
   await page.goto("/news/wallets");
   await page.locator(".news-wallet-research-row").first().getByRole("button").click();
   await page.getByRole("link", { name: "同钱包与代币的买卖 / 转出" }).click();
+  const sevenDayRead = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/news/wallets/cards" && url.searchParams.get("window") === "7d";
+  });
   await page.getByRole("button", { name: "7d", exact: true }).click();
+  const response = await sevenDayRead;
+  expect(response.ok()).toBe(true);
+  // URL updates precede the query. Reload only after its body is complete so the persistence
+  // assertion tests a loaded window rather than cancelling the read that should establish it.
+  expect(await response.finished()).toBeNull();
   await page.reload();
   await expect(page.getByRole("textbox", { name: "钱包地址" })).toHaveValue(buy.wallet);
   await expect(page.getByRole("textbox", { name: "代币合约" })).toHaveValue(buy.token);
