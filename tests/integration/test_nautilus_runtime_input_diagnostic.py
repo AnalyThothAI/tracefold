@@ -14,7 +14,6 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
-from decimal import Decimal
 from pathlib import Path
 from threading import Condition, Event
 from types import SimpleNamespace
@@ -48,12 +47,14 @@ from tracefold.app.http.app import create_app
 from tracefold.app.nautilus.oi_runtime import (
     OiRuntimeDatabaseBridge,
     RuntimeStateProjector,
+    commit_entry_plan,
     flush_audit_once,
 )
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
+from tracefold.integrations.nautilus.oi_runtime.trade_plans import TradePlanChannel
 from tracefold.platform.config.models import Settings
 from tracefold.trading.storage.execution_stream import (
     ExecutionRuntimeState,
@@ -78,7 +79,7 @@ _OWNER_MATRIX = (
         "fact": "unresolved_signal_command_read",
         "owner": "OiRuntimeDatabaseBridge._cycle",
         "authority": "PostgreSQL durable indexed anti-join reads",
-        "repair": "the same Bridge owns LISTEN wake and bounded 200 ms indexed-query repair",
+        "repair": "the same Bridge owns the bounded 200 ms indexed poll",
         "source": "tracefold/app/nautilus/oi_runtime.py",
         "symbol": "OiRuntimeDatabaseBridge._cycle",
     },
@@ -318,6 +319,7 @@ def _runtime_bridge(
         settings=settings,
         profile=profile,
         signals=signals,
+        plans=TradePlanChannel(),
         audit=audit,
         update_day_start=lambda _baseline: None,
         singleton=singleton,
@@ -325,7 +327,7 @@ def _runtime_bridge(
         # it measures the input path, not the current-state path.
         projector=RuntimeStateProjector(
             initial=_runtime_state(account_slot=account_slot),
-            recovery_inputs=((), ()),
+            recovery_inputs=(),
         ),
         poll_seconds=_REPAIR_SECONDS,
     )
@@ -335,12 +337,7 @@ def _runtime_state(*, account_slot: str) -> ExecutionRuntimeState:
     return ExecutionRuntimeState(
         account_slot=account_slot,
         mode="paper",
-        config_sha256="a" * 64,
         runtime_id=uuid4(),
-        runtime_revision="b" * 40,
-        image_digest="unversioned",
-        credential_fingerprint="d" * 64,
-        lifecycle_state="starting",
         alive=True,
         execution_safe=False,
         entries_armed=False,
@@ -516,6 +513,16 @@ def _runtime_lifecycle_sample() -> dict[str, Any]:
     context = registered_oi_strategy(values=(trade_signal(),))
     started = time.perf_counter()
     context.strategy.on_timer(None)
+    assert context.strategy.submitted == []
+    plan = context.plans.pending_prepare()
+    assert plan is not None
+    conn = connect_postgres_test(read_only=False)
+    try:
+        receipt = commit_entry_plan(repositories_for_connection(conn), plan)
+    finally:
+        conn.close()
+    context.plans.committed(receipt.plan, newly_committed=receipt.newly_committed)
+    context.strategy.on_timer(None)
     entry = context.strategy.submitted[0][0]
     position_id = PositionId("BTCUSDT-PERP.BINANCE-475-BASELINE")
     context.strategy.on_position_opened(
@@ -526,7 +533,7 @@ def _runtime_lifecycle_sample() -> dict[str, Any]:
             opening_order_id=entry.client_order_id,
             side=PositionSide.LONG,
             position_id=position_id,
-            quantity=context.instrument.make_qty(Decimal("0.05")),
+            quantity=entry.quantity,
             avg_px_open=10_000.0,
             ts_opened=NOW_NS + 2,
         )
@@ -560,7 +567,7 @@ def _http_sample(tmp_path: Path) -> dict[str, Any]:
     with TestClient(app) as client:
         while time.perf_counter() < deadline:
             started = time.perf_counter()
-            response = client.get("/api/trading/status", params={"token": "475-runtime-input"})
+            response = client.get("/api/trading/status", headers={"Authorization": "Bearer 475-runtime-input"})
             latencies.append((time.perf_counter() - started) * 1_000)
             assert response.status_code == 200
             time.sleep(0.5)

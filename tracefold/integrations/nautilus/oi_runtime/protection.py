@@ -22,6 +22,7 @@ from .state import (
     deterministic_client_order_id,
     protection_leg,
 )
+from .trade_plans import TradePlanChannel
 
 
 def _closed_decimal(value: Any) -> Decimal | None:
@@ -38,6 +39,7 @@ class ProtectionCoordinator:
         *,
         engine: Any,
         profile: OiRuntimeProfile,
+        plans: TradePlanChannel,
         state: RuntimeExecutionState,
         readiness: RuntimeReadiness,
         observations: RuntimeObservationWriter,
@@ -47,6 +49,7 @@ class ProtectionCoordinator:
     ) -> None:
         self._engine = engine
         self._profile = profile
+        self._plans = plans
         self._state = state
         self._readiness = readiness
         self._observations = observations
@@ -97,6 +100,14 @@ class ProtectionCoordinator:
         state.position_quantity = abs(Decimal(str(event.quantity)))
         state.avg_entry_price = Decimal(str(event.avg_px_open))
         self._state.positions[event.position_id] = entry_id
+        state.plan = state.plan.model_copy(
+            update={
+                "status": "open",
+                "opened_at_ns": state.plan.opened_at_ns or int(event.ts_opened),
+                "updated_at_ns": max(state.plan.updated_at_ns, int(self._engine.clock.timestamp_ns())),
+            }
+        )
+        self._plans.offer_update(state.plan)
         self.request_stop(state, state.position_quantity, state.avg_entry_price)
         self._observations.position(state, "opened", int(event.ts_opened))
 
@@ -131,23 +142,43 @@ class ProtectionCoordinator:
             if not retiring.is_closed:
                 self._engine.cancel_order(retiring, client_id=ClientId("BINANCE"))
         state.exit_retry_required = False
+        closing_id = getattr(event, "closing_order_id", None)
+        stop_ids = {
+            order.client_order_id
+            for order in (state.stop_order, state.pending_stop_order, *state.retiring_stop_orders.values())
+            if order is not None
+        }
+        reason = (
+            "stop_filled"
+            if closing_id in stop_ids
+            else (
+                state.exit_reason
+                if state.exit_order is not None and closing_id == state.exit_order.client_order_id
+                else "venue_unknown"
+            )
+        )
+        state.exit_reason = reason
+        state.plan = state.plan.model_copy(
+            update={
+                "status": "closing",
+                "exit_reason": reason,
+                "updated_at_ns": max(state.plan.updated_at_ns, int(self._engine.clock.timestamp_ns())),
+            }
+        )
+        self._plans.offer_update(state.plan)
         self._observations.position(
             state,
             "closed",
             int(event.ts_closed),
             quantity=closed_quantity,
             exit_price=_closed_decimal(event.avg_px_close),
-            realized_pnl_usd=_closed_decimal(event.realized_pnl),
-            # Only `ExitCoordinator.flatten` annotates a reason; anything else that takes this
-            # position off the venue is the reduce-only stop this coordinator placed.
-            exit_reason=state.exit_reason or "stop_filled",
+            realized_pnl_usd=_closed_decimal(event.realized_pnl) if state.native_pnl_complete else None,
+            exit_reason=reason,
         )
-        state.exit_reason = None
         # Nothing on this instrument needs a mark any more, so the Runtime stops paying for its
         # quotes; the next admitted entry re-opens the stream (#510 E).
         self._quotes.release(state.route.instrument_id)
-        if self._state.pending_flatten:
-            self._request_reconciliation("flatten_pending")
+        self._request_reconciliation("flatten_pending" if self._state.pending_flatten else "unknown_outcome")
 
     def _close_unclaimed_position(self, event: Any) -> None:
         """Record the close of exposure this Runtime flattened without owning it (#528 A)."""
@@ -225,7 +256,7 @@ class ProtectionCoordinator:
             self._request_reconciliation("protection_ambiguity")
             self._engine.query_order(order, client_id=ClientId("BINANCE"))
             if state.position_id is not None:
-                self._exits.flatten(state.position_id)
+                self._exits.flatten(state.position_id, reason="protection_failure")
         self._observations.protection_submitted(
             state,
             client_order_id=client_order_id,
@@ -258,7 +289,7 @@ class ProtectionCoordinator:
                 self._engine.query_order(existing, client_id=ClientId("BINANCE"))
             self._observations.order(state, existing, "protection", "replayed_invalid_flatten")
             if state.position_id is not None:
-                self._exits.flatten(state.position_id)
+                self._exits.flatten(state.position_id, reason="protection_failure")
             return
         state.pending_stop_order = existing
         state.pending_stop_quantity = quantity
@@ -269,7 +300,7 @@ class ProtectionCoordinator:
         if existing.is_open:
             self.accept_pending(state, client_order_id)
         elif state.stop_order is None and state.position_id is not None:
-            self._exits.flatten(state.position_id)
+            self._exits.flatten(state.position_id, reason="protection_failure")
 
     def accept_pending(self, state: ExecutionState, client_order_id: ClientOrderId) -> None:
         pending = state.pending_stop_order
@@ -304,7 +335,7 @@ class ProtectionCoordinator:
             return
         if state.position_quantity > 0 and state.position_id is not None:
             self._request_reconciliation("protection_ambiguity")
-            self._exits.flatten(state.position_id)
+            self._exits.flatten(state.position_id, reason="protection_failure")
 
     def desired_trigger_price(self, state: ExecutionState, avg_price: Decimal) -> Decimal | None:
         """The one stop trigger this execution's route, direction and entry price imply."""
@@ -312,7 +343,7 @@ class ProtectionCoordinator:
         instrument = self._engine.cache.instrument(state.route.instrument_id)
         if instrument is None:
             return None
-        distance = Decimal(state.route.stop_distance_bps) / Decimal(10_000)
+        distance = Decimal(state.plan.stop_distance_bps) / Decimal(10_000)
         factor = Decimal(1) - distance if state.entry.direction == "long" else Decimal(1) + distance
         return instrument.make_price(avg_price * factor).as_decimal()
 

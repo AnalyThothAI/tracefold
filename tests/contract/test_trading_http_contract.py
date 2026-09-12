@@ -84,15 +84,21 @@ class _Trading:
     def console_realized_totals(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("console_realized_totals", kwargs))
         return {
-            "realized_today_usd": "-9.53",
-            "realized_total_usd": "56.40",
+            "realized_known_today_usd": "-9.53",
+            "realized_known_total_usd": "56.40",
             "closed_today": 1,
             "closed_total": 12,
+            "pnl_known_today": 1,
+            "pnl_known_total": 11,
+            "pnl_missing_today": 0,
+            "pnl_missing_total": 1,
+            "pnl_complete_today": True,
+            "pnl_complete_total": False,
         }
 
     def console_executions(self, **kwargs: Any) -> list[dict[str, Any]]:
         self.calls.append(("console_executions", kwargs))
-        return [
+        rows: list[dict[str, Any]] = [
             {
                 "source": "signal",
                 "entry_id": "c" * 64,
@@ -211,6 +217,7 @@ class _Trading:
                 "last_observed_at_ns": (NOW + 90_000) * 1_000_000,
             },
         ]
+        return [{**row, "pnl_known": row.get("realized_pnl_usd") is not None, "history_complete": True} for row in rows]
 
 
 class _Runtime:
@@ -510,10 +517,16 @@ def test_executions_publishes_the_realized_totals_the_window_cannot_add_up(
     data = api.get("/api/trading/executions", params={"token": TOKEN}).json()["data"]
 
     assert data["totals"] == {
-        "realized_today_usd": "-9.53",
-        "realized_total_usd": "56.40",
+        "realized_known_today_usd": "-9.53",
+        "realized_known_total_usd": "56.40",
         "closed_today": 1,
         "closed_total": 12,
+        "pnl_known_today": 1,
+        "pnl_known_total": 11,
+        "pnl_missing_today": 0,
+        "pnl_missing_total": 1,
+        "pnl_complete_today": True,
+        "pnl_complete_total": False,
     }
     totals_call = next(kwargs for name, kwargs in trading.calls if name == "console_realized_totals")
     assert totals_call["account_slot"] == "binance_usdm_primary"

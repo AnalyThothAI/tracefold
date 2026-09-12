@@ -28,7 +28,17 @@ class RuntimeAccountProjector:
         self._engine = engine
         self._profile = profile
         self._state = state
-        self._route_stop_bps = {route.instrument_id: route.stop_distance_bps for route in profile.routes}
+
+    def _frozen_stop_bps(self, instrument_id: Any) -> int | None:
+        execution = next(
+            (
+                value
+                for value in self._state.executions.values()
+                if value.active and value.route.instrument_id == instrument_id
+            ),
+            None,
+        )
+        return None if execution is None else execution.plan.stop_distance_bps
 
     def snapshot(
         self,
@@ -118,7 +128,7 @@ class RuntimeAccountProjector:
                         position_pnl_complete = False
             else:
                 position_pnl_complete = False
-            stop_bps = self._route_stop_bps.get(position.instrument_id)
+            stop_bps = self._frozen_stop_bps(position.instrument_id)
             if mark is None or stop_bps is None:
                 complete = False
             else:
@@ -176,7 +186,7 @@ class RuntimeAccountProjector:
                 if bool(order.is_reduce_only):
                     continue
                 mark_fact = marks.get(order.instrument_id)
-                stop_bps = self._route_stop_bps.get(order.instrument_id)
+                stop_bps = self._frozen_stop_bps(order.instrument_id)
                 if mark_fact is None or stop_bps is None:
                     complete = False
                 else:

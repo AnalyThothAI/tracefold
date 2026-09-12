@@ -7,6 +7,7 @@ import {
   EXECUTION_SOURCE_ZH,
   EXECUTION_STAGE_ZH,
   EXIT_REASON_ZH,
+  HISTORY_GAP_ZH,
   holdingLabel,
   ledgerSentence,
   moneyLabel,
@@ -57,7 +58,7 @@ export function TradingLoopLedger({
       data-block="ledger"
       flush
       hint={`入场 ${rows.length}（Signal ${rows.length - manual} · 手工 ${manual}）`}
-      title={caseFiltered ? "关联执行记录" : "执行记录 · 最近 24 小时"}
+      title={caseFiltered ? "关联执行记录" : "执行记录 · 近 24 小时及未结束交易"}
     >
       {rows.length ? (
         <div className="trading-ledger-table">
@@ -105,20 +106,45 @@ export function TradingLoopLedger({
               </span>
               <span data-label="成交量">{row.fill_quantity ?? "—"}</span>
               <span data-label="入场均价">{row.fill_avg_price ?? "—"}</span>
-              <span data-label="止损价">{row.stop_trigger_price ?? "—"}</span>
+              <span data-label="止损价">
+                {row.stop_trigger_price ?? "—"}
+                {row.stop_distance_bps != null ? (
+                  <small>冻结止损 {row.stop_distance_bps} bps</small>
+                ) : null}
+                {row.risk_budget_usd != null ? (
+                  <small>
+                    风险预算 {moneyLabel(row.risk_budget_usd)} · 杠杆上限{" "}
+                    {row.max_leverage_at_creation}×
+                  </small>
+                ) : null}
+              </span>
               <span data-label="退出">
                 {row.exit_price ?? "—"}
+                {row.take_profit_bps != null && row.max_holding_ns != null ? (
+                  <small>
+                    止盈 {row.take_profit_bps} bps · 最长 {holdingLabel(0, row.max_holding_ns)}
+                  </small>
+                ) : null}
                 {row.exit_reason ? (
                   <small>{EXIT_REASON_ZH[row.exit_reason] ?? row.exit_reason}</small>
                 ) : null}
               </span>
               <span data-label="已实现">
-                <b data-tone={moneyTone(row.realized_pnl_usd)}>
-                  {moneyLabel(row.realized_pnl_usd)}
+                <b data-tone={moneyTone(row.pnl_known ? row.realized_pnl_usd : null)}>
+                  {row.pnl_known
+                    ? moneyLabel(row.realized_pnl_usd)
+                    : row.stage === "closed"
+                      ? "盈亏未知"
+                      : "—"}
                 </b>
                 <small>
                   持仓 {holdingLabel(row.entry_filled_at_ns, row.position_closed_at_ns)}
                 </small>
+                {!row.history_complete && row.gap_reason ? (
+                  <small data-tone="caution">
+                    {HISTORY_GAP_ZH[row.gap_reason] ?? row.gap_reason}
+                  </small>
+                ) : null}
               </span>
             </article>
           ))}

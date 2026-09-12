@@ -237,12 +237,28 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
         "exit_price": _string_or_none(row.get("exit_price")),
         "realized_pnl_usd": _string_or_none(row.get("realized_pnl_usd")),
         "exit_reason": _string_or_none(row.get("exit_reason")),
+        "plan_status": _string_or_none(row.get("plan_status")),
+        "account_slot": _string_or_none(row.get("account_slot")),
+        "runtime_mode_at_creation": _string_or_none(row.get("runtime_mode_at_creation")),
+        "instrument_id": _string_or_none(row.get("instrument_id")),
+        "entry_client_order_id": _string_or_none(row.get("entry_client_order_id")),
+        "risk_budget_usd": _string_or_none(row.get("risk_budget_usd")),
+        "max_leverage_at_creation": _int_or_none(row.get("max_leverage_at_creation")),
+        "stop_distance_bps": _int_or_none(row.get("stop_distance_bps")),
+        "exit_policy_id": _string_or_none(row.get("exit_policy_id")),
+        "take_profit_bps": _int_or_none(row.get("take_profit_bps")),
+        "max_holding_ns": _int_or_none(row.get("max_holding_ns")),
+        "pnl_known": bool(row["pnl_known"]),
+        "history_complete": bool(row["history_complete"]),
+        "gap_reason": _string_or_none(row.get("gap_reason")),
+        "duration_ns": _int_or_none(row.get("duration_ns")),
         # The venue's own `order_status` and `position_status` are inputs to this word, not a second
         # answer beside it: the table renders the stage, and publishing both let a reader compare a
         # raw venue string against the server's derivation of the same row (#537 PR-5). The Signal's
         # own TTL is an input for the same reason: a Signal that expired without a disposition is
         # `expired`, not work still pending (#604 T3).
         "stage": execution_stage(
+            plan_status=_string_or_none(row.get("plan_status")),
             disposition_reason=reason,
             order_status=_string_or_none(row.get("order_status")),
             fill_quantity=fill_quantity,
@@ -256,10 +272,21 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
 
 def _totals(row: dict[str, Any]) -> dict[str, Any]:
     return {
-        "realized_today_usd": str(row.get("realized_today_usd") or "0"),
-        "realized_total_usd": str(row.get("realized_total_usd") or "0"),
-        "closed_today": int(row.get("closed_today") or 0),
-        "closed_total": int(row.get("closed_total") or 0),
+        "realized_known_today_usd": _string_or_none(row["realized_known_today_usd"]),
+        "realized_known_total_usd": _string_or_none(row["realized_known_total_usd"]),
+        **{
+            key: int(row[key])
+            for key in (
+                "closed_today",
+                "closed_total",
+                "pnl_known_today",
+                "pnl_known_total",
+                "pnl_missing_today",
+                "pnl_missing_total",
+            )
+        },
+        "pnl_complete_today": bool(row["pnl_complete_today"]),
+        "pnl_complete_total": bool(row["pnl_complete_total"]),
     }
 
 

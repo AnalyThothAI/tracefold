@@ -23,6 +23,7 @@ from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, Obs
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.integrations.nautilus.oi_runtime.state import RuntimeReadiness, RuntimeReadinessSnapshot
+from tracefold.integrations.nautilus.oi_runtime.trade_plans import TradePlanChannel
 from tracefold.trading.storage.execution_stream import (
     ExecutionRuntimeState,
     PreparedExecutionObservationBatch,
@@ -63,11 +64,8 @@ class _FakeTrading:
         self.updates: list[ExecutionRuntimeState] = []
         self.recovery_reads = 0
 
-    def execution_recovery_signals(self, **_kwargs: Any) -> tuple[Any, ...]:
+    def active_trade_plans(self, **_kwargs: Any) -> tuple[Any, ...]:
         self.recovery_reads += 1
-        return ()
-
-    def execution_recovery_manual_entries(self, **_kwargs: Any) -> tuple[Any, ...]:
         return ()
 
     def put_execution_runtime_state(self, _state: ExecutionRuntimeState) -> None:
@@ -124,7 +122,8 @@ def _bridge(
         audit=audit,
         update_day_start=lambda _baseline: None,
         singleton=singleton or _singleton([True]),
-        projector=projector or RuntimeStateProjector(initial=_runtime_state(), recovery_inputs=((), ())),
+        projector=projector or RuntimeStateProjector(initial=_runtime_state(), recovery_inputs=()),
+        plans=TradePlanChannel(),
     )
 
 
@@ -325,14 +324,14 @@ def test_the_bridge_thread_owns_the_projection_write_the_recovery_read_and_the_s
     alive = [True]
     singleton = _singleton(alive)
     starting = _runtime_state()
-    projector = RuntimeStateProjector(initial=starting, recovery_inputs=((), ()))
+    projector = RuntimeStateProjector(initial=starting, recovery_inputs=())
     bridge = _bridge(audit=audit, signals=signals, singleton=singleton, projector=projector)
 
     bridge._cycle(repos)
 
     assert trading.updates == []
     assert trading.recovery_reads == 1
-    assert bridge.recovery_inputs() == ((), ())
+    assert bridge.recovery_inputs() == ()
 
     running = replace(
         starting,
@@ -376,7 +375,7 @@ def test_a_failing_projection_write_logs_once_and_leaves_the_inputs_and_the_gate
         execution_strategy="oi_nautilus_v1",
     )
     starting = _runtime_state()
-    projector = RuntimeStateProjector(initial=starting, recovery_inputs=((), ()))
+    projector = RuntimeStateProjector(initial=starting, recovery_inputs=())
     bridge = _bridge(audit=audit, signals=signals, projector=projector)
 
     records: list[str] = []

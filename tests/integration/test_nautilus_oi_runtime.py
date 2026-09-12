@@ -43,6 +43,7 @@ from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.integrations.nautilus.oi_runtime.state import RuntimeControlSnapshot, deterministic_client_order_id
+from tracefold.integrations.nautilus.oi_runtime.trade_plans import TradePlanChannel
 from tracefold.platform.config.models import Settings
 from tracefold.trading import ExecutionObservationV1, parse_operator_command, prepare_parsed_operator_intent
 from tracefold.trading.storage.execution_stream import (
@@ -118,8 +119,28 @@ def _sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def _append_plan(repo: TradingRepository, *, signal_id: str, closed: bool = False) -> None:
+    from tests.nautilus_oi_runtime_fixtures import trade_plan_for_entry, trade_signal
+    from tracefold.integrations.nautilus.oi_runtime.state import RuntimeEntryRequest
+    from tracefold.trading.storage.trade_plans import prepare_trade_plan
+
+    plan = trade_plan_for_entry(RuntimeEntryRequest.from_signal(trade_signal(signal_id=signal_id)))
+    if closed:
+        plan = plan.model_copy(
+            update={
+                "status": "closed",
+                "terminal_at_ns": NOW_NS + 1,
+                "opened_at_ns": NOW_NS,
+                "updated_at_ns": NOW_NS + 1,
+                "exit_reason": "stop_filled",
+            }
+        )
+    with repo.conn.transaction():
+        repo.insert_trade_plan(prepare_trade_plan(plan))
+
+
 def _append_entry_order_fact(repo: TradingRepository, *, signal_id: str, observed_at_ns: int = NOW_NS) -> None:
-    """Write the durable `order`/`leg=entry` fact a restart reclaims ownership from."""
+    """Append historical order evidence; it is never an ownership input."""
 
     observation = ExecutionObservationV1.model_validate(
         {
@@ -232,7 +253,7 @@ def _bridge_singleton() -> AccountSlotSingleton:
 def _bridge_projector() -> RuntimeStateProjector:
     """A projector with nothing offered: `write_once` is a no-op until the loop offers a row."""
 
-    return RuntimeStateProjector(initial=_runtime_state(), recovery_inputs=((), ()))
+    return RuntimeStateProjector(initial=_runtime_state(), recovery_inputs=())
 
 
 def _runtime_state() -> ExecutionRuntimeState:
@@ -268,6 +289,7 @@ def _runtime_bridge(signals: ExecutionSignalClient, *, poll_seconds: float = 0.2
         singleton=_bridge_singleton(),
         projector=_bridge_projector(),
         poll_seconds=poll_seconds,
+        plans=TradePlanChannel(),
     )
 
 
@@ -727,6 +749,7 @@ def test_day_start_write_failure_preserves_commands_and_projection_until_recover
             update_day_start=baselines.append,
             singleton=_bridge_singleton(),
             projector=projector,
+            plans=TradePlanChannel(),
         )
         bridge.set_equity(Decimal("1000"), NOW_NS)
         conn.execute(
@@ -963,7 +986,7 @@ def test_authenticated_cli_to_postgres_to_nautilus_command_observation_process_s
         "quote_unsubscribe_calls": 0,
         "recovered": True,
         "recovered_seeds": 0,
-        "recovery_signals": 0,
+        "recovery_plans": 0,
         "route_catalogue": 1,
         "unexpected_exposure": False,
     }
@@ -1000,7 +1023,7 @@ def test_cold_cache_restart_reclaims_position_and_stop_from_durable_entry_facts(
         repo = TradingRepository(conn)
         _control_row(repo)
         _append_signal(repo)
-        _append_entry_order_fact(repo, signal_id="1" * 64)
+        _append_plan(repo, signal_id="1" * 64)
     finally:
         conn.close()
 
@@ -1014,7 +1037,7 @@ def test_cold_cache_restart_reclaims_position_and_stop_from_durable_entry_facts(
     assert result.returncode == 0, result.stderr
     receipt = json.loads(result.stdout.strip().splitlines()[-1])
 
-    assert receipt["recovery_signals"] == 1, receipt
+    assert receipt["recovery_plans"] == 1, receipt
     assert receipt["recovered_seeds"] == 1, receipt
     assert receipt["recovered"] is True, receipt
     assert receipt["unexpected_exposure"] is False, receipt
@@ -1041,7 +1064,7 @@ def test_cold_cache_restart_reclaims_position_and_stop_from_durable_entry_facts(
                AND normalized_kind = 'signal_disposition'
             """
         ).fetchall()
-        assert [row["disposition"] for row in dispositions] == ["recovered"]
+        assert [row["disposition"] for row in dispositions] == []
     finally:
         verify.close()
 
@@ -1062,7 +1085,7 @@ def test_rolling_restart_after_an_identity_change_keeps_control_state_and_needs_
         repo = TradingRepository(conn)
         _control_row(repo)
         _append_signal(repo)
-        _append_entry_order_fact(repo, signal_id="1" * 64)
+        _append_plan(repo, signal_id="1" * 64)
         # The operator resumed entries on the previous generation; a restart must not undo that.
         resume = _append_command(repo, suffix="7", action="resume_entries")
         factory = ObservationFactory(_ACCOUNT_SLOT, "oi_nautilus_v1")
@@ -1134,11 +1157,12 @@ def test_position_without_durable_entry_facts_halts_and_flatten_account_closes_i
     assert result.returncode == 0, result.stderr
     receipt = json.loads(result.stdout.strip().splitlines()[-1])
 
-    assert receipt["recovery_signals"] == 0, receipt
+    assert receipt["recovery_plans"] == 0, receipt
     assert receipt["recovered_seeds"] == 0, receipt
     assert receipt["recovered"] is False, receipt
-    assert receipt["unexpected_exposure"] is True, receipt
-    assert receipt["execution_safe"] is False, receipt
+    assert receipt["unexpected_exposure"] is False, receipt
+    # Final full private proof follows the native reduce-only close.
+    assert receipt["execution_safe"] is True, receipt
     assert receipt["admitted_commands"] == 1, receipt
     closes = [
         order
@@ -1196,6 +1220,7 @@ def test_stopped_out_identity_does_not_reclaim_a_new_position_on_the_same_route(
         repo = TradingRepository(conn)
         _control_row(repo)
         _append_signal(repo)
+        _append_plan(repo, signal_id="1" * 64, closed=True)
         _append_entry_order_fact(repo, signal_id="1" * 64)
         _append_closed_position_fact(repo, signal_id="1" * 64)
         _append_command(repo, suffix="b", action="flatten")
@@ -1212,11 +1237,12 @@ def test_stopped_out_identity_does_not_reclaim_a_new_position_on_the_same_route(
     assert result.returncode == 0, result.stderr
     receipt = json.loads(result.stdout.strip().splitlines()[-1])
 
-    assert receipt["recovery_signals"] == 0, receipt
+    assert receipt["recovery_plans"] == 0, receipt
     assert receipt["recovered_seeds"] == 0, receipt
     assert receipt["recovered"] is False, receipt
-    assert receipt["unexpected_exposure"] is True, receipt
-    assert receipt["execution_safe"] is False, receipt
+    assert receipt["unexpected_exposure"] is False, receipt
+    # Final full private proof follows the native reduce-only close.
+    assert receipt["execution_safe"] is True, receipt
     closes = [
         order
         for order in receipt["orders"]
@@ -1267,6 +1293,7 @@ def test_the_bridge_thread_owns_the_projection_write_and_the_account_slot_heartb
             update_day_start=lambda _baseline: None,
             singleton=singleton,
             projector=projector,
+            plans=TradePlanChannel(),
         )
         bridge.start()
         _wait_for_bridge(bridge, lambda: bridge_connected(bridge))

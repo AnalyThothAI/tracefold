@@ -44,7 +44,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260912_0376"
+HEAD = "20260912_0377"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -142,6 +142,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260912_0376",
         "20260908_0375",
         "20260907_0374",
         "20260906_0373",
@@ -219,8 +220,8 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    # The net-buy hard cut preserves historical evidence and requires a verified backup to restore.
-    with pytest.raises(RuntimeError, match="wallet_net_buy_downgrade_requires_verified_backup"):
+    # The TradePlan hard cut cannot roll venue fills back by downgrading its ownership schema.
+    with pytest.raises(RuntimeError, match="trade_plan_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
     assert _table_exists("news_delivery_queue") is True
@@ -972,12 +973,12 @@ def test_pydantic_only_cut_drops_the_shape_checks_the_digests_and_the_readiness_
     try:
         surviving = conn.execute(
             """
-            SELECT count(*) AS n FROM pg_proc
+            SELECT proname FROM pg_proc
              WHERE pronamespace = 'public'::regnamespace AND proname LIKE 'trading\\_%'
             """
-        ).fetchone()
-        assert surviving is not None
-        assert surviving["n"] == 0
+        ).fetchall()
+        # #644 adds immutable intent/terminal enforcement, never the retired payload validators.
+        assert {row["proname"] for row in surviving} == {"trading_trade_plan_guard"}
 
         columns = {
             (str(row["table_name"]), str(row["column_name"]))

@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
+
+from nautilus_trader.adapters.binance.http.error import BinanceError, get_binance_error_code
+from nautilus_trader.model.identifiers import InstrumentId
+
+from tracefold.trading import TradePlan
+
+from .trade_plans import EntryQueryProof
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,8 +72,45 @@ async def load_complete_binance_account_reports(client: Any) -> CompleteBinanceA
     )
 
 
+async def query_planned_entry(client: Any, plan: TradePlan) -> EntryQueryProof:
+    """Query the frozen economic identity without the adapter's error-to-None conversion.
+
+    Only Binance's no-such-order answer means absent. Transport/auth/parse errors propagate,
+    so they can never manufacture terminal proof or authorize a duplicate economic order.
+    """
+    instrument_id = InstrumentId.from_str(plan.instrument_id)
+    try:
+        order = await client._http_account.query_order(
+            symbol=instrument_id.symbol.value, orig_client_order_id=plan.entry_client_order_id
+        )
+    except BinanceError as exc:
+        code = get_binance_error_code(exc)
+        if code is not None and code.value == -2013:
+            return EntryQueryProof(plan.entry_id, "absent")
+        raise
+    if (
+        order.clientOrderId != plan.entry_client_order_id
+        or client._get_cached_instrument_id(order.symbol) != instrument_id
+        or order.side is None
+        or order.side.value != ("BUY" if plan.direction == "long" else "SELL")
+        or order.type is None
+        or order.type.value != "MARKET"
+        or order.reduceOnly is not False
+        or order.origQty is None
+        or Decimal(order.origQty) != plan.entry_quantity
+    ):
+        raise RuntimeError("oi_runtime_planned_entry_query_identity_invalid")
+    status = None if order.status is None else order.status.value
+    if status in {"FILLED", "CANCELED", "REJECTED", "EXPIRED", "EXPIRED_IN_MATCH"}:
+        return EntryQueryProof(plan.entry_id, "terminal", Decimal(order.executedQty))
+    if status in {"NEW", "PARTIALLY_FILLED", "PENDING_CANCEL"}:
+        return EntryQueryProof(plan.entry_id, "working", Decimal(order.executedQty))
+    raise RuntimeError("oi_runtime_planned_entry_query_status_unknown")
+
+
 __all__ = [
     "CompleteBinanceAccountReports",
     "load_complete_binance_account_reports",
+    "query_planned_entry",
     "single_binance_execution_client",
 ]

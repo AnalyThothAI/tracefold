@@ -30,14 +30,13 @@ const desktop = specs(
   "trading-desk.spec.ts",
   "trading-status.spec.ts",
 );
-const tablet = specs(...everyViewport, "tablet-shell.spec.ts");
+const tablet = specs(...everyViewport, "tablet-shell.spec.ts", "trading-desk.spec.ts");
 const mobile = specs(
   ...everyViewport,
   "mobile-navigation.spec.ts",
   "mobile-route-cold-load.spec.ts",
   "mobile-shell.spec.ts",
-  // #604 T4: the desk is a two-viewport spec. It asserts the thumb target at 390 and the ledger's own
-  // horizontal scroll at both desktop widths; the tablet frame adds no claim either of those does not.
+  // #644: frozen risk and missing-history text must stay readable across all four viewports.
   "trading-desk.spec.ts",
 );
 

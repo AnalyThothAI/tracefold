@@ -240,7 +240,7 @@ class _ProjectionTrading:
 
 
 def _projector(starting: ExecutionRuntimeState) -> RuntimeStateProjector:
-    return RuntimeStateProjector(initial=starting, recovery_inputs=((), ()))
+    return RuntimeStateProjector(initial=starting, recovery_inputs=())
 
 
 def test_runtime_state_projector_writes_changes_immediately_and_unchanged_state_only_on_heartbeat() -> None:
@@ -559,7 +559,9 @@ def test_the_runtime_namespace_produces_exactly_these_venue_visible_identities(m
 
     routes = oi_profile().routes
     profile = nautilus_root._active_profile(
-        Settings(trading={"execution": {"mode": mode}}),
+        Settings(
+            trading={"execution": {"mode": mode, "exit_policy": {"take_profit_bps": 200, "max_holding_seconds": 14400}}}
+        ),
         cast(Any, mode),
         routes,
     )
@@ -605,3 +607,13 @@ def test_risk_bounds_refuse_the_values_that_would_make_a_limit_stop_being_one(
 ) -> None:
     with pytest.raises(ValidationError, match=reason):
         _settings_with_risk(**override)
+
+
+def test_paper_defaults_are_explicit_engineering_values_and_live_requires_values() -> None:
+    paper = nautilus_root._active_profile(Settings(), "paper", oi_profile().routes)
+    assert paper.exit_policy.take_profit_bps == 200
+    assert paper.exit_policy.max_holding_ns == 14_400_000_000_000
+    with pytest.raises(ValidationError, match="trading_execution_live_exit_policy_required"):
+        Settings(trading={"execution": {"mode": "live"}})
+    with pytest.raises(ValidationError, match="Field required"):
+        Settings(trading={"execution": {"mode": "live", "exit_policy": {}}})

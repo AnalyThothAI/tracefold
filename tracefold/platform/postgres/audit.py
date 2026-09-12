@@ -131,6 +131,7 @@ TRADING_TABLES = (
     "trading_candidate_gate_decisions",
     "trading_cases",
     "trading_trade_signals",
+    "trading_trade_plans",
     "trading_operator_intents",
     "trading_execution_observations",
     "trading_execution_runtime_control_state",

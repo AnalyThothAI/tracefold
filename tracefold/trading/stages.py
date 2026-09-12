@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-ExecutionStage = Literal["pending", "rejected", "expired", "ordered", "filled", "protected", "closed"]
+ExecutionStage = Literal[
+    "pending", "rejected", "expired", "ordered", "filled", "protected", "closing", "closed", "unresolved"
+]
 
 # Every terminal entry disposition that means "this Signal or manual Command became an order".
 # Everything else the Runtime writes is a refusal; the retryable clock refusals never reach a durable
@@ -28,24 +30,26 @@ def execution_stage(
     position_status: str | None,
     expires_at_ns: int | None,
     now_ns: int,
+    plan_status: str | None = None,
 ) -> ExecutionStage:
-    """How far one entry got, read off the facts its own observations carry and its own TTL.
+    """Plans own lifecycle. Historical entries without a plan use their recorded observations.
 
-    The newest fact wins: a closed position is closed however it got there, and a protected position
-    is the one an operator wants told apart from a bare fill. An entry the Runtime accepted always has
-    an entry order observation, so `ordered` accepts either witness rather than trusting one. A manual
-    entry reaches this the same way a Signal does; only where its facts are correlated differs.
-
-    A Signal with no disposition at all is `pending` only while it can still get one. The bridge that
-    hands Signals to the Runtime anti-joins on `expires_at_ns > now`, so a Signal that was refused for
-    a retryable reason -- and therefore has no durable disposition row -- stops being offered the
-    moment it expires and never receives one. `pending` for the rest of the window was the desk
-    reading that hole as work still in flight (#604 T3, audit A4). The TTL is the Signal's own
-    published clock, so the answer is derived from durable facts rather than from a new writer or a
-    new gate. `expires_at_ns` is `None` for a manual entry, whose Command carries its own TTL and
-    whose refusals are always written down.
+    A missing audit row cannot erase an active plan or turn it into an expired Signal.
+    The Signal TTL applies only before an entry plan exists.
     """
 
+    if plan_status == "closed":
+        return "closed"
+    if plan_status == "closing":
+        return "closing"
+    if plan_status == "unresolved":
+        return "unresolved"
+    if plan_status == "open":
+        return "protected" if stop_trigger_price is not None else "filled"
+    if plan_status == "entry_working":
+        return "ordered"
+    if plan_status == "prepared":
+        return "pending"
     if position_status == "closed":
         return "closed"
     if stop_trigger_price is not None:

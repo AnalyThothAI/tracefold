@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from decimal import Decimal
 from functools import partial
 from typing import Any
@@ -25,6 +28,7 @@ from psycopg.rows import dict_row
 from tests.nautilus_oi_runtime_fixtures import ACCOUNT_ID, NOW_NS, oi_profile
 from tracefold.app.nautilus.oi_runtime import (
     OiRuntimeDatabaseBridge,
+    commit_entry_plan,
     flush_audit_once,
     load_recovery_inputs,
     load_runtime_control_state,
@@ -45,6 +49,8 @@ from tracefold.integrations.nautilus.oi_runtime.state import (
     protection_leg,
 )
 from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrategy
+from tracefold.integrations.nautilus.oi_runtime.trade_plans import TradePlanChannel
+from tracefold.trading.storage.trade_plans import prepare_trade_plan_update
 
 _COLD_QUANTITY = Decimal("0.049")
 _COLD_ENTRY_PRICE = Decimal(10_000)
@@ -217,6 +223,11 @@ def main() -> None:
         "cold_unclaimed",
         "rolling_restart",
         "stop_filled",
+        "take_profit",
+        "time_exit",
+        "crash_after_prepare",
+        "crash_after_entry",
+        "cold_config_change",
         "flatten_owned",
         "manual_entry_flatten",
     }:
@@ -237,7 +248,12 @@ def main() -> None:
                 "cold_recovery",
                 "cold_unclaimed",
                 "rolling_restart",
+                "cold_config_change",
                 "stop_filled",
+                "take_profit",
+                "time_exit",
+                "crash_after_prepare",
+                "crash_after_entry",
                 "flatten_owned",
             }
             else 0
@@ -252,6 +268,10 @@ def main() -> None:
         elif mode == "manual_entry_flatten":
             admitted_commands = signals.poll_commands_once(_manual_entries_only(unresolved_commands))
         profile = oi_profile()
+        if mode == "cold_config_change":
+            profile = replace(profile, routes=tuple(replace(route, stop_distance_bps=400) for route in profile.routes))
+        if mode == "time_exit":
+            profile = replace(profile, exit_policy=replace(profile.exit_policy, max_holding_ns=150_000_000))
         control_state = RuntimeControlSnapshot(False, False, ())
         if mode == "rolling_restart":
             # A rolling restart after a code or configuration change: same account slot, same
@@ -262,15 +282,43 @@ def main() -> None:
         audit = AuditSink(factory=factory)
         readiness = RuntimeReadiness(reconciliation_stale_after_ns=profile.risk.reconciliation_stale_after_ns)
         poll_commands = partial(signals.poll_commands_once, unresolved_commands)
+        plans = TradePlanChannel()
+        plan_writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-plan-bridge")
+
+        def flush_plans() -> None:
+            plan = plans.pending_prepare()
+            if plan is not None:
+                receipt = commit_entry_plan(repos, plan)
+                if mode == "crash_after_prepare":
+                    os._exit(74)
+                plans.committed(receipt.plan, newly_committed=receipt.newly_committed)
+            for update in plans.pending_updates():
+                prepared = prepare_trade_plan_update(update)
+                with repos.transaction():
+                    repos.trading.update_trade_plan(prepared)
+                plans.updated(update)
+
+        def dispatch_test_pump(pump: Callable[[], None]) -> None:
+            pump()
+            # Backtest time does not wait for wall time. The harness advances the real DB worker
+            # outside the native callback, then delivers its receipt on the next callback pass.
+            pending = plans.pending_prepare() is not None
+            plan_writer.submit(flush_plans).result(timeout=5)
+            if pending:
+                pump()
+
         strategy = _CountingOiStrategy(
-            on_position_opened_hook=(poll_commands if mode in {"flatten_owned", "manual_entry_flatten"} else None),
+            on_position_opened_hook=(lambda: os._exit(74))
+            if mode == "crash_after_entry"
+            else (poll_commands if mode in {"flatten_owned", "manual_entry_flatten"} else None),
             profile=profile,
             signals=signals,
+            plans=plans,
             audit=audit,
             readiness=readiness,
             # One `BacktestEngine` thread, no event loop: the timer callback already is the
             # callback thread, and marshalling would have nowhere to marshal to.
-            dispatch_pump=lambda pump: pump(),
+            dispatch_pump=dispatch_test_pump,
             singleton_ready=lambda: True,
             day_start=DayStartBaseline("2030-03-17", Decimal("1000"), NOW_NS - 1, "4" * 64),
             request_reconciliation=lambda _reason: None,
@@ -329,7 +377,17 @@ def main() -> None:
                     ts_init=NOW_NS + 400_000_000,
                 )
             )
-        if mode in {"flatten_owned", "manual_entry_flatten"}:
+        if mode == "take_profit":
+            tape.append(
+                TestDataStubs.quote_tick(
+                    instrument=instrument,
+                    bid_price=10_300,
+                    ask_price=10_301,
+                    ts_event=NOW_NS + 300_000_000,
+                    ts_init=NOW_NS + 300_000_000,
+                )
+            )
+        if mode in {"flatten_owned", "manual_entry_flatten", "take_profit", "time_exit"}:
             tape.append(
                 TestDataStubs.quote_tick(
                     instrument=instrument,
@@ -341,26 +399,25 @@ def main() -> None:
             )
         engine.add_data(tape)
         engine.add_strategy(strategy)
-        if mode in {"cold_recovery", "cold_unclaimed", "rolling_restart"}:
-            recovery_signals, recovery_manual_entries = load_recovery_inputs(repos, profile.account_slot, NOW_NS)
+        if mode in {"cold_recovery", "cold_unclaimed", "rolling_restart", "cold_config_change"}:
+            recovery_plans = load_recovery_inputs(repos, profile.account_slot, profile.mode)
             _seed_cold_cache(
                 engine=engine,
                 strategy=strategy,
                 profile=profile,
                 instrument=instrument,
-                entry_id=recovery_signals[0].signal_id if recovery_signals else None,
+                entry_id=recovery_plans[0].entry_id if recovery_plans else None,
             )
             snapshot = build_runtime_reconciliation_snapshot(
                 profile=profile,
-                signals=recovery_signals,
-                manual_entries=recovery_manual_entries,
+                plans=recovery_plans,
                 cache=engine.cache,
                 account_observed_at_ns=NOW_NS,
                 reconciliation_observed_at_ns=NOW_NS,
             )
             recovered = strategy.reconcile_runtime(snapshot)
         else:
-            recovery_signals = ()
+            recovery_plans = ()
             snapshot = RuntimeReconciliationSnapshot(
                 account_slot=profile.account_slot,
                 account_observed_at_ns=NOW_NS,
@@ -368,6 +425,20 @@ def main() -> None:
             )
             recovered = strategy.reconcile_runtime(snapshot)
         engine.run()
+        plan_writer.submit(flush_plans).result(timeout=5)
+        proof_at = NOW_NS + 1_000_000_000
+        strategy.clock.set_time(proof_at)
+        strategy.reconcile_runtime(
+            build_runtime_reconciliation_snapshot(
+                profile=profile,
+                plans=load_recovery_inputs(repos, profile.account_slot, profile.mode),
+                cache=engine.cache,
+                account_observed_at_ns=proof_at,
+                reconciliation_observed_at_ns=proof_at,
+            )
+        )
+        plan_writer.submit(flush_plans).result(timeout=5)
+        plan_writer.shutdown(wait=True)
         flushed = flush_audit_once(
             repos=repos,
             audit=audit,
@@ -386,7 +457,7 @@ def main() -> None:
                     "quote_subscriptions": strategy.peak_quote_subscriptions,
                     "route_catalogue": len(profile.routes),
                     "recovered_seeds": len(snapshot.executions),
-                    "recovery_signals": len(recovery_signals),
+                    "recovery_plans": len(recovery_plans),
                     "execution_safe": readiness_snapshot.execution_safe,
                     "unexpected_exposure": readiness_snapshot.unexpected_exposure,
                     "positions_count": len(positions),

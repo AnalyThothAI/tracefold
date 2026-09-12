@@ -26,6 +26,7 @@ from tests.nautilus_oi_runtime_fixtures import (
     NOW_NS,
     SignalRows,
     oi_profile,
+    pump_with_committed_plan,
     registered_oi_strategy,
     trade_signal,
 )
@@ -68,7 +69,7 @@ def test_an_admitted_entry_subscribes_exactly_its_own_instrument() -> None:
     context = registered_oi_strategy(values=(trade_signal(),), profile=profile)
     context.strategy.on_start()
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert len(context.strategy.submitted) == 1
     assert context.strategy.subscribed == [context.instrument.id]
@@ -80,7 +81,7 @@ def test_no_order_is_sized_before_the_first_tick_and_the_signal_is_redelivered_n
     context = registered_oi_strategy(values=(signal,), with_quote=False)
     context.strategy.on_start()
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     # Subscribed, nothing submitted, and no durable verdict: the Signal stays unresolved so the next
     # indexed poll offers it again inside its TTL.
@@ -100,7 +101,7 @@ def test_no_order_is_sized_before_the_first_tick_and_the_signal_is_redelivered_n
         )
     )
     context.signals.poll_once(SignalRows(signal))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert len(context.strategy.submitted) == 1
     assert context.strategy.subscribed == [context.instrument.id]
@@ -110,12 +111,12 @@ def test_a_market_that_never_ticks_is_refused_terminally_once_the_warm_up_is_spe
     signal = trade_signal()
     context = registered_oi_strategy(values=(signal,), with_quote=False)
     context.strategy.on_start()
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     assert audit_queued_count(context.audit) == 0
 
     context.clock.set_time(NOW_NS + QUOTE_WARMUP_NS + 1)
     context.signals.poll_once(SignalRows(signal))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     disposition = context.audit.flush_once(lambda _values: None)[0]
     assert disposition.normalized_kind == "signal_disposition"
@@ -129,7 +130,7 @@ def test_a_market_that_never_ticks_is_refused_terminally_once_the_warm_up_is_spe
 def test_a_closed_position_gives_the_quote_stream_back() -> None:
     context = registered_oi_strategy(values=(trade_signal(),))
     context.strategy.on_start()
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     entry = context.strategy.submitted[0][0]
     position_id = PositionId("BTCUSDT-PERP.BINANCE-OI-RUNTIME")
     context.strategy.on_position_opened(
@@ -170,7 +171,7 @@ def test_stopping_hands_back_every_stream_it_opened_and_no_others() -> None:
     profile = _catalogue_profile()
     context = registered_oi_strategy(values=(trade_signal(),), profile=profile)
     context.strategy.on_start()
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     context.strategy.on_stop()
 

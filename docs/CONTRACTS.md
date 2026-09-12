@@ -1222,40 +1222,42 @@ Runtime facts, and status carries readiness plus bounded totals.
   the evidence shown in a Case, and source_item_id may be null.
 
 - `GET /api/trading/executions` — the desk table (#528 PR-1, PR-3).
-  Optional case_id selects that Case's retained Signal executions before
-  limiting, outside the ordinary 24-hour window. Account totals
-  keep their own scope; manual entries have no Case and are excluded from
-  a Case-specific execution list. One row per
-  entry identity in a bounded 24-hour window: a `TradeSignalV1`, or a
-  `manual_entry` Command, which is the identity the Runtime correlates that
-  entry's facts under. Each row folds its own `signal_disposition` or
-  `control_disposition`, `order`, `fill`, `protection` and `position`
-  observations into one row: `source ∈ {signal, manual}` says which kind of
-  entry it was, `entry_id` is the `signal_id` or the `command_id`, `case_id` is
-  absent on a manual entry because a manual entry has no Case, and the venue
-  numbers are the entry's own. The backend derives one
-  `stage ∈ {pending, rejected, expired, ordered, filled, protected, closed}`.
-  `stage` is the one word derived from the venue's own `order_status` and
-  `position_status`, which are its inputs and not published beside it, and the
-  `accepted | rejected` split that was published said what `ordered` and
-  `rejected` already say about the same row (#537 PR-5); `last_observed_at_ns`
-  was a second clock beside `observed_at_ns` that no column printed. The Signal's
-  own `expires_at_ns` is an input too (#604 T3): a Signal with no disposition and
-  no order past its TTL is `expired`, because the bridge that offers Signals to
-  the Runtime anti-joins on that clock and therefore stops offering it — read as
-  `pending` it was a row an operator could not explain and the desk claimed was
-  still in flight. Three columns come out of the same fold: `entry_filled_at_ns`
-  and `position_closed_at_ns`, the two instants a holding time is the distance
-  between, and `order_reject_reason`, the venue's own words on an entry order it
-  refused, absent on every row the Runtime wrote before it recorded them
-  (#604 T1).
-  The response also carries account `totals`: `realized_today_usd`, `realized_total_usd`,
-  `closed_today` and `closed_total`, folded over every `closed` position this
-  account slot has, manual entries included, the day half-open on the server's
-  own UTC clock. It is the one read on the response with no 24 h window, because
-  a running realized result bounded by a window answers a different question from
-  the one an operator reconciles against the venue. Bounded to
-  100 entry rows with a `complete` flag and no cursor.
+  Optional case_id selects that Case's retained entries before limiting, outside
+  the ordinary 24-hour window; manual entries have no Case. Each entry identity
+  appears once. The ordinary list includes recent entries/recently closed plans
+  and every nonterminal plan, even older than 24 hours, bounded to 100 rows with
+  `complete` and no cursor.
+
+  TradePlan supplies lifecycle and frozen intent. Optional plan fields are
+  `plan_status`, `account_slot`, `runtime_mode_at_creation`, `instrument_id`,
+  `entry_client_order_id`, `stop_distance_bps`, `risk_budget_usd`,
+  `max_leverage_at_creation`, `exit_policy_id`, `take_profit_bps` and
+  `max_holding_ns`; historical entries without a plan leave them absent/null.
+  Observations supply known fills, prices, venue refusal text and realized PnL.
+  `stage ∈ {pending, rejected, expired, ordered, filled, protected, closing, closed, unresolved}`
+  uses plan lifecycle when available; a missing audit row never expires an active plan.
+  `entry_filled_at_ns`, `position_closed_at_ns` and `duration_ns` preserve the
+  available clocks, with frozen plan clocks used when native observations are missing.
+
+  Each row publishes `pnl_known`, `history_complete` and optional `gap_reason`.
+  Gap reasons include `entry_fill_missing`, `close_observation_missing`,
+  `exit_fills_incomplete`, `audit_gap`, `entry_outcome_unknown` and
+  `native_pnl_basis_incomplete_after_restart`. A known PnL can coexist with an
+  incomplete fill audit; completeness and numerical availability are distinct.
+  Exit reasons are `stop_filled`, `take_profit`, `time_exit`, `operator_flatten`,
+  `protection_failure`, `recovery_safety_flatten`, `venue_unknown` or
+  `not_submitted`; historical stored reason strings remain readable.
+
+  Account totals count each closed identity once across terminal plans and native
+  close observations. `realized_known_today_usd` and `realized_known_total_usd`
+  sum only present PnL values; they are null when none are known. `closed_today/total`,
+  `pnl_known_today/total`, `pnl_missing_today/total` and
+  `pnl_complete_today/total` accompany the amounts. Complete requires every closed
+  entry to have known PnL, matching entry/exit fill coverage, a close observation
+  and no known history gap. The UTC day is a half-open interval; totals have no
+  24-hour limit. Plans proven never submitted are not counted as closed positions.
+  Old total names are removed, without aliases.
+
 - The HTTP console is read-only (#624). Operator commands are available through
   the local CLI only. The former browser command route, command request/receipt
   schemas, and the orphan `commands[]` control ledger payload are removed.

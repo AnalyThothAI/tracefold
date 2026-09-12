@@ -102,7 +102,9 @@ describe("TradingPage", () => {
     renderTrading("/trading?tab=executions");
 
     expect(await screen.findByText("crypto:perp:BTC:USDT")).toBeVisible();
-    expect(screen.getByRole("heading", { name: "执行记录 · 最近 24 小时" })).toBeVisible();
+    expect(
+      screen.getByRole("heading", { name: "执行记录 · 近 24 小时及未结束交易" }),
+    ).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "策略判定" }));
     expect(await screen.findByRole("heading", { name: "最近 24 小时 · 判定分布" })).toBeVisible();
     expect(screen.getByText(/执行状态账本读取失败；保留其余已验证事实。/)).toBeVisible();
@@ -175,7 +177,7 @@ describe("TradingPage", () => {
     expect(within(row).getByText("已受理")).toBeVisible();
     expect(within(row).getByText("0.049")).toBeVisible();
     expect(within(row).getByText("9699.0")).toBeVisible();
-    expect(within(row).getByText("flatten 退出")).toBeVisible();
+    expect(within(row).getByText("操作员平仓")).toBeVisible();
     // A loss is green and a profit red, exactly as `tokens.css` reads the two market directions.
     expect(within(row).getByText("−$14.92")).toHaveAttribute("data-tone", "loss");
     expect(within(row).getByText("持仓 1m33s")).toBeVisible();
@@ -186,6 +188,52 @@ describe("TradingPage", () => {
     // The manual entry has no Case, so its market cell is a word rather than the button a Signal carries.
     expect(within(manual as HTMLElement).queryByRole("button")).toBeNull();
     expect(within(manual as HTMLElement).getByText(/SHORT · 手工/)).toBeVisible();
+  });
+
+  it("keeps all-missing PnL unknown and names the frozen exit policy and history gap", async () => {
+    const base = tradingExecutionsFixture();
+    server.use(
+      http.get(/.*\/api\/trading\/executions$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingExecutionsFixture({
+            totals: {
+              ...base.totals,
+              realized_known_today_usd: null,
+              realized_known_total_usd: null,
+              closed_today: 3,
+              closed_total: 3,
+              pnl_known_today: 0,
+              pnl_known_total: 0,
+              pnl_missing_today: 3,
+              pnl_missing_total: 3,
+              pnl_complete_today: false,
+              pnl_complete_total: false,
+            },
+            executions: [
+              tradingExecutionRowFixture({
+                realized_pnl_usd: null,
+                pnl_known: false,
+                history_complete: false,
+                gap_reason: "native_pnl_basis_incomplete_after_restart",
+              }),
+            ],
+          }),
+        }),
+      ),
+    );
+    renderTrading();
+    const tally = await screen.findByRole("heading", { name: "今日战况" });
+    const card = tally.closest("[data-block]") as HTMLElement;
+    expect(within(card).getByText("今日已知已实现盈亏").nextSibling).toHaveTextContent("—");
+    expect(within(card).getAllByText("平仓 3 · 已知 0 · 缺失 3")).toHaveLength(2);
+    expect(within(card).getByText(/不能视为账户完整净利润/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "执行记录" }));
+    expect(await screen.findByText("盈亏未知")).toBeVisible();
+    expect(screen.getByText("冻结止损 200 bps")).toBeVisible();
+    expect(screen.getByText(/风险预算.*10.00.*2×/)).toBeVisible();
+    expect(screen.getByText(/止盈 200 bps/)).toBeVisible();
+    expect(screen.getByText(/重启后成交成本基础不完整/)).toBeVisible();
   });
 
   it("prints a dash for an entry that never filled, and the venue's own rejection words", async () => {
@@ -212,11 +260,11 @@ describe("TradingPage", () => {
     const tally = (await screen.findByRole("heading", { name: "今日战况" })).closest(
       "section",
     ) as HTMLElement;
-    expect(within(tally).getByText("今日已实现").nextSibling).toHaveTextContent("−$13.80");
-    expect(within(tally).getByText("累计已实现").nextSibling).toHaveTextContent("$56.40");
-    expect(within(tally).getByText("累计平仓 9 笔")).toBeVisible();
+    expect(within(tally).getByText("今日已知已实现盈亏").nextSibling).toHaveTextContent("−$13.80");
+    expect(within(tally).getByText("累计已知已实现盈亏").nextSibling).toHaveTextContent("$56.40");
+    expect(within(tally).getByText("平仓 9 · 已知 9 · 缺失 0")).toBeVisible();
     // Four entries in the window, two of which the Runtime refused before any order reached the venue.
-    expect(within(tally).getByText("今日入场").nextSibling).toHaveTextContent("4");
+    expect(within(tally).getByText("所列入场").nextSibling).toHaveTextContent("4");
     expect(within(tally).getByText("受理 2 · 拒绝 2")).toBeVisible();
   });
 

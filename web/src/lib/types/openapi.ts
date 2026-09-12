@@ -3180,6 +3180,8 @@ export interface components {
          *     was a second clock beside `observed_at_ns` that no column printed.
          */
         TradingExecutionRowData: {
+            /** Account Slot */
+            account_slot?: string | null;
             /** Case Id */
             case_id?: string | null;
             /**
@@ -3189,28 +3191,52 @@ export interface components {
             direction: "long" | "short";
             /** Disposition Reason */
             disposition_reason?: string | null;
+            /** Duration Ns */
+            duration_ns?: number | null;
+            /** Entry Client Order Id */
+            entry_client_order_id?: string | null;
             /** Entry Filled At Ns */
             entry_filled_at_ns?: number | null;
             /** Entry Id */
             entry_id: string;
+            /** Exit Policy Id */
+            exit_policy_id?: string | null;
             /** Exit Price */
             exit_price?: string | null;
             /** Exit Reason */
-            exit_reason?: ("stop_filled" | "flatten" | "unclaimed_flatten") | null;
+            exit_reason?: string | null;
             /** Fill Avg Price */
             fill_avg_price?: string | null;
             /** Fill Quantity */
             fill_quantity?: string | null;
+            /** Gap Reason */
+            gap_reason?: string | null;
+            /** History Complete */
+            history_complete: boolean;
+            /** Instrument Id */
+            instrument_id?: string | null;
             /** Market Key */
             market_key: string;
+            /** Max Holding Ns */
+            max_holding_ns?: number | null;
+            /** Max Leverage At Creation */
+            max_leverage_at_creation?: number | null;
             /** Observed At Ns */
             observed_at_ns: number;
             /** Order Reject Reason */
             order_reject_reason?: string | null;
+            /** Plan Status */
+            plan_status?: string | null;
+            /** Pnl Known */
+            pnl_known: boolean;
             /** Position Closed At Ns */
             position_closed_at_ns?: number | null;
             /** Realized Pnl Usd */
             realized_pnl_usd?: string | null;
+            /** Risk Budget Usd */
+            risk_budget_usd?: string | null;
+            /** Runtime Mode At Creation */
+            runtime_mode_at_creation?: ("paper" | "live") | null;
             /**
              * Source
              * @enum {string}
@@ -3220,9 +3246,13 @@ export interface components {
              * Stage
              * @enum {string}
              */
-            stage: "pending" | "rejected" | "expired" | "ordered" | "filled" | "protected" | "closed";
+            stage: "pending" | "rejected" | "expired" | "ordered" | "filled" | "protected" | "closing" | "closed" | "unresolved";
+            /** Stop Distance Bps */
+            stop_distance_bps?: number | null;
             /** Stop Trigger Price */
             stop_trigger_price?: string | null;
+            /** Take Profit Bps */
+            take_profit_bps?: number | null;
         };
         /** TradingExecutionsData */
         TradingExecutionsData: {
@@ -3259,10 +3289,22 @@ export interface components {
             closed_today: number;
             /** Closed Total */
             closed_total: number;
-            /** Realized Today Usd */
-            realized_today_usd: string;
-            /** Realized Total Usd */
-            realized_total_usd: string;
+            /** Pnl Complete Today */
+            pnl_complete_today: boolean;
+            /** Pnl Complete Total */
+            pnl_complete_total: boolean;
+            /** Pnl Known Today */
+            pnl_known_today: number;
+            /** Pnl Known Total */
+            pnl_known_total: number;
+            /** Pnl Missing Today */
+            pnl_missing_today: number;
+            /** Pnl Missing Total */
+            pnl_missing_total: number;
+            /** Realized Known Today Usd */
+            realized_known_today_usd: string | null;
+            /** Realized Known Total Usd */
+            realized_known_total_usd: string | null;
         };
         /**
          * TradingStatusData

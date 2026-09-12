@@ -220,7 +220,7 @@ diagnosis; the container healthcheck asks `/healthz`, because a runtime that is
 alive but blocked is exactly the process an operator must be able to reach, and
 restarting the owner of an open position is not a repair. The Runtime's own
 `entry_block_reason` is one of
-`startup_reconciliation_unproven`, `reconciliation_stale`, `unexpected_exposure`,
+`startup_reconciliation_unproven`, `reconciliation_stale`, `unexpected_exposure`, `ownership_ambiguous`,
 `singleton_lost`, `entries_paused` and `emergency_halted`, and the read
 projection adds only its own `disabled` / `runtime_*` reasons for a row that is
 missing, stale or from another identity; a backpressured audit
@@ -232,18 +232,68 @@ whichever of the entry path and the background owner needs it first. Use
 `protection_status`, `unexpected_exposure`, and `reconciliation_age_ms` to locate
 the blocked layer; none is an order, fill, or account-flat receipt.
 
-A restart while in a position reclaims that position and its stop from this
-profile's durable entry-order facts, so a rolling restart of the current profile
-needs no flat account and opens no second entry. `unexpected_exposure=true`
-means the account carries exposure no durable entry identity claims — a position
-opened by hand on Binance, one older than the seven-day recovery window, or one
-on a route whose last Runtime position was already recorded closed. Read
-`current_account` in `trading status` or on the Trading page: every position and
-order row carries `owned`, so the unclaimed instrument, side and quantity are
-named. `/flatten account TTL_SECONDS` converges the whole account slot,
-not only Runtime-owned exposure: it reduce-only closes every open position and
-cancels every resting order, and completes only after a later private Binance
-reconciliation proves flat. Ownership constrains only new entries.
+A restart while in a position reclaims it from its nonterminal TradePlan and exact
+native order/position proof. Recovery has no age cutoff. Config edits affect new
+plans: existing positions retain the admitted stop distance, risk contribution,
+TP and maximum holding duration. A cold reconstruction marks PnL unknown when the
+original native cost basis is unavailable.
+
+`unexpected_exposure=true` means native exposure lacks a uniquely proven current
+account/mode plan. Conflicting candidates explicitly report `ownership_ambiguous`.
+Read `current_account` in `trading status` or the Trading page for the instrument,
+side, quantity and `owned` flag. `/flatten account TTL_SECONDS` reduce-only closes
+the account's open positions and cancels resting orders; completion requires a later
+complete private proof. A failed entry query or unavailable ordinary/Algo endpoint
+does not advance that proof.
+
+### TradePlan cutover and paper exit policy (#644)
+
+`trading.execution.exit_policy` contains `policy_id: oi_fixed_v1`,
+`take_profit_bps` and `max_holding_seconds`. Paper uses explicit engineering defaults
+of 200 bps TP and 14,400 seconds when this object is absent. These are not an Alpha
+result or an optimized claim: the
+[OI-chain research](research/oi-chain-backtest-2026-09-03.md) studies four-hour
+outcomes with limited eligible samples and does not establish an optimal TP.
+Live configuration must supply the policy object explicitly; paper defaults never
+silently authorize a live exit policy. Alpha admission is unchanged.
+
+Migration `20260912_0377` is a forward cut from `0376`. It creates no inferred plans
+from historical observations. Before replacing the old runtime:
+
+1. Capture the exact old main SHA/image, schema, account slot, mode and fresh private
+   positions, ordinary orders and Algo orders. Pause new entries using the local CLI.
+2. If old exposure exists, either prove one old identity and every frozen parameter
+   and insert a reviewed one-time plan with that evidence, or explicitly flatten paper
+   with the old runtime and retain the completed Command and subsequent full flat
+   proof. If parameters are not provable, use the paper flatten/reopen path. An empty
+   position list alone is insufficient while any ordinary or Algo order remains.
+3. Stop the runtime and application writers under the existing deployment lock. Take
+   and verify the protected backup; retain old images. Apply the forward migration
+   using the exact fully green main image, then start Serve/Workers and the separate
+   Nautilus runtime with the operator-owned config mounted consistently.
+4. Verify schema, account/mode, singleton, current private proof and health. For the
+   Demo receipt, submit one small manual entry through the existing CLI risk limits,
+   verify its committed plan precedes entry, fill and exact stop, restart held,
+   change only new-entry risk settings and restart again. The same plan and old stop
+   must remain. Complete a normal or operator exit and capture its fresh flat proof,
+   terminal plan, exit reason and PnL completeness; another restart must not revive it.
+
+The Issue receipt records exact revision/image, plan/entry id, native position and
+stop/exit ids, config changes without secrets, and reconciliation clocks. Never use
+live credentials for this procedure. Do not downgrade across the cut with new plans;
+roll forward, or restore a verified stopped backup only after reconciling venue
+exposure. The schema backup cannot roll back a Binance fill.
+
+Known realized PnL includes the pinned Nautilus 1.231 `PositionClosed.realized_pnl`
+with recorded commissions in the settlement currency. The
+[pinned position implementation](https://github.com/nautechsystems/nautilus_trader/blob/v1.231.0/nautilus_trader/model/position.pyx)
+subtracts those fill commissions. Binance
+[account updates](https://github.com/nautechsystems/nautilus_trader/blob/v1.231.0/nautilus_trader/adapters/binance/futures/schemas/user.py)
+update balances; they do not allocate funding to PositionClosed. Thus the display
+is known execution PnL excluding funding, not complete account net profit.
+Missing entry/exit fills, missing close observations, audit gaps and cold cost-basis
+gaps are visible; absent PnL is never synthesized as zero or reconstructed from
+unrelated account balance changes.
 
 Runtime control restart reads the single
 `trading_execution_runtime_control_state` row for the active profile. Accepted or

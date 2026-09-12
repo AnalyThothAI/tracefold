@@ -6,9 +6,10 @@ from typing import Any, Protocol
 
 from .lane import LaneStorage
 from .queries import QueryStorage
+from .trade_plans import TradePlanStorage
 
 
-class TradingRepository(LaneStorage, QueryStorage):
+class TradingRepository(LaneStorage, QueryStorage, TradePlanStorage):
     """Connection-bound persistence facade; callers continue to own transactions.
 
     Two bases, four modules: `LaneStorage` already carries the admission ledger and the execution

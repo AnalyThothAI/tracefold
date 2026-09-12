@@ -32,6 +32,7 @@ from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.state import RuntimeReadiness
 from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrategy
+from tracefold.integrations.nautilus.oi_runtime.trade_plans import TradePlanChannel
 
 
 @pytest.mark.parametrize(
@@ -154,6 +155,7 @@ def _real_execution_engine() -> Iterator[Any]:
             event_id="4" * 64,
         ),
         request_reconciliation=lambda _reason: None,
+        plans=TradePlanChannel(),
     )
     loop = asyncio.new_event_loop()
     node = _build_active_node(
