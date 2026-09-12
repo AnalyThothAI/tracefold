@@ -115,6 +115,17 @@ class OiRiskLimits:
 
 
 @dataclass(frozen=True, slots=True)
+class OiExitPolicy:
+    take_profit_bps: int
+    max_holding_ns: int
+    policy_id: Literal["oi_fixed_v1"] = "oi_fixed_v1"
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.take_profit_bps <= 50_000 or self.max_holding_ns <= 0:
+            raise ValueError("oi_runtime_exit_policy_invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class OiRuntimeProfile:
     """The account slot this Runtime executes for, and the policy it executes under.
 
@@ -135,6 +146,7 @@ class OiRuntimeProfile:
     namespace: str
     routes: tuple[OiInstrumentRoute, ...]
     risk: OiRiskLimits
+    exit_policy: OiExitPolicy
 
     def __post_init__(self) -> None:
         if self.mode not in ("paper", "live"):
@@ -264,6 +276,7 @@ def build_oi_node_config(
 __all__ = [
     "ActiveRuntimeMode",
     "BinanceRuntimeCredentials",
+    "OiExitPolicy",
     "OiInstrumentRoute",
     "OiRiskLimits",
     "OiRuntimeProfile",

@@ -637,6 +637,19 @@ class TradingExecutionRiskSettings(BaseModel):
         return self
 
 
+class TradingExitPolicySettings(BaseModel):
+    """Paper engineering defaults, not a fitted OI return claim (#644).
+
+    Four hours matches the existing research observation horizon; 200 bps is an explicit
+    bounded profit target. Live must supply this section before activation.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+    policy_id: Literal["oi_fixed_v1"] = "oi_fixed_v1"
+    take_profit_bps: int = Field(ge=1, le=50_000)
+    max_holding_seconds: int = Field(ge=1, le=2_592_000)
+
+
 class TradingExecutionSettings(BaseModel):
     """The one Binance USD-M account slot this deployment executes for.
 
@@ -651,6 +664,13 @@ class TradingExecutionSettings(BaseModel):
     account_slot: str = "binance_usdm_primary"
     credentials: TradingExecutionCredentialsSettings = Field(default_factory=TradingExecutionCredentialsSettings)
     risk: TradingExecutionRiskSettings = Field(default_factory=TradingExecutionRiskSettings)
+    exit_policy: TradingExitPolicySettings | None = None
+
+    @model_validator(mode="after")
+    def validate_exit_policy(self) -> TradingExecutionSettings:
+        if self.mode == "live" and self.exit_policy is None:
+            raise ValueError("trading_execution_live_exit_policy_required")
+        return self
 
     @field_validator("account_slot")
     @classmethod

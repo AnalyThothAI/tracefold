@@ -33,7 +33,6 @@ from tracefold.trading.storage.execution_stream import (
 )
 
 _HEARTBEAT_STALE_AFTER_NS = 5_000_000_000
-_PRIVATE_RECONCILIATION_STALE_AFTER_NS = 10_000_000_000
 
 
 def execution_readiness_projection(
@@ -72,7 +71,7 @@ def execution_readiness_projection(
     private_reconciliation_fresh = (
         state.startup_reconciled
         and state.reconciliation_observed_at_ns <= now_ns
-        and reconciliation_age_ns <= _PRIVATE_RECONCILIATION_STALE_AFTER_NS
+        and now_ns <= state.facts_expire_at_ns
     )
     account_snapshot_flat = bool(
         state.account_snapshot is not None
@@ -91,9 +90,15 @@ def execution_readiness_projection(
     entries_paused = True if current_control is None else current_control.entries_paused
     emergency_halted = False if current_control is None else current_control.emergency_halted
     alive = bool(state.alive and not stale)
-    execution_safe = bool(state.execution_safe and alive)
-    entries_armed = bool(state.entries_armed and alive)
-    entry_block_reason = "runtime_heartbeat_stale" if stale else state.entry_block_reason
+    execution_safe = bool(state.execution_safe and alive and private_reconciliation_fresh)
+    entries_armed = bool(state.entries_armed and execution_safe)
+    entry_block_reason = (
+        "runtime_heartbeat_stale"
+        if stale
+        else "reconciliation_stale"
+        if not private_reconciliation_fresh
+        else state.entry_block_reason
+    )
     base.update(
         {
             "alive": alive,
@@ -120,7 +125,7 @@ def execution_readiness_projection(
             # `account_flat_proven` is no longer what this response says it is.
             "facts_expire_at_ms": min(
                 state.heartbeat_at_ns + _HEARTBEAT_STALE_AFTER_NS,
-                state.reconciliation_observed_at_ns + _PRIVATE_RECONCILIATION_STALE_AFTER_NS,
+                state.facts_expire_at_ns,
             )
             // 1_000_000,
             "current_account": (

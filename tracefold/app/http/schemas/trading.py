@@ -222,7 +222,22 @@ class TradingExecutionRowData(ExactApiSchema):
     position_closed_at_ns: int | None = None
     exit_price: str | None = None
     realized_pnl_usd: str | None = None
-    exit_reason: Literal["stop_filled", "flatten", "unclaimed_flatten"] | None = None
+    exit_reason: str | None = None
+    plan_status: str | None = None
+    account_slot: str | None = None
+    runtime_mode_at_creation: Literal["paper", "live"] | None = None
+    instrument_id: str | None = None
+    entry_client_order_id: str | None = None
+    risk_budget_usd: str | None = None
+    max_leverage_at_creation: int | None = None
+    stop_distance_bps: int | None = None
+    exit_policy_id: str | None = None
+    take_profit_bps: int | None = None
+    max_holding_ns: int | None = None
+    pnl_known: bool
+    history_complete: bool
+    gap_reason: str | None = None
+    duration_ns: int | None = None
     stage: ExecutionStage
 
 
@@ -235,8 +250,14 @@ class TradingRealizedTotalsData(ExactApiSchema):
     entry is a retained trade in this account. Decimal strings, like every other money field here.
     """
 
-    realized_today_usd: str
-    realized_total_usd: str
+    realized_known_today_usd: str | None
+    realized_known_total_usd: str | None
+    pnl_known_today: int = Field(ge=0)
+    pnl_known_total: int = Field(ge=0)
+    pnl_missing_today: int = Field(ge=0)
+    pnl_missing_total: int = Field(ge=0)
+    pnl_complete_today: bool
+    pnl_complete_total: bool
     closed_today: int = Field(ge=0)
     closed_total: int = Field(ge=0)
 

@@ -7,15 +7,16 @@ from decimal import Decimal
 from typing import Any
 
 from nautilus_trader.model.enums import PositionSide
-from nautilus_trader.model.identifiers import ClientId, ClientOrderId, PositionId
+from nautilus_trader.model.identifiers import ClientId, ClientOrderId, InstrumentId, PositionId
 
-from .config import OiRuntimeProfile
+from .config import OiInstrumentRoute, OiRuntimeProfile
 from .exit import ExitCoordinator
 from .protection import ProtectionCoordinator
 from .quotes import QuoteStreamCoordinator
 from .state import (
     ExecutionState,
     PrivateReconciliationReason,
+    RuntimeEntryRequest,
     RuntimeExecutionState,
     RuntimeReadiness,
     RuntimeReconciliationSnapshot,
@@ -26,6 +27,7 @@ from .state import (
     protection_leg,
     unowned_cache_exposure,
 )
+from .trade_plans import TradePlanChannel
 
 
 class RecoveryCoordinator:
@@ -36,6 +38,7 @@ class RecoveryCoordinator:
         *,
         engine: Any,
         profile: OiRuntimeProfile,
+        plans: TradePlanChannel,
         state: RuntimeExecutionState,
         readiness: RuntimeReadiness,
         protection: ProtectionCoordinator,
@@ -45,13 +48,13 @@ class RecoveryCoordinator:
     ) -> None:
         self._engine = engine
         self._profile = profile
+        self._plans = plans
         self._state = state
         self._readiness = readiness
         self._protection = protection
         self._exits = exits
         self._quotes = quotes
         self._request_reconciliation = request_reconciliation
-        self._routes = {route.market_key: route for route in profile.routes}
 
     def reconcile(self, snapshot: RuntimeReconciliationSnapshot) -> bool:
         """Rebuild runtime ownership only from durable identities and current Cache state."""
@@ -62,9 +65,16 @@ class RecoveryCoordinator:
         executions: dict[str, ExecutionState] = {}
         orders: dict[ClientOrderId, tuple[str, str]] = {}
         positions: dict[PositionId, str] = {}
+        previous = self._state.executions
         for seed in snapshot.executions:
             request = seed.entry
-            route = self._routes.get(request.market_key)
+            plan = seed.plan
+            local = previous.get(plan.entry_id)
+            if local is not None and local.plan.updated_at_ns >= plan.updated_at_ns:
+                plan = local.plan
+            route = OiInstrumentRoute(
+                plan.market_key, InstrumentId.from_str(plan.instrument_id), plan.stop_distance_bps
+            )
             expected_entry = deterministic_client_order_id(
                 namespace=self._profile.namespace,
                 entry_id=request.entry_id,
@@ -74,10 +84,13 @@ class RecoveryCoordinator:
             # the only ownership proof, and there is nothing left to shape-check.
             entry_order = self._engine.cache.order(seed.entry_client_order_id)
             if (
-                route is None
+                plan.account_slot != self._profile.account_slot
+                or plan.runtime_mode_at_creation != self._profile.mode
+                or plan.terminal_at_ns is not None
                 or request.entry_id in executions
                 or seed.entry_client_order_id != expected_entry
                 or (entry_order is None and seed.position_id is None)
+                or (entry_order is not None and entry_order.quantity.as_decimal() != plan.entry_quantity)
                 or (
                     entry_order is not None
                     and not entry_order_valid(
@@ -93,6 +106,7 @@ class RecoveryCoordinator:
                 return False
             state = ExecutionState(
                 entry=request,
+                plan=plan,
                 route=route,
                 entry_client_order_id=seed.entry_client_order_id,
                 entry_order=entry_order,
@@ -110,6 +124,15 @@ class RecoveryCoordinator:
                     self._readiness.halt_for_unexpected_exposure()
                     return False
                 state.active = entry_order is not None and not entry_order.is_closed
+                state.native_pnl_complete = False
+                if state.active and state.plan.status == "prepared":
+                    state.plan = plan.model_copy(
+                        update={
+                            "status": "entry_working",
+                            "updated_at_ns": max(plan.updated_at_ns, snapshot.reconciliation_observed_at_ns),
+                        }
+                    )
+                    self._plans.offer_update(state.plan)
                 continue
             position = self._engine.cache.position(seed.position_id)
             expected_side = PositionSide.LONG if request.direction == "long" else PositionSide.SHORT
@@ -120,14 +143,38 @@ class RecoveryCoordinator:
                 or position.strategy_id != self._engine.id
                 or position.instrument_id != route.instrument_id
                 or position.side != expected_side
+                or abs(Decimal(str(position.quantity))) > plan.entry_quantity
             ):
                 self._readiness.halt_for_unexpected_exposure()
                 return False
+            state.native_pnl_complete = bool(
+                local is not None
+                and local.native_pnl_complete
+                and local.position_id == seed.position_id
+                and local.avg_entry_price is not None
+            )
+            state.exit_reason = plan.exit_reason
             state.position_id = seed.position_id
             state.position_quantity = abs(Decimal(str(position.quantity)))
             state.avg_entry_price = Decimal(str(position.avg_px_open))
             state.desired_stop = (state.position_quantity, state.avg_entry_price)
             positions[seed.position_id] = request.entry_id
+            opened_at_ns = plan.opened_at_ns or plan.created_at_ns
+            state.plan = plan.model_copy(
+                update={
+                    "status": "closing" if plan.exit_reason else "open",
+                    "opened_at_ns": opened_at_ns,
+                }
+            )
+            if not state.native_pnl_complete and state.plan.history_gap_reason is None:
+                state.plan = state.plan.model_copy(
+                    update={"history_gap_reason": "native_pnl_basis_incomplete_after_restart"}
+                )
+            if state.plan != plan:
+                state.plan = state.plan.model_copy(
+                    update={"updated_at_ns": max(plan.updated_at_ns, snapshot.reconciliation_observed_at_ns)}
+                )
+                self._plans.offer_update(state.plan)
             if not self._restore_protections(
                 state=state,
                 seed_protections=seed.protections,
@@ -137,6 +184,7 @@ class RecoveryCoordinator:
             ):
                 return False
             state.exit_generation = seed.exit_generation
+            state.exit_retry_required = plan.exit_reason is not None
             if seed.exit_client_order_id is not None:
                 expected_exit = deterministic_client_order_id(
                     namespace=self._profile.namespace,
@@ -165,7 +213,30 @@ class RecoveryCoordinator:
                 else:
                     state.exit_order = exit_order
                     orders[seed.exit_client_order_id] = (request.entry_id, "exit")
-        owned = not any(self._unowned_exposure(orders=orders, positions=positions))
+        for identity, prior in previous.items():
+            if identity not in executions and prior.plan.status == "prepared" and prior.entry_order is None:
+                executions[identity] = prior
+        retired = self._retire_empty_plans(snapshot, previous)
+        for identity in retired:
+            executions.pop(identity, None)
+        for candidate in snapshot.unresolved_plans:
+            local = previous.get(candidate.entry_id)
+            plan = (
+                local.plan if local is not None and local.plan.updated_at_ns >= candidate.updated_at_ns else candidate
+            )
+            if plan.terminal_at_ns is None and plan.entry_id not in executions and plan.entry_id not in retired:
+                executions[plan.entry_id] = ExecutionState(
+                    entry=RuntimeEntryRequest.from_plan(plan),
+                    plan=plan,
+                    route=OiInstrumentRoute(
+                        plan.market_key, InstrumentId.from_str(plan.instrument_id), plan.stop_distance_bps
+                    ),
+                    entry_client_order_id=ClientOrderId(plan.entry_client_order_id),
+                    submitted_at_ns=plan.created_at_ns,
+                    disposition_reason="recovered_unresolved",
+                    native_pnl_complete=False,
+                )
+        owned = not snapshot.ownership_ambiguous and not any(self._unowned_exposure(orders=orders, positions=positions))
         self._commit(
             executions=executions,
             orders=orders,
@@ -181,11 +252,94 @@ class RecoveryCoordinator:
             reconciliation_observed_at_ns=snapshot.reconciliation_observed_at_ns,
         )
         if not owned:
-            self._readiness.halt_for_unexpected_exposure()
+            self._readiness.halt_for_unexpected_exposure(
+                "ownership_ambiguous" if snapshot.ownership_ambiguous else "unexpected_exposure"
+            )
             return False
         self._state.unexpected_exposure_reconciliation_requested = False
         self._exits.complete_from_reconciliation(snapshot)
         return True
+
+    def _retire_empty_plans(
+        self,
+        snapshot: RuntimeReconciliationSnapshot,
+        previous: dict[str, ExecutionState],
+    ) -> set[str]:
+        retired: set[str] = set()
+        if snapshot.ownership_ambiguous:
+            return retired
+        queries = {query.entry_id: query for query in snapshot.entry_queries}
+        for candidate in snapshot.unresolved_plans:
+            local = previous.get(candidate.entry_id)
+            plan = (
+                local.plan if local is not None and local.plan.updated_at_ns >= candidate.updated_at_ns else candidate
+            )
+            instrument_id = InstrumentId.from_str(plan.instrument_id)
+            # Absence must cover the instrument's positions AND regular/Algo orders. An unrelated
+            # exposure is never evidence that this plan closed, even if its original TTL elapsed.
+            if any(
+                position.instrument_id == instrument_id
+                for position in self._engine.cache.positions_open(account_id=self._profile.account_id)
+            ):
+                continue
+            working = tuple(
+                order
+                for order in (
+                    *self._engine.cache.orders_open(account_id=self._profile.account_id),
+                    *self._engine.cache.orders_inflight(account_id=self._profile.account_id),
+                )
+                if order.instrument_id == instrument_id
+            )
+            if working:
+                if local is not None and local.position_quantity == 0:
+                    for order in working:
+                        if order.client_order_id in self._state.orders and order.is_reduce_only:
+                            self._engine.cancel_order(order, client_id=ClientId("BINANCE"))
+                continue
+            proof_at = min(snapshot.account_observed_at_ns, snapshot.reconciliation_observed_at_ns)
+            if proof_at < plan.updated_at_ns:
+                continue
+            if plan.opened_at_ns is None and proof_at <= plan.entry_expires_at_ns:
+                continue
+            query = queries.get(plan.entry_id)
+            entry_order = self._engine.cache.order(ClientOrderId(plan.entry_client_order_id))
+            cached_terminal = (
+                entry_order is not None
+                and entry_order.is_closed
+                and entry_order_valid(
+                    profile=self._profile,
+                    strategy_id=self._engine.id,
+                    request=RuntimeEntryRequest.from_plan(plan),
+                    route=OiInstrumentRoute(plan.market_key, instrument_id, plan.stop_distance_bps),
+                    order=entry_order,
+                )
+                and entry_order.quantity.as_decimal() == plan.entry_quantity
+            )
+            if not cached_terminal and (query is None or query.status == "working"):
+                continue
+            filled = entry_order.filled_qty.as_decimal() if cached_terminal else query.filled_quantity
+            opened_at_ns = plan.opened_at_ns or (plan.created_at_ns if filled and filled > 0 else None)
+            closed = plan.model_copy(
+                update={
+                    "status": "closed",
+                    "terminal_at_ns": proof_at,
+                    "opened_at_ns": opened_at_ns,
+                    "exit_reason": plan.exit_reason or "venue_unknown",
+                    "history_gap_reason": plan.history_gap_reason
+                    or (
+                        "close_observation_missing"
+                        if opened_at_ns is not None and (local is None or local.active)
+                        else ("entry_outcome_unknown" if filled is None else None)
+                    ),
+                    "updated_at_ns": proof_at,
+                }
+            )
+            self._plans.offer_update(closed)
+            retired.add(plan.entry_id)
+            if local is not None:
+                local.plan = closed
+                local.active = False
+        return retired
 
     def _restore_protections(
         self,
@@ -250,7 +404,7 @@ class RecoveryCoordinator:
             observed_at_ns=int(self._engine.clock.timestamp_ns()),
         )
         if state.position_id is not None:
-            self._exits.flatten(state.position_id)
+            self._exits.flatten(state.position_id, reason="recovery_safety_flatten")
         return False
 
     def _commit(
@@ -345,7 +499,7 @@ class RecoveryCoordinator:
             if not state.private_reconciliation_requested:
                 state.private_reconciliation_requested = True
                 self._request_reconciliation("protection_ambiguity")
-            self._exits.flatten(state.position_id)
+            self._exits.flatten(state.position_id, reason="protection_failure")
             safe = False
         return safe
 

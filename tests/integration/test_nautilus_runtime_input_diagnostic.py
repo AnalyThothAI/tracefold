@@ -325,7 +325,7 @@ def _runtime_bridge(
         # it measures the input path, not the current-state path.
         projector=RuntimeStateProjector(
             initial=_runtime_state(account_slot=account_slot),
-            recovery_inputs=((), ()),
+            recovery_inputs=(),
         ),
         poll_seconds=_REPAIR_SECONDS,
     )

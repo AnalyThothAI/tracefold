@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -32,7 +33,9 @@ from tests.nautilus_oi_runtime_fixtures import (
     CommandRows,
     SignalRows,
     operator_intent,
+    pump_with_committed_plan,
     registered_oi_strategy,
+    trade_plan_for_entry,
     trade_signal,
 )
 from tracefold.app.nautilus.reconciliation import build_runtime_reconciliation_snapshot
@@ -90,8 +93,8 @@ def test_signal_submits_one_native_entry_and_emits_unique_disposition() -> None:
     signal = trade_signal()
     context = registered_oi_strategy(values=(signal,))
 
-    context.strategy.on_timer(None)
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
+    pump_with_committed_plan(context)
 
     assert len(context.strategy.submitted) == 1
     order = context.strategy.submitted[0][0]
@@ -107,7 +110,7 @@ def test_signal_submits_one_native_entry_and_emits_unique_disposition() -> None:
 def test_cold_activation_starts_paused_until_an_explicit_resume() -> None:
     context = registered_oi_strategy(values=(trade_signal(),), initial_control_state=None)
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert context.strategy.submitted == []
     assert context.strategy.control_state() == RuntimeControlSnapshot(True, False, ())
@@ -116,7 +119,7 @@ def test_cold_activation_starts_paused_until_an_explicit_resume() -> None:
 def test_short_signal_uses_same_strategy_and_opposite_native_sides() -> None:
     signal = trade_signal(signal_id="7" * 64).model_copy(update={"direction": "short"})
     context = registered_oi_strategy(values=(signal,))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     entry = context.strategy.submitted[0][0]
     position_id = PositionId("BTCUSDT-PERP.BINANCE-OI-SHORT")
     context.strategy.on_position_opened(
@@ -141,12 +144,12 @@ def test_short_signal_uses_same_strategy_and_opposite_native_sides() -> None:
 
 def test_expired_duplicate_and_entry_gate_rejections_never_submit() -> None:
     expired = registered_oi_strategy(values=(trade_signal(expires_at_ns=NOW_NS),))
-    expired.strategy.on_timer(None)
+    pump_with_committed_plan(expired)
     assert expired.strategy.submitted == []
 
     singleton = [False]
     blocked = registered_oi_strategy(values=(trade_signal(signal_id="5" * 64),), singleton=singleton)
-    blocked.strategy.on_timer(None)
+    pump_with_committed_plan(blocked)
     assert blocked.strategy.submitted == []
     assert blocked.strategy.readiness().entry_block_reason == "singleton_lost"
 
@@ -154,7 +157,7 @@ def test_expired_duplicate_and_entry_gate_rejections_never_submit() -> None:
 def test_pause_resume_and_halt_are_distinct_and_never_bypass_entry_risk() -> None:
     pause = operator_intent(command_id="5" * 64)
     paused = registered_oi_strategy(values=(trade_signal(),), commands=(pause,))
-    paused.strategy.on_timer(None)
+    pump_with_committed_plan(paused)
     assert paused.strategy.submitted == []
     assert paused.strategy.readiness().execution_safe is True
     assert paused.strategy.readiness().entries_armed is False
@@ -163,14 +166,14 @@ def test_pause_resume_and_halt_are_distinct_and_never_bypass_entry_risk() -> Non
 
     resume = operator_intent(command_id="6" * 64, action="resume_entries")
     resumed = registered_oi_strategy(values=(trade_signal(),), commands=(pause, resume))
-    resumed.strategy.on_timer(None)
+    pump_with_committed_plan(resumed)
     assert len(resumed.strategy.submitted) == 1
     assert resumed.strategy.control_state().entries_paused is False
     assert resumed.strategy.control_state().emergency_halted is False
 
     halt = operator_intent(command_id="7" * 64, action="emergency_halt", scope="account")
     halted = registered_oi_strategy(values=(trade_signal(),), commands=(halt, resume))
-    halted.strategy.on_timer(None)
+    pump_with_committed_plan(halted)
     assert halted.strategy.submitted == []
     assert halted.strategy.readiness().execution_safe is True
     assert halted.strategy.readiness().entries_armed is False
@@ -195,12 +198,12 @@ def test_signal_waits_until_the_persisted_command_backlog_is_drained() -> None:
     )
     context = registered_oi_strategy(values=(trade_signal(),), commands=commands)
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert context.signals.queued_command_count == 1
     assert context.strategy.submitted == []
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert context.signals.queued_command_count == 0
     assert context.strategy.control_state().entries_paused is True
@@ -220,7 +223,7 @@ def test_signal_full_queue_yields_to_a_later_durable_pause_scan() -> None:
     assert client.poll_commands_once(CommandRows(pause)) == 1
     context = registered_oi_strategy(signal_client=client)
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert context.strategy.control_state().entries_paused is True
     assert context.signals.queued_command_count == 0
@@ -228,7 +231,7 @@ def test_signal_full_queue_yields_to_a_later_durable_pause_scan() -> None:
     assert context.strategy.submitted == []
 
     assert context.signals.poll_commands_once(CommandRows()) == 0
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert context.signals.command_scan_complete is True
     assert context.strategy.submitted == []
@@ -243,7 +246,7 @@ def test_manual_entry_uses_the_same_sizing_risk_and_native_order_path() -> None:
     )
     context = registered_oi_strategy(commands=(manual,))
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     observations = context.audit.flush_once(lambda _values: None)
     order = context.strategy.submitted[0][0]
@@ -268,13 +271,13 @@ def test_manual_entry_replay_queries_the_same_client_id_without_resubmit() -> No
         direction="long",
     )
     first = registered_oi_strategy(commands=(manual,))
-    first.strategy.on_timer(None)
+    pump_with_committed_plan(first)
     entry = first.strategy.submitted[0][0]
     _accepted(first, entry)
 
     restarted = registered_oi_strategy(commands=(manual,))
     restarted.cache.add_order(entry, client_id=ClientId("BINANCE"))
-    restarted.strategy.on_timer(None)
+    pump_with_committed_plan(restarted)
 
     assert restarted.strategy.submitted == []
     assert restarted.strategy.queried == [entry]
@@ -292,7 +295,7 @@ def test_flatten_is_runtime_accepted_but_not_complete_until_fresh_flat_reconcili
     )
     context = registered_oi_strategy(commands=(flatten,))
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     accepted = context.audit.flush_once(lambda _values: None)
     assert len(accepted) == 1
@@ -318,12 +321,12 @@ def test_flatten_is_runtime_accepted_but_not_complete_until_fresh_flat_reconcili
 
 def test_flatten_submits_only_owned_reduce_only_exit_and_does_not_equal_halt() -> None:
     context = registered_oi_strategy(values=(trade_signal(),))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     _, position_id = _open_position(context)
     flatten = operator_intent(command_id="9" * 64, action="flatten", scope="account")
     context.signals.poll_commands_once(CommandRows(flatten))
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     exit_order = context.strategy.submitted[-1][0]
     assert context.strategy.submitted[-1][1] == position_id
@@ -337,13 +340,13 @@ def test_flatten_submits_only_owned_reduce_only_exit_and_does_not_equal_halt() -
 def test_restart_replay_queries_same_deterministic_client_id_without_resubmit() -> None:
     signal = trade_signal()
     first = registered_oi_strategy(values=(signal,))
-    first.strategy.on_timer(None)
+    pump_with_committed_plan(first)
     entry = first.strategy.submitted[0][0]
     _accepted(first, entry)
 
     restarted = registered_oi_strategy(values=(signal,))
     restarted.cache.add_order(entry, client_id=ClientId("BINANCE"))
-    restarted.strategy.on_timer(None)
+    pump_with_committed_plan(restarted)
 
     assert restarted.strategy.submitted == []
     assert restarted.strategy.queried == [entry]
@@ -377,7 +380,7 @@ def test_a_redelivered_signal_whose_entry_id_is_cached_submits_no_second_economi
     _accepted(first, entry)
     restarted = registered_oi_strategy(values=(signal,), cache=first.cache)
 
-    restarted.strategy.on_timer(None)
+    pump_with_committed_plan(restarted)
 
     assert restarted.strategy.submitted == []
     assert restarted.strategy.queried == [entry]
@@ -407,10 +410,10 @@ def test_closed_replayed_entry_does_not_keep_instrument_busy() -> None:
     entry.apply(canceled)
     first.cache.update_order(entry)
     restarted = registered_oi_strategy(values=(first_signal,), cache=first.cache)
-    restarted.strategy.on_timer(None)
+    pump_with_committed_plan(restarted)
 
     assert restarted.signals.poll_once(SignalRows(next_signal)) == 1
-    restarted.strategy.on_timer(None)
+    pump_with_committed_plan(restarted)
 
     assert len(restarted.strategy.submitted) == 1
     assert restarted.strategy.submitted[0][0].client_order_id != entry.client_order_id
@@ -438,6 +441,7 @@ def test_restart_reconciliation_rejects_wrong_entry_shape() -> None:
         executions=(
             RecoveredExecutionSeed(
                 entry=RuntimeEntryRequest.from_signal(signal),
+                plan=trade_plan_for_entry(RuntimeEntryRequest.from_signal(signal)),
                 entry_client_order_id=entry_id,
             ),
         ),
@@ -447,6 +451,7 @@ def test_restart_reconciliation_rejects_wrong_entry_shape() -> None:
         mark_reconciled=False,
     )
 
+    restarted.clock.set_time(snapshot.reconciliation_observed_at_ns)
     restarted.strategy.reconcile_runtime(snapshot)
     restarted.strategy.on_start()
 
@@ -470,7 +475,7 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
 ) -> None:
     signal = trade_signal()
     first = registered_oi_strategy(values=(signal,))
-    first.strategy.on_timer(None)
+    pump_with_committed_plan(first)
     entry = first.strategy.submitted[0][0]
     _accepted(first, entry)
     position_id = PositionId("BTCUSDT-PERP.BINANCE-OI-RECOVERY")
@@ -481,7 +486,7 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
         account_id=ACCOUNT_ID,
         venue_order_id=entry.venue_order_id,
         position_id=position_id,
-        last_qty=first.instrument.make_qty(Decimal("0.05")),
+        last_qty=first.instrument.make_qty(Decimal("0.049")),
         last_px=first.instrument.make_price(Decimal("10000")),
         commission=Money(0, first.instrument.quote_currency),
         ts_event=NOW_NS + 2,
@@ -497,7 +502,7 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
             opening_order_id=entry.client_order_id,
             side=PositionSide.LONG,
             position_id=position_id,
-            quantity=first.instrument.make_qty(Decimal("0.05")),
+            quantity=first.instrument.make_qty(Decimal("0.049")),
             avg_px_open=10_000.0,
             ts_opened=NOW_NS + 2,
         )
@@ -525,7 +530,7 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
     replacement = first.strategy.order_factory.stop_market(
         instrument_id=first.instrument.id,
         order_side=replacement_side,
-        quantity=first.instrument.make_qty(Decimal("0.05")),
+        quantity=first.instrument.make_qty(Decimal("0.049")),
         trigger_price=first.instrument.make_price(Decimal("9800")),
         trigger_type=TriggerType.LAST_PRICE,
         reduce_only=True,
@@ -549,6 +554,7 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
         executions=(
             RecoveredExecutionSeed(
                 entry=RuntimeEntryRequest.from_signal(signal),
+                plan=trade_plan_for_entry(RuntimeEntryRequest.from_signal(signal)),
                 entry_client_order_id=entry.client_order_id,
                 position_id=position_id,
                 protections=(
@@ -562,7 +568,7 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
                     RecoveredProtectionSeed(
                         role="active" if replacement_accepted else "pending",
                         client_order_id=replacement.client_order_id,
-                        quantity=Decimal("0.050"),
+                        quantity=Decimal("0.049"),
                         trigger_price=Decimal("9800"),
                         generation=2,
                     ),
@@ -577,13 +583,14 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
         mark_reconciled=False,
     )
 
+    restarted.clock.set_time(snapshot.reconciliation_observed_at_ns)
     restarted.strategy.reconcile_runtime(snapshot)
     restarted.strategy.on_start()
     if not expected_ready:
         assert restarted.strategy.readiness().execution_safe is False
         assert restarted.strategy.submitted == []
         return
-    restarted.strategy.on_timer(None)
+    pump_with_committed_plan(restarted)
     restarted.strategy.flatten_position(position_id)
 
     assert restarted.strategy.readiness().execution_safe is True
@@ -618,7 +625,7 @@ def test_app_owned_reconciliation_refreshes_clock_before_stale_entry_check() -> 
     )
 
     assert context.strategy.reconcile_runtime(snapshot) is True
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert len(context.strategy.submitted) == 1
 
@@ -670,7 +677,7 @@ def test_utc_day_rollover_records_the_new_baseline_instead_of_blocking_entries()
 )
 def test_terminal_exit_failure_advances_deterministic_generation_and_retries(callback: str) -> None:
     context = registered_oi_strategy(values=(trade_signal(),))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     _, position_id = _open_position(context)
     context.strategy.flatten_position(position_id)
     first_exit = context.strategy.submitted[2][0]
@@ -682,7 +689,7 @@ def test_terminal_exit_failure_advances_deterministic_generation_and_retries(cal
             ts_event=NOW_NS + 4,
         )
     )
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     retried_exit = context.strategy.submitted[3][0]
     assert retried_exit.is_reduce_only is True
@@ -695,14 +702,14 @@ def test_terminal_exit_failure_advances_deterministic_generation_and_retries(cal
             ts_event=NOW_NS + 5,
         )
     )
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert len(context.strategy.submitted) == 4
 
 
 def test_accepted_entry_does_not_remain_on_periodic_ambiguity_query_path() -> None:
     context = registered_oi_strategy(values=(trade_signal(),))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     entry = context.strategy.submitted[0][0]
     context.strategy.on_order_accepted(
         SimpleNamespace(
@@ -713,7 +720,7 @@ def test_accepted_entry_does_not_remain_on_periodic_ambiguity_query_path() -> No
     )
     context.clock.set_time(NOW_NS + 6_000_000_000)
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert context.strategy.queried == []
 
@@ -731,7 +738,7 @@ def test_wide_spread_disposes_signal_without_entry() -> None:
         )
     )
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     written: list[object] = []
     context.audit.flush_once(written.extend)
@@ -742,7 +749,7 @@ def test_wide_spread_disposes_signal_without_entry() -> None:
 
 def test_partial_position_change_cancel_replaces_explicit_reduce_only_stop() -> None:
     context = registered_oi_strategy(values=(trade_signal(),))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     _, position_id = _open_position(context)
     first_stop = context.strategy.submitted[1][0]
 
@@ -772,7 +779,7 @@ def test_partial_position_change_cancel_replaces_explicit_reduce_only_stop() -> 
 def test_cached_same_id_invalid_protection_flattens_instead_of_replaying() -> None:
     signal = trade_signal()
     context = registered_oi_strategy(values=(signal,))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     _, position_id = _open_position(context)
     first_stop = context.strategy.submitted[1][0]
     context.strategy.on_order_accepted(_accepted(context, first_stop, position_id=position_id))
@@ -809,7 +816,7 @@ def test_cached_same_id_invalid_protection_flattens_instead_of_replaying() -> No
 
 def test_native_partial_fill_is_normalized_without_callback_io() -> None:
     context = registered_oi_strategy(values=(trade_signal(),))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     entry = context.strategy.submitted[0][0]
     _accepted(context, entry)
     fill = TestEventStubs.order_filled(
@@ -840,7 +847,7 @@ def test_native_partial_fill_is_normalized_without_callback_io() -> None:
 
 def test_repeated_exit_query_observation_is_idempotent() -> None:
     context = registered_oi_strategy(values=(trade_signal(),))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     _, position_id = _open_position(context)
     context.strategy.flatten_position(position_id)
     context.clock.set_time(NOW_NS + 3)
@@ -861,7 +868,7 @@ def test_repeated_exit_query_observation_is_idempotent() -> None:
 
 def test_revisited_position_quantity_has_distinct_audit_identity() -> None:
     context = registered_oi_strategy(values=(trade_signal(),))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     _, position_id = _open_position(context)
     for offset, quantity in enumerate(("0.04", "0.05", "0.04"), start=3):
         context.strategy.on_position_changed(
@@ -888,7 +895,7 @@ def test_revisited_position_quantity_has_distinct_audit_identity() -> None:
 @pytest.mark.parametrize("reason", ["503 unavailable", "-1007 timeout", "response unknown", "Response Unknown"])
 def test_ambiguous_provider_outcome_is_query_first_and_never_changes_id(reason: str) -> None:
     context = registered_oi_strategy(values=(trade_signal(),))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     entry = context.strategy.submitted[0][0]
 
     context.strategy.on_order_rejected(
@@ -904,7 +911,7 @@ def _rejected_entry_observation(reason: str) -> ExecutionObservationV1:
     """One decided venue refusal of one entry, as the ledger would hold it."""
 
     context = registered_oi_strategy(values=(trade_signal(),))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     entry = context.strategy.submitted[0][0]
 
     context.strategy.on_order_rejected(
@@ -975,7 +982,7 @@ def test_submit_exception_queries_the_same_entry_and_wakes_immediate_private_rep
         raise RuntimeError("response-lost")
 
     monkeypatch.setattr(context.strategy, "submit_order", lose_response)
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert len(context.strategy.queried) == 1
     assert context.strategy.queried[0].client_order_id.value.startswith("tf")
@@ -986,7 +993,7 @@ def test_audit_failure_is_a_reported_flag_and_stops_neither_entries_nor_protecti
     """#520 PR-B: Binance keeps this account's order and fill history; the local copy is a copy."""
 
     context = registered_oi_strategy(values=(trade_signal(),))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     _, position_id = _open_position(context)
     first_stop = context.strategy.submitted[1][0]
 
@@ -1024,7 +1031,7 @@ def test_audit_failure_is_a_reported_flag_and_stops_neither_entries_nor_protecti
 
 def test_canceled_pending_protection_flattens_instead_of_opening_unprotected() -> None:
     context = registered_oi_strategy(values=(trade_signal(),))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     _, _ = _open_position(context)
     pending_stop = context.strategy.submitted[1][0]
 
@@ -1040,7 +1047,7 @@ def test_canceled_pending_protection_flattens_instead_of_opening_unprotected() -
 
 def test_periodic_cache_check_flattens_when_active_protection_disappears() -> None:
     context = registered_oi_strategy(values=(trade_signal(),))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     _, position_id = _open_position(context)
     stop = context.strategy.submitted[1][0]
     context.strategy.on_order_accepted(_accepted(context, stop, position_id=position_id))
@@ -1048,8 +1055,8 @@ def test_periodic_cache_check_flattens_when_active_protection_disappears() -> No
     stop.apply(canceled)
     context.cache.update_order(stop)
 
-    context.strategy.on_timer(None)
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
+    pump_with_committed_plan(context)
 
     flatten = context.strategy.submitted[2][0]
     assert flatten.order_type == OrderType.MARKET
@@ -1060,7 +1067,7 @@ def test_periodic_cache_check_flattens_when_active_protection_disappears() -> No
 
 def test_repeated_flatten_queries_same_exit_instead_of_submitting_again() -> None:
     context = registered_oi_strategy(values=(trade_signal(),))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     _, position_id = _open_position(context)
 
     context.strategy.flatten_position(position_id)
@@ -1074,7 +1081,7 @@ def test_repeated_flatten_queries_same_exit_instead_of_submitting_again() -> Non
 def test_cached_exit_with_wrong_shape_is_never_reclaimed() -> None:
     signal = trade_signal()
     context = registered_oi_strategy(values=(signal,))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     entry = context.strategy.submitted[0][0]
     _accepted(context, entry)
     position_id = PositionId("BTCUSDT-PERP.BINANCE-OI-BAD-EXIT")
@@ -1150,7 +1157,7 @@ def test_failed_audit_writer_still_admits_the_next_signal_and_reports_the_gap() 
         audit.flush_once(fail_writer)
     context = registered_oi_strategy(values=(trade_signal(signal_id="6" * 64),), audit=audit)
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert len(context.strategy.submitted) == 1
     assert context.audit.failure_reason == "audit_append_failed"
@@ -1175,7 +1182,7 @@ def test_account_projection_reports_empty_account_without_claiming_private_flat_
 def test_account_projection_exposes_owned_protection_and_unknown_orders() -> None:
     signal = trade_signal()
     context = registered_oi_strategy(values=(signal,))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     entry = context.strategy.submitted[0][0]
     context.strategy.on_order_accepted(_accepted(context, entry))
     position_id = PositionId("BTCUSDT-PERP.BINANCE-OI-PROJECTION")
@@ -1247,7 +1254,7 @@ def test_account_projection_exposes_owned_protection_and_unknown_orders() -> Non
 
 def test_account_projection_withholds_stale_quote_values() -> None:
     context = registered_oi_strategy(values=(trade_signal(),))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     entry = context.strategy.submitted[0][0]
     context.strategy.on_order_accepted(_accepted(context, entry))
     position_id = PositionId("BTCUSDT-PERP.BINANCE-OI-STALE-PROJECTION")
@@ -1296,7 +1303,7 @@ def test_account_projection_withholds_stale_quote_values() -> None:
 
 def test_account_projection_accepts_quote_newer_than_the_separate_private_account_fact() -> None:
     context = registered_oi_strategy(values=(trade_signal(),))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     entry = context.strategy.submitted[0][0]
     context.strategy.on_order_accepted(_accepted(context, entry))
     position_id = PositionId("BTCUSDT-PERP.BINANCE-OI-NEWER-QUOTE")
@@ -1388,7 +1395,7 @@ def test_callback_module_has_no_postgres_or_telegram_io() -> None:
     assert forbidden == []
 
 
-def _cold_position(context: SimpleNamespace, *, quantity: str = "0.05") -> PositionId:
+def _cold_position(context: SimpleNamespace, *, quantity: str = "0.049") -> PositionId:
     """A position Nautilus synthesised from the Binance report, with no cached entry order."""
 
     external = context.strategy.order_factory.market(
@@ -1418,7 +1425,7 @@ def _cold_position(context: SimpleNamespace, *, quantity: str = "0.05") -> Posit
     return position_id
 
 
-def _cold_stop(context: SimpleNamespace, entry_id: str, *, quantity: str = "0.05") -> object:
+def _cold_stop(context: SimpleNamespace, entry_id: str, *, quantity: str = "0.049") -> object:
     """A reduce-only stop reclaimed from the Binance open-order report, with no position index."""
 
     stop = context.strategy.order_factory.stop_market(
@@ -1452,10 +1459,12 @@ def test_cold_cache_restart_reclaims_position_and_stop_without_a_cached_entry_or
 
     snapshot = build_runtime_reconciliation_snapshot(
         profile=context.profile,
-        signals=(signal,),
         cache=context.cache,
         account_observed_at_ns=NOW_NS,
         reconciliation_observed_at_ns=NOW_NS,
+        plans=tuple(
+            trade_plan_for_entry(RuntimeEntryRequest.from_signal(value), context.profile) for value in (signal,)
+        ),
     )
 
     assert len(snapshot.executions) == 1
@@ -1469,7 +1478,7 @@ def test_cold_cache_restart_reclaims_position_and_stop_without_a_cached_entry_or
     assert readiness.execution_safe is True
     assert context.strategy.protection_status(positions_count=1, unexpected_exposure=False) == "protected"
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert context.strategy.submitted == []
     written: list[object] = []
@@ -1522,18 +1531,20 @@ def test_cold_recovery_matches_cached_orders_once_each_without_a_generation_scan
     monkeypatch.setattr(reconciliation_module, "deterministic_client_order_id", counting)
     snapshot = build_runtime_reconciliation_snapshot(
         profile=context.profile,
-        signals=(signal,),
         cache=context.cache,
         account_observed_at_ns=NOW_NS,
         reconciliation_observed_at_ns=NOW_NS,
+        plans=tuple(
+            trade_plan_for_entry(RuntimeEntryRequest.from_signal(value), context.profile) for value in (signal,)
+        ),
     )
 
     assert [value.client_order_id for value in snapshot.executions[0].protections] == [stop.client_order_id]
-    # One entry id plus one candidate map per durable identity, and the map does not grow with the
+    # The frozen entry id needs no derivation; one candidate map per identity does not grow with the
     # thirteen orders the Cache holds.
     generations = reconciliation_module._MAX_RECOVERY_GENERATIONS
-    assert len(derived) == 1 + generations + (generations + 1)
-    assert derived.count("entry") == 1
+    assert len(derived) == generations + (generations + 1)
+    assert derived.count("entry") == 0
     assert len([leg for leg in derived if leg.startswith("protection:")]) == generations
     assert len([leg for leg in derived if leg == "exit" or leg.startswith("exit:")]) == generations + 1
     assert context.strategy.reconcile_runtime(snapshot) is False
@@ -1547,10 +1558,10 @@ def test_cold_recovery_without_a_durable_entry_fact_stays_unclaimed_and_visible(
 
     snapshot = build_runtime_reconciliation_snapshot(
         profile=context.profile,
-        signals=(),
         cache=context.cache,
         account_observed_at_ns=NOW_NS,
         reconciliation_observed_at_ns=NOW_NS,
+        plans=tuple(trade_plan_for_entry(RuntimeEntryRequest.from_signal(value), context.profile) for value in ()),
     )
 
     assert snapshot.executions == ()
@@ -1563,7 +1574,7 @@ def test_cold_recovery_without_a_durable_entry_fact_stays_unclaimed_and_visible(
     assert readiness.startup_reconciled is True
     account = context.strategy.account_snapshot(projected_at_ns=NOW_NS)
     assert [(row.instrument_id, row.side, row.quantity, row.owned) for row in account.positions] == [
-        (context.instrument.id.value, "long", "0.05", False)
+        (context.instrument.id.value, "long", "0.049", False)
     ]
     assert position_id.value == account.positions[0].position_id
 
@@ -1578,10 +1589,12 @@ def test_flatten_account_closes_a_position_no_durable_entry_identity_claims() ->
         context.strategy.reconcile_runtime(
             build_runtime_reconciliation_snapshot(
                 profile=context.profile,
-                signals=(),
                 cache=context.cache,
                 account_observed_at_ns=NOW_NS,
                 reconciliation_observed_at_ns=NOW_NS,
+                plans=tuple(
+                    trade_plan_for_entry(RuntimeEntryRequest.from_signal(value), context.profile) for value in ()
+                ),
             )
         )
         is False
@@ -1589,7 +1602,7 @@ def test_flatten_account_closes_a_position_no_durable_entry_identity_claims() ->
     flatten = operator_intent(command_id="9" * 64, action="flatten", scope="account")
     context.signals.poll_commands_once(CommandRows(flatten))
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert len(context.strategy.submitted) == 1
     close, close_position_id, _client = context.strategy.submitted[0]
@@ -1597,10 +1610,10 @@ def test_flatten_account_closes_a_position_no_durable_entry_identity_claims() ->
     assert close.order_type == OrderType.MARKET
     assert close.is_reduce_only is True
     assert close.side == OrderSide.SELL
-    assert close.quantity.as_decimal() == Decimal("0.05")
+    assert close.quantity.as_decimal() == Decimal("0.049")
     assert context.strategy.canceled == [stray]
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert len(context.strategy.submitted) == 1
 
@@ -1611,7 +1624,7 @@ def test_flatten_account_closes_a_position_no_durable_entry_identity_claims() ->
     assert unclaimed[0].command_id == flatten.command_id
     assert unclaimed[0].summary["instrument_id"] == context.instrument.id.value
     assert unclaimed[0].summary["side"] == "long"
-    assert unclaimed[0].summary["quantity"] == "0.050"
+    assert unclaimed[0].summary["quantity"] == "0.049"
 
 
 def test_flatten_account_completes_once_the_private_reports_prove_flat() -> None:
@@ -1621,7 +1634,7 @@ def test_flatten_account_completes_once_the_private_reports_prove_flat() -> None
     _cold_position(context)
     flatten = operator_intent(command_id="9" * 64, action="flatten", scope="account", requested_at_ns=NOW_NS - 1)
     context.signals.poll_commands_once(CommandRows(flatten))
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
     assert context.strategy.control_state().flatten_pending == (flatten.command_id,)
 
     position = context.cache.positions_open(account_id=ACCOUNT_ID)[0]
@@ -1635,7 +1648,7 @@ def test_flatten_account_completes_once_the_private_reports_prove_flat() -> None
         strategy_id=context.strategy.id,
         account_id=ACCOUNT_ID,
         position_id=position.id,
-        last_qty=context.instrument.make_qty(Decimal("0.05")),
+        last_qty=context.instrument.make_qty(Decimal("0.049")),
         last_px=context.instrument.make_price(Decimal("10000")),
         commission=Money(0, context.instrument.quote_currency),
         ts_event=NOW_NS + 2,
@@ -1650,10 +1663,12 @@ def test_flatten_account_completes_once_the_private_reports_prove_flat() -> None
         context.strategy.reconcile_runtime(
             build_runtime_reconciliation_snapshot(
                 profile=context.profile,
-                signals=(),
                 cache=context.cache,
                 account_observed_at_ns=NOW_NS + 3,
                 reconciliation_observed_at_ns=NOW_NS + 3,
+                plans=tuple(
+                    trade_plan_for_entry(RuntimeEntryRequest.from_signal(value), context.profile) for value in ()
+                ),
             )
         )
         is True
@@ -1681,7 +1696,7 @@ def test_an_equity_that_cannot_be_a_baseline_is_refused_terminally_not_raised() 
         )
     )
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert context.strategy.submitted == []
     assert [value.summary["disposition"] for value in _dispositions(context)] == [
@@ -1744,7 +1759,7 @@ def test_a_stale_account_clock_returns_the_signal_to_the_ledger_and_the_ttl_stil
         reconciliation_observed_at_ns=NOW_NS,
     )
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert context.strategy.submitted == []
     assert _dispositions(context) == []
@@ -1753,7 +1768,7 @@ def test_a_stale_account_clock_returns_the_signal_to_the_ledger_and_the_ttl_stil
 
     assert context.signals.poll_once(SignalRows(signal)) == 1
     context.readiness.reconciled(account_observed_at_ns=NOW_NS, reconciliation_observed_at_ns=NOW_NS)
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert len(context.strategy.submitted) == 1
     accepted = _dispositions(context)
@@ -1771,12 +1786,12 @@ def test_a_retried_signal_that_never_recovers_still_ends_as_expired() -> None:
     )
 
     for _ in range(3):
-        context.strategy.on_timer(None)
+        pump_with_committed_plan(context)
         assert signal_pending_ids(context.signals) == frozenset()
         assert context.signals.poll_once(SignalRows(signal)) == 1
 
     context.clock.set_time(signal.expires_at_ns + 1)
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert context.strategy.submitted == []
     expired = _dispositions(context)
@@ -1803,7 +1818,7 @@ def test_every_transient_entry_refusal_returns_the_signal_instead_of_burying_it(
     if prepare == "market":
         context.clock.set_time(NOW_NS + context.profile.risk.market_stale_after_ns + 1)
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert reason in RETRYABLE_ENTRY_REASONS
     assert context.strategy.submitted == []
@@ -1817,8 +1832,118 @@ def test_a_deterministic_refusal_is_still_written_once_and_never_redelivered() -
     signal = trade_signal().model_copy(update={"market_key": "crypto:perp:DELL:USDT"})
     context = registered_oi_strategy(values=(signal,))
 
-    context.strategy.on_timer(None)
+    pump_with_committed_plan(context)
 
     assert context.strategy.submitted == []
     assert [value.summary["disposition"] for value in _dispositions(context)] == ["instrument_unmapped"]
     assert signal_pending_ids(context.signals) == {signal.signal_id}
+
+
+def test_recovery_uses_frozen_risk_and_holding_policy_after_config_change() -> None:
+    signal = trade_signal()
+    original = registered_oi_strategy()
+    plan = trade_plan_for_entry(RuntimeEntryRequest.from_signal(signal), original.profile)
+    old_open = NOW_NS - 30 * 86_400_000_000_000
+    plan = plan.model_copy(
+        update={
+            "created_at_ns": old_open,
+            "entry_expires_at_ns": old_open + 60_000_000_000,
+            "opened_at_ns": old_open,
+            "updated_at_ns": old_open,
+            "status": "open",
+        }
+    )
+    changed_profile = replace(
+        original.profile,
+        routes=tuple(replace(route, stop_distance_bps=400) for route in original.profile.routes),
+        exit_policy=replace(original.profile.exit_policy, take_profit_bps=400, max_holding_ns=99_000_000_000_000),
+    )
+    cold = registered_oi_strategy(profile=changed_profile, mark_reconciled=False)
+    _cold_position(cold)
+    stop = _cold_stop(cold, signal.signal_id)
+    snapshot = build_runtime_reconciliation_snapshot(
+        profile=cold.profile,
+        plans=(plan,),
+        cache=cold.cache,
+        account_observed_at_ns=NOW_NS,
+        reconciliation_observed_at_ns=NOW_NS,
+    )
+    assert cold.strategy.reconcile_runtime(snapshot) is True
+    assert cold.strategy.submitted == []
+    assert cold.strategy.account_snapshot(projected_at_ns=NOW_NS).aggregate_risk_usd == "9.79951"
+    cold.strategy.on_timer(None)
+    exits = [
+        item[0] for item in cold.strategy.submitted if item[0].is_reduce_only and item[0].order_type == OrderType.MARKET
+    ]
+    assert len(exits) == 1
+    update = next(value for value in cold.plans.pending_updates() if value.entry_id == signal.signal_id)
+    assert update.stop_distance_bps == 200
+    assert update.take_profit_bps == plan.take_profit_bps
+    assert update.max_holding_ns == plan.max_holding_ns
+    assert update.opened_at_ns == old_open
+    assert update.exit_reason == "time_exit"
+    assert stop.trigger_price.as_decimal() == Decimal("9800")
+
+
+def test_conflicting_active_plans_never_choose_the_newest_identity() -> None:
+    context = registered_oi_strategy(mark_reconciled=False)
+    _cold_position(context)
+    first = trade_plan_for_entry(RuntimeEntryRequest.from_signal(trade_signal()), context.profile)
+    second = trade_plan_for_entry(RuntimeEntryRequest.from_signal(trade_signal(signal_id="2" * 64)), context.profile)
+    second = second.model_copy(update={"created_at_ns": NOW_NS + 1, "updated_at_ns": NOW_NS + 1})
+    snapshot = build_runtime_reconciliation_snapshot(
+        profile=context.profile,
+        plans=(first, second),
+        cache=context.cache,
+        account_observed_at_ns=NOW_NS,
+        reconciliation_observed_at_ns=NOW_NS,
+    )
+    assert snapshot.ownership_ambiguous is True
+    assert snapshot.executions == ()
+    assert context.strategy.reconcile_runtime(snapshot) is False
+    assert context.strategy.readiness().entry_block_reason == "ownership_ambiguous"
+    assert context.strategy.submitted == []
+
+
+def test_empty_plan_stays_unresolved_until_a_deterministic_entry_query_proves_terminal() -> None:
+    from tracefold.integrations.nautilus.oi_runtime.trade_plans import EntryQueryProof
+
+    context = registered_oi_strategy(mark_reconciled=False)
+    plan = trade_plan_for_entry(RuntimeEntryRequest.from_signal(trade_signal()), context.profile)
+    plan = plan.model_copy(update={"entry_expires_at_ns": NOW_NS + 1})
+    context.clock.set_time(NOW_NS + 2)
+    snapshot = build_runtime_reconciliation_snapshot(
+        profile=context.profile,
+        plans=(plan,),
+        cache=context.cache,
+        account_observed_at_ns=NOW_NS + 2,
+        reconciliation_observed_at_ns=NOW_NS + 2,
+    )
+    assert context.strategy.reconcile_runtime(snapshot)
+    assert context.plans.pending_updates() == ()
+    assert context.strategy.submitted == []
+    assert context.strategy.reconcile_runtime(
+        replace(snapshot, entry_queries=(EntryQueryProof(plan.entry_id, "absent"),))
+    )
+    closed = context.plans.pending_updates()[0]
+    assert closed.status == "closed"
+    assert closed.exit_reason == "venue_unknown"
+    assert closed.history_gap_reason == "entry_outcome_unknown"
+    assert context.strategy.submitted == []
+
+
+def test_cold_recovery_cannot_claim_a_position_larger_than_its_frozen_entry() -> None:
+    context = registered_oi_strategy(mark_reconciled=False)
+    _cold_position(context, quantity="0.5")
+    plan = trade_plan_for_entry(RuntimeEntryRequest.from_signal(trade_signal()), context.profile)
+    _cold_stop(context, plan.entry_id, quantity="0.5")
+    snapshot = build_runtime_reconciliation_snapshot(
+        profile=context.profile,
+        plans=(plan,),
+        cache=context.cache,
+        account_observed_at_ns=NOW_NS,
+        reconciliation_observed_at_ns=NOW_NS,
+    )
+    assert context.strategy.reconcile_runtime(snapshot) is False
+    assert context.strategy.readiness().unexpected_exposure is True
+    assert context.strategy.submitted == []

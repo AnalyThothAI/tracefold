@@ -514,6 +514,7 @@ def test_runtime_state_is_single_generation_per_account_slot() -> None:
         open_orders_count=0,
         protection_status="not_applicable",
         reconciliation_observed_at_ns=2_000,
+        facts_expire_at_ns=17_000,
         heartbeat_at_ns=2_100,
         entry_block_reason=None,
         started_at_ns=1_900,
@@ -597,205 +598,6 @@ def test_runtime_state_is_single_generation_per_account_slot() -> None:
 
         with pytest.raises(ValueError, match="execution_runtime_routes_invalid"):
             replace(running, routes_count=-1)
-    finally:
-        conn.close()
-
-
-def test_manual_entry_recovery_read_is_bounded_by_durable_facts_and_the_window() -> None:
-    """#520 PR-A. Recovery is bounded by what a manual entry actually did, not by a waterline.
-
-    A Command with no durable entry-order fact never reached the venue and can hold nothing; one whose
-    latest position fact is `closed` is finished. Both used to sit behind the activation fence as well,
-    which also hid every intent older than the current profile.
-    """
-
-    unsent = _prepare_command(
-        suffix="7",
-        action="manual_entry",
-        scope="market",
-        market_key="crypto:perp:BTC:USDT",
-        direction="long",
-    )
-    submitted = _prepare_command(
-        suffix="8",
-        action="manual_entry",
-        scope="market",
-        market_key="crypto:perp:ETH:USDT",
-        direction="short",
-    )
-    conn = connect_postgres_test(read_only=False)
-    try:
-        repo = TradingRepository(conn)
-        with conn.transaction():
-            repo.append_operator_intent(unsent)
-            repo.append_operator_intent(submitted)
-
-        assert repo.execution_recovery_manual_entries(account_slot="demo-v1", since_ns=0, limit=10) == ()
-        with conn.transaction():
-            repo.append_execution_observations(
-                prepare_execution_observations(
-                    (
-                        _observation(
-                            event="9",
-                            command_id=submitted.value.command_id,
-                            kind="order",
-                            summary={"leg": "entry", "status": "submitted"},
-                        ),
-                    )
-                )
-            )
-
-        rows = repo.execution_recovery_manual_entries(account_slot="demo-v1", since_ns=0, limit=10)
-
-        assert materialize_operator_intents(rows) == (submitted.value.model_copy(update={"seq": rows[0][0]}),)
-        assert repo.execution_recovery_manual_entries(account_slot="demo-v1", since_ns=2_101, limit=10) == ()
-        # A different account slot never claims this one's exposure.
-        assert repo.execution_recovery_manual_entries(account_slot="other-slot", since_ns=0, limit=10) == ()
-        with conn.transaction():
-            repo.append_execution_observations(
-                prepare_execution_observations(
-                    (
-                        _observation(
-                            event="a",
-                            command_id=submitted.value.command_id,
-                            kind="position",
-                            summary={"status": "closed", "quantity": "0"},
-                        ),
-                    )
-                )
-            )
-        assert repo.execution_recovery_manual_entries(account_slot="demo-v1", since_ns=0, limit=10) == ()
-    finally:
-        conn.close()
-
-
-def test_signal_recovery_keeps_only_windowed_durable_entry_order_facts() -> None:
-    active = _prepare_signal(suffix="6", case_id="case-active")
-    stopped = _prepare_signal(suffix="7", case_id="case-stopped")
-    retired = _prepare_signal(suffix="8", case_id="case-retired")
-    conn = connect_postgres_test(read_only=False)
-    try:
-        repo = TradingRepository(conn)
-        with conn.transaction():
-            _append_signal(repo, active)
-            _append_signal(repo, stopped)
-            _append_signal(repo, retired)
-            repo.append_execution_observations(
-                prepare_execution_observations(
-                    (
-                        _observation(
-                            event="1",
-                            signal_id=active.value.signal_id,
-                            kind="order",
-                            summary={"leg": "entry", "status": "submitted"},
-                            observed_at_ns=5_000,
-                        ),
-                        _observation(
-                            event="2",
-                            signal_id=active.value.signal_id,
-                            kind="position",
-                            summary={"status": "opened", "quantity": "0.01"},
-                            observed_at_ns=5_000,
-                        ),
-                        _observation(
-                            event="3",
-                            signal_id=stopped.value.signal_id,
-                            kind="order",
-                            summary={"leg": "entry", "status": "submitted"},
-                            observed_at_ns=5_000,
-                        ),
-                        _observation(
-                            event="4",
-                            signal_id=stopped.value.signal_id,
-                            kind="position",
-                            summary={"status": "opened", "quantity": "0.01"},
-                            observed_at_ns=5_000,
-                        ),
-                        _observation(
-                            event="5",
-                            signal_id=stopped.value.signal_id,
-                            kind="position",
-                            summary={"status": "closed", "quantity": "0"},
-                            observed_at_ns=5_000,
-                        ),
-                        _observation(
-                            event="6",
-                            signal_id=retired.value.signal_id,
-                            kind="order",
-                            summary={"leg": "entry", "status": "submitted"},
-                            observed_at_ns=5_000,
-                        ),
-                        _observation(
-                            event="7",
-                            signal_id=retired.value.signal_id,
-                            kind="order",
-                            summary={"leg": "entry", "status": "canceled"},
-                            observed_at_ns=5_000,
-                        ),
-                    )
-                )
-            )
-
-        rows = repo.execution_recovery_signals(account_slot="demo-v1", since_ns=0, limit=10)
-
-        # `_matched_position` claims by instrument and direction alone, so a stopped-out identity
-        # and a canceled entry must never reach it: either would adopt an unrelated position.
-        assert materialize_trade_signals(rows) == (active.value.model_copy(update={"seq": rows[0][0]}),)
-        assert repo.execution_recovery_signals(account_slot="demo-v1", since_ns=5_001, limit=10) == ()
-    finally:
-        conn.close()
-
-
-def test_signal_recovery_readmits_an_identity_that_reopened_after_a_closed_position() -> None:
-    """Only the *latest* position fact retires an identity; a reopen is live exposure again."""
-
-    reopened = _prepare_signal(suffix="9", case_id="case-reopened")
-    conn = connect_postgres_test(read_only=False)
-    try:
-        repo = TradingRepository(conn)
-        with conn.transaction():
-            _append_signal(repo, reopened)
-            repo.append_execution_observations(
-                prepare_execution_observations(
-                    (
-                        _observation(
-                            event="1",
-                            signal_id=reopened.value.signal_id,
-                            kind="order",
-                            summary={"leg": "entry", "status": "submitted"},
-                            observed_at_ns=5_000,
-                        ),
-                        _observation(
-                            event="2",
-                            signal_id=reopened.value.signal_id,
-                            kind="position",
-                            summary={"status": "closed", "quantity": "0"},
-                            observed_at_ns=5_000,
-                        ),
-                        _observation(
-                            event="3",
-                            signal_id=reopened.value.signal_id,
-                            kind="position",
-                            summary={"status": "changed", "quantity": "0.02"},
-                            observed_at_ns=5_000,
-                        ),
-                    )
-                )
-            )
-
-        rows = repo.execution_recovery_signals(account_slot="demo-v1", since_ns=0, limit=10)
-
-        assert materialize_trade_signals(rows) == (reopened.value.model_copy(update={"seq": rows[0][0]}),)
-    finally:
-        conn.close()
-
-
-def test_signal_recovery_rejects_a_negative_window() -> None:
-    conn = connect_postgres_test(read_only=False)
-    try:
-        repo = TradingRepository(conn)
-        with pytest.raises(ValueError, match="execution_recovery_window_invalid"):
-            repo.execution_recovery_signals(account_slot="demo-v1", since_ns=-1, limit=10)
     finally:
         conn.close()
 
@@ -933,7 +735,8 @@ def test_unsorted_mixed_case_nautilus_references_are_normalized_by_the_contract_
             """
         ).fetchone()
         assert surviving is not None
-        assert surviving["n"] == 0
+        # The only new trading_* function is the immutable plan guard, not a JSON validator.
+        assert surviving["n"] == 1
     finally:
         conn.close()
 
@@ -1239,7 +1042,10 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
     assert "CONSTRAINT TRIGGER trading_trade_signals_case_link" in triggers["trading_trade_signals_case_link"]
     # One function is left on this seam, and it is the append-only trigger. Every `trading_*`
     # validator went with the CHECKs that called it (#520 PR-C).
-    assert functions == {"reject_trading_execution_stream_mutation": ("v", "u", False, "trigger")}
+    assert functions == {
+        "reject_trading_execution_stream_mutation": ("v", "u", False, "trigger"),
+        "trading_trade_plan_guard": ("v", "u", False, "trigger"),
+    }
 
 
 def test_unresolved_reads_use_the_production_query_specs_and_indexes() -> None:
@@ -1285,5 +1091,7 @@ def test_unresolved_reads_use_the_production_query_specs_and_indexes() -> None:
     assert plans["trading_unresolved_trade_signals"] == {
         "ix_trading_trade_signals_expires_at",
         "ux_trading_execution_signal_disposition",
+        "trading_trade_plans_pkey",
     }
+    assert "trading_trade_plans_pkey" in plans["trading_unresolved_operator_intents"]
     assert "ix_trading_operator_intents_pending" in plans["trading_unresolved_operator_intents"]

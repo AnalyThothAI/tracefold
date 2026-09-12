@@ -39,6 +39,7 @@ from .storage.execution_stream import (
     ExecutionAccountSnapshot,
     PreparedOperatorIntent,
 )
+from .trade_plan import ExitReason, TradePlan, TradePlanStatus
 
 __all__ = [
     "ACCEPTED_ENTRY_DISPOSITIONS",
@@ -52,10 +53,13 @@ __all__ = [
     "ExecutionAccountSnapshot",
     "ExecutionObservationV1",
     "ExecutionStage",
+    "ExitReason",
     "OiTradeCandidate",
     "OperatorCommandError",
     "OperatorIntentV1",
     "PreparedOperatorIntent",
+    "TradePlan",
+    "TradePlanStatus",
     "TradeSignalV1",
     "execution_stage",
     "market_key",

@@ -46,6 +46,7 @@ from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, Obs
 from tracefold.integrations.nautilus.oi_runtime.config import (
     ActiveRuntimeMode,
     BinanceRuntimeCredentials,
+    OiExitPolicy,
     OiInstrumentRoute,
     OiRiskLimits,
     OiRuntimeProfile,
@@ -55,6 +56,7 @@ from tracefold.integrations.nautilus.oi_runtime.config import (
 from tracefold.integrations.nautilus.oi_runtime.nautilus_1231_binance_compat import (
     CompleteBinanceAccountReports,
     load_complete_binance_account_reports,
+    query_planned_entry,
     single_binance_execution_client,
 )
 from tracefold.integrations.nautilus.oi_runtime.risk import account_equity_usd
@@ -66,11 +68,12 @@ from tracefold.integrations.nautilus.oi_runtime.state import (
     RuntimeReadiness,
 )
 from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrategy
-from tracefold.platform.config.models import Settings
+from tracefold.integrations.nautilus.oi_runtime.trade_plans import EntryQueryProof, TradePlanChannel
+from tracefold.platform.config.models import Settings, TradingExitPolicySettings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.postgres.client import postgres_health_check
 from tracefold.platform.postgres.migrations import alembic_config, latest_migration_version
-from tracefold.trading import EXECUTION_STRATEGY_ID, market_key
+from tracefold.trading import EXECUTION_STRATEGY_ID, TradePlan, market_key
 from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
 
 _EXECUTION_STRATEGY = EXECUTION_STRATEGY_ID
@@ -123,6 +126,7 @@ class _PrivateReconciliationResult:
     triggers: tuple[str, ...]
     observed_at_ns: int
     duration_ns: int
+    entry_queries: tuple[EntryQueryProof, ...] = ()
 
 
 class _PrivateReconciliationRequests:
@@ -269,6 +273,7 @@ async def _run_active_runtime(
         account_slot=profile.account_slot,
         execution_strategy=_EXECUTION_STRATEGY,
     )
+    plans = TradePlanChannel()
     audit = AuditSink(
         factory=ObservationFactory(
             account_slot=profile.account_slot,
@@ -290,6 +295,7 @@ async def _run_active_runtime(
     strategy = OiNautilusStrategy(
         profile=profile,
         signals=signals,
+        plans=plans,
         audit=audit,
         readiness=readiness,
         dispatch_pump=dispatch_pump_on_loop,
@@ -321,15 +327,15 @@ async def _run_active_runtime(
         client = single_binance_execution_client(node.kernel.exec_engine)
         if client.account_id != profile.account_id:
             raise RuntimeError("oi_runtime_account_identity_mismatch")
-        result = await _reconcile_account(node=node, client=client, triggers=("startup",))
+        recovery_inputs = load_recovery_inputs(repos, profile.account_slot, profile.mode)
+        result = await _reconcile_account(node=node, client=client, triggers=("startup",), plans=recovery_inputs)
         reports = result.reports
         observed_at_ns = result.observed_at_ns
-        recovery_inputs = load_recovery_inputs(repos, profile.account_slot, observed_at_ns)
         strategy.reconcile_runtime(
             build_runtime_reconciliation_snapshot(
                 profile=profile,
-                signals=recovery_inputs[0],
-                manual_entries=recovery_inputs[1],
+                plans=recovery_inputs,
+                entry_queries=result.entry_queries,
                 cache=node.cache,
                 account_observed_at_ns=observed_at_ns,
                 reconciliation_observed_at_ns=observed_at_ns,
@@ -362,6 +368,7 @@ async def _run_active_runtime(
             # them: `instrument_unmapped` on the entry path is the one answer about routability, and
             # publishing the list so the Signal lane could pre-refuse a market was the second (#537).
             routes_count=len(profile.routes),
+            facts_expire_at_ns=strategy.readiness().facts_expire_at_ns,
         )
         projector = RuntimeStateProjector(initial=state, recovery_inputs=recovery_inputs)
         projector.start(repos)
@@ -369,6 +376,7 @@ async def _run_active_runtime(
             settings=settings,
             profile=profile,
             signals=signals,
+            plans=plans,
             audit=audit,
             update_day_start=strategy.update_day_start,
             singleton=singleton,
@@ -410,10 +418,12 @@ async def _run_active_runtime(
             if loop.time() >= next_reconciliation:
                 reconciliation_triggers.add("steady")
             if reconciliation_triggers:
+                recovery_plans = bridge.recovery_inputs()
                 result = await _reconcile_account(
                     node=node,
                     client=client,
                     triggers=tuple(sorted(reconciliation_triggers)),
+                    plans=recovery_plans,
                 )
                 reports = result.reports
                 observed_at_ns = result.observed_at_ns
@@ -422,12 +432,11 @@ async def _run_active_runtime(
                     result=result,
                     previous_identity=reconciliation_identity,
                 )
-                recovery_signals, recovery_manual_entries = bridge.recovery_inputs()
                 strategy.reconcile_runtime(
                     build_runtime_reconciliation_snapshot(
                         profile=profile,
-                        signals=recovery_signals,
-                        manual_entries=recovery_manual_entries,
+                        plans=recovery_plans,
+                        entry_queries=result.entry_queries,
                         cache=node.cache,
                         account_observed_at_ns=observed_at_ns,
                         reconciliation_observed_at_ns=observed_at_ns,
@@ -455,6 +464,7 @@ async def _run_active_runtime(
                     unexpected_exposure=strategy_readiness.unexpected_exposure,
                 ),
                 reconciliation_observed_at_ns=strategy_readiness.reconciliation_observed_at_ns,
+                facts_expire_at_ns=strategy_readiness.facts_expire_at_ns,
                 heartbeat_at_ns=now_ns,
                 entry_block_reason=strategy_readiness.entry_block_reason,
                 updated_at_ns=now_ns,
@@ -515,6 +525,11 @@ def _active_profile(
     # id -- only needs to be stable per account slot and mode, which the namespace already is
     # (#537 PR-4).
     namespace = f"tracefold:{execution.account_slot}:{mode}"
+    exit_policy = execution.exit_policy
+    if exit_policy is None:
+        if mode == "live":
+            raise ValueError("trading_execution_live_exit_policy_required")
+        exit_policy = TradingExitPolicySettings(take_profit_bps=200, max_holding_seconds=14_400)
     return OiRuntimeProfile(
         mode=mode,
         account_slot=execution.account_slot,
@@ -522,6 +537,11 @@ def _active_profile(
         namespace=namespace,
         routes=routes,
         risk=_risk_limits(settings),
+        exit_policy=OiExitPolicy(
+            policy_id=exit_policy.policy_id,
+            take_profit_bps=exit_policy.take_profit_bps,
+            max_holding_ns=exit_policy.max_holding_seconds * 1_000_000_000,
+        ),
     )
 
 
@@ -615,12 +635,32 @@ async def _reconcile_account(
     node: TradingNode,
     client: Any,
     triggers: tuple[str, ...],
+    plans: tuple[TradePlan, ...] = (),
 ) -> _PrivateReconciliationResult:
     # Every trigger here is either a literal this module wrote or one `_PrivateReconciliationRequests
     # .request` already refused by name; re-checking the same vocabulary twice only lets the two
     # lists drift (#589 P-F13).
     started_at_ns = time.perf_counter_ns()
     reports = await load_complete_binance_account_reports(client)
+    queries: list[EntryQueryProof] = []
+    for plan in plans:
+        if any(str(report.instrument_id) == plan.instrument_id for report in reports.positions):
+            continue
+        if any(str(report.client_order_id) == plan.entry_client_order_id for report in reports.orders):
+            continue
+        queries.append(await query_planned_entry(client, plan))
+    if queries:
+        # Querying a market order can observe a fill newer than the first position scan. A second
+        # complete triple makes the terminal decision newer than that query, not the other way round.
+        reports = await load_complete_binance_account_reports(client)
+        working_ids = {query.entry_id for query in queries if query.status == "working"}
+        for plan in plans:
+            if (
+                plan.entry_id in working_ids
+                and not any(str(report.client_order_id) == plan.entry_client_order_id for report in reports.orders)
+                and not any(str(report.instrument_id) == plan.instrument_id for report in reports.positions)
+            ):
+                raise RuntimeError("oi_runtime_entry_query_not_in_complete_report")
     for report in (*reports.positions, *reports.orders):
         if report.account_id != client.account_id:
             raise RuntimeError("oi_runtime_account_report_scope_invalid")
@@ -630,6 +670,7 @@ async def _reconcile_account(
         triggers=tuple(sorted(set(triggers))),
         observed_at_ns=int(node.kernel.clock.timestamp_ns()),
         duration_ns=time.perf_counter_ns() - started_at_ns,
+        entry_queries=tuple(queries),
     )
 
 

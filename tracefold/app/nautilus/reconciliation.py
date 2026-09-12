@@ -6,9 +6,9 @@ from decimal import Decimal
 from typing import Any, Literal
 
 from nautilus_trader.model.enums import PositionSide
-from nautilus_trader.model.identifiers import ClientOrderId, PositionId
+from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId
 
-from tracefold.integrations.nautilus.oi_runtime.config import OiInstrumentRoute, OiRuntimeProfile
+from tracefold.integrations.nautilus.oi_runtime.config import OiRuntimeProfile
 from tracefold.integrations.nautilus.oi_runtime.nautilus_1231_binance_compat import CompleteBinanceAccountReports
 from tracefold.integrations.nautilus.oi_runtime.state import (
     RecoveredExecutionSeed,
@@ -19,7 +19,8 @@ from tracefold.integrations.nautilus.oi_runtime.state import (
     exit_leg,
     protection_leg,
 )
-from tracefold.trading import OperatorIntentV1, TradeSignalV1
+from tracefold.integrations.nautilus.oi_runtime.trade_plans import EntryQueryProof
+from tracefold.trading import TradePlan
 
 # How far a single execution's stop and exit replacement chains are followed when ownership is
 # rebuilt. It bounds one candidate map, derived per durable entry identity before any cached order is
@@ -42,62 +43,68 @@ def reconcile_reports_into_cache(*, engine: Any, reports: CompleteBinanceAccount
 def build_runtime_reconciliation_snapshot(
     *,
     profile: OiRuntimeProfile,
-    signals: tuple[TradeSignalV1, ...],
-    manual_entries: tuple[OperatorIntentV1, ...] = (),
+    plans: tuple[TradePlan, ...],
     cache: Any,
     account_observed_at_ns: int,
     reconciliation_observed_at_ns: int,
+    entry_queries: tuple[EntryQueryProof, ...] = (),
 ) -> RuntimeReconciliationSnapshot:
-    """Rebuild ownership from durable entry identities and the reconciled Binance reports.
+    """Match only active plans in this account/mode. Never choose the newest candidate.
 
-    Cache is process memory and the Binance proof carries only open orders and position risk, so a
-    restart in a position has no filled entry order to key off. Ownership is proven by the durable
-    entry identity instead: its deterministic client order ids claim the resting stop and exit, and an
-    open position on that identity's routed instrument and direction is the one it opened. Anything
-    left over stays unowned (#510 C).
+    A cold Cache may lack the filled entry. Only a unique active identity on the frozen
+    instrument and side can then claim that position; native shape checks still follow.
     """
-
+    candidates = tuple(
+        plan
+        for plan in plans
+        if plan.account_slot == profile.account_slot
+        and plan.runtime_mode_at_creation == profile.mode
+        and plan.terminal_at_ns is None
+    )
     orders = tuple(cache.orders(account_id=profile.account_id))
-    routes = {route.market_key: route for route in profile.routes}
-    subjects = [RuntimeEntryRequest.from_signal(signal) for signal in signals]
-    subjects.extend(RuntimeEntryRequest.from_manual_command(command) for command in manual_entries)
-    identities = tuple(request.entry_id for request in subjects)
-    if len(identities) != len(set(identities)):
-        raise RuntimeError("oi_runtime_recovery_identity_ambiguous")
-    open_positions = tuple(cache.positions_open(account_id=profile.account_id))
-    claimed: set[PositionId] = set()
+    positions = tuple(cache.positions_open(account_id=profile.account_id))
+    by_instrument: dict[str, list[TradePlan]] = {}
+    for plan in candidates:
+        by_instrument.setdefault(plan.instrument_id, []).append(plan)
+    ambiguous = any(len(group) > 1 for group in by_instrument.values())
     seeds: list[RecoveredExecutionSeed] = []
-    # Newest identity first: one instrument carries at most one active execution, so when two
-    # durable entries could claim the same position the most recent one is the one that opened it.
-    for request in reversed(subjects):
-        entry_id = deterministic_client_order_id(
-            namespace=profile.namespace,
-            entry_id=request.entry_id,
-            leg="entry",
-        )
+    unresolved: list[TradePlan] = []
+    for plan in candidates:
+        if len(by_instrument[plan.instrument_id]) != 1:
+            unresolved.append(plan)
+            continue
+        request = RuntimeEntryRequest.from_plan(plan)
+        entry_id = ClientOrderId(plan.entry_client_order_id)
         entry = cache.order(entry_id)
-        route = routes.get(request.market_key)
-        position_id = _matched_position(
-            positions=open_positions,
-            route=route,
-            direction=request.direction,
-            claimed=claimed,
+        instrument_id = InstrumentId.from_str(plan.instrument_id)
+        side = PositionSide.LONG if plan.direction == "long" else PositionSide.SHORT
+        matching = tuple(
+            position for position in positions if position.instrument_id == instrument_id and position.side == side
         )
-        if position_id is None:
-            if entry is None or entry.is_closed:
+        if len(matching) > 1:
+            ambiguous = True
+            unresolved.append(plan)
+            continue
+        linked_position = cache.position_for_order(entry_id)
+        if linked_position is not None:
+            if linked_position.is_open and (len(matching) != 1 or matching[0].id != linked_position.id):
+                ambiguous = True
+                unresolved.append(plan)
                 continue
-            protections: tuple[RecoveredProtectionSeed, ...] = ()
-            exit_id, exit_generation = None, 0
-        else:
-            claimed.add(position_id)
-            protections, exit_id, exit_generation = _recovered_legs(
-                profile=profile,
-                request=request,
-                orders=orders,
-            )
+            # A closed explicitly linked position cannot be reassigned to a different new position.
+            if not linked_position.is_open and matching:
+                ambiguous = True
+                unresolved.append(plan)
+                continue
+        position_id = matching[0].id if matching else None
+        if position_id is None and (entry is None or entry.is_closed):
+            unresolved.append(plan)
+            continue
+        protections, exit_id, exit_generation = _recovered_legs(profile=profile, request=request, orders=orders)
         seeds.append(
             RecoveredExecutionSeed(
                 entry=request,
+                plan=plan,
                 entry_client_order_id=entry_id,
                 position_id=position_id,
                 protections=protections,
@@ -105,30 +112,15 @@ def build_runtime_reconciliation_snapshot(
                 exit_generation=exit_generation,
             )
         )
-    seeds.reverse()
     return RuntimeReconciliationSnapshot(
         account_slot=profile.account_slot,
         account_observed_at_ns=account_observed_at_ns,
         reconciliation_observed_at_ns=reconciliation_observed_at_ns,
         executions=tuple(seeds),
+        unresolved_plans=tuple(unresolved),
+        ownership_ambiguous=ambiguous,
+        entry_queries=entry_queries,
     )
-
-
-def _matched_position(
-    *,
-    positions: tuple[Any, ...],
-    route: OiInstrumentRoute | None,
-    direction: str,
-    claimed: set[PositionId],
-) -> PositionId | None:
-    if route is None:
-        return None
-    side = PositionSide.LONG if direction == "long" else PositionSide.SHORT
-    for position in positions:
-        if position.id in claimed or position.instrument_id != route.instrument_id or position.side != side:
-            continue
-        return position.id
-    return None
 
 
 def _recovery_legs(*, profile: OiRuntimeProfile, entry_id: str) -> dict[ClientOrderId, _RecoveryLeg]:

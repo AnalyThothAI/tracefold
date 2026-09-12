@@ -22,6 +22,7 @@ from nautilus_trader.test_kit.stubs.data import TestDataStubs
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.config import (
     ActiveRuntimeMode,
+    OiExitPolicy,
     OiInstrumentRoute,
     OiRiskLimits,
     OiRuntimeProfile,
@@ -30,10 +31,13 @@ from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.state import (
     RuntimeControlSnapshot,
+    RuntimeEntryRequest,
     RuntimeReadiness,
+    deterministic_client_order_id,
 )
 from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrategy
-from tracefold.trading import OperatorIntentV1, TradeSignalV1
+from tracefold.integrations.nautilus.oi_runtime.trade_plans import TradePlanChannel
+from tracefold.trading import OperatorIntentV1, TradePlan, TradeSignalV1
 
 NOW_NS = 1_900_000_000_000_000_000
 ACCOUNT_ID = AccountId("BINANCE-001")
@@ -54,6 +58,7 @@ def oi_profile(mode: ActiveRuntimeMode = "paper") -> OiRuntimeProfile:
         account_id=ACCOUNT_ID,
         namespace=f"oi-{mode}-identity",
         routes=routes,
+        exit_policy=OiExitPolicy(take_profit_bps=200, max_holding_ns=14_400_000_000_000),
         risk=OiRiskLimits(
             risk_fraction_per_trade=Decimal("0.01"),
             max_risk_per_trade_usd=Decimal("10"),
@@ -78,6 +83,48 @@ def trade_signal(*, signal_id: str = "1" * 64, expires_at_ns: int = NOW_NS + 60_
         observed_at_ns=NOW_NS - 1_000_000,
         expires_at_ns=expires_at_ns,
     )
+
+
+def trade_plan_for_entry(request: RuntimeEntryRequest, profile: OiRuntimeProfile | None = None) -> TradePlan:
+    """Frozen admitted intent for focused native risk/recovery tests; PostgreSQL tests commit it."""
+    profile = profile or oi_profile()
+    route = next(route for route in profile.routes if route.market_key == request.market_key)
+    created = min(NOW_NS, request.expires_at_ns - 1)
+    return TradePlan(
+        entry_id=request.entry_id,
+        source=request.source,
+        case_id=request.signal.case_id if request.signal is not None else None,
+        account_slot=profile.account_slot,
+        runtime_mode_at_creation=profile.mode,
+        market_key=request.market_key,
+        instrument_id=route.instrument_id.value,
+        direction=request.direction,
+        entry_client_order_id=deterministic_client_order_id(
+            namespace=profile.namespace, entry_id=request.entry_id, leg="entry"
+        ).value,
+        created_at_ns=created,
+        entry_expires_at_ns=request.expires_at_ns,
+        entry_quantity=Decimal("0.049"),
+        stop_distance_bps=route.stop_distance_bps,
+        risk_budget_usd=Decimal("10"),
+        max_leverage_at_creation=profile.risk.max_leverage,
+        take_profit_bps=profile.exit_policy.take_profit_bps,
+        max_holding_ns=profile.exit_policy.max_holding_ns,
+        updated_at_ns=created,
+    )
+
+
+def pump_with_committed_plan(context: SimpleNamespace) -> None:
+    """Deliver the DB boundary's receipt when testing other native coordinator mechanisms.
+
+    Commit ordering/failure itself uses the real PostgreSQL bridge in test_nautilus_trade_plan.
+    Keeping this explicit at each call site makes these focused tests' boundary visible.
+    """
+    context.strategy.on_timer(None)
+    plan = context.plans.pending_prepare()
+    if plan is not None:
+        context.plans.committed(plan, newly_committed=True)
+        context.strategy.on_timer(None)
 
 
 class SignalRows:
@@ -198,6 +245,7 @@ def registered_oi_strategy(
     initial_control_state: RuntimeControlSnapshot | None = _RESUMED_CONTROL_STATE,
     profile: OiRuntimeProfile | None = None,
     with_quote: bool = True,
+    plans: TradePlanChannel | None = None,
 ) -> SimpleNamespace:
     profile = profile or oi_profile()
     selected_signals = signal_client or ExecutionSignalClient(
@@ -221,9 +269,11 @@ def registered_oi_strategy(
         )
     singleton_state = singleton or [True]
     reconciliation_requests: list[str] = []
+    selected_plans = plans or TradePlanChannel()
     strategy = RecordingOiStrategy(
         profile=profile,
         signals=selected_signals,
+        plans=selected_plans,
         audit=selected_audit,
         readiness=readiness,
         # `TestClock` fires timers on the calling thread, so the harness is the callback thread.
@@ -269,6 +319,7 @@ def registered_oi_strategy(
         strategy=strategy,
         profile=profile,
         signals=selected_signals,
+        plans=selected_plans,
         audit=selected_audit,
         readiness=readiness,
         singleton=singleton_state,
@@ -288,6 +339,8 @@ __all__ = [
     "SignalRows",
     "oi_profile",
     "operator_intent",
+    "pump_with_committed_plan",
     "registered_oi_strategy",
+    "trade_plan_for_entry",
     "trade_signal",
 ]

@@ -37,6 +37,7 @@ from .state import (
     RuntimeReconciliationSnapshot,
     order_for_event,
 )
+from .trade_plans import TradePlanChannel
 
 _CALLBACK_BATCH = 16
 _PUMP_INTERVAL_MS = 100
@@ -62,6 +63,7 @@ class OiNautilusStrategy(Strategy):
         *,
         profile: OiRuntimeProfile,
         signals: ExecutionSignalClient,
+        plans: TradePlanChannel,
         audit: AuditSink,
         readiness: RuntimeReadiness,
         # Whoever owns the one thread allowed to mutate `RuntimeExecutionState`. On the pinned
@@ -83,6 +85,7 @@ class OiNautilusStrategy(Strategy):
         super().__init__(selected)
         self._profile = profile
         self._signals = signals
+        self._plans = plans
         self._audit = audit
         self._readiness = readiness
         self._dispatch_pump = dispatch_pump
@@ -104,6 +107,7 @@ class OiNautilusStrategy(Strategy):
         )
         self._exits = ExitCoordinator(
             engine=self,
+            plans=plans,
             profile=profile,
             state=self._runtime,
             observations=self._observation_writer,
@@ -112,6 +116,7 @@ class OiNautilusStrategy(Strategy):
         )
         self._protection = ProtectionCoordinator(
             engine=self,
+            plans=plans,
             profile=profile,
             state=self._runtime,
             readiness=readiness,
@@ -122,6 +127,7 @@ class OiNautilusStrategy(Strategy):
         )
         self._recovery = RecoveryCoordinator(
             engine=self,
+            plans=plans,
             profile=profile,
             state=self._runtime,
             readiness=readiness,
@@ -132,6 +138,7 @@ class OiNautilusStrategy(Strategy):
         )
         self._entry = EntryCoordinator(
             engine=self,
+            plans=plans,
             profile=profile,
             state=self._runtime,
             readiness=readiness,
@@ -194,7 +201,9 @@ class OiNautilusStrategy(Strategy):
                     self._entry.handle_signal(signal)
                 except AuditBackpressure:
                     break
+        self._entry.submit_committed()
         self._entry.query_aged()
+        self._exits.advance_policy()
         self._exits.retry_failed()
         self._recovery.verify_owned_exposure()
         self._quotes.sweep(int(self.clock.timestamp_ns()))
@@ -378,7 +387,7 @@ class OiNautilusStrategy(Strategy):
                 and state.position_quantity > 0
                 and state.position_id is not None
             ):
-                self._exits.flatten(state.position_id)
+                self._exits.flatten(state.position_id, reason="protection_failure")
             return
         self._route_known_terminal(state, event.client_order_id, leg)
         self._observation_writer.rejected_order_event(state, leg, status, event, reason)

@@ -708,3 +708,16 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
     visibly degraded under `行情读取失败 · 上次成功于 …`; without cache, confirm
     the shared loading/error surface renders. Background the tab long enough
     to pause interval polling, return, and confirm one immediate quote refetch.
+
+
+### TradePlan execution completeness (#644)
+
+The existing Trading status, execution and strategy areas retain their roles.
+Execution rows show frozen stop/risk budget/leverage and TP/holding limits;
+active plans stay visible beyond the 24-hour history window. The totals are
+explicitly known realized amounts with closed/known/missing counts. All-missing
+PnL renders a dash in totals and an unknown label on a closed row, never zero.
+A history gap has a named explanation and prevents a complete-net-profit claim.
+The fee/funding basis is visible next to the totals. No recovery control center
+or browser command authority is added. Freshness still uses only the server's
+`facts_expire_at_ms`, including its independent heartbeat limit.

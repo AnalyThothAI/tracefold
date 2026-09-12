@@ -861,6 +861,7 @@
 | `protection_status` | `TEXT` | False | `None` |
 | `account_snapshot` | `JSONB` | True | `None` |
 | `routes_count` | `INTEGER` | False | `0` |
+| `facts_expire_at_ns` | `BIGINT` | False | `0` |
 
 ## `trading_operator_intents`
 
@@ -879,6 +880,35 @@
 | `market_key` | `TEXT` | True | `None` |
 | `direction` | `TEXT` | True | `None` |
 | `payload` | `JSONB` | False | `None` |
+
+## `trading_trade_plans`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `entry_id` | `TEXT` | False | `None` |
+| `source` | `TEXT` | False | `None` |
+| `case_id` | `TEXT` | True | `None` |
+| `account_slot` | `TEXT` | False | `None` |
+| `runtime_mode_at_creation` | `TEXT` | False | `None` |
+| `market_key` | `TEXT` | False | `None` |
+| `instrument_id` | `TEXT` | False | `None` |
+| `direction` | `TEXT` | False | `None` |
+| `entry_client_order_id` | `TEXT` | False | `None` |
+| `created_at_ns` | `BIGINT` | False | `None` |
+| `entry_expires_at_ns` | `BIGINT` | False | `None` |
+| `entry_quantity` | `NUMERIC` | False | `None` |
+| `stop_distance_bps` | `INTEGER` | False | `None` |
+| `risk_budget_usd` | `NUMERIC` | False | `None` |
+| `max_leverage_at_creation` | `INTEGER` | False | `None` |
+| `exit_policy_id` | `TEXT` | False | `None` |
+| `take_profit_bps` | `INTEGER` | False | `None` |
+| `max_holding_ns` | `BIGINT` | False | `None` |
+| `status` | `TEXT` | False | `None` |
+| `opened_at_ns` | `BIGINT` | True | `None` |
+| `terminal_at_ns` | `BIGINT` | True | `None` |
+| `exit_reason` | `TEXT` | True | `None` |
+| `history_gap_reason` | `TEXT` | True | `None` |
+| `updated_at_ns` | `BIGINT` | False | `None` |
 
 ## `trading_trade_signals`
 

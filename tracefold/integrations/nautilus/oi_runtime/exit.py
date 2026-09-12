@@ -9,10 +9,11 @@ from typing import Any
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import ClientId, ClientOrderId, PositionId
 
-from tracefold.trading import OperatorIntentV1
+from tracefold.trading import ExitReason, OperatorIntentV1
 
 from .config import OiRuntimeProfile
 from .observations import RuntimeObservationWriter
+from .risk import decimal_value
 from .state import (
     ExecutionState,
     PrivateReconciliationReason,
@@ -22,6 +23,7 @@ from .state import (
     exit_leg,
     exit_order_valid,
 )
+from .trade_plans import TradePlanChannel
 
 # A reduce-only market close on an open position fills; a repeated rejection is a venue fact the
 # operator has to see, not something to retry on the 100 ms callback pump.
@@ -36,6 +38,7 @@ class ExitCoordinator:
         *,
         engine: Any,
         profile: OiRuntimeProfile,
+        plans: TradePlanChannel,
         state: RuntimeExecutionState,
         observations: RuntimeObservationWriter,
         request_reconciliation: Callable[[PrivateReconciliationReason], None],
@@ -43,6 +46,7 @@ class ExitCoordinator:
     ) -> None:
         self._engine = engine
         self._profile = profile
+        self._plans = plans
         self._state = state
         self._observations = observations
         self._request_reconciliation = request_reconciliation
@@ -65,7 +69,7 @@ class ExitCoordinator:
                 self._state.flatten_accept_observed.add(command_id)
         for execution in self._state.executions.values():
             if execution.position_id is not None and execution.position_quantity > 0:
-                self.flatten(execution.position_id)
+                self.flatten(execution.position_id, reason="operator_flatten")
             if execution.entry_order is not None and not execution.entry_order.is_closed:
                 self._engine.cancel_order(execution.entry_order, client_id=ClientId("BINANCE"))
         for position in self._engine.cache.positions_open(account_id=self._profile.account_id):
@@ -136,12 +140,45 @@ class ExitCoordinator:
             self._state.unclaimed_flatten_orders.clear()
             self._state.unclaimed_flatten_attempts.clear()
 
+    def advance_policy(self) -> None:
+        """Normal exits share the existing pump and reduce-only exit generations."""
+        now_ns = int(self._engine.clock.timestamp_ns())
+        for state in tuple(self._state.executions.values()):
+            if state.position_id is None or state.position_quantity <= 0 or state.exit_order is not None:
+                continue
+            if state.exit_reason is not None:
+                if not state.exit_retry_required:
+                    continue
+                self.flatten(state.position_id, reason=state.exit_reason)
+                continue
+            plan = state.plan
+            opened_at_ns = plan.opened_at_ns or plan.created_at_ns
+            if now_ns >= opened_at_ns + plan.max_holding_ns:
+                self.flatten(state.position_id, reason="time_exit")
+                continue
+            if state.avg_entry_price is None:
+                continue
+            quote = self._engine.cache.quote_tick(state.route.instrument_id)
+            if quote is None or now_ns - int(quote.ts_event) > self._profile.risk.market_stale_after_ns:
+                continue
+            bid, ask = decimal_value(quote.bid_price), decimal_value(quote.ask_price)
+            if bid <= 0 or ask < bid:
+                continue
+            distance = Decimal(plan.take_profit_bps) / Decimal(10_000)
+            hit = (
+                bid >= state.avg_entry_price * (1 + distance)
+                if plan.direction == "long"
+                else ask <= state.avg_entry_price * (1 - distance)
+            )
+            if hit:
+                self.flatten(state.position_id, reason="take_profit")
+
     def retry_failed(self) -> None:
         for state in self._state.executions.values():
             if state.exit_retry_required and state.position_id is not None and state.position_quantity > 0:
-                self.flatten(state.position_id)
+                self.flatten(state.position_id, reason=state.exit_reason or "recovery_safety_flatten")
 
-    def flatten(self, position_id: PositionId) -> None:
+    def flatten(self, position_id: PositionId, *, reason: ExitReason = "operator_flatten") -> None:
         """Risk-reducing exit remains available when audit or singleton entry gates fail."""
 
         entry_id = self._state.positions.get(position_id)
@@ -152,7 +189,16 @@ class ExitCoordinator:
             return
         # The one place a reduce-only exit is asked for on an owned position, so the one place that
         # can say why the `PositionClosed` this produces is not the protective stop (#528 A).
-        state.exit_reason = "flatten"
+        if state.exit_reason is None:
+            state.exit_reason = reason
+            state.plan = state.plan.model_copy(
+                update={
+                    "status": "closing",
+                    "exit_reason": reason,
+                    "updated_at_ns": max(state.plan.updated_at_ns, int(self._engine.clock.timestamp_ns())),
+                }
+            )
+            self._plans.offer_update(state.plan)
         instrument = self._engine.cache.instrument(state.route.instrument_id)
         if instrument is None:
             raise RuntimeError("oi_runtime_instrument_missing")

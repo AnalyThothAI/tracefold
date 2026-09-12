@@ -73,6 +73,7 @@ export const ENTRY_BLOCK_REASON_ZH: Record<string, string> = {
   singleton_lost: "账户槽位已被他人持有",
   startup_reconciliation_unproven: "启动对账尚未完成",
   unexpected_exposure: "出现无主敞口",
+  ownership_ambiguous: "交易归属存在冲突",
 };
 
 export function entryBlockReasonLabel(reason: string | null | undefined): string {
@@ -136,6 +137,8 @@ export const EXECUTION_STAGE_ZH: Record<string, string> = {
   filled: "已成交",
   protected: "止损已挂",
   closed: "已平仓",
+  closing: "平仓中",
+  unresolved: "归属待核实",
 };
 
 /**
@@ -150,7 +153,23 @@ export const EXECUTION_SOURCE_ZH: Record<string, string> = {
 };
 
 /** The three exits `ProtectionCoordinator` can witness, as the `position/closed` observation records them. */
+export const HISTORY_GAP_ZH: Record<string, string> = {
+  audit_gap: "成交历史存在审计缺口",
+  entry_fill_missing: "入场成交记录缺失",
+  entry_outcome_unknown: "缺少入场结果凭据",
+  close_observation_missing: "平仓记录缺失",
+  exit_fills_incomplete: "退出成交记录不完整",
+  native_pnl_basis_incomplete_after_restart: "重启后成交成本基础不完整",
+};
+
 export const EXIT_REASON_ZH: Record<string, string> = {
+  take_profit: "止盈退出",
+  time_exit: "持仓到期退出",
+  operator_flatten: "操作员平仓",
+  protection_failure: "保护失败平仓",
+  recovery_safety_flatten: "恢复保护时安全平仓",
+  venue_unknown: "退出原因待确认",
+  not_submitted: "计划终止，未提交入场",
   flatten: "flatten 退出",
   stop_filled: "止损成交",
   unclaimed_flatten: "无主敞口 flatten",

@@ -2359,8 +2359,14 @@ reconciliation happened, the private scan behind it is still fresh, no exposure
 it does not own appeared, and it still holds the account slot. `entries_armed`
 adds only what an operator asked for. So the Runtime's own `entry_block_reason`
 is exactly one of `startup_reconciliation_unproven`, `reconciliation_stale`,
-`unexpected_exposure`, `singleton_lost`, `entries_paused` and `emergency_halted`,
+`unexpected_exposure`, `ownership_ambiguous`, `singleton_lost`, `entries_paused` and `emergency_halted`,
 and the probe is ready exactly when `alive && execution_safe`.
+
+The Runtime persists `facts_expire_at_ns` from its configured reconciliation period
+(three periods after the last complete private proof). HTTP uses that deadline and
+the independent five-second process heartbeat; it has no second ten-second private
+freshness constant. The browser receives their minimum as `facts_expire_at_ms`.
+
 
 Everything an entry needs beyond that — equity, a quote, the day baseline, a
 writable audit — is answered on the entry path against that request's own facts,
@@ -2372,20 +2378,51 @@ entry requests, `audit_ready` refused exposure because the local copy of what
 Binance already stores was unwritable, and `day_start_ready` refused it because a
 baseline the Runtime can compute from current equity had not been written yet.
 
-**Restart recovery reads durable facts, not Cache.** Nautilus Cache is process
-memory and the Binance private proof carries only open orders and position risk,
-so a restart while in a position has no filled entry market order to key off.
-Recovery reads this account slot's durable `order` / `leg=entry` Observations inside
-a seven-day window, regenerates the deterministic entry/stop/exit client order
-ids from each identity, and claims an open position on that identity's routed
-instrument with the same direction plus the resting orders whose client order id
-equals its deterministic stop or exit id. Because that match is by instrument
-and direction alone, an identity is admitted only while its own facts leave
-exposure possible: its latest `position` fact must not be `closed` and its
-latest entry-order fact must not be `canceled`, `rejected`, `denied` or
-`expired`. Exposure no identity claims stays unowned — `execution_safe=false`,
-`entries_armed=false` — and the account projection lists its instrument, side
-and quantity with `owned=false`.
+**TradePlan owns entry identity and frozen risk (#644).** Before any economic entry
+submission, the existing database bridge commits one `trading_trade_plans` row keyed
+by Signal id or manual-entry Command id. A bounded in-memory prepare/commit receipt
+hands submission authority back to the callback thread. A failed or uncertain commit
+cannot submit; retrying an existing identity grants query authority only. Admission
+is checked again against the frozen quantity after the receipt arrives. No SQL runs
+in a strategy callback.
+
+The plan freezes account slot and paper/live mode, actual instrument, direction,
+deterministic entry client order id, creation and entry-expiry clocks, entry quantity,
+stop distance, admitted risk budget, leverage ceiling and versioned TP/maximum-holding
+policy. Only low-frequency lifecycle fields change: prepared, entry_working, open,
+closing, closed or unresolved; first-open and terminal clocks; exit and history-gap
+reasons. PostgreSQL forbids changes to frozen intent, reopening terminal rows or
+deleting plans. A partial unique index allows one active plan per account/mode/instrument.
+There is no order-state mirror or second OMS.
+
+**Restart and steady recovery use the same unbounded ownership set.** The bridge
+loads all nonterminal plans for the current account slot and mode, with a bounded
+overflow that fails closed, regardless of age or audit availability. Observation
+recovery and its seven-day cutoff are removed. Native account/strategy, instrument,
+side and deterministic order shapes must agree. An explicit entry-to-position link
+is used when present; a cold Cache may use only a unique active plan on that
+instrument and side. Multiple candidates produce `ownership_ambiguous`, never a
+newest-entry guess.
+
+A full private proof includes positions, ordinary orders and Algo orders. A plan
+without current exposure additionally queries its frozen entry id through the
+pinned Binance HTTP adapter. Only an actual no-such-order response means absent;
+transport/authentication/parse failures produce no fresh proof. A second full private
+scan follows these queries so a newer fill cannot be hidden by an earlier position
+scan. Terminal retirement requires fresh, consistent absence of positions and
+working orders, plus the deterministic entry query or a validated cached terminal
+entry. Entry expiry is an admission deadline, never a position ownership deadline.
+
+Existing positions keep their frozen stop, risk contribution, TP and holding deadline
+after configuration changes or restarts. The existing timer pump evaluates normal
+TP/time exits through `ExitCoordinator`, sharing query-first, deterministic reduce-only
+exit generations with operator flatten and protection failures. Stop replacement
+still proves the new exact reduce-only stop before retiring the old one. Blocking new
+entries does not block risk-reducing exits.
+
+Cold reconstruction cannot prove the original native fee basis. Its realized PnL
+remains unknown with `native_pnl_basis_incomplete_after_restart`; plans preserve
+ownership while observations independently describe available execution history.
 
 **Ownership constrains only new exposure.** `/flatten account` converges the
 whole account slot: a deterministic reduce-only exit for every owned position, a
@@ -2421,8 +2458,8 @@ Strategy callback reaches only Cache, Portfolio and in-memory queues;
 PostgreSQL polling, audit and Telegram I/O are background work.
 
 **One delivery path.** The bridge's 200 ms indexed anti-join is the whole
-transport: a Signal or Command is unresolved until a disposition observation
-exists, so the read is complete on its own and a poll that lands late reads what
+transport: an entry is unresolved until a disposition observation or committed plan
+exists; control Commands require a disposition, so the read is complete on its own and a poll that lands late reads what
 an early one would have. The `LISTEN`/`NOTIFY` wake that used to sit beside it
 could only make an already-correct read arrive sooner, at the cost of an
 autocommit session, a channel-name regex and a `pg_notify` on all three append

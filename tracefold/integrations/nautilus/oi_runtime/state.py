@@ -12,9 +12,10 @@ from typing import Any, Literal, get_args
 from nautilus_trader.model.enums import OrderSide, OrderType
 from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId, PositionId
 
-from tracefold.trading import OperatorIntentV1, TradeSignalV1
+from tracefold.trading import ExitReason, OperatorIntentV1, TradePlan, TradeSignalV1
 
 from .config import OiInstrumentRoute, OiRuntimeProfile
+from .trade_plans import EntryQueryProof
 
 PrivateReconciliationReason = Literal[
     "unknown_outcome",
@@ -76,6 +77,7 @@ class RuntimeReadinessSnapshot:
     startup_reconciled: bool
     unexpected_exposure: bool
     reconciliation_observed_at_ns: int
+    facts_expire_at_ns: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +102,7 @@ class RuntimeEntryRequest:
     market_key: str
     direction: Literal["long", "short"]
     expires_at_ns: int
+    source: Literal["signal", "manual"]
     signal: TradeSignalV1 | None = None
     command: OperatorIntentV1 | None = None
 
@@ -110,6 +113,7 @@ class RuntimeEntryRequest:
             market_key=signal.market_key,
             direction=signal.direction,
             expires_at_ns=signal.expires_at_ns,
+            source="signal",
             signal=signal,
         )
 
@@ -122,7 +126,18 @@ class RuntimeEntryRequest:
             market_key=command.market_key,
             direction=command.direction,
             expires_at_ns=command.expires_at_ns,
+            source="manual",
             command=command,
+        )
+
+    @classmethod
+    def from_plan(cls, plan: TradePlan) -> RuntimeEntryRequest:
+        return cls(
+            entry_id=plan.entry_id,
+            market_key=plan.market_key,
+            direction=plan.direction,
+            expires_at_ns=plan.entry_expires_at_ns,
+            source=plan.source,
         )
 
 
@@ -135,6 +150,7 @@ class RuntimeReadiness:
         self._reconciliation_stale_after_ns = reconciliation_stale_after_ns
         self._startup_reconciled = False
         self._unexpected_exposure = False
+        self._unexpected_reason = "unexpected_exposure"
         self._account_observed_at_ns = 0
         self._reconciliation_observed_at_ns = 0
         self._lock = Lock()
@@ -148,9 +164,10 @@ class RuntimeReadiness:
             self._account_observed_at_ns = account_observed_at_ns
             self._reconciliation_observed_at_ns = reconciliation_observed_at_ns
 
-    def halt_for_unexpected_exposure(self) -> None:
+    def halt_for_unexpected_exposure(self, reason: str = "unexpected_exposure") -> None:
         with self._lock:
             self._unexpected_exposure = True
+            self._unexpected_reason = reason
 
     def facts_clock(self) -> tuple[int, int]:
         with self._lock:
@@ -181,11 +198,15 @@ class RuntimeReadiness:
         with self._lock:
             startup = self._startup_reconciled
             unexpected = self._unexpected_exposure
+            unexpected_reason = self._unexpected_reason
             reconciled_at = self._reconciliation_observed_at_ns
         safe_gates = (
             (startup, "startup_reconciliation_unproven"),
-            (now_ns - reconciled_at <= self._reconciliation_stale_after_ns, "reconciliation_stale"),
-            (not unexpected, "unexpected_exposure"),
+            (
+                0 < reconciled_at <= now_ns <= reconciled_at + self._reconciliation_stale_after_ns,
+                "reconciliation_stale",
+            ),
+            (not unexpected, unexpected_reason),
             (singleton_ready, "singleton_lost"),
         )
         reason: str | None = None
@@ -209,6 +230,7 @@ class RuntimeReadiness:
             startup_reconciled=startup,
             unexpected_exposure=unexpected,
             reconciliation_observed_at_ns=reconciled_at,
+            facts_expire_at_ns=reconciled_at + self._reconciliation_stale_after_ns if reconciled_at > 0 else 0,
         )
 
 
@@ -226,6 +248,7 @@ class RecoveredExecutionSeed:
     """Durable identities needed to reclaim one execution from Nautilus Cache."""
 
     entry: RuntimeEntryRequest
+    plan: TradePlan
     entry_client_order_id: ClientOrderId
     position_id: PositionId | None = None
     protections: tuple[RecoveredProtectionSeed, ...] = ()
@@ -239,11 +262,15 @@ class RuntimeReconciliationSnapshot:
     account_observed_at_ns: int
     reconciliation_observed_at_ns: int
     executions: tuple[RecoveredExecutionSeed, ...] = ()
+    unresolved_plans: tuple[TradePlan, ...] = ()
+    ownership_ambiguous: bool = False
+    entry_queries: tuple[EntryQueryProof, ...] = ()
 
 
 @dataclass(slots=True)
 class ExecutionState:
     entry: RuntimeEntryRequest
+    plan: TradePlan
     route: OiInstrumentRoute
     entry_client_order_id: ClientOrderId
     submitted_at_ns: int
@@ -254,6 +281,7 @@ class ExecutionState:
     entry_order: Any = None
     active: bool = True
     entry_query_pending: bool = False
+    native_pnl_complete: bool = True
     position_id: PositionId | None = None
     position_quantity: Decimal = Decimal(0)
     avg_entry_price: Decimal | None = None
@@ -272,7 +300,7 @@ class ExecutionState:
     exit_retry_budget: int = 1
     # Why this execution's exposure is being closed, written by whichever exit entry point asked for
     # it. `None` means no reduce-only exit was requested, so a close is the protective stop filling.
-    exit_reason: Literal["flatten"] | None = None
+    exit_reason: ExitReason | None = None
     private_reconciliation_requested: bool = False
 
 

@@ -4,7 +4,10 @@ from dataclasses import replace
 from types import SimpleNamespace
 from uuid import UUID
 
+import pytest
+
 from tracefold.app.execution_status import execution_readiness_projection
+from tracefold.integrations.nautilus.oi_runtime.state import RuntimeReadiness
 from tracefold.trading.storage.execution_stream import (
     ExecutionAccountOrder,
     ExecutionAccountPosition,
@@ -52,6 +55,7 @@ def _state(*, heartbeat_at_ns: int = 10_000_000_000) -> ExecutionRuntimeState:
         open_orders_count=0,
         protection_status="not_applicable",
         reconciliation_observed_at_ns=9_000_000_000,
+        facts_expire_at_ns=19_000_000_000,
         heartbeat_at_ns=heartbeat_at_ns,
         entry_block_reason=None,
         started_at_ns=8_000_000_000,
@@ -140,8 +144,9 @@ def test_flat_proof_requires_a_fresh_private_reconciliation() -> None:
     )
 
     assert projection["alive"] is True
-    assert projection["execution_safe"] is True
+    assert projection["execution_safe"] is False
     assert projection["account_flat_proven"] is False
+    assert projection["entry_block_reason"] == "reconciliation_stale"
     assert projection["reconciliation_age_ms"] == 11_000
     assert projection["current_account"] is None
 
@@ -350,3 +355,32 @@ def test_the_runtime_catalogue_size_passes_straight_through() -> None:
 
     assert projection["routes_count"] == 412
     assert execution_readiness_projection(_execution("disabled"), None, None, now_ns=1)["routes_count"] == 0
+
+
+@pytest.mark.parametrize("interval_seconds", [5, 30, 60])
+def test_http_and_runtime_share_the_persisted_private_deadline(interval_seconds: int) -> None:
+    reconciled_at = 10_000_000_000
+    readiness = RuntimeReadiness(reconciliation_stale_after_ns=interval_seconds * 3_000_000_000)
+    readiness.reconciled(account_observed_at_ns=reconciled_at, reconciliation_observed_at_ns=reconciled_at)
+    deadline = reconciled_at + interval_seconds * 3_000_000_000
+    for now in (deadline - 1, deadline, deadline + 1):
+        native = readiness.snapshot(now_ns=now, singleton_ready=True, entries_paused=False, emergency_halted=False)
+        row = replace(
+            _state(heartbeat_at_ns=now),
+            reconciliation_observed_at_ns=reconciled_at,
+            facts_expire_at_ns=native.facts_expire_at_ns,
+            execution_safe=native.execution_safe,
+            entries_armed=native.entries_armed,
+            entry_block_reason=native.entry_block_reason,
+        )
+        http = execution_readiness_projection(_execution(), row, _control(), now_ns=now)
+        assert native.facts_expire_at_ns == deadline
+        assert http["execution_safe"] == native.execution_safe == (now <= deadline)
+        assert http["facts_expire_at_ms"] == deadline // 1_000_000
+    # The private proof can remain fresh while a stalled process loses its independent heartbeat.
+    stale = replace(
+        _state(heartbeat_at_ns=reconciled_at), reconciliation_observed_at_ns=reconciled_at, facts_expire_at_ns=deadline
+    )
+    http = execution_readiness_projection(_execution(), stale, _control(), now_ns=reconciled_at + 6_000_000_000)
+    assert http["alive"] is False
+    assert http["execution_safe"] is False

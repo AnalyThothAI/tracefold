@@ -35,6 +35,7 @@ RETRYABLE_ENTRY_REASONS: Final[frozenset[str]] = frozenset(
         # terminal while its two siblings were retryable, so which of the three a Runtime happened to
         # notice first decided whether the Signal got another delivery (#537 PR-3).
         "reconciliation_stale",
+        "trade_plan_busy",
     }
 )
 
@@ -77,8 +78,8 @@ class RuntimeObservationWriter:
 
     @staticmethod
     def correlation(state: ExecutionState) -> dict[str, str]:
-        if state.entry.command is not None:
-            return {"command_id": state.entry.command.command_id}
+        if state.entry.source == "manual":
+            return {"command_id": state.entry.entry_id}
         return {"signal_id": state.entry.entry_id}
 
     @staticmethod

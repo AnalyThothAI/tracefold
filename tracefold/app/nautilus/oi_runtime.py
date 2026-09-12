@@ -27,7 +27,8 @@ from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.integrations.nautilus.oi_runtime.state import RuntimeControlSnapshot
-from tracefold.trading import ExecutionObservationV1, OperatorIntentV1, TradeSignalV1
+from tracefold.integrations.nautilus.oi_runtime.trade_plans import PlanPrepared, TradePlanChannel
+from tracefold.trading import ExecutionObservationV1, OperatorIntentV1, TradePlan, TradeSignalV1
 from tracefold.trading.storage.execution_stream import (
     MAX_EXECUTION_READ_BATCH,
     ExecutionRuntimeState,
@@ -36,14 +37,11 @@ from tracefold.trading.storage.execution_stream import (
     materialize_trade_signals,
     prepare_execution_observations,
 )
+from tracefold.trading.storage.trade_plans import prepare_trade_plan, prepare_trade_plan_update
 
 # How often the current row is rewritten when nothing about it changed. It is well inside the public
 # five-second stale budget, so a Runtime that stops projecting reads as stale rather than as healthy.
 RUNTIME_HEARTBEAT_INTERVAL_NS = 500_000_000
-# Recovery reads the durable entry-order facts that can still hold Binance exposure. Seven days is the
-# widest gap this single-host deployment can be down and still find its own position on the venue;
-# an entry order older than that has long since been filled and closed or cancelled by the venue.
-_RECOVERY_ENTRY_FACT_WINDOW_NS = 7 * 24 * 60 * 60 * 1_000_000_000
 # This connection is the only PostgreSQL caller a Runtime holding live exposure has left, and reading
 # Commands on it is how an operator flattens. A statement that has not finished in one private
 # reconciliation period is broken, not slow: PostgreSQL cancels it, psycopg raises the
@@ -65,7 +63,7 @@ class RuntimeStateProjector:
         self,
         *,
         initial: ExecutionRuntimeState,
-        recovery_inputs: tuple[tuple[TradeSignalV1, ...], tuple[OperatorIntentV1, ...]],
+        recovery_inputs: tuple[TradePlan, ...],
     ) -> None:
         self._lock = Lock()
         self._current = initial
@@ -79,7 +77,7 @@ class RuntimeStateProjector:
         with self._lock:
             return self._current
 
-    def recovery_inputs(self) -> tuple[tuple[TradeSignalV1, ...], tuple[OperatorIntentV1, ...]]:
+    def recovery_inputs(self) -> tuple[TradePlan, ...]:
         """The durable entry identities the next reconciliation rebuilds ownership from."""
 
         with self._lock:
@@ -116,8 +114,8 @@ class RuntimeStateProjector:
         with self._lock:
             self._current = candidate
 
-    def refresh_recovery_inputs(self, repos: RepositorySession, observed_at_ns: int) -> None:
-        inputs = load_recovery_inputs(repos, self.current.account_slot, observed_at_ns)
+    def refresh_recovery_inputs(self, repos: RepositorySession) -> None:
+        inputs = load_recovery_inputs(repos, self.current.account_slot, self.current.mode)
         with self._lock:
             self._recovery_inputs = inputs
 
@@ -132,28 +130,24 @@ def _semantic_state(state: ExecutionRuntimeState) -> dict[str, Any]:
 def load_recovery_inputs(
     repos: RepositorySession,
     account_slot: str,
-    observed_at_ns: int,
-) -> tuple[tuple[TradeSignalV1, ...], tuple[OperatorIntentV1, ...]]:
-    """Read the durable entry identities that can still hold Binance exposure."""
+    mode: str,
+) -> tuple[TradePlan, ...]:
+    """Nonterminal plans are the whole ownership set, independent of age and audit history."""
+    rows = repos.trading.active_trade_plans(account_slot=account_slot, mode=mode, limit=MAX_EXECUTION_READ_BATCH)
+    if len(rows) == MAX_EXECUTION_READ_BATCH:
+        raise RuntimeError("oi_runtime_recovery_input_overflow")
+    return tuple(TradePlan.model_validate(row) for row in rows)
 
-    since_ns = max(0, observed_at_ns - _RECOVERY_ENTRY_FACT_WINDOW_NS)
-    signal_rows = repos.trading.execution_recovery_signals(
-        account_slot=account_slot,
-        since_ns=since_ns,
-        limit=MAX_EXECUTION_READ_BATCH,
-    )
-    command_rows = repos.trading.execution_recovery_manual_entries(
-        account_slot=account_slot,
-        since_ns=since_ns,
-        limit=MAX_EXECUTION_READ_BATCH,
-    )
-    if (
-        len(signal_rows) == MAX_EXECUTION_READ_BATCH
-        or len(command_rows) == MAX_EXECUTION_READ_BATCH
-        or len(signal_rows) + len(command_rows) > MAX_EXECUTION_READ_BATCH
-    ):
-        raise RuntimeError("oi_runtime_recovery_history_overflow")
-    return materialize_trade_signals(signal_rows), materialize_operator_intents(command_rows)
+
+def commit_entry_plan(repos: RepositorySession, plan: TradePlan) -> PlanPrepared:
+    """Return only after commit. A pre-existing identity grants query authority, never submission."""
+    values = prepare_trade_plan(plan)
+    with repos.transaction():
+        inserted = repos.trading.insert_trade_plan(values)
+        stored = repos.trading.trade_plan(plan.entry_id)
+    if stored is None:
+        raise RuntimeError("trade_plan_commit_missing")
+    return PlanPrepared(TradePlan.model_validate(stored), inserted)
 
 
 class OiRuntimeDatabaseBridge:
@@ -171,6 +165,7 @@ class OiRuntimeDatabaseBridge:
         settings: Any,
         profile: OiRuntimeProfile,
         signals: ExecutionSignalClient,
+        plans: TradePlanChannel,
         audit: AuditSink,
         update_day_start: Callable[[DayStartBaseline], None],
         singleton: AccountSlotSingleton,
@@ -182,6 +177,7 @@ class OiRuntimeDatabaseBridge:
         self._settings = settings
         self._profile = profile
         self._signals = signals
+        self._plans = plans
         self._audit = audit
         self._update_day_start = update_day_start
         self._singleton = singleton
@@ -195,7 +191,6 @@ class OiRuntimeDatabaseBridge:
         self._equity: tuple[Decimal, int] | None = None
         self._baseline_day: str | None = None
         self._step_failures: dict[str, str] = {}
-        self._appended_since_recovery_read = 0
         self._recovery_read_at_ns = 0
 
     # `_connected` is this loop's own record of whether it currently holds a session. Nothing in
@@ -208,7 +203,7 @@ class OiRuntimeDatabaseBridge:
         with self._lock:
             return self._fatal_error
 
-    def recovery_inputs(self) -> tuple[tuple[TradeSignalV1, ...], tuple[OperatorIntentV1, ...]]:
+    def recovery_inputs(self) -> tuple[TradePlan, ...]:
         """The durable entry identities the next reconciliation rebuilds ownership from."""
 
         return self._projector.recovery_inputs()
@@ -255,6 +250,8 @@ class OiRuntimeDatabaseBridge:
                         self._stop.wait(self._poll_seconds)
                     # The composition root offers its `stopped` row on the way out; this connection is
                     # the only one that can still write it.
+                    self._step("trade_plans", lambda: self._flush_trade_plans(repos))
+                    self._step("audit", lambda: self._flush_audit(repos))
                     self._step("projection", lambda: self._projector.write_once(repos))
                     break
             except (InterfaceError, OperationalError):
@@ -290,6 +287,7 @@ class OiRuntimeDatabaseBridge:
                 lambda slot, strategy, limit: load_unresolved_operator_intents(repos, slot, strategy, limit),
             ),
         )
+        self._step("trade_plans", lambda: self._flush_trade_plans(repos))
         self._step(
             "signals",
             lambda: self._signals.poll_once(
@@ -299,6 +297,22 @@ class OiRuntimeDatabaseBridge:
         self._step("audit", lambda: self._flush_audit(repos))
         self._refresh_current_state(repos)
         self._step("day_start", lambda: self._refresh_day_start(repos))
+
+    def _flush_trade_plans(self, repos: RepositorySession) -> None:
+        plan = self._plans.pending_prepare()
+        if plan is not None:
+            receipt = commit_entry_plan(repos, plan)
+            self._projector.refresh_recovery_inputs(repos)
+            self._plans.committed(receipt.plan, newly_committed=receipt.newly_committed)
+        updates = self._plans.pending_updates()
+        if updates:
+            prepared = tuple(prepare_trade_plan_update(value) for value in updates)
+            with repos.transaction():
+                for values in prepared:
+                    repos.trading.update_trade_plan(values)
+            self._projector.refresh_recovery_inputs(repos)
+            for value in updates:
+                self._plans.updated(value)
 
     def _refresh_day_start(self, repos: RepositorySession) -> None:
         with self._lock:
@@ -320,28 +334,21 @@ class OiRuntimeDatabaseBridge:
         self._baseline_day = utc_day
 
     def _flush_audit(self, repos: RepositorySession) -> None:
-        self._appended_since_recovery_read += flush_audit_once(
+        flush_audit_once(
             repos=repos,
             audit=self._audit,
             signals=self._signals,
         )
 
     def _refresh_current_state(self, repos: RepositorySession) -> None:
-        """Re-read what the loop needs about durable current state, then write what it computed.
-
-        The recovery identities are re-read as soon as this bridge has appended anything, because the
-        only way a new identity becomes recoverable is the `order`/`entry` Observation this same step
-        just made durable. That makes the set the loop reconciles against fresher than the read it
-        replaced, not staler; the periodic floor exists only so a quiet Runtime still refreshes.
-        """
+        """Refresh durable plans periodically, independently of optional audit appends."""
 
         now_ns = time.time_ns()
         recovery_due = now_ns - self._recovery_read_at_ns >= int(self._profile.risk.reconciliation_interval_ns)
-        if (self._appended_since_recovery_read or recovery_due) and self._step(
+        if recovery_due and self._step(
             "recovery",
-            lambda: self._projector.refresh_recovery_inputs(repos, now_ns),
+            lambda: self._projector.refresh_recovery_inputs(repos),
         ):
-            self._appended_since_recovery_read = 0
             self._recovery_read_at_ns = now_ns
         self._step("projection", lambda: self._projector.write_once(repos))
 
@@ -491,5 +498,6 @@ __all__ = [
     "RUNTIME_HEARTBEAT_INTERVAL_NS",
     "OiRuntimeDatabaseBridge",
     "RuntimeStateProjector",
+    "commit_entry_plan",
     "load_recovery_inputs",
 ]

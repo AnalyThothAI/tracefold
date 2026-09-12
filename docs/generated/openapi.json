@@ -7769,6 +7769,17 @@
         "additionalProperties": false,
         "description": "One entry identity's whole execution, folded from its own observations (#528 PR-1, PR-3).\n\n`entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,\nor the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so\n`case_id` is absent on those rows rather than invented; the desk links the ones that have one to\nthe Case drawer.\n\n`order_status`, `position_status` and the `accepted` / `rejected` split are the inputs `stage` is\nderived from, and `stage` is what the table renders: publishing all four let a reader compare a\nvenue word against the server's own answer about the same row (#537 PR-5). `last_observed_at_ns`\nwas a second clock beside `observed_at_ns` that no column printed.",
         "properties": {
+          "account_slot": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Slot"
+          },
           "case_id": {
             "anyOf": [
               {
@@ -7799,6 +7810,28 @@
             ],
             "title": "Disposition Reason"
           },
+          "duration_ns": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ns"
+          },
+          "entry_client_order_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Client Order Id"
+          },
           "entry_filled_at_ns": {
             "anyOf": [
               {
@@ -7814,6 +7847,17 @@
             "title": "Entry Id",
             "type": "string"
           },
+          "exit_policy_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Policy Id"
+          },
           "exit_price": {
             "anyOf": [
               {
@@ -7828,11 +7872,6 @@
           "exit_reason": {
             "anyOf": [
               {
-                "enum": [
-                  "stop_filled",
-                  "flatten",
-                  "unclaimed_flatten"
-                ],
                 "type": "string"
               },
               {
@@ -7863,9 +7902,57 @@
             ],
             "title": "Fill Quantity"
           },
+          "gap_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gap Reason"
+          },
+          "history_complete": {
+            "title": "History Complete",
+            "type": "boolean"
+          },
+          "instrument_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instrument Id"
+          },
           "market_key": {
             "title": "Market Key",
             "type": "string"
+          },
+          "max_holding_ns": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Holding Ns"
+          },
+          "max_leverage_at_creation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Leverage At Creation"
           },
           "observed_at_ns": {
             "title": "Observed At Ns",
@@ -7881,6 +7968,21 @@
               }
             ],
             "title": "Order Reject Reason"
+          },
+          "plan_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Status"
+          },
+          "pnl_known": {
+            "title": "Pnl Known",
+            "type": "boolean"
           },
           "position_closed_at_ns": {
             "anyOf": [
@@ -7904,6 +8006,32 @@
             ],
             "title": "Realized Pnl Usd"
           },
+          "risk_budget_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Budget Usd"
+          },
+          "runtime_mode_at_creation": {
+            "anyOf": [
+              {
+                "enum": [
+                  "paper",
+                  "live"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime Mode At Creation"
+          },
           "source": {
             "enum": [
               "signal",
@@ -7920,10 +8048,23 @@
               "ordered",
               "filled",
               "protected",
-              "closed"
+              "closing",
+              "closed",
+              "unresolved"
             ],
             "title": "Stage",
             "type": "string"
+          },
+          "stop_distance_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Distance Bps"
           },
           "stop_trigger_price": {
             "anyOf": [
@@ -7935,6 +8076,17 @@
               }
             ],
             "title": "Stop Trigger Price"
+          },
+          "take_profit_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Take Profit Bps"
           }
         },
         "required": [
@@ -7943,6 +8095,8 @@
           "market_key",
           "direction",
           "observed_at_ns",
+          "pnl_known",
+          "history_complete",
           "stage"
         ],
         "title": "TradingExecutionRowData",
@@ -8027,18 +8181,66 @@
             "title": "Closed Total",
             "type": "integer"
           },
-          "realized_today_usd": {
-            "title": "Realized Today Usd",
-            "type": "string"
+          "pnl_complete_today": {
+            "title": "Pnl Complete Today",
+            "type": "boolean"
           },
-          "realized_total_usd": {
-            "title": "Realized Total Usd",
-            "type": "string"
+          "pnl_complete_total": {
+            "title": "Pnl Complete Total",
+            "type": "boolean"
+          },
+          "pnl_known_today": {
+            "minimum": 0.0,
+            "title": "Pnl Known Today",
+            "type": "integer"
+          },
+          "pnl_known_total": {
+            "minimum": 0.0,
+            "title": "Pnl Known Total",
+            "type": "integer"
+          },
+          "pnl_missing_today": {
+            "minimum": 0.0,
+            "title": "Pnl Missing Today",
+            "type": "integer"
+          },
+          "pnl_missing_total": {
+            "minimum": 0.0,
+            "title": "Pnl Missing Total",
+            "type": "integer"
+          },
+          "realized_known_today_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realized Known Today Usd"
+          },
+          "realized_known_total_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realized Known Total Usd"
           }
         },
         "required": [
-          "realized_today_usd",
-          "realized_total_usd",
+          "realized_known_today_usd",
+          "realized_known_total_usd",
+          "pnl_known_today",
+          "pnl_known_total",
+          "pnl_missing_today",
+          "pnl_missing_total",
+          "pnl_complete_today",
+          "pnl_complete_total",
           "closed_today",
           "closed_total"
         ],
