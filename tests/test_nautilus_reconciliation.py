@@ -189,3 +189,128 @@ def test_planned_entry_query_uses_the_pinned_binance_http_contract(reply: str, e
         server.shutdown()
         thread.join(timeout=2)
         server.server_close()
+
+
+@pytest.mark.parametrize("new_stop_bps", [100, 200], ids=["same-risk", "changed-new-risk"])
+def test_native_binance_algo_report_keeps_cold_stop_in_account_scope(new_stop_bps: int) -> None:
+    """The actual 1.231 report -> engine -> Cache seam used by Demo restart."""
+    from dataclasses import replace
+    from decimal import Decimal
+
+    from nautilus_trader.adapters.binance.futures.enums import BinanceFuturesEnumParser
+    from nautilus_trader.adapters.binance.futures.schemas.account import BinanceFuturesAlgoOrder
+    from nautilus_trader.cache.cache import Cache
+    from nautilus_trader.common.component import LiveClock, MessageBus
+    from nautilus_trader.core.uuid import UUID4
+    from nautilus_trader.execution.reports import PositionStatusReport
+    from nautilus_trader.live.config import LiveExecEngineConfig
+    from nautilus_trader.live.execution_engine import LiveExecutionEngine
+    from nautilus_trader.model.enums import PositionSide
+    from nautilus_trader.model.identifiers import TraderId
+    from nautilus_trader.test_kit.providers import TestInstrumentProvider
+
+    from tests.nautilus_oi_runtime_fixtures import (
+        NOW_NS,
+        oi_profile,
+        registered_oi_strategy,
+        trade_plan_for_entry,
+        trade_signal,
+    )
+    from tracefold.app.nautilus.reconciliation import build_runtime_reconciliation_snapshot
+    from tracefold.integrations.nautilus.oi_runtime.config import OiInstrumentRoute
+    from tracefold.integrations.nautilus.oi_runtime.state import (
+        RuntimeEntryRequest,
+        deterministic_client_order_id,
+        protection_leg,
+    )
+
+    instrument = TestInstrumentProvider.ethusdt_perp_binance()
+    original_profile = replace(oi_profile(), routes=(OiInstrumentRoute("crypto:perp:ETH:USDT", instrument.id, 100),))
+    profile = replace(
+        original_profile, routes=(OiInstrumentRoute("crypto:perp:ETH:USDT", instrument.id, new_stop_bps),)
+    )
+    cache = Cache()
+    cache.add_instrument(instrument)
+    harness = registered_oi_strategy(profile=profile, cache=cache)
+    signal = trade_signal().model_copy(update={"market_key": "crypto:perp:ETH:USDT"})
+    plan = trade_plan_for_entry(RuntimeEntryRequest.from_signal(signal), original_profile).model_copy(
+        update={"entry_quantity": Decimal("0.039"), "status": "open", "opened_at_ns": NOW_NS - 1_000_000_000}
+    )
+    clock = LiveClock()
+    loop = asyncio.new_event_loop()
+    engine = LiveExecutionEngine(
+        loop,
+        MessageBus(TraderId("OI-TEST"), clock),
+        cache,
+        clock,
+        LiveExecEngineConfig(
+            reconciliation=False,
+            generate_missing_orders=True,
+            filter_unclaimed_external_orders=False,
+            filter_position_reports=False,
+        ),
+    )
+    engine.register_oms_type(harness.strategy)
+    engine.register_external_order_claims(harness.strategy)
+    position = PositionStatusReport(
+        profile.account_id,
+        instrument.id,
+        PositionSide.LONG,
+        instrument.make_qty(Decimal("0.039")),
+        UUID4(),
+        NOW_NS,
+        NOW_NS,
+        avg_px_open=Decimal("2534.51"),
+    )
+    stop_id = deterministic_client_order_id(namespace=profile.namespace, entry_id=plan.entry_id, leg=protection_leg(1))
+    algo = BinanceFuturesAlgoOrder(
+        algoId=100_000,
+        clientAlgoId=stop_id.value,
+        algoType="CONDITIONAL",
+        orderType="STOP_MARKET",
+        symbol="ETHUSDT",
+        side="SELL",
+        positionSide="BOTH",
+        timeInForce="GTC",
+        quantity="0.039",
+        algoStatus="NEW",
+        triggerPrice="2509.16",
+        price="0.0",
+        workingType="CONTRACT_PRICE",
+        closePosition=False,
+        reduceOnly=True,
+        createTime=NOW_NS // 1_000_000 - 1000,
+        updateTime=NOW_NS // 1_000_000 - 999,
+    )
+    report = algo.parse_to_order_status_report(
+        profile.account_id, instrument.id, UUID4(), BinanceFuturesEnumParser(), NOW_NS
+    )
+    reports = CompleteBinanceAccountReports((position,), (), (report,))
+    try:
+        reconcile_reports_into_cache(engine=engine, reports=reports)
+        assert [order.client_order_id for order in cache.orders_open(account_id=profile.account_id)] == [stop_id]
+        stop = cache.order(stop_id)
+        assert stop.account_id == profile.account_id
+        assert stop.is_reduce_only and stop.is_open
+        snapshot = build_runtime_reconciliation_snapshot(
+            profile=profile,
+            plans=(plan,),
+            cache=cache,
+            account_observed_at_ns=NOW_NS,
+            reconciliation_observed_at_ns=NOW_NS,
+        )
+        harness.strategy.reconcile_runtime(snapshot)
+        assert harness.strategy.readiness().execution_safe
+        assert harness.strategy.submitted == []
+        restored = harness.strategy._runtime.executions[plan.entry_id]
+        assert restored.plan.stop_distance_bps == 100
+        assert restored.stop_order.client_order_id == stop_id
+        assert str(restored.stop_order.trigger_price) == "2509.16"
+        # A steady pass reuses the same native order and does not add synthetic history repeatedly.
+        event_count = len(stop.events)
+        reconcile_reports_into_cache(engine=engine, reports=reports)
+        assert cache.order(stop_id) is stop
+        assert len(stop.events) == event_count
+    finally:
+        engine.dispose()
+        loop.close()

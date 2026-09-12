@@ -284,6 +284,14 @@ live credentials for this procedure. Do not downgrade across the cut with new pl
 roll forward, or restore a verified stopped backup only after reconciling venue
 exposure. The schema backup cannot roll back a Binance fill.
 
+The pinned Binance compatibility seam also binds reconciled native orders to the
+account proven by their private report. Nautilus 1.231 can recreate an accepted order
+with an empty account identity, which otherwise hides it from account-scoped Cache
+reads. The repair replays native events in memory with the missing account binding;
+it neither submits an order nor publishes that local binding as audit/history evidence.
+A held restart receipt must cover the actual Binance report parser and native
+ExecutionEngine, not only a manually seeded cold Cache.
+
 Known realized PnL includes the pinned Nautilus 1.231 `PositionClosed.realized_pnl`
 with recorded commissions in the settlement currency. The
 [pinned position implementation](https://github.com/nautechsystems/nautilus_trader/blob/v1.231.0/nautilus_trader/model/position.pyx)
