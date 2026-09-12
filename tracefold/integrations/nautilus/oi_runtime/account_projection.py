@@ -94,7 +94,7 @@ class RuntimeAccountProjector:
                 continue
             market_clocks.append(quote_observed_at_ns)
             quote_age_ns = projected_at_ns - quote_observed_at_ns
-            if quote_age_ns < 0 or quote_age_ns > self._profile.risk.market_stale_after_ns:
+            if quote_age_ns > self._profile.risk.market_stale_after_ns:
                 complete = False
                 continue
             bid = decimal_value(quote.bid_price)
