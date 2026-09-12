@@ -170,7 +170,7 @@ their corrections remain in #319.
 | `make test-scheduled` | non-gating production-duration diagnostics | real code-owned timeout envelopes on a fixed runner | merge evidence and the broad hermetic checkpoint |
 | `make test-visual` | the required four-viewport interaction lane, run locally | mock-API responsive/interaction contracts across four viewport projects | a backend seam; screenshot baselines |
 | `make test-all` | local complete-suite convenience | all Python lanes and frontend | exact-HEAD CI or fail-closed evidence claims |
-| `make test-ci` | optional complete local preflight for declared high-risk changes | every fixed owner surface, run serially with native reports and fail-closed resources/outcomes | routine local changes, merge/release authorization, scheduled diagnostics, missing declared resources, skip/xfail/xpass/rerun/maxfail |
+| `make test-ci` | complete local preflight when the risk table or Issue requires it | every fixed owner surface, run serially with native reports and fail-closed resources/outcomes | routine edit loops, merge/release authorization, scheduled diagnostics, missing declared resources, skip/xfail/xpass/rerun/maxfail |
 | `make coverage` | on-demand coverage of the hermetic selection | standard coverage.py measurement and report | any plan, any lane, any threshold |
 
 Prefer behavior at a maintained public or persistence seam. Do not preserve
@@ -187,14 +187,11 @@ Select commands by risk:
 - UI: scoped tests, lint, typecheck, build, and a browser check when visual or
   interactive behavior changes;
 - documentation: bounded surface and link checks;
-- generated files: run the owning generator and verify a clean second run.
+- generated files: run the owning generator and its drift check; inspect the diff.
 
-Every bug or refactor PR records four pieces of evidence:
-
-1. the smallest F2P reproducer that failed before and passes after;
-2. the production seam it crosses;
-3. the targeted P2P regressions for affected public or persisted boundaries;
-4. the integration, deploy, e2e, or release lane still required.
+Use the evidence rules below for bug fixes, new behavior, and pure refactors.
+Documentation and mechanical changes need their affected checks; do not add
+implementation-mirroring tests or manufacture a failing case to fill a PR field.
 
 ### Risk-tiered local verification
 
@@ -202,8 +199,11 @@ This section is the single owner of stable local verification policy. CI job
 wiring, report formats, resource topology, measured baselines, and historical
 rationale live in [Testing and CI implementation](TESTING.md#fixed-full-ci-implementation).
 
-Use the following levels in order; risk, not diff size, chooses where the final
-local checkpoint stops.
+Select the final local checkpoint by risk, not diff size. Levels 0 and 1 provide
+feedback for the affected work; they do not require every task to run every kind
+of test. Levels 3 and 4 describe remote evidence for every PR and final main SHA,
+not additional local test tiers. Read-only inspection can finish with findings and evidence
+without running checks that do not contribute to the review.
 
 #### Level 0 — edit loop
 
@@ -215,31 +215,53 @@ commit, or push.
 
 #### Level 1 — affected seam checkpoint
 
-When one logical unit is complete, run the smallest F2P reproducer, the affected
-real production seam, and adjacent P2P regressions. PostgreSQL, RabbitMQ,
-process, browser, and order-adapter risks require those real boundaries; a mock
-does not replace the mechanism under test.
+When one logical unit is complete, validate its affected boundary:
+
+- **Bug fix:** record the smallest reproducer failing before and passing after
+  (F2P), plus adjacent passing-to-passing (P2P) regressions.
+- **Pure refactor:** demonstrate unchanged observable behavior at the affected
+  public or persistence seam, with P2P or characterization tests before and
+  after. A refactor without a bug does not need an invented failing case.
+- **New behavior:** check the intended outcome and adjacent regressions; do not
+  describe a test seen only after implementation as observed F2P evidence.
+
+PostgreSQL, RabbitMQ, process, browser, and order-adapter risks require those
+real boundaries; a mock does not replace the mechanism under test. Reuse
+existing tests when they provide the needed evidence.
 
 #### Level 2 — final local checkpoint
 
 | Change surface | Required final local checkpoint |
 |---|---|
 | docs/comment/spelling/generated-doc-only | owning checker; do not run `test-fast` or `test-ci` |
-| formatting/import/mechanical rename with unchanged contract | touched static checks plus focused tests; `test-fast` optional |
-| localized ordinary Python behavior | F2P/P2P plus affected seam; `test-fast` optional and at most once |
-| shared Domain, serializer, or public contract | focused contract plus one `test-fast` |
+| formatting/import/mechanical rename with unchanged contract | touched static checks; focused behavior tests where the edit can affect behavior; `test-fast` optional |
+| localized ordinary Python behavior | affected seam and Level 1 evidence for the change type; `test-fast` optional |
+| shared Domain, serializer, or public contract | focused contract plus successful `test-fast` |
 | PostgreSQL, RabbitMQ, or process behavior | focused real dependency seam; full preflight only when cross-owner risk requires it |
-| localized frontend | exact Vitest plus affected lint/type/build; no unrelated backend preflight |
-| test selection, markers, `conftest`, shared fixtures, report guard, or Make CI targets | one complete `make test-ci` |
-| CI workflow, build/package, deploy/release verifier | one complete `make test-ci` |
-| cross-owner hard cut spanning backend resources/runtime/frontend | affected seams plus one complete `make test-ci` |
-| Signal, OperatorIntent, Runtime/order fence, migration, or security authority | Issue-declared real seams; full preflight when multiple owners change |
+| localized frontend | exact Vitest plus affected lint/type/build; affected browser seam for visual or interactive changes; no unrelated backend preflight |
+| isolated test module | affected module and its real seam; broaden when shared fixtures or selection change |
+| test selection, markers, `conftest`, shared fixtures, report guard, or Make CI targets | complete successful `make test-ci` |
+| CI workflow, build/package, deploy/release verifier | affected build/distribution or verifier seam plus complete successful `make test-ci` |
+| deployment/release task | affected production seam, complete successful `make test-ci`, and Issue-declared live receipt |
+| cross-owner hard cut spanning backend resources/runtime/frontend | affected seams plus complete successful `make test-ci` |
+| Signal, OperatorIntent, Runtime/order fence, migration, or security authority | Issue-declared real seams and live receipt; full preflight when multiple owners change |
 
-`make test-fast` is a broad hermetic checkpoint, never the per-edit loop. An
-ordinary behavior change runs it at most once. `make test-ci` is an optional,
-serial, complete local preflight and runs at most once only when the table or
-governing Issue declares the change high risk. Reporting `NOT RUN` with focused
-evidence is a valid, honest state; local breadth never authorizes a merge.
+`make test-fast` is a broad hermetic checkpoint, never the per-edit loop.
+`make test-ci` is required for the high-risk surfaces named in this table or
+the governing Issue; other tasks use their affected checkpoints. Provision all
+fixed owners' isolated resources before a complete local preflight.
+
+Do not repeat successful checks on an unchanged tree or broaden checks merely
+to fill a template. Failures, later changes affecting the evidence, or unresolved
+risks justify revalidation: diagnose and repair with focused commands, then
+complete the required checkpoint on the resulting tree. An earlier failed
+attempt is not a quota that prevents recovery, nor evidence of a completed run.
+
+Report `PASS` only for a complete successful command, `FAIL` for a failed run,
+`PARTIAL` for an incomplete checkpoint, and `NOT RUN` when not attempted.
+For unrun checks, state whether focused evidence is sufficient or a required
+check remains blocked. These statuses describe evidence honestly; they do not
+waive required checks or authorize merge.
 
 #### Level 3 — exact PR HEAD
 
@@ -264,8 +286,8 @@ that exact SHA; PR-head or local results do not attest it.
 
 On the same unchanged tree, a successful broader command covers its narrower
 subsets. Do not rerun `make check-static` or `make test-fast` after a successful
-`make test-ci` merely to fill a template. Return to focused commands only to
-diagnose a failure.
+`make test-ci` merely to fill a template. New failures, relevant changes, or
+unresolved risks follow the revalidation rule above.
 
 The following evidence rules apply at every level:
 
@@ -275,8 +297,9 @@ The following evidence rules apply at every level:
    own automated status; prose claiming an earlier green run is not evidence.
 2. **Real F2P.** A bug regression must fail against the pre-fix behavior and
    pass after the fix. A new test observed only on the new implementation does
-   not establish failure-to-pass evidence.
-3. **Production seam.** The PR states which real boundary the reproducer
+   not establish failure-to-pass evidence. For a pure refactor, report behavior
+   preservation and P2P instead; use an explained `N/A` for inapplicable fields.
+3. **Production seam.** The PR states which real boundary its evidence
    crosses: CLI, HTTP, PostgreSQL, RabbitMQ, serializer, package identity,
    container, or order adapter. A fake may support the test but may not replace
    the risk mechanism being proved.
@@ -321,25 +344,11 @@ evidence for that SHA. Deployment, cutover, and release work must wait for that
 exact main SHA's `ci-gate`. A green PR-head run is not pre-merge proof of a
 future squash SHA. This repository does not claim merge-queue evidence.
 
-Every PR uses the repository template and completes these fields:
-
-```md
-## Verification
-
-- Tested HEAD:
-- Risk being closed:
-- F2P reproducer:
-- Production seam:
-- Targeted P2P:
-- Focused / local commands:
-- Local full preflight:
-  - `NOT RUN` — reason focused evidence is sufficient:
-  - or `PASS` — reason full local preflight was required:
-- Exact-head fixed CI run:
-- Skipped / xfail / rerun:
-- Acceptance-test contract changes:
-- Native report artifacts:
-```
+Every PR uses the [repository template](../.github/pull_request_template.md),
+the single owner of its fields. Report actual results and explain inapplicable
+fields; a template does not require unrelated tests or a fabricated F2P case.
+Automatic retries within required runs remain forbidden; a new validation run
+after diagnosing and fixing a failure follows the revalidation rule above.
 
 Mocking is not itself a problem. Mocking the risk mechanism under test is: a
 source-identity, import-path, wiring, serialization, migration, or transaction
@@ -921,13 +930,34 @@ inspect its diff before committing.
 
 ## Completion
 
-A change is complete only when:
+Complete the outcome requested by the user or governing Issue. Continue
+already-authorized implementation through the relevant checks and repairs;
+do not stop after a first draft when that outcome still requires work.
 
-- observable behavior and durable invariants have direct successful evidence;
-- generated outputs are current;
+For an inspection-only task, deliver findings with their evidence and limits.
+For an implementation, completion requires:
+
+- the affected behavior and durable invariants have the direct successful
+  evidence required by the local risk policy;
+- affected generated outputs and documentation are current;
 - public contracts and PostgreSQL fact semantics remain intact or change
   through an explicitly approved migration;
-- old names, files, imports, and compatibility paths are gone;
-- deployment/cutover evidence is recorded for runtime changes;
+- obsolete names, files, imports, and compatibility paths introduced or retired
+  by the change are removed together;
 - omitted lanes and remaining risks are named without manufacturing green
   results through skips or compatibility mocks.
+
+A requested PR is ready when the implementation evidence and final diff are
+reviewable and the PR exists; pending or failed CI must be reported honestly.
+A requested merge is complete only after merge is confirmed under the exact
+PR HEAD's required `ci-gate`. A requested release/deployment also requires
+successful fixed CI for the exact final main SHA and the Issue-declared
+deployment/cutover receipt. A runtime code change alone does not authorize
+deployment or require an unrelated live rollout to finish implementation.
+
+Required live receipts for capital/order authority remain part of the governing
+Issue's acceptance. If their execution is not authorized or a resource is
+unavailable, report that acceptance step as blocked, complete independent work,
+and do not claim the whole task is done. Use the scoped
+[worktree failure boundaries](agents/worktrees.md#failure-boundaries) for
+missing resources, uncertain CI, and authorization decisions.
