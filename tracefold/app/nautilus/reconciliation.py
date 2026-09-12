@@ -9,7 +9,10 @@ from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId
 
 from tracefold.integrations.nautilus.oi_runtime.config import OiRuntimeProfile
-from tracefold.integrations.nautilus.oi_runtime.nautilus_1231_binance_compat import CompleteBinanceAccountReports
+from tracefold.integrations.nautilus.oi_runtime.nautilus_1231_binance_compat import (
+    CompleteBinanceAccountReports,
+    bind_reconciled_order_account,
+)
 from tracefold.integrations.nautilus.oi_runtime.state import (
     RecoveredExecutionSeed,
     RecoveredProtectionSeed,
@@ -36,8 +39,10 @@ type _RecoveryLeg = tuple[Literal["protection", "exit"], int]
 def reconcile_reports_into_cache(*, engine: Any, reports: CompleteBinanceAccountReports) -> None:
     """Project every authoritative report through Nautilus ExecutionEngine."""
 
-    if not all(engine.reconcile_execution_report(report) for report in (*reports.positions, *reports.orders)):
-        raise RuntimeError("oi_runtime_execution_report_reconciliation_failed")
+    for report in (*reports.positions, *reports.orders):
+        if not engine.reconcile_execution_report(report):
+            raise RuntimeError("oi_runtime_execution_report_reconciliation_failed")
+        bind_reconciled_order_account(engine, report)
 
 
 def build_runtime_reconciliation_snapshot(

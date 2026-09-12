@@ -7,7 +7,11 @@ from decimal import Decimal
 from typing import Any
 
 from nautilus_trader.adapters.binance.http.error import BinanceError, get_binance_error_code
+from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.execution.reports import OrderStatusReport
+from nautilus_trader.model.events import OrderSubmitted
 from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.orders import OrderUnpacker
 
 from tracefold.trading import TradePlan
 
@@ -42,6 +46,51 @@ def single_binance_execution_client(engine: Any) -> Any:
     if client.venue.value != "BINANCE":
         raise RuntimeError("oi_runtime_execution_client_unsupported")
     return client
+
+
+def bind_reconciled_order_account(engine: Any, report: Any) -> None:
+    """Repair 1.231's account-less reconciled native order, without dispatching an order.
+
+    Native reconciliation goes INITIALIZED -> ACCEPTED/FILLED. In this pinned version
+    only OrderSubmitted sets Order.account_id, so those orders disappear from every
+    account-scoped Cache read. Replaying the same native events with a local binding
+    event supplies the account proven by the private report. This is Cache repair:
+    the binding event is never published, audited or sent to an execution client.
+    """
+    if not isinstance(report, OrderStatusReport):
+        return
+    cache = engine._cache
+    client_order_id = report.client_order_id or cache.client_order_id(report.venue_order_id)
+    order = cache.order(client_order_id) if client_order_id is not None else None
+    if order is None:
+        raise RuntimeError("oi_runtime_report_order_missing_from_cache")
+    if order.account_id is not None:
+        if order.account_id != report.account_id:
+            raise RuntimeError("oi_runtime_report_order_account_mismatch")
+        return
+    events = order.events
+    rebound = OrderUnpacker.from_init(events[0])
+    rebound.apply(
+        OrderSubmitted(
+            trader_id=order.trader_id,
+            strategy_id=order.strategy_id,
+            instrument_id=order.instrument_id,
+            client_order_id=order.client_order_id,
+            account_id=report.account_id,
+            event_id=UUID4(),
+            ts_event=report.ts_accepted,
+            ts_init=report.ts_init,
+        )
+    )
+    for event in events[1:]:
+        rebound.apply(event)
+    cache.add_order(
+        rebound,
+        position_id=cache.position_id(order.client_order_id),
+        client_id=cache.client_id(order.client_order_id),
+        overwrite=True,
+    )
+    cache.update_order(rebound)
 
 
 async def load_complete_binance_account_reports(client: Any) -> CompleteBinanceAccountReports:
@@ -110,6 +159,7 @@ async def query_planned_entry(client: Any, plan: TradePlan) -> EntryQueryProof:
 
 __all__ = [
     "CompleteBinanceAccountReports",
+    "bind_reconciled_order_account",
     "load_complete_binance_account_reports",
     "query_planned_entry",
     "single_binance_execution_client",
