@@ -182,3 +182,51 @@ def test_frozen_intent_and_terminal_plan_cannot_be_rewritten_or_recovered() -> N
         _bridge(harness)._flush_trade_plans(repos)
         harness.strategy.on_timer(None)
         assert harness.strategy.submitted == []
+
+
+@pytest.mark.parametrize("refuse_next_entry", [False, True], ids=["next-entry", "next-entry-insert-fails"])
+def test_terminal_commit_releases_the_instrument_before_the_next_prepare(refuse_next_entry: bool) -> None:
+    old = registered_oi_strategy(values=(trade_signal(),))
+    old.strategy.on_timer(None)
+    old_plan = old.plans.pending_prepare()
+    assert old_plan is not None
+    closed = old_plan.model_copy(
+        update={
+            "status": "closed",
+            "terminal_at_ns": NOW_NS + 1,
+            "updated_at_ns": NOW_NS + 1,
+            "exit_reason": "not_submitted",
+        }
+    )
+    next_signal = trade_signal().model_copy(update={"signal_id": "2" * 64})
+    following = registered_oi_strategy(values=(next_signal,))
+    following.strategy.on_timer(None)
+    next_plan = following.plans.pending_prepare()
+    assert next_plan is not None
+    assert following.strategy.submitted == []
+    following.plans.offer_update(closed)
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        repos = repositories_for_connection(conn)
+        prepared = prepare_trade_plan(old_plan)
+        with repos.transaction():
+            assert repos.trading.insert_trade_plan(prepared)
+        bridge = _bridge(following)
+        if refuse_next_entry:
+            conn.execute("""CREATE FUNCTION test_reject_next_plan() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN RAISE check_violation USING MESSAGE = 'test_next_plan_refused'; END $$""")
+            conn.execute("""CREATE TRIGGER test_reject_next_plan BEFORE INSERT ON trading_trade_plans
+                FOR EACH ROW EXECUTE FUNCTION test_reject_next_plan()""")
+            with pytest.raises(CheckViolation, match="test_next_plan_refused"):
+                bridge._flush_trade_plans(repos)
+        else:
+            bridge._flush_trade_plans(repos)
+        # The terminal transaction is independently durable even when the next insert fails.
+        with closing(connect_postgres_test(read_only=True)) as observer:
+            rows = observer.execute("SELECT entry_id, status FROM trading_trade_plans ORDER BY entry_id").fetchall()
+            assert rows == [
+                {"entry_id": old_plan.entry_id, "status": "closed"},
+                *([] if refuse_next_entry else [{"entry_id": next_plan.entry_id, "status": "prepared"}]),
+            ]
+        assert following.plans.pending_updates() == ()
+        following.strategy.on_timer(None)
+        assert len(following.strategy.submitted) == (0 if refuse_next_entry else 1)

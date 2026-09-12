@@ -299,11 +299,6 @@ class OiRuntimeDatabaseBridge:
         self._step("day_start", lambda: self._refresh_day_start(repos))
 
     def _flush_trade_plans(self, repos: RepositorySession) -> None:
-        plan = self._plans.pending_prepare()
-        if plan is not None:
-            receipt = commit_entry_plan(repos, plan)
-            self._projector.refresh_recovery_inputs(repos)
-            self._plans.committed(receipt.plan, newly_committed=receipt.newly_committed)
         updates = self._plans.pending_updates()
         if updates:
             prepared = tuple(prepare_trade_plan_update(value) for value in updates)
@@ -313,6 +308,13 @@ class OiRuntimeDatabaseBridge:
             self._projector.refresh_recovery_inputs(repos)
             for value in updates:
                 self._plans.updated(value)
+        # Retire prior ownership before preparing another entry on its instrument. A failed
+        # new insert must never prevent already-proven lifecycle facts from committing.
+        plan = self._plans.pending_prepare()
+        if plan is not None:
+            receipt = commit_entry_plan(repos, plan)
+            self._projector.refresh_recovery_inputs(repos)
+            self._plans.committed(receipt.plan, newly_committed=receipt.newly_committed)
 
     def _refresh_day_start(self, repos: RepositorySession) -> None:
         with self._lock:
