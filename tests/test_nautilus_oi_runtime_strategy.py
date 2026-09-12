@@ -1301,7 +1301,8 @@ def test_account_projection_withholds_stale_quote_values() -> None:
     assert snapshot.aggregate_risk_usd is None
 
 
-def test_account_projection_accepts_quote_newer_than_the_separate_private_account_fact() -> None:
+@pytest.mark.parametrize("quote_offset_ns", [2, 3_000_000_000, 30_000_000_000])
+def test_account_projection_accepts_quote_newer_than_private_or_host_clock(quote_offset_ns: int) -> None:
     context = registered_oi_strategy(values=(trade_signal(),))
     pump_with_committed_plan(context)
     entry = context.strategy.submitted[0][0]
@@ -1340,7 +1341,7 @@ def test_account_projection_accepts_quote_newer_than_the_separate_private_accoun
             instrument=context.instrument,
             bid_price=10_000,
             ask_price=10_001,
-            ts_event=NOW_NS + 2,
+            ts_event=NOW_NS + quote_offset_ns,
             ts_init=NOW_NS + 2,
         )
     )
@@ -1348,8 +1349,12 @@ def test_account_projection_accepts_quote_newer_than_the_separate_private_accoun
     snapshot = context.strategy.account_snapshot(projected_at_ns=NOW_NS + 3)
 
     assert snapshot.complete is True
-    assert snapshot.market_observed_at_ns == NOW_NS + 2
+    assert snapshot.market_observed_at_ns == NOW_NS + quote_offset_ns
     assert snapshot.positions[0].mark_price == "10000.5"
+
+    assert snapshot.positions[0].unrealized_pnl_usd == "0.025"
+    assert snapshot.equity_usd == "1000.025"
+    assert snapshot.aggregate_risk_usd == "10.0005"
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
