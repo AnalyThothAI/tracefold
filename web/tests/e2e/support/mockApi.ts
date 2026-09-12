@@ -11,8 +11,9 @@ import {
   newsQuoteFixture,
   newsStatusFixture,
   newsSymbolFixture,
-  newsWalletCardsForParams,
+  newsWalletEventsForParams,
   newsWalletsFixture,
+  newsWalletEventDetailFixture,
 } from "@tests/fixtures/newsFixture";
 import {
   tradingCasesForCaseId,
@@ -89,9 +90,11 @@ export async function installMockApi(
      * and one that does is a real failure.
      */
     if (path === "/api/news/wallets") return fulfill(route, newsWalletsFixture());
-    if (path === "/api/news/wallets/cards") {
-      return fulfill(route, newsWalletCardsForParams(url.searchParams));
+    if (path === "/api/news/wallets/events") {
+      return fulfill(route, newsWalletEventsForParams(url.searchParams));
     }
+    if (path.startsWith("/api/news/wallets/events/"))
+      return fulfill(route, newsWalletEventDetailFixture());
     if (path === "/api/news/quotes") return fulfill(route, newsQuotesData(url));
     if (path.startsWith("/api/news/events/")) return fulfill(route, newsEventDetailData(path));
     // #207 PR-W1: identity is keyed on the path segment, so the token page's baseline names the base the

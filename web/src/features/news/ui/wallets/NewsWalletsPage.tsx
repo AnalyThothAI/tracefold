@@ -1,298 +1,214 @@
 import { ActionButton } from "@shared/ui/ActionButton";
 import { EmptyNote } from "@shared/ui/EmptyNote";
-import { Metric, MetricRow } from "@shared/ui/Metric";
 import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
-import type { FormEvent } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import {
-  NEWS_WALLET_CARD_WINDOWS,
-  useNewsWalletCardsWithToken,
+  NEWS_WALLET_HISTORY_RANGES,
+  useNewsWalletEventsWithToken,
   useNewsWalletsWithToken,
-  type NewsWalletCardFilters,
 } from "../../api/newsQueries";
 import { displayTime, optionalTime } from "../../model/newsLabels";
-import { formatPrice } from "../../model/newsPrice";
 import {
-  nextWalletParams,
-  parseWalletFilters,
-  WALLET_CARD_FILTERS,
-  walletCardLabel,
+  parseWalletEventFilters,
+  walletDecimal,
+  walletNotificationLabel,
+  walletReason,
 } from "../../model/walletFacts";
 import { NewsPageHeader } from "../chrome/NewsChrome";
 
-import { WalletResearchRow } from "./WalletResearchRow";
-import { WalletRosterTable, WalletFillsTable } from "./WalletSupportingTables";
+import { WalletEventDetail } from "./WalletEventDetail";
+import { WalletRosterTable } from "./WalletSupportingTables";
 import "./newsWallets.css";
 
 export function NewsWalletsPage({ token }: { token: string }) {
   const [params, setParams] = useSearchParams();
-  const filters = parseWalletFilters(params);
-  const tab = params.get("tab") === "roster" ? "roster" : "research";
+  const filters = parseWalletEventFilters(params);
+  const episodeId = params.get("episode") ?? "";
+  const eventsQuery = useNewsWalletEventsWithToken(token, filters);
   const walletsQuery = useNewsWalletsWithToken(token);
-  const cardsQuery = useNewsWalletCardsWithToken(token, filters);
-  const data = cardsQuery.data;
+  const data = eventsQuery.data;
+  const tape = walletsQuery.data?.tape;
   const roster = walletsQuery.data?.roster;
-  const setFilters = (next: NewsWalletCardFilters) => setParams(nextWalletParams(next));
-  const changeFilters = (next: NewsWalletCardFilters) =>
-    setFilters({ ...next, cursor: undefined, toMs: undefined });
-  const applyAddresses = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    changeFilters({
-      ...filters,
-      walletAddress: String(form.get("wallet") ?? "")
-        .trim()
-        .toLowerCase(),
-      tokenAddress: String(form.get("token") ?? "")
-        .trim()
-        .toLowerCase(),
-      segmentKey: undefined,
-    });
+  const changeRange = (historyRange: string) => {
+    const next = new URLSearchParams();
+    if (historyRange !== "24h") next.set("history_range", historyRange);
+    setParams(next);
   };
+
   return (
-    <PageShell archetype="scan" className="news-wallets-shell" label="钱包研究">
-      <NewsPageHeader
-        title="钱包研究"
-        subtitle="谁买了什么、处于什么阶段，观察之后价格怎样变化。先读事实，再展开依据。"
-      />
-      <div className="news-wallets-windows news-research-tabs" aria-label="钱包视图" role="group">
-        {(["research", "roster"] as const).map((value) => (
-          <button
-            type="button"
-            key={value}
-            className="news-wallets-window"
-            aria-pressed={tab === value}
-            data-active={tab === value || undefined}
-            onClick={() => {
-              const next = new URLSearchParams(params);
-              next.delete("item");
-              if (value === "roster") next.set("tab", value);
-              else next.delete("tab");
-              setParams(next);
-            }}
+    <PageShell archetype="scan" className="news-wallets-shell" label="聪明钱警报">
+      <NewsPageHeader title="聪明钱警报" subtitle="Robinhood Chain · 多钱包集中净买入" />
+      {episodeId ? <WalletEventDetail token={token} episodeId={episodeId} /> : null}
+      <section className="news-wallets-panel" aria-label="集中净买入事件">
+        <div className="news-wallets-toolbar">
+          <div className="news-wallets-windows" role="group" aria-label="历史查询范围">
+            {NEWS_WALLET_HISTORY_RANGES.map((range) => (
+              <button
+                type="button"
+                key={range}
+                className="news-wallets-window"
+                aria-pressed={filters.historyRange === range}
+                data-active={filters.historyRange === range || undefined}
+                onClick={() => changeRange(range)}
+              >
+                {range}
+              </button>
+            ))}
+          </div>
+          <ActionButton size="sm" onClick={() => void eventsQuery.refetch()}>
+            刷新事件
+          </ActionButton>
+        </div>
+        <p className="news-wallets-note">
+          5 分钟 / 30 分钟是触发窗口；历史范围用于查阅事件。一行一轮，包含静音与未发送事件。
+        </p>
+        {data ? (
+          <p className="news-wallets-note">
+            {displayTime(data.history_from_ms)} → {displayTime(data.history_to_ms)} · 全范围{" "}
+            {data.totals.total} 轮 · 进行中 {data.totals.active} 轮 · 已发送 {data.totals.sent} 轮
+          </p>
+        ) : null}
+        {eventsQuery.isError && !data ? (
+          <PageState.Error error={eventsQuery.error} onRetry={() => void eventsQuery.refetch()} />
+        ) : !data ? (
+          <PageState.Loading label="正在读取集中净买入事件" layout="panel" rows={5} />
+        ) : (
+          <PageState.Stale
+            failedRefresh={eventsQuery.isError ? "事件刷新失败，保留上次读取的事实。" : undefined}
+            updating={eventsQuery.isFetching}
+            onRetry={() => void eventsQuery.refetch()}
           >
-            {value === "research"
-              ? "买入动向"
-              : `跟踪钱包${roster ? ` · ${roster.members.length}` : ""}`}
-          </button>
-        ))}
-      </div>
-      {tab === "research" ? (
-        <div className="news-wallets-body">
-          <section className="news-wallets-panel" aria-label="买入研究">
+            {data.events.length ? (
+              <div className="news-wallets-scroll">
+                <table className="news-wallets-table news-wallet-event-list">
+                  <thead>
+                    <tr>
+                      <th>代币 / 链</th>
+                      <th>首次净买家 5m / 30m</th>
+                      <th>首次主窗口净买入</th>
+                      <th>触发 / 本轮状态</th>
+                      <th>通知结果</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.events.map((event) => {
+                      const first = event.initial_snapshot;
+                      const primary = first.fast.matched ? first.fast : first.slow;
+                      const latest = event.latest_snapshot;
+                      const otherSell = latest.slow.members.some(
+                        (member) => !member.qualified && member.net_usd?.startsWith("-"),
+                      );
+                      const incomplete = latest.slow.members.some((member) =>
+                        member.reasons.some((reason) =>
+                          [
+                            "transfer_out_incomplete",
+                            "unpriced_trade",
+                            "collection_gap",
+                            "incomplete_monitoring_window",
+                          ].includes(reason),
+                        ),
+                      );
+                      const linkParams = new URLSearchParams(params);
+                      linkParams.set("episode", event.episode_id);
+                      return (
+                        <tr key={event.episode_id}>
+                          <td data-label="代币 / 链">
+                            <Link to={`/news/wallets?${linkParams}`}>
+                              {event.token_symbol || event.token}
+                            </Link>
+                            <small>Robinhood Chain</small>
+                            <code>{event.token}</code>
+                          </td>
+                          <td data-label="首次净买家 5m / 30m">
+                            {first.fast.qualified_n} / {first.slow.qualified_n}
+                          </td>
+                          <td data-label="首次主窗口净买入">
+                            ${walletDecimal(primary.net_usd)}
+                            <small>{primary.window} · 入选地址</small>
+                          </td>
+                          <td data-label="触发 / 本轮状态">
+                            {displayTime(event.triggered_at_ms)}
+                            <small>
+                              {event.ended_at_ms === null ? "本轮进行中" : "本轮已结束"}
+                            </small>
+                            {!latest.fast.matched && !latest.slow.matched ? (
+                              <small>当前人数或净额已不满足条件</small>
+                            ) : null}
+                            {otherSell ? <small>其他观察地址存在净卖出</small> : null}
+                            {incomplete ? <small>存在未计价、转出或覆盖不足</small> : null}
+                          </td>
+                          <td data-label="通知结果">
+                            {walletNotificationLabel(event.notification_state)}
+                            {event.notification_reason ? (
+                              <small>{walletReason(event.notification_reason)}</small>
+                            ) : null}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <EmptyNote>当前历史范围没有集中净买入事件。</EmptyNote>
+            )}
             <div className="news-wallets-toolbar">
-              <div className="news-wallets-windows" role="group" aria-label="按类型筛选">
-                {WALLET_CARD_FILTERS.map((kind) => (
-                  <button
-                    type="button"
-                    key={kind}
-                    className="news-wallets-window"
-                    aria-pressed={filters.kind === kind}
-                    data-active={filters.kind === kind || undefined}
-                    onClick={() => changeFilters({ ...filters, kind })}
-                  >
-                    {kind === "all" ? "全部观察" : walletCardLabel(kind)}
-                  </button>
-                ))}
-              </div>
-              <div className="news-wallets-windows" role="group" aria-label="按窗口筛选">
-                {NEWS_WALLET_CARD_WINDOWS.map((window) => (
-                  <button
-                    type="button"
-                    key={window}
-                    className="news-wallets-window"
-                    aria-pressed={filters.window === window}
-                    data-active={filters.window === window || undefined}
-                    onClick={() => changeFilters({ ...filters, window })}
-                  >
-                    {window}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <form
-              className="news-wallets-filters"
-              onSubmit={applyAddresses}
-              key={filters.walletAddress + filters.tokenAddress}
-            >
-              <label>
-                钱包地址
-                <input
-                  name="wallet"
-                  placeholder="0x… 精确地址"
-                  pattern="0x[0-9a-fA-F]{40}"
-                  defaultValue={filters.walletAddress}
-                />
-              </label>
-              <label>
-                代币合约
-                <input
-                  name="token"
-                  placeholder="0x… 精确地址"
-                  pattern="0x[0-9a-fA-F]{40}"
-                  defaultValue={filters.tokenAddress}
-                />
-              </label>
-              <ActionButton type="submit" size="sm">
-                筛选
-              </ActionButton>
-              {filters.walletAddress || filters.tokenAddress || filters.segmentKey ? (
-                <ActionButton
-                  size="sm"
-                  onClick={() =>
-                    setFilters({
-                      window: filters.window,
-                      kind: filters.kind,
-                      walletAddress: "",
-                      tokenAddress: "",
-                    })
-                  }
-                >
-                  清除筛选
+              <small>
+                本页 {data.events.length} 轮 · 全范围 {data.totals.total} 轮
+              </small>
+              {filters.cursor ? (
+                <ActionButton size="sm" onClick={() => changeRange(filters.historyRange)}>
+                  回到最新
                 </ActionButton>
               ) : null}
-            </form>
-            {data ? (
-              <p className="news-wallets-note">
-                {displayTime(data.window_from_ms)} → {displayTime(data.window_to_ms)} ·
-                包含未发送候选 ·{" "}
-                {filters.view === "observations" ? "逐次观察" : "同段合并，金额取最新累计快照"}
-              </p>
-            ) : null}
-          </section>
-          {data ? (
-            <MetricRow className="news-wallets-summary" columns={4} label="当前筛选完整范围">
-              <Metric
-                eyebrow="观察段"
-                value={data.totals.segments}
-                caption={`${data.totals.observations} 次观察 · 分页前统计`}
-              />
-              <Metric eyebrow="钱包" value={data.totals.wallets} caption="按链与地址去重" />
-              <Metric eyebrow="代币" value={data.totals.tokens} caption="按链与合约去重" />
-              <Metric
-                eyebrow="买入段已计价金额"
-                value={`$${formatPrice(data.totals.priced_buy_usd)}`}
-                caption="各段最新累计值 · 非钱包总仓位"
-              />
-            </MetricRow>
-          ) : null}
-          {cardsQuery.isError && !data ? (
-            <PageState.Error error={cardsQuery.error} onRetry={() => void cardsQuery.refetch()} />
-          ) : !data ? (
-            <PageState.Loading label="正在读取钱包观察" layout="panel" rows={5} />
-          ) : (
-            <PageState.Stale
-              failedRefresh={cardsQuery.isError ? "观察刷新失败，保留上次读取的事实。" : undefined}
-              onRetry={() => void cardsQuery.refetch()}
-              updating={cardsQuery.isFetching}
-            >
-              <section className="news-wallets-panel" aria-label="钱包观察列表">
-                {data.cards.length ? (
-                  data.cards.map((card) => (
-                    <WalletResearchRow
-                      key={card.item_id}
-                      card={card}
-                      filters={filters}
-                      open={params.get("item") === card.item_id}
-                      onOpen={() => {
-                        const next = new URLSearchParams(params);
-                        if (params.get("item") === card.item_id) next.delete("item");
-                        else {
-                          next.set("item", card.item_id);
-                          next.set("to_ms", String(data.window_to_ms));
-                        }
-                        setParams(next, { replace: true });
-                      }}
-                    />
-                  ))
-                ) : (
-                  <EmptyNote>当前窗口与筛选下没有观察记录。</EmptyNote>
-                )}
-                <div className="news-wallets-toolbar">
-                  <small>
-                    本页 {data.cards.length} 条 · 全范围{" "}
-                    {filters.view === "observations"
-                      ? data.totals.observations
-                      : data.totals.segments}{" "}
-                    条
-                  </small>
-                  {filters.toMs ? (
-                    <ActionButton size="sm" onClick={() => changeFilters(filters)}>
-                      回到最新
-                    </ActionButton>
-                  ) : null}
-                  {filters.cursor ? (
-                    <ActionButton
-                      size="sm"
-                      onClick={() => setFilters({ ...filters, cursor: undefined })}
-                    >
-                      回到首屏
-                    </ActionButton>
-                  ) : null}
-                  {data.next_cursor ? (
-                    <ActionButton
-                      size="sm"
-                      onClick={() =>
-                        setFilters({
-                          ...filters,
-                          cursor: data.next_cursor!,
-                          toMs: data.window_to_ms,
-                        })
-                      }
-                    >
-                      下一页
-                    </ActionButton>
-                  ) : null}
-                </div>
-              </section>
-              {filters.walletAddress && filters.tokenAddress ? (
-                <section className="news-wallets-panel">
-                  <WalletFillsTable fills={data.fills} limit={data.limit} />
-                  {!data.fills_complete ? (
-                    <p className="news-wallets-note">
-                      流水超过本页上限，仅显示最新 {data.limit} 笔；不代表完整历史。
-                    </p>
-                  ) : null}
-                </section>
+              {data.next_cursor ? (
+                <ActionButton
+                  size="sm"
+                  onClick={() => {
+                    const next = new URLSearchParams(params);
+                    next.set("cursor", data.next_cursor!);
+                    next.set("to_ms", String(data.history_to_ms));
+                    setParams(next);
+                  }}
+                >
+                  下一页
+                </ActionButton>
               ) : null}
-            </PageState.Stale>
-          )}
-        </div>
-      ) : (
-        <section className="news-wallets-panel">
-          <div className="news-wallets-toolbar">
-            <b>跟踪名单</b>
-            <small>{optionalTime(roster?.taken_at_ms)} 取得</small>
-          </div>
-          <p className="news-wallets-note">
-            来源 {roster?.provider ?? "未取得"} ·
-            来源表现榜与持仓规模榜分别记录。统计周期以供应商原始口径为准，不代表可复制的盈利能力。
-          </p>
-          {walletsQuery.isError && !roster ? (
-            <PageState.Error
-              error={walletsQuery.error}
-              onRetry={() => void walletsQuery.refetch()}
-            />
-          ) : !roster ? (
-            <PageState.Loading layout="panel" label="正在读取跟踪钱包" rows={4} />
-          ) : (
-            <WalletRosterTable filters={filters} members={roster.members} />
-          )}
-        </section>
-      )}
+            </div>
+          </PageState.Stale>
+        )}
+      </section>
       <details className="news-wallets-panel news-wallet-data-details">
-        <summary>采集与数据说明</summary>
+        <summary>名单与采集状态</summary>
+        {walletsQuery.isError ? (
+          <p className="news-wallets-note">
+            名单 / 状态读取失败，事件仍可查阅。
+            <ActionButton size="sm" onClick={() => void walletsQuery.refetch()}>
+              重试状态
+            </ActionButton>
+          </p>
+        ) : null}
         <p className="news-wallets-note">
-          链上流水区分买入、卖出和转出；观察期首次买入不等于真实新仓。未核实的价格保留原始值与来源，不参与价格变化比较。
+          最近成功采集 {optionalTime(tape?.last_success_at_ms)} · 链数据截止{" "}
+          {optionalTime(tape?.scanned_at_ms)}
         </p>
         <p className="news-wallets-note">
-          最近成功采集 {optionalTime(walletsQuery.data?.tape?.last_success_at_ms)} ·{" "}
-          {walletsQuery.isError
-            ? "采集状态读取失败"
-            : walletsQuery.data?.tape?.last_outcome || "未取得采集状态"}
+          {tape?.last_error
+            ? `采集异常：${tape.last_error}`
+            : tape
+              ? "按已完成的链范围计算"
+              : "尚未取得采集状态"}
+          {tape?.scanned_at_ms && Date.now() - tape.scanned_at_ms > 60_000
+            ? " · 采集落后，当前变化可能尚未完整"
+            : ""}
         </p>
+        <p className="news-wallets-note">
+          来源 {roster?.provider ?? "未取得"} · {optionalTime(roster?.taken_at_ms)} 取得。
+          来源表现榜才参与人数门槛；规模榜仅作观察背景。供应商短期统计不是长期策略胜率。
+        </p>
+        {roster ? <WalletRosterTable members={roster.members} /> : null}
       </details>
     </PageShell>
   );

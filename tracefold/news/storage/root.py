@@ -12,6 +12,7 @@ from .learning import LearningStorage
 from .market import MarketStorage
 from .operations import OperationsStorage
 from .trade_projection import TradeProjectionStorage
+from .wallet_events import WalletEventStorage
 
 
 class NewsRepository(
@@ -20,6 +21,7 @@ class NewsRepository(
     DecisionStorage,
     MarketStorage,
     ChainTapeStorage,
+    WalletEventStorage,
     TradeProjectionStorage,
     LearningStorage,
     FeedStorage,

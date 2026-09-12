@@ -111,7 +111,7 @@ NEWS_TABLES = (
     "news_market_wallet_roster",
     "news_market_wallet_tape_state",
     "news_market_wallet_events",
-    "news_market_wallet_checks",
+    "news_market_wallet_archive",
     "news_market_wallet_outcomes",
     "news_event_evidence_snapshots",
     "news_learning_epochs",

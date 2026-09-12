@@ -15,8 +15,7 @@ Three flows share the turn, and the extension gate names them separately because
   in bounded batches, and idempotent on the chain's own identity.
 
 Provider failures retain the durable position for a later turn. Unexpected errors reach Workers
-supervision. Research and digests run as independent supervised tasks reading committed PostgreSQL
-facts; neither a model call nor a price or position check can delay the next ingestion turn (#614).
+supervision. The net-buy detector and event price sampler run independently over committed facts.
 """
 
 from __future__ import annotations
@@ -57,17 +56,6 @@ CATCH_UP_BLOCKS_MAX: Final = 100_000
 RECEIPTS_PER_TURN_MAX: Final = 20
 ROSTER_REFRESH_MS: Final = 3_600_000
 POLL_INTERVAL_SECONDS: Final = 2.0
-# How many turns a transaction the node cannot find is carried before it is given up on as
-# unknown. The public endpoint is load balanced, so a transaction that has just appeared in one
-# node's logs can legitimately 404 from another for a moment.
-MISSING_RECEIPT_ATTEMPTS: Final = 3
-# A transaction that has been given up on. It is counted once as unknown and not asked for again while
-# it remains in the log window, which is what makes one movement either a fill or a count and never
-# both. The cost is close to nothing: three turns at the default cadence is twice the wall time the
-# overlap covers in chain time, so a transaction that reaches this state was about to leave the window
-# anyway.
-_GIVEN_UP: Final = -1
-
 _DB_READ_TIMEOUT_SECONDS: Final = 5.0
 _DB_WRITE_TIMEOUT_SECONDS: Final = 10.0
 
@@ -169,10 +157,12 @@ class ChainTapeLoop:
         self.last_result: dict[str, Any] | None = None
         self.last_error: str | None = None
         self._roster: RosterSnapshot | None = None
-        # Transactions the node could not produce a receipt for, and how many turns each has been
-        # asked for. Bounded by the log window: an entry that stops being a candidate is dropped.
-        self._missing_receipts: dict[str, int] = {}
         self._store_refused = False
+        self._coverage_from: int | None = None
+        self._scanned_at: int | None = None
+        self._scanned_block: int | None = None
+        self._scanned_log: int | None = None
+        self._collection_wallets: tuple[str, ...] = ()
 
     async def aclose(self) -> None:
         """Release whatever the two provider ports hold. A port with nothing to release says so by
@@ -196,6 +186,11 @@ class ChainTapeLoop:
         started = time.perf_counter()
         self.last_error = None
         self._store_refused = False
+        self._coverage_from = None
+        self._scanned_at = None
+        self._scanned_block = None
+        self._scanned_log = None
+        self._collection_wallets = ()
         errors: list[str] = []
         result = _empty_result()
         try:
@@ -214,7 +209,21 @@ class ChainTapeLoop:
         if roster_error:
             errors.append(roster_error)
         roster = self._roster
-        wallets = tuple(roster.wallets) if roster is not None else ()
+        wallets = ()
+        if roster is not None:
+            try:
+                wallets = await self.db.read(
+                    "news_chain_tape_collection_roster",
+                    lambda repos: repos.news.chain_tape_collection_wallets(
+                        through_at_ms=int((stored_state or {}).get("scanned_at_ms") or 0)
+                    ),
+                    timeout_seconds=_DB_READ_TIMEOUT_SECONDS,
+                )
+            except (TransientError, DeferError) as exc:
+                errors.append(f"db:{type(exc).__name__}")
+                self._record_turn(started, "error", result, errors)
+                return result
+        self._collection_wallets = wallets
         cursor = _cursor_of(stored_state)
         noise_cursor = _noise_cursor_of(stored_state)
         result["roster_version"] = 0 if roster is None else roster.roster_version
@@ -235,6 +244,11 @@ class ChainTapeLoop:
                 started, result, cursor=cursor, noise_cursor=noise_cursor, roster=roster, errors=errors
             )
 
+        if int(head) < cursor.block_number:
+            errors.append("robinhood_rpc:reorg_unresolved_head_regressed")
+            return await self._end(
+                started, result, cursor=cursor, noise_cursor=noise_cursor, roster=roster, errors=errors
+            )
         from_block, to_block, cursor = self._range(cursor, head=int(head))
         result["from_block"] = from_block
         result["to_block"] = to_block
@@ -244,12 +258,42 @@ class ChainTapeLoop:
                 started, result, cursor=cursor, noise_cursor=noise_cursor, roster=roster, errors=errors
             )
         result["logs"] = len(logs)
+        if any(bool(getattr(log, "removed", False)) for log in logs):
+            errors.append("robinhood_rpc:reorg_unresolved")
+            return await self._end(
+                started, result, cursor=cursor, noise_cursor=noise_cursor, roster=roster, errors=errors
+            )
+        try:
+            overlap = await self.db.read(
+                "news_chain_tape_overlap",
+                lambda repos: repos.news.chain_tape_overlap_fills(
+                    chain_id=self.chain.chain_id,
+                    from_block=from_block,
+                    to_block=to_block,
+                    wallets=wallets,
+                ),
+                timeout_seconds=_DB_READ_TIMEOUT_SECONDS,
+            )
+        except (TransientError, DeferError) as exc:
+            errors.append(f"db:{type(exc).__name__}")
+            return await self._end(
+                started, result, cursor=cursor, noise_cursor=noise_cursor, roster=roster, errors=errors
+            )
+        offered = {(log.transaction_hash, log.log_index): log.block_hash for log in logs}
+        if any(offered.get((row["tx_hash"], row["log_index"])) != row["block_hash"] for row in overlap):
+            errors.append("robinhood_rpc:reorg_unresolved_overlap")
+            return await self._end(
+                started, result, cursor=cursor, noise_cursor=noise_cursor, roster=roster, errors=errors
+            )
+        start_time = await self._provider(CHAIN_SOURCE, lambda: self.chain.block_timestamp_ms(from_block), errors)
+        if start_time is _FAILED:
+            return await self._end(
+                started, result, cursor=cursor, noise_cursor=noise_cursor, roster=roster, errors=errors
+            )
+        self._coverage_from = int(start_time)
 
         discovered = _transactions_after(logs, cursor)
-        self._forget_missing_receipts_outside(discovered)
-        candidates = tuple(
-            position for position in discovered if self._missing_receipts.get(position.transaction_hash) != _GIVEN_UP
-        )
+        candidates = discovered
         result["candidates"] = len(candidates)
         taken = candidates[: self.receipts_per_turn_max]
         result["pending"] = len(candidates) - len(taken)
@@ -287,6 +331,21 @@ class ChainTapeLoop:
         # A partial turn keeps the position it actually reached instead of the lagged one. Clamping it
         # back would re-plan the same bounded batch of receipts every turn and never drain a backlog.
 
+        if classified_through != cursor or not candidates:
+            scanned_time = await self._provider(
+                CHAIN_SOURCE, lambda: self.chain.block_timestamp_ms(classified_through.block_number), errors
+            )
+            if scanned_time is not _FAILED:
+                self._scanned_at = int(scanned_time)
+                self._scanned_block = classified_through.block_number
+                self._scanned_log = (
+                    BLOCK_COMPLETE_TX_INDEX
+                    if classified_through.transaction_index == BLOCK_COMPLETE_TX_INDEX
+                    else max(
+                        (fill.log_index for fill in fills if fill.block_number == classified_through.block_number),
+                        default=-1,
+                    )
+                )
         result["written"] = await self._store(
             fills,
             cursor=classified_through,
@@ -442,7 +501,13 @@ class ChainTapeLoop:
             return None
         if receipt is None:
             return self._missing_receipt(position, errors)
-        self._missing_receipts.pop(position.transaction_hash, None)
+        if (
+            receipt.transaction_hash != position.transaction_hash
+            or receipt.block_number != position.block_number
+            or any(log.removed or log.block_hash != receipt.block_hash for log in receipt.logs)
+        ):
+            errors.append("robinhood_rpc:reorg_unresolved_receipt")
+            return None
         event_at_ms = await self._provider(
             CHAIN_SOURCE,
             lambda: self.chain.block_timestamp_ms(position.block_number),
@@ -473,36 +538,10 @@ class ChainTapeLoop:
         )
 
     def _missing_receipt(self, position: _Transaction, errors: list[str]) -> Any | None:
-        """A transaction the node will not produce a receipt for: carried, then given up on.
-
-        The public endpoint is load balanced, so a transaction that has just appeared in one node's
-        `eth_getLogs` answer can legitimately 404 from another for a moment. Treating that as classified
-        would drop it for ever, because the position would advance past it. It is carried instead --
-        the turn stops here and everything from this position stays pending -- and after a bounded
-        number of turns it is recorded as one `unknown` so the tape cannot stall on it.
-
-        Giving up is final for as long as the log window still offers it. That is what keeps one
-        movement to one outcome: without it the lagging position would offer the transaction again, a
-        later receipt would store a fill, and the same movement would be both a stored trade and a
-        count of something that could not be read.
-        """
-
-        attempts = self._missing_receipts.get(position.transaction_hash, 0) + 1
-        if attempts < MISSING_RECEIPT_ATTEMPTS:
-            self._missing_receipts[position.transaction_hash] = attempts
-            errors.append(f"{CHAIN_SOURCE}:receipt_missing")
-            return None
-        self._missing_receipts[position.transaction_hash] = _GIVEN_UP
-        return _Classified(fills=(), ignored_inbound=0, unknown=1)
-
-    def _forget_missing_receipts_outside(self, candidates: Sequence[_Transaction]) -> None:
-        """Drop carried transactions the log window no longer offers, so the map stays bounded."""
-
-        if not self._missing_receipts:
-            return
-        offered = {position.transaction_hash for position in candidates}
-        for transaction_hash in [key for key in self._missing_receipts if key not in offered]:
-            del self._missing_receipts[transaction_hash]
+        """Missing is unresolved: preserve the cursor until the entire receipt is available."""
+        del position
+        errors.append(f"{CHAIN_SOURCE}:receipt_missing")
+        return None
 
     async def _price(self, fill: ClassifiedFill, *, errors: list[str]) -> ClassifiedFill | None:
         """Attach the two tokens' own metadata, and a dollar figure only when the cash leg is the stablecoin."""
@@ -568,6 +607,14 @@ class ChainTapeLoop:
                 ignored_inbound=int(counts.get("ignored_inbound") or 0),
                 unknown=int(counts.get("unknown") or 0),
                 noise_cursor=noise_cursor,
+            )
+            repos.news.chain_tape_record_coverage(
+                from_ms=self._coverage_from,
+                through_ms=self._scanned_at,
+                through_block=self._scanned_block,
+                through_log=self._scanned_log,
+                gap_at_ms=now_ms() if any("reorg_unresolved" in error for error in errors) else None,
+                wallets=self._collection_wallets,
             )
             return int(written)
 

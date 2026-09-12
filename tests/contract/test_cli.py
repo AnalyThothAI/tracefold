@@ -380,9 +380,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertIs(news["policy"]["restatement_drop"], True)
         self.assertEqual(news["retention"], {"raw_days": 30, "judged_days": 365})
-        # #572: two public unauthenticated endpoints, four list rules and nine card thresholds, printed
-        # in full because none of it is a secret and an operator reading a week of tape counts -- or
-        # deciding whether the medium tier is too loud -- needs the exact numbers.
+        # Public sources, roster criteria and the four current net-buy parameters.
         self.assertEqual(
             news["chain_tape"],
             {
@@ -398,25 +396,10 @@ class CliTests(unittest.TestCase):
                     "top_whale_by_open_cost": 20,
                 },
                 "rules": {
-                    "exit_notifications_enabled": False,
-                    "buy_min_usd": 1000.0,
-                    "buy_window_s": 900,
-                    "exit_ratio_bps": 3000,
-                    "exit_min_position_usd": 20_000.0,
-                    "exit_cascade_window_s": 7200,
-                    "exit_cascade_min_usd": 5_000.0,
-                    "crowding_n": 3,
-                    "crowding_window_s": 900,
-                    "crowding_min_usd": 1_000.0,
-                    "crowding_premium_late_bps": 3000,
-                    "trigger_max_age_s": 600,
-                },
-                # #572 PR-3. Two runtime numbers and a switch; `max_calls_per_day` bounds the model, not
-                # the digest -- past it the summary is still written, from its own fact pack.
-                "digest": {
-                    "enabled": True,
-                    "interval_s": 14_400,
-                    "max_calls_per_day": 24,
+                    "net_buy_fast_n": 3,
+                    "net_buy_slow_n": 5,
+                    "min_net_buy_usd": 1000.0,
+                    "trigger_max_age_s": 60,
                 },
                 "retention_days": 90,
             },

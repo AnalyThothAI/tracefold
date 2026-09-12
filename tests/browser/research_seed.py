@@ -10,15 +10,15 @@ from decimal import Decimal
 import psycopg
 from psycopg.rows import dict_row
 
+from tests.news.net_buy_fixtures import movement, roster, snapshot
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame, admit_market_item, prepare_wallet_observation, wallet_item_id
-from tracefold.news.wallet_contracts import VERIFIED_WALLET_PRICE_SOURCE, WalletEvent, WalletOutcome
+from tracefold.news.wallet_contracts import WalletEvent, WalletOutcome
 
 
 def seed_research(dsn: str) -> None:
     now = int(time.time() * 1000)
-    wallet, token = "0x" + "1" * 40, "0x" + "2" * 40
     with psycopg.connect(dsn, row_factory=dict_row) as conn:
         repos = repositories_for_connection(conn)
         with repos.transaction():
@@ -45,58 +45,44 @@ def seed_research(dsn: str) -> None:
                 watchlist_symbols=frozenset(),
                 now_ms=now,
             )
-            for index in range(3):
-                stamp = now - 4_000_000 + index
-                event = WalletEvent(
-                    item_id="",
-                    kind="buy",
-                    chain_id=4663,
-                    wallet=wallet,
-                    handle="research-wallet",
-                    followers=120,
-                    token=token,
-                    token_symbol="RESEARCH",
-                    token_decimals=18,
-                    roster_version=1,
-                    window_from_ms=stamp,
-                    window_to_ms=stamp,
-                    segment_key="browser-buy-segment",
-                    event_at_ms=stamp,
-                    received_at_ms=stamp,
-                    title="研究钱包买入 RESEARCH",
-                    usd=Decimal((index + 1) * 1000),
-                    mark_price=Decimal("2"),
-                    entry_price=Decimal("1.8"),
-                    tx_hash="0x" + str(index + 1) * 64,
-                    block_number=index + 1,
-                    evidence={
-                        "log_index": index,
-                        "stage": "first_observed" if index == 0 else "add",
-                        "selection_reason": "selected",
-                        "buy_count": index + 1,
-                        "unpriced_buys": 0,
-                        "observed_at_ms": stamp,
-                        "mark_source": VERIFIED_WALLET_PRICE_SOURCE,
-                        "price_chain_id": 4663,
-                        "price_token": token,
-                        "price_quote": "USD",
-                        "price_unit": "token",
-                    },
+            stamp = now - 4_000_000
+            members = roster()
+            for member in members:
+                member["known_at_ms"] = member["monitoring_from_ms"] = stamp - 3600000
+            fills = [replace(movement(i, at=stamp), token_symbol="RESEARCH") for i in range(1, 6)]
+            event = WalletEvent(
+                item_id="",
+                chain_id=4663,
+                token=fills[0].token,
+                token_symbol="RESEARCH",
+                trigger_tx_hash=fills[-1].tx_hash,
+                event_at_ms=stamp,
+                received_at_ms=stamp,
+                detected_at_ms=stamp,
+                trigger_max_age_s=60,
+                notification_eligible=False,
+                notification_reason="wallet_notifications_disabled",
+                initial_snapshot=snapshot(fills, members=members, cutoff_at_ms=stamp, coverage_from_ms=stamp - 3600000),
+                reference_price=Decimal("2"),
+                reference_at_ms=stamp,
+                reference_source="recorded_fixture",
+            )
+            prepared = prepare_wallet_observation(replace(event, item_id=wallet_item_id(event)))
+            admit_market_item(repos, prepared, ingest_mode="live", trace_id="browser-wallet", now_ms=stamp)
+            repos.news.chain_tape_record_fills(fills)
+            repos.news.chain_tape_record_outcome(
+                WalletOutcome(
+                    item_id=prepared.item_id,
+                    horizon="15m",
+                    price=Decimal("2.2"),
+                    at_ms=stamp + 900000,
+                    source="recorded_fixture",
+                    reference_price=Decimal("2"),
+                    reference_at_ms=stamp,
+                    target_at_ms=stamp + 900000,
+                    status="comparable",
                 )
-                prepared = prepare_wallet_observation(replace(event, item_id=wallet_item_id(event)))
-                admit_market_item(repos, prepared, ingest_mode="live", trace_id="browser-wallet", now_ms=stamp)
-                repos.news.chain_tape_record_outcome(
-                    WalletOutcome(
-                        item_id=prepared.item_id,
-                        horizon="15m",
-                        price=Decimal("2.2"),
-                        at_ms=stamp + 900_000,
-                        source=VERIFIED_WALLET_PRICE_SOURCE,
-                        reference_price=Decimal("2"),
-                        reference_at_ms=stamp,
-                        target_at_ms=stamp + 900_000,
-                    )
-                )
+            )
             conn.execute(
                 """INSERT INTO trading_cases (
                 case_id, underlying_key, trigger_kind, primary_source_key, manifest, manifest_sha256,

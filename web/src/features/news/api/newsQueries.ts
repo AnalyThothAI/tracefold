@@ -57,24 +57,17 @@ export type NewsWallets = NewsSchemas["NewsWalletsData"];
 export type NewsWalletRoster = NewsSchemas["NewsWalletRosterData"];
 export type NewsWalletRosterMember = NewsSchemas["NewsWalletRosterMemberData"];
 export type NewsWalletTapeState = NewsSchemas["NewsWalletTapeStateData"];
-export type NewsWalletFillTotal = NewsSchemas["NewsWalletFillTotalData"];
 export type NewsWalletFill = NewsSchemas["NewsWalletFillData"];
-export type NewsWalletCardTotal = NewsSchemas["NewsWalletCardTotalData"];
-export type NewsWalletCards = NewsSchemas["NewsWalletCardsData"];
-export type NewsWalletCard = NewsSchemas["NewsWalletCardData"];
-export type NewsWalletCardKind = NewsWalletCard["kind"];
-export type NewsWalletCardFilters = {
-  window: NewsWalletCardWindow;
-  kind: NewsWalletCardKind | "all";
-  walletAddress: string;
-  tokenAddress: string;
-  chainId?: number;
-  segmentKey?: string;
-  view?: "segments" | "observations";
+export type NewsWalletFillKind = NewsWalletFill["kind"];
+export type NewsWalletEvent = NewsSchemas["NewsWalletEventData"];
+export type NewsWalletEvents = NewsSchemas["NewsWalletEventsData"];
+export type NewsWalletEventDetail = NewsSchemas["NewsWalletEventDetailData"];
+export type NewsWalletSnapshot = NewsWalletEvent["initial_snapshot"];
+export type NewsWalletEventFilters = {
+  historyRange: NewsWalletHistoryRange;
   cursor?: string;
   toMs?: number;
 };
-export type NewsWalletFillKind = NewsWalletFillTotal["kind"];
 
 export type NewsFeedOutcome = NewsOutcomeGroup;
 export type NewsFeedDirection = "bullish" | "bearish" | "neutral";
@@ -148,10 +141,9 @@ export const NEWS_MARKET_REFETCH_MS = 10_000;
  * turns every two seconds but a card is a rule firing, which is tens of times a day.
  */
 export const NEWS_WALLETS_REFETCH_MS = 10_000;
-/** The closed window vocabulary `/api/news/wallets/cards` accepts. */
-export const NEWS_WALLET_CARD_WINDOWS = ["24h", "72h", "7d"] as const;
-export type NewsWalletCardWindow = (typeof NEWS_WALLET_CARD_WINDOWS)[number];
-export const NEWS_WALLET_CARDS_PAGE_SIZE = 25;
+export const NEWS_WALLET_HISTORY_RANGES = ["24h", "72h", "7d"] as const;
+export type NewsWalletHistoryRange = (typeof NEWS_WALLET_HISTORY_RANGES)[number];
+export const NEWS_WALLET_EVENTS_PAGE_SIZE = 25;
 
 const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: string | null) =>
   (
@@ -329,55 +321,47 @@ export const useNewsWalletsWithToken = (token: string) =>
     staleTime: 2_000,
   });
 
-/**
- * Buy candidates and other observations, beside their +15m/+1h/+4h price receipts.
- *
- * Its own query rather than a field of the one above, so a slow card table cannot hold the header and a
- * filter change re-requests only the table. Every server filter is part of both cache identities.
- */
-export const useNewsWalletCardsWithToken = (token: string, filters: NewsWalletCardFilters) =>
+export const useNewsWalletEventsWithToken = (token: string, filters: NewsWalletEventFilters) =>
   useQuery({
     enabled: Boolean(token),
-    queryKey: [
-      ...queryKeys.newsWalletCards(
-        filters.window,
-        filters.kind,
-        filters.walletAddress,
-        filters.tokenAddress,
-      ),
-      filters,
-    ],
-    placeholderData: (previous, query) => {
-      const previousFilters = query?.queryKey.at(-1) as NewsWalletCardFilters | undefined;
-      return previous &&
-        previousFilters &&
-        filters.toMs === previous.window_to_ms &&
-        JSON.stringify({ ...previousFilters, toMs: undefined }) ===
-          JSON.stringify({ ...filters, toMs: undefined })
-        ? previous
-        : undefined;
-    },
+    queryKey: [...queryKeys.newsWalletEvents(filters.historyRange), filters],
     queryFn: async () =>
       (
-        await getApi<NewsWalletCards>("/api/news/wallets/cards", {
-          etagKey: `news-wallet-research:${JSON.stringify(filters)}`,
+        await getApi<NewsWalletEvents>("/api/news/wallets/events", {
+          etagKey: `news-wallet-events:${JSON.stringify(filters)}`,
           params: {
-            limit: NEWS_WALLET_CARDS_PAGE_SIZE,
-            window: filters.window,
-            kind: filters.kind === "all" ? undefined : filters.kind,
-            wallet_address: filters.walletAddress || undefined,
-            token_address: filters.tokenAddress || undefined,
-            chain_id: filters.chainId,
-            segment_key: filters.segmentKey,
-            view: filters.view,
+            history_range: filters.historyRange,
             cursor: filters.cursor,
             to_ms: filters.toMs,
+            limit: NEWS_WALLET_EVENTS_PAGE_SIZE,
           },
           token,
         })
       ).data,
-    refetchInterval:
-      filters.cursor || filters.view === "observations" ? false : NEWS_WALLETS_REFETCH_MS,
+    refetchInterval: filters.cursor ? false : NEWS_WALLETS_REFETCH_MS,
+    staleTime: 2_000,
+  });
+
+export const useNewsWalletEventWithToken = (
+  token: string,
+  episodeId: string,
+  fillsCursor?: string,
+) =>
+  useQuery({
+    enabled: Boolean(token && episodeId),
+    queryKey: [...queryKeys.newsWalletEvent(episodeId), fillsCursor ?? ""],
+    queryFn: async () =>
+      (
+        await getApi<NewsWalletEventDetail>(
+          `/api/news/wallets/events/${encodeURIComponent(episodeId)}`,
+          {
+            etagKey: `news-wallet-event:${episodeId}:${fillsCursor ?? ""}`,
+            params: { fills_cursor: fillsCursor },
+            token,
+          },
+        )
+      ).data,
+    refetchInterval: fillsCursor ? false : NEWS_WALLETS_REFETCH_MS,
     staleTime: 2_000,
   });
 

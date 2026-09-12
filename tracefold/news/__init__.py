@@ -42,6 +42,7 @@ from .taxonomy import (
     source_authority_from_evidence,
 )
 from .told_context import NEWS_RETRIEVAL_SHA256
+from .wallet_contracts import NetBuySnapshot
 
 __all__ = [
     "ASSERTION_STATUSES",
@@ -64,6 +65,7 @@ __all__ = [
     "UNTRADEABLE_NOTICE_ZH",
     "EventKind",
     "IPTCCodebookSha",
+    "NetBuySnapshot",
     "NewsTaxonomyV1",
     "OpenNewsExpectedError",
     "ProgramTrace",

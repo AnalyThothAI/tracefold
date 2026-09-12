@@ -2,7 +2,8 @@
 
 > **Scope.** Owns the `web/` architecture, layer responsibilities, component conventions, and the UI verification gate. Backend layer boundaries live in `ARCHITECTURE.md`; public HTTP contracts live in `CONTRACTS.md`; install and run commands live in `SETUP.md`.
 
-The React operator console is a News workbench plus one read-only Alpha/Execution monitor. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/wallets`, `/api/news/wallets/cards`, `/api/trading/status`, `/api/trading/cases`, and `/api/trading/executions` over HTTP — fourteen reads, which is every `/api/` path the server publishes. The two market reads arrived with #553 PR-1: OI frames, liquidations, smart-money prints and market sources we have no parser for are stored facts rather than Events, so the Event feed cannot serve them and `/api/news/status` no longer counts them. The two wallet reads arrived with #572 PR-3 and answer a different question from the market list: not "what observations arrived" but "what is the chain tape doing" — its roster, its ingest position, and the buy candidates, their evidence and +15m/+1h/+4h price observations. `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections were deleted in #537 PR-5: no browser surface called any of the three, they were three more public shapes over the ledgers `/api/trading/executions` already reads folded, and `tracefold trading signals | observations | commands` reads the same repository directly. `GET /api/trading/gate` and `GET /api/trading/gate/{event_id}` were deleted in #589 PR-2 on the same terms: the OI frame table joined each admission row to its Event on the same line, #553 PR-1 removed that join with the Events themselves, and `tracefold trading gate [--source-key KEY] [--since-ms N]` reads the same two admission-ledger statements directly. Every operation is a read. The console manual command route and controls were removed in #624. There is no WebSocket client, no separate Search route, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
+The React operator console is a News workbench plus one read-only Alpha/Execution monitor. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/wallets`, `/api/news/wallets/events`, `/api/news/wallets/events/{episode_id}`, `/api/trading/status`, `/api/trading/cases`, and `/api/trading/executions` over HTTP — fifteen reads, which is every `/api/` path the server publishes. The two market reads arrived with #553 PR-1: OI frames, liquidations, smart-money prints and market sources we have no parser for are stored facts rather than Events, so the Event feed cannot serve them and `/api/news/status` no longer counts them. The wallet reads expose token episodes, direct episode detail and auxiliary roster/state.
+`GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections were deleted in #537 PR-5: no browser surface called any of the three, they were three more public shapes over the ledgers `/api/trading/executions` already reads folded, and `tracefold trading signals | observations | commands` reads the same repository directly. `GET /api/trading/gate` and `GET /api/trading/gate/{event_id}` were deleted in #589 PR-2 on the same terms: the OI frame table joined each admission row to its Event on the same line, #553 PR-1 removed that join with the Events themselves, and `tracefold trading gate [--source-key KEY] [--since-ms N]` reads the same two admission-ledger statements directly. Every operation is a read. The console manual command route and controls were removed in #624. There is no WebSocket client, no separate Search route, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
 
 ## Source Layer Map (`web/src/`)
 
@@ -32,8 +33,8 @@ URL-owned `?kind=`), `state/` (`useAnchoredEventFeed`), and
 asset chips, quote values, health pill — anything more than one News surface renders; the
 route measure, the provenance line and the nothing-here sentence are `@shared/ui`),
 `feed/`, `detail/`, `status/`, `market/`, `wallets/` and `symbol/`. `model/walletFacts.ts` holds the
-wallet page's own closed vocabularies (card kind, fill kind, verification basis) and its URL-owned
-`?window=`, `?kind=`, `?wallet_address=` and `?token_address=`, by the same rule `marketFacts.ts` follows. `features/news/shell.ts` is the shell
+wallet page's reason labels, raw fill kinds and URL-owned
+`?history_range=`, `?episode=`, `?cursor=` and `?to_ms=`, by the same rule `marketFacts.ts` follows. `features/news/shell.ts` is the shell
 entrypoint and exports hooks, pure helpers and types only, so importing it does not pull
 the route components into the eager shell chunk.
 
@@ -190,35 +191,19 @@ the route components into the eager shell chunk.
   Collection/parse/notification counts are secondary and explicitly describe
   the full time window before asset/definition filtering.
 
-  `/news/wallets` is 钱包研究 (#621). 买入动向 is the default tab;
-  跟踪钱包 contains the current roster with provider-performance and holding-size
-  ranks kept separate. The existing theme, shared primitives and News Event
-  feed/detail/search remain unchanged.
+  `/news/wallets` is 聪明钱警报: Robinhood Chain · 多钱包集中净买入 (#641).
+  One row represents one token episode, including muted and unsent episodes. It presents
+  the initial 5m/30m counts, initial primary-window net amount, time, episode state and
+  notification result. Current insufficiency, negative other-address facts and gaps are
+  explicit. The UI never sums pages or recomputes business money.
 
-  Research rows answer identity, stored stage, cumulative priced amount,
-  post-observation price result and time. The default view collapses buys by
-  persisted chain/wallet/token/segment identity before pagination. Amounts
-  use the latest observation in each segment, never a sum of cumulative
-  snapshots. The four metrics come from full-scope server aggregates, with
-  chain-qualified wallet and token counts. A 25-row page cannot redefine them.
-
-  The URL owns window, kind, exact wallet/token addresses, chain, segment,
-  view, cursor and the anchored end time. Opening wallet evidence anchors the
-  list window so a new cumulative observation cannot replace the selected row;
-  回到最新 explicitly resumes the moving window. A segment expands to its individual
-  observations; the wallet/token action view includes buys, sells and transfers.
-  Raw-fill truncation is explicit. Details retain the source Item identity,
-  observed reference, priced-fill average, historical coverage and each
-  horizon's target and actual sample time. Missing, not due, pending,
-  unavailable and unverified price identity have separate labels. A first
-  observation never claims a proven new position; post-observation price
-  change never claims wallet P&L or executable return.
-
-  The two endpoint reads fail independently and retain their own last good
-  data. Collection health is a disclosure below the research rows. The
-  original observation opens at `/news/market/:itemId` with a return link
-  to the filtered research page. Explorer links remain limited to validated
-  chain-4663 transaction hashes.
+  The URL owns history range (24h/72h/7d), anchored end time, cursor and episode ID.
+  Deep links query the episode directly. Detail order is initial event → member net flows
+  → raw timeline → current changes → price observations. Initial and latest snapshots are
+  separate; all exclusions and full addresses remain accessible on mobile without hover.
+  Independent roster/state and detail errors preserve existing event data. Missing price,
+  missing baseline, late sample, no events, stale collection and read failure have distinct
+  wording. Explorer links remain limited to validated chain-4663 transaction hashes.
 
   `raw` is a shape, not a failure. An `unknown_market` source has no parser at
   all, and its record is retained with its provider line and its stated reason —

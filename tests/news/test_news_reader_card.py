@@ -617,8 +617,9 @@ def test_the_news_read_becomes_card_facts_bounded_to_what_a_card_prints() -> Non
     )
 
 
-@pytest.mark.parametrize("wallet_kind", ["buy", "exit", "crowding", "digest"])
-def test_wallet_provider_names_are_literal_text_not_feishu_links_or_mentions(wallet_kind: str) -> None:
+def test_wallet_provider_names_are_literal_text_not_feishu_links_or_mentions() -> None:
+    from tests.news.net_buy_fixtures import unsafe_snapshot
+
     handle = "[buyer](https://evil.example)"
     symbol = "<at id=all></at>"
     card = render_market_card(
@@ -629,13 +630,11 @@ def test_wallet_provider_names_are_literal_text_not_feishu_links_or_mentions(wal
                 item_id="wallet-observation",
                 market_kind="wallet",
                 parse_status="parsed",
-                title="买入观察",
+                title="集中净买入",
                 event_at_ms=1_788_600_000_000,
                 received_at_ms=1_788_600_001_000,
-                wallet_kind=wallet_kind,
-                wallet_handle=handle,
+                wallet_snapshot=unsafe_snapshot(handle, symbol),
                 symbol=symbol,
-                wallet_digest_lines=(f"{handle} 买入 {symbol}，已计价 $1,000",),
             )
         ],
         detail_url="https://console.example.com/news/market/wallet-observation",
@@ -645,7 +644,7 @@ def test_wallet_provider_names_are_literal_text_not_feishu_links_or_mentions(wal
     assert body["tag"] == "div"
     assert body["text"]["tag"] == "plain_text"
     assert handle in body["text"]["content"]
-    assert symbol in body["text"]["content"]
+    assert symbol in card["header"]["title"]["content"]
     assert card["header"]["title"]["tag"] == "plain_text"
     assert card["elements"][1]["actions"][0]["url"] == ("https://console.example.com/news/market/wallet-observation")
     assert all(element["tag"] != "markdown" for element in card["elements"])

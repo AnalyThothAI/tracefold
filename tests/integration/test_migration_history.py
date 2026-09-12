@@ -44,7 +44,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260908_0375"
+HEAD = "20260912_0376"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -142,6 +142,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260908_0375",
         "20260907_0374",
         "20260906_0373",
         "20260906_0372",
@@ -218,8 +219,8 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    # The buy/outcome hard cut preserves material observations and cannot be reversed.
-    with pytest.raises(RuntimeError, match="news_wallet_buy_research_downgrade_unsupported"):
+    # The net-buy hard cut preserves historical evidence and requires a verified backup to restore.
+    with pytest.raises(RuntimeError, match="wallet_net_buy_downgrade_requires_verified_backup"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
     assert _table_exists("news_delivery_queue") is True

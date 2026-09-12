@@ -131,7 +131,8 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         # read answers "what did the rules open and what was it worth after", and neither contains
         # the other.
         "/api/news/wallets": ("get", "ApiEnvelope_NewsWalletsData_"),
-        "/api/news/wallets/cards": ("get", "ApiEnvelope_NewsWalletCardsData_"),
+        "/api/news/wallets/events": ("get", "ApiEnvelope_NewsWalletEventsData_"),
+        "/api/news/wallets/events/{episode_id}": ("get", "ApiEnvelope_NewsWalletEventDetailData_"),
     }
 
     assert {path for path in schema["paths"] if path.startswith("/api/news/")} == set(expected)

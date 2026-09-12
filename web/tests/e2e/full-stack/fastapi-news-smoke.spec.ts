@@ -176,23 +176,19 @@ function firstNonEmptyString(...values: unknown[]): string | null {
   return null;
 }
 
-test("research reads persisted wallet segments and links OI to its frozen decision", async ({
+test("research reads a persisted net-buy episode and links OI to its frozen decision", async ({
   page,
 }) => {
   await page.goto("/news/wallets");
-  const rows = page.locator(".news-wallet-research-row");
+  const rows = page.locator(".news-wallet-event-list tbody tr");
   await expect(rows).toHaveCount(1);
-  await expect(rows.first()).toContainText("3,000");
-  await rows.first().getByRole("button").click();
-  await expect(page.getByLabel("观察后价格")).toContainText("+10.00%");
-  await page.getByRole("link", { name: "展开本段 3 次观察" }).click();
-  await expect(rows).toHaveCount(3);
+  await expect(rows.first()).toContainText("6,000");
+  await rows.first().getByRole("link").click();
+  await expect(page.getByRole("region", { name: "事件详情" })).toBeVisible();
+  await expect(page.getByText("观察后价格变化 10%")).toBeVisible();
+  expect(new URL(page.url()).searchParams.get("episode")).toBeTruthy();
   await page.reload();
-  await expect(rows).toHaveCount(3);
-  await rows.first().getByRole("button").click();
-  await page.getByRole("link", { name: "原始观察与交易依据" }).click();
-  await expect(page.getByRole("heading", { name: "市场观察依据" })).toBeVisible();
-  await expect(page.getByText("原始记录、解析与通知依据")).toBeVisible();
+  await expect(page.getByRole("region", { name: "事件详情" })).toBeVisible();
 
   await page.goto("/news/market");
   const oi = page.locator('.news-market-row[data-kind="oi"]').first();

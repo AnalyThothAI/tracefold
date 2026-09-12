@@ -76,10 +76,9 @@ NEWS_TABLES = {
     "news_market_wallet_fills",
     "news_market_wallet_roster",
     "news_market_wallet_tape_state",
-    # #572 PR-2. What the tape derived from those fills, what each exit's denominator was verified
-    # against, and the price each card is judged by afterwards.
+    # #641. Current token episodes, their price observations and immutable retired evidence.
     "news_market_wallet_events",
-    "news_market_wallet_checks",
+    "news_market_wallet_archive",
     "news_market_wallet_outcomes",
     # #112 immutable evidence actually read by the SemanticJudge.
     "news_event_evidence_snapshots",

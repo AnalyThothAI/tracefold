@@ -39,6 +39,7 @@ from functools import partial
 from typing import Any, Final, Literal, Protocol
 from urllib.parse import urlsplit
 
+from .chain_tape.rules import trigger_age_reason
 from .delivery_contracts import (
     DELIVERY_FAILURE_RETRIABLE,
     DELIVERY_FAILURE_UNKNOWN,
@@ -73,6 +74,7 @@ from .reader_card import (
     reader_news,
     reader_quotes,
 )
+from .wallet_contracts import NetBuySnapshot
 
 # --- v1 engineering defaults (#553 §4). Not tuned parameters, and not claimed to be optimal. ---
 
@@ -200,42 +202,12 @@ class MarketObservation:
     action: str | None = None
     position_side: str | None = None
     pnl_usd: str | None = None
-    # The chain wallet family (#572 PR-2). Every one of these was computed by the tape from stored
-    # fills and the provider's own figures; none of them is a number a provider reported about itself.
-    wallet_kind: str | None = None
-    wallet_address: str | None = None
-    wallet_handle: str | None = None
-    wallet_followers: int | None = None
+    wallet_chain_id: int | None = None
     wallet_token: str | None = None
-    wallet_segment_key: str | None = None
-    wallet_tone: str | None = None
-    wallet_ratio_bps: int | None = None
-    wallet_basis: str | None = None
-    wallet_quantity: str | None = None
-    wallet_balance_before: str | None = None
-    wallet_usd: str | None = None
-    wallet_position_usd: str | None = None
-    wallet_entry_price: str | None = None
-    wallet_mark_price: str | None = None
-    wallet_peer_wallets: int | None = None
-    wallet_peer_usd: str | None = None
-    wallet_premium_bps: int | None = None
-    wallet_liquidity_usd: str | None = None
-    wallet_tx_hash: str | None = None
-    wallet_block_number: int | None = None
-    wallet_closed: bool = False
-    wallet_crowding_item_id: str | None = None
-    wallet_window_from_ms: int | None = None
+    wallet_snapshot: NetBuySnapshot | None = None
     wallet_notify_eligible: bool = False
-    wallet_stage: str | None = None
-    wallet_selection_reason: str | None = None
-    wallet_buy_count: int | None = None
-    wallet_unpriced_buys: int | None = None
-    wallet_observed_at_ms: int | None = None
-    wallet_history_from_ms: int | None = None
-    # The digest's own lines (#572 PR-3). Already written and already grounded against the fact pack
-    # the tape computed; the card prints them and composes nothing.
-    wallet_digest_lines: tuple[str, ...] = ()
+    wallet_notification_reason: str | None = None
+    wallet_trigger_max_age_s: int | None = None
 
     def notional_amount(self) -> Decimal | None:
         """The reported notional as a number, or None when the report carried none it could be.
@@ -277,38 +249,14 @@ class MarketObservation:
             action=_text(row.get("action")),
             position_side=_text(row.get("position_side")),
             pnl_usd=_text(row.get("pnl_usd")),
-            wallet_kind=_text(row.get("wallet_kind")),
-            wallet_address=_text(row.get("wallet_address")),
-            wallet_handle=_text(row.get("wallet_handle")),
-            wallet_followers=_integer(row.get("wallet_followers")),
+            wallet_chain_id=_integer(row.get("wallet_chain_id")),
             wallet_token=_text(row.get("wallet_token")),
-            wallet_segment_key=_text(row.get("wallet_segment_key")),
-            wallet_tone=_text(row.get("wallet_tone")),
-            wallet_ratio_bps=_integer(row.get("wallet_ratio_bps")),
-            wallet_basis=_text(row.get("wallet_basis")),
-            wallet_quantity=_text(row.get("wallet_quantity")),
-            wallet_balance_before=_text(row.get("wallet_balance_before")),
-            wallet_usd=_text(row.get("wallet_usd")),
-            wallet_position_usd=_text(row.get("wallet_position_usd")),
-            wallet_entry_price=_text(row.get("wallet_entry_price")),
-            wallet_mark_price=_text(row.get("wallet_mark_price")),
-            wallet_peer_wallets=_integer(row.get("wallet_peer_wallets")),
-            wallet_peer_usd=_text(row.get("wallet_peer_usd")),
-            wallet_premium_bps=_integer(row.get("wallet_premium_bps")),
-            wallet_liquidity_usd=_text(row.get("wallet_liquidity_usd")),
-            wallet_tx_hash=_text(row.get("wallet_tx_hash")),
-            wallet_block_number=_integer(row.get("wallet_block_number")),
-            wallet_closed=bool(row.get("wallet_closed")),
-            wallet_crowding_item_id=_text(row.get("wallet_crowding_item_id")),
-            wallet_window_from_ms=_integer(row.get("wallet_window_from_ms")),
+            wallet_snapshot=NetBuySnapshot.model_validate(row["wallet_snapshot"])
+            if row.get("wallet_snapshot")
+            else None,
             wallet_notify_eligible=row.get("wallet_notify_eligible") is True,
-            wallet_stage=_text(row.get("wallet_stage")),
-            wallet_selection_reason=_text(row.get("wallet_selection_reason")),
-            wallet_buy_count=_integer(row.get("wallet_buy_count")),
-            wallet_unpriced_buys=_integer(row.get("wallet_unpriced_buys")),
-            wallet_observed_at_ms=_integer(row.get("wallet_observed_at_ms")),
-            wallet_history_from_ms=_integer(row.get("wallet_history_from_ms")),
-            wallet_digest_lines=_lines(row.get("wallet_digest_lines")),
+            wallet_notification_reason=_text(row.get("wallet_notification_reason")),
+            wallet_trigger_max_age_s=_integer(row.get("wallet_trigger_max_age_s")),
         )
 
 
@@ -414,7 +362,7 @@ def group_family(observation: MarketObservation) -> MarketFamily:
 
     if observation.parse_status != "parsed":
         return "raw"
-    if observation.wallet_kind:
+    if observation.wallet_snapshot is not None:
         # The one family this process derived rather than received. It is decided first because it is
         # decided by its own fact row existing, and no provider frame can produce one.
         return "wallet"
@@ -519,25 +467,7 @@ def group_identity(observation: MarketObservation) -> MarketTrack:
             trader_label=observation.trader_label,
         )
     if family == "wallet":
-        # The subject, and the segment or window it belongs to. The wallet is on the key for an exit
-        # because two wallets getting out of the same token are two subjects; it is on a crowding key
-        # only through the token, because the subject there is the token everyone piled into.
-        #
-        # `segment_key` is what makes the follow-ups the rules allow land beside the card they follow:
-        # an exit segment ends when the balance reaches zero and the next sell opens a new one, and a
-        # crowding window ends when the buying stops. Neither is derivable from the row's other fields,
-        # which is why the tape stores it.
-        subject = observation.wallet_address or "" if observation.wallet_kind in {"buy", "exit"} else ""
-        key = "|".join(
-            (
-                "wallet",
-                observation.wallet_kind or "",
-                observation.provider or "",
-                subject,
-                observation.wallet_token or "",
-                observation.wallet_segment_key or "",
-            )
-        )
+        key = f"wallet|net_buy|{observation.wallet_chain_id}|{observation.wallet_token}|{observation.item_id}"
         return MarketTrack(
             group_key=key,
             market_kind=observation.market_kind,
@@ -547,11 +477,6 @@ def group_identity(observation: MarketObservation) -> MarketTrack:
             venue_known=venue is not None,
             raw_instrument=observation.wallet_token,
             symbol=observation.symbol,
-            # A chain address is an address, not a display label: this is the one market family whose
-            # account identity was read off the chain rather than off a provider's own naming.
-            account_key=observation.wallet_address,
-            account_verified=observation.wallet_address is not None,
-            trader_label=observation.wallet_handle,
         )
     # An unstructured record is its own group and never becomes a track row. What the loop needs
     # from it is the group key the page already keys it by -- `raw|<kind>|<item_id>` -- so the
@@ -851,9 +776,7 @@ def _decide_smart_money(
 
 
 def _wallet_notify_eligible(observation: MarketObservation) -> bool:
-    """Buy candidates and exits require the producer's explicit notification decision."""
-
-    return observation.wallet_kind not in {"buy", "exit"} or observation.wallet_notify_eligible
+    return observation.market_kind != "wallet" or observation.wallet_notify_eligible
 
 
 def _decide_wallet(
@@ -863,30 +786,33 @@ def _decide_wallet(
     now_ms: int,
     has_open_intent: bool,
 ) -> GroupTurn:
-    """Keep every candidate observable, but only explicit selections may create a notification."""
-
+    already_opened = track.round_started_at_ms > 0 or track.anchor_state != ""
     for observation in observations:
         track = _observed(track, observation)
-    if has_open_intent:
-        return GroupTurn(track=replace(track, pending_reason=REASON_MERGING))
-    eligible = tuple(observation for observation in observations if _wallet_notify_eligible(observation))
-    if not eligible:
+    if has_open_intent or already_opened:
         return GroupTurn(
-            track=replace(
-                track,
-                next_due_at_ms=None,
-                pending_reason=observations[-1].wallet_selection_reason or "wallet_not_selected",
-            )
+            track=replace(track, pending_reason=REASON_MERGING if has_open_intent else "episode_already_reported")
         )
-    reason: TriggerReason = "first" if track.anchor_state == "" else "followup"
+    observation = observations[0]
+    reason = observation.wallet_notification_reason
+    if not observation.wallet_notify_eligible:
+        reason = reason or "wallet_not_selected"
+    elif observation.wallet_snapshot is None or not observation.wallet_snapshot.matched:
+        reason = "invalidated_before_send"
+    else:
+        reason = trigger_age_reason(
+            event_at_ms=observation.event_at_ms,
+            received_at_ms=observation.received_at_ms,
+            now_ms=now_ms,
+            max_age_s=observation.wallet_trigger_max_age_s or 60,
+        )
+    if reason:
+        return GroupTurn(track=replace(track, next_due_at_ms=None, pending_reason=reason))
     return GroupTurn(
         track=replace(
-            track,
-            pending_reason=REASON_MERGING,
-            next_due_at_ms=now_ms,
-            round_started_at_ms=eligible[0].received_at_ms,
+            track, pending_reason=REASON_MERGING, next_due_at_ms=now_ms, round_started_at_ms=observation.received_at_ms
         ),
-        intent=IntentPlan(reason, eligible[0].item_id, now_ms),
+        intent=IntentPlan("first", observation.item_id, now_ms),
     )
 
 
@@ -1027,59 +953,15 @@ def market_reader_card(
         wallet=_reader_wallet(latest) if track.family == "wallet" else ReaderCardWallet(),
         link=ReaderCardLink(url=link, label=DETAIL_BUTTON_LABEL) if link is not None else None,
         note=ReaderCardNote(id=track.group_key, detail_id=latest.item_id),
-        # A crowding observation *is* a window -- the rules folded several wallets' first buys into one
-        # derived row -- and a digest is four hours of them, so both spans are the window covered
-        # rather than the single instant the Item is stamped with. Every other family's span is the
-        # reports the card actually speaks for.
         times=ReaderCardTimes(
             event_at_ms=latest.event_at_ms,
-            span_from_ms=latest.wallet_window_from_ms
-            if latest.wallet_kind in {"buy", "crowding", "digest"} and latest.wallet_window_from_ms
-            else first.event_at_ms,
+            span_from_ms=latest.wallet_snapshot.primary.from_ms if latest.wallet_snapshot else first.event_at_ms,
         ),
     )
 
 
 def _reader_wallet(observation: MarketObservation) -> ReaderCardWallet:
-    """The chain wallet family's facts, straight off the observation the tape derived.
-
-    Nothing is recomputed here and nothing is combined across observations. A wallet card speaks for one
-    derived observation -- an exit is one sell, a crowding card is one window -- so the newest member of
-    the group *is* the card, and the merging that folds several OI measurements onto one card has
-    nothing to fold.
-    """
-
-    return ReaderCardWallet(
-        kind=observation.wallet_kind or "",
-        handle=observation.wallet_handle or "",
-        followers=int(observation.wallet_followers or 0),
-        symbol=observation.symbol or "",
-        token=observation.wallet_token or "",
-        quantity=observation.wallet_quantity or "",
-        balance_before=observation.wallet_balance_before or "",
-        ratio_bps=observation.wallet_ratio_bps,
-        basis=observation.wallet_basis or "",
-        usd=observation.wallet_usd or "",
-        position_usd=observation.wallet_position_usd or "",
-        entry_price=observation.wallet_entry_price or "",
-        mark_price=observation.wallet_mark_price or "",
-        peer_wallets=int(observation.wallet_peer_wallets or 0),
-        peer_usd=observation.wallet_peer_usd or "",
-        premium_bps=observation.wallet_premium_bps,
-        liquidity_usd=observation.wallet_liquidity_usd or "",
-        tx_hash=observation.wallet_tx_hash or "",
-        block_number=observation.wallet_block_number,
-        closed=bool(observation.wallet_closed),
-        late=(observation.wallet_tone or "") == "late",
-        crowding_id=observation.wallet_crowding_item_id or "",
-        lines=observation.wallet_digest_lines,
-        stage=observation.wallet_stage or "unknown",
-        selection_reason=observation.wallet_selection_reason or "",
-        buy_count=observation.wallet_buy_count or 0,
-        unpriced_buys=observation.wallet_unpriced_buys or 0,
-        observed_at_ms=observation.wallet_observed_at_ms,
-        history_from_ms=observation.wallet_history_from_ms,
-    )
+    return ReaderCardWallet(snapshot=observation.wallet_snapshot)
 
 
 def _largest_notional(observations: Sequence[MarketObservation]) -> str:
@@ -1423,6 +1305,20 @@ class MarketNotificationLoop:
         # copy of its key: the unique index is what actually enforces "at most one", so it is also
         # what should answer whether one exists.
         open_key = news.market_group_open_delivery(group_key=identity.group_key)
+        if identity.family == "wallet":
+            event = news.wallet_event(observations[0].item_id)
+            if event is not None:
+                observations = [
+                    replace(
+                        observations[0],
+                        wallet_snapshot=NetBuySnapshot.model_validate(event["latest_snapshot"]),
+                        wallet_notification_reason=(
+                            "invalidated_before_send"
+                            if not event["latest_matched"] or event["ended_at_ms"] is not None
+                            else observations[0].wallet_notification_reason
+                        ),
+                    )
+                ]
         turn = decide_group(track, identity, observations, now_ms=now_ms, has_open_intent=open_key is not None)
         news.market_mark_processed(
             item_ids=[observation.item_id for observation in observations], group_key=identity.group_key
@@ -1658,11 +1554,47 @@ class MarketNotificationLoop:
 
         news = repos.news
         track, observations = due.track, list(due.observations)
+        if track.family == "wallet" and due.attempts == 0:
+            event = news.wallet_event(observations[0].item_id, for_update=True)
+            reason = None
+            if event is None or not event["latest_matched"] or event["ended_at_ms"] is not None:
+                reason = "invalidated_before_send"
+            elif (
+                trigger_age_reason(
+                    event_at_ms=event["event_at_ms"],
+                    received_at_ms=event["received_at_ms"],
+                    now_ms=now_ms,
+                    max_age_s=event["trigger_max_age_s"],
+                )
+                is not None
+            ):
+                reason = "stale_before_send"
+            if reason is None:
+                # Collector and detector are independent. A newly committed coverage gap must
+                # invalidate the first attempt even before the detector updates this episode.
+                state = news.chain_tape_state(for_share=True)
+                snapshot = NetBuySnapshot.model_validate(event["latest_snapshot"])
+                if state is None or not any(
+                    window.matched and (state["gap_at_ms"] is None or state["gap_at_ms"] <= window.from_ms)
+                    for window in (snapshot.fast, snapshot.slow)
+                ):
+                    reason = "invalidated_before_send"
+            if reason is not None:
+                news.wallet_suppress_delivery(delivery_key=due.delivery_key, reason=reason, now_ms=now_ms)
+                return None
+            if news.wallet_unprocessed_token(chain_id=event["chain_id"], token=event["token"]):
+                return None
+            observations = [
+                replace(observations[0], wallet_snapshot=NetBuySnapshot.model_validate(event["latest_snapshot"]))
+            ]
+        detail_url = market_detail_url(self.console_base_url, observations[-1].item_id)
+        if track.family == "wallet" and detail_url:
+            detail_url = detail_url.split("/news/market/")[0] + "/news/wallets?episode=" + observations[-1].item_id
         card = market_reader_card(
             track=track,
             reason=due.trigger_reason,
             observations=observations,
-            detail_url=market_detail_url(self.console_base_url, observations[-1].item_id),
+            detail_url=detail_url,
             action_changes=action_changes(observations, since=(track.anchor_action, track.anchor_position_side)),
             quotes=quotes,
             news_pushed=news_pushed,
@@ -1687,6 +1619,10 @@ class MarketNotificationLoop:
             now_ms=now_ms,
         ):
             return None
+        if track.family == "wallet" and due.attempts == 0 and observations[0].wallet_snapshot is not None:
+            news.wallet_freeze_send_snapshot(
+                item_id=observations[0].item_id, snapshot=observations[0].wallet_snapshot.model_dump(mode="json")
+            )
         news.market_set_track_attempt(group_key=due.group_key, delivery_key=due.delivery_key, attempt_at_ms=now_ms)
         latest = observations[-1]
         return ClaimedCard(

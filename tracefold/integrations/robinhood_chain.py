@@ -31,11 +31,7 @@ import httpx
 
 from tracefold.integrations.http_bounds import ResponseTooLarge, read_bounded
 from tracefold.news.chain_tape.evm import (
-    TRANSFER_TOPIC,
-    address_topic,
     normalize_address,
-    topic_address,
-    transfer_amount,
 )
 
 # The one chain this adapter speaks to. Carried on every stored fill so a second chain can never be
@@ -54,7 +50,6 @@ _MAX_BYTES: Final = 32 * 1024 * 1024
 
 _SYMBOL_SELECTOR: Final = "0x95d89b41"
 _DECIMALS_SELECTOR: Final = "0x313ce567"
-_BALANCE_OF_SELECTOR: Final = "0x70a08231"
 
 
 class ChainRpcError(RuntimeError):
@@ -221,96 +216,6 @@ class RobinhoodChainClient:
         resolved = ChainToken(address=normalized, symbol=symbol, decimals=decimals)
         self._tokens[normalized] = resolved
         return resolved
-
-    async def balance_of(self, token: str, wallet: str, *, block_number: int) -> int | None:
-        """`balanceOf(wallet)` on one ERC-20 at one historical block, or `None` when the node cannot say.
-
-        This is the one call in this adapter that asks for *state*, and the public endpoint keeps about
-        6,100 blocks of it -- roughly ten minutes (#572 §3.3). Beyond that window the node answers
-        `-32000 metadata is not found`, which is a fact about the endpoint rather than a fault: it comes
-        back as `None`, and the caller falls back to the provider's own reported bag and says so on the
-        card. A revert is `None` for the same reason.
-
-        At `block_number - 1` this is the next block's starting balance. A transfer-level check must
-        also replay preceding movements inside that block, as `balance_before_transfer` does below.
-        """
-
-        holder = normalize_address(wallet)
-        contract = normalize_address(token)
-        if not holder or not contract:
-            raise ValueError("chain_address_invalid")
-        data = _BALANCE_OF_SELECTOR + holder[2:].rjust(64, "0")
-        try:
-            result = await self._call("eth_call", [{"to": contract, "data": data}, hex(max(0, int(block_number)))])
-        except ChainRpcError as exc:
-            if exc.rpc_code is None:
-                raise
-            # An RPC-level error here is the node declining to answer for this block -- pruned state or
-            # an execution revert. Both are "we do not know", never "the balance was zero".
-            return None
-        if not isinstance(result, str):
-            return None
-        word = result.strip()
-        if not word.startswith("0x") or len(word) < 3:
-            return None
-        try:
-            return int(word[2:], 16)
-        except ValueError:
-            return None
-
-    async def balance_before_transfer(
-        self, token: str, wallet: str, *, block_number: int, log_index: int
-    ) -> int | None:
-        """Block-start balance plus this wallet's preceding ERC-20 movements in the same block.
-
-        A second purchase in one block is an addition to the first. Reading only block minus one would
-        call both new positions. Require the current movement in the log answer; a missing, withdrawn,
-        conflicting or unreadable answer cannot attest a zero position. RPC transport failures retain
-        the adapter's usual bounded error vocabulary.
-        """
-
-        holder = normalize_address(wallet)
-        contract = normalize_address(token)
-        if not holder or not contract:
-            raise ValueError("chain_address_invalid")
-        if block_number <= 0 or log_index < 0:
-            return None
-        balance = await self.balance_of(contract, holder, block_number=block_number - 1)
-        if balance is None:
-            return None
-        movements: dict[int, ChainLog] = {}
-        for topics in ([TRANSFER_TOPIC, address_topic(holder)], [TRANSFER_TOPIC, None, address_topic(holder)]):
-            for item in await self.logs(from_block=block_number, to_block=block_number, topics=topics):
-                if item.address != contract:
-                    continue
-                if item.removed or item.block_number != block_number or len(item.topics) != 3:
-                    return None
-                if item.topics[0] != TRANSFER_TOPIC:
-                    return None
-                sender, recipient = topic_address(item.topics[1]), topic_address(item.topics[2])
-                if not sender or not recipient:
-                    return None
-                if holder not in {sender, recipient}:
-                    continue
-                previous = movements.get(item.log_index)
-                if previous is not None and previous != item:
-                    return None
-                movements[item.log_index] = item
-        if log_index not in movements:
-            return None
-        for index, item in sorted(movements.items()):
-            if index >= log_index:
-                break
-            amount = transfer_amount(item.data)
-            if amount is None:
-                return None
-            if topic_address(item.topics[1]) == holder:
-                balance -= amount
-            if topic_address(item.topics[2]) == holder:
-                balance += amount
-            if balance < 0:
-                return None
-        return balance
 
     async def _maybe_call(self, address: str, selector: str) -> str | None:
         try:

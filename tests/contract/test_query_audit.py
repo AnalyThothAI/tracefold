@@ -12,14 +12,11 @@ import pytest
 from tracefold.app.query_audit import PUBLIC_ROUTE_QUERY_COVERAGE, query_audit_catalog
 from tracefold.news.market_review import instrument_storage, quote_storage
 from tracefold.news.market_review.quote_storage import QuoteStorage
-from tracefold.news.storage import chain_tape, events, feed_sql
-from tracefold.news.storage.chain_tape import ChainTapeStorage
+from tracefold.news.storage import events, feed_sql
 from tracefold.news.storage.events import EventStorage
 from tracefold.news.storage.feed import FeedStorage
 from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.postgres.audit import (
-    BOUNDED_WINDOW_SCAN_BUDGET,
-    INDEXED_ROW_SCAN_BUDGET,
     PostgresQueryAudit,
     QueryAuditCatalog,
     ReadQuerySpec,
@@ -70,10 +67,14 @@ _NEWS_QUERY_NAMES = (
     "news_market_notify_backlog",
     "news_wallet_roster",
     "news_wallet_tape_state",
-    "news_wallet_fill_totals",
-    "news_wallet_card_totals",
-    "news_wallet_cards",
-    "news_wallet_position_fills",
+    "news_wallet_event",
+    "news_wallet_events",
+    "news_wallet_event_totals",
+    "news_wallet_event_fills",
+    "news_wallet_outcomes",
+    "news_wallet_pending_receipts",
+    "news_wallet_due_outcomes",
+    "news_wallet_net_buy_window",
     # #582 PR-2. The OI card's two News reads: they serve no route either, and they run inside the
     # send lane's own 1.5 s budget, which is what makes an unplanned scan visible to a reader.
     "news_market_news_pushed",
@@ -370,48 +371,48 @@ def test_the_oi_cards_news_read_is_audited_as_the_statements_the_port_executes()
     assert all("equivalent_symbols" in query.sql for query in (pushed, total))
 
 
-def test_wallet_cards_audit_binds_every_production_filter() -> None:
-    """A new SQL placeholder must be bound by the audited default exactly as by the route."""
+def test_wallet_reads_are_the_exact_production_statements():
+    from tracefold.news.storage.wallet_events import WalletEventStorage
 
-    now_ms = 123_456
-    query = {query.name: query for query in query_audit_catalog(now_ms=now_ms).queries}["news_wallet_cards"]
-    conn = RecordingStatementConn()
-    NewsRepository(conn).chain_tape_cards(from_ms=now_ms - 86_400_000, to_ms=now_ms, limit=100)
-
-    from tracefold.news.storage.wallet_research import WALLET_RESEARCH_SQL, research_params
-
-    assert query.params == research_params(from_ms=now_ms - 86_400_000, to_ms=now_ms, limit=100)
-    assert conn.statements == [(query.sql, query.params)]
-    assert set(re.findall(r"%\((\w+)\)s", query.sql)) == set(query.params)
-    assert query.sql == WALLET_RESEARCH_SQL
-    assert _executed_constants(ChainTapeStorage, "chain_tape_cards") == {"WALLET_RESEARCH_SQL"}
-    assert query.max_scanned_rows == BOUNDED_WINDOW_SCAN_BUDGET
-    assert query.max_read_return_amplification == 20.0
-
-
-def test_wallet_position_fills_audit_executes_the_same_bounded_statement_as_storage() -> None:
-    """The optional raw-action read is real route coverage, with one production SQL owner."""
-
-    now_ms = 123_456
-    query = {query.name: query for query in query_audit_catalog(now_ms=now_ms).queries}["news_wallet_position_fills"]
-    wallet, token = "0x" + "1" * 40, "0x" + "2" * 40
-    conn = RecordingStatementConn()
-    NewsRepository(conn).chain_tape_wallet_fills(
-        wallet_address=wallet, token_address=token, from_ms=now_ms - 86_400_000, to_ms=now_ms, limit=100
-    )
-
-    assert query.params == (wallet, token, now_ms - 86_400_000, now_ms, None, None, 100)
-    assert conn.statements == [(query.sql, query.params)]
-    assert query.sql.count("%s") == len(query.params)
-    assert query.sql == chain_tape.WALLET_POSITION_FILLS_SQL
-    assert _executed_constants(ChainTapeStorage, "chain_tape_wallet_fills") == {"WALLET_POSITION_FILLS_SQL"}
-    assert query.max_scanned_rows == INDEXED_ROW_SCAN_BUDGET
-    assert query.max_read_return_amplification == 20.0
-    assert PUBLIC_ROUTE_QUERY_COVERAGE["/api/news/wallets/cards"] == (
-        "news_wallet_cards",
-        "news_wallet_research_totals",
-        "news_wallet_position_fills",
-    )
+    now = 123456
+    specs = {q.name: q for q in query_audit_catalog(now_ms=now).queries}
+    calls = [
+        (
+            "news_wallet_events",
+            "wallet_events",
+            dict(from_ms=now - 86400000, to_ms=now, before_at_ms=None, before_id=None, limit=100),
+            "WALLET_EVENTS_SQL",
+        ),
+        (
+            "news_wallet_event_totals",
+            "wallet_event_totals",
+            dict(from_ms=now - 86400000, to_ms=now),
+            "WALLET_EVENT_TOTALS_SQL",
+        ),
+        (
+            "news_wallet_event_fills",
+            "wallet_event_fills",
+            dict(
+                chain_id=4663,
+                token="0x" + "2" * 40,
+                from_ms=now - 1800000,
+                to_ms=now,
+                cutoff_block=2147483647,
+                cutoff_log=2147483647,
+                before_block=None,
+                before_log=None,
+                limit=100,
+            ),
+            "WALLET_EVENT_FILLS_SQL",
+        ),
+        ("news_wallet_pending_receipts", "wallet_pending_receipts", dict(limit=20), "WALLET_PENDING_RECEIPTS_SQL"),
+    ]
+    for name, method, kwargs, constant in calls:
+        conn = RecordingStatementConn()
+        getattr(NewsRepository(conn), method)(**kwargs)
+        assert conn.statements == [(specs[name].sql, specs[name].params)]
+        assert _executed_constants(WalletEventStorage, method) == {constant}
+    assert PUBLIC_ROUTE_QUERY_COVERAGE["/api/news/wallets/events"] == ("news_wallet_events", "news_wallet_event_totals")
 
 
 def test_status_audit_reads_its_sql_from_the_production_module_only():

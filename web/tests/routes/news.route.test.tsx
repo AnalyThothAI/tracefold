@@ -54,7 +54,7 @@ describe("news route", () => {
   it.each([
     ["/news/status", "流水线状态", "/api/news/status"],
     ["/news/market", "市场研究", "/api/news/market"],
-    ["/news/wallets", "钱包研究", "/api/news/wallets"],
+    ["/news/wallets", "聪明钱警报", "/api/news/wallets/events"],
     [
       "/news/events/evt-global-policy",
       "央行政策转向，风险资产承压",

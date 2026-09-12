@@ -485,59 +485,41 @@
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `round_started_at_ms` | `BIGINT` | False | `0` |
 
-## `news_market_wallet_checks`
+## `news_market_wallet_archive`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `chain_id` | `BIGINT` | False | `None` |
-| `tx_hash` | `TEXT` | False | `None` |
-| `log_index` | `INTEGER` | False | `None` |
-| `basis` | `TEXT` | False | `None` |
-| `q_before_raw` | `NUMERIC(78, 0)` | True | `None` |
-| `q_sell_raw` | `NUMERIC(78, 0)` | False | `None` |
-| `ratio_bps` | `INTEGER` | True | `None` |
-| `block_hash` | `TEXT` | False | `''::text` |
-| `checked_at_ms` | `BIGINT` | False | `None` |
-| `error` | `TEXT` | True | `None` |
+| `record_type` | `TEXT` | False | `None` |
+| `record_key` | `TEXT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+| `archived_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_market_wallet_events`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `item_id` | `TEXT` | False | `None` |
-| `kind` | `TEXT` | False | `None` |
-| `provider` | `TEXT` | False | `'robinhood_chain'::text` |
 | `chain_id` | `BIGINT` | False | `None` |
-| `wallet` | `TEXT` | False | `None` |
-| `handle` | `TEXT` | False | `''::text` |
-| `followers` | `BIGINT` | False | `0` |
 | `token` | `TEXT` | False | `None` |
 | `token_symbol` | `TEXT` | True | `None` |
-| `token_decimals` | `INTEGER` | True | `None` |
-| `roster_version` | `BIGINT` | False | `None` |
-| `window_from_ms` | `BIGINT` | False | `None` |
-| `window_to_ms` | `BIGINT` | False | `None` |
-| `segment_key` | `TEXT` | False | `None` |
-| `tone` | `TEXT` | False | `''::text` |
-| `ratio_bps` | `INTEGER` | True | `None` |
-| `basis` | `TEXT` | True | `None` |
-| `quantity_raw` | `NUMERIC(78, 0)` | True | `None` |
-| `balance_before_raw` | `NUMERIC(78, 0)` | True | `None` |
-| `usd` | `NUMERIC(38, 10)` | True | `None` |
-| `position_usd` | `NUMERIC(38, 10)` | True | `None` |
-| `entry_price` | `NUMERIC(38, 18)` | True | `None` |
-| `mark_price` | `NUMERIC(38, 18)` | True | `None` |
-| `peer_wallets` | `INTEGER` | False | `0` |
-| `peer_usd` | `NUMERIC(38, 10)` | True | `None` |
-| `premium_bps` | `INTEGER` | True | `None` |
-| `liquidity_usd` | `NUMERIC(38, 10)` | True | `None` |
-| `tx_hash` | `TEXT` | True | `None` |
-| `block_number` | `BIGINT` | True | `None` |
-| `closed` | `BOOLEAN` | False | `false` |
-| `evidence` | `JSONB` | False | `'{}'::jsonb` |
+| `trigger_tx_hash` | `TEXT` | False | `None` |
 | `event_at_ms` | `BIGINT` | False | `None` |
 | `received_at_ms` | `BIGINT` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
+| `detected_at_ms` | `BIGINT` | False | `None` |
+| `last_effective_buy_at_ms` | `BIGINT` | False | `None` |
+| `ended_at_ms` | `BIGINT` | True | `None` |
+| `initial_snapshot` | `JSONB` | False | `None` |
+| `latest_snapshot` | `JSONB` | False | `None` |
+| `latest_matched` | `BOOLEAN` | False | `None` |
+| `change_reason` | `TEXT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+| `trigger_max_age_s` | `INTEGER` | False | `None` |
+| `notification_eligible` | `BOOLEAN` | False | `None` |
+| `notification_reason` | `TEXT` | True | `None` |
+| `send_snapshot` | `JSONB` | True | `None` |
+| `reference_price` | `NUMERIC` | True | `None` |
+| `reference_at_ms` | `BIGINT` | True | `None` |
+| `reference_source` | `TEXT` | True | `None` |
 | `outcome_attempted_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_market_wallet_fills`
@@ -566,21 +548,22 @@
 | `roster_version` | `BIGINT` | False | `None` |
 | `provider` | `TEXT` | False | `'robinhood_chain'::text` |
 | `derived_at_ms` | `BIGINT` | True | `None` |
+| `derived_reason` | `TEXT` | True | `None` |
 
 ## `news_market_wallet_outcomes`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `delivery_key` | `TEXT` | True | `None` |
-| `horizon` | `TEXT` | False | `None` |
-| `price` | `NUMERIC(38, 18)` | True | `None` |
-| `at_ms` | `BIGINT` | False | `None` |
-| `source` | `TEXT` | False | `None` |
 | `item_id` | `TEXT` | False | `None` |
-| `reference_price` | `NUMERIC(38, 18)` | True | `None` |
-| `reference_at_ms` | `BIGINT` | False | `None` |
+| `horizon` | `TEXT` | False | `None` |
+| `delivery_key` | `TEXT` | True | `None` |
 | `target_at_ms` | `BIGINT` | False | `None` |
-| `reference_kind` | `TEXT` | False | `None` |
+| `at_ms` | `BIGINT` | False | `None` |
+| `price` | `NUMERIC` | True | `None` |
+| `source` | `TEXT` | False | `None` |
+| `reference_price` | `NUMERIC` | True | `None` |
+| `reference_at_ms` | `BIGINT` | True | `None` |
+| `status` | `TEXT` | False | `None` |
 
 ## `news_market_wallet_roster`
 
@@ -599,6 +582,8 @@
 | `rank_quality` | `INTEGER` | True | `None` |
 | `rank_whale` | `INTEGER` | True | `None` |
 | `provider` | `TEXT` | False | `'robinhoodtrenches'::text` |
+| `known_at_ms` | `BIGINT` | False | `None` |
+| `monitoring_from_ms` | `BIGINT` | True | `None` |
 
 ## `news_market_wallet_tape_state`
 
@@ -616,7 +601,12 @@
 | `unknown_total` | `BIGINT` | False | `0` |
 | `noise_through_block` | `BIGINT` | False | `0` |
 | `noise_through_tx_index` | `INTEGER` | False | `'-1'::integer` |
-| `digest_attempted_at_ms` | `BIGINT` | False | `0` |
+| `detection_cutover_at_ms` | `BIGINT` | False | `((EXTRACT(epoch FROM now()) * (1000)::numeric))::bigint` |
+| `coverage_from_ms` | `BIGINT` | True | `None` |
+| `scanned_at_ms` | `BIGINT` | True | `None` |
+| `scanned_block` | `BIGINT` | True | `None` |
+| `scanned_log` | `INTEGER` | True | `None` |
+| `gap_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_model_recordings`
 

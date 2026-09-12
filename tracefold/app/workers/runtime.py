@@ -33,8 +33,8 @@ MARKET_NOTIFICATIONS = "market_notifications"
 # faults -- the followed wallets' on-chain fills -- rather than for the provider behind it, because a
 # second chain or a second roster site would not be a second capability.
 CHAIN_TAPE = "chain_tape"
-WALLET_RESEARCH = "wallet_research"
-WALLET_DIGEST = "wallet_digest"
+WALLET_NET_BUY = "wallet_net_buy"
+WALLET_PRICES = "wallet_prices"
 TRADING_SIGNAL_LANE = "trading_signal_lane"
 
 CapabilityStateName = Literal["running", "faulted", "unavailable", "disabled"]
@@ -343,8 +343,8 @@ __all__ = [
     "NEWS_REACTIONS",
     "SHARED_RESOURCE_FAILURES",
     "TRADING_SIGNAL_LANE",
-    "WALLET_DIGEST",
-    "WALLET_RESEARCH",
+    "WALLET_NET_BUY",
+    "WALLET_PRICES",
     "WORKERS_RUNTIME_STALE_AFTER_MS",
     "WORKERS_RUNTIME_VERSION",
     "CapabilityState",

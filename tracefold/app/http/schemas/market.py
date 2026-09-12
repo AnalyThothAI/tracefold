@@ -11,8 +11,9 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from tracefold.news import NetBuySnapshot
+
 from .common import ExactApiSchema
-from .wallets import WalletBuyStageLiteral, WalletCardKindLiteral
 
 MarketKindLiteral = Literal["oi", "liquidation", "smart_money", "unknown_market", "wallet"]
 
@@ -55,42 +56,11 @@ class NewsMarketObservationData(ExactApiSchema):
     action: str | None = None
     position_side: str | None = None
     pnl_usd: str | None = None
-    # The chain wallet family (#572 PR-2). Derived by this process from chain logs rather than reported
-    # by a provider, which is why none of these has a counterpart on the four provider kinds. The
-    # quantities and dollar figures cross as exact text for the same reason the provider's do.
-    wallet_kind: WalletCardKindLiteral | None = None
-    wallet_stage: WalletBuyStageLiteral | None = None
-    wallet_selection_reason: str | None = None
-    wallet_buy_count: int | None = None
-    wallet_unpriced_buys: int | None = None
-    wallet_observed_at_ms: int | None = None
-    wallet_history_from_ms: int | None = None
-    wallet_address: str | None = None
-    wallet_handle: str | None = None
-    wallet_followers: int | None = None
+    wallet_chain_id: int | None = None
     wallet_token: str | None = None
-    wallet_segment_key: str | None = None
-    wallet_tone: str | None = None
-    wallet_ratio_bps: int | None = None
-    wallet_basis: Literal["chain_balance", "site_reported"] | None = None
-    wallet_quantity: str | None = None
-    wallet_balance_before: str | None = None
-    wallet_usd: str | None = None
-    wallet_position_usd: str | None = None
-    wallet_entry_price: str | None = None
-    wallet_mark_price: str | None = None
-    wallet_peer_wallets: int | None = None
-    wallet_peer_usd: str | None = None
-    wallet_premium_bps: int | None = None
-    wallet_liquidity_usd: str | None = None
-    wallet_tx_hash: str | None = None
-    wallet_block_number: int | None = None
-    wallet_closed: bool | None = None
-    wallet_crowding_item_id: str | None = None
-    # The digest's own sentences, in order (#572 PR-3). Absent on every other kind, including the two
-    # wallet kinds that are about one movement: those carry figures, and this carries the copy that
-    # was written from them.
-    wallet_digest_lines: list[str] | None = None
+    wallet_snapshot: NetBuySnapshot | None = None
+    wallet_notification_reason: str | None = None
+    wallet_trigger_max_age_s: int | None = None
     # The second independent pair. With no attempt this says which rule is holding the observation --
     # `historical`, `merging`, `unprocessed` -- or that none is, because the alert round it belonged
     # to ended before a card spoke for it (`uncovered`). With an attempt it says what the send did.

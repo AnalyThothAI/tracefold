@@ -479,7 +479,7 @@ def test_a_log_the_node_has_withdrawn_is_not_classified(conn: Any) -> None:
     assert chain.receipt_calls == []
 
 
-def test_a_receipt_the_node_cannot_produce_is_carried_and_then_given_up_on(conn: Any) -> None:
+def test_missing_receipt_never_advances_cursor_and_recovers_when_complete(conn: Any) -> None:
     """A transaction that 404s from one node of a load-balanced RPC must not be dropped on sight."""
 
     version = _seed_roster(conn, [SELL_WALLET])
@@ -497,23 +497,15 @@ def test_a_receipt_the_node_cannot_produce_is_carried_and_then_given_up_on(conn:
         assert state["last_outcome"] == "partial"
     assert len(chain.receipt_calls) == 2
 
-    # Given up on after the bound, as exactly one `unknown` rather than a stall.
-    third = asyncio.run(loop.advance())
-    assert third["unknown"] == 1
-    state = _state(conn)
-    assert state is not None
-    assert state["unknown_total"] == 1
-
-    # And it stays one outcome. Giving up is final while the window still offers the transaction, so a
-    # receipt that becomes readable again does not also store a fill for a movement already counted as
-    # unreadable. Three turns is already twice the wall time the overlap covers in chain time, so this
-    # costs a movement that was about to leave the window anyway.
+    # A prolonged gap is still unresolved, never counted as classified.
+    for _ in range(5):
+        assert asyncio.run(loop.advance())["unknown"] == 0
+        assert _state(conn)["high_water_block"] < SELL_BLOCK
+    assert _state(conn)["unknown_total"] == 0
     chain.withhold_receipts = set()
-    assert asyncio.run(loop.advance())["written"] == 0
-    assert _fills(conn) == []
-    final = _state(conn)
-    assert final is not None
-    assert final["unknown_total"] == 1
+    assert asyncio.run(loop.advance())["written"] == 1
+    assert len(_fills(conn)) == 1
+    assert _state(conn)["unknown_total"] == 0
 
 
 def test_a_wide_backlog_is_walked_in_bounded_ranges_rather_than_one_request(conn: Any) -> None:
@@ -990,3 +982,17 @@ def _insert_kind(conn: Any, kind: str) -> None:
         """,
         ("0x" + "8" * 64, SELL_WALLET, FSD, kind),
     )
+
+
+def test_missing_previously_committed_overlap_log_records_gap_without_erasing_facts(conn: Any) -> None:
+    version = _seed_roster(conn, [SELL_WALLET])
+    chain = _Chain([_recorded("receipt_sell_fsd.json")], head=SELL_BLOCK + 2)
+    _seed_cursor(conn, block=SELL_BLOCK - 1, roster_version=version)
+    loop = _loop(conn, chain, _Roster([]))
+    assert asyncio.run(loop.advance())["written"] == 1
+    before = _fills(conn)
+    chain.receipts = {}
+    asyncio.run(loop.advance())
+    assert "reorg_unresolved_overlap" in _state(conn)["last_error"]
+    assert _state(conn)["gap_at_ms"] is not None
+    assert _fills(conn) == before

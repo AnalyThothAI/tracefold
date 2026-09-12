@@ -38,13 +38,13 @@ from tracefold.app.workers.runtime import (
     NEWS_QUOTES,
     NEWS_REACTIONS,
     TRADING_SIGNAL_LANE,
-    WALLET_DIGEST,
-    WALLET_RESEARCH,
+    WALLET_NET_BUY,
+    WALLET_PRICES,
 )
 from tracefold.app.workers.wiring.chain_tape import (
     CHAIN_TAPE_TASK_NAME,
-    WALLET_DIGEST_TASK_NAME,
-    WALLET_RESEARCH_TASK_NAME,
+    WALLET_NET_BUY_TASK_NAME,
+    WALLET_PRICES_TASK_NAME,
     ChainTapeComposition,
     run_chain_tape,
 )
@@ -150,19 +150,19 @@ def worker_business_tasks(
         )
         tasks.append(
             WorkerTask(
-                name=WALLET_RESEARCH_TASK_NAME,
-                capability=WALLET_RESEARCH,
-                run=lambda stop: run_chain_tape(tape.research, stop_event=stop, poll_seconds=tape.poll_seconds),
+                name=WALLET_NET_BUY_TASK_NAME,
+                capability=WALLET_NET_BUY,
+                run=lambda stop: run_chain_tape(tape.detector, stop_event=stop, poll_seconds=tape.poll_seconds),
                 foundational=False,
             )
         )
-        if tape.digest is not None:
-            digest = tape.digest
+        if tape.prices is not None:
+            prices = tape.prices
             tasks.append(
                 WorkerTask(
-                    name=WALLET_DIGEST_TASK_NAME,
-                    capability=WALLET_DIGEST,
-                    run=lambda stop: run_chain_tape(digest, stop_event=stop, poll_seconds=tape.poll_seconds),
+                    name=WALLET_PRICES_TASK_NAME,
+                    capability=WALLET_PRICES,
+                    run=lambda stop: run_chain_tape(prices, stop_event=stop, poll_seconds=tape.poll_seconds),
                     foundational=False,
                 )
             )

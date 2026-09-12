@@ -1315,7 +1315,7 @@ Diagnose News in this order:
    `news_delivery` `unavailable`: read the fault as `news.push.reason` in
    `uv run tracefold config` (`news_item_push_telegram_bot_token_unavailable`
    here), correct the configuration and restart Workers. Reception, admission,
-   triage and the market loop are unaffected while it is wrong (#562 §5 row 1).
+   triage and the market loop are unaffected while it is wrong (#562 `5 row 1).
 
    `news.push.min_interval_seconds` is the shortest gap between two outbound
    messages, and one pacer holds it for every one of them — a first card, its
@@ -1741,267 +1741,66 @@ tolerance are code-owned; `news.venues.binance` / `news.venues.hyperliquid` /
 `news.venues.enabled` are the only switches, shared with the instrument
 snapshot.
 
-### Robinhood Chain wallet research (#614)
+### Robinhood Chain concentrated net buy (#641)
 
-Off by default. `news.chain_tape.enabled` composes two independently supervised tasks:
-`news-chain-tape` ingests the followed wallets' fills and roster, while `news-wallet-research` resumes
-pending fill derivation and collects observation price receipts. `news-wallet-digest` is a third task
-when `digest.enabled` is true. Their capabilities are `chain_tape`, `wallet_research` and `wallet_digest`.
-A slow summary cannot block the next chain read. Each task owns its clients and cancels and joins its
-in-flight turn before closing them on shutdown; none is detached.
+The default-off collector, pure detector and independent price sampler run as
+`news-chain-tape`, `news-wallet-net-buy`, `news-wallet-prices`, with corresponding
+`chain_tape`, `wallet_net_buy`, `wallet_prices` capabilities. Their clients and shutdown
+are independently supervised. A price/provider failure cannot hold the detection turn.
 
-These stages share PostgreSQL facts and the existing market Item/admission/notification path. They do
-not submit orders. Provider endpoints are public and unauthenticated. Inspect the operator-owned
-settings through `uv run tracefold config`; the chain block contains these values:
+Inspect operator-owned configuration with `uv run tracefold config`. Keep existing
+`enabled`, `notifications_enabled`, provider URLs, roster settings, retention and polling
+values. The four rule defaults are:
 
-| Key | Default | What it decides |
+| Rule | Default | Meaning |
 | --- | --- | --- |
-| `news.chain_tape.enabled` | `false` | whether wallet ingestion and research run; off disables all three wallet capabilities |
-| `news.chain_tape.notifications_enabled` | `true` | wallet card delivery only; false keeps ingestion, research, digests and price receipts running |
-| `news.chain_tape.rpc_url` | `https://rpc.mainnet.chain.robinhood.com` | read-only JSON-RPC endpoint |
-| `news.chain_tape.poll_interval_s` | `2.0` | App polling cadence for each wallet stage |
-| `news.chain_tape.roster_provider_url` | `https://rhtrenches.com` | current roster and context host; redirects are refused as `roster_redirect` |
-| `news.chain_tape.roster.min_closed_trades` | `10` | minimum closes for quality selection |
-| `news.chain_tape.roster.min_profit_factor` | `1.2` | minimum profit factor for quality selection |
-| `news.chain_tape.roster.top_quality` | `20` | quality members ranked by realized P&L |
-| `news.chain_tape.roster.top_whale_by_open_cost` | `20` | members ranked by open cost, without a performance filter |
-| `news.chain_tape.rules.buy_min_usd` | `1000` | minimum priced buy total for notification selection |
-| `news.chain_tape.rules.buy_window_s` | `900` | wallet/token aggregation window; follow-up selection requires the selected amount to double |
-| `news.chain_tape.rules.exit_notifications_enabled` | `false` | independent exit notifications; sell facts and exit research observations remain |
-| `news.chain_tape.rules.exit_ratio_bps` | `3000` | ratio threshold when evaluating an exit; strictly greater than 30% |
-| `news.chain_tape.rules.exit_min_position_usd` | `20000` | position floor for the independent exit-size rule |
-| `news.chain_tape.rules.exit_cascade_window_s` | `7200` | other-wallet buy lookback for exit cascade context |
-| `news.chain_tape.rules.exit_cascade_min_usd` | `5000` | position floor for the cascade arm |
-| `news.chain_tape.rules.crowding_n` | `3` | wallets buying in a common window for crowding context |
-| `news.chain_tape.rules.crowding_window_s` | `900` | crowding buy window |
-| `news.chain_tape.rules.crowding_min_usd` | `1000` | each counted wallet's priced buy floor |
-| `news.chain_tape.rules.crowding_premium_late_bps` | `3000` | follower entry premium that produces a `late` label |
-| `news.chain_tape.rules.trigger_max_age_s` | `600` | freshness boundary for live notifications; historical and delayed candidates remain inspectable |
-| `news.chain_tape.digest.enabled` | `true` | whether the independent digest task runs |
-| `news.chain_tape.digest.interval_s` | `14400` | time between summary windows |
-| `news.chain_tape.digest.max_calls_per_day` | `24` | model-call ceiling; `0` retains deterministic summaries without model calls |
-| `news.chain_tape.retention_days` | `90` | fill retention; Janitor removes bounded batches on its existing heavy slot |
+| `net_buy_fast_n` | 3 | quality addresses in fixed 5m window; minimum 2 |
+| `net_buy_slow_n` | 5 | quality addresses in fixed 30m window; minimum 2 |
+| `min_net_buy_usd` | 1000 | each address's complete window net spend; positive |
+| `trigger_max_age_s` | 60 | chain→receive/detect/first-attempt age; future stamps refused |
 
-To silence wallet notifications, set `news.chain_tape.notifications_enabled: false` in the
-operator-owned config and restart Workers. Buy, exit, crowding and digest cards stop; other News and
-market cards keep their normal rules. New wallet observations are processed without a delivery intent
-and read as `not_alerted` / `wallet_notifications_disabled`. Pending and unavailable wallet cards,
-including retries not yet due, settle as `failed` with that reason without consuming an attempt;
-their frozen cards and attempt evidence remain. Completed outcomes are untouched. Re-enabling the
-flag does not replay muted observations or stopped cards; only new observations can join a new card.
+These are engineering starting values, not optimized trading results. All removed rule
+keys and `digest` are errors in the current loader. Use the
+[offline configuration and stopped-writer cutover procedure](wallet-net-buy-cutover.md);
+never change a shared config while an old process/image still depends on its schema.
 
-Thresholds are operating choices, not measured guarantees of buying skill or future returns. The
-roster is a union of quality and whale lists, and the settings cap each list at 200. Its sampling scope
-is the provider's tracked addresses. Membership, ranks and all reported member statistics are versioned
-together; an identical snapshot refreshes only its fetch time. Changing membership does not reconstruct
-earlier holdings, and refreshing statistics does not rewrite a previous buy's roster evidence.
+Setting `notifications_enabled=false` keeps collection, episodes and prices running,
+creates no new intent and terminates unfinished wallet sends under the existing mute rule.
+Restore permits only newly opened episodes. It does not replay muted or already active
+episodes. This issue does not authorize enabling live wallet notifications or trading.
 
-Every buy can become an observation even when it is not selected for notification. The stored
-selection reason distinguishes historical, stale, unpriced, below-minimum and same-window activity.
-The buy stage distinguishes verified `new_position`, `add` and `reentry` from `first_observed` and
-`unknown`. Verification uses the block-start balance plus preceding transfers within the same block;
-missing state or incomplete required log evidence leaves the stage unknown. No retained earlier buy
-is not proof of no earlier position. Ambiguous shared cash remains unpriced instead of being assigned
-in full to several assets or recipients.
-
-If independent exit notifications are enabled, the existing exit verification reads the block-before
-balance where available, otherwise the provider-reported remaining bag plus the sale. When neither
-answers, no denominator is invented. `news_market_wallet_checks` records the successful verification
-basis and failed attempts. Crowding means multiple observed buyers, including additions; it does not
-assert that each wallet opened a previously empty position.
-
-Ingestion commits fills before research sees them. `derived_at_ms IS NULL` is the durable research
-backlog, and each derived observation commits together with that fill's checkpoint. To inspect lag:
+Read-only progress checks:
 
 ```sql
-SELECT count(*) AS pending_fills,
-       min(classified_at_ms) AS oldest_pending_classification_ms
-  FROM news_market_wallet_fills
- WHERE derived_at_ms IS NULL;
+SELECT count(*) AS pending_fills, min(classified_at_ms) AS oldest_pending_ms
+FROM news_market_wallet_fills WHERE derived_at_ms IS NULL;
+
+SELECT high_water_block, high_water_tx_index, scanned_at_ms, scanned_block, scanned_log,
+       coverage_from_ms, gap_at_ms, last_outcome, last_error
+FROM news_market_wallet_tape_state;
+
+SELECT derived_reason, count(DISTINCT (chain_id, tx_hash, token)) AS transaction_tokens
+FROM news_market_wallet_fills WHERE event_at_ms > (extract(epoch FROM now())*1000)::bigint - 86400000
+GROUP BY derived_reason;
+
+SELECT e.item_id, e.event_at_ms, e.ended_at_ms, e.change_reason,
+       d.state, d.error, d.created_at_ms AS intent_at_ms, d.first_attempt_at_ms
+FROM news_market_wallet_events e JOIN news_items i USING (item_id)
+LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
+ORDER BY e.event_at_ms DESC LIMIT 100;
 ```
 
-A research write failure retains that pending row. A digest failure cannot advance or block the
-research checkpoint. Unexpected database or program errors fault the affected capability; an operator
-restart after correcting the cause resumes its pending work. Expected database admission/transient
-refusals retain the checkpoint and log operation/type codes. Expected provider failures leave bounded
-retry or unknown evidence according to the owning stage. A `running` capability means the loop is alive;
-use the pending query to assess whether research is progressing.
+Missing receipts retain the cursor indefinitely; they are not silently counted complete.
+Reorg/overlap inconsistency records a coverage gap and suppresses positive conclusions.
+The collector does not automatically rewrite old facts. Investigate the named range against
+the RPC and apply the established recovery procedure. Network failure leaves the last
+scanned chain time visible; wall time never advances a completed window.
 
-The following read-only queries describe coverage and activity:
-
-```sql
--- fills per day by kind, over the last week, on block time
-SELECT to_char(to_timestamp(event_at_ms / 1000) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
-       kind,
-       count(*) AS fills,
-       count(DISTINCT wallet) AS wallets,
-       count(DISTINCT token) AS tokens
-  FROM news_market_wallet_fills
- WHERE event_at_ms >= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - 7 * 86400000
- GROUP BY 1, 2
- ORDER BY 1 DESC, 2;
-
--- how much of the current roster actually traded in the last week, and how much it moved
-SELECT r.wallet, r.handle, r.rank_quality, r.rank_whale,
-       count(f.tx_hash) AS fills,
-       count(*) FILTER (WHERE f.kind = 'buy') AS buys,
-       round(sum(f.usd) FILTER (WHERE f.kind = 'buy'), 2) AS bought_usd
-  FROM news_market_wallet_roster r
-  LEFT JOIN news_market_wallet_fills f
-    ON f.wallet = r.wallet
-   AND f.event_at_ms >= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - 7 * 86400000
- WHERE r.roster_version = (SELECT max(roster_version) FROM news_market_wallet_roster)
- GROUP BY 1, 2, 3, 4
- ORDER BY fills DESC;
-
--- the unpriced share: non-USDG, unknown scale or ambiguous cash allocation
-SELECT count(*) AS trades,
-       count(*) FILTER (WHERE usd IS NULL) AS unpriced,
-       round(100.0 * count(*) FILTER (WHERE usd IS NULL) / nullif(count(*), 0), 1) AS unpriced_pct
-  FROM news_market_wallet_fills
- WHERE kind <> 'transfer_out'
-   AND event_at_ms >= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - 7 * 86400000;
-
--- how much of the stream is noise: what the tape read and deliberately did not store, beside what it
--- did. The fills table cannot answer this on its own, because the answer is the rows that are not in
--- it, so the two counters are accumulated on the state row.
-SELECT s.ignored_inbound_total,
-       s.unknown_total,
-       (SELECT count(*) FROM news_market_wallet_fills) AS stored_fills,
-       round(100.0 * (s.ignored_inbound_total + s.unknown_total)
-             / nullif(s.ignored_inbound_total + s.unknown_total
-                      + (SELECT count(*) FROM news_market_wallet_fills), 0), 1) AS discarded_pct
-  FROM news_market_wallet_tape_state s;
-```
-
-The same two counts are published as
-`tracefold_external_data_skipped_or_coalesced_total{name="chain_tape",reason="airdrop_ignored"}` and
-`…,reason="unclassified"`. The state row's totals are monotonic since the tape was first enabled and
-are never reset; the Prometheus counters restart with the process. Both count *movements*, not passes
-over them — see `noise_through_block` below.
-
-`unknown_total` also counts transactions the RPC would not produce a receipt for. The endpoint is load
-balanced, so one that has just appeared in one node's logs can 404 from another; it is asked for again
-on the next `MISSING_RECEIPT_ATTEMPTS` turns (3, in `tracefold/news/chain_tape/loop.py`, and that
-constant is the only lever) and then banked as one `unknown` and never asked for again while the log
-window still offers it. That is deliberate: it keeps one movement to one outcome — a stored fill or one
-count, never both — and by the third turn the transaction has already been carried past the chain time
-the 30-block overlap covers, so it was leaving the window regardless. A rising `unknown_total` with
-`last_error` naming `robinhood_rpc:receipt_missing` is that path; raising the constant buys more
-retries at the cost of holding the classified position back longer.
-
-The tape's own position and last turn are one row:
-
-```sql
-SELECT high_water_block, high_water_tx_index, roster_version,
-       last_outcome, last_error, last_success_at_ms,
-       ignored_inbound_total, unknown_total,
-       noise_through_block, noise_through_tx_index
-  FROM news_market_wallet_tape_state;
-```
-
-`high_water_block` trails the chain head by the 30-block overlap on purpose — about three seconds of
-chain. It is the position everything up to which is classified, not the position last read, and the
-gap is what lets a node that answered short be re-read on the next turn. The cost of that lag is that
-each movement's receipt is fetched about three times at the default 2 s cadence, so the effective
-provider load is roughly three times the declared 20-receipts-per-turn cap.
-
-`noise_through_block` / `noise_through_tx_index` is the second position and it never lags: it is how
-far the two noise counters have been taken. A fill re-read across turns collapses on its primary key,
-but a count has no key to collapse on, so a movement is added to `ignored_inbound_total` or
-`unknown_total` only when it is strictly above this marker. Expect `noise_through_block` to sit ahead
-of `high_water_block` by roughly the overlap; that gap is the feature, not a fault. Both totals move
-only when the turn's write commits, which is why the Prometheus counters are emitted on the same
-condition — otherwise the two would disagree by exactly the refused turns.
-
-Cards sent and the basis they were sent on, per day:
-
-```sql
-SELECT to_char(to_timestamp(e.event_at_ms / 1000) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
-       e.kind,
-       coalesce(e.basis, '-') AS basis,
-       count(*) FILTER (WHERE d.state = 'sent') AS sent,
-       count(*) FILTER (WHERE d.state IS DISTINCT FROM 'sent') AS not_sent,
-       count(*) FILTER (WHERE e.tone = 'late') AS late
-  FROM news_market_wallet_events e
-  LEFT JOIN news_items i ON i.item_id = e.item_id
-  LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
- WHERE e.event_at_ms >= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - 7 * 86400000
- GROUP BY 1, 2, 3
- ORDER BY 1 DESC, 2, 3;
-```
-
-### The four-hourly buy digest (#614)
-
-`news-wallet-digest` reads full-window SQL totals separately from bounded buy details. The summary
-reserves one overview, up to five buy subjects, one related detail and a coverage statement. Subsequent
-sells can explain a displayed buy; unrelated exits cannot occupy its buy slots. The optional model
-returns existing buy fact IDs only. The program renders every published sentence, so an accepted ID
-cannot swap a buyer, asset, direction or amount. Invalid IDs fall back to deterministic selection.
-
-The priced buy average uses quantities from the same priced subset. Provider remaining cost is a
-current reported snapshot, not a window-end balance. The first retained movement is not a verified
-entry time, and incomplete history does not support a remaining-position or net-cash-recovery claim.
-Those fields remain unknown rather than describing a sell-only observed history as fully exited.
-
-The digest's model timeout affects only its own task. `max_calls_per_day = 0` disables calls while
-retaining deterministic summaries. `digest_attempted_at_ms` is committed before a model call so a
-write refusal cannot cause another call on every tick. The next written window still starts after the
-last successful digest, bounded to one day of backlog.
-
-Model selection and delivery accounting:
-
-```sql
-SELECT to_char(to_timestamp(e.event_at_ms / 1000) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
-       count(*) AS digests,
-       count(*) FILTER (WHERE e.evidence ->> 'model_called' = 'true') AS model_called,
-       count(*) FILTER (WHERE e.evidence ->> 'model_used' = 'true') AS model_used,
-       sum((e.evidence ->> 'lines_kept')::int) AS selections_kept,
-       sum((e.evidence ->> 'lines_dropped')::int) AS selections_rejected,
-       count(*) FILTER (WHERE d.state = 'sent') AS sent
-  FROM news_market_wallet_events e
-  LEFT JOIN news_items i ON i.item_id = e.item_id
-  LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
- WHERE e.kind = 'digest'
-   AND e.event_at_ms >= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - 7 * 86400000
- GROUP BY 1 ORDER BY 1 DESC;
-```
-
-The `lines_*` audit fields describe accepted and rejected selections under the new program, not a
-numeric check of model-written prose. Inspect `evidence -> 'facts'` and `evidence ->> 'pack_sha256'` to
-reproduce the rendered input. Historical digest rows retain their historical program evidence.
-
-Observation price receipts cover sent and unsent candidates at +15 minutes, +1 hour and +4 hours.
-They compare against the mark recorded when the observation was built, never against the leading
-wallet's entry price or an invented price at delivery. Missing reference price means no comparable
-return. Separate event kinds and reference bases in every evaluation:
-
-```sql
-SELECT e.kind, o.horizon, o.reference_kind,
-       count(*) AS receipts,
-       count(*) FILTER (WHERE o.price IS NOT NULL) AS priced,
-       count(*) FILTER (WHERE o.price IS NOT NULL AND o.reference_price > 0) AS comparable,
-       percentile_cont(0.5) WITHIN GROUP (
-         ORDER BY CASE WHEN o.price IS NOT NULL AND o.reference_price > 0
-                       THEN (o.price / o.reference_price - 1) * 100 END) AS median_percent
-  FROM news_market_wallet_outcomes o
-  JOIN news_market_wallet_events e ON e.item_id = o.item_id
- WHERE o.at_ms >= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - 7 * 86400000
- GROUP BY e.kind, o.horizon, o.reference_kind
- ORDER BY e.kind, o.horizon, o.reference_kind;
-```
-
-A horizon with no row is pending. A row with `source = 'unavailable'` records a horizon no source could
-price within the fifteen-minute grace. Each horizon receives a share of the bounded budget, so a
-backlog cannot permanently starve another horizon. DexScreener's deepest Robinhood Chain pool is the
-first price source; the provider mark is the fallback. Neither a non-positive price nor an unknown
-reference supports a return. These receipts measure observation-price movement, not executable P&L.
-
-The ingestion row's `last_outcome` and `last_error` describe ingestion alone. A stalled
-`last_success_at_ms` or `tracefold_external_data_last_success_age_seconds{name="chain_tape"}` points to
-that stage; research backlog and the separate runtime capability report answer whether observations
-and summaries are progressing. An explicit `roster_redirect` calls for correcting the configured
-provider URL rather than enabling broad redirect following.
+`initial_snapshot` remains immutable; the detector alone updates current business facts.
+Unchanged scans write no latest snapshot. Timers do not create episodes. Read price
+`target_at_ms`, actual `at_ms` and status together; no baseline means unknown change.
+The detector does not wait for or fetch a trigger quote. Late quotes are not backdated.
+The raw archive holds retired wallet evidence; current APIs do not render an old strategy.
 
 ## Migrations
 
