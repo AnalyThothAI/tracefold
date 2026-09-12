@@ -35,6 +35,8 @@ EXECUTION_PATH = {
     "trading/stages.py",
     "trading/operator_control.py",
     "trading/storage/execution_stream.py",
+    "trading/storage/trade_plans.py",
+    "trading/trade_plan.py",
 }
 BANNED_FRAMEWORKS = {"autogen", "crewai", "deepagents", "dspy", "langchain", "langgraph", "langsmith"}
 BANNED_CAPABILITIES = {"boto3", "httpx", "os", "pathlib", "requests", "shutil", "socket", "subprocess"}
@@ -45,6 +47,8 @@ WRITE_SQL_TABLE_RE = re.compile(r"\b(?:DELETE\s+FROM|INSERT\s+INTO|UPDATE)\s+(?P
 SQL_TABLE_RE = re.compile(r"\b(?:DELETE\s+FROM|INSERT\s+INTO|FROM|JOIN|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)", re.I)
 _SQL_KEYWORDS = {
     "batch",
+    "closed",
+    "closing",
     "entry_window",
     "folded",
     "identity_guard",
@@ -55,10 +59,12 @@ _SQL_KEYWORDS = {
     "manual_entry",
     "of",
     "offered",
+    "planned_entry",
     "select",
     "set",
     "signal_entry",
     "skip",
+    "terminal_plans",
     "unnest",
     "values",
 }
@@ -328,10 +334,12 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
         "ExecutionAccountSnapshot",
         "ExecutionObservationV1",
         "ExecutionStage",
+        "ExitReason",
         "OiTradeCandidate",
         "OperatorCommandError",
         "OperatorIntentV1",
         "PreparedOperatorIntent",
+        "TradePlan",
         "TradeSignalV1",
         "execution_stage",
         # #604 T2. The one spelling of the market identity the Signal carries and the Runtime's route

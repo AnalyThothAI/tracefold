@@ -203,6 +203,8 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # prepares bounded Observation batches, and supplies the wake channel to the PostgreSQL
         # integration. Nautilus adapters receive only public values and narrow callables.
         "tracefold.trading.storage.execution_stream",
+        # #644: the same DB bridge prepares and commits immutable execution plans before order admission.
+        "tracefold.trading.storage.trade_plans",
     ),
     "integrations.opennews": ("tracefold.news.opennews",),
     "integrations.rabbitmq": (
