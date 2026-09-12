@@ -426,80 +426,13 @@ class NewsChainTapeRosterSettings(BaseModel):
 
 
 class NewsChainTapeRulesSettings(BaseModel):
-    """When a followed wallet's movement becomes a card: #572 §6.4's medium tier, as runtime values.
-
-    The numbers were computed from the provider's own seven-day close ledger and project about 25-40
-    cards a day, which is the same order as the 50-60 key News cards a reader already gets. They are
-    thresholds an operator moves, never a contract: #572 §11 asks for the receipt that says whether the
-    projection held, and the receipt is the point of shipping them rather than guessing again.
-    """
+    """Fixed 5m/30m net-buy thresholds; retired keys are explicit configuration errors."""
 
     model_config = ConfigDict(extra="forbid")
-
-    exit_notifications_enabled: bool = False
-    buy_min_usd: float = 1_000.0
-    buy_window_s: int = 900
-    exit_ratio_bps: int = 3000
-    exit_min_position_usd: float = 20_000.0
-    exit_cascade_window_s: int = 7200
-    exit_cascade_min_usd: float = 5_000.0
-    crowding_n: int = 3
-    crowding_window_s: int = 900
-    crowding_min_usd: float = 1_000.0
-    crowding_premium_late_bps: int = 3000
-    trigger_max_age_s: int = 600
-
-    @model_validator(mode="after")
-    def validate_bounds(self) -> NewsChainTapeRulesSettings:
-        if not 0 <= self.buy_min_usd <= 1e12 or not 60 <= self.buy_window_s <= 86_400:
-            raise ValueError("news_chain_tape_rules_buy_invalid")
-        if not 0 <= self.exit_ratio_bps < 10_000:
-            # Ten thousand would be "sold more than everything", which no sell can clear.
-            raise ValueError("news_chain_tape_rules_exit_ratio_invalid")
-        if not 0.0 <= self.exit_min_position_usd <= 1e12 or not 0.0 <= self.exit_cascade_min_usd <= 1e12:
-            raise ValueError("news_chain_tape_rules_exit_size_invalid")
-        if not 0 <= self.exit_cascade_window_s <= 86_400:
-            raise ValueError("news_chain_tape_rules_exit_cascade_window_invalid")
-        if not 2 <= self.crowding_n <= 40:
-            # One wallet is not a crowd, and the roster itself is capped at 40 addresses.
-            raise ValueError("news_chain_tape_rules_crowding_n_invalid")
-        if not 60 <= self.crowding_window_s <= 86_400:
-            raise ValueError("news_chain_tape_rules_crowding_window_invalid")
-        if not 0.0 <= self.crowding_min_usd <= 1e12:
-            raise ValueError("news_chain_tape_rules_crowding_size_invalid")
-        if not 0 <= self.crowding_premium_late_bps <= 1_000_000:
-            raise ValueError("news_chain_tape_rules_crowding_premium_invalid")
-        # A fill older than this on the host's own receive clock is history, and the 24-hour backfill is
-        # exactly that. Zero would mean nothing ever fires; a day would mean the backfill fires.
-        if not 1 <= self.trigger_max_age_s <= 3600:
-            raise ValueError("news_chain_tape_rules_trigger_age_invalid")
-        return self
-
-
-class NewsChainTapeDigestSettings(BaseModel):
-    """The four-hourly wallet summary (#572 §5.4), as two runtime numbers and nothing else.
-
-    `interval_s` is what "due" means; `max_calls_per_day` bounds the *model*, not the digest. A window
-    past the cap still gets a digest, rendered from the deterministic template that every other failure
-    path also lands on -- the endpoint is the one triage shares at concurrency one, and this is the
-    ceiling #572 §5.4 put on it.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = True
-    interval_s: int = 14_400
-    max_calls_per_day: int = 24
-
-    @model_validator(mode="after")
-    def validate_bounds(self) -> NewsChainTapeDigestSettings:
-        # An hour is #572 §6.4's loud tier and a week is past the fills' own retention window.
-        if not 3_600 <= self.interval_s <= 604_800:
-            raise ValueError("news_chain_tape_digest_interval_invalid")
-        # Zero is a valid answer: it is "compute the digest, never call the model".
-        if not 0 <= self.max_calls_per_day <= 1_000:
-            raise ValueError("news_chain_tape_digest_max_calls_invalid")
-        return self
+    net_buy_fast_n: int = Field(default=3, ge=2, le=400)
+    net_buy_slow_n: int = Field(default=5, ge=2, le=400)
+    min_net_buy_usd: Decimal = Field(default=Decimal("1000"), gt=0, le=Decimal("1e12"), allow_inf_nan=False)
+    trigger_max_age_s: int = Field(default=60, ge=1, le=3600)
 
 
 class NewsChainTapeSettings(BaseModel):
@@ -518,7 +451,6 @@ class NewsChainTapeSettings(BaseModel):
     roster_provider_url: str = "https://rhtrenches.com"
     roster: NewsChainTapeRosterSettings = Field(default_factory=NewsChainTapeRosterSettings)
     rules: NewsChainTapeRulesSettings = Field(default_factory=NewsChainTapeRulesSettings)
-    digest: NewsChainTapeDigestSettings = Field(default_factory=NewsChainTapeDigestSettings)
     retention_days: int = 90
 
     @field_validator("rpc_url", "roster_provider_url", mode="before")

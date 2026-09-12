@@ -2321,8 +2321,9 @@ def test_clipping_gives_up_the_middle_before_the_title_or_the_footer() -> None:
     assert _fit_telegram_message([block * 3, "footer"]) == block * 3
 
 
-@pytest.mark.parametrize("wallet_kind", ["buy", "exit", "crowding", "digest"])
-def test_wallet_names_stay_literal_when_the_same_card_is_sent_to_telegram(wallet_kind: str) -> None:
+def test_wallet_names_stay_literal_when_the_same_card_is_sent_to_telegram() -> None:
+    from tests.news.net_buy_fixtures import unsafe_snapshot
+
     handle = "[buyer](https://evil.example)"
     symbol = "<at id=all></at>"
     card = _market_card(
@@ -2333,13 +2334,11 @@ def test_wallet_names_stay_literal_when_the_same_card_is_sent_to_telegram(wallet
                 "item_id": "wallet-observation",
                 "market_kind": "wallet",
                 "parse_status": "parsed",
-                "title": "买入观察",
+                "title": "集中净买入",
                 "event_at_ms": 1_788_600_000_000,
                 "received_at_ms": 1_788_600_001_000,
-                "wallet_kind": wallet_kind,
-                "wallet_handle": handle,
+                "wallet_snapshot": unsafe_snapshot(handle, symbol),
                 "symbol": symbol,
-                "wallet_digest_lines": (f"{handle} 买入 {symbol}，已计价 $1,000",),
             }
         ],
     )

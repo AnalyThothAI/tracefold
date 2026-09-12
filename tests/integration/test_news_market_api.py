@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import replace
-from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -23,12 +22,11 @@ from tests.postgres_test_utils import connect_postgres_test, postgres_settings_s
 from tracefold.app.http.app import create_app
 from tracefold.app.http.schemas.market import NewsMarketObservationData
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.chain_tape.contracts import ClassifiedFill, RosterMember, TapeCursor
 from tracefold.news.market_contracts import REASON_UNPROCESSED
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame, admit_market_item, prepare_wallet_observation
 from tracefold.news.storage.market import _OBSERVATION_KEYS, INTERNAL_OBSERVATION_KEYS
-from tracefold.news.wallet_contracts import WalletEvent, WalletOutcome
+from tracefold.news.wallet_contracts import WalletEvent
 from tracefold.platform.config.models import NewsSettings, Settings
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
@@ -413,33 +411,25 @@ SMOKE_LIQUIDATION = "BTC Large Short Liquidation 4.55M at $118000"
 def _admit_wallet_observation(conn: Any, *, at_ms: int, **overrides: Any) -> str:
     """One derived wallet observation, through the same admission the tape uses."""
 
+    from tests.news.net_buy_fixtures import movement, roster, snapshot
+
+    members = roster()
+    for member in members:
+        member["monitoring_from_ms"] = member["known_at_ms"] = at_ms - 3600000
+    facts = [replace(movement(i, at=at_ms), token_symbol="FSD") for i in range(1, 6)]
     event = WalletEvent(
         item_id="",
-        kind="exit",
         chain_id=4663,
-        wallet="0x69326e48f68500fb6cf3b3a7da640737b9cc347b",
-        handle="0xVantaa",
-        followers=21_792,
-        token="0x8de9018c1bb82884245f06dede9fe2bebabd1e18",
+        token=facts[0].token,
         token_symbol="FSD",
-        token_decimals=18,
-        roster_version=1,
-        window_from_ms=at_ms,
-        window_to_ms=at_ms,
-        segment_key=str(at_ms),
+        trigger_tx_hash="0x" + f"{at_ms:064x}",
         event_at_ms=at_ms,
         received_at_ms=at_ms,
-        title="0xVantaa 清仓 FSD",
-        ratio_bps=10_000,
-        basis="chain_balance",
-        quantity_raw=9_412_641_983_109_562_000_000_000,
-        balance_before_raw=9_412_641_983_109_562_000_000_000,
-        usd=Decimal("23531.60"),
-        position_usd=Decimal("23531.60"),
-        closed=True,
-        tx_hash="0x5c10c3cf9b3a5ef265de9ea87e0b4c787583ef11823ea233fde27528ab9ac5f0",
-        block_number=55_432_994,
-        evidence={"basis": "chain_balance"},
+        detected_at_ms=at_ms,
+        trigger_max_age_s=60,
+        notification_eligible=True,
+        notification_reason=None,
+        initial_snapshot=snapshot(facts, members=members, cutoff_at_ms=at_ms, coverage_from_ms=at_ms - 3600000),
     )
     from tracefold.news.pipeline.admission import wallet_item_id
 
@@ -487,8 +477,8 @@ def test_the_smokes_own_observation_and_a_wallet_one_both_answer_two_hundred(app
     assert set(kinds) == {"liquidation", "wallet"}
     assert kinds["liquidation"]["latest"]["title"] == SMOKE_LIQUIDATION
     assert kinds["wallet"]["latest"]["provider"] == "robinhood_chain"
-    assert kinds["wallet"]["latest"]["wallet_basis"] == "chain_balance"
-    assert kinds["wallet"]["latest"]["wallet_closed"] is True
+    assert kinds["wallet"]["latest"]["wallet_snapshot"]["fast"]["qualified_n"] == 5
+    assert kinds["wallet"]["latest"]["wallet_snapshot"]["fast"]["net_usd"] == "6000"
     # Every kind keeps a summary row, whether or not it reported anything.
     assert [source["market_kind"] for source in body["sources"]] == [
         "oi",
@@ -522,414 +512,6 @@ def test_every_projected_observation_column_is_published_or_declared_internal() 
     # Not vacuous: the internal set names a column the projection really carries.
     assert set(_OBSERVATION_KEYS) >= INTERNAL_OBSERVATION_KEYS
     assert INTERNAL_OBSERVATION_KEYS.isdisjoint(NewsMarketObservationData.model_fields)
-
-
-# --- the wallet tape's own page (#572 PR-3) --------------------------------------------------------
-
-
-def _seed_wallet_tape(conn: Any, *, at_ms: int) -> None:
-    """One roster version, one fill and one card, so both wallet routes have something to publish."""
-
-    repos = repositories_for_connection(conn)
-    with repos.transaction():
-        repos.news.chain_tape_store_roster(
-            [
-                RosterMember(
-                    wallet="0x69326e48f68500fb6cf3b3a7da640737b9cc347b",
-                    handle="0xVantaa",
-                    followers=21_792,
-                    realized_pnl=510_000.0,
-                    closed_trades=46,
-                    win_rate=0.44,
-                    profit_factor=1.6,
-                    open_cost=220_000.0,
-                    rank_quality=1,
-                    rank_whale=None,
-                )
-            ],
-            now_ms=at_ms,
-        )
-        repos.news.chain_tape_record_fills(
-            [
-                ClassifiedFill(
-                    chain_id=4663,
-                    tx_hash="0x" + "ab" * 32,
-                    log_index=6,
-                    block_number=55_432_990,
-                    block_hash="0x" + "cd" * 32,
-                    wallet="0x69326e48f68500fb6cf3b3a7da640737b9cc347b",
-                    token="0x8de9018c1bb82884245f06dede9fe2bebabd1e18",
-                    kind="buy",
-                    amount_raw=8 * 10**18,
-                    event_at_ms=at_ms,
-                    received_at_ms=at_ms,
-                    classified_at_ms=at_ms,
-                    roster_version=1,
-                    token_symbol="FSD",
-                    token_decimals=18,
-                    cash_token="0x5fc5360d0400a0fd4f2af552add042d716f1d168",
-                    cash_amount_raw=12_340_500_000,
-                    cash_decimals=6,
-                    usd=Decimal("12340.50"),
-                    usd_source="usdg_cash_leg",
-                )
-            ]
-        )
-        repos.news.chain_tape_save_state(
-            cursor=TapeCursor(55_432_960, 2_147_483_647),
-            roster_version=1,
-            outcome="success",
-            error=None,
-            now_ms=at_ms,
-            succeeded=True,
-            ignored_inbound=14,
-            unknown=1,
-            noise_cursor=TapeCursor(55_432_990, 6),
-        )
-    conn.commit()
-
-
-def test_the_wallets_page_publishes_the_roster_the_tape_state_and_two_windowed_counts(app, conn) -> None:
-    """`GET /api/news/wallets` through the real app: four statements, one envelope, no 500."""
-
-    now = int(time.time() * 1000)
-    _seed_wallet_tape(conn, at_ms=now - 60_000)
-    _admit_wallet_observation(conn, at_ms=now - 30_000)
-
-    with TestClient(app) as client:
-        response = client.get("/api/news/wallets", headers=AUTH)
-
-    assert response.status_code == 200, response.text
-    data = response.json()["data"]
-    assert data["roster"]["roster_version"] == 1
-    assert [member["handle"] for member in data["roster"]["members"]] == ["0xVantaa"]
-    assert data["roster"]["members"][0]["rank_quality"] == 1
-    assert data["tape"]["high_water_block"] == 55_432_960
-    assert data["tape"]["ignored_inbound_total"] == 14
-    assert [(row["kind"], row["fills"], row["unpriced"]) for row in data["fills"]] == [("buy", 1, 0)]
-    assert [(row["kind"], row["cards"]) for row in data["cards"]] == [("exit", 1)]
-
-
-def test_the_wallet_cards_route_publishes_each_card_with_its_receipts_and_bounds_its_window(app, conn) -> None:
-    """`GET /api/news/wallets/cards`: the closed window vocabulary, and a card's published shape."""
-
-    now = int(time.time() * 1000)
-    _seed_wallet_tape(conn, at_ms=now - 60_000)
-    item_id = _admit_wallet_observation(conn, at_ms=now - 30_000)
-
-    with TestClient(app) as client:
-        response = client.get("/api/news/wallets/cards?window=24h&limit=10", headers=AUTH)
-        refused = client.get("/api/news/wallets/cards?window=90d", headers=AUTH)
-        unknown = client.get("/api/news/wallets/cards?horizon=1h", headers=AUTH)
-
-    assert response.status_code == 200, response.text
-    data = response.json()["data"]
-    assert data["window"] == "24h"
-    assert data["window_to_ms"] - data["window_from_ms"] == 24 * 3_600_000
-    assert [card["item_id"] for card in data["cards"]] == [item_id]
-    card = data["cards"][0]
-    assert (card["kind"], card["basis"], card["ratio_bps"]) == ("exit", "chain_balance", 10_000)
-    # Nothing has been sent, so there is no card to have a receipt: absent, not zero.
-    assert (card["delivery_key"], card["outcomes"][1]["return_bps"], card["digest_lines"]) == (None, None, None)
-
-    assert refused.status_code == 400
-    assert refused.json()["error"] == "news_wallets_window_invalid"
-    assert unknown.status_code == 400
-
-
-def test_buy_candidates_keep_unsent_outcomes_and_exact_identity_filters(app, conn) -> None:
-    """Real PostgreSQL -> HTTP includes unsent buys, their own price base, and exact query scope."""
-
-    now = int(time.time() * 1000)
-    at_ms = now - 1_200_000
-    wallet = "0x69326e48f68500fb6cf3b3a7da640737b9cc347b"
-    token = "0x8de9018c1bb82884245f06dede9fe2bebabd1e18"
-    other_wallet = "0x" + "b" * 40
-    other_token = "0x" + "c" * 40
-    evidence = {
-        "log_index": 0,
-        "stage": "first_observed",
-        "selection_reason": "below_min_usd",
-        "notify_eligible": False,
-        "buy_count": 2,
-        "unpriced_buys": 1,
-        "observed_at_ms": at_ms + 1,
-        "history_from_ms": at_ms - 86_400_000,
-        "price_reference": "observed",
-    }
-    item_id = _admit_wallet_observation(
-        conn,
-        at_ms=at_ms,
-        kind="buy",
-        title="FSD 买入观察",
-        entry_price=Decimal("1"),
-        mark_price=Decimal("1.5"),
-        evidence=evidence,
-    )
-    _admit_wallet_observation(conn, at_ms=at_ms + 1, kind="buy", wallet=other_wallet, evidence=evidence)
-    _admit_wallet_observation(conn, at_ms=at_ms + 2, kind="buy", token=other_token, evidence=evidence)
-    _admit_wallet_observation(conn, at_ms=at_ms + 3)
-    repos = repositories_for_connection(conn)
-    with repos.transaction():
-        repos.news.chain_tape_record_outcome(
-            WalletOutcome(
-                item_id=item_id,
-                horizon="15m",
-                price=Decimal("1.2"),
-                at_ms=at_ms + 900_001,
-                source="dexscreener",
-                reference_price=Decimal("1.5"),
-                reference_at_ms=at_ms + 1,
-                target_at_ms=at_ms + 900_001,
-                reference_kind="observed",
-            )
-        )
-    conn.commit()
-
-    with TestClient(app) as client:
-        all_rows = client.get("/api/news/wallets/cards", headers=AUTH)
-        narrowed = client.get(
-            "/api/news/wallets/cards",
-            headers=AUTH,
-            params={
-                "kind": "buy",
-                "wallet_address": "0x" + wallet[2:].upper(),
-                "token_address": token,
-            },
-        )
-        invalid_address = client.get("/api/news/wallets/cards?wallet_address=Alice", headers=AUTH)
-        invalid_kind = client.get("/api/news/wallets/cards?kind=all", headers=AUTH)
-        detail = client.get(f"/api/news/market/{item_id}", headers=AUTH)
-
-    assert all_rows.status_code == 200, all_rows.text
-    assert len(all_rows.json()["data"]["cards"]) == 4
-    assert narrowed.status_code == 200, narrowed.text
-    assert [row["item_id"] for row in narrowed.json()["data"]["cards"]] == [item_id]
-    row = narrowed.json()["data"]["cards"][0]
-    assert (row["kind"], row["stage"], row["selection_reason"]) == ("buy", "first_observed", "below_min_usd")
-    assert (row["buy_count"], row["unpriced_buys"]) == (2, 1)
-    assert (row["delivery_key"], row["settled_at_ms"]) == (None, None)
-    assert row["outcomes"][0]["return_bps"] is None
-    assert row["outcomes"][0]["status"] == "identity_unverified"
-    assert row["outcomes"][0]["source"] == "dexscreener"
-    assert row["price_reference"] == "observed"
-    assert row["observed_at_ms"] == at_ms + 1
-    assert row["history_from_ms"] == at_ms - 86_400_000
-    assert invalid_address.status_code == 422
-    assert invalid_kind.status_code == 422
-    assert detail.status_code == 200, detail.text
-    observation = detail.json()["data"]["observation"]
-    assert observation["wallet_stage"] == "first_observed"
-    assert observation["wallet_unpriced_buys"] == 1
-    assert "wallet_notify_eligible" not in observation
-    assert f"|{wallet}|{token}|" in observation["group_key"]
-
-
-def test_unselected_buy_cannot_be_adopted_by_an_existing_wallet_delivery(conn) -> None:
-    """A retained false candidate must not silently become a sent card's newest observation."""
-
-    at_ms = int(time.time() * 1000) - 1_000
-    selected = _admit_wallet_observation(
-        conn,
-        at_ms=at_ms,
-        kind="buy",
-        evidence={"log_index": 0, "notify_eligible": True},
-        segment_key="same-window",
-    )
-    excluded = _admit_wallet_observation(
-        conn,
-        at_ms=at_ms + 1,
-        kind="buy",
-        evidence={"log_index": 1, "notify_eligible": False},
-        segment_key="same-window",
-    )
-    repos = repositories_for_connection(conn)
-    with repos.transaction():
-        rows = repos.news.market_notification_backlog(limit=10)
-        buy_rows = {row["item_id"]: row for row in rows}
-        assert buy_rows[selected]["wallet_notify_eligible"] is True
-        assert buy_rows[excluded]["wallet_notify_eligible"] is False
-        group = buy_rows[selected]["group_key"]
-        assert group == buy_rows[excluded]["group_key"]
-        repos.news.market_mark_processed(item_ids=[selected, excluded], group_key=group)
-        repos.news.market_open_delivery(
-            delivery_key="buy-adoption",
-            group_key=group,
-            market_kind="wallet",
-            trigger_reason="first",
-            trigger_item_id=selected,
-            due_at_ms=at_ms,
-            now_ms=at_ms,
-        )
-        assert (
-            repos.news.market_adopt_unclaimed(
-                group_key=group,
-                delivery_key="buy-adoption",
-                min_received_at_ms=at_ms,
-            )
-            == 1
-        )
-        assert repos.news.market_delivery_item_ids(delivery_key="buy-adoption") == [selected]
-
-
-def test_wallet_token_timeline_keeps_small_sells_and_transfers_without_cards(app, conn) -> None:
-    """Raw persisted actions cross HTTP even when no exit observation was created."""
-
-    now = int(time.time() * 1000)
-    wallet = "0x" + "a" * 40
-    token = "0x" + "b" * 40
-    buy = ClassifiedFill(
-        chain_id=4663,
-        tx_hash="0x" + "1" * 64,
-        log_index=1,
-        block_number=55_432_990,
-        block_hash="0x" + "2" * 64,
-        wallet=wallet,
-        token=token,
-        kind="buy",
-        amount_raw=1_234_567_890_123_456_789,
-        event_at_ms=now - 60_000,
-        received_at_ms=now - 59_000,
-        classified_at_ms=now - 58_000,
-        roster_version=1,
-        token_symbol="FSD",
-        token_decimals=18,
-        cash_token="0x5fc5360d0400a0fd4f2af552add042d716f1d168",
-        cash_amount_raw=1_230_000,
-        cash_decimals=6,
-        usd=Decimal("1.23"),
-        usd_source="usdg_cash_leg",
-    )
-    repos = repositories_for_connection(conn)
-    with repos.transaction():
-        repos.news.chain_tape_record_fills(
-            [
-                buy,
-                replace(buy, log_index=2, kind="sell", amount_raw=1, usd=Decimal("0.01")),
-                replace(
-                    buy,
-                    log_index=3,
-                    kind="transfer_out",
-                    amount_raw=7,
-                    usd=None,
-                    usd_source=None,
-                    cash_token=None,
-                    cash_amount_raw=None,
-                    cash_decimals=None,
-                ),
-                replace(buy, log_index=4, wallet="0x" + "c" * 40),
-                replace(buy, log_index=5, token="0x" + "d" * 40),
-                replace(buy, log_index=6, event_at_ms=now - 2 * 86_400_000),
-            ]
-        )
-    conn.commit()
-    scope = {"wallet_address": wallet.upper().replace("0X", "0x"), "token_address": token}
-    with TestClient(app) as client:
-        response = client.get("/api/news/wallets/cards", headers=AUTH, params={**scope, "kind": "buy"})
-        limited = client.get("/api/news/wallets/cards", headers=AUTH, params={**scope, "limit": 2})
-        single = client.get("/api/news/wallets/cards", headers=AUTH, params={"wallet_address": wallet})
-        unauthorized = client.get("/api/news/wallets/cards", params=scope)
-    assert response.status_code == 200, response.text
-    data = response.json()["data"]
-    assert data["cards"] == []
-    assert [row["kind"] for row in data["fills"]] == ["transfer_out", "sell", "buy"]
-    assert [row["log_index"] for row in data["fills"]] == [3, 2, 1]
-    assert data["fills"][0]["usd"] is None
-    assert data["fills"][1]["usd"] == "0.0100000000"
-    assert data["fills"][2]["amount_raw"] == "1234567890123456789"
-    assert data["fills"][2]["token_decimals"] == 18
-    assert [row["kind"] for row in limited.json()["data"]["fills"]] == ["transfer_out", "sell"]
-    assert single.json()["data"]["fills"] == []
-    assert unauthorized.status_code == 401
-
-
-def test_wallet_research_collapses_before_paging_and_owns_each_outcome_anchor(app, conn) -> None:
-    from tracefold.news.wallet_contracts import VERIFIED_WALLET_PRICE_SOURCE
-
-    now = int(time.time() * 1000)
-    wallet = "0x69326e48f68500fb6cf3b3a7da640737b9cc347b"
-    token = "0x8de9018c1bb82884245f06dede9fe2bebabd1e18"
-    identities = []
-    for index in range(3):
-        stamp = now - 4_000_000 + index
-        identities.append(
-            _admit_wallet_observation(
-                conn,
-                at_ms=stamp,
-                kind="buy",
-                segment_key="segment-one",
-                tx_hash="0x" + str(index + 1) * 64,
-                usd=Decimal((index + 1) * 1000),
-                mark_price=Decimal("2"),
-                evidence={
-                    "log_index": index,
-                    "buy_count": index + 1,
-                    "observed_at_ms": stamp,
-                    "price_reference": "observed",
-                    "mark_source": VERIFIED_WALLET_PRICE_SOURCE,
-                    "price_chain_id": 4663,
-                    "price_token": token,
-                    "price_quote": "USD",
-                    "price_unit": "token",
-                },
-            )
-        )
-    other = _admit_wallet_observation(
-        conn,
-        at_ms=now - 5_000_000,
-        kind="buy",
-        segment_key="segment-two",
-        usd=Decimal("4000"),
-        evidence={"log_index": 0},
-    )
-    repos = repositories_for_connection(conn)
-    with repos.transaction():
-        repos.news.chain_tape_record_outcome(
-            WalletOutcome(
-                item_id=identities[-1],
-                horizon="15m",
-                price=Decimal("2.2"),
-                at_ms=now - 3_000_000,
-                source=VERIFIED_WALLET_PRICE_SOURCE,
-                reference_price=Decimal("2"),
-                reference_at_ms=now - 4_000_000 + 2,
-                target_at_ms=now - 3_100_000 + 2,
-            )
-        )
-    conn.commit()
-    with TestClient(app) as client:
-        params = {"kind": "buy", "wallet_address": wallet, "token_address": token, "limit": 1, "to_ms": now}
-        first = client.get("/api/news/wallets/cards", headers=AUTH, params=params)
-        assert first.status_code == 200, first.text
-        data = first.json()["data"]
-        assert data["totals"] == {
-            "segments": 2,
-            "observations": 4,
-            "wallets": 1,
-            "tokens": 1,
-            "priced_buy_usd": "7000.0000000000",
-        }
-        row = data["cards"][0]
-        assert row["item_id"] == identities[-1]
-        assert row["observation_count"] == 3
-        assert Decimal(row["usd"]) == 3000
-        assert row["outcomes"][0]["return_bps"] == 1000
-        assert row["outcomes"][1]["status"] == "pending"
-        assert row["outcomes"][2]["status"] == "not_due"
-        second = client.get("/api/news/wallets/cards", headers=AUTH, params={**params, "cursor": data["next_cursor"]})
-        assert second.status_code == 200, second.text
-        assert [row["item_id"] for row in second.json()["data"]["cards"]] == [other]
-        assert second.json()["data"]["totals"] == data["totals"]
-        changed = client.get(
-            "/api/news/wallets/cards", headers=AUTH, params={**params, "kind": "exit", "cursor": data["next_cursor"]}
-        )
-        assert changed.status_code == 400
-        timeline = client.get(
-            "/api/news/wallets/cards",
-            headers=AUTH,
-            params={**params, "limit": 10, "view": "observations", "segment_key": "segment-one"},
-        )
-        assert [row["item_id"] for row in timeline.json()["data"]["cards"]] == list(reversed(identities))
 
 
 def test_oi_sort_requires_a_comparable_scope_and_pages_without_losing_ties(app, conn) -> None:
@@ -972,25 +554,78 @@ def test_oi_sort_requires_a_comparable_scope_and_pages_without_losing_ties(app, 
         assert [g["latest"]["symbol"] for g in filtered["groups"]] == ["BTC"]
 
 
-def test_wallet_segments_do_not_merge_equal_symbols_addresses_on_different_chains(app, conn) -> None:
-    now = int(time.time() * 1000)
-    for chain in (4663, 4664):
-        _admit_wallet_observation(
-            conn,
-            at_ms=now - 1000,
-            kind="buy",
-            chain_id=chain,
-            segment_key="same-segment",
-            usd=Decimal("1000"),
-            evidence={"log_index": 0},
+def test_wallet_events_paging_totals_deep_link_and_old_contract_rejection(app, conn):
+    stamp = int(time.time() * 1000) - 1000
+    ids = []
+    for offset in range(3):
+        ids.append(
+            _admit_wallet_observation(
+                conn,
+                at_ms=stamp + offset,
+                notification_eligible=offset != 1,
+                notification_reason="wallet_notifications_disabled" if offset == 1 else None,
+            )
         )
+        conn.execute(
+            "UPDATE news_market_wallet_events SET ended_at_ms=%s WHERE item_id=%s", (stamp + offset + 1800000, ids[-1])
+        )
+        conn.commit()
     with TestClient(app) as client:
-        data = client.get("/api/news/wallets/cards", headers=AUTH, params={"kind": "buy"}).json()["data"]
-        assert len(data["cards"]) == data["totals"]["segments"] == 2
-        assert data["totals"]["wallets"] == data["totals"]["tokens"] == 2
-        assert len({row["research_id"] for row in data["cards"]}) == 2
-        selected = client.get("/api/news/wallets/cards", headers=AUTH, params={"kind": "buy", "chain_id": 4663}).json()[
-            "data"
-        ]
-        assert [row["chain_id"] for row in selected["cards"]] == [4663]
-        assert selected["totals"]["segments"] == 1
+        first = client.get("/api/news/wallets/events", headers=AUTH, params={"limit": 1}).json()["data"]
+        assert first["totals"] == {"total": 3, "active": 0, "sent": 0}
+        assert first["events"][0]["episode_id"] == ids[2]
+        second = client.get(
+            "/api/news/wallets/events", headers=AUTH, params={"limit": 1, "cursor": first["next_cursor"]}
+        ).json()["data"]
+        assert second["events"][0]["episode_id"] == ids[1]
+        assert second["totals"] == first["totals"]
+        assert second["events"][0]["notification_state"] == "not_alerted"
+        assert second["events"][0]["notification_reason"] == "wallet_notifications_disabled"
+        direct = client.get(f"/api/news/wallets/events/{ids[0]}", headers=AUTH)
+        assert direct.status_code == 200, direct.text
+        detail = direct.json()["data"]
+        assert detail["event"]["initial_snapshot"]["fast"]["net_usd"] == "6000"
+        assert detail["event"]["reference_price"] is None and detail["outcomes"] == []
+        assert client.get("/api/news/wallets/cards", headers=AUTH).status_code == 404
+        for params in (
+            {"window": "24h"},
+            {"kind": "buy"},
+            {"wallet_address": "0x1"},
+            {"token_address": "0x1"},
+            {"history_range": "7d", "cursor": first["next_cursor"]},
+        ):
+            assert client.get("/api/news/wallets/events", headers=AUTH, params=params).status_code == 400
+        assert client.get("/api/news/wallets/events", headers=AUTH, params={"history_range": "30m"}).status_code == 422
+        assert client.get("/api/news/wallets/events").status_code == 401
+        assert client.get("/api/news/wallets/events/missing", headers=AUTH).status_code == 404
+        auxiliary = client.get("/api/news/wallets", headers=AUTH)
+        assert auxiliary.status_code == 200
+        assert set(auxiliary.json()["data"]) == {"roster", "tape"}
+
+
+def test_wallet_detail_timeline_exact_cutoff_and_keyset_include_small_sell_and_transfer(app, conn):
+    from tests.news.net_buy_fixtures import movement
+
+    stamp = int(time.time() * 1000) - 1000
+    episode = _admit_wallet_observation(conn, at_ms=stamp)
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.news.chain_tape_record_fills(
+            [
+                movement(1, at=stamp, raw=1234567890123456789),
+                movement(2, wallet=1, kind="sell", usd="1", raw=1, at=stamp),
+                movement(3, wallet=1, kind="transfer_out", usd=None, raw=1, at=stamp),
+                replace(movement(4, at=stamp), log_index=101),
+            ]
+        )
+    conn.commit()
+    with TestClient(app) as client:
+        first = client.get(f"/api/news/wallets/events/{episode}", headers=AUTH, params={"limit": 2}).json()["data"]
+        assert [row["kind"] for row in first["fills"]] == ["transfer_out", "sell"]
+        second = client.get(
+            f"/api/news/wallets/events/{episode}",
+            headers=AUTH,
+            params={"limit": 2, "fills_cursor": first["next_fills_cursor"]},
+        ).json()["data"]
+        assert [row["amount_raw"] for row in second["fills"]] == ["1234567890123456789"]
+        assert second["next_fills_cursor"] is None

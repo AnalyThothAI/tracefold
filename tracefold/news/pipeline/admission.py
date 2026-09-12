@@ -540,7 +540,7 @@ def _write_market_fact(news: Any, prepared: _PreparedMarket, *, ingest_mode: str
         news.insert_market_smart_money(fact=prepared.smart_money_fact, ingest_mode=ingest_mode, now_ms=now_ms)
         return True
     if prepared.wallet is not None:
-        return bool(news.chain_tape_insert_wallet_event(prepared.wallet))
+        return bool(news.chain_tape_insert_wallet_event(prepared.wallet, snapshot_json=prepared.provider_params_json))
     return False
 
 
@@ -558,7 +558,7 @@ def prepare_wallet_observation(event: WalletEvent) -> _PreparedMarket:
     line of provider text, so the field stays empty rather than carrying an invented one.
     """
 
-    title = event.title or f"{event.kind} {event.token_symbol or event.token}"
+    title = f"链上钱包 · 集中净买入 · {event.token_symbol or event.token}"
     return _PreparedMarket(
         item_id=event.item_id,
         provider_record_id=wallet_record_key(event),
@@ -569,7 +569,7 @@ def prepare_wallet_observation(event: WalletEvent) -> _PreparedMarket:
         parse_status="parsed",
         parse_error=None,
         provider_metadata_json=canonical_json({"source": WALLET_PROVIDER, "strategies": []}),
-        provider_params_json=canonical_json(dict(event.evidence or {})),
+        provider_params_json=event.initial_snapshot.model_dump_json(),
         strategy_ids_json="[]",
         raw_text=title,
         parent=ExtractedTitle(title=title, comparison="", first_line=title, token_count=0, url_slug=False),
@@ -586,23 +586,8 @@ def prepare_wallet_observation(event: WalletEvent) -> _PreparedMarket:
 
 
 def wallet_record_key(event: WalletEvent) -> str:
-    """The chain-side identity one wallet observation is keyed on, and it is the rule's own subject.
-
-    An exit is the sell that triggered it -- one movement, one card, and a re-run of the same turn
-    recomputes the same key. A crowding card is its token, its window and how many wallets it counted,
-    so the doubling follow-up the rule allows is a different Item rather than a silent overwrite of the
-    card a reader already has. A digest is its window and nothing else: it names no wallet and no
-    token, and re-running a due turn must produce the same one Item rather than a second summary of
-    the same four hours (#572 PR-3).
-    """
-
-    if event.kind == "buy":
-        return f"buy|{event.chain_id}|{event.wallet}|{event.token}|{event.tx_hash}|{event.evidence['log_index']}"
-    if event.kind == "exit":
-        return f"exit|{event.chain_id}|{event.wallet}|{event.token}|{event.tx_hash}"
-    if event.kind == "digest":
-        return f"digest|{event.chain_id}|{event.window_from_ms}"
-    return f"crowding|{event.chain_id}|{event.token}|{event.window_from_ms}|{event.peer_wallets}"
+    """A token episode is identified by its first complete trigger transaction."""
+    return f"net_buy|{event.chain_id}|{event.token}|{event.trigger_tx_hash}"
 
 
 def wallet_item_id(event: WalletEvent) -> str:

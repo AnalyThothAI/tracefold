@@ -369,13 +369,13 @@
         "title": "ApiEnvelope[NewsSymbolData]",
         "type": "object"
       },
-      "ApiEnvelope_NewsWalletCardsData_": {
+      "ApiEnvelope_NewsWalletEventDetailData_": {
         "additionalProperties": false,
         "properties": {
           "data": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/NewsWalletCardsData"
+                "$ref": "#/components/schemas/NewsWalletEventDetailData"
               },
               {
                 "type": "null"
@@ -412,7 +412,53 @@
         "required": [
           "ok"
         ],
-        "title": "ApiEnvelope[NewsWalletCardsData]",
+        "title": "ApiEnvelope[NewsWalletEventDetailData]",
+        "type": "object"
+      },
+      "ApiEnvelope_NewsWalletEventsData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsWalletEventsData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[NewsWalletEventsData]",
         "type": "object"
       },
       "ApiEnvelope_NewsWalletsData_": {
@@ -670,6 +716,338 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "NetBuyMember": {
+        "additionalProperties": false,
+        "description": "One address, one window, one arithmetic set, including exclusions.",
+        "properties": {
+          "buy_token_raw": {
+            "title": "Buy Token Raw",
+            "type": "string"
+          },
+          "buy_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Buy Usd",
+            "type": "string"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          },
+          "monitoring_from_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monitoring From Ms"
+          },
+          "net_token_raw": {
+            "title": "Net Token Raw",
+            "type": "string"
+          },
+          "net_usd": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Usd"
+          },
+          "qualified": {
+            "title": "Qualified",
+            "type": "boolean"
+          },
+          "rank_quality": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank Quality"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "roster_known_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roster Known At Ms"
+          },
+          "roster_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roster Version"
+          },
+          "sell_token_raw": {
+            "title": "Sell Token Raw",
+            "type": "string"
+          },
+          "sell_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Sell Usd",
+            "type": "string"
+          },
+          "source_closed_trades": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Closed Trades"
+          },
+          "source_profit_factor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Profit Factor"
+          },
+          "transfer_out_count": {
+            "title": "Transfer Out Count",
+            "type": "integer"
+          },
+          "unpriced_count": {
+            "title": "Unpriced Count",
+            "type": "integer"
+          },
+          "wallet": {
+            "title": "Wallet",
+            "type": "string"
+          }
+        },
+        "required": [
+          "wallet",
+          "handle",
+          "rank_quality",
+          "roster_version",
+          "roster_known_at_ms",
+          "monitoring_from_ms",
+          "source_closed_trades",
+          "source_profit_factor",
+          "buy_usd",
+          "sell_usd",
+          "net_usd",
+          "buy_token_raw",
+          "sell_token_raw",
+          "net_token_raw",
+          "unpriced_count",
+          "transfer_out_count",
+          "qualified",
+          "reasons"
+        ],
+        "title": "NetBuyMember",
+        "type": "object"
+      },
+      "NetBuySnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "chain_id": {
+            "title": "Chain Id",
+            "type": "integer"
+          },
+          "coverage_from_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage From Ms"
+          },
+          "coverage_gap_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage Gap At Ms"
+          },
+          "cutoff_at_ms": {
+            "title": "Cutoff At Ms",
+            "type": "integer"
+          },
+          "cutoff_block": {
+            "title": "Cutoff Block",
+            "type": "integer"
+          },
+          "cutoff_log": {
+            "title": "Cutoff Log",
+            "type": "integer"
+          },
+          "fast": {
+            "$ref": "#/components/schemas/NetBuyWindow"
+          },
+          "min_net_buy_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Min Net Buy Usd",
+            "type": "string"
+          },
+          "roster_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roster Version"
+          },
+          "slow": {
+            "$ref": "#/components/schemas/NetBuyWindow"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          },
+          "token_decimals": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Decimals"
+          },
+          "token_symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Symbol"
+          }
+        },
+        "required": [
+          "chain_id",
+          "token",
+          "token_symbol",
+          "token_decimals",
+          "cutoff_at_ms",
+          "cutoff_block",
+          "cutoff_log",
+          "roster_version",
+          "min_net_buy_usd",
+          "coverage_from_ms",
+          "coverage_gap_at_ms",
+          "fast",
+          "slow"
+        ],
+        "title": "NetBuySnapshot",
+        "type": "object"
+      },
+      "NetBuyWindow": {
+        "additionalProperties": false,
+        "properties": {
+          "buy_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Buy Usd",
+            "type": "string"
+          },
+          "from_ms": {
+            "title": "From Ms",
+            "type": "integer"
+          },
+          "matched": {
+            "title": "Matched",
+            "type": "boolean"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/NetBuyMember"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "net_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Net Usd",
+            "type": "string"
+          },
+          "qualified_n": {
+            "title": "Qualified N",
+            "type": "integer"
+          },
+          "required_n": {
+            "title": "Required N",
+            "type": "integer"
+          },
+          "sell_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Sell Usd",
+            "type": "string"
+          },
+          "to_ms": {
+            "title": "To Ms",
+            "type": "integer"
+          },
+          "window": {
+            "enum": [
+              "5m",
+              "30m"
+            ],
+            "title": "Window",
+            "type": "string"
+          }
+        },
+        "required": [
+          "window",
+          "from_ms",
+          "to_ms",
+          "required_n",
+          "qualified_n",
+          "buy_usd",
+          "sell_usd",
+          "net_usd",
+          "matched",
+          "members"
+        ],
+        "title": "NetBuyWindow",
         "type": "object"
       },
       "NewsAcceptedReviewData": {
@@ -3483,44 +3861,7 @@
             ],
             "title": "Trader Label"
           },
-          "wallet_address": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Address"
-          },
-          "wallet_balance_before": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Balance Before"
-          },
-          "wallet_basis": {
-            "anyOf": [
-              {
-                "enum": [
-                  "chain_balance",
-                  "site_reported"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Basis"
-          },
-          "wallet_block_number": {
+          "wallet_chain_id": {
             "anyOf": [
               {
                 "type": "integer"
@@ -3529,31 +3870,9 @@
                 "type": "null"
               }
             ],
-            "title": "Wallet Block Number"
+            "title": "Wallet Chain Id"
           },
-          "wallet_buy_count": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Buy Count"
-          },
-          "wallet_closed": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Closed"
-          },
-          "wallet_crowding_item_id": {
+          "wallet_notification_reason": {
             "anyOf": [
               {
                 "type": "string"
@@ -3562,221 +3881,17 @@
                 "type": "null"
               }
             ],
-            "title": "Wallet Crowding Item Id"
+            "title": "Wallet Notification Reason"
           },
-          "wallet_digest_lines": {
+          "wallet_snapshot": {
             "anyOf": [
               {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
+                "$ref": "#/components/schemas/NetBuySnapshot"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Wallet Digest Lines"
-          },
-          "wallet_entry_price": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Entry Price"
-          },
-          "wallet_followers": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Followers"
-          },
-          "wallet_handle": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Handle"
-          },
-          "wallet_history_from_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet History From Ms"
-          },
-          "wallet_kind": {
-            "anyOf": [
-              {
-                "enum": [
-                  "buy",
-                  "exit",
-                  "crowding",
-                  "digest"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Kind"
-          },
-          "wallet_liquidity_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Liquidity Usd"
-          },
-          "wallet_mark_price": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Mark Price"
-          },
-          "wallet_observed_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Observed At Ms"
-          },
-          "wallet_peer_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Peer Usd"
-          },
-          "wallet_peer_wallets": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Peer Wallets"
-          },
-          "wallet_position_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Position Usd"
-          },
-          "wallet_premium_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Premium Bps"
-          },
-          "wallet_quantity": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Quantity"
-          },
-          "wallet_ratio_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Ratio Bps"
-          },
-          "wallet_segment_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Segment Key"
-          },
-          "wallet_selection_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Selection Reason"
-          },
-          "wallet_stage": {
-            "anyOf": [
-              {
-                "enum": [
-                  "first_observed",
-                  "new_position",
-                  "add",
-                  "reentry",
-                  "unknown"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Stage"
+            ]
           },
           "wallet_token": {
             "anyOf": [
@@ -3789,29 +3904,7 @@
             ],
             "title": "Wallet Token"
           },
-          "wallet_tone": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Tone"
-          },
-          "wallet_tx_hash": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Tx Hash"
-          },
-          "wallet_unpriced_buys": {
+          "wallet_trigger_max_age_s": {
             "anyOf": [
               {
                 "type": "integer"
@@ -3820,18 +3913,7 @@
                 "type": "null"
               }
             ],
-            "title": "Wallet Unpriced Buys"
-          },
-          "wallet_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wallet Usd"
+            "title": "Wallet Trigger Max Age S"
           },
           "whale_long_profit_bps": {
             "anyOf": [
@@ -5990,150 +6072,73 @@
         "title": "NewsVerdictData",
         "type": "object"
       },
-      "NewsWalletCardData": {
+      "NewsWalletEventData": {
         "additionalProperties": false,
-        "description": "A retained observation, its selection evidence and frozen-reference price outcomes.\n\nA buy can have no delivery and still have outcomes. The paid entry price is distinct from the\nobserved market price; unavailable or historically unrecorded references never invent returns.",
         "properties": {
-          "basis": {
-            "anyOf": [
-              {
-                "enum": [
-                  "chain_balance",
-                  "site_reported"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Basis"
-          },
-          "buy_count": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Buy Count"
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
           },
           "chain_id": {
             "title": "Chain Id",
             "type": "integer"
           },
-          "closed": {
-            "default": false,
-            "title": "Closed",
-            "type": "boolean"
+          "change_reason": {
+            "title": "Change Reason",
+            "type": "string"
           },
-          "delivery_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Delivery Key"
-          },
-          "delivery_state": {
-            "anyOf": [
-              {
-                "enum": [
-                  "pending",
-                  "sending",
-                  "sent",
-                  "failed",
-                  "unknown",
-                  "unavailable"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Delivery State"
-          },
-          "digest_lines": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Digest Lines"
-          },
-          "digest_model_used": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Digest Model Used"
-          },
-          "entry_price": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Entry Price"
-          },
-          "event_at_ms": {
-            "title": "Event At Ms",
+          "detected_at_ms": {
+            "title": "Detected At Ms",
             "type": "integer"
           },
-          "first_event_at_ms": {
-            "title": "First Event At Ms",
+          "ended_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At Ms"
+          },
+          "episode_id": {
+            "title": "Episode Id",
+            "type": "string"
+          },
+          "first_attempt_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Attempt At Ms"
+          },
+          "initial_snapshot": {
+            "$ref": "#/components/schemas/NetBuySnapshot"
+          },
+          "intent_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intent At Ms"
+          },
+          "last_effective_buy_at_ms": {
+            "title": "Last Effective Buy At Ms",
             "type": "integer"
           },
-          "handle": {
-            "default": "",
-            "title": "Handle",
-            "type": "string"
+          "latest_snapshot": {
+            "$ref": "#/components/schemas/NetBuySnapshot"
           },
-          "history_from_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "History From Ms"
-          },
-          "item_id": {
-            "title": "Item Id",
-            "type": "string"
-          },
-          "kind": {
-            "enum": [
-              "buy",
-              "exit",
-              "crowding",
-              "digest"
-            ],
-            "title": "Kind",
-            "type": "string"
-          },
-          "mark_price": {
+          "notification_reason": {
             "anyOf": [
               {
                 "type": "string"
@@ -6142,24 +6147,17 @@
                 "type": "null"
               }
             ],
-            "title": "Mark Price"
+            "title": "Notification Reason"
           },
-          "mark_source": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mark Source"
+          "notification_state": {
+            "title": "Notification State",
+            "type": "string"
           },
-          "observation_count": {
-            "title": "Observation Count",
+          "received_at_ms": {
+            "title": "Received At Ms",
             "type": "integer"
           },
-          "observed_at_ms": {
+          "reference_at_ms": {
             "anyOf": [
               {
                 "type": "integer"
@@ -6168,21 +6166,9 @@
                 "type": "null"
               }
             ],
-            "title": "Observed At Ms"
+            "title": "Reference At Ms"
           },
-          "outcomes": {
-            "items": {
-              "$ref": "#/components/schemas/NewsWalletOutcomeData"
-            },
-            "title": "Outcomes",
-            "type": "array"
-          },
-          "peer_wallets": {
-            "default": 0,
-            "title": "Peer Wallets",
-            "type": "integer"
-          },
-          "position_usd": {
+          "reference_price": {
             "anyOf": [
               {
                 "type": "string"
@@ -6191,25 +6177,9 @@
                 "type": "null"
               }
             ],
-            "title": "Position Usd"
+            "title": "Reference Price"
           },
-          "premium_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Premium Bps"
-          },
-          "price_quote": {
-            "const": "USD",
-            "title": "Price Quote",
-            "type": "string"
-          },
-          "price_reference": {
+          "reference_source": {
             "anyOf": [
               {
                 "type": "string"
@@ -6218,62 +6188,7 @@
                 "type": "null"
               }
             ],
-            "title": "Price Reference"
-          },
-          "price_source_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Price Source At Ms"
-          },
-          "price_status": {
-            "enum": [
-              "missing",
-              "verified",
-              "identity_unverified"
-            ],
-            "title": "Price Status",
-            "type": "string"
-          },
-          "price_unit": {
-            "const": "token",
-            "title": "Price Unit",
-            "type": "string"
-          },
-          "ratio_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ratio Bps"
-          },
-          "research_id": {
-            "title": "Research Id",
-            "type": "string"
-          },
-          "segment_key": {
-            "title": "Segment Key",
-            "type": "string"
-          },
-          "selection_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Selection Reason"
+            "title": "Reference Source"
           },
           "settled_at_ms": {
             "anyOf": [
@@ -6286,26 +6201,7 @@
             ],
             "title": "Settled At Ms"
           },
-          "stage": {
-            "anyOf": [
-              {
-                "enum": [
-                  "first_observed",
-                  "new_position",
-                  "add",
-                  "reentry",
-                  "unknown"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Stage"
-          },
           "token": {
-            "default": "",
             "title": "Token",
             "type": "string"
           },
@@ -6320,120 +6216,52 @@
             ],
             "title": "Token Symbol"
           },
-          "tone": {
-            "default": "",
-            "title": "Tone",
+          "trigger_tx_hash": {
+            "title": "Trigger Tx Hash",
             "type": "string"
           },
-          "unpriced_buys": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Unpriced Buys"
-          },
-          "usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Usd"
-          },
-          "wallet": {
-            "default": "",
-            "title": "Wallet",
-            "type": "string"
-          },
-          "window_from_ms": {
-            "title": "Window From Ms",
+          "triggered_at_ms": {
+            "title": "Triggered At Ms",
             "type": "integer"
           },
-          "window_to_ms": {
-            "title": "Window To Ms",
+          "updated_at_ms": {
+            "title": "Updated At Ms",
             "type": "integer"
           }
         },
         "required": [
-          "item_id",
+          "episode_id",
           "chain_id",
-          "segment_key",
-          "research_id",
-          "observation_count",
-          "first_event_at_ms",
-          "mark_source",
-          "price_status",
-          "price_quote",
-          "price_unit",
-          "price_source_at_ms",
-          "outcomes",
-          "kind",
-          "event_at_ms",
-          "window_from_ms",
-          "window_to_ms"
+          "token",
+          "token_symbol",
+          "trigger_tx_hash",
+          "triggered_at_ms",
+          "received_at_ms",
+          "detected_at_ms",
+          "last_effective_buy_at_ms",
+          "ended_at_ms",
+          "initial_snapshot",
+          "latest_snapshot",
+          "change_reason",
+          "updated_at_ms",
+          "notification_state",
+          "notification_reason",
+          "intent_at_ms",
+          "first_attempt_at_ms",
+          "settled_at_ms",
+          "attempts",
+          "reference_price",
+          "reference_at_ms",
+          "reference_source"
         ],
-        "title": "NewsWalletCardData",
+        "title": "NewsWalletEventData",
         "type": "object"
       },
-      "NewsWalletCardTotalData": {
+      "NewsWalletEventDetailData": {
         "additionalProperties": false,
-        "description": "What the rules opened in the window, per kind, and how much of it reached a reader.",
         "properties": {
-          "cards": {
-            "default": 0,
-            "title": "Cards",
-            "type": "integer"
-          },
-          "kind": {
-            "enum": [
-              "buy",
-              "exit",
-              "crowding",
-              "digest"
-            ],
-            "title": "Kind",
-            "type": "string"
-          },
-          "last_event_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Event At Ms"
-          },
-          "sent": {
-            "default": 0,
-            "title": "Sent",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "kind"
-        ],
-        "title": "NewsWalletCardTotalData",
-        "type": "object"
-      },
-      "NewsWalletCardsData": {
-        "additionalProperties": false,
-        "description": "One bounded page of cards, newest first, inside the window the caller asked for.",
-        "properties": {
-          "cards": {
-            "items": {
-              "$ref": "#/components/schemas/NewsWalletCardData"
-            },
-            "title": "Cards",
-            "type": "array"
+          "event": {
+            "$ref": "#/components/schemas/NewsWalletEventData"
           },
           "fills": {
             "items": {
@@ -6442,9 +6270,84 @@
             "title": "Fills",
             "type": "array"
           },
-          "fills_complete": {
-            "title": "Fills Complete",
-            "type": "boolean"
+          "next_fills_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Fills Cursor"
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/NewsWalletOutcomeData"
+            },
+            "title": "Outcomes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "event",
+          "fills",
+          "next_fills_cursor",
+          "outcomes"
+        ],
+        "title": "NewsWalletEventDetailData",
+        "type": "object"
+      },
+      "NewsWalletEventTotalsData": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "integer"
+          },
+          "sent": {
+            "title": "Sent",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "active",
+          "sent"
+        ],
+        "title": "NewsWalletEventTotalsData",
+        "type": "object"
+      },
+      "NewsWalletEventsData": {
+        "additionalProperties": false,
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/NewsWalletEventData"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "history_from_ms": {
+            "title": "History From Ms",
+            "type": "integer"
+          },
+          "history_range": {
+            "enum": [
+              "24h",
+              "72h",
+              "7d"
+            ],
+            "title": "History Range",
+            "type": "string"
+          },
+          "history_to_ms": {
+            "title": "History To Ms",
+            "type": "integer"
           },
           "limit": {
             "title": "Limit",
@@ -6462,50 +6365,30 @@
             "title": "Next Cursor"
           },
           "totals": {
-            "$ref": "#/components/schemas/NewsWalletResearchTotalsData"
-          },
-          "view": {
-            "enum": [
-              "segments",
-              "observations"
-            ],
-            "title": "View",
-            "type": "string"
-          },
-          "window": {
-            "title": "Window",
-            "type": "string"
-          },
-          "window_from_ms": {
-            "title": "Window From Ms",
-            "type": "integer"
-          },
-          "window_to_ms": {
-            "title": "Window To Ms",
-            "type": "integer"
+            "$ref": "#/components/schemas/NewsWalletEventTotalsData"
           }
         },
         "required": [
-          "cards",
+          "events",
           "totals",
           "next_cursor",
-          "view",
-          "fills_complete",
-          "fills",
-          "window",
-          "window_from_ms",
-          "window_to_ms",
+          "history_range",
+          "history_from_ms",
+          "history_to_ms",
           "limit"
         ],
-        "title": "NewsWalletCardsData",
+        "title": "NewsWalletEventsData",
         "type": "object"
       },
       "NewsWalletFillData": {
         "additionalProperties": false,
-        "description": "A retained wallet/token action, whether or not it generated an observation.",
         "properties": {
           "amount_raw": {
             "title": "Amount Raw",
+            "type": "string"
+          },
+          "block_hash": {
+            "title": "Block Hash",
             "type": "string"
           },
           "block_number": {
@@ -6514,6 +6397,10 @@
           },
           "chain_id": {
             "title": "Chain Id",
+            "type": "integer"
+          },
+          "classified_at_ms": {
+            "title": "Classified At Ms",
             "type": "integer"
           },
           "event_at_ms": {
@@ -6531,6 +6418,14 @@
           },
           "log_index": {
             "title": "Log Index",
+            "type": "integer"
+          },
+          "received_at_ms": {
+            "title": "Received At Ms",
+            "type": "integer"
+          },
+          "roster_version": {
+            "title": "Roster Version",
             "type": "integer"
           },
           "token": {
@@ -6574,6 +6469,17 @@
             ],
             "title": "Usd"
           },
+          "usd_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usd Source"
+          },
           "wallet": {
             "title": "Wallet",
             "type": "string"
@@ -6584,6 +6490,7 @@
           "tx_hash",
           "log_index",
           "block_number",
+          "block_hash",
           "wallet",
           "token",
           "token_symbol",
@@ -6591,59 +6498,33 @@
           "kind",
           "amount_raw",
           "usd",
-          "event_at_ms"
+          "usd_source",
+          "event_at_ms",
+          "received_at_ms",
+          "classified_at_ms",
+          "roster_version"
         ],
         "title": "NewsWalletFillData",
-        "type": "object"
-      },
-      "NewsWalletFillTotalData": {
-        "additionalProperties": false,
-        "description": "What the tape stored in the window, per kind.\n\n`unpriced` counts trades whose cash leg was not the pinned stablecoin, so it is always zero on\n`transfer_out`: a movement with no swap has no cash leg at all, and calling it unpriced would report\nthe tape's own classification as a pricing failure.",
-        "properties": {
-          "fills": {
-            "default": 0,
-            "title": "Fills",
-            "type": "integer"
-          },
-          "kind": {
-            "enum": [
-              "buy",
-              "sell",
-              "transfer_out"
-            ],
-            "title": "Kind",
-            "type": "string"
-          },
-          "tokens": {
-            "default": 0,
-            "title": "Tokens",
-            "type": "integer"
-          },
-          "unpriced": {
-            "default": 0,
-            "title": "Unpriced",
-            "type": "integer"
-          },
-          "usd": {
-            "default": "0",
-            "title": "Usd",
-            "type": "string"
-          },
-          "wallets": {
-            "default": 0,
-            "title": "Wallets",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "kind"
-        ],
-        "title": "NewsWalletFillTotalData",
         "type": "object"
       },
       "NewsWalletOutcomeData": {
         "additionalProperties": false,
         "properties": {
+          "at_ms": {
+            "title": "At Ms",
+            "type": "integer"
+          },
+          "change_percent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Percent"
+          },
           "horizon": {
             "enum": [
               "15m",
@@ -6686,110 +6567,37 @@
             ],
             "title": "Reference Price"
           },
-          "return_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Return Bps"
-          },
-          "sampled_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sampled At Ms"
-          },
           "source": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source"
+            "title": "Source",
+            "type": "string"
           },
           "status": {
             "enum": [
-              "not_scheduled",
-              "not_due",
-              "pending",
-              "unavailable",
+              "comparable",
               "missing_reference",
-              "identity_unverified",
-              "measured"
+              "unavailable",
+              "late"
             ],
             "title": "Status",
             "type": "string"
           },
           "target_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target At Ms"
+            "title": "Target At Ms",
+            "type": "integer"
           }
         },
         "required": [
           "horizon",
-          "status",
-          "source",
+          "target_at_ms",
+          "at_ms",
           "price",
-          "sampled_at_ms",
+          "source",
           "reference_price",
           "reference_at_ms",
-          "target_at_ms",
-          "return_bps"
+          "status",
+          "change_percent"
         ],
         "title": "NewsWalletOutcomeData",
-        "type": "object"
-      },
-      "NewsWalletResearchTotalsData": {
-        "additionalProperties": false,
-        "properties": {
-          "observations": {
-            "title": "Observations",
-            "type": "integer"
-          },
-          "priced_buy_usd": {
-            "title": "Priced Buy Usd",
-            "type": "string"
-          },
-          "segments": {
-            "title": "Segments",
-            "type": "integer"
-          },
-          "tokens": {
-            "title": "Tokens",
-            "type": "integer"
-          },
-          "wallets": {
-            "title": "Wallets",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "segments",
-          "observations",
-          "wallets",
-          "tokens",
-          "priced_buy_usd"
-        ],
-        "title": "NewsWalletResearchTotalsData",
         "type": "object"
       },
       "NewsWalletRosterData": {
@@ -6924,6 +6732,32 @@
         "additionalProperties": false,
         "description": "Where the tape has read to, and what its last turn did there.\n\n`noise_through_block` is the second position and never lags: it is how far the two discard counters\nhave been taken, so a movement is counted once however many times the overlap re-offers it.",
         "properties": {
+          "coverage_from_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage From Ms"
+          },
+          "detection_cutover_at_ms": {
+            "title": "Detection Cutover At Ms",
+            "type": "integer"
+          },
+          "gap_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gap At Ms"
+          },
           "high_water_block": {
             "default": 0,
             "title": "High Water Block",
@@ -6981,6 +6815,39 @@
             "title": "Roster Version",
             "type": "integer"
           },
+          "scanned_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scanned At Ms"
+          },
+          "scanned_block": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scanned Block"
+          },
+          "scanned_log": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scanned Log"
+          },
           "unknown_total": {
             "default": 0,
             "title": "Unknown Total",
@@ -6998,27 +6865,20 @@
             "title": "Updated At Ms"
           }
         },
+        "required": [
+          "detection_cutover_at_ms",
+          "coverage_from_ms",
+          "scanned_at_ms",
+          "scanned_block",
+          "scanned_log",
+          "gap_at_ms"
+        ],
         "title": "NewsWalletTapeStateData",
         "type": "object"
       },
       "NewsWalletsData": {
         "additionalProperties": false,
-        "description": "The page's header and roster: one roster version, one tape position, two windowed counts.",
         "properties": {
-          "cards": {
-            "items": {
-              "$ref": "#/components/schemas/NewsWalletCardTotalData"
-            },
-            "title": "Cards",
-            "type": "array"
-          },
-          "fills": {
-            "items": {
-              "$ref": "#/components/schemas/NewsWalletFillTotalData"
-            },
-            "title": "Fills",
-            "type": "array"
-          },
           "roster": {
             "$ref": "#/components/schemas/NewsWalletRosterData"
           },
@@ -7031,22 +6891,11 @@
                 "type": "null"
               }
             ]
-          },
-          "window_from_ms": {
-            "title": "Window From Ms",
-            "type": "integer"
-          },
-          "window_to_ms": {
-            "title": "Window To Ms",
-            "type": "integer"
           }
         },
         "required": [
           "roster",
-          "fills",
-          "cards",
-          "window_from_ms",
-          "window_to_ms"
+          "tape"
         ],
         "title": "NewsWalletsData",
         "type": "object"
@@ -9008,7 +8857,6 @@
     },
     "/api/news/wallets": {
       "get": {
-        "description": "The tape's own state: its roster, its position, and one day of what it stored and sent.\n\nFour bounded statements and no parameters. The roster is the current version only -- an earlier\nversion is evidence a card carries, not a page a reader browses -- and the two count blocks are\nthe last 24 hours on the chain's own clock.",
         "operationId": "get_news_wallets_api_news_wallets_get",
         "responses": {
           "200": {
@@ -9028,19 +8876,22 @@
         ]
       }
     },
-    "/api/news/wallets/cards": {
+    "/api/news/wallets/events": {
       "get": {
-        "description": "Retained observations, optionally narrowed by kind and exact wallet/token identity.\n\nEvery card is published, sent or not: whether a reader was told is reported per row and is never a\nfilter. A digest says whether the model selected its material; the program renders its sentences.",
-        "operationId": "get_news_wallet_cards_api_news_wallets_cards_get",
+        "operationId": "get_news_wallet_events_api_news_wallets_events_get",
         "parameters": [
           {
             "in": "query",
-            "name": "window",
+            "name": "history_range",
             "required": false,
             "schema": {
               "default": "24h",
-              "maxLength": 8,
-              "title": "Window",
+              "enum": [
+                "24h",
+                "72h",
+                "7d"
+              ],
+              "title": "History Range",
               "type": "string"
             }
           },
@@ -9049,116 +8900,11 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": 100,
+              "default": 50,
               "maximum": 200,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "kind",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "enum": [
-                    "buy",
-                    "exit",
-                    "crowding",
-                    "digest"
-                  ],
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Kind"
-            }
-          },
-          {
-            "in": "query",
-            "name": "wallet_address",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "pattern": "^0x[0-9a-fA-F]{40}$",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Wallet Address"
-            }
-          },
-          {
-            "in": "query",
-            "name": "token_address",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "pattern": "^0x[0-9a-fA-F]{40}$",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Token Address"
-            }
-          },
-          {
-            "in": "query",
-            "name": "chain_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "exclusiveMaximum": 9223372036854775808,
-                  "minimum": 1,
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Chain Id"
-            }
-          },
-          {
-            "in": "query",
-            "name": "segment_key",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "maxLength": 128,
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Segment Key"
-            }
-          },
-          {
-            "in": "query",
-            "name": "view",
-            "required": false,
-            "schema": {
-              "default": "segments",
-              "enum": [
-                "segments",
-                "observations"
-              ],
-              "title": "View",
-              "type": "string"
             }
           },
           {
@@ -9190,7 +8936,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_NewsWalletCardsData_"
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsWalletEventsData_"
                 }
               }
             },
@@ -9207,7 +8953,72 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Get News Wallet Cards",
+        "summary": "Get News Wallet Events",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/news/wallets/events/{episode_id}": {
+      "get": {
+        "operationId": "get_news_wallet_event_api_news_wallets_events__episode_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "episode_id",
+            "required": true,
+            "schema": {
+              "title": "Episode Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fills_cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 512,
+              "title": "Fills Cursor",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsWalletEventDetailData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get News Wallet Event",
         "tags": [
           "api"
         ]

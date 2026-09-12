@@ -20,11 +20,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any, Final, Literal
 
 from . import card_format as fmt
 from .market_contracts import MARKET_NEWS_PUSHED_MAX, MARKET_NEWS_WINDOW_MS
 from .outcome import DIRECTION_ZH, MAGNITUDE_ZH, NOVELTY_ZH
+from .wallet_contracts import NetBuySnapshot
 
 CardFamily = Literal["news", "oi", "liquidation", "smart_money", "wallet"]
 # The model's own judgment about the news, and `none` for a card that carries no judgment at all --
@@ -44,26 +46,6 @@ FAMILY_TITLE: Final[dict[str, str]] = {
     "smart_money": "聪明钱",
     "wallet": "链上钱包",
 }
-# The wallet family's own qualifier, decided by what the observation is rather than by why the card
-# fired. A reader scanning a channel needs "this wallet got out" and "several wallets got in" to be
-# distinguishable in the header, and the follow-up qualifier the other families use answers a different
-# question -- the family's line already says which movement this is (#572 PR-2).
-WALLET_QUALIFIER: Final[dict[str, str]] = {
-    "buy": "买入观察",
-    "exit": "减仓",
-    "exit_closed": "清仓",
-    "crowding": "拥挤",
-    "crowding_late": "拥挤 · 跟风偏晚",
-    # The four-hourly summary (#572 PR-3). It is a wallet card because it is about the same roster on
-    # the same chain, and it is its own qualifier because its subject is a window rather than a
-    # movement -- a reader must be able to tell "something just happened" from "here is the period".
-    "digest": "摘要",
-}
-# Where an exit's denominator came from, in four characters. Not a warning and not a confidence score:
-# `链上余额` is `balanceOf` at the block before the sell, `持仓推算` is the provider's reported bag plus
-# the amount just sold. A reader is owed the difference and nothing more alarming than the difference
-# (#572 決策更新).
-WALLET_BASIS_ZH: Final[dict[str, str]] = {"chain_balance": "链上余额", "site_reported": "持仓推算"}
 # OI's own direction vocabulary. Deliberately not the verdict's `DIRECTION_ZH`: an open-interest
 # change rises or falls, it is not bullish or bearish, and a market card claims no judgment.
 OI_DIRECTION_ZH: Final[dict[str, str]] = {"rise": "上升", "fall": "下降"}
@@ -128,7 +110,6 @@ _SMART_MONEY_UNVERIFIED: Final = "（来源标签，非已核实地址）"
 # What a wallet card's caveat says, and it is about the roster rather than about the trade: the list is
 # hand-curated by the provider and ranked on seven days of its own ledger, which is a short history in a
 # nine-day-old chain (#572 §10).
-_WALLET_NOTE: Final = "名单为原站统计所选，历史样本很短；卡片只陈述链上成交，不构成建议。"
 
 _NOTE_PREFIX: Final[dict[str, str]] = {"news": "Tracefold", "market": "Tracefold 市场"}
 _NOTE_ID_MAX: Final[dict[str, int]] = {"news": 8, "market": 24}
@@ -248,55 +229,12 @@ class ReaderCardMarket:
 
 @dataclass(frozen=True, slots=True)
 class ReaderCardWallet:
-    """The chain wallet family's own facts (#572 PR-2). Every one of them was computed, not reported.
+    """The same exact net-buy snapshot reaches every channel."""
 
-    Both kinds share this shape because they share a subject -- a wallet, a token, a window and a set of
-    numbers -- and the fields each kind does not use are simply absent, which is how every other family
-    here already handles a fact its report did not carry.
-    """
-
-    kind: str = ""
-    handle: str = ""
-    followers: int = 0
-    symbol: str = ""
-    token: str = ""
-    # Digest: the sentences themselves, already written and already grounded against the fact pack
-    # they came from. The card renders them and composes nothing -- a digest line is the whole line.
-    lines: tuple[str, ...] = ()
-    stage: str = "unknown"
-    selection_reason: str = ""
-    buy_count: int = 0
-    unpriced_buys: int = 0
-    observed_at_ms: int | None = None
-    history_from_ms: int | None = None
-    # Exit: what left, what was held before it, and what share of it that was.
-    quantity: str = ""
-    balance_before: str = ""
-    ratio_bps: int | None = None
-    basis: str = ""
-    usd: str = ""
-    position_usd: str = ""
-    entry_price: str = ""
-    mark_price: str = ""
-    # Exit: other roster wallets that bought this token in the cascade window. Crowding: the window's
-    # buyers and what they put in.
-    peer_wallets: int = 0
-    peer_usd: str = ""
-    premium_bps: int | None = None
-    liquidity_usd: str = ""
-    tx_hash: str = ""
-    block_number: int | None = None
-    closed: bool = False
-    late: bool = False
-    # The crowding card this exit follows on from, when the same token had one recently.
-    crowding_id: str = ""
+    snapshot: NetBuySnapshot | None = None
 
     def qualifier(self) -> str:
-        if self.kind == "exit":
-            return WALLET_QUALIFIER["exit_closed" if self.closed else "exit"]
-        if self.kind == "crowding":
-            return WALLET_QUALIFIER["crowding_late" if self.late else "crowding"]
-        return WALLET_QUALIFIER.get(self.kind, "")
+        return "集中净买入"
 
 
 @dataclass(frozen=True, slots=True)
@@ -496,107 +434,40 @@ class ReaderCard:
         return []
 
     def _wallet_lines(self, span: str, quote: str) -> list[str]:
-        """The chain wallet family's lines: who, what moved, at what size, and the evidence.
-
-        The order is the order a reader asks in. Who and when; what the movement was; how big the
-        position it came out of was, and on which denominator; what it cost and what it is worth now;
-        who else was in it; and finally the transaction, so the whole card is checkable on chain.
-
-        Every line is assembled from parts that may be absent and joined with the empty ones dropped,
-        which is the same rule the three other market families follow: a fact nobody could establish
-        costs its own words, never a blank line and never a placeholder.
-        """
-
-        wallet = self.wallet
-        if wallet.kind == "digest":
-            # The one wallet card with no subject of its own. Its lines were written from a fact pack
-            # this process computed, so they are printed as they are: composing a header out of a
-            # window that has no wallet and no token would print the separators and nothing else.
-            return [f"名单钱包 · {span}", *wallet.lines, _WALLET_NOTE]
-        who = f"{wallet.handle or fmt.UNKNOWN_ACCOUNT}{_followers(wallet.followers)}"
-        subject = wallet.symbol or wallet.token[:10]
-        if wallet.kind == "buy":
-            stage = {
-                "first_observed": "首次观察买入（此前持仓未知）",
-                "new_position": "买前余额为零的新仓",
-                "add": "已有余额上加仓",
-                "reentry": "买前余额为零的重入",
-            }.get(wallet.stage, "仓位阶段未知")
-            selection = {
-                "selected": "金额与时效满足提醒条件",
-                "history": "历史成交，仅供研究",
-                "stale": "成交已过提醒时限",
-                "unpriced": "未计价，仅供研究",
-                "below_minimum": "金额未达提醒条件",
-                "same_window": "同窗口已有提醒，规模未明显增加",
-            }.get(wallet.selection_reason, "")
-            entry = fmt.money(wallet.entry_price)
-            mark = fmt.money(wallet.mark_price)
-            return [
-                f"{who} · {subject} · {span}",
-                _joined(
-                    f"窗口买入 {wallet.buy_count} 笔" if wallet.buy_count else "买入观察",
-                    f"已计价金额 {fmt.money(wallet.usd) or '未知'}",
-                    f"未计价 {wallet.unpriced_buys} 笔",
-                ),
-                _joined(f"已计价部分均价 {entry or '未知'}", f"观察价 {mark or '未知'}"),
-                stage,
-                f"选材依据：{selection}" if selection else "",
-                f"观察时间 {fmt.clock(wallet.observed_at_ms)}" if wallet.observed_at_ms else "观察时间未知",
-                "只覆盖保留流水；观察前历史与余额连续性未确认",
-                f"代币 {wallet.token}" if wallet.token else "",
-                _joined(
-                    f"tx {wallet.tx_hash[:10]}" if wallet.tx_hash else "",
-                    f"区块 {wallet.block_number:,}" if wallet.block_number else "",
-                ),
-                quote,
-                _WALLET_NOTE,
-            ]
-        if wallet.kind == "crowding":
-            total = fmt.money(wallet.peer_usd)
-            entry = fmt.money(wallet.entry_price)
-            liquidity = fmt.money(wallet.liquidity_usd)
-            premium = fmt.percent_from_bps(wallet.premium_bps) if wallet.premium_bps is not None else ""
-            return [
-                f"{wallet.peer_wallets} 个名单地址买入 · {subject} · {span}",
-                _joined(
-                    f"合计买入 {total}" if total else "",
-                    f"粉丝合计 {wallet.followers:,}" if wallet.followers else "",
-                ),
-                _joined(f"领头 {who}", f"进场 {entry}" if entry else ""),
-                f"跟随进场溢价中位 {premium}" if premium else "",
-                f"池子流动性 {liquidity}" if liquidity else "",
-                quote,
-                _WALLET_NOTE,
-            ]
-        quantity = fmt.price(wallet.quantity)
-        action = "清仓" if wallet.closed else f"减仓 {fmt.percent_from_bps(wallet.ratio_bps)}"
-        before = fmt.price(wallet.balance_before)
-        value = fmt.money(wallet.position_usd)
-        entry = fmt.money(wallet.entry_price)
-        mark = fmt.money(wallet.mark_price)
-        peers = fmt.money(wallet.peer_usd)
-        return [
-            f"{who} · {subject} · {span}",
-            _joined(
-                f"{action} {quantity} {wallet.symbol}".strip() if quantity else action,
-                fmt.money(wallet.usd),
-            ),
-            _joined(
-                f"卖前持仓 {before}" if before else "",
-                f"约 {value}" if value else "",
-                f"口径 {WALLET_BASIS_ZH.get(wallet.basis, wallet.basis)}" if wallet.basis else "",
-            ),
-            _joined(f"进场均价 {entry}" if entry else "", f"现价 {mark}" if mark else ""),
-            f"窗口内其他名单买入 {wallet.peer_wallets} 个地址 {peers}" if wallet.peer_wallets and peers else "",
-            _joined(
-                f"tx {wallet.tx_hash[:10]}" if wallet.tx_hash else "",
-                f"区块 {wallet.block_number:,}" if wallet.block_number else "",
-                f"关联拥挤卡 {wallet.crowding_id[:8]}" if wallet.crowding_id else "",
-            ),
-            quote,
-            _WALLET_NOTE,
+        del span, quote
+        snapshot = self.wallet.snapshot
+        if snapshot is None:
+            return []
+        primary = snapshot.primary
+        minutes = 5 if primary.window == "5m" else 30
+        members = sorted(
+            (member for member in primary.members if member.qualified),
+            key=lambda member: (-(member.net_usd or Decimal(0)), member.wallet),
+        )
+        names = []
+        for member in members[:3]:
+            label = (
+                ("@" + member.handle.lstrip("@"))[:33]
+                if member.handle
+                else (member.wallet[:8] + "…" + member.wallet[-6:])
+            )
+            names.append(f"{label} +{fmt.money(str(member.net_usd))}")
+        if len(members) > 3:
+            names.append(f"另 {len(members) - 3} 个地址")
+        lines = [
+            f"{minutes} 分钟 · {primary.qualified_n} 个合格地址 · 净买入 {fmt.money(str(primary.net_usd))}",
+            f"入选地址买入 {fmt.money(str(primary.buy_usd))} · 卖出 {fmt.money(str(primary.sell_usd))}",
+            " · ".join(names),
         ]
+        if snapshot.fast.matched and snapshot.slow.matched:
+            lines.append(f"30 分钟条件也已满足 · {snapshot.slow.qualified_n} 个合格地址")
+        lines.extend(
+            [
+                f"Robinhood Chain · {fmt.clock(primary.from_ms)}–{fmt.clock(primary.to_ms)}",
+                "不同地址不等于独立主体；以上为入选地址的窗口成交。",
+            ]
+        )
+        return lines
 
     def _reported_line(self) -> str:
         """`来源报告价 $3,120.50 · 已实现 PNL -$412.75`, or nothing when the report carried neither.
@@ -669,15 +540,6 @@ def _joined(*parts: str) -> str:
     """The card's own separator, with the parts nobody could fill dropped rather than printed empty."""
 
     return " · ".join(part for part in parts if part)
-
-
-def _followers(count: int) -> str:
-    """The follower count in the card's own brackets, or nothing when the provider publishes none."""
-
-    followers = int(count or 0)
-    if followers <= 0:
-        return ""
-    return f"（{followers / 10_000:.1f} 万粉丝）" if followers >= 10_000 else f"（{followers:,} 粉丝）"
 
 
 def reader_quotes(quotes: Sequence[Mapping[str, Any]]) -> tuple[ReaderCardQuote, ...]:
@@ -770,8 +632,6 @@ __all__ = [
     "SIDE_ZH",
     "TITLE_MAX",
     "UNTRADEABLE_NOTICE_ZH",
-    "WALLET_BASIS_ZH",
-    "WALLET_QUALIFIER",
     "CardFamily",
     "CardTone",
     "ReaderCard",

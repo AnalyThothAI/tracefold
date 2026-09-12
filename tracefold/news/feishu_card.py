@@ -26,9 +26,7 @@ _FAMILY_TEMPLATE: Final[dict[str, str]] = {
     "oi": "blue",
     "liquidation": "red",
     "smart_money": "turquoise",
-    # The chain wallet family gets its own colour rather than a tone. A market card carries no model
-    # judgment, so colouring an exit red and a crowding card green would be the card claiming one
-    # (#572 PR-2); the header's qualifier is what tells the two apart.
+    # The chain wallet family has one colour; its trading facts carry no model judgment.
     "wallet": "orange",
 }
 _TONE_TEMPLATE: Final[dict[str, str]] = {"bullish": "green", "bearish": "red"}
@@ -38,7 +36,7 @@ def feishu_card(card: ReaderCard) -> dict[str, Any]:
     """One reader card as the JSON Feishu accepts, and as the delivery ledgers store it."""
 
     body = "\n".join(card.body_lines())
-    # Provider wallet handles and token symbols are data, including in rendered digest sentences.
+    # Provider wallet handles and token symbols are data, including in the net-buy member list.
     # Feishu JSON 1.0's div/plain_text keeps their links and <at> syntax literal:
     # https://open.feishu.cn/document/feishu-cards/card-components/content-components/plain-text
     elements: list[dict[str, Any]] = [

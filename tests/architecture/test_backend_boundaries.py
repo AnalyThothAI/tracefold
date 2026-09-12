@@ -80,7 +80,6 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # composition root to the reader-card endpoint. It reads a fact pack the tape already computed
         # and can change no threshold, no roster and no card -- only the wording of a summary that is
         # written either way.
-        "tracefold.news.program.chain_tape_digest",
         "tracefold.news.artifact_identity",
         "tracefold.news.learning.contracts",
         "tracefold.news.learning.evaluate",

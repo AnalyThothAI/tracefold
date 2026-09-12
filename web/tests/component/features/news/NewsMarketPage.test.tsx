@@ -4,13 +4,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import {
   NEWS_NOW_MS,
-  newsMarketDigestObservationFixture,
+  newsMarketWalletObservationFixture,
   newsMarketFixture,
   newsMarketGroupFixture,
   newsMarketItemFixture,
   newsMarketObservationFixture,
   newsStatusFixture,
-  newsWalletBuyFixture,
 } from "@tests/fixtures/newsFixture";
 import { server } from "@tests/msw/server";
 import { HttpResponse, http } from "msw";
@@ -201,7 +200,7 @@ describe("NewsMarketPage", () => {
                 latest: newsMarketObservationFixture({
                   event_at_ms: NEWS_NOW_MS - 90_000,
                   group_key:
-                    "wallet|exit|robinhood_chain|0x69326e48f68500fb6cf3b3a7da640737b9cc347b|0x8de9018c1bb82884245f06dede9fe2bebabd1e18|1788642791000",
+                    "wallet|net_buy|4663|0x69326e48f68500fb6cf3b3a7da640737b9cc347b|0x8de9018c1bb82884245f06dede9fe2bebabd1e18|1788642791000",
                   item_id: "mkt-wallet-1",
                   market_kind: "wallet",
                   notification_reason: "",
@@ -212,7 +211,7 @@ describe("NewsMarketPage", () => {
                   raw_instrument: "0x8de9018c1bb82884245f06dede9fe2bebabd1e18",
                   source_strategy_id: null,
                   symbol: "FSD",
-                  title: "0xVantaa 清仓 FSD",
+                  title: "链上钱包 · 集中净买入 · FSD",
                   whale_long_profit_bps: null,
                   whale_oi_ratio_bps: null,
                 }),
@@ -227,7 +226,7 @@ describe("NewsMarketPage", () => {
 
     renderMarket();
 
-    const wallet = await screen.findByText("0xVantaa 清仓 FSD");
+    const wallet = await screen.findByText("链上钱包 · 集中净买入 · FSD");
     const row = wallet.closest(".news-market-row");
     expect(row).not.toBeNull();
     expect(row).toHaveAttribute("data-kind", "wallet");
@@ -240,24 +239,8 @@ describe("NewsMarketPage", () => {
     expect(within(sources).getByTitle(/链上钱包/)).toBeInTheDocument();
   });
 
-  it("shows a buy observation's frozen evidence and links its exact wallet/token timeline", async () => {
-    const buy = newsWalletBuyFixture();
-    const observation = newsMarketObservationFixture({
-      market_kind: "wallet",
-      wallet_kind: "buy",
-      wallet_stage: buy.stage,
-      wallet_address: buy.wallet,
-      wallet_token: buy.token,
-      wallet_handle: buy.handle,
-      wallet_usd: buy.usd,
-      wallet_entry_price: buy.entry_price,
-      wallet_mark_price: buy.mark_price,
-      wallet_selection_reason: buy.selection_reason,
-      wallet_buy_count: buy.buy_count,
-      wallet_observed_at_ms: buy.observed_at_ms,
-      wallet_history_from_ms: buy.history_from_ms,
-      title: "0xVantaa 买入观察 FSD",
-    });
+  it("shows the frozen net-buy cohort and links the exact episode", async () => {
+    const observation = newsMarketWalletObservationFixture();
     server.use(
       http.get(/.*\/api\/news\/market\/.+$/, () =>
         HttpResponse.json({
@@ -277,58 +260,12 @@ describe("NewsMarketPage", () => {
     renderMarket();
     const rows = await screen.findAllByRole("button", { expanded: false });
     fireEvent.click(rows[0]);
-    expect(await screen.findByText("买入观察依据")).toBeInTheDocument();
-    expect(screen.getByText("观察期首次买入")).toBeInTheDocument();
-    expect(screen.getByText("已计价均价")).toBeInTheDocument();
-    expect(screen.getByText("观察价")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "查看同钱包与代币的观察时间线" })).toHaveAttribute(
+    fireEvent.click(await screen.findByText("原始记录、解析与通知依据"));
+    expect(await screen.findByText("集中净买入事件")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "查看集中净买入事件" })).toHaveAttribute(
       "href",
-      `/news/wallets?window=7d&kind=all&wallet_address=${buy.wallet}&token_address=${buy.token}`,
+      `/news/wallets?episode=${observation.item_id}`,
     );
-  });
-
-  it("prints a wallet digest's own sentences when its group is expanded", async () => {
-    /*
-     * #572 PR-3. Every other market kind's content is a number in a field; a digest's is the sentences
-     * those numbers were written into, and they are the only thing on the page that says what four
-     * hours of the roster amounted to. Stored in the observation and rendered nowhere would be a
-     * frozen contract nobody reads.
-     */
-    const digest = newsMarketDigestObservationFixture();
-    server.use(
-      http.get(/.*\/api\/news\/market\/.+$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: newsMarketItemFixture({ observation: digest, timeline: [digest] }),
-        }),
-      ),
-      http.get(/.*\/api\/news\/market$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: marketWithEveryKind({
-            groups: [
-              newsMarketGroupFixture({
-                first_event_at_ms: NEWS_NOW_MS - 4 * 3_600_000,
-                latest: digest,
-                market_kind: "wallet",
-                observation_count: 1,
-              }),
-            ],
-          }),
-        }),
-      ),
-    );
-
-    renderMarket();
-    const rows = await screen.findAllByRole("button", { expanded: false });
-
-    fireEvent.click(rows[0]);
-
-    expect(await screen.findByText("摘要正文")).toBeInTheDocument();
-    expect(
-      screen.getByText("合计买入 62 笔 $394,120.55，卖出 44 笔 $309,002.10"),
-    ).toBeInTheDocument();
-    expect(screen.getByText("窗口内退出卡 4 张、拥挤卡 1 张，其中已送达 5 张")).toBeInTheDocument();
   });
 
   it("puts the chosen kinds in the URL and narrows the request with them", async () => {

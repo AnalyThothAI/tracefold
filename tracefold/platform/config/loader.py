@@ -135,12 +135,11 @@ news:
     bitget: true
     us_reference: true
     snapshot_period_hours: 6.0
-  # #572: the Robinhood Chain wallet tape. Public read-only endpoints, no credentials. When it is on it
-  # stores what followed wallets did and, under `rules`, sends exit and crowding cards through the same
-  # market notification loop every other market card goes through. Off until an operator turns it on.
+  # Robinhood Chain facts and token-level concentrated net-buy episodes.
+  # Detection and price observations continue when wallet notifications are muted.
   chain_tape:
     enabled: false
-    notifications_enabled: true  # false keeps wallet research running without sending wallet cards
+    notifications_enabled: true  # false records new episodes without sending or later replaying them
     rpc_url: "https://rpc.mainnet.chain.robinhood.com"
     poll_interval_s: 2.0
     roster_provider_url: "https://rhtrenches.com"
@@ -150,19 +149,10 @@ news:
       top_quality: 20
       top_whale_by_open_cost: 20
     rules:
-      exit_ratio_bps: 3000
-      exit_min_position_usd: 20000.0
-      exit_cascade_window_s: 7200
-      exit_cascade_min_usd: 5000.0
-      crowding_n: 3
-      crowding_window_s: 900
-      crowding_min_usd: 1000.0
-      crowding_premium_late_bps: 3000
-      trigger_max_age_s: 600
-    digest:
-      enabled: true
-      interval_s: 14400
-      max_calls_per_day: 24
+      net_buy_fast_n: 3
+      net_buy_slow_n: 5
+      min_net_buy_usd: 1000
+      trigger_max_age_s: 60
     retention_days: 90
   watchlist: []
 

@@ -20,7 +20,7 @@ const specs = (...names: string[]) => names.map((name) => `**/${name}`);
 const everyViewport = [
   "event-feed-controls.spec.ts",
   "price-plane.spec.ts",
-  "wallet-buy-research.spec.ts",
+  "wallet-net-buy.spec.ts",
 ];
 const desktop = specs(
   ...everyViewport,

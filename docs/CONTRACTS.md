@@ -86,7 +86,7 @@ EventSemantics and ReaderCard still receive separate Adapters and their own
 code-owned `max_tokens` (1,200 and 600); changing this endpoint changes only the
 secret-free `reader_card.primary` runtime binding identity, not Program
 identity.
-`llm.news_compiler_tariff` is gone (#202 §6.2). It was the trusted worst-case
+`llm.news_compiler_tariff` is gone (#202 `6.2). It was the trusted worst-case
 rate table the proxy sidecar reserved against, and the sidecar went with the
 compiler platform; the optimization leg of `learning run` charges an unpriced provider call at the
 operator's declared `--max-call-cost-microusd` instead. `LlmConfig` forbids
@@ -158,7 +158,7 @@ Push delivery is available only when `news.push.enabled` is true, exactly one
 provider is complete, and Workers is running. Feishu requires a valid HTTPS custom-bot v2 URL.
 Telegram requires a secure bot-token file and one channel Bot API ID; the adapter
 is the single owner of what a valid target is, and configuration reads the
-operator's number without a second copy of that rule (#562 §5 rows 1 and 8).
+operator's number without a second copy of that rule (#562 `5 rows 1 and 8).
 Provider conflicts, invalid targets, and missing or insecure credentials fail
 closed on the capability they describe: Serve remains credential-free, and an
 explicitly enabled invalid provider configuration leaves Workers running with
@@ -171,7 +171,7 @@ grounded ticker but a confident code-like title identity, is checked after the i
 from all five venue families. Any exact match keeps the message and
 is added through one in-place edit; its delivery prices use trade-first anchors and closed one-minute candles as
 fallback. An absent result that all five catalogues answered successfully, on a candidate specific enough to be an
-exchange identifier, leads the same in-place edit with `未找到可交易标的`. Nothing is deleted: #562 §5 row 5 removed
+exchange identifier, leads the same in-place edit with `未找到可交易标的`. Nothing is deleted: #562 `5 row 5 removed
 the `deleteMessage` path, because taking a card the reader has already read out of their channel on an LLM-derived
 candidate list plus a title heuristic cost more than saying what the catalogues answered. A timeout, blocked
 endpoint, malformed catalogue, incomplete issuer identity, or any other partial result states nothing about
@@ -187,7 +187,7 @@ all; it keeps its family mark, its own body lines and its observation event time
 absence sets the card's own `未找到可交易标的`, which leads the card in both channels. The novelty badge sits directly
 below the title: `🆕 新事实`, or `🔄 新进展`. With a post-delivery verifier configured, an initial progression also
 shows an indented one-line `关联确认中` child block and never waits for another model call; with none configured no
-review is coming, so no badge is shown and no prior headline is named (#562 §5 rows 3 and 6). The same message is later
+review is coming, so no badge is shown and no prior headline is named (#562 `5 rows 3 and 6). The same message is later
 edited to a compact child block: `✅ 已确认关联`, a clickable `此前：<parent headline>` quote bound to the
 previous sent Telegram receipt, and its receipt-to-receipt age. A rejected, unavailable, or otherwise non-confirmed
 final result changes the same message's novelty badge to `🆕 新事实` and removes the complete association child
@@ -402,7 +402,7 @@ or a live path is unmentioned.
 | Family | Routes | Source of data |
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
-| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/wallets`, `/api/news/wallets/cards` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, market observations read straight from `news_items` and their typed facts, one observation with its group timeline, four-layer status, bounded quotes, one symbol's identity, and the chain wallet tape's own state — its roster, its ingest position, and every card it opened with the price receipt taken after it |
+| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/wallets`, `/api/news/wallets/events`, `/api/news/wallets/events/{episode_id}` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, market observations read straight from `news_items` and their typed facts, one observation with its group timeline, four-layer status, bounded quotes, one symbol's identity, and the chain wallet tape's own state — its roster, its ingest position, and every card it opened with the price receipt taken after it |
 | Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/executions` | one owner per question the console asks: current execution/account readiness, frozen Case decisions, and the folded per-entry execution table. Three GETs; no write authority. #537 PR-5 deleted `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections, and #589 PR-2 the two `GET /api/trading/gate*` admission reads — five more public shapes over ledgers `/api/trading/executions` already reads folded or that no browser surface called, all still readable through `tracefold trading signals \| observations \| commands \| gate` |
 
 The public API is exactly the paths in `docs/generated/openapi.json` plus
@@ -411,6 +411,7 @@ each. Everything else is retired: not registered, answering the ordinary `404`,
 with no alias, redirect, or feature flag.
 
 <!-- retired-routes:begin -->
+- `/api/news/wallets/cards` (#641): replaced by token episode list/detail; no redirect.
 - the GMGN lane: `/ws`, `/api/recent`, `/api/events/by-ids`, `/api/search`,
   `/api/search/inspect`, `/api/token-case`, `/api/target-posts`,
   `/api/target-social-timeline`, `/api/live-market`, `/api/token-images/*`,
@@ -658,10 +659,9 @@ every Event this code can open.
   itself, and one banner would be a second, weaker answer to a question the rows
   already answer.
 
-  Three rules about the group payload that the schema cannot state. The
-  `wallet_*` block is absent on the four provider kinds; `wallet_kind` is
-  `buy`, `exit`, `crowding` or `digest`, and `wallet_digest_lines` is present on a
-  digest alone, carrying the sentences it was sent with, in order.
+  The `wallet_snapshot` carries only the concentrated net-buy episode contract;
+  provider kinds have no wallet snapshot. The exact chain/token and frozen send/initial
+  snapshot identify its facts. There is no legacy wallet-kind union.
   `notify_group_key` is deliberately not the display `group_key` — a smart-money
   display run breaks when the account changes action and the notification group
   must not, because that change is exactly what earns a card. And every
@@ -683,64 +683,25 @@ every Event this code can open.
   `wallet_notifications_disabled` while the track is muted. Previously pending cards stopped by that
   policy retain their delivery row as `failed` with that reason and their original attempt evidence.
   A later alert round may report earlier unclaimed observations as `uncovered`; it never adopts them.
-- `GET /api/news/wallets` returns the chain wallet tape's own state (#572 PR-3):
-  its roster, its ingest position, and one day of fills and cards counted per
-  kind. It takes no parameter but `token`; any other is 400
-  `unsupported_query_param`. The window is fixed at the last 24 h on the chain's
-  own clock, because the four figures a reader opens this page for describe a
-  day and a control that disagreed with the card table below it would be two
-  answers to one question.
-
-  `roster` is the current version only — an earlier version is evidence a card
-  carries, not a page a reader browses. The two ranks are two lists — 质量榜 by
-  realized P&L and profit factor, 大户榜 by open cost — and `null` on one means
-  that list did not select this wallet, which is not rank 0. A tape that has
-  never refreshed publishes version `0` with no members rather than `null`.
-
-  `tape` is one row, or `null` when the task has never run. `last_outcome` and
-  `last_error` are the loop's own open strings and are printed as written.
-
-  `fills[]` is counted per stored kind (`buy`, `sell`, `transfer_out`) and
-  `cards[]` per card kind (`buy`, `exit`, `crowding`, `digest`). A kind nothing
-  happened for is absent rather than zeroed — unlike the market surface's
-  `sources[]`, these are counts of what the tape did rather than a per-source
-  inventory a reader is owed either way.
-- `GET /api/news/wallets/cards` reads persisted research facts (#621).
-  `window=24h|72h|7d` defaults to 24h; `limit=1..200` defaults to 100
-  (the UI requests 25). Optional kind, exact wallet/token addresses,
-  chain_id and segment_key filter before grouping. The authentication
-  parameter remains `token`; the asset filter is `token_address`.
-  `view=segments|observations` defaults to segments. Buy segment identity
-  is chain + wallet + token + persisted segment key; all other observations
-  keep their Item identity. The latest event-time/Item tuple supplies the
-  segment snapshot. `totals` covers the full scope before pagination:
-  segments, observations, unique chain-qualified wallets/tokens and the sum
-  of latest cumulative priced buy amounts. It is not wallet total exposure.
-
-  `cursor` binds filters and a fixed `to_ms`, with an event-time/Item
-  keyset. Changed scope is 400; `next_cursor=null` ends the list.
-  Exact wallet + token filters also return bounded raw `fills[]`,
-  independently of observation kind; `fills_complete=false` discloses
-  truncation. Quantities retain exact integer text and optional decimals.
-
-  Rows retain buy stage, counts, priced-fill mean, observed reference,
-  history coverage, source and original Item identity. `outcomes[]`
-  replaces the former flat horizon fields. Each 15m/1h/4h outcome carries
-  reference/target/actual sample clocks, raw prices, source, nullable return
-  and a status: not_scheduled, not_due, pending, unavailable,
-  missing_reference, identity_unverified or measured. Only measured
-  returns are numeric, rounded to integral bps and clamped to ±10,000,000.
-  Zero is a measured flat price, never a missing-data placeholder.
-
-  `price_status=verified` requires the pinned
-  `dexscreener_base_token_v1` source plus matching chain/token/USD/unit
-  evidence; it attests identity checks, not market-price accuracy.
-  Both reference and later sample must carry that verified identity before
-  a return is comparable. The adapter selects only matching base-token
-  pools. Provider quote time remains null when absent. Legacy unverified
-  receipts preserve raw values and never acquire invented provenance.
-  No historical fact is rewritten. Digest lines retain their program-rendered
-  sentences and model-selection attribution.
+- `GET /api/news/wallets` returns only `roster` and `tape`. Authentication
+  `token` is its only query parameter. Roster source statistics and quality/whale ranks
+  retain their original meaning; monitoring and scanned-chain state disclose coverage.
+- `GET /api/news/wallets/events` returns `events`, full-scope `totals`, and a keyset
+  `next_cursor`. `history_range=24h|72h|7d` defaults to 24h; `limit=1..200` defaults
+  to 50 (UI 25). Optional `to_ms` anchors the range. Cursors bind the range and end
+  time and sort descending by trigger time and episode ID. Changed cursor scope is 400.
+  Statistics and rows use a single repeatable read snapshot.
+- `GET /api/news/wallets/events/{episode_id}` reads that identity directly, independently
+  of list scope. It returns the event, bounded raw `fills`, `next_fills_cursor` and
+  `outcomes`. `limit=1..200` defaults to 100; `fills_cursor` preserves the timeline
+  time boundary and descends by block/log. An unknown episode is 404.
+  Both initial and latest snapshots carry exact decimal strings, original raw quantities,
+  quality membership, exclusions and exact chain cutoff. The first snapshot is immutable.
+  Timeline pages never define the totals. Notification status and episode end are separate.
+  Price outcomes record target/actual time, source, nullable price/reference/change and
+  `comparable|missing_reference|unavailable|late`; missing never becomes 0%.
+  Retired `/api/news/wallets/cards`, single-wallet filters, segment views and DTOs have
+  no redirect, alias or fallback. Unknown query keys return 400.
 
 - `GET /api/news/market/{item_id}` returns one observation in full: the
   observation itself, the stored `provider_params` payload, the card that spoke
@@ -760,7 +721,7 @@ every Event this code can open.
 
   Two `trigger_reason` values need their own sentence. `raw` stays in the wire
   Literal and in `news_market_deliveries_reason_check` and no writer produces
-  it: the four unstructured cards production sent before #582 §3.2 are
+  it: the four unstructured cards production sent before #582 `3.2 are
   receipts, and a receipt is not rewritten by a rule change — the same
   treatment the retired News delivery lane's `followup` rows get below.
   `action_change` is smart money's second card of a 24 h round and means
@@ -791,7 +752,7 @@ every Event this code can open.
   next round covers that round only. `not_alerted`
   (`unstructured_record_not_alerted`) is the other: a record whose template no
   parser could prove is stored, grouped and readable and is never a card, so it
-  has no notification track at all and nothing is holding it (#582 §3.2). The two
+  has no notification track at all and nothing is holding it (#582 `3.2). The two
   are distinguished by whether a track row exists, never by an empty reason
   string. With an attempt it is the card's state:
   `pending`, `sending`, `sent`, `failed`, `unknown` or `unavailable`. `unknown`
@@ -868,7 +829,7 @@ surface renders a bare key.
 
 `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`,
 `/api/news/market/{item_id}`, `/api/news/wallets` and
-`/api/news/wallets/cards` emit strong ETags and honor `If-None-Match`;
+`/api/news/wallets/events`, `/api/news/wallets/events/{episode_id}` emit strong ETags and honor `If-None-Match`;
 `/api/news/status` uses a weak ETag that ignores `measured_at_ms`. All News
 routes require the operator token — a bearer header or a `token` query
 parameter on a read — and answer `401` without one or with a wrong one.
@@ -1676,7 +1637,7 @@ development or future temporal validation dataset. Every current dataset is in
 the running bundle's runtime-owned epoch and accepts only `news_review_v6`;
 every earlier Prompt/Program/review cohort is audit-only and cannot enter a
 dataset or metric-v8 denominator.
-The CLI is two groups, because there are two lifecycles (#202 §11 PR-E). `news
+The CLI is two groups, because there are two lifecycles (#202 `11 PR-E). `news
 learning` freezes a corpus, explains what GEPA may optimize, scores the stable
 Program and runs the one optimization — `readiness`, `baseline`, `run`,
 `draft-reviews`, `freeze` — and none of them can ship anything.

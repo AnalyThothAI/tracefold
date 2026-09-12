@@ -68,23 +68,23 @@ flowchart TD
 
 这条链路属于 News 市场面，没有把钱包买入转为 Trading 的交易指令。账本与发送链路可以直接复用，无须为买入再建立一套独立采集进程、数据库、通知系统或多 agent 编排。
 
-1. **名单模块。** 第三方 `/api/traders?window=7d&stocks=false` 与逐 handle 统计提供候选；程序取质量榜和大户榜并集。质量排名依赖近七天已实现盈亏、profit factor 与平仓样本，大户排名只按持仓成本。名单并非全链发现，也并非独立验证过的买入能力榜。资料中的 `stocks=false` 也提示当前候选统计范围，不应把此流程泛化成 Robinhood 股票代币策略。[名单选择](../../tracefold/news/chain_tape/roster.py#L52)
-2. **摄取模块。** 两个方向的 Transfer 日志筛选名单地址，receipt 检查 V3/V4 Swap，读取 token 元数据及区块时间，保存 raw 数量、现金腿、美元口径与名单版本。默认每轮最多 20 个 receipts、一次区块段最多 100,000 块，重叠 30 块；初启默认从近端开始，曾部署的 24 小时回补是额外操作。[摄取循环](../../tracefold/news/chain_tape/loop.py#L227)
-3. **持久化。** `(chain_id, tx_hash, log_index)` 幂等，原始数量保持精确数值；fills 与摄取位置一起提交，然后派生观测。默认保留 90 天。这是可靠的流水基础，但观察历史与真实仓位历史不是同一件事。[存储](../../tracefold/news/storage/chain_tape.py#L59)
-4. **规则模块。** 每笔卖出走余额、比例、仓位价值与级联条件；买入只检查多人拥挤。单人首次观察买入、大额买入、连续加仓都没有专门观测类型。[派生入口](../../tracefold/news/chain_tape/derive.py#L160)
-5. **发送模块。** 派生观测进入既有 market admission、通知循环、ReaderCard 和投递账本。钱包规则已经在上游筛选，下游通常直接通知，只保留同组未开始 intent 的限制。因此改摘要 prompt 不会改变独立减仓卡数量。[发送决策](../../tracefold/news/market_notifications.py#L837)
-6. **摘要模块。** PostgreSQL 先算数字，程序选材，DSPy 调用模型写最多八句中文。模型没有链上查询工具，也不负责筛名单、计算、解释交易动机或产生买入研究判断。[模型指令](../../tracefold/news/program/chain_tape_digest.py#L44)
-7. **回执与前端。** +1h/+4h 价格针对已发送的卡；钱包页展示名单、摄取状态、卡片和回执，缺少可按 token／钱包展开的买入流水及行为时间线。[钱包页面](../../web/src/features/news/ui/wallets/NewsWalletsPage.tsx#L62)
+1. **名单模块。** 第三方 `/api/traders?window=7d&stocks=false` 与逐 handle 统计提供候选；程序取质量榜和大户榜并集。质量排名依赖近七天已实现盈亏、profit factor 与平仓样本，大户排名只按持仓成本。名单并非全链发现，也并非独立验证过的买入能力榜。资料中的 `stocks=false` 也提示当前候选统计范围，不应把此流程泛化成 Robinhood 股票代币策略。[名单选择](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/chain_tape/roster.py#L52)
+2. **摄取模块。** 两个方向的 Transfer 日志筛选名单地址，receipt 检查 V3/V4 Swap，读取 token 元数据及区块时间，保存 raw 数量、现金腿、美元口径与名单版本。默认每轮最多 20 个 receipts、一次区块段最多 100,000 块，重叠 30 块；初启默认从近端开始，曾部署的 24 小时回补是额外操作。[摄取循环](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/chain_tape/loop.py#L227)
+3. **持久化。** `(chain_id, tx_hash, log_index)` 幂等，原始数量保持精确数值；fills 与摄取位置一起提交，然后派生观测。默认保留 90 天。这是可靠的流水基础，但观察历史与真实仓位历史不是同一件事。[存储](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/storage/chain_tape.py#L59)
+4. **规则模块。** 每笔卖出走余额、比例、仓位价值与级联条件；买入只检查多人拥挤。单人首次观察买入、大额买入、连续加仓都没有专门观测类型。[派生入口](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/chain_tape/derive.py#L160)
+5. **发送模块。** 派生观测进入既有 market admission、通知循环、ReaderCard 和投递账本。钱包规则已经在上游筛选，下游通常直接通知，只保留同组未开始 intent 的限制。因此改摘要 prompt 不会改变独立减仓卡数量。[发送决策](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/market_notifications.py#L837)
+6. **摘要模块。** PostgreSQL 先算数字，程序选材，DSPy 调用模型写最多八句中文。模型没有链上查询工具，也不负责筛名单、计算、解释交易动机或产生买入研究判断。[模型指令](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/program/chain_tape_digest.py#L44)
+7. **回执与前端。** +1h/+4h 价格针对已发送的卡；钱包页展示名单、摄取状态、卡片和回执，缺少可按 token／钱包展开的买入流水及行为时间线。[钱包页面](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/web/src/features/news/ui/wallets/NewsWalletsPage.tsx#L62)
 
 **摘要偏减仓的具体机制**
 
-第一层在 SQL：钱包按买卖合计金额选前 20，wallet/token 按买卖合计金额选前 12，卡片按时间选最早 20。一个大额退出会同时争夺钱包明细、仓位明细和卡片明细的空间。[选材 SQL](../../tracefold/news/storage/chain_tape.py#L320)
+第一层在 SQL：钱包按买卖合计金额选前 20，wallet/token 按买卖合计金额选前 12，卡片按时间选最早 20。一个大额退出会同时争夺钱包明细、仓位明细和卡片明细的空间。[选材 SQL](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/storage/chain_tape.py#L320)
 
-第二层在事实结构：钱包行只是买入多少笔、卖出多少笔的合计；token 行主要是三个成本口径，缺少完整的「谁在什么时间以多少金额买了哪个 token、仓位阶段是什么」。事实顺序为概览、卡片、回执、噪声、钱包、仓位。[事实包](../../tracefold/news/chain_tape/digest.py#L265)
+第二层在事实结构：钱包行只是买入多少笔、卖出多少笔的合计；token 行主要是三个成本口径，缺少完整的「谁在什么时间以多少金额买了哪个 token、仓位阶段是什么」。事实顺序为概览、卡片、回执、噪声、钱包、仓位。[事实包](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/chain_tape/digest.py#L265)
 
-第三层在模型目标：指令明确写 `Prefer the largest positions, the cards that were sent and the price receipts`，同时禁止判断、解释动机、预测与重新计算。这使当前模型适合复述活动，缺少进行买入研究的任务和证据。[指令](../../tracefold/news/program/chain_tape_digest.py#L44)
+第三层在模型目标：指令明确写 `Prefer the largest positions, the cards that were sent and the price receipts`，同时禁止判断、解释动机、预测与重新计算。这使当前模型适合复述活动，缺少进行买入研究的任务和证据。[指令](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/program/chain_tape_digest.py#L44)
 
-第四层在输出预算：模型输出最多 8 行，每行最多 60 字符；模板同样最多 8 行，但没有该字符上限。模板也并非按注释说的每区取一条；代码顺序填满整组。存在两条回执、噪声、两个成本条目时，8 行就是 `w0,w1,k0,o1,o2,n1,c1,c2`，钱包买入事实完全没有位置。本次直接调用 `template_lines` 已复现。[模板](../../tracefold/news/chain_tape/digest.py#L453)
+第四层在输出预算：模型输出最多 8 行，每行最多 60 字符；模板同样最多 8 行，但没有该字符上限。模板也并非按注释说的每区取一条；代码顺序填满整组。存在两条回执、噪声、两个成本条目时，8 行就是 `w0,w1,k0,o1,o2,n1,c1,c2`，钱包买入事实完全没有位置。本次直接调用 `template_lines` 已复现。[模板](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/chain_tape/digest.py#L453)
 
 第五层在读者工作流：遗漏的单人买入不会自动出现在钱包页的交易明细里，页面主要展示产生过卡的内容。读者因此很难从摘要顺手下钻补回被省略的信息。
 
@@ -99,29 +99,29 @@ flowchart TD
 | 数字一致不等于语义一致 | `ground` 只查引用、数字集合和词汇；Alice 买入的事实被改写为 Bob 卖出、保留同样数字仍通过 | 输出可以错主体、错方向、错 token，现有校验不会证明句子整体正确 |
 | 拥挤回执基准混淆 | crowding 存领头者 `entry_price`，没有 `mark_price`；回执取 `COALESCE(mark_price,entry_price)`，文案称相对发卡时价格 | 领头者收益会被误读为读者收到信息后的机会 |
 
-对应来源：[总量计算](../../tracefold/news/chain_tape/digest.py#L280)、[新仓判别](../../tracefold/news/storage/chain_tape.py#L229)、[净现金与成本](../../tracefold/news/chain_tape/digest.py#L394)、[数量和金额 SQL](../../tracefold/news/storage/chain_tape.py#L339)、[ground](../../tracefold/news/chain_tape/digest.py#L485)、[拥挤事件](../../tracefold/news/chain_tape/derive.py#L544)、[回执统计](../../tracefold/news/storage/chain_tape.py#L387)。
+对应来源：[总量计算](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/chain_tape/digest.py#L280)、[新仓判别](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/storage/chain_tape.py#L229)、[净现金与成本](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/chain_tape/digest.py#L394)、[数量和金额 SQL](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/storage/chain_tape.py#L339)、[ground](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/chain_tape/digest.py#L485)、[拥挤事件](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/chain_tape/derive.py#L544)、[回执统计](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/storage/chain_tape.py#L387)。
 
 回执的一个算术例子：领头买入价 1，提醒时价格 1.5，一小时后 1.2。相对领头者为 +20%，相对提醒时为 −20%。这是说明两种分母差异的假设例子，不是实际币种或实盘结果。退出和拥挤又被按 horizon 混合汇总，同一个价格下跌对两种事件的含义不同；且普通单人买入根本不在 sent-card 样本里。这组回执目前不能回答「买入策略是否有效」。
 
 **成交流水也有明确的覆盖边界**
 
-分类器检查 receipt 内存在 Swap topic，按 token 的首发／末收 Transfer 和对手地址收到的现金判断交易，尚未把每个钱包的支付、每条兑换路径和最终资产净流严格配对。[分类逻辑](../../tracefold/news/chain_tape/classify.py#L132)
+分类器检查 receipt 内存在 Swap topic，按 token 的首发／末收 Transfer 和对手地址收到的现金判断交易，尚未把每个钱包的支付、每条兑换路径和最终资产净流严格配对。[分类逻辑](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/chain_tape/classify.py#L132)
 
 本次直接调用当前分类器的合成输入复现了三类边界：一个钱包支付 100 USDG 同时收到 A/B，两个 buy 各归入 100 USDG；正常兑换附赠另一 token，赠币也归作 buy 并取得全额现金；两个跟踪钱包在同交易收到同 token，仅最后接收者被判 buy。这证明算法处理这些输入的方式，尚未证明这些输入在线上样本中出现过。不要把问题扩大成全部账本失真，也不要把两笔真实路由的校准泛化为所有路由已验证。
 
 适合当前规模的处理是继续复用单个 receipt，以 wallet/transaction 的资金和代币净流检查已验证路由；现金不能唯一分配时明确标注 ambiguous/unpriced，保留证据。模型不应替代这一步决定成交金额。
 
-此外，动态名单之外不采集，默认初启只读近端，普通入站不进入持仓流水，receipt 连续三轮不存在后会计 unknown 并前移，90 天保留期会截断历史；30 块重叠解决短答重读，不等于 reorg 处理。模型至少需要知道开始观察时间、覆盖是否连续、有无余额基线和未知比例。[摄取范围](../../tracefold/news/chain_tape/loop.py#L455)、[缺 receipt](../../tracefold/news/chain_tape/loop.py#L548)、[重组范围声明](../../tracefold/news/chain_tape/contracts.py#L51)
+此外，动态名单之外不采集，默认初启只读近端，普通入站不进入持仓流水，receipt 连续三轮不存在后会计 unknown 并前移，90 天保留期会截断历史；30 块重叠解决短答重读，不等于 reorg 处理。模型至少需要知道开始观察时间、覆盖是否连续、有无余额基线和未知比例。[摄取范围](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/chain_tape/loop.py#L455)、[缺 receipt](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/chain_tape/loop.py#L548)、[重组范围声明](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/chain_tape/contracts.py#L51)
 
 **还有两个与实时买入召回有关的执行问题**
 
-同一批次的相同 token 只用第一笔买入触发 crowding 检查，查询窗口又截止于第一笔时间。本次用真实 `derive()` 控制流加受控上下文适配复现：同 token 三笔买入一次传入不产卡，只以最后一笔触发则产卡。重叠重读可能在后续轮补触发，因此实际漏卡率与完整摄取／PostgreSQL seam 仍待验证。正确性至少不应依赖输入如何分批。[首笔去重](../../tracefold/news/chain_tape/derive.py#L163)
+同一批次的相同 token 只用第一笔买入触发 crowding 检查，查询窗口又截止于第一笔时间。本次用真实 `derive()` 控制流加受控上下文适配复现：同 token 三笔买入一次传入不产卡，只以最后一笔触发则产卡。重叠重读可能在后续轮补触发，因此实际漏卡率与完整摄取／PostgreSQL seam 仍待验证。正确性至少不应依赖输入如何分批。[首笔去重](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/chain_tape/derive.py#L163)
 
-fills 与摄取 cursor 先提交，派生在后；没有独立 durable 派生进度。短重叠可能重供成交，但失败一旦超出这个窗口，就没有从账本补做的保证。模型摘要也在摄取 turn 内等待，默认每四小时发生一次、模型传输超时设置为 60 秒。买入研究若增加外部查询或模型深度，必须从摄取等待中移出去，用已有 worker 模式和有界账本读取即可，不必新增消息系统。[提交顺序](../../tracefold/news/chain_tape/loop.py#L330)、[模型时限](../../tracefold/news/program/chain_tape_digest.py#L40)
+fills 与摄取 cursor 先提交，派生在后；没有独立 durable 派生进度。短重叠可能重供成交，但失败一旦超出这个窗口，就没有从账本补做的保证。模型摘要也在摄取 turn 内等待，默认每四小时发生一次、模型传输超时设置为 60 秒。买入研究若增加外部查询或模型深度，必须从摄取等待中移出去，用已有 worker 模式和有界账本读取即可，不必新增消息系统。[提交顺序](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/chain_tape/loop.py#L330)、[模型时限](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/news/program/chain_tape_digest.py#L40)
 
 **本次额外发现的当前上游变化**
 
-2026-09-08 对旧域 `/api/traders?window=7d&stocks=false`、`/api/tokens` 的不跟随跳转请求均返回 301，Location 指向 `https://rhtrenches.com` 相同路径。跟随跳转后的公开状态及名单仍可读取，公开名单为 147 人。当前默认 adapter 用旧域且 `follow_redirects=False`；本次直接调用 `RobinhoodTrenchesClient().traders()` 得到 `RosterProviderError: roster_payload_invalid`。[客户端](../../tracefold/integrations/robinhoodtrenches.py#L129)
+2026-09-08 对旧域 `/api/traders?window=7d&stocks=false`、`/api/tokens` 的不跟随跳转请求均返回 301，Location 指向 `https://rhtrenches.com` 相同路径。跟随跳转后的公开状态及名单仍可读取，公开名单为 147 人。当前默认 adapter 用旧域且 `follow_redirects=False`；本次直接调用 `RobinhoodTrenchesClient().traders()` 得到 `RosterProviderError: roster_payload_invalid`。[客户端](https://github.com/AnalyThothAI/tracefold/blob/96bd90c98/tracefold/integrations/robinhoodtrenches.py#L129)
 
 因此，「代码默认客户端对当前公开端点失败」已复现。生产是否仍使用旧域尚未核实；不能据此声称生产已停止同步。若生产仍用旧域，已有名单可能让链上采集继续运行，同时名单刷新、bags、marks 等上下文降级。最小修复候选是把 operator-owned 的 provider URL 指向已核实的新域；本次没有执行该配置变更。外部来源与采样说明见[一手来源复核笔记](robinhood-buy-design-source-review-2026-09-08.md)。
 

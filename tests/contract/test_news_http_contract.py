@@ -387,7 +387,8 @@ def test_news_exposes_read_routes_and_no_write_route_at_all() -> None:
         # arrived; these two answer what the tape is doing -- its roster, its ingest position, and the
         # price receipt taken after every card its rules opened.
         ("GET", "/api/news/wallets"),
-        ("GET", "/api/news/wallets/cards"),
+        ("GET", "/api/news/wallets/events"),
+        ("GET", "/api/news/wallets/events/{episode_id}"),
     }
 
 

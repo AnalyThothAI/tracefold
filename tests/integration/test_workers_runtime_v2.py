@@ -748,7 +748,7 @@ def test_real_market_notification_task_fault_stops_only_that_task() -> None:
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("capability", ["chain_tape", "wallet_research", "wallet_digest"])
+@pytest.mark.parametrize("capability", ["chain_tape", "wallet_net_buy", "wallet_prices"])
 def test_real_chain_tape_task_fault_stops_only_that_task(capability: str) -> None:
     """#614's three tasks cross the real process, task supervision, PostgreSQL and readiness seam.
 
@@ -759,7 +759,7 @@ def test_real_chain_tape_task_fault_stops_only_that_task(capability: str) -> Non
     _create_test_fact_table()
     port = _free_port()
     process = _start_workers_process(f"{capability}_fault", port)
-    siblings = {"chain_tape", "wallet_research", "wallet_digest"} - {capability}
+    siblings = {"chain_tape", "wallet_net_buy", "wallet_prices"} - {capability}
     try:
         _wait_ready(process, port)
         _wait_capability(port, capability, "faulted")

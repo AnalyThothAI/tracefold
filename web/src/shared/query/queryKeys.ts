@@ -51,8 +51,8 @@ export const queryKeys = {
   // rhythms — the header and roster move when the tape's turn does, the card table when a rule fires —
   // and the window is part of the card key because every window is a real request.
   newsWallets: () => ["news-wallets"] as const,
-  newsWalletCards: (window: string, kind: string, wallet: string, tokenAddress: string) =>
-    ["news-wallet-cards", window, kind, wallet, tokenAddress] as const,
+  newsWalletEvents: (historyRange: string) => ["news-wallet-events", historyRange] as const,
+  newsWalletEvent: (episodeId: string) => ["news-wallet-event", episodeId] as const,
   newsStatus: () => ["news-status"] as const,
   // #207 PR-W1: identity only, and identity does not change on a poll — the token page's Events, price and
   // rank window each keep their own key and their own rhythm.

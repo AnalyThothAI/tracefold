@@ -22,7 +22,6 @@ import {
 } from "../../model/marketFacts";
 import { clockTime, displayTime, formatCount } from "../../model/newsLabels";
 import { formatPrice } from "../../model/newsPrice";
-import { walletCardLabel, walletHistoryPath, walletStageLabel } from "../../model/walletFacts";
 
 import { MarketObservationMetrics, OiEvidence } from "./OiEvidence";
 
@@ -152,7 +151,7 @@ function GroupRow({ group, token }: { group: NewsMarketGroup; token: string }) {
           </span>
           <span className="news-market-kind" title={marketKindTitle(group.market_kind)}>
             {marketKindLabel(group.market_kind)}
-            {latest.wallet_kind ? ` · ${walletCardLabel(latest.wallet_kind)}` : ""}
+            {latest.wallet_snapshot ? " · 集中净买入" : ""}
           </span>
           <b className="news-market-subject">{marketSubject(latest)}</b>
           {/* The run, not a rank: how many consecutive observations this one row stands for. */}
@@ -326,13 +325,7 @@ export function GroupDetail({ itemId, token }: { itemId: string; token: string }
         <div className="news-market-detail-panel">
           <ParseChip observation={item.observation} />
           <PushChip reason={item.notification_reason} status={item.notification_status} />
-          {/*
-           * A wallet digest has no provider line to show: nothing reported it, this process computed it
-           * from stored fills. What it has instead is the sentences it was sent with, and they are the
-           * first thing a reader who opened this row came for (#572 PR-3).
-           */}
-          <DigestLines lines={item.observation.wallet_digest_lines} />
-          <WalletBuyEvidence observation={item.observation} />
+          <WalletEventEvidence observation={item.observation} />
           <small className="news-market-detail-label">供应商原文</small>
           <code className="news-market-raw">{item.raw_first_line || item.observation.title}</code>
           {item.description ? <p className="news-market-description">{item.description}</p> : null}
@@ -385,78 +378,22 @@ export function GroupDetail({ itemId, token }: { itemId: string; token: string }
   );
 }
 
-function WalletBuyEvidence({ observation }: { observation: NewsMarketObservation }) {
-  if (observation.wallet_kind !== "buy") return null;
+function WalletEventEvidence({ observation }: { observation: NewsMarketObservation }) {
+  const snapshot = observation.wallet_snapshot;
+  if (!snapshot) return null;
+  const primary = snapshot.fast.matched ? snapshot.fast : snapshot.slow;
   return (
     <>
-      <small className="news-market-detail-label">买入观察依据</small>
+      <small className="news-market-detail-label">集中净买入事件</small>
       <TraceList
         entries={[
-          ["阶段", walletStageLabel(observation.wallet_stage)],
-          ["钱包", observation.wallet_handle || observation.wallet_address || "未记录"],
-          ["代币合约", observation.wallet_token || "未记录"],
-          ["已计价金额", formatPrice(observation.wallet_usd)],
-          ["已计价均价", formatPrice(observation.wallet_entry_price)],
-          [
-            "未计价笔数",
-            observation.wallet_unpriced_buys == null
-              ? "未记录"
-              : String(observation.wallet_unpriced_buys),
-          ],
-          ["观察价", formatPrice(observation.wallet_mark_price)],
-          ["记录原因", observation.wallet_selection_reason || "未记录"],
-          [
-            "买入笔数",
-            observation.wallet_buy_count == null ? "未记录" : String(observation.wallet_buy_count),
-          ],
-          [
-            "观察时点",
-            observation.wallet_observed_at_ms == null
-              ? "未记录"
-              : displayTime(observation.wallet_observed_at_ms),
-          ],
-          [
-            "历史覆盖自",
-            observation.wallet_history_from_ms == null
-              ? "未记录"
-              : displayTime(observation.wallet_history_from_ms),
-          ],
+          ["主窗口", primary.window],
+          ["合格地址", String(primary.qualified_n)],
+          ["合格地址净买入", formatPrice(primary.net_usd)],
+          ["代币合约", snapshot.token],
         ]}
       />
-      {observation.wallet_address && observation.wallet_token ? (
-        <Link
-          to={walletHistoryPath({
-            kind: "all",
-            window: "7d",
-            walletAddress: observation.wallet_address,
-            tokenAddress: observation.wallet_token,
-          })}
-        >
-          查看同钱包与代币的观察时间线
-        </Link>
-      ) : null}
-    </>
-  );
-}
-
-/**
- * The lines a digest was sent with, in order.
- *
- * Rendered rather than only stored, because they are the whole content of that card: every other market
- * kind's content is a number in a field, and a digest's is the sentences those numbers were written
- * into. Absent on every other kind, including the two other wallet kinds.
- */
-function DigestLines({ lines }: { lines?: readonly string[] | null }) {
-  if (!lines?.length) return null;
-  return (
-    <>
-      <small className="news-market-detail-label">摘要正文</small>
-      <ol className="news-market-digest">
-        {/* Position is the identity here: two sentences of a digest may legitimately read the same. */}
-        {lines.map((line, index) => (
-          <li key={index}>{line}</li>
-        ))}
-      </ol>
+      <Link to={`/news/wallets?episode=${observation.item_id}`}>查看集中净买入事件</Link>
     </>
   );
 }

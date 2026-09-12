@@ -7,8 +7,9 @@ import {
   newsMarketObservationFixture,
   newsStatusFixture,
   newsSymbolFixture,
-  newsWalletCardsForParams,
+  newsWalletEventsForParams,
   newsWalletsFixture,
+  newsWalletEventDetailFixture,
 } from "@tests/fixtures/newsFixture";
 import {
   tradingCasesForCaseId,
@@ -66,18 +67,21 @@ export function mockAppRoutes(apiMock: ApiMock) {
      * because the window is a real request — a mock that ignored it would let a browser-side slice pass.
      */
     if (path === "/api/news/wallets") return ok(newsWalletsFixture());
-    if (path === "/api/news/wallets/cards") {
+    if (path === "/api/news/wallets/events") {
       return ok(
-        newsWalletCardsForParams(
+        newsWalletEventsForParams(
           new URLSearchParams(
-            ["window", "kind", "wallet_address", "token_address"].map((key) => [
-              key,
-              param(key) ?? "",
-            ]),
+            ["history_range", "cursor", "to_ms"].map((key) => [key, param(key) ?? ""]),
           ),
         ),
       );
     }
+    if (path.startsWith("/api/news/wallets/events/"))
+      return ok(
+        newsWalletEventDetailFixture({
+          event: { ...newsWalletEventDetailFixture().event, episode_id: path.split("/").pop()! },
+        }),
+      );
     if (path === "/api/news/quotes") return ok({ measured_at_ms: 0, quotes: [] });
     if (path.startsWith("/api/news/events/")) return ok(newsEventDetailFixture());
     // #537 PR-5: only `/trading` reads this now. The shell polled it on every News route for a

@@ -9,8 +9,8 @@ from tracefold.app.workers import root as workers_module
 from tracefold.app.workers.runtime import (
     CHAIN_TAPE,
     MARKET_NOTIFICATIONS,
-    WALLET_DIGEST,
-    WALLET_RESEARCH,
+    WALLET_NET_BUY,
+    WALLET_PRICES,
     CapabilityStates,
 )
 from tracefold.app.workers.task_contract import WorkerTask, worker_business_tasks
@@ -142,7 +142,7 @@ def test_every_news_ingestion_task_is_foundational_and_every_optional_one_owns_i
         signal_lane=None,
         market_notifications=_StubMarketNotifications(),
         chain_tape=ChainTapeComposition(
-            loop=_StubChainTape(), research=_StubChainTape(), digest=_StubChainTape(), poll_seconds=2.0
+            loop=_StubChainTape(), detector=_StubChainTape(), prices=_StubChainTape(), poll_seconds=2.0
         ),
     )
     by_name = {task.name: task for task in tasks}
@@ -159,10 +159,10 @@ def test_every_news_ingestion_task_is_foundational_and_every_optional_one_owns_i
     # information entry above is unchanged.
     assert by_name["news-chain-tape"].capability == CHAIN_TAPE
     assert by_name["news-chain-tape"].foundational is False
-    assert by_name["news-wallet-research"].capability == WALLET_RESEARCH
-    assert by_name["news-wallet-digest"].capability == WALLET_DIGEST
-    assert by_name["news-wallet-research"].foundational is False
-    assert by_name["news-wallet-digest"].foundational is False
+    assert by_name["news-wallet-net-buy"].capability == WALLET_NET_BUY
+    assert by_name["news-wallet-prices"].capability == WALLET_PRICES
+    assert by_name["news-wallet-net-buy"].foundational is False
+    assert by_name["news-wallet-prices"].foundational is False
     optional = [task.capability for task in tasks if not task.foundational]
     assert MARKET_NOTIFICATIONS in optional
     assert CHAIN_TAPE in optional

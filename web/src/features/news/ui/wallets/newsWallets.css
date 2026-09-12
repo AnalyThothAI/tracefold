@@ -1,337 +1,153 @@
 @layer app.features {
-  /* The same reading measure as 市场事实: two tables of figures, wide but not unbounded. */
   .news-wallets-shell {
     max-width: 1240px;
   }
-
-  .news-wallets-body {
-    display: grid;
-    gap: 12px;
-  }
-
   .news-wallets-panel {
     min-width: 0;
+    margin-bottom: 12px;
     overflow: hidden;
     border-radius: var(--radius-lg);
     background: var(--surface-panel);
     box-shadow: var(--ring-panel);
   }
-
   .news-wallets-toolbar {
     display: flex;
     flex-wrap: wrap;
     gap: 8px 12px;
     align-items: center;
     justify-content: space-between;
-    min-height: 41px;
-    padding: 5px 10px;
+    padding: 10px;
   }
-
-  .news-wallets-toolbar > b {
-    color: var(--text-primary);
-    font-size: var(--font-size-meta);
-    font-weight: 660;
-  }
-
-  .news-wallets-toolbar > small {
-    overflow: hidden;
-    color: var(--text-subtle);
-    font: 500 var(--font-size-mono-meta)/1 var(--font-mono);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .news-wallets-filters {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: end;
-    padding: 6px 10px;
-  }
-
-  .news-wallets-filters label {
-    display: grid;
-    flex: 1 1 220px;
-    gap: 4px;
-    min-width: 0;
-    color: var(--text-secondary);
-    font: 500 var(--font-size-meta)/1.5 var(--font-sans);
-  }
-
-  .news-wallets-filters input {
-    width: 100%;
-    min-width: 0;
-    padding: 6px 8px;
-    border: 1px solid var(--signal-neutral-border);
-    border-radius: var(--radius-sm);
-    color: var(--text-primary);
-    background: var(--surface-panel);
-    font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
-  }
-
   .news-wallets-note {
     margin: 0;
-    padding: 6px 10px;
+    padding: 8px 10px;
     color: var(--text-subtle);
-    font: 400 var(--font-size-meta)/1.5 var(--font-sans);
+    font: 400 var(--font-size-meta)/1.6 var(--font-sans);
   }
-
-  .news-wallets-evidence {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 16px;
-    color: var(--text-subtle);
-    font: 400 var(--font-size-meta)/1.5 var(--font-sans);
-  }
-
-  /* One meaning per state, the way the market page's kind chips work: a lit chip is the window in force. */
   .news-wallets-windows {
     display: inline-flex;
     gap: 2px;
-    min-width: 0;
     padding: 3px;
     border-radius: var(--radius-lg);
     background: var(--surface-slot);
   }
-
   .news-wallets-window {
-    display: inline-flex;
-    align-items: center;
-    min-height: 25px;
-    padding: 0 12px;
+    min-height: 40px;
+    padding: 0 16px;
     border: 0;
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
     background: transparent;
     font: 500 var(--font-size-meta)/1 var(--font-mono);
-    white-space: nowrap;
     cursor: pointer;
   }
-
   .news-wallets-window[data-active] {
     color: var(--text-primary);
     background: var(--surface-panel);
     box-shadow: var(--ring-panel);
   }
-
-  /* Wide tables scroll inside their own panel rather than widening the page. */
   .news-wallets-scroll {
     overflow-x: auto;
   }
-
   .news-wallets-table {
     width: 100%;
     border-collapse: collapse;
-    white-space: nowrap;
   }
-
   .news-wallets-table th,
   .news-wallets-table td {
-    padding: 6px 10px;
-    text-align: right;
+    padding: 12px 10px;
+    text-align: left;
+    vertical-align: top;
+    border-bottom: 1px solid var(--signal-neutral-border);
+    font-size: var(--font-size-meta);
+    line-height: 1.6;
   }
-
-  .news-wallets-table thead th {
-    color: var(--text-faint);
+  .news-wallets-table th {
+    color: var(--text-subtle);
     background: var(--surface-raised);
-    font: 700 var(--font-size-eyebrow)/1.4 var(--font-mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
   }
-
-  .news-wallets-table tbody td {
-    color: var(--text-secondary);
-    font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
-    font-variant-numeric: tabular-nums;
+  .news-wallets-table small,
+  .news-wallets-table code {
+    display: block;
   }
-
-  /* The row's own subject, on the left and in the reading font: everything else is a figure. */
-  .news-wallets-table th[scope="row"],
-  .news-wallets-table thead th:first-child,
-  .news-wallets-table tbody td:first-child,
-  .news-wallets-table tbody td:nth-child(2),
-  .news-wallets-table tbody td:nth-child(3),
-  .news-wallets-table tbody td:nth-child(4) {
-    text-align: left;
+  .news-wallets-table small {
+    color: var(--text-subtle);
   }
-
-  .news-wallets-table th[scope="row"] {
-    color: var(--text-primary);
-    font: 620 var(--font-size-meta)/1.5 var(--font-sans);
-  }
-
-  .news-wallets-table tbody tr + tr th,
-  .news-wallets-table tbody tr + tr td {
-    border-top: 1px solid var(--signal-neutral-border);
-  }
-
-  .news-wallets-kind {
-    color: var(--text-primary);
-    font: 620 var(--font-size-mono-meta)/1.5 var(--font-mono);
-    text-decoration: none;
-  }
-
-  .news-wallets-kind:hover {
-    text-decoration: underline;
-  }
-
-  /*
-   * Red up, green down — the mainland convention the quote line already uses, and applied here for the
-   * same reason: these are the market's own answers, not a judgment this console made.
-   */
-  .news-wallets-table td[data-tone="up"] {
-    color: var(--dir-bullish);
-  }
-
-  .news-wallets-table td[data-tone="down"] {
-    color: var(--dir-bearish);
-  }
-
-  /*
-   * A digest's own sentences, under the row whose figures they were written from. Numbered because
-   * their order is the summary's order, and left-aligned against a table whose cells are figures.
-   */
-  .news-wallets-lines > td {
-    padding-top: 0;
-    text-align: left;
+  .news-wallets-panel code {
+    overflow-wrap: anywhere;
     white-space: normal;
+    font: 400 var(--font-size-mono-meta)/1.6 var(--font-mono);
   }
-
-  .news-wallets-lines ol {
-    display: grid;
-    gap: 3px;
+  .news-wallet-event-detail {
+    padding: 12px;
+  }
+  .news-wallet-event-detail h2 {
     margin: 0;
-    padding-left: 20px;
+    font-size: var(--font-size-page-title);
   }
-
-  .news-wallets-lines li {
-    color: var(--text-secondary);
-    font: 400 var(--font-size-meta)/1.5 var(--font-sans);
+  .news-wallet-event-detail h3 {
+    margin: 24px 0 10px;
+    font-size: var(--font-size-item-title);
   }
-}
-
-@layer app.features {
-  .news-research-tabs {
-    margin-bottom: 14px;
+  .news-wallet-event-detail h4 {
+    margin: 12px 0 8px;
+    font-size: var(--font-size-body);
   }
-  .news-wallet-research-row + .news-wallet-research-row {
-    border-top: 1px solid var(--border-subtle);
+  .news-wallet-event-detail p {
+    font-size: var(--font-size-meta);
+    line-height: 1.6;
+    overflow-wrap: anywhere;
   }
-  .news-wallet-research-trigger {
-    display: grid;
-    grid-template-columns: minmax(190px, 1.5fr) 1fr 1.2fr 1.2fr 95px;
-    gap: 18px;
-    width: 100%;
-    padding: 20px;
-    text-align: left;
-    background: transparent;
-    color: var(--text-primary);
-    border: 0;
+  .news-wallets-panel summary {
+    padding: 12px;
     cursor: pointer;
   }
-  .news-wallet-research-trigger:hover {
-    background: var(--surface-hover);
-  }
-  .news-wallet-research-trigger > span {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    min-width: 0;
-  }
-  .news-wallet-research-trigger b {
-    font-size: var(--font-size-body);
-    font-weight: 600;
-  }
-  .news-wallet-research-trigger small,
-  .news-wallet-outcomes small {
-    color: var(--text-muted);
-    font-size: var(--font-size-meta);
-  }
-  .news-wallet-research-identity b span {
-    font-family: var(--font-mono);
-  }
-  .news-wallet-price-gap {
-    color: var(--signal-caution) !important;
-  }
-  .news-wallet-research-detail {
-    padding: 4px 20px 22px;
+  .news-wallets-snapshots {
     display: grid;
-    gap: 16px;
-    background: var(--surface-raised);
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
   }
-  .news-wallet-research-detail p {
-    margin: 12px 0 0;
-    color: var(--text-secondary);
-  }
-  .news-wallet-outcomes {
+  .news-wallets-outcomes {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 16px;
+    gap: 12px;
   }
-  .news-wallet-outcomes > div {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    border-left: 2px solid var(--border-subtle);
-    padding-left: 12px;
+  .news-wallets-outcomes > div {
+    padding: 12px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-slot);
   }
-  .news-wallet-research-links {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 16px;
-  }
-  .news-wallet-research-links a {
-    color: var(--accent-primary);
-    min-height: 44px;
-    display: inline-flex;
-    align-items: center;
-  }
-  .news-wallet-anchor {
-    overflow-wrap: anywhere;
-    color: var(--text-muted);
-  }
-  .news-wallet-data-details {
-    margin-top: 16px;
-  }
-  .news-wallet-data-details > summary {
-    cursor: pointer;
-    padding: 16px;
-    min-height: 44px;
-  }
-  .news-wallet-research-row [data-tone="up"] {
-    color: var(--dir-bullish);
-  }
-  .news-wallet-research-row [data-tone="down"] {
-    color: var(--dir-bearish);
-  }
-  @media (max-width: 1023px) {
-    .news-wallet-research-trigger {
-      grid-template-columns: 1.5fr 1fr 1fr;
-      gap: 16px;
-    }
-    .news-wallet-research-identity {
-      grid-column: span 2;
-    }
-  }
-  @media (max-width: 599px) {
-    .news-wallets-summary {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      grid-auto-flow: row;
-      grid-auto-columns: auto;
-      overflow-x: visible;
-    }
-    .news-wallet-research-trigger {
-      grid-template-columns: 1fr 1fr;
-      padding: 16px;
-    }
-    .news-wallet-research-identity {
-      grid-column: span 2;
-    }
-    .news-wallet-outcomes {
+  @media (width < 700px) {
+    .news-wallets-outcomes {
       grid-template-columns: 1fr;
     }
-    .news-wallet-research-detail {
-      padding: 4px 16px 18px;
+    .news-wallet-event-list thead {
+      display: none;
+    }
+    .news-wallet-event-list tbody,
+    .news-wallet-event-list tr,
+    .news-wallet-event-list td {
+      display: block;
+    }
+    .news-wallet-event-list tr {
+      padding: 8px;
+      border-bottom: 1px solid var(--signal-neutral-border);
+    }
+    .news-wallet-event-list td {
+      padding: 6px;
+      border: 0;
+    }
+    .news-wallet-event-list td::before {
+      content: attr(data-label);
+      display: block;
+      color: var(--text-subtle);
+      font-size: var(--font-size-meta);
+    }
+    .news-wallets-window {
+      min-height: 48px;
+    }
+    .news-wallet-event-detail .news-wallets-table {
+      min-width: 620px;
     }
   }
 }

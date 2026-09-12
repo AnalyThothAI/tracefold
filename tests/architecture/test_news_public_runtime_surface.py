@@ -38,6 +38,7 @@ PUBLIC_NEWS_INTERFACE = {
     "IPTC_SUBJECT_CODES",
     "NEWS_RETRIEVAL_SHA256",
     "NewsTaxonomyV1",
+    "NetBuySnapshot",
     "OI_METRIC_VERSION",
     # #553: the market read surface's own vocabulary and bounds, which the HTTP route validates a
     # window and a page against so it stops restating either. The timeline cap and the notification
@@ -112,6 +113,12 @@ WRITE_REPOSITORY_METHODS = (
     "market_release_unavailable",
     "market_sweep_interrupted_sends",
     "market_prune_tracks",
+    "chain_tape_insert_wallet_event",
+    "wallet_update_event",
+    "wallet_mark_receipt_derived",
+    "wallet_freeze_send_snapshot",
+    "wallet_suppress_delivery",
+    "chain_tape_record_outcome",
 )
 
 

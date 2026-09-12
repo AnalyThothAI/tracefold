@@ -17,9 +17,6 @@ from ..review.desk import review_read_statements
 from ..source_contracts import MARKET_KINDS
 from .chain_tape import (
     TAPE_STATE_ID,
-    WALLET_CARDS_BY_KIND_SQL,
-    WALLET_FILLS_BY_KIND_SQL,
-    WALLET_POSITION_FILLS_SQL,
     WALLET_ROSTER_ROWS_SQL,
     WALLET_TAPE_STATE_SQL,
 )
@@ -59,7 +56,16 @@ from .operations import (
     RECOVERY_BACKLOG_LIMIT,
     pending_recovery_incidents_statement,
 )
-from .wallet_research import WALLET_RESEARCH_SQL, WALLET_RESEARCH_TOTALS_SQL, research_params
+from .wallet_events import (
+    NET_BUY_WINDOW_SQL,
+    WALLET_DUE_OUTCOMES_SQL,
+    WALLET_EVENT_FILLS_SQL,
+    WALLET_EVENT_SQL,
+    WALLET_EVENT_TOTALS_SQL,
+    WALLET_EVENTS_SQL,
+    WALLET_OUTCOMES_SQL,
+    WALLET_PENDING_RECEIPTS_SQL,
+)
 
 
 def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
@@ -369,6 +375,66 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         # They are registered because they are public reads over a table the tape appends to every two
         # seconds -- the one place in this flow where growth reaches a reader rather than a log line.
         ReadQuerySpec(
+            name="news_wallet_event",
+            sql=WALLET_EVENT_SQL,
+            params=("episode",),
+            max_read_return_amplification=20.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_wallet_events",
+            sql=WALLET_EVENTS_SQL,
+            params=(int(now_ms) - 86400000, int(now_ms), None, None, None, 100),
+            max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_wallet_event_totals",
+            sql=WALLET_EVENT_TOTALS_SQL,
+            params=(int(now_ms) - 86400000, int(now_ms)),
+            max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_wallet_event_fills",
+            sql=WALLET_EVENT_FILLS_SQL,
+            params=(
+                4663,
+                "0x" + "2" * 40,
+                int(now_ms) - 1800000,
+                int(now_ms),
+                2147483647,
+                2147483647,
+                None,
+                None,
+                None,
+                100,
+            ),
+            max_read_return_amplification=20.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_wallet_outcomes",
+            sql=WALLET_OUTCOMES_SQL,
+            params=("episode",),
+            max_read_return_amplification=20.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_wallet_pending_receipts",
+            sql=WALLET_PENDING_RECEIPTS_SQL,
+            params=(20,),
+            max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_wallet_due_outcomes",
+            sql=WALLET_DUE_OUTCOMES_SQL,
+            params=(900000, "15m", 900000, int(now_ms), 2),
+            max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
             name="news_wallet_roster",
             sql=WALLET_ROSTER_ROWS_SQL,
             params=(),
@@ -383,39 +449,18 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
-            name="news_wallet_fill_totals",
-            sql=WALLET_FILLS_BY_KIND_SQL,
-            params={"from_ms": day_ago},
-            max_read_return_amplification=100.0,
-            max_scanned_rows=MARKET_WINDOW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="news_wallet_card_totals",
-            sql=WALLET_CARDS_BY_KIND_SQL,
-            params={"from_ms": day_ago},
-            max_read_return_amplification=100.0,
-            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="news_wallet_cards",
-            sql=WALLET_RESEARCH_SQL,
-            params=research_params(from_ms=day_ago, to_ms=int(now_ms), limit=100),
+            name="news_wallet_net_buy_window",
+            sql=NET_BUY_WINDOW_SQL,
+            params={
+                "chain_id": 4663,
+                "token": "0x" + "2" * 40,
+                "from_ms": now_ms - 1800000,
+                "to_ms": now_ms,
+                "block": 9223372036854775807,
+                "log": 2147483647,
+            },
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="news_wallet_research_totals",
-            sql=WALLET_RESEARCH_TOTALS_SQL,
-            params=research_params(from_ms=day_ago, to_ms=int(now_ms)),
-            max_read_return_amplification=100.0,
-            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="news_wallet_position_fills",
-            sql=WALLET_POSITION_FILLS_SQL,
-            params=("0x" + "1" * 40, "0x" + "2" * 40, day_ago, int(now_ms), None, None, 100),
-            max_read_return_amplification=20.0,
-            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
             name="news_market_group_timeline",
