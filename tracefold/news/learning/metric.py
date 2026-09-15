@@ -40,7 +40,12 @@ from .objective import (
     DevelopmentEpisode,
     _gold_value,
     _labelled,
+    asset_claims_match,
+    evidence_text_of,
+    known_wrong_markets,
     production_decision,
+    typed_asset_claims,
+    ungrounded_primaries,
 )
 from .taxonomy_metric import TAXONOMY_TARGET_DIMENSIONS, compare_taxonomy
 
@@ -50,7 +55,11 @@ from .taxonomy_metric import TAXONOMY_TARGET_DIMENSIONS, compare_taxonomy
 # addresses — but a version label that stays put while the definition moves is a label that lies.
 # v5 (#306 Phase 1): the deterministic ReaderCard copy contract became a scored component and a hard gate,
 # so the card side of this ruler no longer depends on a reviewer having labelled anything.
-METRIC_ID = "tracefold.news.production_action_trade_relevance_v9"
+# v10 (#651 §6.2): `asset_grounding` compares typed `(market_type, symbol, role)` claims instead of a
+# bare symbol set — so a primary/mentioned swap and a wrong market are both visible where they were
+# silently equal — and `ungrounded_primary_asset` no longer zeroes a primary the evidence text or the
+# instrument catalogue grounds when the provider tagged something else.
+METRIC_ID = "tracefold.news.production_action_trade_relevance_v10"
 
 
 # The five components of the candidate-selection score. Code-owned and content-addressed: they are hashed
@@ -176,12 +185,7 @@ def _reader_card_owns_action_feedback(decision: DecisionResult, projection: Mapp
 
 def _observed_value(verdict: Mapping[str, Any], name: str) -> Any:
     if name == "asset_grounding":
-        assets = verdict.get("assets")
-        if not isinstance(assets, Sequence) or isinstance(assets, (str, bytes)):
-            return frozenset()
-        return frozenset(
-            base_symbol(str(dict(asset).get("symbol") or "")) for asset in assets if isinstance(asset, Mapping)
-        )
+        return typed_asset_claims(verdict.get("assets"))
     value = verdict.get(_DIMENSION_FIELD.get(name, ""), _NO_GOLD)
     if name in {"trade_channels", "trade_affected_markets"} and value is not _NO_GOLD:
         return tuple(str(item) for item in value or ())
@@ -365,9 +369,21 @@ def _component(
             if wanted is not _NO_GOLD:
                 gold_scored += 1
                 scored_n += 1
-                hit = _observed_value(verdict, name) == wanted
+                observed = _observed_value(verdict, name)
+                if name == "asset_grounding":
+                    # Typed claims, compared under #651 §6.2 rather than by set equality: `unknown` on
+                    # either side cannot contradict, and a market both sides state has to agree.
+                    hit = asset_claims_match(observed, wanted)
+                    outcome = (
+                        "gold_hit"
+                        if hit
+                        else ("known_wrong_market" if known_wrong_markets(observed, wanted) else "gold_miss")
+                    )
+                else:
+                    hit = observed == wanted
+                    outcome = "gold_hit" if hit else "gold_miss"
                 hits += float(hit)
-                outcomes.append((name, "gold_hit" if hit else "gold_miss"))
+                outcomes.append((name, outcome))
                 continue
             outcomes.append((name, "not_scored_no_gold"))
             continue
@@ -712,11 +728,14 @@ def accepted_review_metric(
             **decision_metadata,
         )
     # Symbol sets, canonicalized on both sides. Gate grounding carries the provider's raw tag (`XYZ-CL`), and
-    # a raw `.upper()` comparison would zero a candidate that correctly named `CL`.
-    ungrounded = sorted(
-        asset.symbol
-        for asset in typed.assets
-        if asset.role == "primary" and grounded_values and base_symbol(asset.symbol) not in grounded_values
+    # a raw `.upper()` comparison would zero a candidate that correctly named `CL`. Since #651 §5 the
+    # evidence text and the instrument catalogue ground a primary too: the provider tagging a *different*
+    # company is not evidence that the subject the model read out of the headline does not exist.
+    ungrounded = ungrounded_primaries(
+        [asset for asset in typed.assets if asset.role == "primary"],
+        grounded=grounded_values,
+        evidence_text=evidence_text_of(gold.context),
+        catalog_candidates=gold.context.gate.catalog_candidates,
     )
     if ungrounded:
         return _zero(
@@ -766,6 +785,12 @@ def accepted_review_metric(
     else:
         action_score = None
 
+    wrong_market = [name for name, outcome in outcomes if outcome == "known_wrong_market"]
+    if wrong_market:
+        feedback.append(
+            "The accepted answer names the same symbols in a different market; "
+            "state market_type from the evidence, or unknown when it does not establish one."
+        )
     # Novelty is the epoch's whole subject: a candidate that answers `new_fact` for every accepted
     # `restatement` must not score the same as one that gets it right, and on an `uncertain` action label
     # nothing else would notice.
