@@ -51,10 +51,15 @@ FIGURE: Final = r"\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?"
 # whole forced trade over its width lost the number the reader came for.
 MAX_INSTRUMENT_LEN: Final = 32
 
+# Since 2026-09-14 the provider appends `, N times in 24h` to the template (`BTC Large Long
+# Liquidation 759.27K at $76089.00, 24 times in 24h`); the anchored frame refused every one of them as
+# `liquidation_template_unmatched`. The suffix is accepted and not stored, exactly as the OI lane does:
+# it is the provider's recurrence count, not a fact about this forced trade.
 _FRAME = re.compile(
     r"^\s*(?P<symbol>[A-Z0-9._-]{1,64})\s+Large\s+"
     r"(?P<side>Short|Long)\s+Liquidation\s+"
-    rf"(?P<notional>{FIGURE})(?P<unit>[{MAGNITUDE_SUFFIXES}]?)\s+at\s+\$(?P<price>{FIGURE})\s*$",
+    rf"(?P<notional>{FIGURE})(?P<unit>[{MAGNITUDE_SUFFIXES}]?)\s+at\s+\$(?P<price>{FIGURE})"
+    r"(?:,\s*\d+\s+times\s+in\s+24h)?\s*$",
     re.IGNORECASE,
 )
 _MAX_NUMERIC: Final = Decimal("1e24")

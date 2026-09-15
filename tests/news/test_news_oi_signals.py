@@ -45,6 +45,28 @@ def test_parses_the_production_template_into_exact_basis_points() -> None:
     assert signal == _signal()
 
 
+@pytest.mark.parametrize(
+    "title",
+    [
+        # Verbatim production titles from 2026-09-14 02:18 UTC and 2026-09-15 13:39 UTC, the first and
+        # latest frames the provider shipped with its new recurrence suffix.
+        "MTL OI Rise 4.28%, OI Value 3.71M, Whale Long Profit 96.25%, Whale/OI Ratio 30.02%, 1 times in 24h",
+        "CRWD OI Rise 13.59%, OI Value 4.35M, Whale Long Profit 88.89%, Whale/OI Ratio 115.49%, 1 times in 24h",
+    ],
+)
+def test_the_providers_recurrence_suffix_does_not_unmatch_the_template(title: str) -> None:
+    """`, N times in 24h` is the provider's own count; the four numbers before it are unchanged."""
+
+    signal = parse_oi_signal(title)
+    assert signal is not None
+    assert signal.symbol == title.split(maxsplit=1)[0]
+    assert signal.direction == "rise"
+
+
+def test_the_recurrence_suffix_reads_the_same_numbers_as_the_bare_frame() -> None:
+    assert parse_oi_signal(f"{FRAME}, 3 times in 24h") == parse_oi_signal(FRAME)
+
+
 @pytest.mark.parametrize(("wire", "direction"), [("Rise", "rise"), ("Fall", "fall"), ("Drop", "fall")])
 def test_production_direction_words_keep_their_domain_direction(wire: str, direction: str) -> None:
     signal = parse_oi_signal(FRAME.replace("Rise", wire))
@@ -86,6 +108,8 @@ def test_the_symbol_is_the_titles_own_subject_normalized_and_the_native_token_is
         "HIP-3 has lost $820M in open interest over the past 5 days, down from its peak of $4.57B.",
         "Bitcoin open interest hits a record",
         "TRUMP OI Rise 4.55%, OI Value 32.17M",
+        f"{FRAME}, many times in 24h",
+        f"{FRAME}, 3 times in 7d",
         "",
     ],
 )
