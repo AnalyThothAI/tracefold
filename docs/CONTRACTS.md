@@ -895,9 +895,13 @@ The sibling `news_taxonomy_v1` is a fact projection, not delivery intent:
 - `event_family`: one of the 13 event families defined in
   [`docs/NEWS_TAXONOMY.md`](NEWS_TAXONOMY.md);
 - `change_state`: `announced|scheduled|effective|reported|updated|delayed|cancelled|recalled|unknown`;
-- `assertion_status`: `confirmed|claimed|rumor|conflicted|unknown`;
-- `source_authority`: `regulatory_filing|issuer_first_party|reputable_secondary|unknown`,
-  derived by code from structured source/provenance and absent from model output.
+- `assertion_status`: `confirmed|claimed|rumor|conflicted|unknown`.
+
+Source authority is not one of its axes. It is code-owned, derived from
+structured source/provenance, absent from model output, and since
+`news_editorial_v3` (#651) it lives on the editorial envelope beside the
+taxonomy rather than inside it — so a judgment whose taxonomy Predictor failed
+still carries it.
 
 `other` and `unknown` are valid abstentions. Unknown qcodes, more than three
 qcodes, and a pinned parent together with one of its pinned descendants fail
@@ -912,8 +916,19 @@ the Verdict.
 
 `SemanticJudgment` atomically carries verdict, an `EditorialEnvelope`, trace,
 usage and runtime identities. The envelope is
-`{editorial_contract_version=news_editorial_v2, editorial_origin=model,
-relevance, taxonomy, editorial_sha256}` and exists only for model origin.
+`{editorial_contract_version=news_editorial_v3, editorial_origin=model,
+relevance, source_authority, taxonomy, taxonomy_status, taxonomy_error_code,
+editorial_sha256}` and exists only for model origin. `source_authority` is a
+code fact and is always present. `taxonomy` is the taxonomy Predictor's answer
+and is `null` when that one call failed while the other two answered, in which
+case `taxonomy_status` is `unavailable` and `taxonomy_error_code` names the
+`news_program_*` code; the route is not restarted for it, because the verdict,
+the card and the authority are all there. `news_editorial_v2` nested the
+authority inside the taxonomy and required it; those rows are audit truth, are
+never rewritten, and are converted to the v3 shape once, at the storage read
+boundary (`tracefold.news.storage.decisions.editorial_read_shape` and its SQL
+sibling `EDITORIAL_SOURCE_AUTHORITY_SQL`), so the feed's source-authority filter
+and the Event detail answer over the whole retention window.
 An admitted listing still runs the normal Program and uses `model` origin;
 listing admission is an objective policy fact, not synthetic relevance.
 `ScoredJudgment` is the model projection accepted by policy, baseline, compiler,
@@ -939,7 +954,7 @@ the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `news_title_norm_v2`, `news_gate_v6`, `news_storyline_registry_v1`,
 `news_event_evidence_v3`, `news_judgment_v2`,
 `news_semantic_program_v10`,
-`news_triage_policy_v13`, `news_delivery_card_v11`, artifact schema
+`news_triage_policy_v14`, `news_delivery_card_v11`, artifact schema
 `news_program_state_v1`, and source classifier
 `opennews_source_classifier_v2`. `news_oi_signal_v3` and
 `news_liquidation_fact_v2` are retired program versions: the deterministic
@@ -1047,7 +1062,7 @@ grounded watchlist, eligible `reader_value=escalate`, eligible
 `reader_value=realtime`, background/none, then
 `trade_relevance_inconsistent`; then the v12 escalate corroboration
 (`trade_relevance_escalate_uncorroborated`: eligible `escalate` with
-code-owned `source_authority = unknown` and a single Event member becomes a
+code-owned `editorial.source_authority = unknown` and a single Event member becomes a
 `push`) and `single_name_without_instrument` (eligible realtime `single_name`
 with no primary asset drops); the retained stale-source and same-fact checks
 and the per-storyline budget run after action selection. There is no
@@ -1412,9 +1427,14 @@ availability — and `action_confusion` splits agreement by `must_push`,
 `should_push`, `must_hold` and `should_hold`. `hard_gates.by_gate` names which
 gate zeroed each case (`must_push_miss`, `must_hold_send`,
 `background_realtime_send`, `factual_contradiction_unchanged`,
-`ungrounded_primary_asset`, `schema_invalid`, `relevance_inconsistent`,
-`known_duplicate_leak`, `advisory_rejected`, `card_lint_url`,
-`card_lint_self_description`). A gated case keeps its resolved action and its per-dimension
+`ungrounded_primary_asset`, `schema_invalid`, `taxonomy_unavailable`,
+`relevance_inconsistent`, `known_duplicate_leak`, `advisory_rejected`,
+`card_lint_url`, `card_lint_self_description`). `taxonomy_unavailable` is a case
+whose accepted Gold names all four axes and whose prediction carries none
+because that Predictor failed on its own (#651): production publishes the card,
+and the ruler scores the classification task zero and keeps it in the
+denominator — a separate gate from `schema_invalid`, because no instruction
+produced it and no instruction repairs it. A gated case keeps its resolved action and its per-dimension
 outcomes: the zero enters every denominator rather than leaving it, or a
 candidate with more hard failures could publish a higher per-dimension hit rate.
 Metric `tracefold.news.production_action_trade_relevance_v8` weights 45% exact

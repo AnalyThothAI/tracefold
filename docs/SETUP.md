@@ -383,7 +383,7 @@ prior-factory judgments are audit-only under exact current-bundle eligibility,
 so the factory-v7 cohort starts at zero.
 The production image has one loader only: the content-addressed
 `news_program_state_v1` document executed as
-`news_semantic_program_v10` under `news_triage_policy_v13`. Prior roots remain
+`news_semantic_program_v10` under `news_triage_policy_v14`. Prior roots remain
 immutable audit history and are not executable by the current image. Rollback
 uses the recorded previous same-schema runtime image, never an alternate
 registry entry or runtime switch.

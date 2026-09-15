@@ -67,7 +67,11 @@ the typed `ModelTaxonomyV1` schema, which the JSON adapter hands the provider
 as a grammar; the seed text carries only what a schema cannot: definitions,
 precedence rules, the qcode glossary and the boundary examples.
 
-`source_authority` is code-owned:
+`source_authority` is code-owned, and since #651 it is an `EditorialEnvelope`
+field rather than a taxonomy axis: the model never emitted it, and a judgment
+whose taxonomy Predictor failed alone must still carry it, because that is what
+the escalate-corroboration rule reads. The allowlists are unchanged:
+
 
 - `regulatory_filing`: exact recognized regulator/filing provenance.
 - `issuer_first_party`: exact recognized issuer or venue first-party identity.
@@ -94,7 +98,7 @@ Membership is a judgment about corroboration weight, so three categories stay
 out on purpose: personal accounts (analysts, traders, journalists posting under
 their own name), aggregators and relays that restate an origin they do not own,
 and a belligerent's state media, which is a party to the event it reports.
-Policy v13 reads `source_authority` when it decides whether an `escalate` is
+Policy v14 reads `editorial.source_authority` when it decides whether an `escalate` is
 corroborated, and none of those three can carry that weight.
 
 ## Persistence and readers
@@ -205,7 +209,9 @@ The four model-owned axes (`subject_codes`, `event_family`, `change_state`,
 `assertion_status`) never enter `decide()`, Gate, ReaderCard, Delivery, or
 Trading, and changing them alone must not change any of those. The code-owned
 `source_authority` field is different: since policy v12 (#504) `decide()`
-reads `editorial.taxonomy.source_authority` once, as issued from the evidence,
+reads it once, as issued from the evidence — from `editorial.source_authority`
+since #651 moved it out of the taxonomy object, so that a failed taxonomy call
+cannot take the corroboration fact down with the label —
 as the escalate corroboration fact — an eligible `escalate` from an `unknown`
 source with a single Event member is downgraded to `push`. It is a Gate-side
 evidence fact carried on the taxonomy record, not a model judgment, and it is

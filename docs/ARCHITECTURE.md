@@ -1492,7 +1492,7 @@ landing on a key otherwise hid a real reversal behind it, while those cards
 still count toward the budget; and the `none` key, which is not a storyline
 (the registry matched nothing) and is neither counted nor budgeted. Either knob at
 0 disables the budget. Two more v12 rules run before it: an eligible
-`escalate` whose code-owned `editorial.taxonomy.source_authority` is
+`escalate` whose code-owned `editorial.source_authority` is
 `unknown` and whose Event has a single member is downgraded to `push` as
 `trade_relevance_escalate_uncorroborated` (grounded assets are not
 corroboration); and an eligible realtime `single_name` verdict that names no
