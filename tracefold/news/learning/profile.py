@@ -70,9 +70,9 @@ EVALUATOR_VERSION = "news_candidate_evaluator_v9"
 
 _PROFILE: dict[str, Any] = {
     "profile_id": LEARNING_PROFILE_ID,
-    # No `learning_epoch` (#314). The profile names the gates a corpus must clear; which epoch a corpus was
-    # frozen in is a per-deployment fact carried by the dataset's own `learning_epoch` and `agent_cohort`,
-    # and naming it here made a static document claim to know the running bundle.
+    # No `learning_epoch` (#314). The profile names the gates a corpus must clear, and naming an epoch here
+    # made a static document claim to know the running bundle. Since #651 §9 a corpus seals no epoch at
+    # all: which arm was deployed is provenance on the dataset's `agent_cohort` and on each case.
     # No `development` block (#651 §9). The corpus-size quotas it held are deleted rather than lowered:
     # a threshold nobody can defend in a unit that matches the question is not a safeguard.
     # The only temporal contract in the profile, and it is a *future* one: the holdout window opens after
