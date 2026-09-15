@@ -16,6 +16,7 @@ from tracefold.news.program.lm import AuditedConfiguredLM, RuntimeModelIdentity,
 from tracefold.news.program.module import NativeNewsProgram
 from tracefold.news.program.routing import RoutedSemanticJudge, RouteLMs
 from tracefold.news.program.runtime import PROGRAM_VERSION
+from tracefold.news.taxonomy import source_authority_from_evidence
 
 
 def _semantics(**updates: Any) -> dict[str, Any]:
@@ -545,3 +546,100 @@ def test_provider_answer_after_deadline_is_reconciled_as_late_completion(
     assert caught.value.partial_trace is not None
     assert len(caught.value.partial_trace.calls) == 1
     assert caught.value.partial_trace.calls[0].terminal_disposition == "late_completion"
+
+
+def _taxonomy_only_failure(taxonomies: list[Any]) -> tuple[Any, RouteLMs]:
+    """One judgment whose taxonomy Predictor fails and whose other two Predictors answer."""
+
+    artifact = build_code_owned_program_state()
+    fallback = _route(artifact, route="fallback", semantics=[_semantics()], cards=[_card()])
+    judge = RoutedSemanticJudge(
+        NativeNewsProgram(artifact),
+        primary=_route(
+            artifact,
+            route="primary",
+            semantics=[_semantics()],
+            taxonomies=taxonomies,
+            cards=[_card()],
+        ),
+        fallback=fallback,
+    )
+    return asyncio.run(judge.judge(_context())), fallback
+
+
+def test_a_taxonomy_provider_failure_keeps_the_card_and_never_restarts_the_route() -> None:
+    """#651 §5.3. The fallback re-runs all three Predictors, so it is the right answer only when the
+    judgment has nothing to publish. A taxonomy failure leaves a complete verdict, a complete card and the
+    code-owned source authority `decide()` reads, so spending a second EventSemantics and a second
+    ReaderCard call on it would buy the reader nothing."""
+
+    judgment, fallback = _taxonomy_only_failure([dspy.LMServerError("unavailable", code="server")])
+
+    assert judgment.trace.answering_route == "primary"
+    assert judgment.fallback_from is None
+    assert fallback.event_semantics._delegate.requests == []
+    assert [(call.predictor, call.terminal_disposition) for call in judgment.trace.calls] == [
+        ("event_semantics", "provider_success"),
+        ("taxonomy", "provider_error"),
+        ("reader_card", "provider_success"),
+    ]
+    assert judgment.verdict.headline_zh == "比特币上线新交易市场"
+    assert judgment.editorial.taxonomy is None
+    assert judgment.editorial.taxonomy_status == "unavailable"
+    assert judgment.editorial.taxonomy_error_code == "news_program_lm_server"
+    # The authority is computed from the evidence and is unaffected by the Predictor that failed.
+    assert judgment.editorial.source_authority == source_authority_from_evidence(_context().evidence)
+    # Per-predictor outcome at judgment altitude: no taxonomy hash, and the code that says why.
+    assert judgment.trace.taxonomy_sha256 is None
+    assert judgment.trace.taxonomy_error_code == "news_program_lm_server"
+    assert judgment.trace.reader_card_sha256 is not None
+
+
+def test_a_truncated_taxonomy_answer_is_named_on_the_judgment_it_did_not_stop() -> None:
+    response = dspy.LMResponse.from_text('{"taxonomy":', model="scripted/truncated")
+    response.outputs[0] = response.output.model_copy(update={"finish_reason": "length", "truncated": True})
+
+    judgment, fallback = _taxonomy_only_failure([response])
+
+    assert fallback.taxonomy._delegate.requests == []
+    assert judgment.editorial.taxonomy_status == "unavailable"
+    assert judgment.editorial.taxonomy_error_code == "news_program_output_truncated"
+    taxonomy_call = next(call for call in judgment.trace.calls if call.predictor == "taxonomy")
+    assert taxonomy_call.error_code == "news_program_lm_output_truncated"
+    assert taxonomy_call.finish_reason == "length"
+
+
+def test_an_unparseable_taxonomy_answer_costs_the_label_and_nothing_else() -> None:
+    """The adapter's own one format fallback still runs; only the third call is the ReaderCard's."""
+
+    judgment, _ = _taxonomy_only_failure(["not-json", "not-json"])
+
+    assert [(call.predictor, call.attempt, call.terminal_disposition) for call in judgment.trace.calls] == [
+        ("event_semantics", 1, "provider_success"),
+        ("taxonomy", 1, "adapter_parse_error"),
+        ("taxonomy", 2, "adapter_parse_error"),
+        ("reader_card", 1, "provider_success"),
+    ]
+    assert judgment.editorial.taxonomy_error_code == "news_program_adapter_parse_error"
+    assert judgment.usage.physical_call_count == 4
+
+
+def test_a_card_failure_after_a_taxonomy_failure_still_fails_the_whole_judgment() -> None:
+    """The reader's copy is the product. Losing the classification is survivable; losing the card is not."""
+
+    artifact = build_code_owned_program_state()
+    judge = RoutedSemanticJudge(
+        NativeNewsProgram(artifact),
+        primary=_route(
+            artifact,
+            route="primary",
+            semantics=[_semantics()],
+            taxonomies=[dspy.LMServerError("unavailable", code="server")],
+            cards=[dspy.LMServerError("unavailable", code="server")],
+        ),
+    )
+
+    with pytest.raises(SemanticJudgeError) as caught:
+        asyncio.run(judge.judge(_context()))
+
+    assert caught.value.failing_predictor == "reader_card"

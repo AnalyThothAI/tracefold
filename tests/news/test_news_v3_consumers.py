@@ -770,7 +770,9 @@ def _judgment(
     usage: ProgramUsage | None = None,
 ) -> SemanticJudgment:
     verdict_payload = verdict.model_dump(mode="json") if hasattr(verdict, "model_dump") else dict(verdict)
-    editorial = EditorialEnvelope.issue(relevance=trade_relevance(), taxonomy=news_taxonomy())
+    editorial = EditorialEnvelope.issue(
+        relevance=trade_relevance(), source_authority="unknown", taxonomy=news_taxonomy()
+    )
     default_calls = (
         _program_call(
             predictor="event_semantics",
@@ -3292,7 +3294,7 @@ def test_triage_runs_exactly_the_persisted_canary_arm_and_traces_the_assignment(
     assert inserted["program_version"] == PROGRAM_VERSION
     assert inserted["program_sha256"] == PROGRAM_SHA256
     assert inserted["verdict"]["headline_zh"] == "候选版真实输出"
-    assert inserted["model_editorial"]["editorial_contract_version"] == "news_editorial_v2"
+    assert inserted["model_editorial"]["editorial_contract_version"] == "news_editorial_v3"
     assert inserted["model_editorial"]["taxonomy"]["taxonomy_version"] == "news_taxonomy_v1"
     assert inserted["trace"]["agent_assignment"] == {
         "activation_id": activation_id,

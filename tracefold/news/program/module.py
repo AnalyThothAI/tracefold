@@ -15,7 +15,13 @@ from ..taxonomy import ModelTaxonomyV1, NewsTaxonomyV1, source_authority_from_ev
 from .artifact import NewsProgramStateV1, render_model_evidence_json, validate_program_instruction
 from .assembly import normalize_restates, restatement_index_error
 from .contracts import EditorialEnvelope, ProgramNormalizationTrace, ReaderCardSemanticView, TriageContext
-from .lm import mark_active_domain_failure, program_json_adapter
+from .lm import (
+    LMDelegateProgramError,
+    LMOutputTruncatedError,
+    active_predictor_disposition,
+    mark_active_domain_failure,
+    program_json_adapter,
+)
 from .runtime import PREDICTOR_NAMES
 from .seed import seed_instruction
 from .signatures import (
@@ -144,21 +150,59 @@ def _normalize_and_validate_semantics(
         return semantics, tuple(normalizations)
     except ValueError as exc:
         code = str(exc) if str(exc).startswith("news_program_") else "news_program_domain_validation_error"
-        mark_active_domain_failure(code)
+        mark_active_domain_failure(code, predictor="event_semantics")
         raise ProgramOutputError(code) from exc
+
+
+def _taxonomy_call_failure_code(exc: Exception) -> str | None:
+    """The `news_program_*` code for a taxonomy call this Program may degrade, or ``None`` to re-raise.
+
+    Only the three failures that are about *this model call* degrade: a provider refusal, a truncated
+    completion, and an adapter that could not parse the answer after its one format fallback. A delegate
+    defect carried through DSPy's catch boundary is a Tracefold bug wearing an LM error's clothes, and
+    anything else is unknown — both keep ending the route.
+    """
+
+    if isinstance(exc, LMDelegateProgramError):
+        return None
+    if isinstance(exc, LMOutputTruncatedError):
+        return "news_program_output_truncated"
+    if isinstance(exc, dspy.LMError):
+        raw = str(getattr(exc, "code", "") or "lm_error")
+        return raw if raw.startswith("news_program_") else f"news_program_lm_{raw}"
+    if active_predictor_disposition("taxonomy") == "adapter_parse_error":
+        return "news_program_adapter_parse_error"
+    return None
+
+
+def _validate_taxonomy(raw_taxonomy: Any) -> tuple[ModelTaxonomyV1 | None, str | None]:
+    """The taxonomy Predictor's typed answer, or the code that says why there is none.
+
+    Separate from `_assemble` since #651 §5.3: the four taxonomy axes and the reader's card are two
+    different products of two different Predictors, and validating them together meant a rejected label
+    threw away a card the reader could have had. The ledger receipt is attributed to `taxonomy` by name
+    rather than by recency, because the ReaderCard call still runs after this one.
+    """
+
+    try:
+        return ModelTaxonomyV1.model_validate(raw_taxonomy), None
+    except ValueError as exc:
+        code = str(exc) if str(exc).startswith("news_program_") else "news_program_taxonomy_domain_validation_error"
+        mark_active_domain_failure(code, predictor="taxonomy")
+        return None, code
 
 
 def _assemble(
     semantics: EventSemantics,
-    raw_taxonomy: Any,
+    taxonomy: ModelTaxonomyV1 | None,
     raw_card: Any,
     *,
     context: TriageContext,
     told_count: int,
     normalizations: tuple[ProgramNormalizationTrace, ...],
+    taxonomy_error_code: str | None,
 ) -> NativeProgramResult:
     try:
-        taxonomy = ModelTaxonomyV1.model_validate(raw_taxonomy)
         card = ReaderCard.model_validate(raw_card)
         error = restatement_index_error(
             novelty=semantics.novelty,
@@ -181,22 +225,26 @@ def _assemble(
                 "why_zh": card.why_zh.strip(),
             }
         )
-        issued = NewsTaxonomyV1.issue(
-            taxonomy,
-            source_authority=source_authority_from_evidence(context.evidence),
-        )
         return NativeProgramResult(
             instruction_rejected=None,
             semantics=semantics,
             taxonomy=taxonomy,
             card=card,
             verdict=verdict,
-            editorial=EditorialEnvelope.issue(relevance=semantics.relevance, taxonomy=issued),
+            # The authority is read off the frozen evidence whatever the taxonomy Predictor did: it is
+            # what `decide()` needs to keep the uncorroborated-escalate rule working on a judgment whose
+            # classification is missing.
+            editorial=EditorialEnvelope.issue(
+                relevance=semantics.relevance,
+                source_authority=source_authority_from_evidence(context.evidence),
+                taxonomy=None if taxonomy is None else NewsTaxonomyV1.issue(taxonomy),
+                taxonomy_error_code=taxonomy_error_code,
+            ),
             normalizations=normalizations,
         )
     except ValueError as exc:
         code = str(exc) if str(exc).startswith("news_program_") else "news_program_domain_validation_error"
-        mark_active_domain_failure(code)
+        mark_active_domain_failure(code, predictor="reader_card")
         raise ProgramOutputError(code) from exc
 
 
@@ -290,22 +338,61 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
         semantics_json = canonical_json(_reader_card_semantic_view(semantics).model_dump(mode="json"))
         return semantics, normalizations, semantics_json
 
+    def _taxonomy_answer(
+        self,
+        prepared: _PreparedRun,
+        lm: dspy.BaseLM | None,
+    ) -> tuple[ModelTaxonomyV1 | None, str | None]:
+        """The taxonomy Predictor's answer, or the code that says why this judgment has none.
+
+        The call is made inside the try because a taxonomy failure no longer ends the judgment: a provider
+        refusal, a truncated completion and an unparseable answer are all as survivable as a rejected
+        label, and the ReaderCard call after this one is what the reader actually receives.
+        """
+
+        try:
+            prediction = self.taxonomy(evidence_json=prepared.taxonomy_evidence_json, lm=lm)
+        except Exception as exc:
+            code = _taxonomy_call_failure_code(exc)
+            if code is None:
+                raise
+            return None, code
+        return _validate_taxonomy(prediction.taxonomy)
+
+    async def _ataxonomy_answer(
+        self,
+        prepared: _PreparedRun,
+        lm: dspy.BaseLM | None,
+    ) -> tuple[ModelTaxonomyV1 | None, str | None]:
+        """`_taxonomy_answer` on the production async path; same boundary, DSPy's own async entry point."""
+
+        try:
+            prediction = await self.taxonomy.acall(evidence_json=prepared.taxonomy_evidence_json, lm=lm)
+        except Exception as exc:
+            code = _taxonomy_call_failure_code(exc)
+            if code is None:
+                raise
+            return None, code
+        return _validate_taxonomy(prediction.taxonomy)
+
     @staticmethod
     def _result(
         prediction: dspy.Prediction,
         *,
         prepared: _PreparedRun,
         semantics: EventSemantics,
-        taxonomy_prediction: dspy.Prediction,
+        taxonomy: ModelTaxonomyV1 | None,
+        taxonomy_error_code: str | None,
         normalizations: tuple[ProgramNormalizationTrace, ...],
     ) -> NativeProgramResult:
         return _assemble(
             semantics,
-            taxonomy_prediction.taxonomy,
+            taxonomy,
             prediction.card,
             context=prepared.context,
             told_count=len(prepared.context.told.entries),
             normalizations=normalizations,
+            taxonomy_error_code=taxonomy_error_code,
         )
 
     def forward(
@@ -325,13 +412,10 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
                 evidence_json=prepared.semantics_evidence_json,
                 lm=event_lm,
             )
-            # Validate semantics before the next physical call: the ledger marks a domain failure on the
-            # latest receipt, so a taxonomy call in between would be blamed for EventSemantics' failure.
+            # EventSemantics is validated before the next physical call because ReaderCard reads its
+            # output: there is no card to assemble without it, and the route restarts on a fallback.
             semantics, normalizations, semantics_json = self._semantics(semantics_prediction, prepared)
-            taxonomy_prediction = self.taxonomy(
-                evidence_json=prepared.taxonomy_evidence_json,
-                lm=taxonomy_lm,
-            )
+            taxonomy, taxonomy_error_code = self._taxonomy_answer(prepared, taxonomy_lm)
             card_prediction = self.reader_card(
                 evidence_json=prepared.card_evidence_json,
                 semantics_json=semantics_json,
@@ -341,7 +425,8 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
             card_prediction,
             prepared=prepared,
             semantics=semantics,
-            taxonomy_prediction=taxonomy_prediction,
+            taxonomy=taxonomy,
+            taxonomy_error_code=taxonomy_error_code,
             normalizations=normalizations,
         )
 
@@ -362,13 +447,10 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
                 evidence_json=prepared.semantics_evidence_json,
                 lm=event_lm,
             )
-            # Validate semantics before the next physical call: the ledger marks a domain failure on the
-            # latest receipt, so a taxonomy call in between would be blamed for EventSemantics' failure.
+            # EventSemantics is validated before the next physical call because ReaderCard reads its
+            # output: there is no card to assemble without it, and the route restarts on a fallback.
             semantics, normalizations, semantics_json = self._semantics(semantics_prediction, prepared)
-            taxonomy_prediction = await self.taxonomy.acall(
-                evidence_json=prepared.taxonomy_evidence_json,
-                lm=taxonomy_lm,
-            )
+            taxonomy, taxonomy_error_code = await self._ataxonomy_answer(prepared, taxonomy_lm)
             card_prediction = await self.reader_card.acall(
                 evidence_json=prepared.card_evidence_json,
                 semantics_json=semantics_json,
@@ -378,7 +460,8 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
             card_prediction,
             prepared=prepared,
             semantics=semantics,
-            taxonomy_prediction=taxonomy_prediction,
+            taxonomy=taxonomy,
+            taxonomy_error_code=taxonomy_error_code,
             normalizations=normalizations,
         )
 

@@ -182,7 +182,10 @@ def test_three_named_predictors_run_in_order_with_exact_instructions_and_bounded
     assert result.verdict is not None
     assert result.editorial is not None and result.editorial.taxonomy is not None
     assert result.editorial.taxonomy.event_family == "market_access"
-    assert result.editorial.taxonomy.source_authority == "reputable_secondary"
+    assert result.editorial.taxonomy_status == "available"
+    assert result.editorial.taxonomy_error_code is None
+    # Code-owned and beside the label rather than inside it since #651: the model never emitted it.
+    assert result.editorial.source_authority == "reputable_secondary"
     assert result.verdict.headline_zh == "比特币出现新进展"
     assert result.verdict.why_zh == "值得关注。"
     assert result.verdict.model_dump(mode="json") == {

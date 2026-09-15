@@ -487,7 +487,7 @@ def _observed_judgment_fields(verdict: dict[str, object]) -> dict[str, object]:
         affected_markets=("us_equity_broad",),
         reader_value="realtime",
     )
-    editorial = EditorialEnvelope.issue(relevance=relevance, taxonomy=news_taxonomy())
+    editorial = EditorialEnvelope.issue(relevance=relevance, source_authority="unknown", taxonomy=news_taxonomy())
     scored = ScoredJudgment.issue(
         verdict=TriageVerdict.model_validate(verdict),
         editorial=editorial,
@@ -583,7 +583,7 @@ def _taxonomy_evidence(pairs: Sequence[tuple[dict[str, Any], dict[str, Any]]]) -
     """The evaluator's own release evidence over one (stable, candidate) answer per independent cluster."""
 
     def arm(axes: dict[str, Any]) -> dict[str, Any]:
-        taxonomy = news_taxonomy(**axes, source_authority="reputable_secondary").model_dump(mode="json")
+        taxonomy = news_taxonomy(**axes).model_dump(mode="json")
         return {"editorial": {"taxonomy": taxonomy}}
 
     observations = [

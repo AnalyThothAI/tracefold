@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from ..artifact_identity import canonical_sha
 from ..models import MarketType, TriageAsset, TriageVerdict, base_symbol, market_type_of
-from ..taxonomy import NewsTaxonomyV1
+from ..taxonomy import NewsTaxonomyV1, SourceAuthority
 from ..told_context import TOLD_MAX as _TOLD_MAX
 from ..told_context import TOLD_SYMBOLS_MAX as _TOLD_SYMBOLS_MAX
 from ..told_context import ToldLedgerSnapshot as _ToldLedgerSnapshot
@@ -106,7 +106,7 @@ TRADE_AFFECTED_MARKET_ORDER: Final[tuple[TradeAffectedMarket, ...]] = (
     "metals",
     "single_asset",
 )
-EDITORIAL_CONTRACT_VERSION: Final[Literal["news_editorial_v2"]] = "news_editorial_v2"
+EDITORIAL_CONTRACT_VERSION: Final[Literal["news_editorial_v3"]] = "news_editorial_v3"
 JUDGMENT_CONTRACT_VERSION: Final[Literal["news_judgment_v2"]] = "news_judgment_v2"
 
 
@@ -182,12 +182,29 @@ class ReaderCardSemanticView(_ExactContractModel):
 
 
 class EditorialEnvelope(_ExactContractModel):
-    """The one current editorial sibling persisted atomically with a verdict."""
+    """The one current editorial sibling persisted atomically with a verdict.
 
-    editorial_contract_version: Literal["news_editorial_v2"] = EDITORIAL_CONTRACT_VERSION
+    v3 (#651 §5.3) separates the two things v2 kept in one required object. ``source_authority`` is a
+    code fact: `source_authority_from_evidence` reads it off the frozen evidence, the model never emits
+    it, and it is therefore present on every model judgment whatever the taxonomy Predictor did.
+    ``taxonomy`` is the taxonomy Predictor's answer, and a Predictor can fail on its own -- a truncated
+    completion, a provider refusal, a typed rejection -- without costing the reader the card the other
+    two Predictors produced. ``taxonomy_status`` names which of those two happened and
+    ``taxonomy_error_code`` carries the `news_program_*` code when it is the second.
+
+    The uncorroborated-escalate rule (`triage_rules.decide`) is why the split is not cosmetic: under v2
+    the rule read `taxonomy.source_authority`, so a taxonomy failure would have taken the corroboration
+    evidence down with the label, and the loudest card class would have lost its safety rule to an
+    unrelated model failure.
+    """
+
+    editorial_contract_version: Literal["news_editorial_v3"] = EDITORIAL_CONTRACT_VERSION
     editorial_origin: Literal["model"] = "model"
     relevance: TradeRelevanceV1
-    taxonomy: NewsTaxonomyV1
+    source_authority: SourceAuthority
+    taxonomy: NewsTaxonomyV1 | None = None
+    taxonomy_status: Literal["available", "unavailable"] = "available"
+    taxonomy_error_code: str | None = None
     editorial_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @classmethod
@@ -195,18 +212,28 @@ class EditorialEnvelope(_ExactContractModel):
         cls,
         *,
         relevance: TradeRelevanceV1,
-        taxonomy: NewsTaxonomyV1,
+        source_authority: SourceAuthority,
+        taxonomy: NewsTaxonomyV1 | None = None,
+        taxonomy_error_code: str | None = None,
     ) -> EditorialEnvelope:
         payload = {
             "editorial_contract_version": EDITORIAL_CONTRACT_VERSION,
             "editorial_origin": "model",
             "relevance": relevance.model_dump(mode="json"),
-            "taxonomy": taxonomy.model_dump(mode="json"),
+            "source_authority": source_authority,
+            "taxonomy": None if taxonomy is None else taxonomy.model_dump(mode="json"),
+            "taxonomy_status": "available" if taxonomy is not None else "unavailable",
+            "taxonomy_error_code": None if taxonomy is not None else taxonomy_error_code,
         }
         return cls(**payload, editorial_sha256=canonical_sha(payload))
 
     @model_validator(mode="after")
     def _origin_and_identity_are_exact(self) -> EditorialEnvelope:
+        available = self.taxonomy_status == "available"
+        if available != (self.taxonomy is not None) or available != (self.taxonomy_error_code is None):
+            raise ValueError("news_editorial_taxonomy_status_invalid")
+        if not available and not str(self.taxonomy_error_code or "").startswith("news_program_"):
+            raise ValueError("news_editorial_taxonomy_error_code_invalid")
         payload = self.model_dump(mode="json", exclude={"editorial_sha256"})
         if self.editorial_sha256 != canonical_sha(payload):
             raise ValueError("news_editorial_hash_mismatch")
@@ -665,6 +692,11 @@ class ProgramTrace(_ExactContractModel):
     envelope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     event_semantics_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     taxonomy_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    # Which of the three Predictors answered, at judgment altitude (#651 §5.3). `taxonomy_sha256` is
+    # `None` both when the route never got that far and when the taxonomy call failed on its own while the
+    # other two answered; this names the second case, and it is the same code the persisted
+    # `EditorialEnvelope` carries.
+    taxonomy_error_code: str | None = None
     reader_card_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     verdict_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     editorial_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -778,7 +810,8 @@ class SemanticJudgment(_ExactContractModel):
             or self.trace.answering_route is None
             or self.trace.answering_route != ("fallback" if self.fallback_from else "primary")
             or self.trace.event_semantics_sha256 is None
-            or self.trace.taxonomy_sha256 is None
+            or (self.trace.taxonomy_sha256 is None) != (self.editorial.taxonomy is None)
+            or self.trace.taxonomy_error_code != self.editorial.taxonomy_error_code
             or self.trace.reader_card_sha256 is None
             or self.trace.verdict_sha256 != canonical_sha(self.verdict.model_dump(mode="json"))
             or self.trace.editorial_sha256 != self.editorial.editorial_sha256

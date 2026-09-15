@@ -147,6 +147,7 @@ _MATERIAL_IMPLEMENTATION_SYMBOLS: Final[dict[str, tuple[str, ...]]] = {
         "_stable_error_code",
         "_usage_values",
         "_validate_request_defaults",
+        "active_predictor_disposition",
         "lm_request_identity",
         "lm_request_projection",
         "lm_request_sha256",
@@ -162,6 +163,10 @@ _MATERIAL_IMPLEMENTATION_SYMBOLS: Final[dict[str, tuple[str, ...]]] = {
         "_reader_card_semantic_view",
         "_rejected",
         "_relevance_normalizations",
+        # Which taxonomy-call failures the Program degrades instead of ending the route, and how a
+        # rejected label is turned into `taxonomy_status=unavailable` (#651 §5.3).
+        "_taxonomy_call_failure_code",
+        "_validate_taxonomy",
     ),
     "signatures.py": ("EventSemantics", "EventTaxonomySignature", "ReaderCard"),
     "taxonomy.py": (
@@ -445,8 +450,20 @@ def execution_envelope() -> dict[str, Any]:
         "route": {
             "model_binding_slots": sorted(_MODEL_BINDING_SLOTS),
             "order": ["primary", "fallback"],
-            "route_graph": ["event_semantics", "normalize_validate", "taxonomy", "reader_card", "assemble"],
+            "route_graph": [
+                "event_semantics",
+                "normalize_validate",
+                "taxonomy",
+                "taxonomy_validate",
+                "reader_card",
+                "assemble",
+            ],
             "fallback_restart": "event_semantics",
+            "partial_failure": {
+                "taxonomy": "editorial_taxonomy_unavailable_no_route_restart",
+                "event_semantics": "route_restart",
+                "reader_card": "route_restart",
+            },
             "deadline_seconds": PROGRAM_ROUTE_DEADLINE_SECONDS,
             "primary_breaker": {
                 "failures": PROGRAM_PRIMARY_BREAKER_FAILURES,
@@ -469,6 +486,10 @@ def execution_envelope() -> dict[str, Any]:
                 "adapter_parse_error_after_format_fallback": "fallback_output_failure",
                 "domain_validation_error": "fallback_output_failure",
                 "output_truncated": "fallback_output_failure_no_format_retry",
+                "taxonomy_provider_error": "taxonomy_unavailable_continue",
+                "taxonomy_adapter_parse_error": "taxonomy_unavailable_continue",
+                "taxonomy_domain_validation_error": "taxonomy_unavailable_continue",
+                "taxonomy_output_truncated": "taxonomy_unavailable_continue",
                 "timeout_cancelled": "fallback_and_primary_breaker",
                 "late_completion": "fallback_and_primary_breaker",
                 "dual_route_failure": "SemanticJudgeError",

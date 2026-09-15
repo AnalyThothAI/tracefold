@@ -21,13 +21,12 @@ def _taxonomy(**updates: object) -> NewsTaxonomyV1:
         "event_family": "market_access",
         "change_state": "effective",
         "assertion_status": "confirmed",
-        "source_authority": "reputable_secondary",
     }
     values.update(updates)
     return NewsTaxonomyV1.model_validate(values)
 
 
-def _judgment(taxonomy: NewsTaxonomyV1) -> ScoredJudgment:
+def _judgment(taxonomy: NewsTaxonomyV1, *, source_authority_value: str = "reputable_secondary") -> ScoredJudgment:
     relevance = TradeRelevanceV1(
         impact_breadth="single_instrument",
         tradability="direct",
@@ -52,7 +51,11 @@ def _judgment(taxonomy: NewsTaxonomyV1) -> ScoredJudgment:
             why_zh="新增市场改变可交易入口。",
             audience="crypto",
         ),
-        editorial=EditorialEnvelope.issue(relevance=relevance, taxonomy=taxonomy),
+        editorial=EditorialEnvelope.issue(
+            relevance=relevance,
+            source_authority=source_authority_value,  # type: ignore[arg-type]
+            taxonomy=taxonomy,
+        ),
     )
 
 
@@ -138,8 +141,8 @@ def test_taxonomy_has_no_delivery_authority() -> None:
                 event_family="geopolitical_conflict",
                 change_state="unknown",
                 assertion_status="rumor",
-                source_authority="unknown",
-            )
+            ),
+            source_authority_value="unknown",
         ),
         facts,
         None,

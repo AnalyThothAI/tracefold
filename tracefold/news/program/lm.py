@@ -270,14 +270,23 @@ class LMCallLedger:
             None,
         )
 
-    def domain_failure(self, code: str) -> LMCallReceipt:
-        """Change the latest successful physical receipt into the domain terminal."""
+    def domain_failure(self, code: str, *, predictor: str | None = None) -> LMCallReceipt:
+        """Change one successful physical receipt into the domain terminal.
+
+        ``predictor`` names the stage whose output was rejected. Without it the latest in-scope receipt is
+        blamed, which is only the right answer while validation happens before the next physical call.
+        #651 §5.3 breaks that: a taxonomy rejection no longer ends the route, so the ReaderCall that runs
+        after it would inherit the taxonomy Predictor's failure and the audit would name the wrong stage.
+        Attribution is therefore stated by the caller that knows it.
+        """
 
         normalized = str(code).strip()
         if not normalized:
             raise ValueError("news_program_lm_domain_error_code_empty")
         active = _ACTIVE_SCOPE.get()
         candidates = self._calls if active is None or active.ledger is not self else self._calls[active.start_index :]
+        if predictor is not None:
+            candidates = [call for call in candidates if call.receipt.predictor == predictor]
         if not candidates:
             raise dspy.LMConfigurationError("news_program_lm_domain_failure_without_call")
         call = candidates[-1]
@@ -292,6 +301,16 @@ class LMCallLedger:
             error_code=normalized,
         )
         return call.receipt
+
+    def latest_disposition(self, predictor: str) -> TerminalDisposition | None:
+        """How the latest in-scope call of one Predictor ended, or ``None`` when it has not ended yet."""
+
+        active = _ACTIVE_SCOPE.get()
+        calls = self._calls if active is None or active.ledger is not self else self._calls[active.start_index :]
+        for call in reversed(calls):
+            if call.receipt.predictor == predictor:
+                return call.receipt.terminal_disposition
+        return None
 
     def late_completion(self, code: str = "news_program_route_deadline") -> LMCallReceipt:
         """Reclassify the latest answered success that crossed its route deadline."""
@@ -449,12 +468,21 @@ def program_json_adapter() -> dspy.JSONAdapter:
     return dspy.JSONAdapter(callbacks=[_PARSE_CALLBACK], use_native_function_calling=False)
 
 
-def mark_active_domain_failure(code: str) -> None:
-    """Settle the latest answered call when native business validation rejects it."""
+def mark_active_domain_failure(code: str, *, predictor: str | None = None) -> None:
+    """Settle the answered call of ``predictor`` when native business validation rejects its output."""
 
     active = _ACTIVE_SCOPE.get()
     if active is not None and not active.closed:
-        active.ledger.domain_failure(code)
+        active.ledger.domain_failure(code, predictor=predictor)
+
+
+def active_predictor_disposition(predictor: str) -> str | None:
+    """How the active scope's latest call of one Predictor ended, for a caller deciding whether to degrade."""
+
+    active = _ACTIVE_SCOPE.get()
+    if active is None or active.closed:
+        return None
+    return active.ledger.latest_disposition(predictor)
 
 
 def structured_output_capability(mode: StructuredOutputMode) -> dict[str, Any]:
@@ -1265,6 +1293,7 @@ __all__ = [
     "ScriptedLM",
     "StructuredOutputMode",
     "TerminalDisposition",
+    "active_predictor_disposition",
     "lm_request_identity",
     "lm_request_projection",
     "lm_request_sha256",

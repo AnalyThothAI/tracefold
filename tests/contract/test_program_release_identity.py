@@ -21,7 +21,7 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "93c8e620c1be260c82c14c7047297e2fb140f7737335efd0d5615234de4f0d7d"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "19d4f67b64bdcc5ebbf4c42f8eff3d51f24c8dd755b1e94193b544d123811454"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
@@ -81,7 +81,7 @@ def test_current_news_release_identity_is_byte_exact() -> None:
         "program_sha256": load_stable_program_state().program_sha256,
     } == {
         "program_version": "news_semantic_program_v10",
-        "policy_version": "news_triage_policy_v13",
+        "policy_version": "news_triage_policy_v14",
         "review_rubric_version": "news_review_v6",
         "metric_id": "tracefold.news.production_action_trade_relevance_v10",
         "program_sha256": NEWS_STABLE_PROGRAM_SHA256,
@@ -182,6 +182,7 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "lm._stable_error_code",
         "lm._usage_values",
         "lm._validate_request_defaults",
+        "lm.active_predictor_disposition",
         "lm.lm_request_identity",
         "lm.lm_request_projection",
         "lm.lm_request_sha256",
@@ -195,6 +196,8 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "module._reader_card_semantic_view",
         "module._rejected",
         "module._relevance_normalizations",
+        "module._taxonomy_call_failure_code",
+        "module._validate_taxonomy",
         "routing.__module__",
         "signatures.EventSemantics",
         "signatures.EventTaxonomySignature",
@@ -239,6 +242,7 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "order",
         "route_graph",
         "fallback_restart",
+        "partial_failure",
         "deadline_seconds",
         "primary_breaker",
         "call_ceiling",
