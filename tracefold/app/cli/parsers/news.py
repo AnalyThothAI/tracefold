@@ -110,6 +110,15 @@ def add_news_commands(
         help="explain the Objective Plan for a frozen development dataset; 0 model calls, 0 writes",
     )
     learning_readiness.add_argument("--development", required=True, help="development dataset artifact SHA")
+    # Readiness answers for one target, because "is this corpus ready" has no answer until someone says
+    # ready for what (#651 §9). The report still publishes every target's counts, so an operator who
+    # asked the wrong question can see which one to ask instead.
+    learning_readiness.add_argument(
+        "--target",
+        choices=("classification", "understanding", "explanation"),
+        default="classification",
+        help="which Predictor to answer for: taxonomy, event_semantics or reader_card",
+    )
     learning_readiness.add_argument(
         "--out", default="", help="write the readiness report JSON (per-case dispositions live only here)"
     )
@@ -168,7 +177,7 @@ def add_news_commands(
     learning_baseline.add_argument("--out", default="", help="write the baseline report JSON")
     learning_draft = learning_subcommands.add_parser(
         "draft-reviews",
-        help="propose news_review_v6 rubrics with exact taxonomy Gold (writes a file, never the DB)",
+        help="propose news_review_v7 rubrics with optional taxonomy Gold (writes a file, never the DB)",
     )
     # The ReviewDesk queue is anchored at "now" and takes a look-back width, not an absolute window, so this
     # command takes the same shape rather than pretending to accept one: `--from-ms/--to-ms` looked like an

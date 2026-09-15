@@ -26,7 +26,6 @@ from .news_learning_runtime import (
 
 def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
     from tracefold.app.repository_session import postgres_connection
-    from tracefold.news.learning.contracts import epoch_id_for_bundle
     from tracefold.news.learning.evaluate import (
         CandidateEvaluator,
         CandidateManifest,
@@ -87,7 +86,11 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             return _handle_learning_draft_reviews(args, settings, stable)
         if action == "register":
             from tracefold.news.learning.contracts import PromptCandidateV1
-            from tracefold.news.learning.objective import DevelopmentEpisode, build_gepa_objective_plan
+            from tracefold.news.learning.objective import (
+                DevelopmentEpisode,
+                build_gepa_objective_plan,
+                declared_target,
+            )
             from tracefold.news.program.artifact import (
                 load_stable_program_state,
                 write_program_candidate_state,
@@ -117,7 +120,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     stable=stable,
                 ).development_compile_export(str(args.development))
             plan = build_gepa_objective_plan(
-                tuple(DevelopmentEpisode.model_validate(episode) for episode in export.episodes)
+                tuple(DevelopmentEpisode.model_validate(episode) for episode in export.episodes),
+                declared_target(prompt.objective_summary),
             )
             validate_declared_objective_summary(
                 prompt.objective_summary,
@@ -125,7 +129,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 plan=plan,
             )
             if not plan.optimizer_cluster_ids:
-                raise ValueError("news_program_compile_no_taxonomy_gold_clusters")
+                raise ValueError(f"news_program_compile_no_labelled_clusters:{plan.target}")
             arm_payload = stable.model_dump(mode="json")
             arm_payload.update(program_sha256=candidate_state.program_sha256)
             candidate_arm = type(stable).model_validate(arm_payload)
@@ -134,11 +138,13 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 artifact_root=Path(str(args.artifact_root)),
             )
             with postgres_connection(settings) as conn, conn.transaction():
+                # The corpus exists and is a development corpus. It is no longer required to have been
+                # frozen in the running bundle's epoch (#651 §9): a candidate is bound to its parent
+                # stable and its dataset SHA, and both of those are checked above.
                 development = conn.execute(
                     "SELECT artifact_sha FROM news_learning_artifacts "
-                    "WHERE artifact_sha = %s AND kind = 'dataset' "
-                    "AND payload->>'role' = 'development' AND payload->>'learning_epoch' = %s",
-                    (str(args.development), epoch_id_for_bundle(stable.bundle_sha)),
+                    "WHERE artifact_sha = %s AND kind = 'dataset' AND payload->>'role' = 'development'",
+                    (str(args.development),),
                 ).fetchone()
                 if development is None:
                     raise ValueError("news_learning_development_dataset_not_found")

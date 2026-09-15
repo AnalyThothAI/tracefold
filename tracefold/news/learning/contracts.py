@@ -50,9 +50,21 @@ MODEL_EXECUTION_IDENTITY_SCHEMA: Literal["tracefold.news.model_execution_identit
 # v7 (#501): `accepted_review.taxonomy_review` carries the review's provenance verbatim — label source,
 # drafter and the blind drafts — so freeze-time agreement can be computed from the sealed corpus alone.
 # Owner columns remain audit metadata; they no longer decide the optimizer population.
-COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_episode.v7"] = (
-    "tracefold.news.development_compile_episode.v7"
+# v8 (#651 §9): `accepted_review.taxonomy` may be absent, `accepted_review.explanation` carries the
+# reviewer's explanation supervision, and the episode names the `applicable_targets` its review is
+# evidence for. A v7 projection cannot answer "which question did this reviewer actually answer", so a
+# plan built from one would hand every target every case — which is exactly the fabricated `pass` the
+# task-level rubric exists to stop.
+COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_episode.v8"] = (
+    "tracefold.news.development_compile_episode.v8"
 )
+# What one corpus can explain. A case is evidence for a target when the review actually labelled that
+# target's question, and for no others: taxonomy makes it classification evidence, novelty / expected
+# assets / a push verdict make it understanding evidence, and the explanation block or the copy
+# dimensions make it explanation evidence. One name, read by the dataset store, the Objective Plan, the
+# readiness report and the optimizer, because three vocabularies for one idea is how they drift.
+LearningTarget = Literal["classification", "understanding", "explanation"]
+LEARNING_TARGETS: tuple[LearningTarget, ...] = ("classification", "understanding", "explanation")
 OptimizerRole = Literal["task", "reflection"]
 ModelExecutionRole = Literal["task", "reflection", "metric_judge"]
 # The reflection role's budget is its own. Until #143 both roles were built from the task route's numbers,
@@ -377,8 +389,9 @@ class DevelopmentDatasetRef(BaseModel):
     development_dataset_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_projection_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_count: int = Field(gt=0)
-    learning_epoch: str = Field(pattern=r"^bundle_[0-9a-f]{8}$")
-    learning_epoch_started_at_ms: int = Field(ge=0)
+    # No `learning_epoch` (#651 §9). The corpus it referred to no longer seals one, and the epoch never
+    # said anything about *this* binding that `development_dataset_sha256` and the projection root do not
+    # say exactly: which corpus, and which projection of it.
     review_rubric_version: str = Field(min_length=1, max_length=64)
 
 
@@ -554,6 +567,24 @@ class OptimizationResult(BaseModel):
         return self
 
 
+class CaseProvenance(BaseModel):
+    """Which arm produced the Event one frozen case is about.
+
+    Provenance, not a filter (#651 §9). Until this cut a corpus admitted only the running bundle's own
+    Events, so every deployment threw away the evidence reviewers had just finished building. What the
+    arm identity is actually for is reading a result afterwards -- "this case was answered by
+    `program_v9` under `policy_v13`" is a fact a report should carry, and never a reason to refuse a
+    reviewer's judgment about words a reader really saw.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    program_version: str = ""
+    program_sha256: str = ""
+    policy_version: str = ""
+    bundle_sha: str = ""
+
+
 class DatasetCaseRef(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -569,6 +600,10 @@ class DatasetCaseRef(BaseModel):
     should_push: str
     opened_at_ms: int
     delivery_truth: Literal["observed_sent", "observed_not_sent", "unknown"] = "unknown"
+    # Sorted, so the sealed payload is byte-stable. Empty is a real answer: a review that labelled
+    # nothing a target reads is stored, counted and excluded, rather than being given a default.
+    applicable_targets: tuple[LearningTarget, ...] = ()
+    provenance: CaseProvenance = Field(default_factory=CaseProvenance)
 
 
 # The dataset coverage a report publishes, in one fixed order (#259 §5.2). Here rather than beside
@@ -578,6 +613,12 @@ class DatasetCaseRef(BaseModel):
 _COVERAGE_FIELDS: tuple[str, ...] = (
     "case_n",
     "independent_cluster_n",
+    # Per-target case and cluster counts, and the reviews the window held but could not use (#651 §9).
+    # A readiness answer that does not say which target it is about is not an answer, and the two
+    # rejection counts are the difference between "nobody reviewed anything" and "everyone reviewed
+    # under the previous contract".
+    "targets",
+    "rubric_ineligible_n",
     "boundary_cluster_n",
     "retention_cluster_n",
     "negative_cluster_n",
@@ -610,6 +651,7 @@ __all__ = [
     "COMPILE_EPISODE_PROJECTION_SCHEMA",
     "LEARNING_PROFILE_ID",
     "LEARNING_PROGRAM_VERSION",
+    "LEARNING_TARGETS",
     "METRIC_JUDGE_MAX_TOKENS",
     "METRIC_JUDGE_TIMEOUT_SECONDS",
     "MODEL_EXECUTION_IDENTITY_SCHEMA",
@@ -620,9 +662,11 @@ __all__ = [
     "REFLECTION_TIMEOUT_SECONDS",
     "ArmManifest",
     "CandidateManifest",
+    "CaseProvenance",
     "ClosedWindow",
     "DatasetCaseRef",
     "DevelopmentDatasetRef",
+    "LearningTarget",
     "ModelExecutionIdentity",
     "ModelExecutionRole",
     "OptimizationBudget",

@@ -11,6 +11,13 @@ not know — that an epoch row has to describe the bundle this process is actual
 evaluation may only proceed against the stable arm the last deployment appointed, and what identity a
 cohort is described by.
 
+Those are release facts, and since #651 §9 they are the *only* thing the epoch decides. Freezing a corpus
+no longer asks any of them: a dataset is made of evidence and accepted labels, and the arm that happened
+to be deployed when a reader read a card is recorded on each case as provenance rather than used to
+admit or refuse it. `assert_active_stable` and `epoch_started_at_ms` therefore have exactly two callers
+left, both in the release plane, which is where "may this candidate be evaluated against that stable"
+is a real question.
+
 Notably it holds no judge, no Program and no DSPy: an artifact write is not a model call, and a caller
 that only needs to read the epoch should not pay four seconds of import to do it.
 """

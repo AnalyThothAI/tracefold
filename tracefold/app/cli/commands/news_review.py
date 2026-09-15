@@ -136,7 +136,7 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, _principal: Any
         if exclude and any(task_id.startswith(p) or event_id.startswith(p) for p in exclude):
             skip("excluded")
             continue
-        # The five taxonomy_* dimensions are recomputed from this entry against the possibly edited
+        # The four taxonomy_* dimensions are recomputed from this entry against the possibly edited
         # `draft.taxonomy` (#548 PR-B.1). An entry that does not carry Stable's label cannot be compared,
         # only copied, so it is refused here instead. `null` is a carried answer and passes: Stable never
         # labelled that Event, and every taxonomy axis is `not_applicable`.

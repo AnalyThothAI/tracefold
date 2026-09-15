@@ -1543,8 +1543,19 @@ The `0336` genesis removed the retired replay fixture. Current metric evidence
 comes only from exact `news_judgment_v2` rows created in the post-genesis active
 epoch; no repository fixture provides a legacy recorded-mode input.
 
-Reviews are accepted under `news_review_v6`. Its exact Gold includes the five
-taxonomy axes; its optional `expected` block continues to cover magnitude,
+Reviews are accepted under `news_review_v7`, which is task-level: a submission
+must carry a non-empty `dimensions` map and may leave every other field out, so
+a reviewer answers what this Event poses instead of inventing a taxonomy, a
+novelty judgment and a push verdict to record one defect. A stated taxonomy is
+the four model axes and must come with all four `taxonomy_*` dimensions; a
+submission with neither is a complete review of everything else it judged. The
+optional `explanation` block — verbatim `source_spans` of the frozen evidence
+(checked at submit), `key_facts`, `forbidden_claims`, `error_types` and a
+non-gold `reference_why_zh` — is the supervision a `why_support` failure needs
+to be trainable; without it the row is stored and flagged
+`explanation_supervision: "pending"`. The `taxonomy_source_authority` dimension
+is deleted: source authority is a code fact derived from the reporting source.
+Its optional `expected` block continues to cover magnitude,
 direction, assets and the seven TradeRelevance fields
 (`trade_impact_breadth`, `trade_tradability`, `trade_surprise`,
 `trade_development_delta`, `trade_channels`, `trade_affected_markets`, and
@@ -1558,8 +1569,9 @@ cases are separated as policy evidence. `gold_coverage` reports how much of each
 component is actually scored.
 
 One explicit ReviewDesk acceptance by an owner-authorized reviewer is sufficient ordinary taxonomy Gold.
-Development readiness separately requires a source-only 50-cluster calibration set with two independent
-primary reviewers per task and an independent adjudicator for every disagreement. Model drafts still cannot
+Development readiness asks for no calibration set, no second primary reviewer and no adjudicator: #501
+deleted the 50-cluster calibration gate and #651 §9 deleted the corpus-size quotas that remained, leaving
+κ as a published freeze-time diagnostic and the holdout as the gate. Model drafts still cannot
 self-accept. `news review accept-drafts --dry-run` may preview an empty
 selection, while every non-dry-run requires a non-empty explicit `--only` list
 and `--reviewer` identity. An entry that carries no `stable_taxonomy` is skipped
@@ -1576,8 +1588,8 @@ standalone `news learning optimize` route and `news learning baseline
 --max-cost-microusd N
 --max-call-cost-microusd N [--max-wall-clock-seconds N] [--seed N]`.
 
-`run` writes zero-call readiness, requires both `objective.compilable` and
-`development_profile.ready`, then invokes exactly one `dspy.GEPA.compile(trainset, valset)` over the single
+`run` writes zero-call readiness for its own `--target`, requires
+`objective.compilable`, then invokes exactly one `dspy.GEPA.compile(trainset, valset)` over the single
 native `NativeNewsProgram.taxonomy` Predict in a learning-only wrapper. Exactly one of `--auto` and
 `--max-metric-calls` is passed through to `dspy.GEPA` unchanged; the receipt records the metric-call count
 DSPy resolves for `auto`. That wrapper converts a receipted task-output truncation or typed
@@ -1621,7 +1633,7 @@ returns that result, `0` for a zero-call preflight refusal, and `null` when an i
 publish an exact count. It never guesses from model calls or parses private GEPA state.
 
 `news learning draft-reviews --rubric-model MODEL --taxonomy-models A,B --out FILE
-[--hours N] [--limit N] [--include-reviewed]` proposes `news_review_v6` rubrics
+[--hours N] [--limit N] [--include-reviewed]` proposes `news_review_v7` rubrics
 for an owner-authorized reviewer to accept and writes a file, never a review.
 The two taxonomy models label each Event blind — from the Program's own
 bounded taxonomy input through the taxonomy Predictor's Signature and seed,
@@ -1632,7 +1644,7 @@ draft takes A and the entry is marked `taxonomy_disagreement`. The batch
 one's agreement with Stable and the disagreeing task ids; each accepted review's
 `taxonomy_review.drafts` keeps both labels. Every entry also carries
 `stable_taxonomy`, Stable's own persisted label (`null` when Stable never
-labelled the Event), because the five code-written `taxonomy_*` dimensions are
+labelled the Event), because the four code-written `taxonomy_*` dimensions are
 recomputed from it against the possibly edited `taxonomy` when the draft is
 accepted, never copied from drafting time. A `v5` file has no such field and is
 refused by `accept-drafts` rather than accepted with a stale comparison. It
@@ -1642,18 +1654,22 @@ that drafted the Events a #193 experiment run had frozen went with that loop in
 and reports `tasks` beside `unique_tasks`; one ReviewDesk task can therefore
 consume at most one drafting call.
 
-`news learning readiness --development SHA [--out FILE]` explains one frozen
-development dataset before any provider call. It re-projects the sealed corpus and builds Objective Plan v4.
-Every case with valid accepted taxonomy Gold and a replayable Stable answer is **included**; owner columns
-are audit metadata and grant no authority. One deterministic representative per connected fact cluster
-enters the time-ordered, cluster-disjoint train/selection split; every other member remains an excluded
-diagnostic.
+`news learning readiness --development SHA [--target classification|understanding|explanation] [--out FILE]`
+explains one frozen development dataset before any provider call. It re-projects the sealed corpus and
+builds Objective Plan v5 **for that target**. A case is **included** when the frozen case's
+`applicable_targets` names the target — the reviewer labelled something that target scores — and the
+target's example can be built from the episode; owner columns are audit metadata and grant no authority.
+One deterministic representative per connected fact cluster enters the time-ordered, cluster-disjoint
+train/selection split; every other member remains an excluded diagnostic.
 
-The v4 readiness report has no top-level outcome. `objective.compilable` and its blockers describe whether
-the included population can be optimized; `development_profile.ready` and its blockers independently
-describe whether the sealed evidence meets release-profile v4: the existing boundary/retention/negative/
-strata and safety floors, and nothing about taxonomy targets, controls or calibration. `taxonomy_gold`
-reports `stable_exact_n` and `stable_mismatch_n` as diagnostics, and the frozen dataset's
+The v6 readiness report has no top-level outcome. `objective.compilable` and its blockers describe whether
+this target's population can be optimized, and the blocker vocabulary is exactly `train_empty`,
+`selection_empty`, `input_contract_invalid` and `cluster_leak` — #651 §9 deleted the corpus-size quotas
+that used to sit beside it in `development_profile`, because they measured quantity in a unit that did not
+match the question. `targets` publishes every target's case and cluster counts beside this one's, plus
+`rubric_ineligible_n` (accepted reviews the window holds under an older rubric contract) and
+`explanation_supervision_pending_n`, so a thin answer says which kind of evidence is missing.
+`taxonomy_gold` reports `stable_exact_n` and `stable_mismatch_n` as diagnostics, and the frozen dataset's
 `counts.calibration` (`dataset_calibration_receipt.v2`) reports Cohen's κ on family/state/assertion and
 mean subject set-F1 over every cluster whose accepted review carries two blind drafts; none of it gates.
 
@@ -1661,19 +1677,27 @@ Readiness makes no task/reflection/judge call and writes nothing except the oper
 Its call envelope names the ceiling of two physical EventSemantics task calls per metric call — the primary
 JSONAdapter attempt plus its one format fallback — and one reflection call per proposal round; the taxonomy
 optimizer has no ReaderCard or semantic-judge envelope. `news learning run` rebuilds
-the same report before constructing endpoints and refuses unless both readiness booleans are true.
-CandidateEvaluator re-projects the same v3 plan at registration/evaluation.
+the same report before constructing endpoints and refuses unless `objective.compilable` is true.
+CandidateEvaluator re-projects the same plan at registration/evaluation, for the target the candidate's
+own `optimization_objective_summary` declares.
 
-Optimizer candidates publish `optimization_objective_summary.v3`, including the episode projection root,
-plan schema, representative population identity, target dimensions and split roots. Registration re-derives
-and compares every field. The current corpus contract is `news_learning_dataset_v3`, the current candidate
-is `news_prompt_candidate_v3`, and historical v1/v2 artifacts remain audit-only.
+Optimizer candidates publish `optimization_objective_summary.v5`, including the target, the episode
+projection root, plan schema, representative population identity, target dimensions and split roots.
+Registration re-derives and compares every field. The current corpus contract is
+`news_learning_dataset_v4`, the current candidate is `news_prompt_candidate_v3`, and historical artifacts
+remain audit-only.
 
 `news learning freeze` seals accepted reviews into a content-addressed
-development or future temporal validation dataset. Every current dataset is in
-the running bundle's runtime-owned epoch and accepts only `news_review_v6`;
-every earlier Prompt/Program/review cohort is audit-only and cannot enter a
-dataset or metric-v8 denominator.
+development or future temporal validation dataset. A corpus is made of evidence
+and accepted labels (#651 §9): a case needs a frozen, release-eligible observed
+evidence snapshot inside the window and an accepted `news_review_v7` review of
+it, whichever arm answered the Event. The answering arm is recorded on the case
+as `provenance` and the sealing arm beside the corpus; neither admits or refuses
+a case. A `v4` dataset seals no learning epoch, names the `targets` its cases
+can explain, and counts `rubric_ineligible_n` rather than hiding the accepted
+reviews it could not read. `news_review_v6` rows stay readable audit history and
+are ineligible for a new dataset, because a v6 row means "every dimension below
+was answered" and a v7 row does not.
 The CLI is two groups, because there are two lifecycles (#202 `11 PR-E). `news
 learning` freezes a corpus, explains what GEPA may optimize, scores the stable
 Program and runs the one optimization — `readiness`, `baseline`, `run`,

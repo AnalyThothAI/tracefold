@@ -32,11 +32,11 @@ def _handle_learning_run(args: Namespace, settings: Any, stable: Any) -> tuple[i
     development = str(args.development).strip()
     target = str(getattr(args, "target", "classification") or "classification")
     readiness = _readiness(settings, stable, out=out, development=development, target=target)
-    blockers = [
-        *list(readiness["objective"]["blockers"]),
-        *list(readiness["development_profile"]["blockers"]),
-    ]
-    if not readiness["objective"]["compilable"] or not readiness["development_profile"]["ready"]:
+    # One gate, not two (#651 §9): the Objective Plan for this target either has a split to optimize or
+    # names exactly why it does not. The second gate was a corpus-size quota that could refuse a corpus
+    # this target could learn from because a different target's evidence was thin.
+    blockers = list(readiness["objective"]["blockers"])
+    if not readiness["objective"]["compilable"]:
         raise ValueError("news_learning_run_readiness_blocked:" + ",".join(blockers))
     optimization = _optimize(args, settings, stable, out=out, development=development, target=target)
 

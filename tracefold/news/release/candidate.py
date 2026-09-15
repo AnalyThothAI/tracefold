@@ -29,6 +29,7 @@ from ..learning.objective import (
     DevelopmentEpisode,
     GepaObjectivePlan,
     build_gepa_objective_plan,
+    declared_target,
     optimizer_population_identity,
 )
 from ..learning.projection import _arm_exact_diff
@@ -153,7 +154,12 @@ class CandidateRegistry:
         if rebuilt.program_sha256 != candidate.candidate_arm.program_sha256:
             raise ValueError("news_learning_prompt_candidate_program_identity_mismatch")
         episodes = list(self._datasets.development_compile_export(candidate.development_dataset_sha).episodes)
-        plan = build_gepa_objective_plan(tuple(DevelopmentEpisode.model_validate(episode) for episode in episodes))
+        # The plan is re-derived for the target the candidate declares it optimized (#651 §9). Rebuilding
+        # it for a different target would compare this candidate's population against another question's.
+        plan = build_gepa_objective_plan(
+            tuple(DevelopmentEpisode.model_validate(episode) for episode in episodes),
+            declared_target(prompt.objective_summary),
+        )
         # Not the count: the episodes themselves. `development_compile_export` re-projects them from live
         # reviews and recorded decisions, so a review edited between registration and evaluation leaves the
         # dataset SHA and the case count identical and the corpus different — and the candidate would then

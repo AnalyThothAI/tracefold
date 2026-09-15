@@ -379,7 +379,7 @@ positional arguments:
                         dataset; 0 model calls, 0 writes
     baseline            score a moving-window Program baseline (no sandbox,
                         tariff, or writes)
-    draft-reviews       propose news_review_v6 rubrics with exact taxonomy
+    draft-reviews       propose news_review_v7 rubrics with optional taxonomy
                         Gold (writes a file, never the DB)
     run                 the one bounded candidate path: readiness -> stock
                         GEPA, into a new empty directory
@@ -394,12 +394,16 @@ options:
 
 ```
 usage: tracefold news learning readiness [-h] --development DEVELOPMENT
+                                         [--target {classification,understanding,explanation}]
                                          [--out OUT]
 
 options:
   -h, --help            show this help message and exit
   --development DEVELOPMENT
                         development dataset artifact SHA
+  --target {classification,understanding,explanation}
+                        which Predictor to answer for: taxonomy,
+                        event_semantics or reader_card
   --out OUT             write the readiness report JSON (per-case dispositions
                         live only here)
 

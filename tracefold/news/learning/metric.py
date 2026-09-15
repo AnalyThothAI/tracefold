@@ -622,33 +622,39 @@ def accepted_review_metric(
     if parsed is None or lint is None:
         return _zero("Return one complete, schema-valid semantic judgment and card.", gate="schema_invalid")
     typed, editorial, judgment, verdict = parsed
-    if not taxonomy_gold_present:
-        return _zero("Return all four accepted taxonomy axes.", gate="schema_invalid")
-    if editorial.taxonomy is None:
-        # #651 §5.3: the taxonomy Predictor can now fail on its own without costing the reader the card.
-        # That is the right production behavior and it is still a task failure here: this case carries
-        # accepted Gold for all four axes and the candidate answered none of them, so it scores zero and
-        # stays in the denominator. It is a separate gate from `schema_invalid` because the cause is
-        # different and so is the repair -- nothing about the *instruction* produced this, and a
-        # candidate whose taxonomy call keeps failing should be readable as that rather than as a
-        # candidate that emits invalid JSON.
-        return _zero(
-            "The taxonomy call produced no label for this case "
-            f"({editorial.taxonomy_error_code or 'unknown'}). Return all four accepted taxonomy axes.",
-            gate="taxonomy_unavailable",
-            outcomes=(
-                *((name, "unscored") for name in scored_names),
-                *((dimension, "taxonomy_unavailable") for dimension in TAXONOMY_TARGET_DIMENSIONS),
-            ),
-        )
-    taxonomy = compare_taxonomy(review["taxonomy"], editorial.taxonomy)
-    component_diagnostics["semantics_novelty"]["taxonomy"] = {
-        "score": taxonomy.score,
-        "subject_f1": taxonomy.subject_f1,
-        "missing_subjects": list(taxonomy.missing_subjects),
-        "extra_subjects": list(taxonomy.extra_subjects),
-        "wrong_axes": list(taxonomy.wrong_axes),
-    }
+    # A review that states no taxonomy is not a defective review (#651 §7.2). Under v6 every submission
+    # carried four axes, so "the accepted Gold has no taxonomy" could only mean the corpus was broken and
+    # zeroing the case was right. Under v7 it is the ordinary shape of a reviewer who judged the copy and
+    # nothing else, and zeroing it would charge a candidate for a question nobody asked — under a
+    # `schema_invalid` gate that blames the model for the reviewer's silence. The taxonomy simply is not
+    # scored here; `taxonomy_n` already keeps it out of the denominator.
+    taxonomy = None
+    if taxonomy_gold_present:
+        if editorial.taxonomy is None:
+            # #651 §5.3: the taxonomy Predictor can now fail on its own without costing the reader the card.
+            # That is the right production behavior and it is still a task failure here: this case carries
+            # accepted Gold for all four axes and the candidate answered none of them, so it scores zero and
+            # stays in the denominator. It is a separate gate from `schema_invalid` because the cause is
+            # different and so is the repair -- nothing about the *instruction* produced this, and a
+            # candidate whose taxonomy call keeps failing should be readable as that rather than as a
+            # candidate that emits invalid JSON.
+            return _zero(
+                "The taxonomy call produced no label for this case "
+                f"({editorial.taxonomy_error_code or 'unknown'}). Return all four accepted taxonomy axes.",
+                gate="taxonomy_unavailable",
+                outcomes=(
+                    *((name, "unscored") for name in scored_names),
+                    *((dimension, "taxonomy_unavailable") for dimension in TAXONOMY_TARGET_DIMENSIONS),
+                ),
+            )
+        taxonomy = compare_taxonomy(review["taxonomy"], editorial.taxonomy)
+        component_diagnostics["semantics_novelty"]["taxonomy"] = {
+            "score": taxonomy.score,
+            "subject_f1": taxonomy.subject_f1,
+            "missing_subjects": list(taxonomy.missing_subjects),
+            "extra_subjects": list(taxonomy.extra_subjects),
+            "wrong_axes": list(taxonomy.wrong_axes),
+        }
 
     feedback: list[str] = []
     decision = production_decision(
@@ -691,19 +697,20 @@ def accepted_review_metric(
     # The deterministic card checks report beside the reviewer-labelled dimensions, in the same vocabulary,
     # so one `dimension_outcomes` list answers "what did this candidate do" for both kinds of truth.
     outcomes.extend(lint.outcomes)
-    outcomes.extend(
-        (dimension, "taxonomy_hit" if hit else "taxonomy_miss")
-        for dimension, hit in zip(
-            TAXONOMY_TARGET_DIMENSIONS,
-            (
-                taxonomy.subject_f1 == 1.0,
-                taxonomy.event_family_match,
-                taxonomy.change_state_match,
-                taxonomy.assertion_status_match,
-            ),
-            strict=True,
+    if taxonomy is not None:
+        outcomes.extend(
+            (dimension, "taxonomy_hit" if hit else "taxonomy_miss")
+            for dimension, hit in zip(
+                TAXONOMY_TARGET_DIMENSIONS,
+                (
+                    taxonomy.subject_f1 == 1.0,
+                    taxonomy.event_family_match,
+                    taxonomy.change_state_match,
+                    taxonomy.assertion_status_match,
+                ),
+                strict=True,
+            )
         )
-    )
 
     # ---- hard gates: a dangerous miss cannot be averaged away ----
     if should_push == "must_push" and not reaches_reader:
@@ -813,9 +820,19 @@ def accepted_review_metric(
     # nothing else would notice.
     novelty_score = None if expected_novelty == "uncertain" else float(str(verdict.get("novelty")) == expected_novelty)
     semantics_subscores = [
-        value for value in (semantics[0] if semantics else None, novelty_score, taxonomy.score) if value is not None
+        value
+        for value in (
+            semantics[0] if semantics else None,
+            novelty_score,
+            taxonomy.score if taxonomy is not None else None,
+        )
+        if value is not None
     ]
-    semantics_score = sum(semantics_subscores) / len(semantics_subscores)
+    # `None`, not zero, when nothing in this component was answered (#651 §7.2). Under v6 the taxonomy
+    # was always there to score, so the list could not be empty; a review that judges only the copy now
+    # leaves it so, and a zero would be a failing mark on a question nobody asked. The weighted sum below
+    # already drops an absent component and renormalizes over the ones that are present.
+    semantics_score = sum(semantics_subscores) / len(semantics_subscores) if semantics_subscores else None
     relevance_score = relevance_component[0] if relevance_component else None
     card_score = card[0] if card else None
     # Always present unless the card tripped a gate above or no check applied: this is the whole point of
@@ -859,7 +876,7 @@ def accepted_review_metric(
         and owned != _CARD_DIMENSIONS
     ):
         feedback.append(f"Accepted novelty is {expected_novelty}.")
-    if not taxonomy.exact and owned != _CARD_DIMENSIONS:
+    if taxonomy is not None and not taxonomy.exact and owned != _CARD_DIMENSIONS:
         feedback.append(f"Taxonomy: {taxonomy.feedback}")
     # The lint's own repair instructions, routed to the Predictor that writes the copy. They are the only
     # feedback in this metric that needs no reviewer label at all, which is why they survive `pred_name`

@@ -29,6 +29,24 @@ def test_run_is_the_only_candidate_generating_route_and_dataset_baseline_is_gone
             build_parser().parse_args(retired)
 
 
+def test_readiness_asks_which_target_it_is_answering_for() -> None:
+    """#651 §9: "is this corpus ready" has no answer until someone says ready for what.
+
+    The same reviewed window can be a complete classification corpus and an empty explanation one, so the
+    target is part of the question. It defaults rather than being required, because the answer an operator
+    wants first is almost always the taxonomy one, and an unknown name is refused by the parser instead of
+    reaching a plan that cannot build it.
+    """
+
+    parser = build_parser()
+    base = ["news", "learning", "readiness", "--development", "d" * 64]
+
+    assert parser.parse_args(base).target == "classification"
+    assert parser.parse_args([*base, "--target", "explanation"]).target == "explanation"
+    with pytest.raises(SystemExit):
+        parser.parse_args([*base, "--target", "taxonomy"])
+
+
 def test_the_retired_compile_and_propose_commands_are_gone_without_an_alias() -> None:
     """#202 §10.5: one hard cut, no compatibility layer.
 
@@ -430,7 +448,7 @@ def test_recorded_slots_group_schema_fallback_and_reject_old_schema() -> None:
 
 
 def _readiness_args(**updates: Any) -> SimpleNamespace:
-    args = {"learning_command": "readiness", "development": "a" * 64, "out": ""}
+    args = {"learning_command": "readiness", "development": "a" * 64, "target": "classification", "out": ""}
     args.update(updates)
     return SimpleNamespace(**args)
 
@@ -453,12 +471,17 @@ def _readiness_settings(monkeypatch: Any) -> None:
     )
 
 
-def test_readiness_reports_a_cohort_mismatch_in_the_same_shape_as_a_real_report(monkeypatch: Any) -> None:
+def test_readiness_reports_an_unprojectable_corpus_in_the_same_shape_as_a_real_report(monkeypatch: Any) -> None:
     """One report shape, whatever the answer.
 
     The blocked path used to return four keys and a differently named output field, so anything parsing
-    the report had to special-case it. `dataset_agent_cohort_mismatch` is a #199 §4 blocking reason, not
-    an error, so the same report carries a non-compilable Objective with every section present and empty.
+    the report had to special-case it. A corpus sealed under the previous episode contract cannot be
+    projected at all, which is a blocking reason and not an error, so the same report carries a
+    non-compilable Objective with every section present and empty.
+
+    The cohort mismatch this test used to drive is gone (#651 §9): a candidate is bound to its parent
+    stable and its dataset SHA, so the arm a corpus was frozen under no longer refuses anything, and
+    `news_learning_dataset_contract_hash_mismatch` is the refusal that still reaches here.
     """
 
     class _Evaluator:
@@ -466,7 +489,7 @@ def test_readiness_reports_a_cohort_mismatch_in_the_same_shape_as_a_real_report(
             pass
 
         def development_compile_export(self, _sha: str) -> Any:
-            raise ValueError("news_learning_dataset_agent_cohort_mismatch")
+            raise ValueError("news_learning_dataset_contract_hash_mismatch")
 
     @contextmanager
     def fake_postgres_connection(_settings: Any, *, application_name: str = "tracefold_cli"):
@@ -482,14 +505,22 @@ def test_readiness_reports_a_cohort_mismatch_in_the_same_shape_as_a_real_report(
     assert code == 0 and payload["ok"] is True
     assert "outcome" not in data and "blocking_reasons" not in data
     assert data["objective"]["compilable"] is False
-    assert data["objective"]["blockers"] == ["dataset_agent_cohort_mismatch"]
-    assert data["development_profile"]["ready"] is False
+    assert data["objective"]["blockers"] == ["dataset_not_projectable"]
+    # The report says which question it was asked even when it could not reach a corpus to answer it
+    # with, and the planned target repeats the refusal rather than leaving an operator to infer it.
+    assert data["target"] == "classification"
+    assert data["targets"]["by_target"]["classification"]["planned"] is True
+    assert data["targets"]["by_target"]["classification"]["ready"] is False
+    assert data["targets"]["by_target"]["classification"]["blockers"] == ["dataset_not_projectable"]
+    # The unplanned targets have no sealed counts to republish and no verdict to state, so they carry
+    # only the Predictor each one names.
+    assert data["targets"]["by_target"]["understanding"] == {"predictor": "event_semantics", "planned": False}
     # The sections a consumer reads, present and empty rather than absent.
     for section in (
         "coverage",
         "corpus",
         "objective",
-        "development_profile",
+        "targets",
         "taxonomy_gold",
         "split",
         "train",
@@ -519,6 +550,15 @@ def test_readiness_republishes_the_frozen_datasets_own_coverage_counts(monkeypat
     counts = {
         "case_n": 168,
         "independent_cluster_n": 141,
+        # How much evidence each target actually has, and how many accepted reviews the window held under
+        # a rubric this contract cannot read (#651 §9). Both are sealed at freeze time for the same reason
+        # the cluster-role counts are: they are measured against the corpus, not against what survived it.
+        "targets": {
+            "classification": {"case_n": 120, "cluster_n": 101},
+            "understanding": {"case_n": 168, "cluster_n": 141},
+            "explanation": {"case_n": 48, "cluster_n": 40},
+        },
+        "rubric_ineligible_n": 12,
         "boundary_cluster_n": 34,
         "retention_cluster_n": 107,
         "negative_cluster_n": 55,
@@ -558,7 +598,13 @@ def test_readiness_republishes_the_frozen_datasets_own_coverage_counts(monkeypat
     assert coverage["independent_cluster_n"] == 141
     assert coverage["eligible_event_n"] == 733
     assert "strata" not in coverage and "eligibility" not in coverage
-    assert payload["data"]["schema"] == "tracefold.news.gepa_readiness_report.v5"
+    assert payload["data"]["schema"] == "tracefold.news.gepa_readiness_report.v6"
+    # The sealed per-target counts reach the target block an operator reads, including for the two targets
+    # this run did not plan — that is how someone who asked the wrong question finds the right one.
+    by_target = payload["data"]["targets"]["by_target"]
+    assert by_target["classification"]["case_n"] == 120 and by_target["classification"]["planned"] is True
+    assert by_target["explanation"] == {"predictor": "reader_card", "planned": False, "case_n": 48, "cluster_n": 40}
+    assert payload["data"]["targets"]["rubric_ineligible_n"] == 12
 
 
 def test_readiness_lets_a_wrong_dataset_argument_stay_an_error(monkeypatch: Any) -> None:

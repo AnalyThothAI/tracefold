@@ -13,6 +13,7 @@ from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.models import TriageVerdict
 from tracefold.news.program.contracts import EditorialEnvelope, TradeRelevanceV1
 from tracefold.news.review.desk import BlindPairwiseSubmission, EventRubricSubmission, _pairwise_virtual
+from tracefold.news.taxonomy import ModelTaxonomyV1
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
@@ -100,7 +101,6 @@ def _current_review_payload(*, production_sized: bool = False) -> dict[str, Any]
         "taxonomy_subject_codes": "pass",
         "taxonomy_event_family": "pass",
         "taxonomy_change_state": "pass",
-        "taxonomy_source_authority": "pass",
         "taxonomy_assertion_status": "pass",
     }
     expected: dict[str, Any] | None = None
@@ -122,7 +122,10 @@ def _current_review_payload(*, production_sized: bool = False) -> dict[str, Any]
         expected = {
             "magnitude": 3,
             "direction": "bullish",
-            "assets": [{"symbol": f"ASSET{index:02d}".ljust(32, "X"), "role": "primary"} for index in range(16)],
+            "assets": [
+                {"symbol": f"ASSET{index:02d}".ljust(32, "X"), "market_type": "equity", "role": "primary"}
+                for index in range(16)
+            ],
             "trade_impact_breadth": "global_systemic",
             "trade_tradability": "second_order",
             "trade_surprise": "material_vs_expectation",
@@ -138,7 +141,10 @@ def _current_review_payload(*, production_sized: bool = False) -> dict[str, Any]
         first_bad_owner="triage_prompt",
         evidence_refs=evidence_refs,
         expected=expected,
-        taxonomy=news_taxonomy(
+        # The four model axes (#651 §7.2). `news_taxonomy()` builds the persisted seven-key shape, whose
+        # `source_authority` is a code fact the reviewer never states and the v7 payload never carries.
+        taxonomy=ModelTaxonomyV1(
+            subject_codes=(),
             event_family="regulatory_legal",
             change_state="reported",
             assertion_status="claimed",
@@ -365,7 +371,7 @@ def test_retained_telemetry_and_review_validators_match_python_owned_shapes() ->
             row = conn.execute(
                 """
                     SELECT news_current_review_valid(
-                      'judgment', 'event', 'news_review_v6', 'reader_contract_v2',
+                      'judgment', 'event', 'news_review_v7', 'reader_contract_v2',
                       'event-current', 1, NULL, NULL,
                       %(should_push)s, %(dimensions)s, %(novelty)s,
                       %(first_bad_owner)s, %(evidence_refs)s, %(expected_correction)s, %(note)s,
@@ -404,7 +410,7 @@ def test_retained_telemetry_and_review_validators_match_python_owned_shapes() ->
             row = conn.execute(
                 """
                 SELECT news_current_review_valid(
-                  'judgment', 'pairwise', 'news_review_v6', 'reader_contract_v2',
+                  'judgment', 'pairwise', 'news_review_v7', 'reader_contract_v2',
                   NULL, NULL, NULL, 'pairwise-current',
                   NULL, '{}'::jsonb, '{}'::jsonb, NULL, %(evidence_refs)s, '', %(note)s,
                   %(selection)s, %(payload)s, NULL
@@ -461,7 +467,7 @@ def test_retained_json_validators_meet_native_insert_and_update_budget() -> None
                     CHECK (news_current_liquidation_metadata_valid(liquidation_metadata, true)),
                   selection jsonb NOT NULL,
                   review jsonb NOT NULL CHECK (news_current_review_valid(
-                    'judgment', 'event', 'news_review_v6', 'reader_contract_v2',
+                    'judgment', 'event', 'news_review_v7', 'reader_contract_v2',
                     'event-current', 1, NULL, NULL,
                     review ->> 'should_push', review -> 'dimensions', review -> 'novelty',
                     review ->> 'first_bad_owner', review -> 'evidence_refs',
