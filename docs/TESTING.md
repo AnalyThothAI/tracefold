@@ -1,206 +1,119 @@
 # Testing and CI implementation
 
-The stable risk policy is owned only by
-[Risk-tiered local verification](DEVELOPMENT.md#risk-tiered-local-verification).
-This document records the current lane wiring, resource topology, native report
-contract, platform enforcement, and measured implementation facts. Changing a
-job here does not change when developers should run broad local checks.
+[Development](DEVELOPMENT.md#risk-tiered-local-verification) owns local check
+selection. This document describes current commands, resources, and remote evidence;
+it does not add another approval process or require every local task to run every lane.
 
 ## Fixed full CI implementation
 
-`.github/workflows/ci.yml` runs the same fixed required plan for pull requests
-targeting `main`, `main` pushes, releases, and manual dispatches. It has no path,
-draft, commit-message, or impact-selection bypass. Pull-request concurrency
-cancels only an older run for the same PR; a cancelled run is not green.
+[The workflow](../.github/workflows/ci.yml) runs the same required plan for PRs targeting
+`main`, main pushes, release events, and manual dispatches. It currently has no path,
+draft, or commit-message exclusion. Pull-request concurrency cancels older runs for
+the same PR. A cancelled run is not successful evidence.
 
-The current owners are:
+| Job | Make target | Resources | Native results |
+| --- | --- | --- | --- |
+| `quality-static` | `ci-quality-static` | Python | `junit-quality-static.xml` |
+| `python-hermetic` | `ci-python-hermetic` | Python | `junit-python-hermetic.xml` |
+| `postgres-behavior` | `ci-postgres-behavior` | PostgreSQL, RabbitMQ | `junit-postgres-behavior.xml`, `junit-migration.xml` |
+| `runtime-broker` | `ci-runtime-broker` | PostgreSQL, RabbitMQ, disposable restartable broker | `junit-runtime-broker.xml` |
+| `deploy-e2e` | `ci-deploy-e2e` | PostgreSQL, Node, Docker/Testcontainers | `junit-deploy-e2e.xml` |
+| `frontend` | `ci-frontend` | PostgreSQL, RabbitMQ, Node, Chromium | `junit-frontend-python.xml`, `junit-test-integrity.xml`, `vitest-architecture.json`, `vitest-unit.json`, `playwright-golden-paths.json`, `playwright.json` |
 
-| Job | Make target | Isolated resources | Native results |
-|---|---|---|---|
-| `quality-static` | `ci-quality-static` | none | `junit-quality-static.xml` |
-| `python-hermetic` | `ci-python-hermetic` | none | `junit-python-hermetic.xml` |
-| `postgres-behavior` | `ci-postgres-behavior` | PostgreSQL and RabbitMQ | `junit-postgres-behavior.xml` and `junit-migration.xml` |
-| `runtime-broker` | `ci-runtime-broker` | PostgreSQL, RabbitMQ, and a disposable broker container identity | `junit-runtime-broker.xml` |
-| `deploy-e2e` | `ci-deploy-e2e` | PostgreSQL, Node, and a job-local testcontainer | `junit-deploy-e2e.xml` |
-| `frontend` | `ci-frontend` | PostgreSQL, RabbitMQ, Node, and Chromium | `junit-frontend-python.xml`, `junit-test-integrity.xml`, `vitest-architecture.json`, `vitest-unit.json`, `playwright-golden-paths.json`, and `playwright.json` |
+`postgres-behavior` also walks migrations and checks the generated database schema
+against a scratch database. `frontend` includes external code generation, harness
+integrity checks, Vitest, the viewport interaction suite, and full-stack browser
+smoke. The [Makefile](../Makefile) owns exact selections and report names; use it
+rather than a historical node-count inventory when investigating coverage.
 
-Six jobs, twelve native reports, one gate. Two lanes carry more than one selection because the
-selection needed the resource the job already had rather than a runner of its own (#598 D8):
-`postgres-behavior` also walks every historical migration against the same pinned PostgreSQL image,
-then runs the `scripts/regen_db_schema.py --check` drift check; `frontend` also runs the
-Node-dependent required-test and hook fail-closed nodeids that were the `test-integrity` job, and
-the four-viewport golden-path interaction specs. A folded selection is still a separate pytest or
-Playwright invocation writing a separate report under its own name, and
-`scripts/require_test_reports.py` checks each one — a fold that shared a report path would be a
-deletion wearing a fold's name.
+Each job checks out `TESTED_SHA` (PR HEAD for a pull request), verifies that checkout,
+and installs locked dependencies as needed. Jobs have isolated resources. Required
+Python, Vitest, and Playwright runs emit native reports under `artifacts/test-results/`;
+`scripts/require_test_reports.py` rejects empty, missing, or non-green required results.
+Do not silently update snapshots or use focus, skips, expected failures, or retries
+to convert incomplete coverage into a successful required run.
 
-Each job checks out `TESTED_SHA` (`pull_request.head.sha` for a PR,
-`github.sha` otherwise), asserts the checkout SHA, installs from locked Python
-and Node dependency state where needed, and uses SHA-pinned Actions plus
-digest-pinned service images. PostgreSQL, RabbitMQ, processes, ports, and
-browser state are job-local; fixed jobs do not share a destructive database or
-broker.
+The `ci-gate` job succeeds only when every required job reports `success`. Repository
+rules are remote configuration, so inspect their current enforcement before an
+authorized merge instead of relying on a copied ruleset name, bypass list, or merge
+method in prose. `scripts/require_main_ci.py` separately checks successful main-push
+workflow evidence for the exact deployment SHA. PR-head results do not attest a
+later squash commit.
 
-Required pytest runs disable plugin autoload, load only named plugins, select
-the deterministic Hypothesis `ci` profile, enforce strict xfail and no early
-`maxfail`, record the slowest 50 cases, and emit JUnit under
-`artifacts/test-results/`. Required Vitest and Playwright runs emit their native
-JSON reports with focus, expected failure, retry, repeat, pending, snapshot
-update, and empty-run escapes rejected. `scripts/require_test_reports.py`
-checks only that the native report exists, executed tests, and contains no
-non-green outcome; it does not select, inventory, or re-adjudicate tests.
-
-There is no ninth, report-only job. `ci.yml` holds the six required jobs and the
-gate, and nothing else: a lane that lives in this file is required, or it belongs
-in another workflow. The coverage job that used to sit outside `ci-gate`'s
-dependencies needed `continue-on-error` for a reason worth keeping in mind —
-`scripts/require_main_ci.py` requires the whole workflow *run* to have concluded
-`success`, so even a job nobody was waiting on could refuse a deployment. #598 D8
-deleted it, and the `coverage run --parallel-mode` wrapper every required lane
-carried for it. Coverage is measured on demand by `make coverage`, from the
-retained `[tool.coverage]` configuration; no percentage gates anything.
-
-`ci-gate` is the single merge interface. It has no checkout, services,
-artifacts, or project script: it reads each required `needs.<job>.result` and
-succeeds only when all are exactly `success`. The active strict
-`main-production-verification` repository Ruleset requires this check for the
-latest `main`-targeting PR HEAD, permits squash merges only, and has no bypass
-actor. `scripts/require_main_ci.py` separately requires a successful run of
-this workflow and check from a `main` push for the exact deployment SHA.
-
-The fixed-plan and native-report hard cut originated in #353. #373 added the
-installed-distribution smoke, historical migration walk, business failure
-windows, report-only coverage, and a scheduled Cosmic Ray mutation workflow;
-#598 D8 kept the first three, deleted the last two with the jobs and tooling
-they needed, folded `migration` and `test-integrity` into the lanes that already
-owned their resources, and made the golden-path interaction specs required.
-These Issue references explain the current wiring; they do not define a second
-policy.
-
-### Audited #428 baseline and fixed split
-
-The successful pre-split baseline is
-[`main@3a9a84f`, run 33346454722](https://github.com/AnalyThothAI/tracefold/actions/runs/33346454722).
-The workflow took 13m53s wall-clock. Its `runtime-process` job took 13m02s,
-and its test step took 12m15s. The native JUnit report recorded 204 passing
-nodeids in 731.349 seconds, with no failure, error, or skip.
-
-The exact required-job timings were:
-
-| Job | Job wall | Pre-test bootstrap | Required step | Native runner outcomes |
-|---|---:|---:|---:|---|
-| `quality-static` | 2m16s | 19s | 1m52s | 311 pytest testcase rows in 77.703s |
-| `python-hermetic` | 2m14s | 14s | 1m56s | 1,622 pytest testcase rows in 110.972s |
-| `postgres-behavior` | 8m13s | 35s | 7m32s | 363 pytest testcase rows in 447.493s |
-| `migration` | 2m12s | 29s | 1m37s | 58 pytest testcase rows in 93.201s |
-| `runtime-process` | 13m02s | 42s | 12m15s | 204 pytest testcase rows in 731.349s |
-| `frontend` | 2m36s | 1m20s | 1m09s | 1 pytest, 234 Vitest, and 1 Playwright outcome |
-
-Bootstrap is the job start through the required-step start, so it includes
-job-local services, checkout, tool setup, locked `uv sync`, and `npm ci` where
-applicable. The frontend native reports further record: pytest 1/1 in 1.005s;
-architecture Vitest 26/26 in 3.522s wall-clock; unit Vitest 208/208 in 23.654s
-wall-clock; and Playwright 1 expected result in 1.965s. Across all native
-reports there were 2,794 testcase/result rows, zero failure, error, skip,
-pending, todo, unexpected, flaky, retry, xfail, or xpass outcomes.
-
-The runtime report preserves the complete per-test timing data and the job log
-prints the slowest 50. Its ten longest cases were 196.497s dead-letter
-recovery, 104.461s price-corpus sizing, 65.664s transient-failure budgeting,
-29.903s broker restart in a retry window, 13.009s never-returning worker
-control, 12.729s golden production pipeline, 7.886s transient heartbeat
-recovery, 7.694s broker restart mid-flight, 7.578s publication-preserving
-SIGTERM, and 7.538s Serve readiness. The linked run and its native artifacts
-are the full top-50 and outcome evidence; no profile database was created.
-
-The run used Python 3.13, Node 22, and uv 0.11.7. PostgreSQL was
-`postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296`;
-RabbitMQ was
-`rabbitmq:4.3.5-management-alpine@sha256:e2f08f846de10bb09649a8b020f286ed362a8f72ee45e5a8d043851f1533fda8`.
-Every service, port, checkout, browser, and restartable broker identity was
-job-local.
-
-The hard cut preserves that exact required nodeid union and every marker.
-`runtime-broker` owns 27 broker, worker-process, and golden nodeids;
-`deploy-e2e` owns 115 deployment, end-to-end, capacity, and Nautilus nodeids;
-the `CI_TEST_INTEGRITY_SELECTION` owns 62 pytest, frontend-runner, and hook
-fail-closed nodeids — its own job until #598 D8 folded it into `frontend`, where
-the Node it needs already exists. Their path selections are fixed in the
-Makefile, their reports are independent, and every one of them is required
-through a job `ci-gate` names. No case was moved to a scheduled or optional
-workflow. The only acceptance-test source changes
-repair assertions for the renamed CI owners; they change no test nodeid,
-marker, production-risk mechanism, or outcome.
-
-The changed acceptance tests are contract repairs, not detector changes:
-
-| Source | Classification |
-|---|---|
-| `tests/architecture/test_docs_surface.py` | replaces the retired Make owner with all three fixed owner targets |
-| `tests/contract/test_verification_gate_contract.py` | hard-cuts required jobs, resource topology, native targets, and fail-closed gate results to the new owners |
-| `tests/deploy/test_postgres_deployment.py` | transfers the pinned PostgreSQL image assertion from `runtime-process` to `runtime-broker` and `deploy-e2e` |
-
-The `slow` audit is exhaustive at the source-owner boundary:
-
-| Source | Slow nodeids | Disposition and retained seam |
-|---|---:|---|
-| `tests/integration/test_news_bus_rabbitmq.py` | 3 | required: real delayed retry, broker restart, and dead-letter recovery |
-| `tests/integration/test_news_durable_event_plane.py` | 1 | required: real RabbitMQ restart with durable PostgreSQL convergence |
-| `tests/integration/test_workers_runtime_v2.py` | 21 | required: real process, lock, timeout, readiness, failure, and shutdown windows |
-| `tests/test_workers_probe.py` | 1 | required: readiness remains responsive during blocked metrics rendering |
-| `tests/integration/test_news_status_scale.py` | 1 | required: production-sized status corpus against real PostgreSQL |
-| `tests/integration/test_news_v3_price_scale.py` | 6 | required: Serve statement-timeout capacity gates against real PostgreSQL |
-| `tests/integration/test_nautilus_config.py` | 6 | required: pinned public Nautilus construction and lifecycle contract |
-| `tests/contract/test_hook_installer.py` | 3 | required harness seam: the installed frontend hooks execute from the locked project |
-| `tests/slow/test_frontend_harness_fail_closed.py` | 52 | required harness seam: Vitest and Playwright cannot turn non-green outcomes into green |
-| `tests/slow/test_required_pytest_fail_closed.py` | 7 | required harness seam: pytest reports reject skips, xfails, xpasses, failures, and collection faults |
-
-All 101 current `slow` nodeids therefore remain required. The 103 additional
-deployment, E2E, and golden nodeids also remain in the fixed plan. There is no
-deletion, scheduled reclassification, mock substitution, or duplicate owner.
+There is no required coverage-percentage gate. `make coverage` measures on demand;
+required lanes do not pay for a coverage tracer. Historical timing measurements,
+old job splits, and previous test counts remain in their Issues and workflow runs,
+not as present-tense inventories in this manual.
 
 ## Local lane implementation
 
-`make test` aliases `make test-fast`. Both run the broad hermetic Python
-selection and start no external resource. They are final-checkpoint tools, not
-the edit loop. Focused execution uses pytest and Vitest directly; the repository
-does not provide a changed-file planner, nodeid inventory, wrapper DSL, or test
-impact database.
+Use focused pytest or frontend commands during development. The common entry points
+are available through `make help`:
 
-`make test-ci` serially runs every fixed owner target. Serial execution binds one
-frozen local tree to its isolated resources and avoids concurrent broker restarts
-or destructive database use. Its native reports are diagnostic local evidence and
-never merge, release, or deployment authority. `make coverage` is a separate,
-on-demand measurement of the hermetic selection and is part of no plan.
+| Command | Scope |
+| --- | --- |
+| `make check-static` | Static quality, pure generated/router drift, documentation file links, compilation. |
+| `make check` | Static checks plus the hermetic architecture/contract selection. |
+| `make test` / `make test-fast` | Broad hermetic Python regression; no real DB or broker. |
+| `make test-integration` | Real dependency integration, excluding separately selected slow/scheduled tests. |
+| `make test-deploy` | Deployment and operations lifecycle. |
+| `make test-e2e` | Running service boundary. |
+| `make test-golden` | Broker-driven Workers → PostgreSQL → HTTP path. |
+| `make test-browser-smoke` | Production backend/static/bootstrap path in Chromium. |
+| `make test-visual` | The viewport interaction lane also selected by CI. |
+| `make test-slow` | Explicit slow process and harness diagnostics. |
+| `make test-scheduled` | Production-duration diagnostics outside required merge evidence. |
+| `make test-ci` | All current fixed owners, serially, with reports and required isolated resources. |
+| `make coverage` | On-demand measurement of hermetic Python coverage. |
 
-`make check-static` owns every generated-artifact drift check that needs no
-external resource: `scripts/regen_cli_help.py --check`,
-`scripts/regen_rabbitmq_definitions.py --check`, and
-`scripts/sync_agent_router.py --check`. `docs/generated/db-schema.md` is
-introspected from a database at Alembic head, so its checker cannot run there;
-`ci-postgres-behavior` runs `scripts/regen_db_schema.py --check` after its two
-pytest selections, against a scratch database that target migrates and drops, and
-prints a unified diff before failing. `docs/generated/openapi.json` and the frontend types are checked
-by `tests/contract/test_openapi_drift.py` in the same fixed plan.
+A successful local full preflight is useful evidence, not merge or deployment
+authorization. Select it according to the changed risk; do not run it after every
+edit or require it merely to open a PR. Do not rerun subsets of a successful superset
+on unchanged relevant inputs just to populate a checklist.
 
-PostgreSQL behavior tests migrate one run-scoped baseline database to head and
-clone it into private function- or module-scoped databases. Tests that reset a
-schema or traverse historical revisions use a separate empty migration-owned
-database. Broker restart tests require an explicitly supplied disposable
-`TRACEFOLD_TEST_RABBITMQ_CONTAINER`; they never discover and restart an
-operator deployment on their own. CI supplies that identity and fails if it
-cannot find the job-local service container.
+### Resource isolation
 
-The four-viewport golden-path lane is required per PR. `web/playwright.config.ts`
-partitions its nine specs across the projects with per-project `testMatch`, at
-collection time, because a required Playwright report may contain no skip at all;
-`make test-visual` runs exactly what `ci-frontend` runs. Its two screenshot specs
-and their 40 committed `-darwin` baselines are gone (#598 D8) — a baseline no CI
-runner could ever match is not a detector.
+PostgreSQL tests clone a migrated baseline into private test databases where
+appropriate; migration-history tests use a separate empty database. Broker restart
+tests require an explicitly supplied disposable `TRACEFOLD_TEST_RABBITMQ_CONTAINER`.
+They must not discover and restart an operator deployment. Required CI and full
+preflight treat missing required resources as failure, not a skip.
 
-Scheduled and performance diagnostics remain outside the fixed merge plan unless a
-dedicated Issue moves a detector after showing which retained required seam owns
-the original risk. Mutation testing is not one of them: adopting it again needs
-the detector-by-detector Issue that
-[Risk-tiered local verification](DEVELOPMENT.md#risk-tiered-local-verification)
-already demands of generic tooling.
+Keep the tested local tree and resource configuration stable during a run. Do not
+share a destructive database or restartable broker between concurrent owners.
+A local environment without a resource can still run independent pure checks and
+prepare a PR, but cannot claim to have verified that resource's behavior.
+
+### Generated artifacts and documentation
+
+`make check-static` runs the CLI-help, RabbitMQ-definitions, and agent-router drift
+checks. The generated database schema requires PostgreSQL and is checked by its
+resource-owning CI job. OpenAPI and TypeScript checks also have their maintained
+contract/codegen owners; inspect the actual Make selections when changing them.
+
+For router/document edits, the pure starting point is:
+
+```bash
+python3 scripts/sync_agent_router.py --check
+python3 scripts/check_mandatory_docs_links.py
+```
+
+The documentation link script checks local file existence. It does not establish
+that every anchor, command, architectural claim, or backticked path is correct.
+Review those against their owning headings and implementation. The existing
+`tests/architecture/test_docs_surface.py` additionally checks router synchronization
+and the hermetic Make surfaces; do not add tests that freeze the wording or length
+of an agent instruction as a product invariant.
+
+### Changing the test system
+
+Improve a slow or redundant test at the risk mechanism it covers. A change to test
+selection, retry behavior, or required jobs must explain retained coverage and be
+validated at the affected harness boundary. The current fixed plan can be improved
+in an explicitly scoped change; this document does not make it immutable.
+
+Libraries, coverage, mutation testing, or other diagnostic tools may be evaluated
+inside the current task when useful. They do not require an automatic separate
+Issue per detector, and their presence alone does not prove a production seam.
+Do not silently move a required risk into an optional diagnostic or weaken an
+acceptance test merely to obtain green CI.
