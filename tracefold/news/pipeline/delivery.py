@@ -20,10 +20,19 @@ from ..market_review.pricing import (
     Candle,
     PriceInstrument,
     PricePoint,
+    QuoteRequest,
     parse_change_pct,
     select_candle,
 )
-from ..models import Novelty, ReaderDeliveryPresentation, ReaderMarketScope, TelegramDeliveryReceipt
+from ..models import (
+    MarketAsset,
+    Novelty,
+    ReaderDeliveryPresentation,
+    ReaderMarketScope,
+    TelegramDeliveryReceipt,
+    base_symbol,
+    market_type_of,
+)
 from ..progression_review import PROGRESSION_REVIEW_TIMEOUT_SECONDS, ProgressionReview, ProgressionVerifier
 from ..reader_card import ReaderCard
 from ..source_contracts import EVENT_KINDS
@@ -99,7 +108,7 @@ def _claim_due(repos: Any, *, now_ms: int) -> list[dict[str, Any]]:
 
 async def read_display_quotes(
     db: NewsDatabasePort,
-    symbols: Sequence[str],
+    requests: Sequence[QuoteRequest],
     *,
     now_ms: int,
     name: str,
@@ -114,12 +123,12 @@ async def read_display_quotes(
     drops anything not fresh, so there is exactly one place each of those constants is read.
     """
 
-    if not symbols:
+    if not requests:
         return []
     try:
         rows = await db.read(
             name,
-            lambda repos: repos.price.quotes_for_symbols(list(symbols), now_ms=now_ms),
+            lambda repos: repos.price.quotes_for_symbols(list(requests), now_ms=now_ms),
             timeout_seconds=QUOTE_READ_TIMEOUT_SECONDS,
         )
     except Exception:  # price is display-only; all failures degrade to no line
@@ -302,7 +311,7 @@ class _EnrichmentEditContext:
     verdict: Mapping[str, Any]
     decision: str
     grounded_assets: tuple[str, ...]
-    shown: tuple[str, ...]
+    shown: tuple[MarketAsset, ...]
     degraded: bool
     receipt: TelegramDeliveryReceipt
     presentation: ReaderDeliveryPresentation
@@ -701,7 +710,7 @@ class DelivererLoop:
         bundle = await self.db.read("news_delivery_load", lambda repos: self._load(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_delivery_inputs_missing")
-        card, triage_row, _admission, timing = bundle
+        card, triage_row, _admission, timing, catalog_candidates = bundle
         # A queued delivery can outlive the source-contract migration that held its Event. Immutable
         # evidence and historical verdicts remain audit facts; current PostgreSQL routing still wins before
         # a delivery ledger row, quote read, or external send is attempted. A retired market kind is one of
@@ -737,12 +746,13 @@ class DelivererLoop:
             return
         # Only query a quote after every policy return above. A quote failure
         # never changes the delivery decision.
-        shown = card_assets(tv, list(card.get("grounded_assets") or []))
+        shown = card_assets(tv, list(card.get("grounded_assets") or []), catalog_candidates=catalog_candidates)
+        shown_symbols = [asset.symbol for asset in shown]
         news_at_ms = int(timing["news_at_ms"]) if timing and timing.get("news_at_ms") is not None else None
         observed_at_ms = int(timing["observed_at_ms"]) if timing and timing.get("observed_at_ms") is not None else None
         progression_candidates = _progression_review_candidates(triage_row, tv)
         progression_review_pending = self._progression_verifier is not None and bool(progression_candidates)
-        _, title_identity_confident = tradability_candidates(event=card, verdict=tv, symbols=shown)
+        _, title_identity_confident = tradability_candidates(event=card, verdict=tv, symbols=shown_symbols)
         tradability_pending = (
             self._tradability_verifier is not None
             and _reader_market_scope(tv) == "single_name"
@@ -769,7 +779,7 @@ class DelivererLoop:
             verdict=tv,
             decision=str(triage_row["final_decision"]),
             grounded_assets=list(card.get("grounded_assets") or []),
-            assets=shown,
+            assets=shown_symbols,
             degraded=bool(triage_row.get("degraded")),
             quotes=quotes,
         )
@@ -782,7 +792,7 @@ class DelivererLoop:
             else replace(
                 base_presentation,
                 trade_targets=reader_trade_targets(quotes),
-                market_movements=reader_market_movements(shown, quotes),
+                market_movements=reader_market_movements(shown_symbols, quotes),
             )
         )
         state = await self.db.tx(
@@ -929,9 +939,13 @@ class DelivererLoop:
                     news_at_ms=context.presentation.news_at_ms,
                 )
                 if not resolved_shown:
+                    # A contract the catalogue verifier found by exact name: its own instrument class is
+                    # the market, because the match *is* the instrument (#651 §6.2).
                     resolved_shown = tuple(
                         dict.fromkeys(
-                            match.requested_symbol for match in tradability_review.matches if match.requested_symbol
+                            MarketAsset(base_symbol(match.requested_symbol), market_type_of(match.instrument_class))
+                            for match in tradability_review.matches
+                            if match.requested_symbol
                         )
                     )
             reader_card = news_reader_card(
@@ -939,7 +953,7 @@ class DelivererLoop:
                 verdict=context.verdict,
                 decision=context.decision,
                 grounded_assets=list(context.grounded_assets),
-                assets=resolved_shown,
+                assets=[asset.symbol for asset in resolved_shown],
                 degraded=context.degraded,
                 quotes=quotes,
                 # The catalogue's authoritative "nothing here can be traded" is a fact about the card,
@@ -964,7 +978,7 @@ class DelivererLoop:
             presentation = replace(
                 context.presentation,
                 trade_targets=reader_trade_targets(quotes),
-                market_movements=reader_market_movements(resolved_shown, quotes),
+                market_movements=reader_market_movements([a.symbol for a in resolved_shown], quotes),
                 novelty=(
                     "new_fact"
                     if displayed_progression_review is not None and displayed_progression_review.state != "confirmed"
@@ -1049,7 +1063,7 @@ class DelivererLoop:
                 raw = await verifier.review(
                     event=context.event,
                     verdict=context.verdict,
-                    symbols=context.shown,
+                    symbols=[asset.symbol for asset in context.shown],
                 )
             return raw if isinstance(raw, TradabilityReview) else TradabilityReview.model_validate(raw)
         except asyncio.CancelledError:
@@ -1057,7 +1071,7 @@ class DelivererLoop:
         except Exception:
             return TradabilityReview(
                 state="incomplete",
-                candidates=tuple(context.shown),
+                candidates=tuple(asset.symbol for asset in context.shown),
                 checked_venues=(),
                 failed_venues=(),
                 matches=(),
@@ -1170,7 +1184,7 @@ class DelivererLoop:
 
     async def _market_data(
         self,
-        shown: Sequence[str],
+        shown: Sequence[MarketAsset],
         stamp: int,
         *,
         news_at_ms: int | None,
@@ -1187,7 +1201,12 @@ class DelivererLoop:
             return []
         if self._price_fetcher_for is not None:
             return await self._point_market_data(shown, stamp, news_at_ms=news_at_ms)
-        quotes = await read_display_quotes(self.db, shown, now_ms=stamp, name="news_delivery_quotes")
+        quotes = await read_display_quotes(
+            self.db,
+            [QuoteRequest(asset.symbol, asset.market_type) for asset in shown],
+            now_ms=stamp,
+            name="news_delivery_quotes",
+        )
         if self._candle_fetcher_for is None:
             return quotes
         news_target_ms = (
@@ -1227,7 +1246,7 @@ class DelivererLoop:
 
     async def _point_market_data(
         self,
-        shown: Sequence[str],
+        shown: Sequence[MarketAsset],
         stamp: int,
         *,
         news_at_ms: int | None,
@@ -1238,17 +1257,19 @@ class DelivererLoop:
         ``(venue, venue_symbol)``. Partial values are kept only if no later venue can provide the complete set.
         """
 
+        requests = [QuoteRequest(asset.symbol, asset.market_type) for asset in shown]
         try:
             rows, candidates = await self.db.read(
                 "news_delivery_price_sources",
                 lambda repos: (
-                    repos.price.quotes_for_symbols(shown, now_ms=stamp),
-                    repos.price.instruments_for_symbols(shown),
+                    repos.price.quotes_for_symbols(requests, now_ms=stamp),
+                    repos.price.instruments_for_symbols(requests),
                 ),
                 timeout_seconds=QUOTE_READ_TIMEOUT_SECONDS,
             )
         except Exception:
             return []
+        symbols = [asset.symbol for asset in shown]
         originals = {
             str(row.get("requested_symbol") or ""): dict(row) for row in rows or [] if isinstance(row, Mapping)
         }
@@ -1265,11 +1286,11 @@ class DelivererLoop:
                 stamp=stamp,
                 news_target_ms=news_target,
             )
-            for symbol in shown
+            for symbol in symbols
         ]
         resolved = await asyncio.gather(*tasks, return_exceptions=True)
         out: list[dict[str, Any]] = []
-        for symbol, result in zip(shown, resolved, strict=True):
+        for symbol, result in zip(symbols, resolved, strict=True):
             if isinstance(result, BaseException):
                 fallback = originals.get(symbol)
                 if fallback:
@@ -1501,13 +1522,26 @@ class DelivererLoop:
         admission = str(routing.get("admission") or "")
         event_kind = str(routing.get("event_kind") or "")
         if event_kind not in EVENT_KINDS:
-            return card, None, admission, timing
+            return card, None, admission, timing, {}
         triage = repos.news.latest_verdict(event_id=event_id, stage="triage")
         if triage is None:
             return None
+        # What the catalogue proves about the symbols this Event carries (#651 §6.2). Read in the same
+        # session as the card, and used for exactly one thing here: typing a pre-#651 or degraded asset
+        # the judgment left untyped, and only where the catalogue holds one market for it.
+        candidates = repos.instruments.instrument_class_candidates(
+            [
+                *(str(value) for value in card.get("grounded_assets") or () if value),
+                *(
+                    str(asset.get("symbol"))
+                    for asset in dict(triage.get("verdict") or {}).get("assets") or ()
+                    if isinstance(asset, Mapping) and asset.get("symbol")
+                ),
+            ]
+        )
         # No OI frame row travels in this bundle any more (#458). It grounded the symbol on a pushed OI
         # card, and Triage publishes to this consumer only on `push`, which the OI lane no longer produces.
-        return card, triage, admission, timing
+        return card, triage, admission, timing, candidates
 
     async def drain(self) -> None:
         tasks = tuple(self._edit_tasks)

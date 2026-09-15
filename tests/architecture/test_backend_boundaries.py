@@ -180,6 +180,11 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # News may not name, declares its capability key and owns its tick.
         "tracefold.news.chain_tape",
         "tracefold.news.market_review.loops",
+        # #651 §6.2: the typed quote question. The composition seam builds the `QuoteRequest` values the
+        # News-owned quote port takes, for the same reason `app.http` already reads this module -- the
+        # vocabulary a caller must speak to ask for a price belongs to the pricing domain, and a literal
+        # copy of it at the seam would be a second definition of what a market is.
+        "tracefold.news.market_review.pricing",
         # The database composition adapter constructs narrow callback views from the concrete
         # repositories; no business package imports the App adapter in return.
         "tracefold.news.market_review.instrument_storage",

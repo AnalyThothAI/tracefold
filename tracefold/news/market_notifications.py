@@ -58,7 +58,7 @@ from .market_contracts import (
     REASON_SMART_MONEY_ROUND,
     REASON_WALLET_NOTIFICATIONS_DISABLED,
 )
-from .market_review.pricing import QUOTE_READ_TIMEOUT_SECONDS, parse_price
+from .market_review.pricing import QUOTE_READ_TIMEOUT_SECONDS, QuoteRequest, parse_price
 from .reader_card import (
     ReaderCard,
     ReaderCardAction,
@@ -1079,7 +1079,9 @@ class MarketNotificationDatabasePort(Protocol):
     # with the same 1.5 s budget and the same "any failure is no quote" degradation (#562 §3). The
     # rows are the read model's own; `reader_quotes` turns them into this card's facts, exactly as
     # the News card does. Nothing here may write a quote, wait for one, or let one reach a decision.
-    async def quotes_for_symbols(self, symbols: Sequence[str], *, now_ms: int) -> Sequence[Mapping[str, Any]]: ...
+    async def quotes_for_symbols(
+        self, requests: Sequence[QuoteRequest], *, now_ms: int
+    ) -> Sequence[Mapping[str, Any]]: ...
 
     # What News has already told this reader about the same instrument, in the card's own 48 h window
     # (#582 §3.3). A port for the same reason the quote is one: what the loop needs is *the pushed
@@ -1505,7 +1507,9 @@ class MarketNotificationLoop:
         if not symbols:
             return ()
         try:
-            rows = await self.db.quotes_for_symbols(symbols, now_ms=now_ms)
+            # The market lane's frames are measurements on a venue contract and carry no market claim of
+            # their own, so the question stays untyped and resolves exactly as it did before #651 §6.2.
+            rows = await self.db.quotes_for_symbols([QuoteRequest(symbol) for symbol in symbols], now_ms=now_ms)
         except Exception:  # display-only, exactly as News treats it: every failure is no line
             return ()
         return reader_quotes(rows)

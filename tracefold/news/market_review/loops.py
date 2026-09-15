@@ -21,6 +21,7 @@ from decimal import Decimal
 from typing import Any, ClassVar, Protocol
 
 from ..bus import DeferError, TransientError, now_ms
+from ..models import market_type_of
 from ..telemetry import (
     NewsExternalDataOutcome,
     NewsExternalDataSource,
@@ -44,6 +45,7 @@ from .pricing import (
     PriceInstrument,
     ProviderQuote,
     Quote,
+    QuoteRequest,
     parse_change_pct,
     reference_freshness,
     return_bps,
@@ -583,8 +585,13 @@ class EventReactionLoop:
 
         def _due(repos: Any) -> Any:
             rows = repos.price.due_reactions(now_ms=stamp, limit=REACTION_DUE_BATCH)
-            symbols = sorted({str(row["symbol"]) for row in rows})
-            return rows, repos.price.resolve_instruments(symbols)
+            # Typed resolution (#651 §6.2): the market the Event's own judgment says the symbol is, so an
+            # equity Event's Reaction is measured against an equity contract or against nothing at all --
+            # never against the same-name coin, which is what `reaction_v1` silently did.
+            requests = sorted({(str(row["symbol"]), market_type_of(row.get("market_type"))) for row in rows})
+            return rows, repos.price.resolve_instruments(
+                [QuoteRequest(symbol, market_type) for symbol, market_type in requests]
+            )
 
         try:
             rows, instruments = await self.db.read("news_reaction_due", _due, timeout_seconds=_DB_READ_TIMEOUT_SECONDS)

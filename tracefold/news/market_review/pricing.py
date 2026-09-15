@@ -22,6 +22,8 @@ from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal, DivisionByZero, Inv
 from math import isfinite
 from typing import Any, Final, Literal
 
+from .instruments import InstrumentClass
+
 # Reference tiers (`us.listed`) are excluded where candidates are selected — in the repository's SQL,
 # which is the one place resolution happens. There is deliberately no second Python copy of that rule.
 PriceKind = Literal["last", "mark", "mid"]
@@ -33,7 +35,12 @@ ReactionState = Literal["pending", "partial", "complete", "unavailable"]
 # `reaction_v1` freezes candle interval, price kind, alignment, gap tolerance, source selection, multi-asset
 # aggregation and the hit definition. Changing any of them is a new version plus a replay; it must never
 # silently change what a stored v1 row means.
-REACTION_METRIC_VERSION: Final = "reaction_v1"
+# v2 (#651 §6.2): resolution is typed. A quote target and a Reaction row are now selected by
+# `(symbol, market_type)` and filtered on `news_market_instruments.instrument_class`, so a `SEI` equity
+# Event no longer prices against the `SEI` coin and a `V` equity Event resolves to nothing rather than to
+# a same-name token. Every stored `reaction_v1` row was measured under the untyped rule and keeps its
+# version as audit; nothing reads the two together.
+REACTION_METRIC_VERSION: Final = "reaction_v2"
 CANDLE_INTERVAL: Final = "5m"
 CANDLE_INTERVAL_MS: Final = 300_000
 # One interval plus provider timestamp jitter. Wide enough that a boundary rounding difference between two
@@ -150,6 +157,30 @@ def price_kind_for(venue: str) -> PriceKind:
     """What the venue's current-quote endpoint publishes."""
 
     return "mid" if str(venue).startswith("hl.") else "last"
+
+
+@dataclass(frozen=True, slots=True)
+class QuoteRequest:
+    """One priceable question: a raw symbol, and the market that symbol has to be priced in.
+
+    A symbol on its own is not a priceable question. `V` is Visa on the NYSE and also a base symbol a
+    crypto venue lists; `SEI` is a Cosmos token and a NYSE-listed insurer; 352 of the catalogue's crypto
+    bases are also US tickers. Resolving by symbol alone returned whichever contract the venue ranking
+    happened to put first, so an equity Event could be quoted at a coin's price under the same three
+    letters and nothing in the row said so (#651 §6.2).
+
+    `unknown` is the untyped question and keeps the untyped answer — any contract the catalogue lists —
+    because a caller that genuinely does not know the market (an operator typing symbols into the quotes
+    endpoint) must not have a market invented for it.
+    """
+
+    symbol: str
+    market_type: InstrumentClass = "unknown"
+
+    def accepts(self, instrument_class: str) -> bool:
+        """Whether a catalogue row's class answers this question."""
+
+        return self.market_type in {"unknown", instrument_class}
 
 
 @dataclass(frozen=True, slots=True)
@@ -515,6 +546,7 @@ __all__ = [
     "ProviderQuote",
     "Quote",
     "QuoteFreshness",
+    "QuoteRequest",
     "QuoteState",
     "ReactionState",
     "change_basis_zh",

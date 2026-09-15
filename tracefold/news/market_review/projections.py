@@ -80,6 +80,24 @@ def _unlisted_quote(symbol: str) -> dict[str, Any]:
     }
 
 
+def _directory_only_quote(symbol: str, market_type: str) -> dict[str, Any]:
+    """A typed question the catalogue answers only from a reference directory (#651 §6.2).
+
+    `V/equity` is a real NYSE ticker in `us.listed` and no venue we poll prices it. `unlisted` would say
+    the symbol names nothing, which is false; the same-name coin would be a different instrument's price
+    under this Event's ticker, which is the failure this whole cut is about. The honest third answer is
+    `unavailable` with the market the question asked for, so a reader and an operator both see that the
+    instrument is real and the price is not available here.
+    """
+
+    return {
+        **_unlisted_quote(symbol),
+        "instrument_class": market_type,
+        "state": "unavailable",
+        "state_zh": quote_state_zh("unavailable"),
+    }
+
+
 def _unavailable_quote(symbol: str, instrument: PriceInstrument) -> dict[str, Any]:
     return {
         "requested_symbol": symbol,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 # S608 exemptions below interpolate only the module-owned venue-priority expression; all values stay bound.
@@ -17,6 +17,7 @@ from .pricing import (
     REACTION_METRIC_VERSION,
     PriceInstrument,
     Quote,
+    QuoteRequest,
     change_basis_zh,
     price_kind_zh,
     quote_asset_rank_sql,
@@ -27,6 +28,7 @@ from .pricing import (
 )
 from .projections import (
     _aggregate_public,
+    _directory_only_quote,
     _reaction_public,
     _unavailable_quote,
     _unlisted_quote,
@@ -50,7 +52,25 @@ DUE_REACTIONS_SQL: Final = """
                           ORDER BY v.created_at_ms DESC LIMIT 1
                        ) t, LATERAL jsonb_array_elements(COALESCE(t.verdict -> 'assets', '[]'::jsonb)) x
                       WHERE x ->> 'role' = 'primary'
-                   ), false) AS is_primary
+                   ), false) AS is_primary,
+                   -- Which market this Event says the symbol is (#651 §6.2). `news_event_assets` is the
+                   -- Gate's tag ledger and carries no market; the judgment does, and it is the authority on
+                   -- what the Event is about. A primary's market wins over a mention of the same symbol; a
+                   -- verdict written before #651 says nothing here and reads as `unknown`, which resolves
+                   -- exactly as it did before.
+                   (
+                     SELECT x ->> 'market_type'
+                       FROM (
+                         SELECT v.verdict FROM news_verdicts v
+                         WHERE v.event_id = a.event_id AND v.stage = 'triage'
+                           AND v.judgment_contract_version = 'news_judgment_v2'
+                          ORDER BY v.created_at_ms DESC LIMIT 1
+                       ) t, LATERAL jsonb_array_elements(COALESCE(t.verdict -> 'assets', '[]'::jsonb)) x
+                      WHERE replace(upper(x ->> 'symbol'), 'XYZ-', '') = a.symbol
+                        AND jsonb_typeof(x -> 'market_type') = 'string'
+                      ORDER BY (x ->> 'role' = 'primary') DESC
+                      LIMIT 1
+                   ) AS market_type
               FROM news_event_assets a
               JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
               -- A lateral probe on the primary key, not a hash join: the scan walks Event-assets oldest
@@ -75,65 +95,97 @@ DUE_REACTIONS_SQL: Final = """
 class QuoteStorage:
     conn: Any
 
-    def resolve_instruments(self, symbols: Iterable[str]) -> dict[str, PriceInstrument]:
-        """Raw provider tag -> the one contract its price comes from, for a bounded batch.
+    def resolve_instruments(self, requests: Sequence[QuoteRequest]) -> dict[str, PriceInstrument]:
+        """Raw tag -> the one contract its price comes from, for a bounded batch of typed questions.
 
         Exact-symbol-first: a symbol that is itself tradeable is never resolved through an issuer alias, so
         `SKHX` prices SKHX even though storyline identity normalizes it to `SKHY` (#88 §3). The alias is
-        the fallback for tags that name nothing on their own. Reference-only tiers (`us.listed`) are excluded
-        here rather than filtered later — they answer "does this ticker exist", not "what does it cost".
+        the fallback for tags that name nothing on their own. Reference-only tiers (`us.listed`) are never
+        priceable — they answer "does this ticker exist", not "what does it cost".
 
-        Keyed by the caller's raw symbol so no caller needs normalization knowledge of its own.
+        Typed since #651 §6.2: a request naming a market resolves only to contracts of that market, so an
+        equity question can no longer be answered with a same-name coin. Keyed by the caller's raw symbol
+        so no caller needs normalization knowledge of its own.
         """
 
-        candidates = self.instruments_for_symbols(symbols)
+        candidates, _ = self._priceable(requests)
         return {symbol: rows[0] for symbol, rows in candidates.items() if rows}
 
-    def instruments_for_symbols(self, symbols: Iterable[str]) -> dict[str, tuple[PriceInstrument, ...]]:
-        """Every priceable contract for each tag, in the single code-owned venue order.
+    def instruments_for_symbols(self, requests: Sequence[QuoteRequest]) -> dict[str, tuple[PriceInstrument, ...]]:
+        """Every priceable contract that answers each typed question, in the code-owned venue order.
 
         Delivery uses this larger view to fail over an entire price calculation from Binance to Hyperliquid
-        and then OKX. Exact tradeable tags still suppress issuer-alias candidates, preserving the same SKHX/SKHY
-        identity rule as :meth:`resolve_instruments`.
+        and then OKX. Exact tradeable tags still suppress issuer-alias candidates, preserving the same
+        SKHX/SKHY identity rule as :meth:`resolve_instruments`.
         """
 
-        normalized = {str(symbol): normalize_symbol(symbol) for symbol in symbols if str(symbol).strip()}
-        wanted = sorted({value for value in normalized.values() if value})
+        return self._priceable(requests)[0]
+
+    def _priceable(
+        self, requests: Sequence[QuoteRequest]
+    ) -> tuple[dict[str, tuple[PriceInstrument, ...]], frozenset[str]]:
+        """Resolution, once: the priceable contracts per request, and the requests only a directory knows.
+
+        The second half is what keeps `unlisted` and `unavailable` different answers for a typed question.
+        `V/equity` is a real ticker the `us.listed` directory carries and no venue we poll prices, so the
+        honest answer is "we cannot quote it", not "no such symbol" — and certainly not the `V` coin. A
+        request whose market the catalogue carries nowhere stays `unlisted`.
+        """
+
+        normalized = {
+            str(request.symbol): (normalize_symbol(request.symbol), request)
+            for request in requests
+            if str(request.symbol).strip()
+        }
+        wanted = sorted({symbol for symbol, _ in normalized.values() if symbol})
         if not wanted:
-            return {}
+            return {}, frozenset()
         alias_rows = self.conn.execute(
             "SELECT alias, base_symbol FROM news_symbol_aliases WHERE alias = ANY(%s)", (wanted,)
         ).fetchall()
         aliases = {str(row["alias"]): str(row["base_symbol"]) for row in alias_rows}
         bases = sorted({*wanted, *(aliases.get(symbol, symbol) for symbol in wanted)})
+        # Both tiers in one statement. Reference rows are never returned as price candidates; they are read
+        # so that a typed miss can say which of the two misses it is.
         rows = self.conn.execute(
             f"""
             SELECT venue, venue_symbol, base_symbol, instrument_class, quote_asset
               FROM news_market_instruments i
              WHERE i.status = 'trading'
-               AND NOT (i.venue = ANY(%s))
                AND i.base_symbol = ANY(%s)
              ORDER BY i.base_symbol, {source_rank_sql()}, {quote_asset_rank_sql()}, i.venue, i.venue_symbol
             """,  # noqa: S608
-            (sorted(REFERENCE_VENUES), bases),
+            (bases,),
         ).fetchall()
         grouped: dict[str, list[PriceInstrument]] = {}
+        reference: dict[str, set[str]] = {}
         for row in rows:
-            grouped.setdefault(str(row["base_symbol"]), []).append(
+            base = str(row["base_symbol"])
+            if str(row["venue"]) in REFERENCE_VENUES:
+                reference.setdefault(base, set()).add(str(row["instrument_class"]))
+                continue
+            grouped.setdefault(base, []).append(
                 PriceInstrument(
                     venue=str(row["venue"]),
                     venue_symbol=str(row["venue_symbol"]),
-                    base_symbol=str(row["base_symbol"]),
+                    base_symbol=base,
                     instrument_class=str(row["instrument_class"]),
                     quote_asset=str(row["quote_asset"]) if row["quote_asset"] else None,
                 )
             )
         result: dict[str, tuple[PriceInstrument, ...]] = {}
-        for raw, symbol in normalized.items():
-            candidates = grouped.get(symbol) or grouped.get(aliases.get(symbol, symbol)) or []
+        directory_only: set[str] = set()
+        for raw, (symbol, request) in normalized.items():
+            base = symbol if symbol in grouped or symbol in reference else aliases.get(symbol, symbol)
+            candidates = tuple(
+                instrument for instrument in grouped.get(base, ()) if request.accepts(instrument.instrument_class)
+            )
             if candidates:
-                result[raw] = tuple(candidates)
-        return result
+                result[raw] = candidates
+                continue
+            if any(request.accepts(name) for name in reference.get(base, ())):
+                directory_only.add(raw)
+        return result, frozenset(directory_only)
 
     def quote_target_symbols(self, *, since_ms: int, limit: int = 1000) -> list[str]:
         """Code-verified assets on recent live Events, most recently observed first.
@@ -185,7 +237,10 @@ class QuoteStorage:
             if key and key not in seen_symbols:
                 seen_symbols.add(key)
                 ordered.append(symbol)
-        resolved = self.resolve_instruments(ordered)
+        # The planner asks the untyped question on purpose: it decides which contracts to *poll*, and
+        # polling a superset costs one provider call, while typing it here would starve a later typed
+        # question of its snapshot. Typing happens where a price is claimed about an Event.
+        resolved = self.resolve_instruments([QuoteRequest(symbol) for symbol in ordered])
         targets: list[PriceInstrument] = []
         seen_instruments: set[tuple[str, str, str]] = set()
         groups: list[str] = []
@@ -268,27 +323,38 @@ class QuoteStorage:
         ).fetchall()
         return {str(row["source_key"]): dict(row) for row in rows}
 
-    def quotes_for_symbols(self, symbols: Sequence[str], *, now_ms: int) -> list[dict[str, Any]]:
-        """One result per requested symbol, in request order, each naming its own state.
+    def quotes_for_symbols(self, requests: Sequence[QuoteRequest], *, now_ms: int) -> list[dict[str, Any]]:
+        """One result per requested instrument, in request order, each naming its own state.
 
-        `unlisted` and `unavailable` are different answers: the first says no venue we poll lists this tag,
-        the second says we have not managed to quote it yet. Neither is ever rendered as a price of zero.
+        `unlisted` and `unavailable` are different answers: the first says the catalogue holds nothing that
+        answers this question, the second says we have not managed to quote it yet. A typed equity question
+        the `us.listed` directory answers is `unavailable` — the ticker exists and we poll no price source
+        for it — never the same-name coin, and never a price of zero (#651 §6.2).
         """
 
-        requested: list[str] = []
-        for symbol in symbols:
-            text = str(symbol).strip()
-            if text and text not in requested:
-                requested.append(text)
+        requested: list[QuoteRequest] = []
+        seen: set[tuple[str, str]] = set()
+        for request in requests:
+            text = str(request.symbol).strip()
+            key = (text, request.market_type)
+            if text and key not in seen:
+                seen.add(key)
+                requested.append(QuoteRequest(text, request.market_type))
         if not requested:
             return []
-        instruments = self.resolve_instruments(requested)
+        candidates, directory_only = self._priceable(requested)
+        instruments = {symbol: rows[0] for symbol, rows in candidates.items() if rows}
         snapshots = self.quote_snapshots() if instruments else {}
         out: list[dict[str, Any]] = []
-        for symbol in requested:
+        for request in requested:
+            symbol = request.symbol
             instrument = instruments.get(symbol)
             if instrument is None:
-                out.append(_unlisted_quote(symbol))
+                out.append(
+                    _directory_only_quote(symbol, request.market_type)
+                    if symbol in directory_only
+                    else _unlisted_quote(symbol)
+                )
                 continue
             snapshot = snapshots.get(instrument.source_key)
             entry = (snapshot or {}).get("quotes", {}).get(f"{instrument.venue_symbol}|{instrument.price_kind}")
