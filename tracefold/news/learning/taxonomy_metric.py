@@ -73,7 +73,9 @@ def compare_taxonomy(
     accepted = gold if isinstance(gold, ModelTaxonomyV1) else ModelTaxonomyV1.model_validate(gold)
     if isinstance(predicted, ModelTaxonomyV1):
         observed = predicted
-    elif "source_authority" in predicted:
+    elif "taxonomy_version" in predicted:
+        # The persisted/read shape: four axes plus the codebook identity. Since #651 that is all it is --
+        # the code-owned source authority moved to the editorial envelope beside it.
         observed = NewsTaxonomyV1.model_validate(predicted)
     else:
         observed = ModelTaxonomyV1.model_validate(predicted)

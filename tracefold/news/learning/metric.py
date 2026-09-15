@@ -622,8 +622,25 @@ def accepted_review_metric(
     if parsed is None or lint is None:
         return _zero("Return one complete, schema-valid semantic judgment and card.", gate="schema_invalid")
     typed, editorial, judgment, verdict = parsed
-    if not taxonomy_gold_present or editorial.taxonomy is None:
+    if not taxonomy_gold_present:
         return _zero("Return all four accepted taxonomy axes.", gate="schema_invalid")
+    if editorial.taxonomy is None:
+        # #651 §5.3: the taxonomy Predictor can now fail on its own without costing the reader the card.
+        # That is the right production behavior and it is still a task failure here: this case carries
+        # accepted Gold for all four axes and the candidate answered none of them, so it scores zero and
+        # stays in the denominator. It is a separate gate from `schema_invalid` because the cause is
+        # different and so is the repair -- nothing about the *instruction* produced this, and a
+        # candidate whose taxonomy call keeps failing should be readable as that rather than as a
+        # candidate that emits invalid JSON.
+        return _zero(
+            "The taxonomy call produced no label for this case "
+            f"({editorial.taxonomy_error_code or 'unknown'}). Return all four accepted taxonomy axes.",
+            gate="taxonomy_unavailable",
+            outcomes=(
+                *((name, "unscored") for name in scored_names),
+                *((dimension, "taxonomy_unavailable") for dimension in TAXONOMY_TARGET_DIMENSIONS),
+            ),
+        )
     taxonomy = compare_taxonomy(review["taxonomy"], editorial.taxonomy)
     component_diagnostics["semantics_novelty"]["taxonomy"] = {
         "score": taxonomy.score,
@@ -973,6 +990,7 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
             "must_push_miss",
             "must_hold_send",
             "schema_invalid",
+            "taxonomy_unavailable",
             "factual_contradiction",
             "metric_judge_unavailable",
             *GATE_CHECKS,

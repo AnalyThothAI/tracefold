@@ -324,11 +324,11 @@ _STABLE_TAXONOMY_INSTRUCTION = load_stable_program_state().instruction_for("taxo
 def _editorial() -> EditorialEnvelope:
     return EditorialEnvelope.issue(
         relevance=_relevance(),
+        source_authority="reputable_secondary",
         taxonomy=news_taxonomy(
             event_family="regulatory_legal",
             change_state="reported",
             assertion_status="claimed",
-            source_authority="reputable_secondary",
         ),
     )
 
@@ -665,7 +665,8 @@ class _TaxonomyArmJudge(_StaticJudge):
         axes = {**self._default_axes, **self._axes_by_title.get(context.evidence.title, {})}
         return EditorialEnvelope.issue(
             relevance=_relevance(),
-            taxonomy=news_taxonomy(**axes, source_authority="reputable_secondary"),
+            source_authority="reputable_secondary",
+            taxonomy=news_taxonomy(**axes),
         )
 
 
@@ -1020,16 +1021,17 @@ def _open_event(
         card = {key: verdict[key] for key in ("headline_zh", "why_zh")}
         editorial = EditorialEnvelope.issue(
             relevance=effective_relevance,
+            source_authority="reputable_secondary",
             taxonomy=news_taxonomy(
                 event_family="regulatory_legal",
                 change_state="reported",
                 assertion_status="claimed",
-                source_authority="reputable_secondary",
             ),
         )
+        assert editorial.taxonomy is not None
         semantics["taxonomy"] = editorial.taxonomy.model_dump(
             mode="json",
-            exclude={"taxonomy_version", "source_authority", "codebook_sha256"},
+            exclude={"taxonomy_version", "codebook_sha256"},
         )
         scored = ScoredJudgment.issue(
             verdict=TriageVerdict.model_validate(verdict),
@@ -1314,7 +1316,6 @@ def _accepted_event(
                     event_family="product_service_change",
                     change_state="reported",
                     assertion_status="claimed",
-                    source_authority="reputable_secondary",
                 ).model_dump(mode="json")
             }
         )
@@ -1344,31 +1345,17 @@ def test_one_operator_taxonomy_freezes_into_the_existing_episode_and_projection_
         event_family="product_service_change",
         change_state="effective",
         assertion_status="confirmed",
-        source_authority="reputable_secondary",
     )
     submission = EventRubricSubmission.model_validate(
         _rubric(why="pass").model_dump(mode="json") | {"taxonomy": taxonomy.model_dump(mode="json")}
     )
-    mismatched_source = EventRubricSubmission.model_validate(
-        submission.model_dump(mode="json")
-        | {
-            "taxonomy": news_taxonomy(
-                event_family="product_service_change",
-                change_state="effective",
-                assertion_status="confirmed",
-                source_authority="unknown",
-            ).model_dump(mode="json")
-        }
-    )
-    with (
-        repositories_for_connection(conn).transaction(),
-        pytest.raises(ValueError, match="news_review_taxonomy_source_authority_code_mismatch"),
-    ):
-        desk.submit(
-            TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
-            mismatched_source,
-            principal=PRINCIPAL,
-            idempotency_key=str(uuid.uuid4()),
+    # #651 §5.3 retired `news_review_taxonomy_source_authority_code_mismatch`: a submission cannot state
+    # a source authority at all any more, because `NewsTaxonomyV1` has no field for one and
+    # `EventRubricSubmission` forbids extra keys. The reviewer's taxonomy is four axes and a codebook.
+    with pytest.raises(ValueError):
+        EventRubricSubmission.model_validate(
+            submission.model_dump(mode="json")
+            | {"taxonomy": taxonomy.model_dump(mode="json") | {"source_authority": "unknown"}}
         )
     self_draft = EventRubricSubmission.model_validate(
         submission.model_dump(mode="json")
@@ -3740,7 +3727,6 @@ def _miss_rubric(event_family: str) -> EventRubricSubmission:
                 event_family=event_family,
                 change_state="reported",
                 assertion_status="claimed",
-                source_authority="reputable_secondary",
             ).model_dump(mode="json")
         }
     )

@@ -26,10 +26,10 @@ def _observation(
     def arm(taxonomy: dict[str, Any]) -> dict[str, Any]:
         return {
             "editorial": {
-                "taxonomy": news_taxonomy(
-                    **taxonomy,
-                    source_authority="reputable_secondary",
-                ).model_dump(mode="json")
+                "source_authority": "reputable_secondary",
+                "taxonomy": news_taxonomy(**taxonomy).model_dump(mode="json"),
+                "taxonomy_status": "available",
+                "taxonomy_error_code": None,
             }
         }
 

@@ -25,7 +25,6 @@ _TAXONOMY = {
     "event_family": "other",
     "change_state": "unknown",
     "assertion_status": "unknown",
-    "source_authority": "unknown",
 }
 _TAXONOMY_DIMENSIONS = {
     "taxonomy_subject_codes": "pass",
@@ -125,7 +124,7 @@ def _episode(*, dimensions: dict[str, str], expected: dict[str, Any] | None = No
             "novelty": {"judgment": "new_fact", "duplicate_of": ""},
             "expected": expected or {},
             "expected_correction": "",
-            "taxonomy": {key: value for key, value in _TAXONOMY.items() if key != "source_authority"},
+            "taxonomy": dict(_TAXONOMY),
         },
         production_judgment=scored_judgment(_VERDICT),
         policy_metric={
@@ -446,3 +445,46 @@ def test_rubric_v6_submission_without_optional_gold_validates() -> None:
         taxonomy=_TAXONOMY,
     )
     assert submission.expected is None
+
+
+def test_a_technical_taxonomy_failure_against_valid_gold_is_a_counted_zero_not_a_schema_defect() -> None:
+    """#651 §5.3. Production may publish a judgment whose taxonomy Predictor failed alone. Offline that is
+    still a task failure: this case carries accepted Gold for all four axes and the candidate answered
+    none, so it scores zero and stays in the denominator. It gets its own gate because the cause and the
+    repair differ from `schema_invalid` -- no instruction produced it, and a candidate whose taxonomy call
+    keeps failing must be readable as that rather than as one emitting invalid JSON."""
+
+    episode = _episode(dimensions={"why_support": "pass"})
+    example = program_metric.build_compile_example(episode)
+    projection = dict(example.policy_metric)
+    projection["recorded_decision_result"] = recorded_decision("push")
+    unavailable = scored_judgment(_VERDICT, taxonomy_error_code="news_program_output_truncated")
+
+    outcome = accepted_review_metric(
+        dataclasses.replace(example, policy_metric=projection),
+        CandidatePrediction(
+            verdict=unavailable.verdict.model_dump(mode="json"),
+            editorial=unavailable.editorial.model_dump(mode="json"),
+        ),
+    )
+
+    assert outcome.score == 0.0
+    assert outcome.hard_gate == "taxonomy_unavailable"
+    assert "news_program_output_truncated" in outcome.feedback
+    # Counted, not excluded: the accepted Gold this case carries is still in the denominator.
+    assert outcome.gold_scored_n >= 1
+    assert outcome.component_scores["semantics_novelty"] == 0.0
+    assert outcome.component_denominators["semantics_novelty"] >= 1
+    assert ("taxonomy.event_family", "taxonomy_unavailable") in outcome.dimension_outcomes
+    assert ("taxonomy.subject_codes", "taxonomy_unavailable") in outcome.dimension_outcomes
+
+    # The same case with the label present is scored normally, so the gate above is about the failure and
+    # not about the corpus.
+    answered = accepted_review_metric(
+        dataclasses.replace(example, policy_metric=projection),
+        CandidatePrediction(
+            verdict=scored_judgment(_VERDICT).verdict.model_dump(mode="json"),
+            editorial=scored_judgment(_VERDICT).editorial.model_dump(mode="json"),
+        ),
+    )
+    assert answered.hard_gate == ""

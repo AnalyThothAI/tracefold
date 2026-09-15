@@ -168,7 +168,7 @@ def _episode(index: int, *, target: bool, **review_updates: Any) -> DevelopmentE
         "leader_item_id": f"{index:064d}",
         "provider_metadata": {},
     }
-    stable_taxonomy = news_taxonomy(**_PRODUCT_TAXONOMY, source_authority="reputable_secondary")
+    stable_taxonomy = news_taxonomy(**_PRODUCT_TAXONOMY)
     review: dict[str, Any] = {
         "should_push": "uncertain",
         "dimensions": {},
@@ -207,6 +207,7 @@ def _episode(index: int, *, target: bool, **review_updates: Any) -> DevelopmentE
                 "why_zh": "产品变化影响交付预期",
             },
             taxonomy=stable_taxonomy,
+            source_authority="reputable_secondary",
         ),
     )
 

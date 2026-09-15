@@ -576,6 +576,11 @@ def stable_hard_gate(
     judgment = episode.production_judgment
     if judgment is None:
         return "schema_invalid"
+    # The metric's `taxonomy_unavailable` gate (#651 §5.3), mirrored in the same position: a case whose
+    # accepted review carries taxonomy Gold and whose recorded Stable answer has no taxonomy scores zero
+    # there, so it is not a case Stable already answers correctly and cannot be a control.
+    if isinstance(review.get("taxonomy"), Mapping) and judgment.editorial.taxonomy is None:
+        return "taxonomy_unavailable"
     guard = _objective_guard(episode.policy_metric)
     reaches_reader = decision.final in _PUSH_ACTIONS
     if should_push == "must_push" and not reaches_reader:

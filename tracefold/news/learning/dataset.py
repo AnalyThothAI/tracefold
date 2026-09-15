@@ -297,7 +297,7 @@ class DevelopmentDatasetStore:
                         "case_id": episode.case_id,
                         "cluster_id": episode.cluster_id,
                         "gold": gold,
-                        "predicted": NewsTaxonomyV1.issue(gold, source_authority=authority),
+                        "predicted": NewsTaxonomyV1.issue(gold),
                     }
                 )
                 review = dict(review_by_case.get(episode.case_id) or {})

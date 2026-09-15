@@ -91,13 +91,40 @@ _TAXONOMY_RELEASE_AXES = (
 _TAXONOMY_INTERVAL_AXES = ("taxonomy_overall", *_TAXONOMY_RELEASE_AXES)
 
 
-def _output_taxonomy(output: Mapping[str, Any]) -> Mapping[str, Any] | None:
+def _output_editorial(output: Mapping[str, Any]) -> Mapping[str, Any] | None:
     editorial = output.get("editorial")
     if not isinstance(editorial, Mapping):
         scored = output.get("scored_judgment")
         editorial = scored.get("editorial") if isinstance(scored, Mapping) else None
-    taxonomy = editorial.get("taxonomy") if isinstance(editorial, Mapping) else None
+    return editorial if isinstance(editorial, Mapping) else None
+
+
+def _output_taxonomy(output: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    editorial = _output_editorial(output)
+    taxonomy = editorial.get("taxonomy") if editorial is not None else None
     return taxonomy if isinstance(taxonomy, Mapping) else None
+
+
+def _component_failures(observations: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, int]]:
+    """Per arm, how many observations lost one Predictor while the judgment still answered (#651 §5.3).
+
+    A taxonomy failure no longer errors the whole judgment, so it would otherwise be invisible in this
+    report: the arm's `error_code` is empty, the card is real, and `_taxonomy_release_evidence` simply
+    drops the case from both arms to keep the comparison paired. That silent drop is exactly the thing an
+    operator has to be able to see -- a candidate whose taxonomy call fails on a quarter of the corpus is
+    not "equal on the axes it answered", it is a candidate with a quarter less evidence.
+    """
+
+    counts = {arm: {"taxonomy": 0} for arm in ("stable", "candidate")}
+    for item in observations:
+        for arm in ("stable", "candidate"):
+            output = item.get(arm)
+            if not isinstance(output, Mapping) or output.get("not_assigned"):
+                continue
+            editorial = _output_editorial(output)
+            if editorial is not None and str(editorial.get("taxonomy_status") or "") == "unavailable":
+                counts[arm]["taxonomy"] += 1
+    return counts
 
 
 def _review_taxonomy(review: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1565,6 +1592,7 @@ class CandidateEvaluator:
             "candidate_runtime_observation_n": candidate_observed_n,
             "candidate_degraded_or_error_n": candidate_bad_n,
             "candidate_degraded_or_error_rate": candidate_bad_rate,
+            "component_failures": _component_failures(observations),
             "critical_regressions": critical_regressions,
             "stability": stability,
             "blockers": blockers,
