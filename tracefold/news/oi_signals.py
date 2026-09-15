@@ -52,11 +52,19 @@ RAW_REASON_TEMPLATE_UNMATCHED: Final = "oi_template_unmatched"
 
 # Anchored on purpose: this must recognise the telemetry template and nothing that merely mentions
 # open interest, such as "HIP-3 has lost $820M in open interest over the past 5 days".
+#
+# Since 2026-09-14 02:18 UTC the provider appends `, N times in 24h` to every frame (`MTL OI Rise
+# 4.28%, …, Whale/OI Ratio 30.02%, 1 times in 24h`). The anchored template refused all of them as
+# `oi_template_unmatched`, and the OI lane produced no signal, track or card for a day and a half
+# while the four numbers it needs were sitting in the title unchanged. The suffix is accepted and
+# not stored: it is the provider's own 24 h recurrence count for the symbol, which this lane already
+# derives from its own ledger and does not need a second source for.
 _TELEMETRY = re.compile(
     r"^\s*(?P<symbol>\S{1,16})\s+OI\s+(?P<direction>Rise|Fall|Drop)\s+(?P<oi>-?\d+(?:\.\d+)?)\s*%,\s*"
     r"OI\s+Value\s+(?P<value>\d+(?:\.\d+)?)(?P<unit>[KMB]?),\s*"
     r"Whale\s+Long\s+Profit\s+(?P<profit>-?\d+(?:\.\d+)?)\s*%,\s*"
-    r"Whale/OI\s+Ratio\s+(?P<ratio>-?\d+(?:\.\d+)?)\s*%\s*$",
+    r"Whale/OI\s+Ratio\s+(?P<ratio>-?\d+(?:\.\d+)?)\s*%"
+    r"(?:,\s*\d+\s+times\s+in\s+24h)?\s*$",
     re.IGNORECASE,
 )
 _UNIT: Final[dict[str, int]] = {"": 1, "K": 10**3, "M": 10**6, "B": 10**9}

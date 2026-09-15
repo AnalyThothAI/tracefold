@@ -32,6 +32,8 @@ def _parse(title: str, *, venue: str = "binance", strategy_id: str = "2083"):
         ("BTC Large Long Liquidation 1.25M at $123.45", Decimal("1250000")),
         ("ETH Large Short Liquidation 2B at $4.50", Decimal("2000000000")),
         ("SOL Large Long Liquidation 99 at $1", Decimal("99")),
+        # Verbatim production title from 2026-09-15 13:41 UTC: the provider's recurrence suffix.
+        ("BTC Large Long Liquidation 759.27K at $76089.00, 24 times in 24h", Decimal("759270")),
     ],
 )
 def test_exact_template_and_decimal_units(text: str, notional: Decimal) -> None:
@@ -106,6 +108,8 @@ def test_source_contract_records_every_semantic_gap_and_stays_incomplete() -> No
         "SOL Large Short Liquidation 10K at mark $150",
         "SOL Large Short Liquidation -10K at $150",
         "XYZ- Large Short Liquidation 10K at $150",
+        "SOL Large Short Liquidation 10K at $150, many times in 24h",
+        "SOL Large Short Liquidation 10K at $150, 2 times in 7d",
     ],
 )
 def test_ambiguous_or_malformed_prose_fails_closed(text: str) -> None:
