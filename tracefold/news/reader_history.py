@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Final, Literal
 
 from .artifact_identity import canonical_sha
-from .models import base_symbol
+from .models import MarketAsset, base_symbol
 from .similarity import trigram_similarity
 
 RECENT_HISTORY_WINDOW_MS: Final = 4 * 3_600_000
@@ -115,7 +115,10 @@ class ReaderHistoryRow:
     comparison_fingerprint: str
     dedupe_family: str
     grounded_assets: tuple[str, ...]
-    assets: tuple[str, ...]
+    # The judgment's own assets, typed (#651 §6.2). `grounded_assets` and `canonical_assets` stay bare
+    # symbols: one is the provider's tag and the other is the Event-asset ledger, and neither carries a
+    # market claim, so neither may pretend to one.
+    assets: tuple[MarketAsset, ...]
     canonical_assets: tuple[str, ...]
     magnitude: int
     direction: str
@@ -133,7 +136,7 @@ class ReaderHistoryRow:
             "comparison_fingerprint": self.comparison_fingerprint,
             "dedupe_family": self.dedupe_family,
             "grounded_assets": list(self.grounded_assets),
-            "assets": list(self.assets),
+            "assets": [{"symbol": asset.symbol, "market_type": asset.market_type} for asset in self.assets],
             "canonical_assets": list(self.canonical_assets),
             "magnitude": self.magnitude,
             "direction": self.direction,
@@ -311,7 +314,7 @@ def _history_row(row: Mapping[str, Any]) -> ReaderHistoryRow:
     if missing:
         raise ValueError(f"news_reader_history_fields_missing:{','.join(sorted(missing))}")
     assets = tuple(
-        str(value.get("symbol") if isinstance(value, Mapping) else value)
+        MarketAsset.of(value)
         for value in row["assets"] or ()
         if value and (not isinstance(value, Mapping) or value.get("symbol"))
     )
