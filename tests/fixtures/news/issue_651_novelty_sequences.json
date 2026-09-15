@@ -1,0 +1,110 @@
+{
+  "issue": "https://github.com/AnalyThothAI/tracefold/issues/651",
+  "purpose": "Ordered novelty sequences over the frozen #651 production snapshots. Each step names the raw case it replays, the clock its card settled on, the recorded production judgment, and the gold novelty target: expected_duplicate_of is the event_id of the told entry this card repeats (null when it repeats nothing) and told_index_of_target is that entry's visible index i in this step's own told ledger. A controlled block is a judgment this step did not produce, held against the same frozen evidence to isolate one policy condition.",
+  "raw_cases": "issue_651_raw_cases.json",
+  "schema": "tracefold.news.novelty_sequences.v1",
+  "sequences": [
+    {
+      "id": "visa_onchain_credit",
+      "steps": [
+        {
+          "case": "visa_first",
+          "event_id": "ec2e5a29405b1d8fb671a85472a39036a2e4f1f43240b824d23a1246401bc105",
+          "expected_duplicate_of": null,
+          "recorded": {
+            "direction": "bullish",
+            "final_decision": "push",
+            "novelty": "progression",
+            "override_rule": "trade_relevance_realtime",
+            "restates": -1,
+            "throttled_by": null
+          },
+          "settled_at_ms": 1788877831278,
+          "storyline_key": "asset:V",
+          "told_index_of_target": null
+        },
+        {
+          "case": "visa_restated",
+          "controlled": {
+            "direction": "bearish",
+            "expected_final_decision": "drop",
+            "expected_override_rule": "restatement",
+            "novelty": "restatement",
+            "restates": 6,
+            "why": "The gold label against the direction the first card did not carry. Under policy v13 the flip exempted it and the card pushed; under #651 the label decides."
+          },
+          "event_id": "727ffc0bafe3e94ee2ceccc772a504f6ee62bd1cb6dab0a8cbb19361966478af",
+          "expected_duplicate_of": "ec2e5a29405b1d8fb671a85472a39036a2e4f1f43240b824d23a1246401bc105",
+          "recorded": {
+            "direction": "bullish",
+            "final_decision": "push",
+            "novelty": "progression",
+            "override_rule": "trade_relevance_realtime",
+            "restates": -1,
+            "throttled_by": null
+          },
+          "settled_at_ms": 1788883972830,
+          "storyline_key": "asset:V",
+          "told_index_of_target": 6
+        }
+      ],
+      "storyline_key": "asset:V",
+      "summary": "One Visa onchain-credit release carried by two outlets 102 minutes apart. The reader received both cards; the second should have been a restatement of the first."
+    },
+    {
+      "id": "cp_listing_three_venues",
+      "steps": [
+        {
+          "case": "cp_upbit_first",
+          "event_id": "c28bbbd0957ba033b7298440cf853b148f2bc336785a45d557cc43f8316ce89e",
+          "expected_duplicate_of": null,
+          "recorded": {
+            "direction": "neutral",
+            "final_decision": "push",
+            "novelty": "new_fact",
+            "override_rule": "listing_deterministic",
+            "restates": -1,
+            "throttled_by": null
+          },
+          "settled_at_ms": 1788837731840,
+          "storyline_key": "asset:CP",
+          "told_index_of_target": null
+        },
+        {
+          "case": "cp_upbit_cross_channel",
+          "event_id": "1e469a0456e1645cde468cbbf44d28a0ce131f523b5dee1dd2f874acddff4918",
+          "expected_duplicate_of": "c28bbbd0957ba033b7298440cf853b148f2bc336785a45d557cc43f8316ce89e",
+          "recorded": {
+            "direction": "bullish",
+            "final_decision": "drop",
+            "novelty": "restatement",
+            "override_rule": "restatement",
+            "restates": 6,
+            "throttled_by": null
+          },
+          "settled_at_ms": null,
+          "storyline_key": "asset:CP",
+          "told_index_of_target": 6
+        },
+        {
+          "case": "cp_bithumb_new_venue",
+          "event_id": "d6ce507db803bfccd99005588a86c0dd43e524039375a77e7f07a8141c6af179",
+          "expected_duplicate_of": null,
+          "recorded": {
+            "direction": "bullish",
+            "final_decision": "push",
+            "novelty": "progression",
+            "override_rule": "listing_deterministic",
+            "restates": -1,
+            "throttled_by": null
+          },
+          "settled_at_ms": 1788838314204,
+          "storyline_key": "asset:CP",
+          "told_index_of_target": null
+        }
+      ],
+      "storyline_key": "asset:CP",
+      "summary": "One Upbit listing notice, the same notice arriving on the ordinary news channel 71 seconds later, and a genuinely different venue 9 minutes after that."
+    }
+  ]
+}
