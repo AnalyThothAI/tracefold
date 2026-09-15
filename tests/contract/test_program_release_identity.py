@@ -31,14 +31,16 @@ NEWS_EXECUTION_ENVELOPE_SHA256 = "19d4f67b64bdcc5ebbf4c42f8eff3d51f24c8dd755b1e9
 # #567 moves only the taxonomy instruction: the twelve rules the #534 and #548 reviewers adjudicated by are
 # now codebook constants, so the drafters, the reviewers and the metric's feedback read one text.
 # #651 moves the EventSemantics instruction: `market_type` is a required vocabulary value and the Gate
-# now shows the model the catalogue's uncollapsed candidates. The pin is separate from
-# `NEWS_STABLE_PROGRAM_SHA256`, which also moved because the image is now the native state document.
-NEWS_PREDICTOR_INSTRUCTION_SHA256 = "ffe44715c77b589b052302dd45ee8a13c5e4009364458818df9ffc9dd58168ed"
+# now shows the model the catalogue's uncollapsed candidates. #651 §6.3 moves it again, and this is the
+# half of that change a hash can hold: the novelty contract lost the absolute "a direction flip is never a
+# restatement" sentence, so the seed and `grounded_restatement` now say the same thing. The pin is separate
+# from `NEWS_STABLE_PROGRAM_SHA256`, which also moved because the image is now the native state document.
+NEWS_PREDICTOR_INSTRUCTION_SHA256 = "bd3da7883c87c64bd058fba82187aef2f5f17d4b960d981ea1baf116cfa15eed"
 
 # #651 re-pins this over the native DSPy state document rather than three instruction strings. The
 # instruction bytes below did not move; the image's *shape* did, and `program_sha256` now addresses
 # the whole `dump_state()` document (minus its `lm` routes) plus the schema and the pinned DSPy version.
-NEWS_STABLE_PROGRAM_SHA256 = "8f344c77c49f8563f83be4f6715152b7332e84ca8adc240c5365090bbb9ba751"
+NEWS_STABLE_PROGRAM_SHA256 = "dd3038a4818e254c01374a8cb38eb65a166917573f7dcdc125d2afd226c3a8ca"
 
 # #437 changes Gold projection. It remains release evidence after #453 moves taxonomy Gold into the one
 # development Objective and Metric: a behavior edit must visibly re-pin this name. v7 (#501) carries the
