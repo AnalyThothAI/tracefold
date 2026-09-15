@@ -300,6 +300,10 @@ def _target_release_evidence(
     for item in observations:
         case_ref = dict(item.get("case_ref") or {})
         review = _accepted_review_view(reviews.get(str(case_ref.get("review_id") or ""), {}))
+        # Sealed with the corpus by `DatasetCaseRef`, so this is the freeze's answer and not a guess. The
+        # fallback covers only the hand-built canary observation shape, which no stage that reaches this
+        # function uses; a corpus that genuinely sealed an empty tuple is `not_applicable` everywhere, and
+        # the rulers say so case by case rather than this line deciding it.
         applicable = tuple(case_ref.get("applicable_targets") or LEARNING_TARGETS)
         stratum = str(case_ref.get("stratum") or "")
         explanation = accepted_explanation(review)
