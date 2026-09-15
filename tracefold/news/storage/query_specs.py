@@ -59,10 +59,12 @@ from .operations import (
 from .wallet_events import (
     NET_BUY_WINDOW_SQL,
     WALLET_DUE_OUTCOMES_SQL,
+    WALLET_DUE_REFERENCES_SQL,
     WALLET_EVENT_FILLS_SQL,
     WALLET_EVENT_SQL,
     WALLET_EVENT_TOTALS_SQL,
     WALLET_EVENTS_SQL,
+    WALLET_NOTIFICATION_FUNNEL_SQL,
     WALLET_OUTCOMES_SQL,
     WALLET_PENDING_RECEIPTS_SQL,
 )
@@ -371,9 +373,10 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
-        # The wallet console page's six statements, including #614's optional wallet/token timeline.
-        # They are registered because they are public reads over a table the tape appends to every two
-        # seconds -- the one place in this flow where growth reaches a reader rather than a log line.
+        # The wallet console page's statements, including #614's optional wallet/token timeline and
+        # #649's status block. They are registered because they are public reads over a table the tape
+        # appends to every two seconds -- the one place in this flow where growth reaches a reader
+        # rather than a log line -- together with the sampler's two bounded due-work reads.
         ReadQuerySpec(
             name="news_wallet_event",
             sql=WALLET_EVENT_SQL,
@@ -431,6 +434,20 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             name="news_wallet_due_outcomes",
             sql=WALLET_DUE_OUTCOMES_SQL,
             params=(900000, "15m", 900000, int(now_ms), 2),
+            max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_wallet_due_references",
+            sql=WALLET_DUE_REFERENCES_SQL,
+            params=(int(now_ms) - 300000, int(now_ms), 2),
+            max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_wallet_notification_funnel",
+            sql=WALLET_NOTIFICATION_FUNNEL_SQL,
+            params=(int(now_ms) - 86400000, int(now_ms)),
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),

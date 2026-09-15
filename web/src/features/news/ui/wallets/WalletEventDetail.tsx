@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { useNewsWalletEventWithToken, type NewsWalletSnapshot } from "../../api/newsQueries";
-import { displayTime, optionalTime } from "../../model/newsLabels";
+import { displayTime, optionalDuration, optionalTime } from "../../model/newsLabels";
 import { walletDecimal, walletNotificationLabel, walletReason } from "../../model/walletFacts";
 
 import { WalletFillsTable } from "./WalletSupportingTables";
@@ -93,9 +93,9 @@ function EpisodeContent({ token, episodeId }: { token: string; episodeId: string
         </p>
         <h3>事件后价格观察</h3>
         <p>
-          {event.reference_price === null
+          {event.reference_price === null || event.reference_at_ms === null
             ? "未取得触发时的可靠价格基准，价格变化保持未知。"
-            : `触发基准 $${walletDecimal(event.reference_price)} · ${optionalTime(event.reference_at_ms)} · ${event.reference_source}`}
+            : `首次可得参考价 $${walletDecimal(event.reference_price)} · ${optionalTime(event.reference_at_ms)} · 距触发 ${optionalDuration(event.reference_at_ms - event.triggered_at_ms)} · ${event.reference_source}`}
         </p>
         <div className="news-wallets-outcomes">
           {(["15m", "1h", "4h"] as const).map((horizon) => {
@@ -117,6 +117,7 @@ function EpisodeContent({ token, episodeId }: { token: string; episodeId: string
                   <>
                     <p>目标 {displayTime(receipt.target_at_ms)}</p>
                     <p>实际 {displayTime(receipt.at_ms)}</p>
+                    <p>基准 {optionalTime(receipt.reference_at_ms)}</p>
                     <p>
                       {receipt.price === null
                         ? "价格未知"

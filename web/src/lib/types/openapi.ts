@@ -181,7 +181,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get News Wallets */
+        /**
+         * Get News Wallets
+         * @description Whether the current list, the current collection and the send chain can produce an alert at all.
+         *
+         *     A reader who sees no events needs to tell "nothing qualified" from "nothing could have qualified",
+         *     and every number that answers that is counted here rather than in the browser: the quality pool
+         *     against the two quorums, the monitoring support behind it, how far behind the chain cutoff is, and
+         *     what happened to the episodes that did exist.
+         */
         get: operations["get_news_wallets_api_news_wallets_get"];
         put?: never;
         post?: never;
@@ -2708,6 +2716,29 @@ export interface components {
             /** Wallet */
             wallet: string;
         };
+        /**
+         * NewsWalletFunnelData
+         * @description Episodes to intents to sends over one window, and the reason most of the rest stopped at.
+         *
+         *     Counts describe the stated window and are never accumulated totals. `unsent_reason` is the server's
+         *     own reason string for the episodes that did not reach a channel, not a translated summary.
+         */
+        NewsWalletFunnelData: {
+            /** Events */
+            events: number;
+            /** Intents */
+            intents: number;
+            /** Sent */
+            sent: number;
+            /** Unsent Reason */
+            unsent_reason: string | null;
+            /** Unsent Reason Count */
+            unsent_reason_count: number;
+            /** Window From Ms */
+            window_from_ms: number;
+            /** Window To Ms */
+            window_to_ms: number;
+        };
         /** NewsWalletOutcomeData */
         NewsWalletOutcomeData: {
             /** At Ms */
@@ -2737,20 +2768,46 @@ export interface components {
         };
         /**
          * NewsWalletRosterData
-         * @description The roster as one version: when it was taken, and who was on it.
+         * @description The roster as one version: when it was taken, who was on it, and how the last refresh went.
+         *
+         *     `quality_count` is the pool the 5m/30m thresholds are counted against; `whale_count` is observation
+         *     background and never stands in for it. `supported_quality_count` is the subset whose monitoring
+         *     already covers a whole fast window at the collection cutoff -- a wallet the list gained minutes ago
+         *     cannot complete a quorum yet, and a page that counted it would promise a trigger that cannot fire.
          */
         NewsWalletRosterData: {
+            /** Last Attempt At Ms */
+            last_attempt_at_ms?: number | null;
+            /** Last Error */
+            last_error?: string | null;
+            /** Last Success At Ms */
+            last_success_at_ms?: number | null;
             /** Members */
             members: components["schemas"]["NewsWalletRosterMemberData"][];
             /** Provider */
             provider?: string | null;
             /**
-             * Roster Version
+             * Quality Count
              * @default 0
              */
-            roster_version: number;
+            quality_count: number;
+            /**
+             * Supported Quality Count
+             * @default 0
+             */
+            supported_quality_count: number;
             /** Taken At Ms */
             taken_at_ms?: number | null;
+            /**
+             * Version
+             * @default 0
+             */
+            version: number;
+            /**
+             * Whale Count
+             * @default 0
+             */
+            whale_count: number;
         };
         /**
          * NewsWalletRosterMemberData
@@ -2773,6 +2830,8 @@ export interface components {
             followers: number;
             /** Handle */
             handle: string;
+            /** Monitoring From Ms */
+            monitoring_from_ms?: number | null;
             /**
              * Open Cost
              * @default 0
@@ -2866,10 +2925,28 @@ export interface components {
             /** Updated At Ms */
             updated_at_ms?: number | null;
         };
+        /**
+         * NewsWalletThresholdsData
+         * @description The two window quorums, and whether the current pool can reach either of them.
+         */
+        NewsWalletThresholdsData: {
+            /** Fast N */
+            fast_n: number;
+            /** Slow N */
+            slow_n: number;
+            /** Sufficient */
+            sufficient: boolean;
+        };
         /** NewsWalletsData */
         NewsWalletsData: {
+            /** Collection Lagging */
+            collection_lagging: boolean;
+            funnel: components["schemas"]["NewsWalletFunnelData"];
+            /** Notifications Enabled */
+            notifications_enabled: boolean;
             roster: components["schemas"]["NewsWalletRosterData"];
             tape: components["schemas"]["NewsWalletTapeStateData"] | null;
+            thresholds: components["schemas"]["NewsWalletThresholdsData"];
         };
         /** ReadinessData */
         ReadinessData: {

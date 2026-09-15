@@ -124,6 +124,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # here would stop matching the day `oi_signals` bumps it — silently, as "no case".
         "tracefold.news.oi_signals",
         "tracefold.news.review.desk",
+        # #649 §7.3: the two fixed net-buy window lengths. The wallets status block answers whether the
+        # roster can support a 5m or a 30m quorum at all, which is the same span `rules.py` measures a
+        # member against; two literals here would stop matching the day that module changed them.
+        "tracefold.news.chain_tape.rules",
         "tracefold.trading.intent",
     ),
     "app.trading_cli": (

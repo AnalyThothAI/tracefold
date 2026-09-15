@@ -475,6 +475,128 @@ def test_muted_episode_prices_are_sampled_once_and_missing_baseline_stays_unknow
     assert receipt["target_at_ms"] == receipt["at_ms"] == NOW + 900000
 
 
+class RecordedPrices:
+    """A price provider with a scripted answer per token, counting what it was actually asked."""
+
+    def __init__(self, answers: dict[str, Any] | None = None, default: Any = Decimal("2")) -> None:
+        self.answers = answers or {}
+        self.default = default
+        self.asked: list[str] = []
+
+    async def token_price(self, address: str) -> Any:
+        self.asked.append(address)
+        answer = self.answers.get(address, self.default)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    async def aclose(self) -> None:
+        pass
+
+
+def sampler(conn: Any, prices: Any, *, at_ms: int | None = None, clock: Callable[[], int] | None = None) -> Any:
+    from tracefold.news.chain_tape.prices import WalletPriceSampler
+
+    return WalletPriceSampler(db=Db(conn), prices=prices, clock=clock or (lambda: int(at_ms or 0)))
+
+
+def test_reference_price_is_written_once_by_the_sampler_after_a_failure_and_never_rewritten(conn: Any) -> None:
+    """t0 is a sampler stage, not a detector one, and it retries until the first price is really there."""
+
+    seed(conn, [fill(i, wallet=i) for i in range(1, 4)])
+    run(conn)
+    episode = events(conn)[0]
+    assert episode["reference_price"] is None, "the detector must not write a baseline (#649 §3 row 7)"
+
+    broken = RecordedPrices(default=OSError("provider unavailable"))
+    assert asyncio.run(sampler(conn, broken, at_ms=NOW + 1000).advance()) == 0
+    assert events(conn)[0]["reference_price"] is None and broken.asked == [TOKEN]
+
+    recovered = RecordedPrices({TOKEN: Decimal("3.5")})
+    assert asyncio.run(sampler(conn, recovered, at_ms=NOW + 30_000).advance()) == 1
+    stored = events(conn)[0]
+    assert Decimal(stored["reference_price"]) == Decimal("3.5")
+    assert stored["reference_at_ms"] == NOW + 30_000
+    assert stored["reference_source"] == "dexscreener_robinhood_chain_base_token"
+    # The delay from the trigger is the two stored stamps, not a second recorded number.
+    assert stored["reference_at_ms"] - stored["event_at_ms"] == 30_000
+
+    # A later turn, and a restarted process, both leave the first baseline exactly as it is.
+    moved = RecordedPrices({TOKEN: Decimal("99")})
+    assert asyncio.run(sampler(conn, moved, at_ms=NOW + 60_000).advance()) == 0
+    assert moved.asked == [], "an episode that already has a baseline is not due for one"
+    assert Decimal(events(conn)[0]["reference_price"]) == Decimal("3.5")
+
+
+def test_episode_older_than_the_sampling_budget_is_never_given_a_backfilled_baseline(conn: Any) -> None:
+    from tracefold.news.wallet_contracts import REFERENCE_MAX_DELAY_MS
+
+    seed(conn, [fill(i, wallet=i) for i in range(1, 4)])
+    run(conn)
+    prices = RecordedPrices({TOKEN: Decimal("7")})
+    assert asyncio.run(sampler(conn, prices, at_ms=NOW + REFERENCE_MAX_DELAY_MS + 1).advance()) == 0
+    assert prices.asked == []
+    assert events(conn)[0]["reference_price"] is None
+    # And the horizons it goes on to record say so rather than reporting a change of zero.
+    late = RecordedPrices({TOKEN: Decimal("7")})
+    assert asyncio.run(sampler(conn, late, at_ms=NOW + 900_000).advance()) == 1
+    receipt = repositories_for_connection(conn).news.wallet_outcomes(events(conn)[0]["item_id"])[0]
+    assert receipt["status"] == "missing_reference" and receipt["change_percent"] is None
+
+
+def test_a_call_that_overruns_the_budget_leaves_no_baseline_and_the_next_turn_is_too_late(conn: Any) -> None:
+    from tracefold.news.wallet_contracts import REFERENCE_MAX_DELAY_MS
+
+    seed(conn, [fill(i, wallet=i) for i in range(1, 4)])
+    run(conn)
+    clock = [NOW + 1000]
+
+    class SlowPrices(RecordedPrices):
+        async def token_price(self, address: str) -> Any:
+            clock[0] += REFERENCE_MAX_DELAY_MS
+            return await super().token_price(address)
+
+    slow = SlowPrices({TOKEN: Decimal("4")})
+    assert asyncio.run(sampler(conn, slow, clock=lambda: clock[0]).advance()) == 0
+    assert slow.asked == [TOKEN] and events(conn)[0]["reference_price"] is None
+
+
+def test_unpriced_tokens_do_not_starve_the_other_fresh_episodes_of_a_baseline(conn: Any) -> None:
+    """Two unpriceable tokens fill the per-turn reference budget; rotation reaches the rest anyway."""
+
+    from tracefold.news.wallet_contracts import REFERENCE_MAX_DELAY_MS
+
+    tokens = ["0x" + f"{i:040x}" for i in range(1, 5)]
+    seed(conn, [])
+    for index, token in enumerate(tokens):
+        add_facts(conn, [replace(fill(index * 3 + i, wallet=i), token=token) for i in range(1, 4)], stamp=NOW)
+        run(conn, enabled=False)
+    assert len(events(conn)) == 4
+    repos = repositories_for_connection(conn)
+    queued = repos.news.chain_tape_due_references(now_ms=NOW + 1000, max_delay_ms=REFERENCE_MAX_DELAY_MS, limit=2)
+    dead = {row["token"] for row in queued}
+    assert len(dead) == 2, "the first turn's whole budget goes to the two tokens that cannot be priced"
+    prices = RecordedPrices({token: None for token in dead})
+    live = sampler(conn, prices, at_ms=NOW + 1000)
+    written = [asyncio.run(live.advance()) for _ in range(3)]
+    assert written == [0, 2, 0], f"two references a turn, rotating past the dead tokens: {written}"
+    priced = {row["token"]: row["reference_price"] is None for row in events(conn)}
+    assert priced == {token: token in dead for token in tokens}
+    assert all(prices.asked.count(token) >= 2 for token in dead), "the dead tokens were retried, not abandoned"
+
+
+def test_a_baseline_taken_before_the_target_makes_the_horizon_comparable(conn: Any) -> None:
+    seed(conn, [fill(i, wallet=i) for i in range(1, 4)])
+    run(conn)
+    assert asyncio.run(sampler(conn, RecordedPrices({TOKEN: Decimal("2")}), at_ms=NOW + 1000).advance()) == 1
+    assert asyncio.run(sampler(conn, RecordedPrices({TOKEN: Decimal("3")}), at_ms=NOW + 900_000).advance()) == 1
+    receipt = repositories_for_connection(conn).news.wallet_outcomes(events(conn)[0]["item_id"])[0]
+    assert receipt["status"] == "comparable"
+    assert Decimal(receipt["reference_price"]) == Decimal("2")
+    assert receipt["reference_at_ms"] == NOW + 1000 < receipt["target_at_ms"]
+    assert Decimal(receipt["change_percent"]) == Decimal("50")
+
+
 def test_quote_that_finishes_late_is_not_backdated_or_used_for_target_return(conn: Any) -> None:
     from tracefold.news.chain_tape.prices import WalletPriceSampler
     from tracefold.news.wallet_contracts import OUTCOME_MAX_DELAY_MS

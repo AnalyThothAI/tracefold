@@ -8,7 +8,9 @@ from typing import Annotated, Any, Final, Literal
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
 
-from ..dependencies import _authenticated_runtime, _validate_query_params
+from tracefold.news.chain_tape.rules import FAST_WINDOW_MS, SLOW_WINDOW_MS
+
+from ..dependencies import _authenticated_runtime, _now_ms, _validate_query_params
 from ..exceptions import ApiBadRequest
 from ..read_cursor import decode_read_cursor, encode_read_cursor
 from ..responses import _etagged, _json
@@ -21,16 +23,62 @@ _EventsEnvelope = api_schemas.ApiEnvelope[wallet_schemas.NewsWalletEventsData]
 _DetailEnvelope = api_schemas.ApiEnvelope[wallet_schemas.NewsWalletEventDetailData]
 WALLET_HISTORY_RANGES: Final = {"24h": 86_400_000, "72h": 259_200_000, "7d": 604_800_000}
 WALLET_EVENTS_PAGE_MAX: Final = 200
+WALLET_FUNNEL_WINDOW_MS: Final = 86_400_000
+# The funnel window ends on a whole minute. The page polls this read every ten seconds, and a window
+# that moved every millisecond would make the response body different every time and the ETag useless
+# on a read whose answer changes hourly. A reader asking why nothing alerted all morning is not served
+# by the last sixty seconds being in the count.
+WALLET_FUNNEL_BUCKET_MS: Final = 60_000
+# The tape polls every two seconds and stamps `scanned_at_ms` on every successful turn, so a cutoff a
+# whole minute behind the clock means turns are failing or overrunning, not that the chain was quiet.
+# The browser used to make this judgement with a bare `60_000`; it is one server-owned number (#649 §7.3).
+COLLECTION_LAG_MS: Final = 60_000
+# A roster refresh still runs inside the collection turn, so its failure reaches this projection as the
+# turn's error. PR-1 (#649 §5.1) moves the refresh to its own task with its own attempt record; this
+# reads whichever of the two the deployment is running without inventing a state for the other.
+ROSTER_ERROR_PREFIXES: Final = ("robinhoodtrenches", "roster_")
 
 
 @router.get("/news/wallets", response_model=_WalletsEnvelope)
 def get_news_wallets(request: Request) -> Response:
+    """Whether the current list, the current collection and the send chain can produce an alert at all.
+
+    A reader who sees no events needs to tell "nothing qualified" from "nothing could have qualified",
+    and every number that answers that is counted here rather than in the browser: the quality pool
+    against the two quorums, the monitoring support behind it, how far behind the chain cutoff is, and
+    what happened to the episodes that did exist.
+    """
+
     _validate_query_params(request, supported={"token"})
     runtime = _authenticated_runtime(request)
+    now = _now_ms()
+    chain_tape = runtime.settings.news.chain_tape
+    until = now - now % WALLET_FUNNEL_BUCKET_MS
+    since = max(0, until - WALLET_FUNNEL_WINDOW_MS)
     with runtime.repositories() as repos:
         members = repos.news.chain_tape_roster_rows()
         tape = repos.news.chain_tape_state()
-    return _etagged({"roster": _roster(members), "tape": tape}, request, envelope=_WalletsEnvelope)
+        funnel = repos.news.wallet_notification_funnel(from_ms=since, to_ms=until)
+    cutoff = None if tape is None else tape["scanned_at_ms"]
+    coverage_from = None if tape is None else tape["coverage_from_ms"]
+    rules = chain_tape.rules
+    return _etagged(
+        {
+            "roster": _roster(members, tape, cutoff=cutoff, coverage_from_ms=coverage_from),
+            "tape": tape,
+            "thresholds": {
+                "fast_n": rules.net_buy_fast_n,
+                "slow_n": rules.net_buy_slow_n,
+                "sufficient": _supported(members, cutoff, coverage_from, FAST_WINDOW_MS) >= rules.net_buy_fast_n
+                or _supported(members, cutoff, coverage_from, SLOW_WINDOW_MS) >= rules.net_buy_slow_n,
+            },
+            "funnel": {**funnel, "window_from_ms": since, "window_to_ms": until},
+            "collection_lagging": cutoff is None or now - int(cutoff) > COLLECTION_LAG_MS,
+            "notifications_enabled": bool(chain_tape.notifications_enabled),
+        },
+        request,
+        envelope=_WalletsEnvelope,
+    )
 
 
 @router.get("/news/wallets/events", response_model=_EventsEnvelope)
@@ -157,15 +205,60 @@ def _event(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _roster(members: list[dict[str, Any]]) -> dict[str, Any]:
-    if not members:
-        return {"roster_version": 0, "taken_at_ms": None, "provider": None, "members": []}
+def _roster(
+    members: list[dict[str, Any]],
+    tape: dict[str, Any] | None,
+    *,
+    cutoff: int | None,
+    coverage_from_ms: int | None,
+) -> dict[str, Any]:
+    """The published version is the last refresh that actually succeeded; a failed one publishes nothing.
+
+    So `last_success_at_ms` is that version's own `taken_at_ms`, and the failure half is reported only
+    when there is a real failure to report -- an absent error is not a refresh that has never been tried.
+    """
+
+    error = _roster_error(tape)
+    published = {
+        "version": 0 if not members else int(members[0]["roster_version"]),
+        "taken_at_ms": None if not members else int(members[0]["taken_at_ms"]),
+        "provider": None if not members else str(members[0]["provider"]),
+    }
     return {
-        "roster_version": int(members[0]["roster_version"]),
-        "taken_at_ms": int(members[0]["taken_at_ms"]),
-        "provider": str(members[0]["provider"]),
+        **published,
+        "quality_count": sum(member["rank_quality"] is not None for member in members),
+        "whale_count": sum(member["rank_whale"] is not None for member in members),
+        "supported_quality_count": _supported(members, cutoff, coverage_from_ms, FAST_WINDOW_MS),
+        "last_attempt_at_ms": None if error is None or tape is None else tape["updated_at_ms"],
+        "last_success_at_ms": published["taken_at_ms"],
+        "last_error": error,
         "members": [
             {key: value for key, value in member.items() if key not in {"roster_version", "taken_at_ms"}}
             for member in members
         ],
     }
+
+
+def _roster_error(tape: dict[str, Any] | None) -> str | None:
+    error = None if tape is None else tape["last_error"]
+    return str(error) if error and str(error).startswith(ROSTER_ERROR_PREFIXES) else None
+
+
+def _supported(members: list[dict[str, Any]], cutoff: int | None, coverage_from_ms: int | None, window_ms: int) -> int:
+    """Quality addresses whose monitoring already covers a whole `window_ms` at the collection cutoff.
+
+    The same test `rules.py` applies to a member inside a window, asked of the roster as a whole: both
+    the address's own `monitoring_from_ms` and the tape's coverage must start before the window does.
+    """
+
+    if cutoff is None or coverage_from_ms is None:
+        return 0
+    start = int(cutoff) - window_ms
+    if int(coverage_from_ms) > start:
+        return 0
+    return sum(
+        member["rank_quality"] is not None
+        and member["monitoring_from_ms"] is not None
+        and int(member["monitoring_from_ms"]) <= start
+        for member in members
+    )

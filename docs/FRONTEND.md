@@ -197,13 +197,29 @@ the route components into the eager shell chunk.
   notification result. Current insufficiency, negative other-address facts and gaps are
   explicit. The UI never sums pages or recomputes business money.
 
+  One status block leads the page (#649 §7.3), because an empty table is four different
+  answers and the reader cannot tell them apart from the rows. It reads `/api/news/wallets`
+  and renders the server's own numbers: the collection cutoff, the quality pool beside the
+  whale list, the monitoring support behind it, the two window quorums with the verdict on
+  whether the pool can reach either, the last complete roster with any refresh failure, and
+  the 24-hour episode → intent → sent funnel with its leading unsent reason. Its
+  `data-status-state` names which answer leads — `unread`, `query_failed`,
+  `notifications_disabled`, `roster_insufficient`, `warming_up`, `collection_lagging`,
+  `send_failed`, `no_match`, `healthy` — and each carries its own sentence, so 「当前质量地址
+  1 个，低于 5m 3 个及 30m 5 个门槛；当前名单不足以触发」 is never rendered as 「没有机会」.
+  The browser computes none of those numbers: the freshness judgement is the server's
+  `collection_lagging`, replacing a `Date.now()` comparison the page used to make itself.
+  The block and the event list fail independently in both directions.
+
   The URL owns history range (24h/72h/7d), anchored end time, cursor and episode ID.
   Deep links query the episode directly. Detail order is initial event → member net flows
   → raw timeline → current changes → price observations. Initial and latest snapshots are
   separate; all exclusions and full addresses remain accessible on mobile without hover.
   Independent roster/state and detail errors preserve existing event data. Missing price,
   missing baseline, late sample, no events, stale collection and read failure have distinct
-  wording. Explorer links remain limited to validated chain-4663 transaction hashes.
+  wording. The t0 baseline reads 首次可得参考价 with the delay it cost from the trigger, and each
+  horizon prints its target, actual and reference times; a horizon with no comparable baseline
+  stays 未知 rather than 0%. Explorer links remain limited to validated chain-4663 transaction hashes.
 
   `raw` is a shape, not a failure. An `unknown_market` source has no parser at
   all, and its record is retained with its provider line and its stated reason —

@@ -69,7 +69,7 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_market_item_covered",
         "news_market_group_timeline",
     ),
-    "/api/news/wallets": ("news_wallet_roster", "news_wallet_tape_state"),
+    "/api/news/wallets": ("news_wallet_roster", "news_wallet_tape_state", "news_wallet_notification_funnel"),
     "/api/news/wallets/events": ("news_wallet_events", "news_wallet_event_totals"),
     "/api/news/wallets/events/{episode_id}": ("news_wallet_event", "news_wallet_event_fills", "news_wallet_outcomes"),
     # Three reads per request, and all three are named: `is_tradeable` runs its own statement and a
