@@ -809,8 +809,7 @@ def _target_evidence(
         if isinstance(predicted, Mapping)
     ]
     elected = {
-        str(row["cluster_id"]): row
-        for row in sorted(taxonomy_rows, key=lambda row: str(row["case_id"]), reverse=True)
+        str(row["cluster_id"]): row for row in sorted(taxonomy_rows, key=lambda row: str(row["case_id"]), reverse=True)
     }
     summary = summarize_taxonomy(list(elected.values())) if elected else {}
     scoreboard = product_scoreboard(
