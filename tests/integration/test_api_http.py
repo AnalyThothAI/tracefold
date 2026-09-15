@@ -10,12 +10,17 @@ from tests.postgres_test_utils import (
     connect_postgres_test,
     postgres_settings_storage,
 )
+from tests.support.news_judgment import news_taxonomy
 from tracefold.app import serve_database as serve_database_module
 from tracefold.app.http.app import create_app
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.market_review.instruments import Instrument
+from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
+from tracefold.news.program.contracts import EditorialEnvelope, TradeRelevanceV1
+from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.platform.config.models import NewsSettings, Settings
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
@@ -361,3 +366,182 @@ def test_api_retired_market_routes_and_websocket_are_absent(tmp_path):
 
     assert [response.status_code for response in responses] == [404] * len(responses)
     assert websocket_missing
+
+
+def _editorial_relevance() -> TradeRelevanceV1:
+    return TradeRelevanceV1(
+        impact_breadth="single_instrument",
+        tradability="direct",
+        surprise="unscheduled",
+        development_delta="state_change",
+        channels=("exchange_access",),
+        affected_markets=("single_asset",),
+        reader_value="realtime",
+    )
+
+
+def _historical_v2_editorial(*, source_authority: str) -> dict:
+    """One `news_editorial_v2` document, exactly as the worker wrote it before #651 §5.3.
+
+    Written by hand because the Python contract can no longer produce it: `EditorialEnvelope` is v3 and
+    `NewsTaxonomyV1` has no `source_authority` field. That is the point — these rows are audit truth that
+    is never rewritten, and the feed's source-authority filter has to keep answering over them.
+    """
+
+    payload = {
+        "editorial_contract_version": "news_editorial_v2",
+        "editorial_origin": "model",
+        "relevance": _editorial_relevance().model_dump(mode="json"),
+        "taxonomy": news_taxonomy(event_family="market_access", change_state="effective").model_dump(mode="json")
+        | {"source_authority": source_authority},
+    }
+    return payload | {"editorial_sha256": canonical_sha(payload)}
+
+
+def _write_model_verdict(
+    *,
+    event_id: str,
+    editorial: dict,
+    policy_version: str,
+    now_ms: int,
+) -> None:
+    verdict = TriageVerdict(
+        novelty="new_fact",
+        restates=-1,
+        assets=[{"symbol": "BTC", "market_type": "crypto", "role": "primary"}],
+        direction="bullish",
+        scope="single_name",
+        magnitude=2,
+        confidence=0.8,
+        audience="crypto",
+        headline_zh="比特币获得新的市场准入",
+        why_zh="新增入口扩大可交易范围。",
+    ).model_dump(mode="json")
+    verdict_sha = canonical_sha(verdict)
+    judgment_sha = canonical_sha(
+        {
+            "judgment_contract_version": "news_judgment_v2",
+            "verdict": verdict,
+            "editorial": editorial,
+            "verdict_sha256": verdict_sha,
+        }
+    )
+    runtime_manifest_sha = "b" * 64
+    program_sha256 = "a" * 64
+    with write_repositories() as repos:
+        evidence = repos.news.latest_evidence_snapshot(event_id)
+        assert evidence is not None
+        trace = {
+            "judgment_contract_version": "news_judgment_v2",
+            "judgment_origin": "model",
+            "judgment_sha256": judgment_sha,
+            "verdict_sha256": verdict_sha,
+            "editorial_sha256": editorial["editorial_sha256"],
+            "runtime_manifest_sha": runtime_manifest_sha,
+            "program_version": PROGRAM_VERSION,
+            "program_sha256": program_sha256,
+            "evidence_version": int(evidence["evidence_version"]),
+            "evidence_sha256": str(evidence["evidence_sha256"]),
+            "focus_fact_id": str(evidence["focus_fact_id"]),
+            "told": [],
+            "told_count": 0,
+        }
+        with repos.transaction():
+            assert repos.news.insert_verdict(
+                event_id=event_id,
+                stage="triage",
+                policy_version=policy_version,
+                judgment_contract_version="news_judgment_v2",
+                judgment_origin="model",
+                rule_baseline_decision="push",
+                final_decision="push",
+                override_rule="trade_relevance_realtime",
+                throttled_by=None,
+                verdict=verdict,
+                model_editorial=editorial,
+                judgment_sha256=judgment_sha,
+                runtime_manifest_sha=runtime_manifest_sha,
+                model="test-model",
+                program_version=PROGRAM_VERSION,
+                program_sha256=program_sha256,
+                degraded=False,
+                error_code=None,
+                trace=trace,
+                evidence_version=int(evidence["evidence_version"]),
+                evidence_sha256=str(evidence["evidence_sha256"]),
+                focus_fact_id=str(evidence["focus_fact_id"]),
+                now_ms=now_ms,
+            )
+
+
+def test_api_serves_an_unavailable_taxonomy_and_filters_history_by_source_authority(tmp_path):
+    """#651 §5.3, end to end over real PostgreSQL.
+
+    Three facts in one pass, because they are one fact: a judgment whose taxonomy Predictor failed alone
+    is persistable under the new CHECK, readable through the public Event detail with its classification
+    absent and its code-owned authority intact, and indistinguishable to the feed's source-authority
+    filter from a `news_editorial_v2` row written before the cut.
+    """
+
+    settings = make_settings(tmp_path)
+    app = create_app(settings=settings)
+    now_ms = int(time.time() * 1000)
+    event_ids = _seed_news_v3_events(now_ms=now_ms)
+    assert len(event_ids) >= 2
+    unavailable_event, historical_event = event_ids[0], event_ids[1]
+
+    unavailable = EditorialEnvelope.issue(
+        relevance=_editorial_relevance(),
+        source_authority="issuer_first_party",
+        taxonomy=None,
+        taxonomy_error_code="news_program_output_truncated",
+    ).model_dump(mode="json")
+    _write_model_verdict(
+        event_id=unavailable_event,
+        editorial=unavailable,
+        policy_version=TRIAGE_POLICY_VERSION,
+        now_ms=now_ms,
+    )
+    _write_model_verdict(
+        event_id=historical_event,
+        editorial=_historical_v2_editorial(source_authority="reputable_secondary"),
+        # The policy the pre-cut worker wrote under: a historical row, not a re-issued one.
+        policy_version="news_triage_policy_v13",
+        now_ms=now_ms,
+    )
+
+    with TestClient(app) as client:
+        headers = {"Authorization": "Bearer secret"}
+        detail = client.get(f"/api/news/events/{unavailable_event}", headers=headers)
+        historical_detail = client.get(f"/api/news/events/{historical_event}", headers=headers)
+        issuer_feed = client.get("/api/news/feed?source_authority=issuer_first_party&limit=100", headers=headers)
+        secondary_feed = client.get("/api/news/feed?source_authority=reputable_secondary&limit=100", headers=headers)
+
+    assert detail.status_code == 200
+    triage = detail.json()["data"]["triage"]
+    assert triage["taxonomy"] is None
+    assert triage["taxonomy_status"] == "unavailable"
+    assert triage["taxonomy_error_code"] == "news_program_output_truncated"
+    assert triage["source_authority"] == "issuer_first_party"
+    assert triage["source_authority_zh"]
+    assert triage["headline_zh"] == "比特币获得新的市场准入"
+    verdict_row = next(row for row in detail.json()["data"]["verdicts"] if row["stage"] == "triage")
+    assert verdict_row["policy_version"] == TRIAGE_POLICY_VERSION == "news_triage_policy_v14"
+    assert verdict_row["model_editorial"]["taxonomy"] is None
+    assert verdict_row["model_editorial"]["taxonomy_status"] == "unavailable"
+    assert verdict_row["model_editorial"]["source_authority"] == "issuer_first_party"
+
+    # The v2 row reads as v3 above the storage boundary: the authority is lifted out of the taxonomy,
+    # which is present and therefore `available`.
+    assert historical_detail.status_code == 200
+    historical_triage = historical_detail.json()["data"]["triage"]
+    assert historical_triage["taxonomy_status"] == "available"
+    assert historical_triage["source_authority"] == "reputable_secondary"
+    assert historical_triage["taxonomy"]["event_family"] == "market_access"
+    assert "source_authority" not in historical_triage["taxonomy"]
+
+    assert issuer_feed.status_code == 200 and secondary_feed.status_code == 200
+    issuer_ids = {event["event_id"] for event in issuer_feed.json()["data"]["events"]}
+    secondary_ids = {event["event_id"] for event in secondary_feed.json()["data"]["events"]}
+    assert unavailable_event in issuer_ids and historical_event not in issuer_ids
+    assert historical_event in secondary_ids and unavailable_event not in secondary_ids

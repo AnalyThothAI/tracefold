@@ -4061,16 +4061,59 @@
       },
       "NewsModelEditorialData": {
         "additionalProperties": false,
+        "description": "The editorial sibling of one model verdict, in the current `news_editorial_v3` read shape.\n\n``source_authority`` is code-owned and always present; ``taxonomy`` is the taxonomy Predictor's answer\nand is ``null`` when that call failed on its own, in which case ``taxonomy_status`` reads\n``unavailable`` and ``taxonomy_error_code`` names the `news_program_*` code. Verdicts written under\n`news_editorial_v2` are projected into this shape at the storage read boundary, so a historical row\nreads as ``available`` with its authority lifted out of the taxonomy object (#651 \u00a75.3).",
         "properties": {
           "relevance": {
             "$ref": "#/components/schemas/NewsTradeRelevanceData"
           },
+          "source_authority": {
+            "enum": [
+              "regulatory_filing",
+              "issuer_first_party",
+              "reputable_secondary",
+              "unknown"
+            ],
+            "title": "Source Authority",
+            "type": "string"
+          },
+          "source_authority_zh": {
+            "default": "",
+            "title": "Source Authority Zh",
+            "type": "string"
+          },
           "taxonomy": {
-            "$ref": "#/components/schemas/NewsTaxonomyData"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsTaxonomyData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "taxonomy_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Taxonomy Error Code"
+          },
+          "taxonomy_status": {
+            "default": "available",
+            "enum": [
+              "available",
+              "unavailable"
+            ],
+            "title": "Taxonomy Status",
+            "type": "string"
           }
         },
         "required": [
-          "taxonomy",
+          "source_authority",
           "relevance"
         ],
         "title": "NewsModelEditorialData",
@@ -5356,6 +5399,7 @@
       },
       "NewsTaxonomyData": {
         "additionalProperties": false,
+        "description": "The four model-owned classification axes and the codebook they were labelled against.\n\nSource authority left this object in #651: it is code-owned, computed from the evidence, and present\non a judgment whose taxonomy call failed and which therefore has no taxonomy at all. It is published\nbeside this one, on the editorial and the Triage summary.",
         "properties": {
           "assertion_status": {
             "enum": [
@@ -5417,20 +5461,6 @@
           },
           "event_family_zh": {
             "title": "Event Family Zh",
-            "type": "string"
-          },
-          "source_authority": {
-            "enum": [
-              "regulatory_filing",
-              "issuer_first_party",
-              "reputable_secondary",
-              "unknown"
-            ],
-            "title": "Source Authority",
-            "type": "string"
-          },
-          "source_authority_zh": {
-            "title": "Source Authority Zh",
             "type": "string"
           },
           "subject_codes": {
@@ -5498,11 +5528,9 @@
           "change_state",
           "assertion_status",
           "taxonomy_version",
-          "source_authority",
           "codebook_sha256",
           "event_family_zh",
           "change_state_zh",
-          "source_authority_zh",
           "assertion_status_zh"
         ],
         "title": "NewsTaxonomyData",
@@ -5862,6 +5890,28 @@
             "title": "Scope Zh",
             "type": "string"
           },
+          "source_authority": {
+            "anyOf": [
+              {
+                "enum": [
+                  "regulatory_filing",
+                  "issuer_first_party",
+                  "reputable_secondary",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Authority"
+          },
+          "source_authority_zh": {
+            "default": "",
+            "title": "Source Authority Zh",
+            "type": "string"
+          },
           "taxonomy": {
             "anyOf": [
               {
@@ -5871,6 +5921,32 @@
                 "type": "null"
               }
             ]
+          },
+          "taxonomy_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Taxonomy Error Code"
+          },
+          "taxonomy_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "available",
+                  "unavailable"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Taxonomy Status"
           },
           "throttled_by": {
             "anyOf": [

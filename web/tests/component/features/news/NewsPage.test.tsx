@@ -980,6 +980,67 @@ describe("NewsPage", () => {
     expect(within(hero).queryByText(/asset:BTC|evt-global-policy|jaccard/)).toBeNull();
   });
 
+  it("says the classification is unavailable, with its code, and keeps the source authority", async () => {
+    // #651 §5.3: the taxonomy Predictor can fail while the other two answer, so the reader gets a real
+    // card with no classification behind it. The four axis cells must say that once, with the reason —
+    // not read as four Events nobody bothered to classify — and 来源权威 is code-owned, so it survives.
+    const detail = newsEventDetailFixture();
+    const verdict = newsVerdictFixture();
+    server.use(
+      http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: {
+            ...detail,
+            triage: {
+              ...detail.triage!,
+              taxonomy: null,
+              taxonomy_error_code: "news_program_output_truncated",
+              taxonomy_status: "unavailable",
+            },
+            verdicts: [
+              {
+                ...verdict,
+                model_editorial: {
+                  ...verdict.model_editorial!,
+                  taxonomy: null,
+                  taxonomy_error_code: "news_program_output_truncated",
+                  taxonomy_status: "unavailable",
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    );
+
+    renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy",
+    );
+
+    const region = await screen.findByRole("region", { name: "新闻事件详情" });
+    await screen.findByRole("heading", { level: 1, name: "央行政策转向，风险资产承压" });
+    const facts = region.querySelector<HTMLElement>(".news-detail-fact-grid")!;
+    expect(
+      within(facts).getByText("分类不可用（news_program_output_truncated）"),
+    ).toBeInTheDocument();
+    expect(within(facts).queryByText("宏观政策与数据")).toBeNull();
+    expect(within(facts).queryByText("已更新")).toBeNull();
+    // The code fact the escalate-corroboration rule reads is still here.
+    expect(within(facts).getByText("可信二手来源")).toBeInTheDocument();
+    // And the card itself is a real card.
+    expect(
+      screen.getByRole("heading", { level: 1, name: "央行政策转向，风险资产承压" }),
+    ).toBeInTheDocument();
+
+    const technical = screen.getByText(/技术详情/).closest("details")!;
+    expect(within(technical).getByText("source_authority")).toBeInTheDocument();
+    expect(
+      within(technical).getAllByText("分类不可用（news_program_output_truncated）").length,
+    ).toBeGreaterThan(0);
+  });
+
   it("hides same-name non-primary market candidates from Event evidence", async () => {
     server.use(
       http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>

@@ -584,12 +584,14 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "event_family_zh",
         "change_state",
         "change_state_zh",
-        "source_authority",
-        "source_authority_zh",
         "assertion_status",
         "assertion_status_zh",
     }
-    assert "taxonomy" in news_common_schemas.NewsTriageSummaryData.model_fields
+    # #651 §5.3: the code-owned authority is an editorial field, published beside the classification
+    # rather than inside it, and it survives a taxonomy the model failed to produce.
+    assert {"taxonomy", "taxonomy_status", "taxonomy_error_code", "source_authority", "source_authority_zh"} <= set(
+        news_common_schemas.NewsTriageSummaryData.model_fields
+    )
     assert set(news_common_schemas.NewsOutcomeData.model_fields) == {"kind", "text_zh", "reason_zh", "group"}
     assert set(status_schemas.NewsStatusData.model_fields) == {
         "state",
@@ -666,6 +668,10 @@ def test_current_verdict_schema_rejects_raw_and_cross_origin_payloads() -> None:
         "why_zh": "准入状态发生变化",
     }
     model_editorial = {
+        "source_authority": "issuer_first_party",
+        "source_authority_zh": "发行方一手来源",
+        "taxonomy_status": "available",
+        "taxonomy_error_code": None,
         "taxonomy": {
             "taxonomy_version": "news_taxonomy_v1",
             "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac",
@@ -675,8 +681,6 @@ def test_current_verdict_schema_rejects_raw_and_cross_origin_payloads() -> None:
             "event_family_zh": "市场准入",
             "change_state": "effective",
             "change_state_zh": "已生效",
-            "source_authority": "issuer_first_party",
-            "source_authority_zh": "发行方一手来源",
             "assertion_status": "confirmed",
             "assertion_status_zh": "已确认",
         },
@@ -692,7 +696,7 @@ def test_current_verdict_schema_rejects_raw_and_cross_origin_payloads() -> None:
     }
     payload = {
         "stage": "triage",
-        "policy_version": "news_triage_policy_v13",
+        "policy_version": "news_triage_policy_v14",
         "judgment_contract_version": "news_judgment_v2",
         "judgment_origin": "model",
         "judgment_sha256": "b" * 64,

@@ -25,11 +25,13 @@ from ..source_contracts import (
     SOURCE_CONTRACT_CLASSIFIER_VERSION,
     EventKind,
 )
-from ..taxonomy import taxonomy_public
+from ..taxonomy import source_authority_zh, taxonomy_public
 from ..timeline import event_timeline
+from .decisions import editorial_read_shape
 from .feed_sql import (
     ASSET_SEARCH_PREDICATE,
     EDITORIAL_EVENT_SQL,
+    EDITORIAL_SOURCE_AUTHORITY_SQL,
     EVENT_MEMBERS_SQL,
     EVENT_VERDICTS_SQL,
     OUTCOME_GROUP_SQL,
@@ -87,12 +89,16 @@ class FeedStorage:
             (event_family, "event_family"),
             (change_state, "change_state"),
             (assertion_status, "assertion_status"),
-            (source_authority, "source_authority"),
         )
         for values, key in taxonomy_filters:
             if values:
                 where.append(f"t.editorial #>> '{{taxonomy,{key}}}' = ANY(%s)")
                 params.append(list(values))
+        if source_authority:
+            # Not a taxonomy axis since #651: the authority is an editorial field of its own, and this
+            # predicate reads it from wherever the stored document keeps it.
+            where.append(f"{EDITORIAL_SOURCE_AUTHORITY_SQL} = ANY(%s)")
+            params.append(list(source_authority))
         if subject_code:
             where.append("COALESCE(t.editorial #> '{taxonomy,subject_codes}', '[]'::jsonb) ?| %s")
             params.append(list(subject_code))
@@ -218,10 +224,7 @@ class FeedStorage:
             }
             for r in members
         ]
-        timeline_verdict_rows = [
-            dict(r) | {"model_editorial": dict(r["editorial"]) if r["editorial"] is not None else None}
-            for r in verdicts
-        ]
+        timeline_verdict_rows = [dict(r) | {"model_editorial": editorial_read_shape(r["editorial"])} for r in verdicts]
         verdict_rows = [_verdict_public(dict(r)) for r in verdicts]
         delivery_rows = [
             {
@@ -253,7 +256,7 @@ class FeedStorage:
             now_ms=int(time.time() * 1000),
         )
         latest_triage = next((dict(v) for v in reversed(verdicts) if v["stage"] == "triage"), None)
-        latest_editorial = dict((latest_triage or {}).get("editorial") or {})
+        latest_editorial = editorial_read_shape((latest_triage or {}).get("editorial"))
         return {
             "event": event,
             "outcome": outcome.as_dict(),
@@ -264,8 +267,7 @@ class FeedStorage:
                 degraded=(latest_triage or {}).get("degraded"),
                 error_code=(latest_triage or {}).get("error_code"),
                 verdict=(latest_triage or {}).get("verdict") or {},
-                taxonomy=latest_editorial.get("taxonomy"),
-                relevance=latest_editorial.get("relevance"),
+                editorial=latest_editorial,
                 full=True,
             ),
             "timeline": timeline,
@@ -615,8 +617,7 @@ def _triage_summary(
     degraded: Any = False,
     error_code: Any = None,
     verdict: Mapping[str, Any] | None = None,
-    taxonomy: Mapping[str, Any] | None = None,
-    relevance: Mapping[str, Any] | None = None,
+    editorial: Mapping[str, Any] | None = None,
     full: bool = False,
 ) -> dict[str, Any] | None:
     """The reader-facing Triage summary shared by the feed row and the Event detail.
@@ -650,13 +651,23 @@ def _triage_summary(
         return summary
     novelty = v.get("novelty")
     audience = v.get("audience")
+    # The read shape `editorial_read_shape` produces, or nothing at all for a degraded/OI/liquidation
+    # verdict that has no editorial sibling. `source_authority` survives a taxonomy failure because it is
+    # a code fact about the evidence, so the detail keeps showing it while the classification is absent.
+    e: Mapping[str, Any] = editorial or {}
+    taxonomy = e.get("taxonomy")
+    relevance = e.get("relevance")
     return summary | {
         "scope": scope,
         "novelty": novelty,
         "audience": audience,
         "confidence": optional_float(v.get("confidence")),
-        "taxonomy": taxonomy_public(taxonomy) if taxonomy is not None else None,
-        "relevance": dict(relevance) if relevance is not None else None,
+        "taxonomy": taxonomy_public(taxonomy) if isinstance(taxonomy, Mapping) else None,
+        "taxonomy_status": e.get("taxonomy_status"),
+        "taxonomy_error_code": e.get("taxonomy_error_code"),
+        "source_authority": e.get("source_authority"),
+        "source_authority_zh": source_authority_zh(e.get("source_authority")),
+        "relevance": dict(relevance) if isinstance(relevance, Mapping) else None,
         "why_zh": v.get("why_zh"),
         "assets": _triage_assets(v.get("assets")),
         "scope_zh": scope_zh(scope),
@@ -696,8 +707,7 @@ def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
         degraded=row.get("triage_degraded"),
         error_code=row.get("triage_error_code"),
         verdict=row.get("triage_verdict") or {},
-        taxonomy=dict(row.get("model_editorial") or {}).get("taxonomy"),
-        relevance=dict(row.get("model_editorial") or {}).get("relevance"),
+        editorial=editorial_read_shape(row.get("model_editorial")),
     )
     delivery = (
         {
@@ -735,16 +745,18 @@ def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
 
 
 def _verdict_public(row: Mapping[str, Any]) -> dict[str, Any]:
-    editorial = row.get("editorial")
+    editorial = editorial_read_shape(row.get("editorial"))
     model_editorial = None
-    if isinstance(editorial, Mapping):
-        taxonomy = editorial.get("taxonomy")
-        relevance = editorial.get("relevance")
-        if isinstance(taxonomy, Mapping) and isinstance(relevance, Mapping):
-            model_editorial = {
-                "taxonomy": taxonomy_public(taxonomy),
-                "relevance": dict(relevance),
-            }
+    if editorial is not None:
+        taxonomy = editorial["taxonomy"]
+        model_editorial = {
+            "source_authority": editorial["source_authority"],
+            "source_authority_zh": source_authority_zh(editorial["source_authority"]),
+            "taxonomy": taxonomy_public(taxonomy) if taxonomy is not None else None,
+            "taxonomy_status": editorial["taxonomy_status"],
+            "taxonomy_error_code": editorial["taxonomy_error_code"],
+            "relevance": dict(editorial["relevance"]),
+        }
     return {
         "stage": row["stage"],
         "policy_version": row["policy_version"],

@@ -461,7 +461,16 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
         "headline_zh",
         "why_zh",
     }
-    assert set(schema["components"]["schemas"]["NewsModelEditorialData"]["properties"]) == {"taxonomy", "relevance"}
+    assert set(schema["components"]["schemas"]["NewsModelEditorialData"]["properties"]) == {
+        "relevance",
+        # #651 §5.3: the code-owned authority is published beside the classification, and the two
+        # status fields say whether the taxonomy Predictor answered at all.
+        "source_authority",
+        "source_authority_zh",
+        "taxonomy",
+        "taxonomy_status",
+        "taxonomy_error_code",
+    }
     assert {
         "judgment_contract_version",
         "judgment_origin",
