@@ -13,12 +13,19 @@ from typing import Any
 
 import pytest
 
-from tracefold.app.workers.runtime import CHAIN_TAPE, WALLET_NET_BUY, WALLET_PRICES, CapabilityStates
+from tracefold.app.workers.runtime import (
+    CHAIN_TAPE,
+    WALLET_NET_BUY,
+    WALLET_PRICES,
+    WALLET_ROSTER,
+    CapabilityStates,
+)
 from tracefold.app.workers.task_contract import worker_business_tasks
 from tracefold.app.workers.wiring.chain_tape import (
     CHAIN_TAPE_TASK_NAME,
     WALLET_NET_BUY_TASK_NAME,
     WALLET_PRICES_TASK_NAME,
+    WALLET_ROSTER_TASK_NAME,
     ChainTapeComposition,
     _wire_chain_tape,
     run_chain_tape,
@@ -81,7 +88,7 @@ def test_the_flag_off_is_a_disabled_capability_and_no_task() -> None:
 
     assert loop is None
     assert capabilities.payload()[CHAIN_TAPE] == {"state": "disabled", "reason": "news_chain_tape_disabled"}
-    assert set(capabilities.payload()) == {CHAIN_TAPE, WALLET_NET_BUY, WALLET_PRICES}
+    assert set(capabilities.payload()) == {CHAIN_TAPE, WALLET_ROSTER, WALLET_NET_BUY, WALLET_PRICES}
 
 
 @pytest.mark.parametrize("notifications_enabled", [True, False])
@@ -103,13 +110,15 @@ def test_the_flag_on_builds_one_loop_and_reports_the_capability_running(
     assert isinstance(composed, ChainTapeComposition)
     loop = composed.loop
     assert isinstance(loop, ChainTapeLoop)
-    assert (loop.rules.top_quality, loop.rules.top_whale_by_open_cost) == (5, 3)
+    assert (composed.roster.rules.top_quality, composed.roster.rules.top_whale_by_open_cost) == (5, 3)
     assert loop.chain.chain_id == 4663
     assert capabilities.payload()[CHAIN_TAPE] == {"state": "running", "reason": None}
     assert capabilities.payload()[WALLET_NET_BUY]["state"] == "running"
     assert capabilities.payload()[WALLET_PRICES]["state"] == "running"
+    assert capabilities.payload()[WALLET_ROSTER]["state"] == "running"
     tasks = worker_business_tasks(news_pipeline=None, signal_lane=None, chain_tape=composed)
     assert [(task.name, task.capability, task.foundational) for task in tasks] == [
+        (WALLET_ROSTER_TASK_NAME, WALLET_ROSTER, False),
         (CHAIN_TAPE_TASK_NAME, CHAIN_TAPE, False),
         (WALLET_NET_BUY_TASK_NAME, WALLET_NET_BUY, False),
         (WALLET_PRICES_TASK_NAME, WALLET_PRICES, False),
@@ -129,7 +138,7 @@ def test_the_operators_endpoints_and_list_rules_reach_the_loop(no_proxy_environm
             rpc_url="https://rpc.example/",
             roster_provider_url="https://roster.example/",
             poll_interval_s=7.5,
-            roster={"min_closed_trades": 3, "min_profit_factor": 2.5},
+            roster={"min_closed_trades": 3, "min_profit_factor": 2.5, "window": "90d", "refresh_interval_s": 600},
             rules={"net_buy_fast_n": 4, "net_buy_slow_n": 6, "min_net_buy_usd": "1234.5", "trigger_max_age_s": 45},
         ),
         db=object(),  # type: ignore[arg-type]
@@ -139,8 +148,14 @@ def test_the_operators_endpoints_and_list_rules_reach_the_loop(no_proxy_environm
     assert composed is not None
     loop = composed.loop
     assert loop.chain.rpc_url == "https://rpc.example"  # type: ignore[attr-defined]
-    assert loop.roster_provider.base_url == "https://roster.example"  # type: ignore[attr-defined]
-    assert (loop.rules.min_closed_trades, loop.rules.min_profit_factor) == (3, 2.5)
+    # The roster site belongs to the refresh task, and to nothing else: the collector has no provider
+    # to point at it any more (#649 §5.1).
+    assert not hasattr(loop, "roster_provider")
+    roster = composed.roster
+    assert roster.provider.base_url == "https://roster.example"  # type: ignore[attr-defined]
+    assert (roster.rules.min_closed_trades, roster.rules.min_profit_factor) == (3, 2.5)
+    # Both endpoints get the operator's statistics window, and the period is the operator's too.
+    assert (roster.window, roster.refresh_period_ms) == ("90d", 600_000)
     # The operator's cadence is a runtime parameter, not a decoration on a config page: it has to
     # reach the thing that ticks the loop.
     assert composed.poll_seconds == 7.5
@@ -186,7 +201,9 @@ def test_the_configured_cadence_is_what_the_workers_task_actually_polls_with(
         ticks.append(poll_seconds)
         del loop, stop_event
 
-    tape = ChainTapeComposition(loop=_Tape(), detector=_Loop(), prices=_Loop(), poll_seconds=11.0)  # type: ignore[arg-type]
+    tape = ChainTapeComposition(  # type: ignore[arg-type]
+        loop=_Tape(), roster=_Loop(), detector=_Loop(), prices=_Loop(), poll_seconds=11.0
+    )
     tasks = worker_business_tasks(news_pipeline=None, signal_lane=None, chain_tape=tape)
     task = next(item for item in tasks if item.name == CHAIN_TAPE_TASK_NAME)
 
@@ -396,4 +413,8 @@ def test_the_defaults_are_off_and_public() -> None:
         "min_profit_factor": 1.2,
         "top_quality": 20,
         "top_whale_by_open_cost": 20,
+        # #649 §5.3: the provider statistics window both roster endpoints are asked for, and how old
+        # a published list may be before the refresh task rebuilds it.
+        "window": "30d",
+        "refresh_interval_s": 3600,
     }

@@ -1,8 +1,9 @@
-"""Compose independently supervised wallet ingestion, net-buy detection and price tasks (#641).
+"""Compose independently supervised wallet roster, ingestion, net-buy detection and price tasks.
 
 Each task owns its adapters, one bounded `advance()` and one `aclose()`. PostgreSQL facts and durable
-work markers connect the stages. Slow price calls cannot hold up ingestion, and a faulted
-stage closes only its own clients. App owns polling, cancellation and joining all in-flight work.
+work markers connect the stages. Slow price calls cannot hold up ingestion, a slow roster site cannot
+hold up collection (#649 §5.1), and a faulted stage closes only its own clients. App owns polling,
+cancellation and joining all in-flight work.
 """
 
 from __future__ import annotations
@@ -13,7 +14,13 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from tracefold.app.worker_database import WorkerDatabase
-from tracefold.app.workers.runtime import CHAIN_TAPE, WALLET_NET_BUY, WALLET_PRICES, CapabilityStates
+from tracefold.app.workers.runtime import (
+    CHAIN_TAPE,
+    WALLET_NET_BUY,
+    WALLET_PRICES,
+    WALLET_ROSTER,
+    CapabilityStates,
+)
 from tracefold.app.workers.wiring.database import WorkerChainTapeDatabase
 from tracefold.integrations.dexscreener import DexScreenerClient
 from tracefold.integrations.robinhood_chain import RobinhoodChainClient
@@ -24,11 +31,13 @@ from tracefold.news.chain_tape.detect import NetBuyDetector
 from tracefold.news.chain_tape.loop import POLL_INTERVAL_SECONDS
 from tracefold.news.chain_tape.prices import WalletPriceSampler
 from tracefold.news.chain_tape.roster import RosterRules
+from tracefold.news.chain_tape.roster_refresh import RosterRefreshLoop
 from tracefold.news.chain_tape.rules import WalletRules
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 
 CHAIN_TAPE_TASK_NAME = "news-chain-tape"
+WALLET_ROSTER_TASK_NAME = "news-wallet-roster"
 WALLET_NET_BUY_TASK_NAME = "news-wallet-net-buy"
 WALLET_PRICES_TASK_NAME = "news-wallet-prices"
 
@@ -43,10 +52,11 @@ class WalletStage(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ChainTapeComposition:
-    """Three stages with independent resources and one operator-configured polling cadence."""
+    """Four stages with independent resources and one operator-configured polling cadence."""
 
     loop: ChainTapeLoop
     poll_seconds: float
+    roster: RosterRefreshLoop
     detector: NetBuyDetector
     prices: WalletPriceSampler
 
@@ -62,20 +72,26 @@ def _wire_chain_tape(
 
     chain_tape = settings.news.chain_tape
     if not chain_tape.enabled:
-        for capability in (CHAIN_TAPE, WALLET_NET_BUY, WALLET_PRICES):
+        for capability in (CHAIN_TAPE, WALLET_ROSTER, WALLET_NET_BUY, WALLET_PRICES):
             capabilities.disabled(capability, "news_chain_tape_disabled")
         return None
     tape_db = WorkerChainTapeDatabase(db)
     loop = ChainTapeLoop(
         db=tape_db,
         chain=RobinhoodChainClient(rpc_url=chain_tape.rpc_url),
-        roster_provider=RobinhoodTrenchesClient(base_url=chain_tape.roster_provider_url),
+        telemetry=telemetry,
+    )
+    roster = RosterRefreshLoop(
+        db=tape_db,
+        provider=RobinhoodTrenchesClient(base_url=chain_tape.roster_provider_url),
         rules=RosterRules(
             min_closed_trades=chain_tape.roster.min_closed_trades,
             min_profit_factor=chain_tape.roster.min_profit_factor,
             top_quality=chain_tape.roster.top_quality,
             top_whale_by_open_cost=chain_tape.roster.top_whale_by_open_cost,
         ),
+        window=chain_tape.roster.window,
+        refresh_period_ms=chain_tape.roster.refresh_interval_s * 1000,
         telemetry=telemetry,
     )
     detector = NetBuyDetector(
@@ -90,10 +106,11 @@ def _wire_chain_tape(
         clock=now_ms,
     )
     prices = WalletPriceSampler(db=tape_db, prices=DexScreenerClient(), clock=now_ms)
-    for capability in (CHAIN_TAPE, WALLET_NET_BUY, WALLET_PRICES):
+    for capability in (CHAIN_TAPE, WALLET_ROSTER, WALLET_NET_BUY, WALLET_PRICES):
         capabilities.running(capability)
     return ChainTapeComposition(
         loop=loop,
+        roster=roster,
         detector=detector,
         prices=prices,
         poll_seconds=float(chain_tape.poll_interval_s),
@@ -143,6 +160,7 @@ __all__ = [
     "CHAIN_TAPE_TASK_NAME",
     "WALLET_NET_BUY_TASK_NAME",
     "WALLET_PRICES_TASK_NAME",
+    "WALLET_ROSTER_TASK_NAME",
     "ChainTapeComposition",
     "_wire_chain_tape",
     "run_chain_tape",

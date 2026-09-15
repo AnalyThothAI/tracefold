@@ -78,6 +78,10 @@ function StatusFacts({ status }: { status: NewsWallets }) {
               ? `v${roster.version} · ${optionalTime(roster.last_success_at_ms)}`
               : "尚未取得",
           },
+          // The provider statistics window both roster endpoints were asked for. It belongs beside
+          // the counts because the quality pool is only as large as this window makes it: on 7d the
+          // same 147 addresses produced two qualifying wallets, on 30d seven (#649 §5.3).
+          { label: "名单统计窗口", value: roster.window },
           {
             label: "24 小时 事件 / 意图 / 已发送",
             value: `${funnel.events} / ${funnel.intents} / ${funnel.sent}`,

@@ -493,6 +493,99 @@ def test_a_list_that_parses_to_nothing_is_a_broken_answer_not_an_empty_roster() 
     assert failure.value.code == "roster_payload_empty"
 
 
+def test_both_roster_endpoints_carry_the_same_statistics_window() -> None:
+    """#649 §2.1: the list was asked for 7d and the profit factor for the provider's own default.
+
+    The profit factor and the closed-trade count are compared against each other by one rule, so they
+    have to be computed over one window. They were not.
+    """
+
+    seen: list[httpx.Request] = []
+
+    async def work(client: RobinhoodTrenchesClient) -> Any:
+        await client.traders(window="30d")
+        return await client.trader("frankdegods", window="30d")
+
+    asyncio.run(_with(_roster(seen), work))
+
+    assert [dict(request.url.params)["window"] for request in seen] == ["30d", "30d"]
+
+
+def test_a_throttled_call_is_asked_again_before_it_becomes_a_refresh_failure() -> None:
+    """#649 §5.1: measured, the site answers 429 sporadically whatever the pace.
+
+    A refresh publishes nothing unless every candidate answered, so one unlucky handle would
+    otherwise withhold the whole list. The retry is this call being made again -- nothing is cached
+    and the answer, when it comes, is the site's.
+    """
+
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        if len(attempts) < 3:
+            return httpx.Response(429, text="slow down")
+        return httpx.Response(200, json=_fixture("trader_stats.json")["frankdegods"])
+
+    async def work(client: RobinhoodTrenchesClient) -> Any:
+        return await client.trader("frankdegods")
+
+    client = RobinhoodTrenchesClient(
+        base_url="https://trenches.test",
+        transport=httpx.MockTransport(handler),
+        pace_seconds=0.0,
+        retry_backoff_seconds=(0.0,),
+    )
+    stats = asyncio.run(_with(client, work))
+
+    assert len(attempts) == 3
+    assert stats is not None and stats.profit_factor is not None
+
+
+def test_an_exhausted_retry_is_raised_as_the_rate_limit_it_is() -> None:
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        return httpx.Response(429, text="slow down")
+
+    async def work(client: RobinhoodTrenchesClient) -> Any:
+        return await client.trader("frankdegods")
+
+    client = RobinhoodTrenchesClient(
+        base_url="https://trenches.test",
+        transport=httpx.MockTransport(handler),
+        pace_seconds=0.0,
+        retry_attempts=2,
+        retry_backoff_seconds=(0.0,),
+    )
+    with pytest.raises(RosterProviderError) as failure:
+        asyncio.run(_with(client, work))
+
+    assert (failure.value.code, len(attempts)) == ("roster_rate_limited", 2)
+
+
+def test_an_unknown_handle_is_not_retried_because_404_is_an_answer() -> None:
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        return httpx.Response(404, json={"error": "not found"})
+
+    async def work(client: RobinhoodTrenchesClient) -> Any:
+        return await client.trader("nobody")
+
+    client = RobinhoodTrenchesClient(
+        base_url="https://trenches.test",
+        transport=httpx.MockTransport(handler),
+        pace_seconds=0.0,
+        retry_backoff_seconds=(0.0,),
+    )
+
+    assert asyncio.run(_with(client, work)) is None
+    assert len(attempts) == 1
+
+
 def test_a_blocked_roster_provider_has_its_own_stable_code() -> None:
     transport = httpx.MockTransport(lambda _request: httpx.Response(403, text="no"))
 

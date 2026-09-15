@@ -6217,6 +6217,17 @@
           "latest_snapshot": {
             "$ref": "#/components/schemas/NetBuySnapshot"
           },
+          "notification_next_due_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notification Next Due At Ms"
+          },
           "notification_reason": {
             "anyOf": [
               {
@@ -6325,6 +6336,7 @@
           "updated_at_ms",
           "notification_state",
           "notification_reason",
+          "notification_next_due_at_ms",
           "intent_at_ms",
           "first_attempt_at_ms",
           "settled_at_ms",
@@ -6706,7 +6718,6 @@
             "enum": [
               "comparable",
               "missing_reference",
-              "unavailable",
               "late"
             ],
             "title": "Status",
@@ -6733,7 +6744,7 @@
       },
       "NewsWalletRosterData": {
         "additionalProperties": false,
-        "description": "The roster as one version: when it was taken, who was on it, and how the last refresh went.\n\n`quality_count` is the pool the 5m/30m thresholds are counted against; `whale_count` is observation\nbackground and never stands in for it. `supported_quality_count` is the subset whose monitoring\nalready covers a whole fast window at the collection cutoff -- a wallet the list gained minutes ago\ncannot complete a quorum yet, and a page that counted it would promise a trigger that cannot fire.",
+        "description": "The roster as one version: when it was taken, who was on it, and how the last refresh went.\n\n`quality_count` is the pool the 5m/30m thresholds are counted against; `whale_count` is observation\nbackground and never stands in for it. `supported_quality_count` is the subset whose monitoring\nalready covers a whole fast window at the collection cutoff -- a wallet the list gained minutes ago\ncannot complete a quorum yet, and a page that counted it would promise a trigger that cannot fire.\n\nThe published version and the last refresh attempt are separate on purpose. `taken_at_ms` and\n`last_success_at_ms` belong to a refresh that completed; `last_attempt_at_ms` and `last_error`\nbelong to the refresh task whether or not it published, so a provider that has been refusing to\nanswer for five hours reads as exactly that rather than as a fresh list (#649 \u00a75.1).",
         "properties": {
           "last_attempt_at_ms": {
             "anyOf": [
@@ -6816,9 +6827,14 @@
             "default": 0,
             "title": "Whale Count",
             "type": "integer"
+          },
+          "window": {
+            "title": "Window",
+            "type": "string"
           }
         },
         "required": [
+          "window",
           "members"
         ],
         "title": "NewsWalletRosterData",
@@ -6999,6 +7015,39 @@
             "default": 0,
             "title": "Noise Through Tx Index",
             "type": "integer"
+          },
+          "roster_last_attempt_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roster Last Attempt At Ms"
+          },
+          "roster_last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roster Last Error"
+          },
+          "roster_last_success_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roster Last Success At Ms"
           },
           "roster_version": {
             "default": 0,

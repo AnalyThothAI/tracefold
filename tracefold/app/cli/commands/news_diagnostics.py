@@ -40,6 +40,10 @@ def handle_news(args: Namespace) -> tuple[int, dict[str, Any]]:
         return _handle_dlq(args)
     if args.news_command == "why":
         return _handle_why(args)
+    if args.news_command == "wallets":
+        from .news_wallets import handle_wallets
+
+        return handle_wallets(args)
     return 2, {"ok": False, "error": f"unknown news command: {args.news_command}"}
 
 

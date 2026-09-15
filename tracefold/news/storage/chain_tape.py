@@ -37,7 +37,8 @@ SELECT high_water_block, high_water_tx_index, roster_version,
        last_outcome, last_error, last_success_at_ms, updated_at_ms,
        ignored_inbound_total, unknown_total,
        noise_through_block, noise_through_tx_index, detection_cutover_at_ms,
-       coverage_from_ms, scanned_at_ms, scanned_block, scanned_log, gap_at_ms
+       coverage_from_ms, scanned_at_ms, scanned_block, scanned_log, gap_at_ms,
+       roster_last_attempt_at_ms, roster_last_success_at_ms, roster_last_error
   FROM news_market_wallet_tape_state
  WHERE state_id = %s
 """
@@ -75,6 +76,25 @@ ON CONFLICT (state_id) DO UPDATE SET
                           EXCLUDED.noise_through_tx_index)
         ELSE news_market_wallet_tape_state.noise_through_tx_index
     END
+"""
+
+# The roster refresh task's own result, recorded whether or not a version was published. It is an
+# upsert because the refresh can legitimately run before the collector has ever written the row, and a
+# refresh failure that could not be recorded is the failure this whole flow exists to make visible.
+_SAVE_ROSTER_REFRESH_SQL: Final = """
+INSERT INTO news_market_wallet_tape_state (
+    state_id, high_water_block, high_water_tx_index, roster_version,
+    last_outcome, updated_at_ms,
+    roster_last_attempt_at_ms, roster_last_success_at_ms, roster_last_error
+) VALUES (%s, 0, -1, 0, '', %s, %s, %s, %s)
+ON CONFLICT (state_id) DO UPDATE SET
+    updated_at_ms = EXCLUDED.updated_at_ms,
+    roster_last_attempt_at_ms = EXCLUDED.roster_last_attempt_at_ms,
+    -- A failed attempt may never move the success stamp: "the last complete list was taken at" is
+    -- the one figure an operator uses to decide whether the published roster is still the truth.
+    roster_last_success_at_ms = COALESCE(EXCLUDED.roster_last_success_at_ms,
+                                         news_market_wallet_tape_state.roster_last_success_at_ms),
+    roster_last_error = EXCLUDED.roster_last_error
 """
 
 _CURRENT_ROSTER_SQL: Final = """
@@ -138,6 +158,9 @@ class ChainTapeStateRow(TypedDict):
     scanned_block: int | None
     scanned_log: int | None
     gap_at_ms: int | None
+    roster_last_attempt_at_ms: int | None
+    roster_last_success_at_ms: int | None
+    roster_last_error: str | None
 
 
 class ChainTapeStorage:
@@ -235,6 +258,9 @@ class ChainTapeStorage:
             scanned_block=row["scanned_block"],
             scanned_log=row["scanned_log"],
             gap_at_ms=row["gap_at_ms"],
+            roster_last_attempt_at_ms=row["roster_last_attempt_at_ms"],
+            roster_last_success_at_ms=row["roster_last_success_at_ms"],
+            roster_last_error=None if row["roster_last_error"] is None else str(row["roster_last_error"]),
         )
 
     def chain_tape_save_state(
@@ -273,6 +299,26 @@ class ChainTapeStorage:
                 max(0, int(unknown)),
                 0 if noise_cursor is None else max(0, int(noise_cursor.block_number)),
                 -1 if noise_cursor is None else max(-1, int(noise_cursor.transaction_index)),
+            ),
+        )
+
+    def chain_tape_save_roster_refresh(
+        self,
+        *,
+        now_ms: int,
+        succeeded: bool,
+        error: str | None,
+    ) -> None:
+        """Record one refresh attempt: when it ran, whether it published, and why it did not."""
+
+        self.conn.execute(
+            _SAVE_ROSTER_REFRESH_SQL,
+            (
+                TAPE_STATE_ID,
+                int(now_ms),
+                int(now_ms),
+                int(now_ms) if succeeded else None,
+                None if succeeded else (error or "roster_refresh_failed"),
             ),
         )
 

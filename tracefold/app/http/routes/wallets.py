@@ -33,10 +33,6 @@ WALLET_FUNNEL_BUCKET_MS: Final = 60_000
 # whole minute behind the clock means turns are failing or overrunning, not that the chain was quiet.
 # The browser used to make this judgement with a bare `60_000`; it is one server-owned number (#649 §7.3).
 COLLECTION_LAG_MS: Final = 60_000
-# A roster refresh still runs inside the collection turn, so its failure reaches this projection as the
-# turn's error. PR-1 (#649 §5.1) moves the refresh to its own task with its own attempt record; this
-# reads whichever of the two the deployment is running without inventing a state for the other.
-ROSTER_ERROR_PREFIXES: Final = ("robinhoodtrenches", "roster_")
 
 
 @router.get("/news/wallets", response_model=_WalletsEnvelope)
@@ -64,7 +60,13 @@ def get_news_wallets(request: Request) -> Response:
     rules = chain_tape.rules
     return _etagged(
         {
-            "roster": _roster(members, tape, cutoff=cutoff, coverage_from_ms=coverage_from),
+            "roster": _roster(
+                members,
+                tape,
+                cutoff=cutoff,
+                coverage_from_ms=coverage_from,
+                window=chain_tape.roster.window,
+            ),
             "tape": tape,
             "thresholds": {
                 "fast_n": rules.net_buy_fast_n,
@@ -197,9 +199,15 @@ def _event(row: dict[str, Any]) -> dict[str, Any]:
         **{field: row[field] for field in fields},
         "episode_id": row["item_id"],
         "triggered_at_ms": row["event_at_ms"],
-        "notification_state": row["notification_state"]
-        or ("pending" if row["notification_eligible"] and not row["notification_error"] else "not_alerted"),
-        "notification_reason": row["notification_error"] or row["notification_reason"],
+        # One projection, computed in SQL beside the facts it reads (#649 §7.1). The route used to
+        # invent `pending` here for "eligible and no error", which is how a notification-stage
+        # rejection with no intent -- `wallet_not_selected`, `episode_already_reported`, a discarded
+        # intent -- read as "waiting to be sent" for the rest of its life.
+        "notification_state": row["notification_state"],
+        "notification_reason": row["notification_error"],
+        "notification_next_due_at_ms": (
+            row["notification_next_due_at_ms"] if row["notification_state"] == "pending" else None
+        ),
         "attempts": row["attempts"] or 0,
         "reference_price": None if row["reference_price"] is None else str(row["reference_price"]),
     }
@@ -211,14 +219,17 @@ def _roster(
     *,
     cutoff: int | None,
     coverage_from_ms: int | None,
+    window: str,
 ) -> dict[str, Any]:
     """The published version is the last refresh that actually succeeded; a failed one publishes nothing.
 
-    So `last_success_at_ms` is that version's own `taken_at_ms`, and the failure half is reported only
-    when there is a real failure to report -- an absent error is not a refresh that has never been tried.
+    The refresh half is the refresh task's own record rather than a guess from the collection turn's
+    error (#649 §5.1). `news-wallet-roster` writes `roster_last_attempt_at_ms` on every attempt and
+    `roster_last_success_at_ms` only on one that published, so "throttled for five hours" and "the list
+    genuinely did not change" are two different answers here instead of one silence. A refresh that has
+    never been tried has no attempt stamp and no error, which is also not a failure.
     """
 
-    error = _roster_error(tape)
     published = {
         "version": 0 if not members else int(members[0]["roster_version"]),
         "taken_at_ms": None if not members else int(members[0]["taken_at_ms"]),
@@ -226,22 +237,18 @@ def _roster(
     }
     return {
         **published,
+        "window": window,
         "quality_count": sum(member["rank_quality"] is not None for member in members),
         "whale_count": sum(member["rank_whale"] is not None for member in members),
         "supported_quality_count": _supported(members, cutoff, coverage_from_ms, FAST_WINDOW_MS),
-        "last_attempt_at_ms": None if error is None or tape is None else tape["updated_at_ms"],
-        "last_success_at_ms": published["taken_at_ms"],
-        "last_error": error,
+        "last_attempt_at_ms": None if tape is None else tape["roster_last_attempt_at_ms"],
+        "last_success_at_ms": None if tape is None else tape["roster_last_success_at_ms"],
+        "last_error": None if tape is None else tape["roster_last_error"],
         "members": [
             {key: value for key, value in member.items() if key not in {"roster_version", "taken_at_ms"}}
             for member in members
         ],
     }
-
-
-def _roster_error(tape: dict[str, Any] | None) -> str | None:
-    error = None if tape is None else tape["last_error"]
-    return str(error) if error and str(error).startswith(ROSTER_ERROR_PREFIXES) else None
 
 
 def _supported(members: list[dict[str, Any]], cutoff: int | None, coverage_from_ms: int | None, window_ms: int) -> int:

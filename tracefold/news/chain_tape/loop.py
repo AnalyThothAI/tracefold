@@ -1,13 +1,18 @@
-"""The `news-chain-tape` turn: refresh the roster, read the chain's logs, store what the wallets did.
+"""The `news-chain-tape` turn: read the chain's logs, store what the followed wallets did.
 
 One bounded `advance()`. App owns the tick, the stop event and the process lifecycle, exactly as it does
 for the market notification loop and the Signal lane, because this loop exposes one business action.
 
-Three flows share the turn, and the extension gate names them separately because their contracts differ
+The roster is **read** here and refreshed nowhere near here. It used to be rebuilt at the top of this
+turn, one blocking per-trader request at a time, ahead of the first chain call: 45 handles against a
+15 s read timeout is a collection turn that can spend eleven minutes not collecting, and a provider
+that rate-limited half of them still published a new eligibility list (#649 §3 row 1). The refresh is
+its own Workers task now (`roster_refresh.py`), and what this turn does with the list is read the last
+published version out of PostgreSQL.
+
+Two flows share the turn, and the extension gate names them separately because their contracts differ
 (#572 §5.1):
 
-* the roster snapshot is `latest_state` -- a failed refresh keeps the previous version, and a version
-  that has not changed is re-stamped rather than re-inserted;
 * the wallet `Transfer` logs are a `durable_event` stream -- every one matters, the chain is the
   authority, and the position they were classified to is durable, so a restart resumes rather than
   re-reads from the head;
@@ -15,7 +20,8 @@ Three flows share the turn, and the extension gate names them separately because
   in bounded batches, and idempotent on the chain's own identity.
 
 Provider failures retain the durable position for a later turn. Unexpected errors reach Workers
-supervision. The net-buy detector and event price sampler run independently over committed facts.
+supervision. The roster refresh, the net-buy detector and the event price sampler run independently
+over committed facts.
 """
 
 from __future__ import annotations
@@ -42,7 +48,6 @@ from .contracts import (
     TapeCursor,
 )
 from .evm import TRANSFER_TOPIC, address_topic
-from .roster import RosterRules, quality_candidates, select_roster
 
 # Blocks are ~0.101 s apart. Thirty of them is three seconds of overlap on every turn: enough that a tip
 # that answered short is re-read on the next turn, and cheap because the classified position is durable
@@ -54,17 +59,21 @@ BLOCK_OVERLAP: Final = 30
 CATCH_UP_BLOCKS_MAX: Final = 100_000
 # Receipts are the expensive call: one round trip each, on a public endpoint that publishes a rate limit.
 RECEIPTS_PER_TURN_MAX: Final = 20
-ROSTER_REFRESH_MS: Final = 3_600_000
 POLL_INTERVAL_SECONDS: Final = 2.0
 _DB_READ_TIMEOUT_SECONDS: Final = 5.0
 _DB_WRITE_TIMEOUT_SECONDS: Final = 10.0
 
 CHAIN_SOURCE: Final[NewsExternalDataSource] = "robinhood_rpc"
-ROSTER_SOURCE: Final[NewsExternalDataSource] = "robinhoodtrenches"
 
 # "This provider call did not answer". Distinct from a provider that answered `None`, which is a fact
 # about the chain (no such transaction) rather than a failure.
 _FAILED: Final = object()
+# "This transaction could not be classified this turn, and the rest of the batch is unaffected." A
+# receipt the node did not answer for, or a token whose metadata did not answer, holds the durable
+# position at the last transaction that *was* classified -- the batch carries on, because a missing
+# ERC-20 `symbol()` is not a reason to stop reading the chain for the next two seconds, and one
+# transaction's metadata has nothing to do with the next one's (#649 §6.3).
+_HOLD: Final = object()
 
 
 class ChainLogPort(Protocol):
@@ -93,17 +102,6 @@ class ChainLogPort(Protocol):
     async def token(self, address: str) -> Any: ...
 
 
-class RosterProviderPort(Protocol):
-    """The roster's authority: the tracked list, and one document per handle for its profit factor."""
-
-    @property
-    def last_response_bytes(self) -> int: ...
-
-    async def traders(self, *, window: str = "7d") -> Sequence[Any]: ...
-
-    async def trader(self, handle: str) -> Any | None: ...
-
-
 class ChainTapeRepositories(Protocol):
     """The callback capability one turn needs; no instruments, no price, no Trading."""
 
@@ -129,7 +127,6 @@ class ChainTapeLoop:
     work_semantics: ClassVar[tuple[NewsWorkSemantics, ...]] = (
         "durable_event",
         "derived_work",
-        "latest_state",
     )
 
     def __init__(
@@ -137,9 +134,6 @@ class ChainTapeLoop:
         *,
         db: ChainTapeDatabasePort,
         chain: ChainLogPort,
-        roster_provider: RosterProviderPort,
-        rules: RosterRules | None = None,
-        roster_refresh_ms: int = ROSTER_REFRESH_MS,
         block_overlap: int = BLOCK_OVERLAP,
         catch_up_blocks_max: int = CATCH_UP_BLOCKS_MAX,
         receipts_per_turn_max: int = RECEIPTS_PER_TURN_MAX,
@@ -147,9 +141,6 @@ class ChainTapeLoop:
     ) -> None:
         self.db = db
         self.chain = chain
-        self.roster_provider = roster_provider
-        self.rules = rules or RosterRules()
-        self.roster_refresh_ms = max(0, int(roster_refresh_ms))
         self.block_overlap = max(0, int(block_overlap))
         self.catch_up_blocks_max = max(1, int(catch_up_blocks_max))
         self.receipts_per_turn_max = max(1, int(receipts_per_turn_max))
@@ -165,17 +156,16 @@ class ChainTapeLoop:
         self._collection_wallets: tuple[str, ...] = ()
 
     async def aclose(self) -> None:
-        """Release whatever the two provider ports hold. A port with nothing to release says so by
-        not having the method; the loop never learns what an adapter's session is."""
+        """Release whatever the chain port holds. A port with nothing to release says so by not
+        having the method; the loop never learns what an adapter's session is."""
 
-        for provider in (self.chain, self.roster_provider):
-            close = getattr(provider, "aclose", None)
-            if close is not None:
-                await close()
+        close = getattr(self.chain, "aclose", None)
+        if close is not None:
+            await close()
 
     # ------------------------------------------------------------------ the turn
     async def advance(self) -> dict[str, Any]:
-        """Refresh the roster if it is due, then classify one bounded slice of the chain's logs.
+        """Classify one bounded slice of the chain's logs, against the last published roster.
 
         Every path out of here writes the tape's state row, including the ones a provider failure ends
         early. An operator reading `last_outcome` and `last_error` is asking "did the last turn work",
@@ -205,9 +195,6 @@ class ChainTapeLoop:
             errors.append(f"db:{type(exc).__name__}")
             self._record_turn(started, "error", result, errors)
             return result
-        roster_error = await self._refresh_roster_if_due()
-        if roster_error:
-            errors.append(roster_error)
         roster = self._roster
         wallets = ()
         if roster is not None:
@@ -301,23 +288,35 @@ class ChainTapeLoop:
         fills: list[ClassifiedFill] = []
         classified_through = cursor
         counted_through = noise_cursor
+        # Where the *durable position* stops. One transaction the node or a token contract would not
+        # answer for holds the mark at the last transaction before it, so that one is re-offered next
+        # turn -- but the rest of the batch is still classified and still written, because the chain's
+        # own identity makes re-writing those rows one `ON CONFLICT DO NOTHING` (#649 §6.3). The noise
+        # counters stop with the mark for the opposite reason: they have no key to collapse on, so a
+        # movement counted above a held mark would be counted again when the mark finally passes it.
+        held = False
         for position in taken:
             outcome = await self._classify(position, wallets=wallets, roster=roster, errors=errors)
             if outcome is None:
-                # The receipt or one of its tokens did not answer. Everything from here stays pending,
-                # and the position this turn already classified is what is recorded.
+                # The chain contradicted itself -- a withdrawn log, a receipt for another block. That
+                # is not one transaction's problem, so the turn stops reading here.
                 break
+            if outcome is _HOLD:
+                held = True
+                continue
             fills.extend(outcome.fills)
             # A fill collapses on its primary key however many times the lagging position re-offers it.
             # A count has no key to collapse on, so the marker is the key: what is at or below it has
             # already been counted, and this pass only reports what is above it.
-            if noise_cursor.precedes(position.block_number, position.transaction_index):
+            if not held and noise_cursor.precedes(position.block_number, position.transaction_index):
                 result["ignored_inbound"] += outcome.ignored_inbound
                 result["unknown"] += outcome.unknown
             result["receipts"] += 1
+            if held:
+                continue
             classified_through = TapeCursor(position.block_number, position.transaction_index)
             counted_through = classified_through
-        if result["receipts"] == len(candidates) and len(errors) == errors_before_chain:
+        if not held and result["receipts"] == len(candidates) and len(errors) == errors_before_chain:
             # The whole planned range is classified -- and the durable position deliberately stops one
             # overlap short of the head it was read to.
             #
@@ -390,53 +389,6 @@ class ChainTapeLoop:
         self._record_turn(started, "error", result, errors, stored=not self._store_refused)
         return result
 
-    # ------------------------------------------------------------------ roster
-    async def _refresh_roster_if_due(self) -> str | None:
-        """Rebuild the list when it is older than the refresh period. A failure keeps the last one."""
-
-        if (
-            self._roster is not None
-            and self.roster_refresh_ms
-            and now_ms() - int(self._roster.taken_at_ms) < self.roster_refresh_ms
-        ):
-            return None
-        errors: list[str] = []
-        candidates = await self._provider(ROSTER_SOURCE, self.roster_provider.traders, errors)
-        if candidates is _FAILED:
-            # The site did not answer. The previous version stays exactly as it is; that is the whole
-            # of the `latest_state` contract for this flow (#572 §5.1).
-            return errors[0] if errors else "roster_unavailable"
-        profit_factors: dict[str, float | None] = {}
-        for row in quality_candidates(candidates, rules=self.rules):
-            handle = str(getattr(row, "handle", "") or "")
-            if not handle or handle in profit_factors:
-                continue
-            stats = await self._provider(
-                ROSTER_SOURCE,
-                functools.partial(self.roster_provider.trader, handle),
-                errors,
-            )
-            if stats is _FAILED or stats is None:
-                # One unreadable trader is not a broken roster: it simply cannot pass the quality rule.
-                profit_factors[handle] = None
-                continue
-            profit_factors[handle] = getattr(stats, "profit_factor", None)
-        members = select_roster(candidates, profit_factors=profit_factors, rules=self.rules)
-        if not members:
-            return "roster_selected_nobody"
-        stamp = now_ms()
-        try:
-            self._roster = await self.db.tx(
-                "news_chain_tape_roster",
-                lambda repos: repos.news.chain_tape_store_roster(members, now_ms=stamp),
-                timeout_seconds=_DB_WRITE_TIMEOUT_SECONDS,
-            )
-        except (TransientError, DeferError) as exc:
-            # Same shape as the fill write: nothing committed, the previous version is still current,
-            # and the chain half of this turn carries on against it.
-            return f"db:{type(exc).__name__}"
-        return errors[0] if errors else None
-
     # ------------------------------------------------------------------ chain
     def _range(self, cursor: TapeCursor, *, head: int) -> tuple[int, int, TapeCursor]:
         """The block window this turn reads, and the position it must not re-classify.
@@ -498,7 +450,7 @@ class ChainTapeLoop:
             errors,
         )
         if receipt is _FAILED:
-            return None
+            return _HOLD
         if receipt is None:
             return self._missing_receipt(position, errors)
         if (
@@ -514,7 +466,7 @@ class ChainTapeLoop:
             errors,
         )
         if event_at_ms is _FAILED:
-            return None
+            return _HOLD
         stamp = now_ms()
         classification = classify_receipt(
             receipt,
@@ -529,7 +481,9 @@ class ChainTapeLoop:
         for fill in classification.fills:
             enriched = await self._price(fill, errors=errors)
             if enriched is None:
-                return None
+                # One token's metadata did not answer. That is this transaction's problem and nobody
+                # else's: it is held for the next turn, and the batch behind it carries on (#649 §6.3).
+                return _HOLD
             priced.append(enriched)
         return _Classified(
             fills=tuple(priced),
@@ -537,11 +491,11 @@ class ChainTapeLoop:
             unknown=classification.unknown,
         )
 
-    def _missing_receipt(self, position: _Transaction, errors: list[str]) -> Any | None:
-        """Missing is unresolved: preserve the cursor until the entire receipt is available."""
+    def _missing_receipt(self, position: _Transaction, errors: list[str]) -> Any:
+        """Missing is unresolved: hold the cursor until the entire receipt is available."""
         del position
         errors.append(f"{CHAIN_SOURCE}:receipt_missing")
-        return None
+        return _HOLD
 
     async def _price(self, fill: ClassifiedFill, *, errors: list[str]) -> ClassifiedFill | None:
         """Attach the two tokens' own metadata, and a dollar figure only when the cash leg is the stablecoin."""
@@ -661,7 +615,7 @@ class ChainTapeLoop:
                 source,
                 "success",
                 time.perf_counter() - started,
-                byte_count=_response_bytes(self.chain if source == CHAIN_SOURCE else self.roster_provider),
+                byte_count=_response_bytes(self.chain),
             )
         return answer
 
@@ -807,10 +761,8 @@ __all__ = [
     "CATCH_UP_BLOCKS_MAX",
     "POLL_INTERVAL_SECONDS",
     "RECEIPTS_PER_TURN_MAX",
-    "ROSTER_REFRESH_MS",
     "ChainLogPort",
     "ChainTapeDatabasePort",
     "ChainTapeLoop",
     "ChainTapeRepositories",
-    "RosterProviderPort",
 ]

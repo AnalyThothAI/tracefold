@@ -607,6 +607,9 @@
 | `scanned_block` | `BIGINT` | True | `None` |
 | `scanned_log` | `INTEGER` | True | `None` |
 | `gap_at_ms` | `BIGINT` | True | `None` |
+| `roster_last_attempt_at_ms` | `BIGINT` | True | `None` |
+| `roster_last_success_at_ms` | `BIGINT` | True | `None` |
+| `roster_last_error` | `TEXT` | True | `None` |
 
 ## `news_model_recordings`
 

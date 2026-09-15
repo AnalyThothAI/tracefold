@@ -169,10 +169,10 @@ options:
 
 ```
 usage: tracefold news [-h]
-                      {bus-check,bus-policy,instruments,review,learning,release,replay,why,dlq} ...
+                      {bus-check,bus-policy,instruments,review,learning,release,replay,wallets,why,dlq} ...
 
 positional arguments:
-  {bus-check,bus-policy,instruments,review,learning,release,replay,why,dlq}
+  {bus-check,bus-policy,instruments,review,learning,release,replay,wallets,why,dlq}
     bus-check           declare the News topology and report queue state,
                         effective retry policy, and topology drift
     bus-policy          apply or verify the checked-in RabbitMQ retry/dead-
@@ -186,6 +186,8 @@ positional arguments:
                         and control the canary
     replay              replay a JSON file of provider hits through
                         Deduper+Gate (no model, no broker)
+    wallets             explain the smart-money alert flow: roster,
+                        thresholds, collected flow, decisions, send queue
     why                 print one Event's chain: item, gate, triage, decide,
                         delivery
     dlq                 inspect, replay, or purge the News dead-letter queue
@@ -722,6 +724,19 @@ options:
   -h, --help        show this help message and exit
   --no-instruments  replay without the instrument universe (offline); the Gate
                     then guesses asset_class from XYZ- tags
+
+```
+
+## `news wallets`
+
+```
+usage: tracefold news wallets [-h] [--hours HOURS] [--queue-limit QUEUE_LIMIT]
+
+options:
+  -h, --help            show this help message and exit
+  --hours HOURS         window for the flow and decision counts
+  --queue-limit QUEUE_LIMIT
+                        how many waiting deliveries to list
 
 ```
 

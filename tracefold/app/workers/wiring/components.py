@@ -20,6 +20,7 @@ from tracefold.app.workers.runtime import (
     TRADING_SIGNAL_LANE,
     WALLET_NET_BUY,
     WALLET_PRICES,
+    WALLET_ROSTER,
     CapabilityStates,
 )
 from tracefold.app.workers.wiring.chain_tape import ChainTapeComposition, _wire_chain_tape
@@ -108,6 +109,7 @@ async def _wire_components(
             NEWS_REACTIONS,
             MARKET_NOTIFICATIONS,
             CHAIN_TAPE,
+            WALLET_ROSTER,
             WALLET_NET_BUY,
             WALLET_PRICES,
         ):

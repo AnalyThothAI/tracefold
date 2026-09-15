@@ -40,11 +40,13 @@ from tracefold.app.workers.runtime import (
     TRADING_SIGNAL_LANE,
     WALLET_NET_BUY,
     WALLET_PRICES,
+    WALLET_ROSTER,
 )
 from tracefold.app.workers.wiring.chain_tape import (
     CHAIN_TAPE_TASK_NAME,
     WALLET_NET_BUY_TASK_NAME,
     WALLET_PRICES_TASK_NAME,
+    WALLET_ROSTER_TASK_NAME,
     ChainTapeComposition,
     run_chain_tape,
 )
@@ -140,6 +142,18 @@ def worker_business_tasks(
         )
     if chain_tape is not None:
         tape = chain_tape
+        roster = tape.roster
+        # Declared before the collector, because it is what the collector reads. It is still an
+        # ordinary capability task: a roster site that will not answer faults `wallet_roster` and
+        # leaves collection, detection and pricing running against the last published list (#649 §5.1).
+        tasks.append(
+            WorkerTask(
+                name=WALLET_ROSTER_TASK_NAME,
+                capability=WALLET_ROSTER,
+                run=lambda stop: run_chain_tape(roster, stop_event=stop, poll_seconds=tape.poll_seconds),
+                foundational=False,
+            )
+        )
         tasks.append(
             WorkerTask(
                 name=CHAIN_TAPE_TASK_NAME,

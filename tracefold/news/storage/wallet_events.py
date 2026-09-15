@@ -46,11 +46,33 @@ WALLET_PENDING_RECEIPTS_SQL: Final = f"""
              ORDER BY p.block, p.log, f.chain_id, f.tx_hash, f.log_index
         """  # noqa: S608 -- code-owned SQL identifiers.
 
+# One projection of "what happened to this episode's notification", written once and read by both the
+# list and the detail query (#649 §7.1). `pending` used to be a route-side fallback for "eligible and
+# no error", which made every notification-stage rejection -- `wallet_not_selected`,
+# `episode_already_reported`, a discarded intent -- read as "waiting to be sent" for ever. The three
+# reasons this query used to whitelist had the same effect from the other side: a real terminal reason
+# that was not on the list disappeared and left the fallback to invent `pending`.
+#
+# The facts are the four this join already has: whether the *detector* already refused the episode
+# (`e.notification_eligible`, which is how a muted wallet lane is recorded), whether the notification
+# loop has decided about the Item at all (`i.market_notify_state`), the delivery row if a decision
+# produced one, and the track's own reason if it did not. `pending` is now exactly one thing: an
+# intent that exists, has not been attempted, and whose track still has a next due time.
+NOTIFICATION_PROJECTION: Final = """
+                   CASE
+                     WHEN d.state IS NULL AND NOT e.notification_eligible THEN 'not_alerted'
+                     WHEN d.state IS NULL AND i.market_notify_state <> 'processed' THEN 'awaiting_decision'
+                     WHEN d.state IS NULL THEN 'not_alerted'
+                     WHEN d.state = 'pending' AND d.attempts = 0 AND t.next_due_at_ms IS NULL
+                       THEN 'not_alerted'
+                     ELSE d.state
+                   END AS notification_state,
+                   COALESCE(d.error, NULLIF(t.pending_reason, ''), e.notification_reason)
+                       AS notification_error,
+                   t.next_due_at_ms AS notification_next_due_at_ms"""
+
 WALLET_EVENTS_SQL: Final = f"""
-            SELECT {EVENT_COLUMNS}, d.state AS notification_state,
-                   COALESCE(d.error, CASE WHEN t.pending_reason IN (
-                       'invalidated_before_send','stale_before_send','wallet_notifications_disabled'
-                   ) THEN t.pending_reason END) AS notification_error,
+            SELECT {EVENT_COLUMNS},{NOTIFICATION_PROJECTION},
                    d.created_at_ms AS intent_at_ms, d.first_attempt_at_ms,
                    d.settled_at_ms, d.attempts
               FROM news_market_wallet_events e
@@ -127,10 +149,7 @@ WALLET_OUTCOMES_SQL: Final = """
         """
 
 WALLET_EVENT_SQL: Final = f"""
-            SELECT {EVENT_COLUMNS}, d.state AS notification_state,
-                   COALESCE(d.error, CASE WHEN t.pending_reason IN (
-                       'invalidated_before_send','stale_before_send','wallet_notifications_disabled'
-                   ) THEN t.pending_reason END) AS notification_error,
+            SELECT {EVENT_COLUMNS},{NOTIFICATION_PROJECTION},
                    d.created_at_ms AS intent_at_ms, d.first_attempt_at_ms,
                    d.settled_at_ms, d.attempts, d.card AS frozen_card
               FROM news_market_wallet_events e
@@ -399,14 +418,27 @@ class WalletEventStorage:
             (reason, now_ms, delivery_key),
         )
 
-    def wallet_unprocessed_token(self, *, chain_id: int, token: str) -> bool:
+    def wallet_underived_within_cutoff(self, *, chain_id: int, token: str, cutoff_block: int, cutoff_log: int) -> bool:
+        """Is any fill this token's evidence depends on still undivided *inside* the cutoff?
+
+        This is the bounded form of the send-time gate. Its predecessor asked whether the token had
+        any underived fill at all, with no upper bound: a token the roster keeps trading answers yes
+        for ever, and a qualified first report behind it was never sent -- not suppressed, not
+        deferred, simply skipped on every turn with no state change to show for it (#649 §3 row 3).
+
+        The bound is the collector's own committed position, so the question becomes answerable:
+        everything at or below `C` has been offered to the detector, and everything above it is the
+        tail the detector has not been asked about yet. A tail is not a reason to hold a report.
+        """
+
         return (
             self.conn.execute(
                 """
             SELECT 1 FROM news_market_wallet_fills
-             WHERE chain_id = %s AND token = %s AND derived_at_ms IS NULL LIMIT 1
+             WHERE chain_id = %s AND token = %s AND derived_at_ms IS NULL
+               AND (block_number, log_index) <= (%s, %s) LIMIT 1
         """,
-                (chain_id, token),
+                (chain_id, token, int(cutoff_block), int(cutoff_log)),
             ).fetchone()
             is not None
         )

@@ -2613,6 +2613,8 @@ export interface components {
             /** Last Effective Buy At Ms */
             last_effective_buy_at_ms: number;
             latest_snapshot: components["schemas"]["NetBuySnapshot"];
+            /** Notification Next Due At Ms */
+            notification_next_due_at_ms: number | null;
             /** Notification Reason */
             notification_reason: string | null;
             /** Notification State */
@@ -2762,7 +2764,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "comparable" | "missing_reference" | "unavailable" | "late";
+            status: "comparable" | "missing_reference" | "late";
             /** Target At Ms */
             target_at_ms: number;
         };
@@ -2774,6 +2776,11 @@ export interface components {
          *     background and never stands in for it. `supported_quality_count` is the subset whose monitoring
          *     already covers a whole fast window at the collection cutoff -- a wallet the list gained minutes ago
          *     cannot complete a quorum yet, and a page that counted it would promise a trigger that cannot fire.
+         *
+         *     The published version and the last refresh attempt are separate on purpose. `taken_at_ms` and
+         *     `last_success_at_ms` belong to a refresh that completed; `last_attempt_at_ms` and `last_error`
+         *     belong to the refresh task whether or not it published, so a provider that has been refusing to
+         *     answer for five hours reads as exactly that rather than as a fresh list (#649 §5.1).
          */
         NewsWalletRosterData: {
             /** Last Attempt At Ms */
@@ -2808,6 +2815,8 @@ export interface components {
              * @default 0
              */
             whale_count: number;
+            /** Window */
+            window: string;
         };
         /**
          * NewsWalletRosterMemberData
@@ -2906,6 +2915,12 @@ export interface components {
              * @default 0
              */
             noise_through_tx_index: number;
+            /** Roster Last Attempt At Ms */
+            roster_last_attempt_at_ms?: number | null;
+            /** Roster Last Error */
+            roster_last_error?: string | null;
+            /** Roster Last Success At Ms */
+            roster_last_success_at_ms?: number | null;
             /**
              * Roster Version
              * @default 0

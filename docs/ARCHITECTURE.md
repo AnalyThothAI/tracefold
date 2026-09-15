@@ -400,8 +400,11 @@ prove complete historic position coverage.
 
 ### Concentrated wallet net-buy episodes (#641)
 
-The three independent tasks collect receipts, detect concentrated net-buy episodes,
-and sample prices. Detection and first notification have no balance, bags, external
+The four independent tasks refresh the followed list, collect receipts, detect concentrated
+net-buy episodes, and sample prices. The refresh task owns every provider call to the roster site
+and publishes a new version only when every candidate lookup answered; the collector reads the last
+published version out of PostgreSQL and makes no roster call at all, so a slow or throttled provider
+cannot stop collection (#649 §5.1). Detection and first notification have no balance, bags, external
 quote, or model dependency. Complete transaction facts and derivation progress commit
 atomically. The detector calculates the supported windows from the same fill set,
 with explicit member coverage, pricing, and exclusion reasons.
@@ -409,7 +412,10 @@ with explicit member coverage, pricing, and exclusion reasons.
 An episode retains an immutable first snapshot and an independently updated current
 snapshot. Its logical first notification uses the existing market intent/delivery
 owner. Before the first attempt, eligibility and freshness are checked against actual
-persisted state; the attempted payload then freezes. Price samples remain independent
+persisted state, and the evidence is re-evaluated by the detector's own pure function at the
+collector's committed cutoff `(scanned_block, scanned_log)`: facts inside that cutoff decide the
+report, facts above it never hold it back, and a card whose evidence is not yet derived is deferred
+with its own due time rather than skipped. The attempted payload then freezes. Price samples remain independent
 observations with target and actual times. Without a known trigger baseline, returns
 remain unknown rather than invented.
 
