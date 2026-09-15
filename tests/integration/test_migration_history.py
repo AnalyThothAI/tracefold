@@ -44,7 +44,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260912_0377"
+HEAD = "20260915_0378"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -142,6 +142,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260912_0377",
         "20260912_0376",
         "20260908_0375",
         "20260907_0374",
@@ -220,8 +221,8 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    # The TradePlan hard cut cannot roll venue fills back by downgrading its ownership schema.
-    with pytest.raises(RuntimeError, match="trade_plan_forward_only"):
+    # The typed-asset cut cannot roll a v10 verdict back by downgrading the CHECK that admits it.
+    with pytest.raises(RuntimeError, match="news_program_v10_typed_assets_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
     assert _table_exists("news_delivery_queue") is True
