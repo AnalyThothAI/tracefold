@@ -16,6 +16,7 @@ from tracefold.news.market_review.pricing import (
     REACTION_METRIC_VERSION,
     REVIEW_MAX_HOURS,
     Quote,
+    QuoteRequest,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
@@ -267,7 +268,7 @@ def test_the_quote_read_stays_bounded_with_a_full_snapshot(seeded) -> None:
         )
     seeded.commit()
     symbols = [f"S{index}" for index in range(100)]
-    results = repos.price.quotes_for_symbols(symbols, now_ms=NOW)
+    results = repos.price.quotes_for_symbols([QuoteRequest(symbol) for symbol in symbols], now_ms=NOW)
 
     assert len(results) == 100
 

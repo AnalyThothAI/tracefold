@@ -20,6 +20,7 @@ from tracefold.news.market_review.pricing import (
     QUOTE_FRESH_MAX_AGE_MS,
     REACTION_METRIC_VERSION,
     Quote,
+    QuoteRequest,
 )
 from tracefold.news.models import TriageVerdict
 from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
@@ -238,15 +239,17 @@ def test_resolution_is_exact_symbol_first_and_never_reference_only(conn) -> None
     conn.commit()
     repos = repositories_for_connection(conn)
 
-    resolved = repos.price.resolve_instruments(["SKHX", "SKHY", "BTC", "UWMC", "NOPE"])
+    resolved = repos.price.resolve_instruments(
+        [QuoteRequest("SKHX"), QuoteRequest("SKHY"), QuoteRequest("BTC"), QuoteRequest("UWMC"), QuoteRequest("NOPE")]
+    )
 
     # Storyline identity collapses SKHX into SKHY; pricing keeps the contract the Event actually named.
-    assert resolved["SKHX"].venue_symbol == "xyz:SKHX"
-    assert resolved["SKHY"].venue_symbol == "xyz:SKHY"
+    assert resolved[QuoteRequest("SKHX")].venue_symbol == "xyz:SKHX"
+    assert resolved[QuoteRequest("SKHY")].venue_symbol == "xyz:SKHY"
     # Venue precedence: the perp outranks spot, and USDT outranks USDC inside a venue.
-    assert resolved["BTC"].venue == "binance.perp"
+    assert resolved[QuoteRequest("BTC")].venue == "binance.perp"
     # A reference-only ticker names something, but nothing anyone can price here.
-    assert "UWMC" not in resolved and "NOPE" not in resolved
+    assert QuoteRequest("UWMC") not in resolved and QuoteRequest("NOPE") not in resolved
 
 
 def test_an_alias_still_resolves_a_tag_that_names_nothing_on_its_own(conn) -> None:
@@ -257,8 +260,8 @@ def test_an_alias_still_resolves_a_tag_that_names_nothing_on_its_own(conn) -> No
         (NOW,),
     )
     conn.commit()
-    resolved = repositories_for_connection(conn).price.resolve_instruments(["XAU"])
-    assert resolved["XAU"].venue_symbol == "GOLDUSDT"
+    resolved = repositories_for_connection(conn).price.resolve_instruments([QuoteRequest("XAU")])
+    assert resolved[QuoteRequest("XAU")].venue_symbol == "GOLDUSDT"
 
 
 def test_delivery_resolution_exposes_ordered_venue_fallbacks_without_crossing_an_exact_alias(conn) -> None:
@@ -277,14 +280,16 @@ def test_delivery_resolution_exposes_ordered_venue_fallbacks_without_crossing_an
     )
     conn.commit()
 
-    resolved = repositories_for_connection(conn).price.instruments_for_symbols(["MSFT", "SKHX"])
+    resolved = repositories_for_connection(conn).price.instruments_for_symbols(
+        [QuoteRequest("MSFT"), QuoteRequest("SKHX")]
+    )
 
-    assert [(row.venue, row.venue_symbol) for row in resolved["MSFT"]] == [
+    assert [(row.venue, row.venue_symbol) for row in resolved[QuoteRequest("MSFT")]] == [
         ("binance.perp", "MSFTUSDT"),
         ("hl.xyz", "xyz:MSFT"),
         ("okx.perp", "MSFT-USDT-SWAP"),
     ]
-    assert [row.venue_symbol for row in resolved["SKHX"]] == ["xyz:SKHX"]
+    assert [row.venue_symbol for row in resolved[QuoteRequest("SKHX")]] == ["xyz:SKHX"]
 
 
 def test_quote_working_set_includes_recent_oi_ledger_symbols(conn) -> None:
@@ -333,6 +338,66 @@ def test_quote_working_set_includes_recent_oi_ledger_symbols(conn) -> None:
 
     assert symbols == ["DOGE"]
     assert repos.price.quote_target_symbols(since_ms=NOW - HOUR, limit=1) == ["DOGE"]
+
+
+def test_a_typed_question_never_resolves_to_a_same_name_contract_of_another_market(conn) -> None:
+    """#651 §6.2, against the real catalogue: `V` is Visa and a crypto venue also lists a `V`.
+
+    The untyped question returns whichever contract the venue ranking puts first — which is the coin,
+    because a perp outranks everything — and nothing in the row says the Event was about a company. The
+    typed question filters `news_market_instruments.instrument_class`, so the equity Event resolves to an
+    equity contract or to nothing at all.
+    """
+
+    _universe(
+        conn,
+        _instrument("binance.perp", "VUSDT", "V"),
+        Instrument("hl.xyz", "xyz:V", "V", "equity"),
+        _instrument("binance.perp", "SEIUSDT", "SEI"),
+        Instrument(venue="us.listed", venue_symbol="SEI", base_symbol="SEI", instrument_class="equity"),
+    )
+    repos = repositories_for_connection(conn)
+
+    untyped = repos.price.resolve_instruments([QuoteRequest("V")])
+    equity = repos.price.resolve_instruments([QuoteRequest("V", "equity")])
+    crypto = repos.price.resolve_instruments([QuoteRequest("SEI", "crypto")])
+    listed_only = repos.price.resolve_instruments([QuoteRequest("SEI", "equity")])
+
+    assert untyped[QuoteRequest("V")].venue_symbol == "VUSDT"
+    assert equity[QuoteRequest("V", "equity")].venue_symbol == "xyz:V"
+    assert crypto[QuoteRequest("SEI", "crypto")].venue_symbol == "SEIUSDT"
+    # The `us.listed` reference tier answers "this ticker exists", never "this is what it costs", so an
+    # equity question it is the only answer to resolves to no priceable contract at all.
+    assert listed_only == {}
+    conn.commit()
+
+
+def test_a_directory_only_equity_is_unavailable_rather_than_unlisted_or_a_coin(conn) -> None:
+    """The third quote answer (#651 §6.2): the instrument is real and we poll no price source for it."""
+
+    _universe(
+        conn,
+        _instrument("binance.perp", "SEIUSDT", "SEI"),
+        Instrument(venue="us.listed", venue_symbol="SEI", base_symbol="SEI", instrument_class="equity"),
+    )
+    repos = repositories_for_connection(conn)
+
+    rows = {
+        (row["requested_symbol"], row["instrument_class"]): row
+        for row in repos.price.quotes_for_symbols(
+            [QuoteRequest("SEI", "equity"), QuoteRequest("SEI", "crypto"), QuoteRequest("NOPE", "equity")],
+            now_ms=NOW,
+        )
+    }
+
+    assert rows[("SEI", "equity")]["state"] == "unavailable"
+    assert rows[("SEI", "equity")]["price"] is None and rows[("SEI", "equity")]["venue"] is None
+    # The coin question still resolves to the coin; the two are separate rows of one batch.
+    assert rows[("SEI", "crypto")]["state"] in {"unavailable", "unlisted"}
+    assert rows[("SEI", "crypto")]["venue"] == "binance.perp"
+    # A symbol the catalogue holds nowhere in the asked market is `unlisted`, which is a different answer.
+    assert rows[("NOPE", None)]["state"] == "unlisted"
+    conn.commit()
 
 
 # ---------------------------------------------------------------------------- quotes
@@ -420,7 +485,9 @@ def test_quote_results_name_their_own_state_and_never_fabricate_a_price(conn) ->
 
     fresh = {
         row["requested_symbol"]: row
-        for row in repos.price.quotes_for_symbols(["BTC", "HYPE", "NOPE"], now_ms=NOW + 1_000)
+        for row in repos.price.quotes_for_symbols(
+            [QuoteRequest("BTC"), QuoteRequest("HYPE"), QuoteRequest("NOPE")], now_ms=NOW + 1_000
+        )
     }
     assert fresh["BTC"]["state"] == "fresh" and fresh["BTC"]["price"] == "68000"
     assert fresh["BTC"]["change_basis"] == "rolling_24h"
@@ -443,7 +510,7 @@ def test_quote_results_name_their_own_state_and_never_fabricate_a_price(conn) ->
         assert absent["reference_age_ms"] is None
 
     aged = NOW + QUOTE_FRESH_MAX_AGE_MS + 1_000
-    stale = {row["requested_symbol"]: row for row in repos.price.quotes_for_symbols(["BTC"], now_ms=aged)}
+    stale = {row["requested_symbol"]: row for row in repos.price.quotes_for_symbols([QuoteRequest("BTC")], now_ms=aged)}
     assert stale["BTC"]["state"] == "stale" and stale["BTC"]["price"] == "68000"  # stale keeps its number
 
 
@@ -493,7 +560,10 @@ def test_quote_freshness_preserves_future_timestamps_and_expires_only_the_refere
             now_ms=NOW,
         )
 
-    rows = {row["requested_symbol"]: row for row in repos.price.quotes_for_symbols(["BTC", "HYPE"], now_ms=NOW)}
+    rows = {
+        row["requested_symbol"]: row
+        for row in repos.price.quotes_for_symbols([QuoteRequest("BTC"), QuoteRequest("HYPE")], now_ms=NOW)
+    }
     assert rows["BTC"]["state"] == "stale"
     assert rows["BTC"]["source_at_ms"] == NOW + 5_001
     assert rows["BTC"]["source_age_ms"] == 0
@@ -532,7 +602,7 @@ def test_quote_api_status_and_delivery_render_share_one_snapshot_freshness(conn)
             now_ms=NOW,
         )
 
-    current = repos.price.quotes_for_symbols(["BTC"], now_ms=NOW)[0]
+    current = repos.price.quotes_for_symbols([QuoteRequest("BTC")], now_ms=NOW)[0]
     current_status = repos.price.price_status(now_ms=NOW)["sources"][0]
     assert current["state"] == current_status["state"] == "fresh"
     assert current["effective_age_ms"] == current_status["effective_age_ms"] == 0
@@ -540,7 +610,7 @@ def test_quote_api_status_and_delivery_render_share_one_snapshot_freshness(conn)
     assert quote_line(reader_quotes([current])).startswith("行情 BTC $68,000")
     assert "24h" not in quote_line(reader_quotes([current]))
 
-    stale = repos.price.quotes_for_symbols(["BTC"], now_ms=NOW + 45_001)[0]
+    stale = repos.price.quotes_for_symbols([QuoteRequest("BTC")], now_ms=NOW + 45_001)[0]
     stale_status = repos.price.price_status(now_ms=NOW + 45_001)["sources"][0]
     assert stale["state"] == stale_status["state"] == "stale"
     assert stale["effective_age_ms"] == stale_status["effective_age_ms"] == 45_001
@@ -550,7 +620,9 @@ def test_quote_api_status_and_delivery_render_share_one_snapshot_freshness(conn)
 def test_duplicate_request_symbols_cannot_multiply_repository_work(conn) -> None:
     _universe(conn, _instrument("binance.perp", "BTCUSDT", "BTC"))
     repos = repositories_for_connection(conn)
-    results = repos.price.quotes_for_symbols(["BTC", "btc", "BTC"], now_ms=NOW)
+    results = repos.price.quotes_for_symbols(
+        [QuoteRequest("BTC"), QuoteRequest("btc"), QuoteRequest("BTC")], now_ms=NOW
+    )
     assert [row["requested_symbol"] for row in results] == ["BTC", "btc"]
 
 
