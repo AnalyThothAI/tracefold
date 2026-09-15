@@ -263,9 +263,12 @@ def grounded_restatement(verdict: TriageVerdict, status: StorylineStatus | None)
 
     The label decides, and the direction does not (#651 §6.3). This used to exempt a `restatement` whose
     `direction` had flipped against the cited told entry, on the theory that a reversal cannot be a repeat.
-    But `direction` is the model's own reading of a fact, not a fact about the world: the same Visa onchain
-    credit release read `bullish` by one card and, from another outlet's wording, differently by the next is
-    one fact either way, and the exemption is what pushed `ec2e5a29` and `727ffc0b` to the reader as two.
+    But `direction` is the model's own reading of a fact, not a fact about the world. `ec2e5a29` and
+    `727ffc0b` are one Visa onchain-credit release carried by two outlets and the reader received both
+    cards; the model called the second a progression, so the drop it earned it never reached this guard --
+    and had it called it a restatement while reading the direction the other way, the exemption would have
+    delivered it anyway. Correcting the instruction alone could not have stopped that card.
+
     A real world reversal does not arrive wearing this label at all -- it is a new action, so it arrives as
     `progression` or `new_fact`, and it is those two that ``_seen_flip`` and ``_budget_exhausted`` still
     protect against the similarity check and the storyline budget.
