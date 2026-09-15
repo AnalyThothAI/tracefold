@@ -62,6 +62,9 @@ from .taxonomy_metric import TAXONOMY_TARGET_DIMENSIONS, compare_taxonomy
 # bare symbol set — so a primary/mentioned swap and a wrong market are both visible where they were
 # silently equal — and `ungrounded_primary_asset` no longer zeroes a primary the evidence text or the
 # instrument catalogue grounds when the provider tagged something else.
+# v11 (#651 §8): the taxonomy and asset comparisons moved to `learning/target_metrics.py`, and the
+# taxonomy diagnostic reports that module's masked partial score rather than a plain mean over four axes.
+# The number itself moves on a partial Gold, so the label moves with it.
 METRIC_ID = "tracefold.news.production_action_trade_relevance_v11"
 
 
