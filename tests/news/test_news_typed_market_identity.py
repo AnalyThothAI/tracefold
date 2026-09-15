@@ -21,7 +21,12 @@ from typing import Any
 import pytest
 
 from tracefold.news.delivery import card_assets
-from tracefold.news.events.storyline import final_storyline_key, same_storyline_key, storyline_asset
+from tracefold.news.events.storyline import (
+    final_storyline_key,
+    same_storyline_key,
+    storyline_asset,
+    symbol_in_text,
+)
 from tracefold.news.learning.objective import (
     asset_claims_match,
     known_wrong_markets,
@@ -166,13 +171,25 @@ def test_the_visa_card_names_visa_and_not_the_only_tag_the_provider_sent() -> No
     assert QuoteRequest(shown[0].symbol, shown[0].market_type) == QuoteRequest("V", "equity")
 
 
-def test_a_primary_the_provider_did_not_tag_is_still_grounded_by_the_evidence() -> None:
-    """The gate that zeroed the correct Visa answer for not matching the provider's tag (#651 §5)."""
+def test_a_primary_the_gate_did_not_ground_is_still_grounded_by_the_event() -> None:
+    """The gate that zeroed the correct Visa answer for not matching the *grounded* tag (#651 §5).
+
+    `727ffc0b` is exact about why the old rule was wrong. The provider sent four coin tags — `XPL`,
+    `CRCL`, `XYZ-CRCL` and `V` — and the Gate grounded only the two `CRCL` spellings, because a B+ tag
+    grounds only when the text spells it and this text says `Visa`, not `V`. So the Event names `V`,
+    the catalogue holds it, the model read Visa out of the headline and answered `V` — and the metric
+    zeroed the case for it. Grounding is now the whole question "does this Event name this symbol at
+    all", which the Gate's grounding bar was never asking.
+    """
 
     context = _context("visa_restated")
     evidence_text = " ".join((context.evidence.title, context.evidence.raw_first_line, context.evidence.content))
 
-    assert "Visa" in evidence_text
+    # Neither `V` nor `CRCL` is spelled in the text, and the Gate grounded only `CRCL`.
+    assert "Visa" in evidence_text and not symbol_in_text("V", evidence_text)
+    assert context.evidence.provider_coins == ("XPL:C", "CRCL:A", "XYZ-CRCL:A", "V:B+")
+    assert unambiguous_catalog_class(context.gate.catalog_candidates, "V") == "unknown"  # two markets
+
     assert (
         ungrounded_primaries(
             [_asset("V", "equity")],
@@ -182,7 +199,18 @@ def test_a_primary_the_provider_did_not_tag_is_still_grounded_by_the_evidence() 
         )
         == ()
     )
-    # The gate that stays: a primary nothing in the Event names at all is invented, not grounded.
+    # The other half of the rule, on an Event that names nothing at all in the catalogue: a symbol the
+    # evidence text spells as its own token is grounded by the text alone.
+    assert (
+        ungrounded_primaries(
+            [_asset("NVDA", "equity")],
+            grounded={"CRCL"},
+            evidence_text="NVDA to invest $100bn in OpenAI data centres",
+            catalog_candidates=(),
+        )
+        == ()
+    )
+    # And the gate that stays: a primary the Event names nowhere is invented, not grounded.
     assert ungrounded_primaries(
         [_asset("ZZZZ", "equity")],
         grounded={"CRCL"},
