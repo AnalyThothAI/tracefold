@@ -35,12 +35,12 @@ NEWS_EXECUTION_ENVELOPE_SHA256 = "19d4f67b64bdcc5ebbf4c42f8eff3d51f24c8dd755b1e9
 # half of that change a hash can hold: the novelty contract lost the absolute "a direction flip is never a
 # restatement" sentence, so the seed and `grounded_restatement` now say the same thing. The pin is separate
 # from `NEWS_STABLE_PROGRAM_SHA256`, which also moved because the image is now the native state document.
-NEWS_PREDICTOR_INSTRUCTION_SHA256 = "bd3da7883c87c64bd058fba82187aef2f5f17d4b960d981ea1baf116cfa15eed"
+NEWS_PREDICTOR_INSTRUCTION_SHA256 = "83aa1b8122d87a9ea58d3c90900ac7cb8a4d8b90c59c691fec9b381efcc05909"
 
 # #651 re-pins this over the native DSPy state document rather than three instruction strings. The
 # instruction bytes below did not move; the image's *shape* did, and `program_sha256` now addresses
 # the whole `dump_state()` document (minus its `lm` routes) plus the schema and the pinned DSPy version.
-NEWS_STABLE_PROGRAM_SHA256 = "dd3038a4818e254c01374a8cb38eb65a166917573f7dcdc125d2afd226c3a8ca"
+NEWS_STABLE_PROGRAM_SHA256 = "5454071e2981e09f9672b1fdd0490473072c1fb641292c600856b7659b13107a"
 
 # #437 changes Gold projection. It remains release evidence after #453 moves taxonomy Gold into the one
 # development Objective and Metric: a behavior edit must visibly re-pin this name. v7 (#501) carries the

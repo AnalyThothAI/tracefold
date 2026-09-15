@@ -140,6 +140,9 @@ def test_the_novelty_contract_no_longer_exempts_the_model_s_own_direction() -> N
 
     assert "A direction flip versus the told entry is never a restatement." not in semantics
     assert "Your own direction reading is not a fact about the world" in semantics
+    # The #522 calibration the short contract must not have displaced: "a decision-relevant new quantity"
+    # is a progression, and a sharper figure of the quantity already told is not one.
+    assert "a more precise figure of the same fact is still the same fact" in semantics
     assert "Two different economic events are not one fact because one storyline covers both." in semantics
     assert "restates must name the told index of the same fact" in semantics
     for counterexample in (

@@ -18,7 +18,7 @@ independent connected-fact clusters are scored, the result is
 - Source-authority classifier: `news_source_authority_v3`, registry SHA
   `9aa960aa5ff29d08b4a0223c5a745ac767f9161f7862885818d2d0035917da50`.
 - Production Program: `news_semantic_program_v10`, Program SHA
-  `dd3038a4818e254c01374a8cb38eb65a166917573f7dcdc125d2afd226c3a8ca`.
+  `5454071e2981e09f9672b1fdd0490473072c1fb641292c600856b7659b13107a`.
 - Review contract: `news_review_v7`.
 - The model emits `subject_codes`, `event_family`, `change_state`, and
   `assertion_status`. Code derives `source_authority` only from the structured
