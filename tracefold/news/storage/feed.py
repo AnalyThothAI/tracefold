@@ -7,7 +7,7 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..models import ReaderReceipt
+from ..models import ReaderReceipt, market_type_of
 from ..outcome import (
     audience_zh,
     decision_zh,
@@ -666,21 +666,22 @@ def _triage_summary(
     }
 
 
-def _triage_assets(value: Any) -> list[dict[str, str | None]]:
+def _triage_assets(value: Any) -> list[dict[str, str]]:
+    """The stored verdict's assets, typed. A pre-#651 free string or `null` reads as `unknown`."""
+
     if not isinstance(value, list):
         return []
-    out: list[dict[str, str | None]] = []
+    out: list[dict[str, str]] = []
     for item in value:
         if not isinstance(item, Mapping):
             continue
         symbol = str(item["symbol"]).strip()
         if not symbol:
             continue
-        market_type = item["market_type"]
         out.append(
             {
                 "symbol": symbol,
-                "market_type": None if market_type is None else str(market_type),
+                "market_type": market_type_of(item.get("market_type")),
                 "role": str(item["role"]),
             }
         )

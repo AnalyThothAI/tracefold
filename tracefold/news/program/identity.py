@@ -191,13 +191,17 @@ def _golden_inputs(predictor: PredictorName) -> dict[str, str]:
             "provider_metadata": {},
             "queue_priority": "normal",
             "asset_class": "none",
-            "grounded_assets": [],
+            "grounded_assets": ["GOLD"],
             "storyline_key": "golden",
         },
         watchlist=(),
         told_rows=(),
         now_ms=2_000,
         queue_lag_ms=1_000,
+        # A two-class golden candidate, because the ambiguous symbol is the one the field exists for:
+        # an empty list would let the rendered request keep its bytes while the candidate row stopped
+        # being emitted at all (#651 §A).
+        catalog_candidates={"GOLD": ("crypto", "commodity")},
     )
     prepared = _prepare(context)
     if predictor == "event_semantics":

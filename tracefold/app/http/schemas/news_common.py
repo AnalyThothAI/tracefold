@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from tracefold.news import IPTCCodebookSha, NewsTaxonomyV1, TradeRelevanceV1
+from tracefold.news import IPTCCodebookSha, MarketType, NewsTaxonomyV1, TradeRelevanceV1
 
 from .common import ExactApiSchema
 
@@ -32,8 +32,16 @@ class NewsOutcomeData(ExactApiSchema):
 
 
 class NewsTriageAssetData(ExactApiSchema):
+    """One typed asset of a Triage verdict (#651 §6.2).
+
+    ``market_type`` is the catalogue's instrument-class vocabulary, never a free string: the browser has
+    to be able to tell `SEI` the token from `SEI` the listed insurer, and so does anything reading this
+    API. Verdicts written before #651 carry `null` or a provider-tag word; the projection normalizes
+    those to `unknown` rather than publishing a market nobody established.
+    """
+
     symbol: str = Field(min_length=1, max_length=16)
-    market_type: str | None = Field(default=None, max_length=16)
+    market_type: MarketType
     role: Literal["primary", "mentioned"]
 
 
