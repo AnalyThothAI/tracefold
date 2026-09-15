@@ -730,7 +730,7 @@ cannot verify its own policy is a construction bug, and scoring it 0 would blame
 the Program for it.
 
 Migration `0336` removes the pre-genesis replay fixture with the database
-evidence it represented. Current metric-v8 evidence is built only from exact
+evidence it represented. Current metric-v9 evidence is built only from exact
 `news_judgment_v2` rows created in the post-genesis active epoch; tests do not
 carry a repository copy of the retired evidence shape.
 
@@ -756,13 +756,18 @@ Hard gates come first and are not averaged with anything: `must_push` miss,
 `must_hold` send, background sent realtime (objective guards separated), schema
 invalidity, ungrounded primary, factual contradiction, relevance inconsistency,
 a card carrying a URL or describing its writer as a model, or known duplicate
-leak scores the example zero. What survives is metric v8: 45% final production
+leak scores the example zero. What survives is metric v9: 45% final production
 action, 35% exact TradeRelevance dimensions, 10% semantics/novelty, 10%
 ReaderCard reviewer anchors and 10% the deterministic ReaderCard copy lint.
-Every failed scored dimension needs exact expected gold; without it the field is
-not scored — the lint is the one component that needs no reviewer label at all,
-which is why it is the only card evidence an unlabelled case carries. Reports publish per-component
-denominators, effective weight mass, gold coverage and field n. `pred_name`
+Exact expected gold scores typed repairs. Failed `factual_fidelity` and rewritten
+`why_support` instead use the sealed evidence-support judge on the frozen bounded
+input; a supported repair needs no reference sentence. An unavailable question
+scores zero and is reported separately from an explicit unsupported answer.
+`why_value=fail` without gold remains unscored; equivalence can preserve an
+accepted pass but cannot certify a value improvement. Lint needs no reviewer
+label and measures format only. Reports publish per-component denominators,
+effective weight mass, gold coverage and field n, plus per-dimension scored and
+answered denominators, unavailable, unscored and unlabelled counts. `pred_name`
 never changes the score; it only routes owned feedback. Listing/telemetry are
 excluded from relevance scoring, and watchlist-guard action feedback cannot ask
 a Predictor to repair code-owned policy. The receipt binds weights, complete

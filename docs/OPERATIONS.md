@@ -1457,13 +1457,17 @@ Diagnose News in this order:
    every requested case and does not move when the model does. `hard_gates`
    says which gate zeroed a case, and a `metric_error:*` in `failures.by_code`
    is a defect in the corpus or the ruler, not a provider outage. Compare
-   metric-v8 components as well: 45% final action, 35% exact TradeRelevance,
+   metric-v9 components as well: 45% final action, 35% exact TradeRelevance,
    10% semantics/novelty, 10% ReaderCard reviewer anchors and 10% ReaderCard
    lint, each with its effective denominator,
-   weight mass and gold coverage. A failed dimension without exact gold is not
-   scored. `metric_judge` unavailability is a receipted failure-as-zero for its
-   free-text field, not byte-equality fallback.
-   receipts by `report_sha256`, which excludes wall-clock latency so two runs
+   weight mass and gold coverage. Factual repairs and rewritten `why_support`
+   use the existing evidence-support judge without requiring reference copy;
+   `why_value=fail` without gold remains unscored. Read each dimension's
+   `denominator`, `answered_denominator`, `unavailable_n`, `not_scored_n` and
+   `not_labelled`. `metric_judge` unavailability is a receipted failure-as-zero,
+   distinct from an explicit unsupported claim. Lint and accepted-copy
+   equivalence do not establish an increase in explanation usefulness.
+   Identify receipts by `report_sha256`, which excludes wall-clock latency so two runs
    with the same predictions have the same address. The command is read-only —
    one `serve` connection that closes before the first model call, and no write, delivery,
    proposal, acceptance or promotion authority of any kind.
@@ -1496,7 +1500,7 @@ Diagnose News in this order:
    Then `release
    register --candidate prompt_candidate.json` binds it to the active stable and that frozen dataset
    — re-applying the patch to derive the Program identity and re-deriving the
-   #199 Objective Plan rather than trusting the candidate — and `learning
+   #199 Objective Plan rather than trusting the candidate — and `release
    evaluate` runs the gate. A patch a person wrote registers on identical terms:
    the generator is audit, never permission.
    Production promotion additionally requires a
@@ -1532,7 +1536,7 @@ news_learning_epochs e JOIN agent ON agent.stable_sha = e.bundle_sha`. Take the
 newest agent *before* the join, not after: joining the whole appointment history
 and then taking one row reports the previous deployment's epoch when the current
 agent has no row yet, which is exactly the case worth diagnosing. Only accepted `news_review_v6` rows from that
-epoch, bound to that exact bundle, enter metric v8, GEPA or release evidence. Every earlier Prompt/Program
+epoch, bound to that exact bundle, enter metric v9, GEPA or release evidence. Every earlier Prompt/Program
 baseline remains readable audit history but cannot enter a dataset or release
 stage. Do not
 interpret a successful migration, a valid Program artifact, or the new
@@ -1602,7 +1606,7 @@ For the taxonomy Gold → Candidate workflow (#501 PR-D, drafter routes #534):
    blind pairwise judgments, because both arms hand the reviewer the identical
    card: `news learning freeze --role validation --candidate ...` projects the
    same accepted Gold the development freeze does and publishes
-   `counts.primary_cluster_n`, and `news learning evaluate --stage
+   `counts.primary_cluster_n`, and `news release evaluate --stage
    offline|holdout --live-program` reads, per axis and for `taxonomy_overall`,
    the paired per-cluster candidate-minus-Stable delta and its bootstrap 95 %
    interval under the profile's own `bootstrap` block (seed 112, 2,000

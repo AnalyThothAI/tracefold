@@ -81,7 +81,7 @@ def _carries_han(value: str) -> bool:
 
 class ReaderCard(_ExactModel):
     headline_zh: str = Field(min_length=1, max_length=60)
-    why_zh: str = Field(default="", min_length=8, max_length=140)
+    why_zh: str = Field(default="", min_length=1, max_length=140)
 
     @model_validator(mode="after")
     def _reader_text_is_deliverable(self) -> ReaderCard:

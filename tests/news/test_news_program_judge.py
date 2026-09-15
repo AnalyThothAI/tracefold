@@ -22,6 +22,7 @@ from tracefold.news.learning.judge import (
     CardEquivalence,
     CardEquivalenceAssessment,
     CardEquivalenceJudge,
+    FactualEvidenceAssessment,
     FactualEvidenceSupport,
     MetricJudgeEndpoint,
 )
@@ -185,7 +186,7 @@ def test_concurrent_same_key_misses_share_one_provider_call(route: str) -> None:
     judge = CardEquivalenceJudge(lm, max_model_calls=1)
     callers_ready = threading.Barrier(2)
 
-    def invoke() -> CardEquivalenceAssessment | bool:
+    def invoke() -> CardEquivalenceAssessment | FactualEvidenceAssessment:
         callers_ready.wait(timeout=1)
         if route == "equivalence":
             return judge.equivalence(_ACCEPTED, _REWORDED)
@@ -246,7 +247,15 @@ def test_a_reworded_card_keeps_the_reviewers_pass() -> None:
     names = ("factual_fidelity", "headline_fidelity", "why_support", "why_value")
 
     without = _component(dimensions, names, _REWORDED, _ACCEPTED, None, None)
-    with_judge = _component(dimensions, names, _REWORDED, _ACCEPTED, None, _judge())
+    with_judge = _component(
+        dimensions,
+        names,
+        _REWORDED,
+        _ACCEPTED,
+        None,
+        _judge(),
+        evidence_json=canonical_json({"source": _ACCEPTED}),
+    )
     assert without is not None and with_judge is not None
     assert without[0] == 0.0, "byte equality gives a reworded card nothing"
     assert with_judge[0] == 1.0
@@ -264,8 +273,30 @@ def test_factual_repair_is_verified_against_immutable_event_evidence() -> None:
     supported = CardEquivalenceJudge(supported_lm).facts_supported(evidence, candidate)
     contradicted = CardEquivalenceJudge(contradicted_lm).facts_supported(evidence, candidate)
 
-    assert supported is True and contradicted is False
+    assert supported.status == contradicted.status == "answered"
+    assert supported.verdict is not None and supported.verdict.supported_by_evidence is True
+    assert contradicted.verdict is not None and contradicted.verdict.supported_by_evidence is False
     assert supported_lm.calls == contradicted_lm.calls == 1
+
+
+def test_support_unavailable_is_not_a_cached_negative_answer() -> None:
+    judge = _judge(fail=True)
+    for _ in range(2):
+        assessment = judge.facts_supported("bounded evidence", _REWORDED)
+        assert assessment.status == "unavailable"
+        assert assessment.verdict is None
+        assert assessment.error_code == "metric_judge_unavailable"
+    assert judge.failures == judge.model_calls == 2
+    assert judge.stats["cache_entries"] == 0
+
+
+def test_an_explicit_unsupported_answer_is_cached() -> None:
+    judge = _judge(facts_supported=False)
+    first = judge.facts_supported("bounded evidence", _UNRELATED)
+    assert judge.facts_supported("bounded evidence", _UNRELATED) == first
+    assert first.status == "answered" and first.verdict is not None
+    assert first.verdict.supported_by_evidence is False
+    assert judge.model_calls == 1 and judge.failures == 0
 
 
 def test_an_unrelated_card_does_not_keep_the_pass() -> None:

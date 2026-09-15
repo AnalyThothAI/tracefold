@@ -1,0 +1,2075 @@
+{
+  "purpose": "issue_629_development_diagnostic_not_release_evidence",
+  "case_root_sha256": "f7099327fcc1fcb2a01d9f66c93dfd5b789131b4c405c668c520a039bd458bc6",
+  "study_protocol": {
+    "candidate_program_sha256": "ffbb0a1ff4e7363496250971d8a52f3a2e1e813700d2320d05b02a6b9edcfb49",
+    "candidate_frozen_at_ms": 1789192902306,
+    "candidate_frozen_at_utc": "2026-09-12T06:01:42.306000+00:00",
+    "cases_sha256": "f7099327fcc1fcb2a01d9f66c93dfd5b789131b4c405c668c520a039bd458bc6",
+    "development_role": "six historical counterexamples and three synthetic controls",
+    "split": "all current cases are development only; Platinum/Ingram share one fact group",
+    "future_sample_rule": "select reviewed source events strictly after candidate freeze, exclude connected development fact clusters, preserve current release profile floors and a predeclared closed 24-hour window",
+    "deployment_observation": "a separate fixed 24-hour interval starts only after verified production identity switch; no window shopping",
+    "review_provenance": "pending independent human assessment; model judgments are drafts",
+    "blind_mapping_sha256": "5fa9bb2399757911436c8bb2cae38cd96a5ae2905a86331bd3223e21c44d4958",
+    "future_window": {
+      "from_ms": 1789192902306,
+      "to_ms": 1789279302306,
+      "purpose": "independent diagnostic sample; formal release holdout must begin after actual candidate registration"
+    },
+    "formal_release_holdout_window": null
+  },
+  "baseline": {
+    "raw_report_sha256": "aecdc31a3a66a76c009e80229b0eb70e98bebb9c7baf229d1ed5f6dcd3574059",
+    "report_sha256": "bf21a0c4e983bc3ebb7ff1b8a8edc32ba2a196f11da0c21dcb886f71a6373986",
+    "program_sha256": "32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a",
+    "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+    "metric_id": "tracefold.news.production_action_trade_relevance_v9",
+    "route": {
+      "answered_by": {
+        "fallback": 9
+      },
+      "unanswered_n": 0,
+      "retry_count": 0,
+      "call_count": 30,
+      "physical_call_count": 30,
+      "input_tokens": 115926,
+      "output_tokens": 2656,
+      "total_tokens": 118582,
+      "provider_cost_microusd_known": 0,
+      "cost_unknown_n": 9
+    },
+    "latency_ms": {
+      "wall_ms": 46130,
+      "population": "answered cases; *_with_failures covers every requested case",
+      "p50": 4723,
+      "p95": 7922,
+      "max": 7922,
+      "p95_with_failures": 7922,
+      "max_with_failures": 7922,
+      "num_threads": 1
+    },
+    "failures": {
+      "by_code": {
+        "metric_error:3 validation errors for ModelTaxonomyV1": 2
+      }
+    },
+    "prediction_dimensions": {
+      "factual_fidelity": {
+        "n": 0,
+        "not_labelled": 7,
+        "denominator": 0,
+        "answered_denominator": 0,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": null,
+        "scoring_basis": "accepted_anchor_or_evidence_support"
+      },
+      "headline_fidelity": {
+        "n": 0,
+        "not_labelled": 7,
+        "denominator": 0,
+        "answered_denominator": 0,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": null,
+        "scoring_basis": "accepted_anchor"
+      },
+      "why_support": {
+        "n": 0,
+        "not_labelled": 7,
+        "denominator": 0,
+        "answered_denominator": 0,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": null,
+        "scoring_basis": "accepted_anchor_or_evidence_support"
+      },
+      "why_value": {
+        "n": 0,
+        "not_labelled": 7,
+        "denominator": 0,
+        "answered_denominator": 0,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": null,
+        "scoring_basis": "accepted_pass_retention_only_not_value_improvement"
+      }
+    },
+    "runtime_model": {
+      "slots": {
+        "event_semantics.primary": {
+          "provider": "openai",
+          "model": "openai/qwen3.8-27b",
+          "model_sha256": "08e79e35bd12e8d155a70d9f6a465a5e07fe7263c9221017396ecce6dfa319ab",
+          "binding_sha256": "98b0b9ed078b7f9cc709c2f48b3c3e515983eaa61e1a7e38aae844659600c62e"
+        },
+        "taxonomy.primary": {
+          "provider": "openai",
+          "model": "openai/qwen3.8-27b",
+          "model_sha256": "08e79e35bd12e8d155a70d9f6a465a5e07fe7263c9221017396ecce6dfa319ab",
+          "binding_sha256": "98b0b9ed078b7f9cc709c2f48b3c3e515983eaa61e1a7e38aae844659600c62e"
+        },
+        "reader_card.primary": {
+          "provider": "openai",
+          "model": "openai/qwen3.8-27b",
+          "model_sha256": "08e79e35bd12e8d155a70d9f6a465a5e07fe7263c9221017396ecce6dfa319ab",
+          "binding_sha256": "98b0b9ed078b7f9cc709c2f48b3c3e515983eaa61e1a7e38aae844659600c62e"
+        },
+        "event_semantics.fallback": {
+          "provider": "openai",
+          "model": "openai/deepseek-v4-flash",
+          "model_sha256": "7cc4b6e20cb6f352d6913fbf1b91470b206ab52e599620950da25293cd09e950",
+          "binding_sha256": "e698ab119d6cdcc99c3bf7d0a52bdb9f2753394dc6820f0d5c3b4b8bb08f9d42"
+        },
+        "taxonomy.fallback": {
+          "provider": "openai",
+          "model": "openai/deepseek-v4-flash",
+          "model_sha256": "7cc4b6e20cb6f352d6913fbf1b91470b206ab52e599620950da25293cd09e950",
+          "binding_sha256": "e698ab119d6cdcc99c3bf7d0a52bdb9f2753394dc6820f0d5c3b4b8bb08f9d42"
+        },
+        "reader_card.fallback": {
+          "provider": "openai",
+          "model": "openai/deepseek-v4-flash",
+          "model_sha256": "7cc4b6e20cb6f352d6913fbf1b91470b206ab52e599620950da25293cd09e950",
+          "binding_sha256": "e698ab119d6cdcc99c3bf7d0a52bdb9f2753394dc6820f0d5c3b4b8bb08f9d42"
+        }
+      },
+      "aliases": {
+        "taxonomy.primary": "event_semantics.primary",
+        "reader_card.primary": "event_semantics.primary",
+        "taxonomy.fallback": "event_semantics.fallback",
+        "reader_card.fallback": "event_semantics.fallback"
+      }
+    }
+  },
+  "candidate": {
+    "raw_report_sha256": "2c57a7c9cc1e29a2679870f82694bb8e5fc5723e8fb22e58cc937fc31f7eb8a8",
+    "report_sha256": "93a04417059b5330f7546746f5be55840e1f503f389983881a45ffddfad2630c",
+    "program_sha256": "ffbb0a1ff4e7363496250971d8a52f3a2e1e813700d2320d05b02a6b9edcfb49",
+    "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+    "metric_id": "tracefold.news.production_action_trade_relevance_v9",
+    "route": {
+      "answered_by": {
+        "fallback": 9
+      },
+      "unanswered_n": 0,
+      "retry_count": 0,
+      "call_count": 30,
+      "physical_call_count": 30,
+      "input_tokens": 114721,
+      "output_tokens": 2482,
+      "total_tokens": 117203,
+      "provider_cost_microusd_known": 0,
+      "cost_unknown_n": 9
+    },
+    "latency_ms": {
+      "wall_ms": 48277,
+      "population": "answered cases; *_with_failures covers every requested case",
+      "p50": 5142,
+      "p95": 8038,
+      "max": 8038,
+      "p95_with_failures": 8038,
+      "max_with_failures": 8038,
+      "num_threads": 1
+    },
+    "failures": {
+      "by_code": {}
+    },
+    "prediction_dimensions": {
+      "asset_grounding": {
+        "gold_miss": 1,
+        "retention_miss": 1,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 0.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "banned_filler": {
+        "lint_pass": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 0.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "direction": {
+        "retention_hit": 1,
+        "retention_miss": 1,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 0.5,
+        "scoring_basis": "accepted_anchor"
+      },
+      "factual_fidelity": {
+        "retention_miss": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 0.0,
+        "scoring_basis": "accepted_anchor_or_evidence_support"
+      },
+      "headline_fidelity": {
+        "retention_miss": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 0.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "headline_language": {
+        "lint_pass": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 0.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "headline_length": {
+        "lint_pass": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 0.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "headline_number_count": {
+        "lint_pass": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 0.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "magnitude": {
+        "retention_hit": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 1.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "meta_opening": {
+        "lint_pass": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 0.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "no_emoji": {
+        "lint_pass": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 0.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "reader_value": {
+        "retention_hit": 1,
+        "retention_miss": 1,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 0.5,
+        "scoring_basis": "accepted_anchor"
+      },
+      "taxonomy.assertion_status": {
+        "taxonomy_hit": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 1.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "taxonomy.change_state": {
+        "taxonomy_hit": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 1.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "taxonomy.event_family": {
+        "taxonomy_miss": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 0.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "taxonomy.subject_codes": {
+        "taxonomy_hit": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 1.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "trade_affected_markets": {
+        "retention_hit": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 1.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "trade_channels": {
+        "retention_miss": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 0.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "trade_development_delta": {
+        "retention_miss": 1,
+        "retention_hit": 1,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 0.5,
+        "scoring_basis": "accepted_anchor"
+      },
+      "trade_impact_breadth": {
+        "retention_hit": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 1.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "trade_surprise": {
+        "retention_hit": 1,
+        "retention_miss": 1,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 0.5,
+        "scoring_basis": "accepted_anchor"
+      },
+      "trade_tradability": {
+        "retention_miss": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 0.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "why_length": {
+        "lint_pass": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 0.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "why_single_sentence": {
+        "lint_pass": 2,
+        "n": 2,
+        "labelled_n": 2,
+        "not_labelled": 7,
+        "not_evaluated_n": 0,
+        "denominator": 2,
+        "answered_denominator": 2,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": 0.0,
+        "scoring_basis": "accepted_anchor"
+      },
+      "why_support": {
+        "n": 0,
+        "labelled_n": 0,
+        "not_labelled": 9,
+        "not_evaluated_n": 0,
+        "denominator": 0,
+        "answered_denominator": 0,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": null,
+        "scoring_basis": "accepted_anchor_or_evidence_support"
+      },
+      "why_value": {
+        "n": 0,
+        "labelled_n": 0,
+        "not_labelled": 9,
+        "not_evaluated_n": 0,
+        "denominator": 0,
+        "answered_denominator": 0,
+        "unavailable_n": 0,
+        "not_scored_n": 0,
+        "hit_rate": null,
+        "scoring_basis": "accepted_pass_retention_only_not_value_improvement"
+      }
+    },
+    "runtime_model": {
+      "slots": {
+        "event_semantics.primary": {
+          "provider": "openai",
+          "model": "openai/qwen3.8-27b",
+          "model_sha256": "08e79e35bd12e8d155a70d9f6a465a5e07fe7263c9221017396ecce6dfa319ab",
+          "binding_sha256": "98b0b9ed078b7f9cc709c2f48b3c3e515983eaa61e1a7e38aae844659600c62e"
+        },
+        "taxonomy.primary": {
+          "provider": "openai",
+          "model": "openai/qwen3.8-27b",
+          "model_sha256": "08e79e35bd12e8d155a70d9f6a465a5e07fe7263c9221017396ecce6dfa319ab",
+          "binding_sha256": "98b0b9ed078b7f9cc709c2f48b3c3e515983eaa61e1a7e38aae844659600c62e"
+        },
+        "reader_card.primary": {
+          "provider": "openai",
+          "model": "openai/qwen3.8-27b",
+          "model_sha256": "08e79e35bd12e8d155a70d9f6a465a5e07fe7263c9221017396ecce6dfa319ab",
+          "binding_sha256": "98b0b9ed078b7f9cc709c2f48b3c3e515983eaa61e1a7e38aae844659600c62e"
+        },
+        "event_semantics.fallback": {
+          "provider": "openai",
+          "model": "openai/deepseek-v4-flash",
+          "model_sha256": "7cc4b6e20cb6f352d6913fbf1b91470b206ab52e599620950da25293cd09e950",
+          "binding_sha256": "e698ab119d6cdcc99c3bf7d0a52bdb9f2753394dc6820f0d5c3b4b8bb08f9d42"
+        },
+        "taxonomy.fallback": {
+          "provider": "openai",
+          "model": "openai/deepseek-v4-flash",
+          "model_sha256": "7cc4b6e20cb6f352d6913fbf1b91470b206ab52e599620950da25293cd09e950",
+          "binding_sha256": "e698ab119d6cdcc99c3bf7d0a52bdb9f2753394dc6820f0d5c3b4b8bb08f9d42"
+        },
+        "reader_card.fallback": {
+          "provider": "openai",
+          "model": "openai/deepseek-v4-flash",
+          "model_sha256": "7cc4b6e20cb6f352d6913fbf1b91470b206ab52e599620950da25293cd09e950",
+          "binding_sha256": "e698ab119d6cdcc99c3bf7d0a52bdb9f2753394dc6820f0d5c3b4b8bb08f9d42"
+        }
+      },
+      "aliases": {
+        "taxonomy.primary": "event_semantics.primary",
+        "reader_card.primary": "event_semantics.primary",
+        "taxonomy.fallback": "event_semantics.fallback",
+        "reader_card.fallback": "event_semantics.fallback"
+      }
+    }
+  },
+  "cold_judge": {
+    "provenance": "model_draft_not_human_gold",
+    "identity": {
+      "judge_id": "tracefold.news.card_equivalence_judge_v4",
+      "model": "openai/deepseek-v4-pro",
+      "instruction_sha256": "6d6313cc14ec58be6dc740aba5ee5e776188a6a9b130c8e0a2238c756fc923ba",
+      "signature_sha256": "5f459d5e44db408d0f61f0f38fb28f56c9cab897ddf3525270e8e69020971a23",
+      "output_schema_sha256": "896f11f3aadf939640b14b0b9b7f3992b6c5f42976ddba2d245366462293a33b",
+      "factual_evidence_instruction_sha256": "d3ac5cf682e8cb281b36f6890a8729e1285f99fb0af4d9619cc5cc9501925475",
+      "factual_evidence_signature_sha256": "f9d740b6cf7363f15db3919ae5f67b7c07a1e38a9edda1f34d21ee46ffca3a23",
+      "factual_evidence_output_schema_sha256": "6c48bb8b7cc50210fe2b6e85935550d6671ef51323776182a92824a0609bc587",
+      "implementation_source_sha256": "7ef5a471d52716534aa41cd6450815e858425a06f223e8702bd7430f400edac6",
+      "adapter": {
+        "implementation": "dspy.JSONAdapter",
+        "dspy_version": "3.3.1",
+        "program_sha256": "a6dcf1df9394d56ac59e52055477621dea6f931094650c0c9c4ff74268a4abec",
+        "equivalence_render_sha256": "017ff61a0a66d5a5d230501e571a88820d119dc40425542ef17e9ec0ea2d04cc",
+        "factual_evidence_render_sha256": "17f8de042ec18894d778a3575aa8d7a15f6549810aab28df6d4e9b412571e8c6",
+        "native_function_calling": false,
+        "format_fallback": true,
+        "max_calls_per_question": 2,
+        "effective_lm_capability": {
+          "supported_params": [
+            "response_format"
+          ],
+          "supports_response_schema": false
+        }
+      },
+      "execution": {
+        "role_binding": {
+          "schema_version": "tracefold.news.model_execution_identity.v1",
+          "role": "metric_judge",
+          "provider": "openai",
+          "model": "openai/deepseek-v4-pro",
+          "endpoint_fingerprint": "e35a8f4b98e74078a0177e48d92af4e1b9ba50c3ff7792610967fd2ded953077",
+          "max_output_tokens": 4096,
+          "timeout_seconds": 120.0,
+          "temperature": 0.0,
+          "model_kwargs": {
+            "extra_body": {
+              "thinking": {
+                "type": "disabled"
+              }
+            }
+          },
+          "adapter": "strict_json",
+          "cache": false,
+          "num_retries": 0
+        },
+        "max_output_tokens": 4096,
+        "max_model_calls": 36,
+        "timeout_seconds": 120.0,
+        "temperature": 0.0,
+        "model_kwargs": {
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "cache": false,
+        "num_retries": 0,
+        "require_exact_accounting": false
+      },
+      "success_cache": true,
+      "failure_cache": false
+    },
+    "baseline_supported_n": 2,
+    "candidate_supported_n": 9,
+    "n_per_arm": 9,
+    "scope": "whole card; not per-dimension accepted human labels",
+    "candidate_model_calls": 9,
+    "actual_monetary_cost": null
+  },
+  "human_why_support_labels": 0,
+  "human_why_value_labels": 0,
+  "formal_candidate_evaluator": "NOT RUN: adjudicated current-contract dataset and pairwise evidence pending",
+  "production_switch": "NOT RUN",
+  "rows": [
+    {
+      "case": "pons",
+      "event_id": "80e7941620b79a48db0eb8579b8eb9d8ff7194cb166051efd391db1ed15ff452",
+      "origin": "production_snapshot",
+      "snapshot_sha256": "f87ba805fe83b0661746ca4005042862f51c16fd59c84f75ba32eb7b219186f1",
+      "criterion": "Preserve third-party attribution, most-days revenue, and a wallet balance ready for TWAP; do not assert execution or sustained price support.",
+      "baseline": {
+        "raw_capture_sha256": "fd20b006776303aeec8f110b9e94eeb60a7b205a7b5690f4b25fe932925477f6",
+        "program_sha256": "32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a",
+        "verdict": {
+          "novelty": "progression",
+          "restates": -1,
+          "assets": [
+            {
+              "symbol": "PONS",
+              "market_type": "crypto",
+              "role": "primary"
+            }
+          ],
+          "direction": "bullish",
+          "scope": "single_name",
+          "magnitude": 2,
+          "confidence": 0.6,
+          "audience": "crypto",
+          "headline_zh": "$PONS 日收入近一周维持 130 万至 200 万美元以上，回购钱包已备近 300 万美元",
+          "why_zh": "PONS 用手续费持续回购并分批买入自家代币，收入越高回购资金补充越快，持币者面对的买盘压力来自协议现金流而非情绪。"
+        },
+        "editorial": {
+          "editorial_contract_version": "news_editorial_v2",
+          "editorial_origin": "model",
+          "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "second_order",
+            "surprise": "unscheduled",
+            "development_delta": "material_detail",
+            "channels": [
+              "product_progress",
+              "positioning_flow"
+            ],
+            "affected_markets": [
+              "single_asset"
+            ],
+            "reader_value": "realtime"
+          },
+          "taxonomy": {
+            "subject_codes": [
+              "medtop:20000175"
+            ],
+            "event_family": "financing_capital_allocation",
+            "change_state": "effective",
+            "assertion_status": "claimed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "unknown",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+          },
+          "editorial_sha256": "197855c6fd864d809aca2a742806141a83344416d7a26ebac7131c07ee04f7c1"
+        },
+        "usage": {
+          "wall_latency_ms": 5097,
+          "call_count": 3,
+          "physical_call_count": 3,
+          "input_tokens": 14007,
+          "output_tokens": 311,
+          "cached_tokens": 13440,
+          "total_tokens": 14318,
+          "provider_cost_microusd": null
+        },
+        "answering_model": "deepseek-flash",
+        "trace": {
+          "context_sha256": "3ac0f8588505fd7a3eda44dff59bd94a79db79606b5b2fa628b807646f13185e",
+          "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+          "event_semantics_sha256": "5f569f11e07fb3c7c5991c22f7619d3f834b01f4998ae95a87e07484741cb3e0",
+          "taxonomy_sha256": "df1ceded4e30df4017c247654b2396afbc4d6197198bc4c975e624ba654831a8",
+          "reader_card_sha256": "f19cf99f181c0290ed780a630ffa6f8e50f43d3114865641525072745e21f996",
+          "answering_route": "fallback"
+        },
+        "whole_card_support_model_draft": {
+          "status": "answered",
+          "verdict": {
+            "supported_by_evidence": false
+          },
+          "error_code": null
+        }
+      },
+      "candidate": {
+        "raw_capture_sha256": "331bb61e09abcfe8dcd6af7b733944b60e65565d91827fc168cc0e99aeed6cbc",
+        "program_sha256": "ffbb0a1ff4e7363496250971d8a52f3a2e1e813700d2320d05b02a6b9edcfb49",
+        "verdict": {
+          "novelty": "progression",
+          "restates": -1,
+          "assets": [
+            {
+              "symbol": "PONS",
+              "market_type": "crypto",
+              "role": "primary"
+            }
+          ],
+          "direction": "bullish",
+          "scope": "single_name",
+          "magnitude": 2,
+          "confidence": 0.55,
+          "audience": "crypto",
+          "headline_zh": "发帖人称$PONS收入较上次发帖几乎翻倍",
+          "why_zh": "发帖人称过去一周多数日子日收入130万至200万美元以上，回购钱包备有近300万美元待买入，但未披露实际买入规模。"
+        },
+        "editorial": {
+          "editorial_contract_version": "news_editorial_v2",
+          "editorial_origin": "model",
+          "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "second_order",
+            "surprise": "unknown",
+            "development_delta": "material_detail",
+            "channels": [
+              "product_progress",
+              "positioning_flow"
+            ],
+            "affected_markets": [
+              "single_asset"
+            ],
+            "reader_value": "realtime"
+          },
+          "taxonomy": {
+            "subject_codes": [
+              "medtop:20000175"
+            ],
+            "event_family": "financing_capital_allocation",
+            "change_state": "effective",
+            "assertion_status": "claimed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "unknown",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+          },
+          "editorial_sha256": "761965acc71c21654fb728cb142b13b312b0b34c254ce67011d94ce78ed95650"
+        },
+        "usage": {
+          "wall_latency_ms": 5142,
+          "call_count": 3,
+          "physical_call_count": 3,
+          "input_tokens": 13876,
+          "output_tokens": 310,
+          "cached_tokens": 12800,
+          "total_tokens": 14186,
+          "provider_cost_microusd": null
+        },
+        "answering_model": "deepseek-flash",
+        "trace": {
+          "context_sha256": "3ac0f8588505fd7a3eda44dff59bd94a79db79606b5b2fa628b807646f13185e",
+          "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+          "event_semantics_sha256": "bcd563ad5af6da5eb48f6b863a010a40f67b4e5f084d3c799d95771c09af5048",
+          "taxonomy_sha256": "df1ceded4e30df4017c247654b2396afbc4d6197198bc4c975e624ba654831a8",
+          "reader_card_sha256": "daaa0e3849f707c133361b5d9877d749faaf9d42bf799679db104481932cb77e",
+          "answering_route": "fallback"
+        },
+        "whole_card_support_model_draft": {
+          "status": "answered",
+          "verdict": {
+            "supported_by_evidence": true
+          },
+          "error_code": null
+        }
+      }
+    },
+    {
+      "case": "iren",
+      "event_id": "f144ede496375dab863c6f377dc02767b2197aaafd3ea8d065f633434fcb2642",
+      "origin": "production_snapshot",
+      "snapshot_sha256": "2100b4ef619c0eae94f84983fcb9dbce7d3b97d1cd344b5d40bdcb37ca7f4914",
+      "criterion": "The title states Batch Zero inclusion, not guaranteed power supply or operational capacity.",
+      "baseline": {
+        "raw_capture_sha256": "13fa8f90dd3f38f9a171a625a6d2de5c8f8156a8a2ddad99a90c48a475be59d4",
+        "program_sha256": "32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a",
+        "verdict": {
+          "novelty": "new_fact",
+          "restates": -1,
+          "assets": [
+            {
+              "symbol": "IREN",
+              "market_type": "us_equity",
+              "role": "primary"
+            }
+          ],
+          "direction": "bullish",
+          "scope": "single_name",
+          "magnitude": 2,
+          "confidence": 0.72,
+          "audience": "us_equity",
+          "headline_zh": "IREN 2GW Sweetwater 枢纽被纳入 ERCOT 零批次基荷",
+          "why_zh": "IREN 的 2GW 数据中心电力容量进入 ERCOT 并网排队，获批后可直接为比特币矿场和 AI 算力供电。"
+        },
+        "editorial": {
+          "editorial_contract_version": "news_editorial_v2",
+          "editorial_origin": "model",
+          "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "direct",
+            "surprise": "unscheduled",
+            "development_delta": "state_change",
+            "channels": [
+              "energy_supply",
+              "product_progress"
+            ],
+            "affected_markets": [
+              "energy",
+              "single_asset"
+            ],
+            "reader_value": "realtime"
+          },
+          "taxonomy": {
+            "subject_codes": [
+              "medtop:20000205"
+            ],
+            "event_family": "product_service_change",
+            "change_state": "effective",
+            "assertion_status": "claimed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "unknown",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+          },
+          "editorial_sha256": "fcee6ce80489022ced14c784699474ac1841a0d494c5fd8ed265c5f2a0d55243"
+        },
+        "usage": {
+          "wall_latency_ms": 5549,
+          "call_count": 4,
+          "physical_call_count": 4,
+          "input_tokens": 13459,
+          "output_tokens": 322,
+          "cached_tokens": 12800,
+          "total_tokens": 13781,
+          "provider_cost_microusd": null
+        },
+        "answering_model": "deepseek-flash",
+        "trace": {
+          "context_sha256": "3dca87e3602aa0e0055a65f0658c4c02b8af5684f97fb7f2254df591a762e71e",
+          "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+          "event_semantics_sha256": "e8dcb1eeac77b192d6a4e022e50b37920e88fe53aac1d267fecb5924d5d76b33",
+          "taxonomy_sha256": "765a89ea231d30d3ee31cd39aeb32bcaf57138d952df3d7aba2481518103c8d1",
+          "reader_card_sha256": "61367e7a72f86d2364e70e38b3e3ad165500ba6c7db0da1d6f03d137d696b4e0",
+          "answering_route": "fallback"
+        },
+        "whole_card_support_model_draft": {
+          "status": "answered",
+          "verdict": {
+            "supported_by_evidence": false
+          },
+          "error_code": null
+        }
+      },
+      "candidate": {
+        "raw_capture_sha256": "60ecf8040ac699e57fae31a78a077a71d8c5f0ded6bbceb50f1e426183d92bd2",
+        "program_sha256": "ffbb0a1ff4e7363496250971d8a52f3a2e1e813700d2320d05b02a6b9edcfb49",
+        "verdict": {
+          "novelty": "new_fact",
+          "restates": -1,
+          "assets": [
+            {
+              "symbol": "IREN",
+              "market_type": "us_equity",
+              "role": "primary"
+            }
+          ],
+          "direction": "neutral",
+          "scope": "single_name",
+          "magnitude": 2,
+          "confidence": 0.72,
+          "audience": "us_equity",
+          "headline_zh": "IREN的2GW Sweetwater枢纽被纳入ERCOT零批次基荷",
+          "why_zh": "该2GW枢纽被列为ERCOT并网批次中的基荷，但公告未披露投运时间、实际供电规模或对IREN收入的影响。"
+        },
+        "editorial": {
+          "editorial_contract_version": "news_editorial_v2",
+          "editorial_origin": "model",
+          "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "direct",
+            "surprise": "unscheduled",
+            "development_delta": "state_change",
+            "channels": [
+              "energy_supply",
+              "product_progress"
+            ],
+            "affected_markets": [
+              "energy",
+              "single_asset"
+            ],
+            "reader_value": "realtime"
+          },
+          "taxonomy": {
+            "subject_codes": [
+              "medtop:20000205"
+            ],
+            "event_family": "product_service_change",
+            "change_state": "effective",
+            "assertion_status": "claimed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "unknown",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+          },
+          "editorial_sha256": "fcee6ce80489022ced14c784699474ac1841a0d494c5fd8ed265c5f2a0d55243"
+        },
+        "usage": {
+          "wall_latency_ms": 5201,
+          "call_count": 4,
+          "physical_call_count": 4,
+          "input_tokens": 13327,
+          "output_tokens": 317,
+          "cached_tokens": 12544,
+          "total_tokens": 13644,
+          "provider_cost_microusd": null
+        },
+        "answering_model": "deepseek-flash",
+        "trace": {
+          "context_sha256": "3dca87e3602aa0e0055a65f0658c4c02b8af5684f97fb7f2254df591a762e71e",
+          "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+          "event_semantics_sha256": "14c9445d7e0267fe1f1403fa44c110c18dce5307208a4056d4ca9482f6c7f829",
+          "taxonomy_sha256": "765a89ea231d30d3ee31cd39aeb32bcaf57138d952df3d7aba2481518103c8d1",
+          "reader_card_sha256": "08ab9285a947460138f0a9d177c002ba2ea4547723e08b35e822036b94135558",
+          "answering_route": "fallback"
+        },
+        "whole_card_support_model_draft": {
+          "status": "answered",
+          "verdict": {
+            "supported_by_evidence": true
+          },
+          "error_code": null
+        }
+      }
+    },
+    {
+      "case": "hood",
+      "event_id": "4fc314789c99a4624985241a10ce0f60073708dcb37f232e15b7180b81d32419",
+      "origin": "production_snapshot",
+      "snapshot_sha256": "2a0199d1aee4b5c542148dda359cd347af61fa8fa335ed21094545a6a428292f",
+      "criterion": "Bernstein's valuation argument does not prove recognition of chain fees in company accounts, revenue conversion or EPS realization.",
+      "baseline": {
+        "raw_capture_sha256": "8247f8230740a7602089e10e03273f8c9af4248de9892959b09da3c532243212",
+        "program_sha256": "32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a",
+        "verdict": {
+          "novelty": "restatement",
+          "restates": 0,
+          "assets": [
+            {
+              "symbol": "HOOD",
+              "market_type": "us_equity",
+              "role": "primary"
+            }
+          ],
+          "direction": "bullish",
+          "scope": "single_name",
+          "magnitude": 2,
+          "confidence": 0.9,
+          "audience": "us_equity",
+          "headline_zh": "Bernstein 看多 Robinhood 31%，称其手续费收入已超 Solana 与 BNB Chain",
+          "why_zh": "Bernstein 把加密业务手续费视为 Robinhood 的盈利引擎，若该收入持续高于 Solana 与 BNB Chain，其估值将更多由链上交易现金流而非经纪佣金支撑。"
+        },
+        "editorial": {
+          "editorial_contract_version": "news_editorial_v2",
+          "editorial_origin": "model",
+          "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "direct",
+            "surprise": "in_line",
+            "development_delta": "color_only",
+            "channels": [
+              "product_progress",
+              "earnings_cashflow"
+            ],
+            "affected_markets": [
+              "us_equity_broad",
+              "single_asset"
+            ],
+            "reader_value": "background"
+          },
+          "taxonomy": {
+            "subject_codes": [
+              "medtop:20000186"
+            ],
+            "event_family": "other",
+            "change_state": "unknown",
+            "assertion_status": "claimed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "unknown",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+          },
+          "editorial_sha256": "af392d3c564eb62ffc19cdf228a8bd8b2b2c4ff492b204f134e81febafacd742"
+        },
+        "usage": {
+          "wall_latency_ms": 7922,
+          "call_count": 4,
+          "physical_call_count": 4,
+          "input_tokens": 13674,
+          "output_tokens": 336,
+          "cached_tokens": 12800,
+          "total_tokens": 14010,
+          "provider_cost_microusd": null
+        },
+        "answering_model": "deepseek-flash",
+        "trace": {
+          "context_sha256": "220565b6574fe4a3d79ea6e153ca97dd01ddbe59b999a4b4eba7a92c16d09605",
+          "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+          "event_semantics_sha256": "3fefc40c68305555986b8ea228fd686a4f244937d1ea3b28382a9085607deeba",
+          "taxonomy_sha256": "a6977496ed8f18451e6256d709ee247e2727f9cf8c01fd9e34a1b0648ae6364f",
+          "reader_card_sha256": "cedabb2ba8fa6947d72ce9b3973977aa6eca2160b072d87ac9538f02c65d8b7c",
+          "answering_route": "fallback"
+        },
+        "whole_card_support_model_draft": {
+          "status": "answered",
+          "verdict": {
+            "supported_by_evidence": false
+          },
+          "error_code": null
+        }
+      },
+      "candidate": {
+        "raw_capture_sha256": "29a35c73ba53c0789c229bb4e8d1f0bc339a10506c954a8fed3627afa7f86c54",
+        "program_sha256": "ffbb0a1ff4e7363496250971d8a52f3a2e1e813700d2320d05b02a6b9edcfb49",
+        "verdict": {
+          "novelty": "restatement",
+          "restates": 0,
+          "assets": [
+            {
+              "symbol": "HOOD",
+              "market_type": "us_equity",
+              "role": "primary"
+            }
+          ],
+          "direction": "bullish",
+          "scope": "single_name",
+          "magnitude": 2,
+          "confidence": 0.9,
+          "audience": "us_equity",
+          "headline_zh": "Bernstein：Robinhood手续费收入超越Solana与BNB Chain，看涨31%",
+          "why_zh": "Bernstein认为链上手续费已成为Robinhood的盈利来源，并给出31%上行空间；该观点为分析师预测，非公司确认数据。"
+        },
+        "editorial": {
+          "editorial_contract_version": "news_editorial_v2",
+          "editorial_origin": "model",
+          "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "direct",
+            "surprise": "in_line",
+            "development_delta": "color_only",
+            "channels": [
+              "earnings_cashflow"
+            ],
+            "affected_markets": [
+              "single_asset"
+            ],
+            "reader_value": "background"
+          },
+          "taxonomy": {
+            "subject_codes": [
+              "medtop:20000186"
+            ],
+            "event_family": "other",
+            "change_state": "unknown",
+            "assertion_status": "claimed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "unknown",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+          },
+          "editorial_sha256": "2db7a7872aef39f9ee4349650b2781cf4250d9c08eba19e8e27e4e86f1647ad4"
+        },
+        "usage": {
+          "wall_latency_ms": 8038,
+          "call_count": 4,
+          "physical_call_count": 4,
+          "input_tokens": 13532,
+          "output_tokens": 306,
+          "cached_tokens": 11776,
+          "total_tokens": 13838,
+          "provider_cost_microusd": null
+        },
+        "answering_model": "deepseek-flash",
+        "trace": {
+          "context_sha256": "220565b6574fe4a3d79ea6e153ca97dd01ddbe59b999a4b4eba7a92c16d09605",
+          "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+          "event_semantics_sha256": "10e03f8cb71a95b97c6b08110b504f4bcbb0c60cc8c872e127be30135ff19b25",
+          "taxonomy_sha256": "a6977496ed8f18451e6256d709ee247e2727f9cf8c01fd9e34a1b0648ae6364f",
+          "reader_card_sha256": "36edc2f6ab705c92f93563743677c7f67fc6ec911acedc4273fda2fad1decd28",
+          "answering_route": "fallback"
+        },
+        "whole_card_support_model_draft": {
+          "status": "answered",
+          "verdict": {
+            "supported_by_evidence": true
+          },
+          "error_code": null
+        }
+      }
+    },
+    {
+      "case": "platinum",
+      "event_id": "cd0f52759aff13f3ae5048a0c5dc4a8b5b22ea1c233d405a4a11044a07b60232",
+      "origin": "production_snapshot",
+      "snapshot_sha256": "59400fd09a18d37f738f2cd5fd4c353f04916240367d2fc6fef2ccb25e21d4cb",
+      "criterion": "An ambiguous offer quote does not establish acquisition, cash consideration, or a takeover premium.",
+      "baseline": {
+        "raw_capture_sha256": "8bb5dce2db632caf9ff71f59df1b38d7fcb5053e4087ae07cea50de259823a71",
+        "program_sha256": "32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a",
+        "verdict": {
+          "novelty": "new_fact",
+          "restates": -1,
+          "assets": [
+            {
+              "symbol": "INGM",
+              "market_type": "us_equity",
+              "role": "primary"
+            }
+          ],
+          "direction": "neutral",
+          "scope": "single_name",
+          "magnitude": 2,
+          "confidence": 0.55,
+          "audience": "us_equity",
+          "headline_zh": "Platinum 据称以每股 27.25-28.38 美元配售 Ingram Micro 股票",
+          "why_zh": "Platinum 作为卖方以区间价减持 Ingram Micro，接盘方在 27.25 美元附近建仓，短期抛压由买方承接。"
+        },
+        "editorial": {
+          "editorial_contract_version": "news_editorial_v2",
+          "editorial_origin": "model",
+          "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "second_order",
+            "surprise": "unscheduled",
+            "development_delta": "state_change",
+            "channels": [
+              "positioning_flow"
+            ],
+            "affected_markets": [
+              "us_equity_broad"
+            ],
+            "reader_value": "realtime"
+          },
+          "taxonomy": {
+            "subject_codes": [
+              "medtop:20000186"
+            ],
+            "event_family": "financing_capital_allocation",
+            "change_state": "announced",
+            "assertion_status": "claimed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "unknown",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+          },
+          "editorial_sha256": "91e674a3112eaa8084c608af3381644202e8214feb314b6099a06368827895e9"
+        },
+        "usage": {
+          "wall_latency_ms": 4472,
+          "call_count": 3,
+          "physical_call_count": 3,
+          "input_tokens": 13583,
+          "output_tokens": 310,
+          "cached_tokens": 12928,
+          "total_tokens": 13893,
+          "provider_cost_microusd": null
+        },
+        "answering_model": "deepseek-flash",
+        "trace": {
+          "context_sha256": "d3d223c77493b9874ca929793ba0f85cb78b41405db1bc9254677afbcad26ec7",
+          "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+          "event_semantics_sha256": "d9c17ef139a70f20030984153c84df853d102f0c8356f41a3fa36aa5a404b906",
+          "taxonomy_sha256": "64c3fc5e3ed363ef591ada80b1cbb2d431d0977deb26551cba378aaca795d62f",
+          "reader_card_sha256": "9afcf112fe0d60c90b2977d3fd06dcdf53e12601a2244f943db4572210ef90f2",
+          "answering_route": "fallback"
+        },
+        "whole_card_support_model_draft": {
+          "status": "answered",
+          "verdict": {
+            "supported_by_evidence": false
+          },
+          "error_code": null
+        }
+      },
+      "candidate": {
+        "raw_capture_sha256": "6f18320ce4698239fc61575e23fa7525eac875bec5a5ad48baded342a55967e3",
+        "program_sha256": "ffbb0a1ff4e7363496250971d8a52f3a2e1e813700d2320d05b02a6b9edcfb49",
+        "verdict": {
+          "novelty": "new_fact",
+          "restates": -1,
+          "assets": [
+            {
+              "symbol": "INGM",
+              "market_type": "us_equity",
+              "role": "primary"
+            }
+          ],
+          "direction": "neutral",
+          "scope": "single_name",
+          "magnitude": 2,
+          "confidence": 0.55,
+          "audience": "us_equity",
+          "headline_zh": "据称Platinum以每股27.25至28.38美元发售Ingram Micro股份",
+          "why_zh": "报价仅披露价格区间，未说明发售规模、股份来源或资金去向。"
+        },
+        "editorial": {
+          "editorial_contract_version": "news_editorial_v2",
+          "editorial_origin": "model",
+          "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "second_order",
+            "surprise": "unscheduled",
+            "development_delta": "state_change",
+            "channels": [
+              "positioning_flow"
+            ],
+            "affected_markets": [
+              "single_asset"
+            ],
+            "reader_value": "realtime"
+          },
+          "taxonomy": {
+            "subject_codes": [
+              "medtop:20000186"
+            ],
+            "event_family": "financing_capital_allocation",
+            "change_state": "announced",
+            "assertion_status": "claimed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "unknown",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+          },
+          "editorial_sha256": "ecc2b60a581a41d4e25aea19751ef17c1e7e853a6ff30045680db95d1617d7ef"
+        },
+        "usage": {
+          "wall_latency_ms": 4764,
+          "call_count": 3,
+          "physical_call_count": 3,
+          "input_tokens": 13449,
+          "output_tokens": 285,
+          "cached_tokens": 12544,
+          "total_tokens": 13734,
+          "provider_cost_microusd": null
+        },
+        "answering_model": "deepseek-flash",
+        "trace": {
+          "context_sha256": "d3d223c77493b9874ca929793ba0f85cb78b41405db1bc9254677afbcad26ec7",
+          "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+          "event_semantics_sha256": "43e347945b438c79741fddbe56252543fa5708ffa430c86e1559e0fb2b5e01ea",
+          "taxonomy_sha256": "64c3fc5e3ed363ef591ada80b1cbb2d431d0977deb26551cba378aaca795d62f",
+          "reader_card_sha256": "2a0e0a7391a8d0eec94b4bb44afa3047ed0fa668ee35d76779e8190281d93495",
+          "answering_route": "fallback"
+        },
+        "whole_card_support_model_draft": {
+          "status": "answered",
+          "verdict": {
+            "supported_by_evidence": true
+          },
+          "error_code": null
+        }
+      }
+    },
+    {
+      "case": "ingram",
+      "event_id": "04eccca5e7272b39b5d1760e402ccda142c07a99129ac16ad9f7bba07ebec0cf",
+      "origin": "production_snapshot",
+      "snapshot_sha256": "ce2688f6e62ea1500a031f0a47918a293e74e6b8216c3736868817ad5a4abb0d",
+      "criterion": "A discount quote does not establish a company capital injection, new issuance, cash recipient or dilution.",
+      "baseline": {
+        "raw_capture_sha256": "70aa6095453daeb2b9dc4e7bb771537cc1c4e2413d4bfdd062f38d05f30ed176",
+        "program_sha256": "32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a",
+        "verdict": {
+          "novelty": "progression",
+          "restates": -1,
+          "assets": [
+            {
+              "symbol": "INGM",
+              "market_type": "us_equity",
+              "role": "primary"
+            }
+          ],
+          "direction": "neutral",
+          "scope": "single_name",
+          "magnitude": 2,
+          "confidence": 0.55,
+          "audience": "us_equity",
+          "headline_zh": "铂金据称以最高 4% 折价配售 Ingram 股份",
+          "why_zh": "承销方以折价转手 Ingram 股票，接盘者成本低于市价，而抛压会压低该股短期成交价。"
+        },
+        "editorial": {
+          "editorial_contract_version": "news_editorial_v2",
+          "editorial_origin": "model",
+          "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "second_order",
+            "surprise": "unscheduled",
+            "development_delta": "material_detail",
+            "channels": [
+              "earnings_cashflow",
+              "positioning_flow"
+            ],
+            "affected_markets": [
+              "us_equity_broad"
+            ],
+            "reader_value": "realtime"
+          },
+          "taxonomy": {
+            "subject_codes": [
+              "medtop:20000186"
+            ],
+            "event_family": "financing_capital_allocation",
+            "change_state": "announced",
+            "assertion_status": "claimed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "unknown",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+          },
+          "editorial_sha256": "11e63c9ad9f3808d33d92612837e8d4d4ce13f9640fbf3310b7c31e3830d4878"
+        },
+        "usage": {
+          "wall_latency_ms": 4689,
+          "call_count": 3,
+          "physical_call_count": 3,
+          "input_tokens": 13555,
+          "output_tokens": 283,
+          "cached_tokens": 12800,
+          "total_tokens": 13838,
+          "provider_cost_microusd": null
+        },
+        "answering_model": "deepseek-flash",
+        "trace": {
+          "context_sha256": "81211c3e52cd7fa0aaa7a378e4b6588fc9ebb67c303115d47c062cdab2e0b3e9",
+          "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+          "event_semantics_sha256": "ddb46fa78ad57f21c258a6d40c54dfd7d0c42bad645d64aacfd7bfd635b299c4",
+          "taxonomy_sha256": "64c3fc5e3ed363ef591ada80b1cbb2d431d0977deb26551cba378aaca795d62f",
+          "reader_card_sha256": "1472eccf8b5cb883760492bdb9f1cd85a7ddb15247382080e9f70615d6639280",
+          "answering_route": "fallback"
+        },
+        "whole_card_support_model_draft": {
+          "status": "answered",
+          "verdict": {
+            "supported_by_evidence": false
+          },
+          "error_code": null
+        }
+      },
+      "candidate": {
+        "raw_capture_sha256": "782c1d7d076b660d11c37552d9d5768484b21337ee67cbc9691b32183a2a93b1",
+        "program_sha256": "ffbb0a1ff4e7363496250971d8a52f3a2e1e813700d2320d05b02a6b9edcfb49",
+        "verdict": {
+          "novelty": "restatement",
+          "restates": 3,
+          "assets": [
+            {
+              "symbol": "INGM",
+              "market_type": "us_equity",
+              "role": "primary"
+            }
+          ],
+          "direction": "neutral",
+          "scope": "single_name",
+          "magnitude": 2,
+          "confidence": 0.55,
+          "audience": "us_equity",
+          "headline_zh": "据称Platinum以最高4%折价发售Ingram股份",
+          "why_zh": "报价仅披露折价上限，未说明股份来源、实际规模或资金去向。"
+        },
+        "editorial": {
+          "editorial_contract_version": "news_editorial_v2",
+          "editorial_origin": "model",
+          "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "second_order",
+            "surprise": "unknown",
+            "development_delta": "material_detail",
+            "channels": [
+              "positioning_flow"
+            ],
+            "affected_markets": [
+              "single_asset"
+            ],
+            "reader_value": "background"
+          },
+          "taxonomy": {
+            "subject_codes": [
+              "medtop:20000186"
+            ],
+            "event_family": "financing_capital_allocation",
+            "change_state": "announced",
+            "assertion_status": "claimed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "unknown",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+          },
+          "editorial_sha256": "fbe3cbd472797535bfc07a6ded86edc6264cf39c0099ae044cd417ca46c1150d"
+        },
+        "usage": {
+          "wall_latency_ms": 5149,
+          "call_count": 3,
+          "physical_call_count": 3,
+          "input_tokens": 13414,
+          "output_tokens": 292,
+          "cached_tokens": 12544,
+          "total_tokens": 13706,
+          "provider_cost_microusd": null
+        },
+        "answering_model": "deepseek-flash",
+        "trace": {
+          "context_sha256": "81211c3e52cd7fa0aaa7a378e4b6588fc9ebb67c303115d47c062cdab2e0b3e9",
+          "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+          "event_semantics_sha256": "b5f064d3146f6270140cf992cfb5017010956841fd9bc01bf7af536c2baac26d",
+          "taxonomy_sha256": "64c3fc5e3ed363ef591ada80b1cbb2d431d0977deb26551cba378aaca795d62f",
+          "reader_card_sha256": "6c327a9a438b28140f01930aad954cd6773307dfdec92b945a4c3f0696282946",
+          "answering_route": "fallback"
+        },
+        "whole_card_support_model_draft": {
+          "status": "answered",
+          "verdict": {
+            "supported_by_evidence": true
+          },
+          "error_code": null
+        }
+      }
+    },
+    {
+      "case": "bitget",
+      "event_id": "a09e5cb6f4347d4dafd1c35e74876803fca491d0f71006a5544bf274f06f7c52",
+      "origin": "production_snapshot",
+      "snapshot_sha256": "33babc0f6102e4b7e7e3e1b3e690d2651ed9426053324d3b52ce62007360d600",
+      "criterion": "raw_first_line supports Bitget even though the title does not name the exchange; retain that grounding.",
+      "baseline": {
+        "raw_capture_sha256": "da39adbc5c1445537e0b5e880b99a4a7ebfb30ef51f2617bba4be4e0570fce54",
+        "program_sha256": "32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a",
+        "verdict": {
+          "novelty": "progression",
+          "restates": -1,
+          "assets": [
+            {
+              "symbol": "CP",
+              "market_type": null,
+              "role": "primary"
+            },
+            {
+              "symbol": "SOPH",
+              "market_type": null,
+              "role": "primary"
+            }
+          ],
+          "direction": "neutral",
+          "scope": "single_name",
+          "magnitude": 2,
+          "confidence": 0.85,
+          "audience": "crypto",
+          "headline_zh": "Bitget 新增 CP/USDT、SOPH/USDT 现货杠杆交易对",
+          "why_zh": "Bitget 把 CP 和 SOPH 纳入现货杠杆，交易者可用借入资金做多或做空这两个代币，交易所从中赚取利息和手续费。"
+        },
+        "editorial": {
+          "editorial_contract_version": "news_editorial_v2",
+          "editorial_origin": "model",
+          "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "direct",
+            "surprise": "unscheduled",
+            "development_delta": "state_change",
+            "channels": [
+              "exchange_access",
+              "product_progress"
+            ],
+            "affected_markets": [
+              "single_asset"
+            ],
+            "reader_value": "realtime"
+          },
+          "taxonomy": {
+            "subject_codes": [
+              "medtop:20000186"
+            ],
+            "event_family": "market_access",
+            "change_state": "announced",
+            "assertion_status": "claimed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "unknown",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+          },
+          "editorial_sha256": "34dfdaaa09d07c97b26c083e1b31c05b83e28694df08f32187685d9a2bb4c5e0"
+        },
+        "usage": {
+          "wall_latency_ms": 5501,
+          "call_count": 4,
+          "physical_call_count": 4,
+          "input_tokens": 13456,
+          "output_tokens": 303,
+          "cached_tokens": 12800,
+          "total_tokens": 13759,
+          "provider_cost_microusd": null
+        },
+        "answering_model": "deepseek-flash",
+        "trace": {
+          "context_sha256": "2728639b3828787bb4b7c075beb313b60052ce9a5c686b60b1547b3186ddfcb6",
+          "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+          "event_semantics_sha256": "2b9ed7389b84254c1963cf262631535e9952cd15cc37ad13c2f34a78d3d9d1e4",
+          "taxonomy_sha256": "b2c5a32b702f6b346fc36fdf0e3e33990e10accf59f275421f529a994181b2ca",
+          "reader_card_sha256": "af65f3d3d96abc62d9655be2d9e5136463686b039fe5b4849f77e6d068c25e93",
+          "answering_route": "fallback"
+        },
+        "whole_card_support_model_draft": {
+          "status": "answered",
+          "verdict": {
+            "supported_by_evidence": false
+          },
+          "error_code": null
+        }
+      },
+      "candidate": {
+        "raw_capture_sha256": "504c3a2f050e7c1404a15b7e5d899a27367ddf701b6882c7d3c73c912b217de5",
+        "program_sha256": "ffbb0a1ff4e7363496250971d8a52f3a2e1e813700d2320d05b02a6b9edcfb49",
+        "verdict": {
+          "novelty": "progression",
+          "restates": -1,
+          "assets": [
+            {
+              "symbol": "CP",
+              "market_type": null,
+              "role": "primary"
+            },
+            {
+              "symbol": "SOPH",
+              "market_type": null,
+              "role": "primary"
+            }
+          ],
+          "direction": "neutral",
+          "scope": "single_name",
+          "magnitude": 2,
+          "confidence": 0.85,
+          "audience": "crypto",
+          "headline_zh": "Bitget新增CP/USDT、SOPH/USDT现货杠杆交易对",
+          "why_zh": "Bitget公告上线CP与SOPH的现货杠杆交易对，为这两个代币提供交易所杠杆交易通道，未披露上线时间或杠杆倍数。"
+        },
+        "editorial": {
+          "editorial_contract_version": "news_editorial_v2",
+          "editorial_origin": "model",
+          "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "direct",
+            "surprise": "unscheduled",
+            "development_delta": "state_change",
+            "channels": [
+              "exchange_access",
+              "product_progress"
+            ],
+            "affected_markets": [
+              "single_asset"
+            ],
+            "reader_value": "realtime"
+          },
+          "taxonomy": {
+            "subject_codes": [
+              "medtop:20000186"
+            ],
+            "event_family": "market_access",
+            "change_state": "announced",
+            "assertion_status": "claimed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "unknown",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+          },
+          "editorial_sha256": "34dfdaaa09d07c97b26c083e1b31c05b83e28694df08f32187685d9a2bb4c5e0"
+        },
+        "usage": {
+          "wall_latency_ms": 4687,
+          "call_count": 4,
+          "physical_call_count": 4,
+          "input_tokens": 13325,
+          "output_tokens": 297,
+          "cached_tokens": 12544,
+          "total_tokens": 13622,
+          "provider_cost_microusd": null
+        },
+        "answering_model": "deepseek-flash",
+        "trace": {
+          "context_sha256": "2728639b3828787bb4b7c075beb313b60052ce9a5c686b60b1547b3186ddfcb6",
+          "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+          "event_semantics_sha256": "2b9ed7389b84254c1963cf262631535e9952cd15cc37ad13c2f34a78d3d9d1e4",
+          "taxonomy_sha256": "b2c5a32b702f6b346fc36fdf0e3e33990e10accf59f275421f529a994181b2ca",
+          "reader_card_sha256": "b5e0a8c0801de3f1d3338631fae39f0a13a2c6495433e279cc3fbdcdd54ca721",
+          "answering_route": "fallback"
+        },
+        "whole_card_support_model_draft": {
+          "status": "answered",
+          "verdict": {
+            "supported_by_evidence": true
+          },
+          "error_code": null
+        }
+      }
+    },
+    {
+      "case": "confirmed_buyback",
+      "event_id": "d8f6a0be59311bd11970fd35293d6fe147aa6e1983425c439d51750793e1c01d",
+      "origin": "synthetic_control",
+      "snapshot_sha256": "155712515c8d5bc600c709c6715d41ea69daaaa5ef6d298e8f10cb50691b3604",
+      "criterion": "Preserve completed execution, $12 million and the stated 3% share reduction; do not demote explicit completion to a plan.",
+      "baseline": {
+        "raw_capture_sha256": "72e7b855393ac871ff53dc18523cda05f62394ad4b6dcf5264014a6b30d18da6",
+        "program_sha256": "32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a",
+        "verdict": {
+          "novelty": "new_fact",
+          "restates": -1,
+          "assets": [],
+          "direction": "bullish",
+          "scope": "single_name",
+          "magnitude": 2,
+          "confidence": 0.6,
+          "audience": "none",
+          "headline_zh": "Aster 完成 1200 万美元股票回购，流通股减少 3%",
+          "why_zh": "回购把 1200 万美元现金返还给股东，流通股减少 3% 后每股收益的分母变小，剩余股东的持股比例相应提高。"
+        },
+        "editorial": {
+          "editorial_contract_version": "news_editorial_v2",
+          "editorial_origin": "model",
+          "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "direct",
+            "surprise": "unscheduled",
+            "development_delta": "state_change",
+            "channels": [
+              "earnings_cashflow",
+              "positioning_flow"
+            ],
+            "affected_markets": [
+              "single_asset"
+            ],
+            "reader_value": "realtime"
+          },
+          "taxonomy": {
+            "subject_codes": [
+              "medtop:20000175"
+            ],
+            "event_family": "financing_capital_allocation",
+            "change_state": "effective",
+            "assertion_status": "claimed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "unknown",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+          },
+          "editorial_sha256": "73f349ba3b145154c9f52d2069fad4cb766493741198ce232808aca5662849c6"
+        },
+        "usage": {
+          "wall_latency_ms": 4416,
+          "call_count": 3,
+          "physical_call_count": 3,
+          "input_tokens": 11395,
+          "output_tokens": 286,
+          "cached_tokens": 10240,
+          "total_tokens": 11681,
+          "provider_cost_microusd": null
+        },
+        "answering_model": "deepseek-flash",
+        "trace": {
+          "context_sha256": "f1c9912ac2e96f910eeb1b08d1e43bb74c758d9d4642c45ca18e288be3498625",
+          "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+          "event_semantics_sha256": "da836ceaffc3a8257fce443192812999aa46e655fb999432bf83f99fa7287eb1",
+          "taxonomy_sha256": "df1ceded4e30df4017c247654b2396afbc4d6197198bc4c975e624ba654831a8",
+          "reader_card_sha256": "d23c1cfcb7f5d6cfb09e3dc3f8e4b12d98966c12c3f12d3b851a0cf790ccb8e2",
+          "answering_route": "fallback"
+        },
+        "whole_card_support_model_draft": {
+          "status": "answered",
+          "verdict": {
+            "supported_by_evidence": false
+          },
+          "error_code": null
+        }
+      },
+      "candidate": {
+        "raw_capture_sha256": "075810405295e5d2cae511c6f5866313768f947720bd9b1ca38f0af95b36ffb5",
+        "program_sha256": "ffbb0a1ff4e7363496250971d8a52f3a2e1e813700d2320d05b02a6b9edcfb49",
+        "verdict": {
+          "novelty": "new_fact",
+          "restates": -1,
+          "assets": [],
+          "direction": "bullish",
+          "scope": "single_name",
+          "magnitude": 2,
+          "confidence": 0.6,
+          "audience": "none",
+          "headline_zh": "Aster称本季完成1200万美元回购，流通股减少3%",
+          "why_zh": "公司称回购已完成，流通股减少3%，但未披露回购均价或资金来源。"
+        },
+        "editorial": {
+          "editorial_contract_version": "news_editorial_v2",
+          "editorial_origin": "model",
+          "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "direct",
+            "surprise": "unscheduled",
+            "development_delta": "state_change",
+            "channels": [
+              "earnings_cashflow",
+              "positioning_flow"
+            ],
+            "affected_markets": [
+              "single_asset"
+            ],
+            "reader_value": "realtime"
+          },
+          "taxonomy": {
+            "subject_codes": [
+              "medtop:20000175"
+            ],
+            "event_family": "financing_capital_allocation",
+            "change_state": "effective",
+            "assertion_status": "claimed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "unknown",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+          },
+          "editorial_sha256": "73f349ba3b145154c9f52d2069fad4cb766493741198ce232808aca5662849c6"
+        },
+        "usage": {
+          "wall_latency_ms": 4781,
+          "call_count": 3,
+          "physical_call_count": 3,
+          "input_tokens": 11264,
+          "output_tokens": 236,
+          "cached_tokens": 10496,
+          "total_tokens": 11500,
+          "provider_cost_microusd": null
+        },
+        "answering_model": "deepseek-flash",
+        "trace": {
+          "context_sha256": "f1c9912ac2e96f910eeb1b08d1e43bb74c758d9d4642c45ca18e288be3498625",
+          "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+          "event_semantics_sha256": "da836ceaffc3a8257fce443192812999aa46e655fb999432bf83f99fa7287eb1",
+          "taxonomy_sha256": "df1ceded4e30df4017c247654b2396afbc4d6197198bc4c975e624ba654831a8",
+          "reader_card_sha256": "c502624ed67824adb1f7fa1d3550db3a866d9144d870db22320a79ca01c1d523",
+          "answering_route": "fallback"
+        },
+        "whole_card_support_model_draft": {
+          "status": "answered",
+          "verdict": {
+            "supported_by_evidence": true
+          },
+          "error_code": null
+        }
+      }
+    },
+    {
+      "case": "realized_cost",
+      "event_id": "b6d60ac73b22fafe8eb7fc445dddc53850f018f935d2294b13a211b9941be8be",
+      "origin": "synthetic_control",
+      "snapshot_sha256": "cff9972131dd444f8b01b6866b4d24e8ace5216a84416c025f87ace531b39332",
+      "criterion": "Explain the supported cost mechanism while preserving annual savings versus a one-time charge.",
+      "baseline": {
+        "raw_capture_sha256": "d2c663852d57c1ee35eb7448ef9561074f35fe9fa679a0b9322c5024d47a90fd",
+        "program_sha256": "32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a",
+        "verdict": {
+          "novelty": "new_fact",
+          "restates": -1,
+          "assets": [],
+          "direction": "bullish",
+          "scope": "single_name",
+          "magnitude": 2,
+          "confidence": 0.6,
+          "audience": "none",
+          "headline_zh": "Aster 关闭工厂削减 4000 万美元年度固定成本，计提 1200 万美元一次性费用",
+          "why_zh": "关厂把每年 4000 万美元固定开支从成本结构中移除，一次性支出 1200 万美元后，后续利润将直接受益于更低的盈亏平衡点。"
+        },
+        "editorial": {
+          "editorial_contract_version": "news_editorial_v2",
+          "editorial_origin": "model",
+          "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "direct",
+            "surprise": "unscheduled",
+            "development_delta": "state_change",
+            "channels": [
+              "earnings_cashflow"
+            ],
+            "affected_markets": [
+              "single_asset"
+            ],
+            "reader_value": "realtime"
+          },
+          "taxonomy": {
+            "subject_codes": [
+              "medtop:20000178"
+            ],
+            "event_family": "financial_results",
+            "change_state": "reported",
+            "assertion_status": "claimed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "unknown",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+          },
+          "editorial_sha256": "5396a2b1a0c6086b8b5bb65478143a73f37f644b864873cac50648ba22f3fe13"
+        },
+        "usage": {
+          "wall_latency_ms": 4723,
+          "call_count": 3,
+          "physical_call_count": 3,
+          "input_tokens": 11404,
+          "output_tokens": 285,
+          "cached_tokens": 10240,
+          "total_tokens": 11689,
+          "provider_cost_microusd": null
+        },
+        "answering_model": "deepseek-flash",
+        "trace": {
+          "context_sha256": "9b6745061367014bfadfddac5c7223e978fcb132138ec51aa9b8491c75f1e1bc",
+          "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+          "event_semantics_sha256": "97c2533065d9691db891761f2f200091fd658eae53a7bab5d8d17d5d48897e9b",
+          "taxonomy_sha256": "4a0f2b1885ca8743f567f80f0f7125955e605c2d941e415aca4f59aca9e0b1e9",
+          "reader_card_sha256": "d0e9192cf53926ef85ac5dc25b5425d8e2355be75aadbb0289688360cc2f4877",
+          "answering_route": "fallback"
+        },
+        "whole_card_support_model_draft": {
+          "status": "answered",
+          "verdict": {
+            "supported_by_evidence": true
+          },
+          "error_code": null
+        }
+      },
+      "candidate": {
+        "raw_capture_sha256": "ee393bb2c9ca54e519c7423cf0781740a101646ac12cb102e4d4ebe5cd97fa2a",
+        "program_sha256": "ffbb0a1ff4e7363496250971d8a52f3a2e1e813700d2320d05b02a6b9edcfb49",
+        "verdict": {
+          "novelty": "new_fact",
+          "restates": -1,
+          "assets": [],
+          "direction": "neutral",
+          "scope": "single_name",
+          "magnitude": 2,
+          "confidence": 0.6,
+          "audience": "none",
+          "headline_zh": "Aster称关闭工厂削减4000万美元年度固定成本",
+          "why_zh": "公司称此举削减年度固定成本4000万美元，并产生1200万美元一次性费用，净影响未披露。"
+        },
+        "editorial": {
+          "editorial_contract_version": "news_editorial_v2",
+          "editorial_origin": "model",
+          "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "direct",
+            "surprise": "unscheduled",
+            "development_delta": "state_change",
+            "channels": [
+              "earnings_cashflow"
+            ],
+            "affected_markets": [
+              "single_asset"
+            ],
+            "reader_value": "realtime"
+          },
+          "taxonomy": {
+            "subject_codes": [
+              "medtop:20000189"
+            ],
+            "event_family": "financial_results",
+            "change_state": "reported",
+            "assertion_status": "claimed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "unknown",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+          },
+          "editorial_sha256": "5a9285ba799cd6582a190962dff17f0fe1c93866ac5005e176eb24a8c0fd0025"
+        },
+        "usage": {
+          "wall_latency_ms": 4513,
+          "call_count": 3,
+          "physical_call_count": 3,
+          "input_tokens": 11272,
+          "output_tokens": 228,
+          "cached_tokens": 10496,
+          "total_tokens": 11500,
+          "provider_cost_microusd": null
+        },
+        "answering_model": "deepseek-flash",
+        "trace": {
+          "context_sha256": "9b6745061367014bfadfddac5c7223e978fcb132138ec51aa9b8491c75f1e1bc",
+          "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+          "event_semantics_sha256": "d3044d9adb51bea8ae482e3518d4f824e55229b61226b44b9327a03938e3c70f",
+          "taxonomy_sha256": "afbb71c284b723fb3447dd4327b7ae845e578998838c3264c397e450e6a379d3",
+          "reader_card_sha256": "ebe6febb7a9d3ac8e044638d723e3aa618cdc9ac5d6d51c65af5810612017e17",
+          "answering_route": "fallback"
+        },
+        "whole_card_support_model_draft": {
+          "status": "answered",
+          "verdict": {
+            "supported_by_evidence": true
+          },
+          "error_code": null
+        }
+      }
+    },
+    {
+      "case": "conditional_apr",
+      "event_id": "a4025ae465e86297b340ee8893312154036383ec7c69315f9b6e47c26b18a332",
+      "origin": "synthetic_control",
+      "snapshot_sha256": "b4fa1eaba9511add4b75c38c28e8f346c2486b91555dab3ad3200804527ae954",
+      "criterion": "Preserve annual, variable and before-fee qualifications; do not claim a 12% daily or guaranteed return.",
+      "baseline": {
+        "raw_capture_sha256": "59f6b2ba39fa2ef2a0c66185fd7cfa17bd7b724db1b49c09338adf80d850c687",
+        "program_sha256": "32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a",
+        "verdict": {
+          "novelty": "new_fact",
+          "restates": -1,
+          "assets": [],
+          "direction": "neutral",
+          "scope": "single_name",
+          "magnitude": 1,
+          "confidence": 0.4,
+          "audience": "none",
+          "headline_zh": "Harbor 储蓄池宣传 12% 年化收益率",
+          "why_zh": "该 12% 年化收益率为浮动利率且未扣除费用，实际回报取决于资金池的使用率，储户最终到手收益可能低于宣传值。"
+        },
+        "editorial": {
+          "editorial_contract_version": "news_editorial_v2",
+          "editorial_origin": "model",
+          "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "contextual",
+            "surprise": "unknown",
+            "development_delta": "color_only",
+            "channels": [],
+            "affected_markets": [],
+            "reader_value": "none"
+          },
+          "taxonomy": {
+            "subject_codes": [],
+            "event_family": "other",
+            "change_state": "unknown",
+            "assertion_status": "claimed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "unknown",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+          },
+          "editorial_sha256": "8f02ad9c9f069240270e4997787b91baec7fad6a8ee2fc70ee129d45232a4512"
+        },
+        "usage": {
+          "wall_latency_ms": 3756,
+          "call_count": 3,
+          "physical_call_count": 3,
+          "input_tokens": 11393,
+          "output_tokens": 220,
+          "cached_tokens": 10240,
+          "total_tokens": 11613,
+          "provider_cost_microusd": null
+        },
+        "answering_model": "deepseek-flash",
+        "trace": {
+          "context_sha256": "f8b89c2c90d4d2d31aecb0a68427084bd19a6c9d021ebdfb0b0635e6cf6e55da",
+          "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+          "event_semantics_sha256": "e2c3d76d6f8e5e389480ea6442b5442ee86ecb3bb7e0f28694b0ecea6a474b86",
+          "taxonomy_sha256": "a7ab24107b6344058304029ba92643a2b8245f5cae162cd869dc626ede51fde3",
+          "reader_card_sha256": "62d63ac6efb0306b2cba293825aa2e3c81d0c9a59d6a347a91c4b7bbf4c3132e",
+          "answering_route": "fallback"
+        },
+        "whole_card_support_model_draft": {
+          "status": "answered",
+          "verdict": {
+            "supported_by_evidence": true
+          },
+          "error_code": null
+        }
+      },
+      "candidate": {
+        "raw_capture_sha256": "60dc7df95bf6513bf4de5cc9951ce809b142ace34c58329ca0c0083e47a59186",
+        "program_sha256": "ffbb0a1ff4e7363496250971d8a52f3a2e1e813700d2320d05b02a6b9edcfb49",
+        "verdict": {
+          "novelty": "new_fact",
+          "restates": -1,
+          "assets": [],
+          "direction": "neutral",
+          "scope": "single_name",
+          "magnitude": 1,
+          "confidence": 0.6,
+          "audience": "none",
+          "headline_zh": "Harbor宣传其储蓄池年化12%",
+          "why_zh": "该12%年化为浮动利率且未扣费用，实际收益取决于资金利用率。"
+        },
+        "editorial": {
+          "editorial_contract_version": "news_editorial_v2",
+          "editorial_origin": "model",
+          "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "contextual",
+            "surprise": "unknown",
+            "development_delta": "color_only",
+            "channels": [],
+            "affected_markets": [],
+            "reader_value": "none"
+          },
+          "taxonomy": {
+            "subject_codes": [
+              "medtop:20000205"
+            ],
+            "event_family": "product_service_change",
+            "change_state": "announced",
+            "assertion_status": "claimed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "unknown",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+          },
+          "editorial_sha256": "3cc51927ccbe7ccb39551e6bfb811f70b4cc6f573f50b4cf4a04ab7f3563a684"
+        },
+        "usage": {
+          "wall_latency_ms": 5997,
+          "call_count": 3,
+          "physical_call_count": 3,
+          "input_tokens": 11262,
+          "output_tokens": 211,
+          "cached_tokens": 10496,
+          "total_tokens": 11473,
+          "provider_cost_microusd": null
+        },
+        "answering_model": "deepseek-flash",
+        "trace": {
+          "context_sha256": "f8b89c2c90d4d2d31aecb0a68427084bd19a6c9d021ebdfb0b0635e6cf6e55da",
+          "envelope_sha256": "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235",
+          "event_semantics_sha256": "83c44a9fdaa72096bc508e0976a269759073f411971aa2f1518ace8c8c227757",
+          "taxonomy_sha256": "ea24d5376fc3d4864cfd30d333244e37e8f4531992b41e17c6a5bb57c72546cd",
+          "reader_card_sha256": "15571af8d6de1b23cf8e797ede3a304f668c9bb8cdaa6ba11f9470b5a1af0267",
+          "answering_route": "fallback"
+        },
+        "whole_card_support_model_draft": {
+          "status": "answered",
+          "verdict": {
+            "supported_by_evidence": true
+          },
+          "error_code": null
+        }
+      }
+    }
+  ]
+}

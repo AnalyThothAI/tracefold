@@ -372,7 +372,7 @@ model sees cannot go on accruing evidence into the previous cohort. Rows
 `program_v1`–`program_v9`, each opened by a hand-written migration, remain
 append-only audit history. Only accepted `news_review_v6` evidence created in
 the running bundle's epoch and bound to that exact bundle is eligible for
-metric v8, optimizer, replay or release gates.
+metric v9, optimizer, replay or release gates.
 The operator fast loop that used to sit beside that plane
 (`tracefold.news.learning.experiment`, #193) was deleted in #343, and with it
 its on-disk run directories, snapshot/compare arm comparison and the
@@ -1202,7 +1202,7 @@ holds `schema_version` `news_program_strategy_artifact_v1` and one instruction
 per Predictor (`event_semantics`, `taxonomy`, `reader_card`), and
 `program_sha256` is the canonical hash of exactly those
 three values. The stable root is
-`32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a`.
+`ffbb0a1ff4e7363496250971d8a52f3a2e1e813700d2320d05b02a6b9edcfb49`.
 Issue #117 changed the EventSemantics instruction and typed output while
 preserving the then two-Predictor graph and its two-call common-success path;
 #501 added the taxonomy Predictor beside them, which is why the ordinary path is
@@ -2015,7 +2015,7 @@ The resource guardrails are unchanged except that #567 moved
 `mean_total_tokens_growth_pct` to 0.25 while the call and provider-cost caps that
 actually bill stay at 0.10.
 
-Metric v8 (`tracefold.news.production_action_trade_relevance_v8`) uses the one
+Metric v9 (`tracefold.news.production_action_trade_relevance_v9`) uses the one
 version-bound production-action projection shared by baseline, failure-cluster
 selection and CandidateEvaluator. Its candidate scalar weights 45% final
 production action, 35% exact TradeRelevance dimensions, 10% semantics/novelty,
@@ -2028,17 +2028,36 @@ one subscore of the existing semantics/novelty component: subject-code set F1
 plus exact event family, change state and assertion status. `source_authority`
 is code-derived and absent from target, score and feedback.
 
-The copy lint (`tracefold.news.reader_card_lint_v1`, #306 Phase 1) is what makes
+The copy lint (`tracefold.news.reader_card_lint_v2`, #629) is what makes
 the ReaderCard side scorable at all without a reviewer label. Before it, the
 only card dimension the ruler could measure was `factual_fidelity`, through the
 sealed equivalence judge; the rest of the card contract — banned evaluative
 filler, meta openings, self-description, emoji, URLs, the Chinese language
-boundary, the 15-60 character headline band, the count of decision-relevant
+boundary, the nonempty headline with a 60-character maximum, the count of decision-relevant
 numbers the original headline stated, a single-sentence `why_zh` — lived only as
 prose inside a RulePack, and prose cannot score a candidate. The lint is pure, framework-neutral code with no
 model call and no Gold dependency, so the metric, the Objective Plan's mirrored
 gate ladder and any offline report read the same answer, and its tables are
 hashed into the metric receipt like the rest of the ruler.
+
+Fidelity takes priority over padding or inventing a price mechanism. ReaderCard
+keeps source attribution, conditions, time basis and execution status, and may
+explain a specific evidence boundary when a title supplies no mechanism. Short
+substantive copy and supported conditional language (`或将`/`有望`) are valid.
+EventSemantics no longer defaults a product launch or capacity commitment to
+bullish; ReaderCard still cannot change semantics or read Taxonomy.
+
+Failed `factual_fidelity` and nonliteral `why_support` use the existing sealed
+judge's factual-evidence question against the exact bounded ReaderCard input.
+An accepted identical why retains its pass without a call; repeating a failed
+why cannot earn repair credit. Supported repairs enter the denominator without
+reference Chinese wording. Explicitly unsupported and unavailable questions both
+score zero, but have distinct outcomes; the two dimensions share a question and
+its physical-call receipts. This judge stays offline, outside the three-Predictor
+online graph. `why_value` equivalence measures retention of an accepted pass,
+not increased usefulness; failed values without gold remain unscored. Reports
+publish effective/answered denominators, unavailable and unlabelled counts.
+Lint is format evidence, not a semantic-fidelity measurement.
 
 Two severities, and the split is published in the receipt rather than implied.
 **Hard gates** are `card_lint_url` and `card_lint_self_description` only: a card

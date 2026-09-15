@@ -30,9 +30,9 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Final, Literal
 
-CARD_LINT_ID: Final[str] = "tracefold.news.reader_card_lint_v1"
+CARD_LINT_ID: Final[str] = "tracefold.news.reader_card_lint_v2"
 
-HEADLINE_MIN_CHARS: Final[int] = 15
+HEADLINE_MIN_CHARS: Final[int] = 1
 HEADLINE_MAX_CHARS: Final[int] = 60
 WHY_MAX_CHARS: Final[int] = 140
 # The evaluative/meta filler the card contract forbids, moved out of RulePack prose into a code table.
@@ -48,8 +48,6 @@ BANNED_FILLER: Final[tuple[str, ...]] = (
     "利空",
     "看涨",
     "看跌",
-    "或将",
-    "有望",
     "市场普遍认为",
     "机构采用趋势",
     "rwa叙事",
@@ -300,7 +298,7 @@ def lint_reader_card(*, headline_zh: str, why_zh: str, source_title: str = "") -
     if filler:
         feedback.append(
             f"Reader copy used banned evaluative filler ({', '.join(filler)}); state the concrete "
-            "mechanism instead: who holds what, what happens next, which price or business result it feeds."
+            "supported mechanism or the specific limit of the supplied evidence instead."
         )
 
     meta = _meta_opening_hit(headline, why)

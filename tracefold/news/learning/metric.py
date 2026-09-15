@@ -50,7 +50,7 @@ from .taxonomy_metric import TAXONOMY_TARGET_DIMENSIONS, compare_taxonomy
 # addresses — but a version label that stays put while the definition moves is a label that lies.
 # v5 (#306 Phase 1): the deterministic ReaderCard copy contract became a scored component and a hard gate,
 # so the card side of this ruler no longer depends on a reviewer having labelled anything.
-METRIC_ID = "tracefold.news.production_action_trade_relevance_v8"
+METRIC_ID = "tracefold.news.production_action_trade_relevance_v9"
 
 
 # The five components of the candidate-selection score. Code-owned and content-addressed: they are hashed
@@ -87,6 +87,7 @@ LABEL_GROUP: dict[str, str] = {
 # dropped the next new one silently.
 UNGROUPED_LABEL = "not_scored"
 _CARD_LINT_GATES: Final[frozenset[str]] = frozenset(GATE_CHECKS)
+_EVIDENCE_DIMENSIONS: Final[frozenset[str]] = frozenset({"factual_fidelity", "why_support"})
 _DIMENSION_FIELD = {
     "asset_grounding": "assets",
     "direction": "direction",
@@ -289,7 +290,10 @@ def _component_diagnostics(
         else:
             labelled_n = len(component_anchors) + (novelty_n + taxonomy_n if component == "semantics_novelty" else 0)
             gold_scored_n = sum(wanted is not _NO_GOLD for _field, _label, wanted in component_anchors)
-            denominator = sum(label == "pass" or wanted is not _NO_GOLD for _field, label, wanted in component_anchors)
+            denominator = sum(
+                label == "pass" or wanted is not _NO_GOLD or field in _EVIDENCE_DIMENSIONS
+                for field, label, wanted in component_anchors
+            )
             if component == "semantics_novelty":
                 field_n["novelty"] = novelty_n
                 field_n["taxonomy"] = taxonomy_n
@@ -314,19 +318,23 @@ def _component(
     expected: Mapping[str, Any] | None = None,
     judge: Any = None,
     outcomes: list[tuple[str, str]] | None = None,
+    *,
+    evidence_json: str = "",
 ) -> tuple[float | None, int, int, int] | None:
     """Score one Predictor's accepted dimensions, or ``None`` when the reviewer labelled none of them.
 
-    Three branches, in strict order of how much the reviewer actually told us:
+    Accepted anchors and evidence support have distinct meanings:
 
     1. ``pass`` — a retention anchor: keep what the reviewer accepted.
     2. ``fail`` **with gold** — the reviewer stated the correct value, so only that value scores. This is the
-       DSPy-idiomatic case and the only one where the score means "right", not "different".
-    3. ``fail`` **without gold** — visible in corpus/field counts but absent from the effective denominator.
-       It never earns credit merely for changing something.
+       exact-value case; changing a field alone never earns credit.
+    3. Evidence support — factual repairs and rewritten why_support are checked against the original
+       bounded input, without requiring one reference Chinese sentence. Unavailability scores zero.
+    4. Other ``fail`` labels without gold stay outside the denominator. In particular, equivalence
+       cannot establish that a failed why_value became more useful.
 
     Returns ``(score, gold_scored_n, effective_n, labelled_n)``. ``score`` is ``None`` when labels exist but
-    none has an exact scoring anchor.
+    none has an exact, retention or evidence-support scoring anchor.
     """
 
     anchors = _scoring_anchors(dimensions, names, dict(expected or {}))
@@ -336,8 +344,23 @@ def _component(
     hits = 0.0
     gold_scored = 0
     scored_n = 0
+    support_outcome: str | None = None
     for name, label, wanted in anchors:
         field = _DIMENSION_FIELD.get(name)
+        if name in _EVIDENCE_DIMENSIONS and (label == "fail" or name == "why_support"):
+            scored_n += 1
+            if _same_value(field, verdict, production):
+                # An accepted literal answer needs no new judge; repeating a known failure is no repair.
+                hit = label == "pass"
+                outcome = "retention_hit" if hit else "support_miss"
+            else:
+                if support_outcome is None:
+                    support_outcome = _evidence_support(evidence_json, verdict, judge)
+                outcome = support_outcome
+                hit = outcome == "support_hit"
+            hits += hit
+            outcomes.append((name, outcome))
+            continue
         if label == "fail":
             if wanted is not _NO_GOLD:
                 gold_scored += 1
@@ -359,6 +382,21 @@ def _component(
             outcomes.append((name, "retention_hit" if kept else "retention_miss"))
             continue
     return (hits / scored_n if scored_n else None, gold_scored, scored_n, len(anchors))
+
+
+def _evidence_support(evidence_json: str, verdict: Mapping[str, Any], judge: Any) -> str:
+    """Reuse the sealed judge and its receipts; one unavailable question is distinct from a false answer."""
+
+    verify = getattr(judge, "facts_supported", None)
+    if not evidence_json or not callable(verify):
+        return "support_unavailable"
+    try:
+        assessment = verify(evidence_json, verdict)
+        if assessment.status != "answered" or assessment.verdict is None:
+            return "support_unavailable"
+        return "support_hit" if assessment.verdict.supported_by_evidence else "support_miss"
+    except Exception:
+        return "support_unavailable"
 
 
 def _parse_prediction(
@@ -433,8 +471,7 @@ def accepted_review_metric(
     projection = dict(gold.policy_metric or {})
     dimensions = dict(review.get("dimensions") or {})
     should_push = str(review.get("should_push") or "uncertain")
-    # v4 exact gold. A failed dimension without a stated correct value is visible
-    # in corpus metadata but contributes neither a hit nor a denominator.
+    # Exact corrections remain gold; evidence-supported card repairs need no reference wording.
     expected = dict(review.get("expected") or {})
     gate_facts = dict(projection.get("gate") or {})
     grounded_values = {base_symbol(str(value)) for value in gate_facts.get("grounded_assets") or ()}
@@ -608,7 +645,16 @@ def accepted_review_metric(
         else _component(dimensions, _RELEVANCE_DIMENSIONS, observed, production, expected, judge, outcomes)
     )
     semantics = _component(dimensions, _SEMANTICS_DIMENSIONS, observed, production, expected, judge, outcomes)
-    card = _component(dimensions, _CARD_DIMENSIONS, observed, production, expected, judge, outcomes)
+    card = _component(
+        dimensions,
+        _CARD_DIMENSIONS,
+        observed,
+        production,
+        expected,
+        judge,
+        outcomes,
+        evidence_json=gold.card_evidence_json,
+    )
     # The deterministic card checks report beside the reviewer-labelled dimensions, in the same vocabulary,
     # so one `dimension_outcomes` list answers "what did this candidate do" for both kinds of truth.
     outcomes.extend(lint.outcomes)
@@ -644,18 +690,13 @@ def accepted_review_metric(
             **decision_metadata,
         )
     if dimensions.get("factual_fidelity") == "fail":
-        evidence_json = gold.card_evidence_json
-        verify_facts = getattr(judge, "facts_supported", None)
-        try:
-            facts_supported = bool(
-                evidence_json and callable(verify_facts) and verify_facts(evidence_json, typed.model_dump(mode="json"))
-            )
-        except Exception:
-            facts_supported = False
-        if not facts_supported:
+        factual_outcome = dict(outcomes).get("factual_fidelity")
+        if factual_outcome != "support_hit":
             return _zero(
                 "The candidate's factual repair could not be verified against the immutable Event evidence.",
-                gate="factual_contradiction",
+                gate="metric_judge_unavailable"
+                if factual_outcome == "support_unavailable"
+                else "factual_contradiction",
                 action=action,
                 outcomes=outcomes,
                 **decision_metadata,
@@ -860,9 +901,15 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
         # v5 (#117) makes the accepted-rubric identity in `gold_source` exact rather than claiming v4 for
         # every caller. A schema label that stays put while the document changes is the same lie
         # `METRIC_ID` bumps to avoid.
-        "schema": "tracefold.news.compile_metric_receipt.v5",
+        "schema": "tracefold.news.compile_metric_receipt.v6",
         "metric_id": METRIC_ID,
         "gold_source": f"news_reviews.payload.expected ({review_rubric_version} exact gold only)",
+        "evidence_support": {
+            "dimensions": sorted(_EVIDENCE_DIMENSIONS),
+            "source": "CompileExample.card_evidence_json (immutable bounded model input)",
+            "unavailable": "failure_as_zero_separate_from_unsupported",
+            "why_value": "accepted_pass_retention_only; fail_without_gold_not_scored",
+        },
         # Which ruler measured the free-text retention anchors. Two runs judged differently are not comparable,
         # and `null` means the strict byte-equality rule that predates #148.
         "semantic_judge": judge.identity if judge is not None else None,
@@ -902,6 +949,7 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
             "must_hold_send",
             "schema_invalid",
             "factual_contradiction",
+            "metric_judge_unavailable",
             *GATE_CHECKS,
             "ungrounded_primary_asset",
             "background_realtime_send",

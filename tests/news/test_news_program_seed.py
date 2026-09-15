@@ -93,7 +93,7 @@ def test_the_seed_carries_the_reviewed_knowledge_rather_than_regenerating_it() -
     for marker in (
         "Write a faithful Chinese reading of the original headline",
         "every decision-relevant number",
-        "the concrete mechanism, who is exposed, and what changes for them now",
+        "When evidence supports a mechanism, explain who is affected and what changes",
         "Do not open with",
     ):
         assert marker in card, marker
@@ -215,7 +215,7 @@ def test_the_reader_card_seed_asks_for_a_condensed_headline_and_a_required_why()
     card = seed_instruction("reader_card")
     assert "Aim for at most 50 characters and never exceed 60" in card
     assert "Never stop mid-clause to fit the limit: condense first" in card
-    assert "why_zh is required: exactly one plain sentence, never empty and never punctuation alone" in card
+    assert "why_zh is required: one nonempty plain Chinese sentence, at most 140 characters" in card
     assert "Write the headline in Chinese even when the original is entirely English" in card
     assert "If the faithful result is at most 60 characters, do not shorten it further." not in card
 

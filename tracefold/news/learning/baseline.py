@@ -75,7 +75,7 @@ from .objective import (
 )
 
 BaselineMode = Literal["recorded", "compile_live", "runtime_live"]
-BASELINE_SCHEMA: Literal["tracefold.news.program_baseline_report.v3"] = "tracefold.news.program_baseline_report.v3"
+BASELINE_SCHEMA: Literal["tracefold.news.program_baseline_report.v4"] = "tracefold.news.program_baseline_report.v4"
 # Bootstrap convention shared with the release evaluator, so a cluster interval here means the same
 # thing it means there.
 _BOOTSTRAP = {"seed": 112, "replicates": 2_000, "confidence": 0.95}
@@ -156,7 +156,7 @@ class BaselineReport(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_id: Literal["tracefold.news.program_baseline_report.v3"] = BASELINE_SCHEMA
+    schema_id: Literal["tracefold.news.program_baseline_report.v4"] = BASELINE_SCHEMA
     mode: BaselineMode
     identity: dict[str, Any]
     execution_scope: tuple[str, ...]
@@ -464,10 +464,20 @@ def _action_confusion(results: Sequence[CaseResult]) -> dict[str, Any]:
     return summary
 
 
-def _prediction_dimensions(results: Sequence[CaseResult]) -> dict[str, Any]:
+def _prediction_dimensions(
+    results: Sequence[CaseResult], *, cases: Sequence[BaselineCase] | None = None
+) -> dict[str, Any]:
     """What the candidate did, not what the corpus contains."""
 
-    table: dict[str, dict[str, int]] = {}
+    # Empty card dimensions remain visible: no labels is not a measured zero error rate.
+    table: dict[str, dict[str, int]] = {name: {} for name in COMPONENT_FIELDS["reader_card"]}
+    labelled: dict[str, int] = {}
+    if cases is not None:
+        for case in cases:
+            for name, label in case.episode.accepted_review.get("dimensions", {}).items():
+                if label in {"pass", "fail"} and LABEL_GROUP.get(name) in {"event_semantics", "reader_card"}:
+                    labelled[name] = labelled.get(name, 0) + 1
+                    table.setdefault(name, {})
     for result in results:
         for name, outcome in result.dimension_outcomes:
             row = table.setdefault(name, {})
@@ -476,14 +486,30 @@ def _prediction_dimensions(results: Sequence[CaseResult]) -> dict[str, Any]:
     for name, counts in sorted(table.items()):
         total = sum(counts.values())
         hits = sum(value for outcome, value in counts.items() if outcome.endswith("_hit"))
+        unscored = sum(value for outcome, value in counts.items() if outcome.startswith("not_scored"))
+        unavailable = sum(value for outcome, value in counts.items() if outcome.endswith("_unavailable"))
+        denominator = total - unscored
+        labelled_n = max(total, labelled.get(name, 0))
+        population_n = len(results) if cases is None else len(cases)
         summary[name] = {
             **counts,
             "n": total,
-            # The reviewer labelled this dimension on `n` cases and left the rest alone. Publishing the
-            # silence keeps `n` readable: a dimension scored on 40 of 242 cases is a different claim from one
-            # scored on 240, and the rate alone cannot tell them apart.
-            "not_labelled": len(results) - total,
-            "hit_rate": round(hits / total, 6) if total else None,
+            # Route/metric failures did not erase the reviewer's labels. They are unevaluated, not unlabelled.
+            "labelled_n": labelled_n,
+            "not_labelled": population_n - labelled_n,
+            "not_evaluated_n": labelled_n - total,
+            "denominator": denominator,
+            "answered_denominator": denominator - unavailable,
+            "unavailable_n": unavailable,
+            "not_scored_n": unscored,
+            "hit_rate": round(hits / denominator, 6) if denominator else None,
+            "scoring_basis": (
+                "accepted_pass_retention_only_not_value_improvement"
+                if name == "why_value"
+                else "accepted_anchor_or_evidence_support"
+                if name in {"factual_fidelity", "why_support"}
+                else "accepted_anchor"
+            ),
         }
     return summary
 
@@ -892,7 +918,7 @@ def _build_report(
         # move when the model does; built over `answered` it moved whenever a provider timed out, and an
         # operator reading a changed label distribution concludes the corpus changed under them.
         review_label_distribution=_dimension_tally(cases),
-        prediction_dimensions=_prediction_dimensions(answered),
+        prediction_dimensions=_prediction_dimensions(answered, cases=cases),
         gold_coverage={
             "gold_scored_n": gold_n,
             "labelled_n": labelled_n,
