@@ -40,13 +40,16 @@ from .objective import (
     DevelopmentEpisode,
     _gold_value,
     _labelled,
-    asset_claims_match,
     evidence_text_of,
-    known_wrong_markets,
     production_decision,
     typed_asset_claims,
     ungrounded_primaries,
 )
+
+# #651 §8: the taxonomy and asset comparisons are `target_metrics`'s, not this module's. Two
+# implementations of "is this taxonomy right" is how the number an operator reads before a prompt edit
+# stopped being the number GEPA maximizes, and a composite that re-derived them would put it back.
+from .target_metrics import asset_grounding_outcome, classification_score
 from .taxonomy_metric import TAXONOMY_TARGET_DIMENSIONS, compare_taxonomy
 
 # v3 (#150): the scored dimension set lost `timeliness`, the policy moved from process-global
@@ -59,7 +62,7 @@ from .taxonomy_metric import TAXONOMY_TARGET_DIMENSIONS, compare_taxonomy
 # bare symbol set — so a primary/mentioned swap and a wrong market are both visible where they were
 # silently equal — and `ungrounded_primary_asset` no longer zeroes a primary the evidence text or the
 # instrument catalogue grounds when the provider tagged something else.
-METRIC_ID = "tracefold.news.production_action_trade_relevance_v10"
+METRIC_ID = "tracefold.news.production_action_trade_relevance_v11"
 
 
 # The five components of the candidate-selection score. Code-owned and content-addressed: they are hashed
@@ -372,13 +375,10 @@ def _component(
                 observed = _observed_value(verdict, name)
                 if name == "asset_grounding":
                     # Typed claims, compared under #651 §6.2 rather than by set equality: `unknown` on
-                    # either side cannot contradict, and a market both sides state has to agree.
-                    hit = asset_claims_match(observed, wanted)
-                    outcome = (
-                        "gold_hit"
-                        if hit
-                        else ("known_wrong_market" if known_wrong_markets(observed, wanted) else "gold_miss")
-                    )
+                    # either side cannot contradict, and a market both sides state has to agree. The
+                    # comparison itself belongs to `target_metrics`, which is also what the understanding
+                    # ruler asks.
+                    hit, outcome = asset_grounding_outcome(observed, wanted)
                 else:
                     hit = observed == wanted
                     outcome = "gold_hit" if hit else "gold_miss"
@@ -649,7 +649,9 @@ def accepted_review_metric(
             )
         taxonomy = compare_taxonomy(review["taxonomy"], editorial.taxonomy)
         component_diagnostics["semantics_novelty"]["taxonomy"] = {
-            "score": taxonomy.score,
+            # The classification ruler's own partial score, masked to the axes this Gold states, so the
+            # composite reports the same number the classification target is optimized on.
+            "score": classification_score(review["taxonomy"], taxonomy),
             "subject_f1": taxonomy.subject_f1,
             "missing_subjects": list(taxonomy.missing_subjects),
             "extra_subjects": list(taxonomy.extra_subjects),

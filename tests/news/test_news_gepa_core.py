@@ -19,7 +19,6 @@ from tracefold.news.learning.optimizer import (
     OptimizationBudgetExceeded,
     OptimizationRunTerminated,
     _BudgetMeter,
-    _ClassificationMetric,
     _LearningStudent,
     _MeteredLearningLM,
     gepa_metric_call_ceiling,
@@ -28,6 +27,7 @@ from tracefold.news.learning.optimizer import (
     resolve_auto_metric_calls,
     target_plan,
 )
+from tracefold.news.learning.target_metrics import classification_metric
 from tracefold.news.program.lm import LMOutputTruncatedError
 from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 from tracefold.news.taxonomy import EVENT_FAMILY_DEFINITIONS, ModelTaxonomyV1
@@ -112,7 +112,7 @@ def test_direct_metric_is_the_mean_of_the_four_taxonomy_axes() -> None:
         taxonomy=ModelTaxonomyV1.model_validate(_taxonomy(event_family="other", assertion_status="rumor"))
     )
 
-    result = _ClassificationMetric()(gold, prediction)
+    result = classification_metric(gold, prediction)
 
     assert result.score == 0.5
     assert result.objective_scores == {
@@ -128,7 +128,7 @@ def test_metric_feedback_quotes_the_codebook_definitions_and_the_matching_preced
     gold = dspy.Example(gold_taxonomy=_taxonomy(change_state="effective", assertion_status="confirmed"))
     prediction = dspy.Prediction(taxonomy=_taxonomy(change_state="reported", assertion_status="claimed"))
 
-    feedback = _ClassificationMetric()(gold, prediction).feedback
+    feedback = classification_metric(gold, prediction).feedback
 
     assert "change_state: expected=effective (the change is live, completed or legally in force," in feedback
     assert "predicted=reported (a published measurement" in feedback
@@ -141,7 +141,7 @@ def test_metric_feedback_names_missing_and_extra_subjects_with_their_glossary_la
     gold = dspy.Example(gold_taxonomy=_taxonomy(subject_codes=["medtop:20000178"]))
     prediction = dspy.Prediction(taxonomy=_taxonomy(subject_codes=["medtop:20001279"], event_family="other"))
 
-    feedback = _ClassificationMetric()(gold, prediction).feedback
+    feedback = classification_metric(gold, prediction).feedback
 
     assert "missing subjects: medtop:20000178 (corporate earnings)" in feedback
     assert "extra subjects: medtop:20001279 (cryptocurrency)" in feedback
@@ -295,7 +295,7 @@ def test_truncated_and_invalid_task_output_score_the_native_failure_score() -> N
     """#501 D5: no sentinel below the real scale; a failure is `failure_score`, which is 0.0."""
 
     constructor = optimizer_constructor(max_metric_calls=40, seed=456, train_count=8)
-    metric = _ClassificationMetric()
+    metric = classification_metric
 
     truncated = metric(
         dspy.Example(gold_taxonomy=_taxonomy()),
