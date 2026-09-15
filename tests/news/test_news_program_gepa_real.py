@@ -1,10 +1,10 @@
-"""Issue #501: exercise the native, taxonomy-only public DSPy GEPA path over blind Gold."""
+"""The native public DSPy GEPA path over blind Gold, for each optimization target (#501, #651)."""
 
 from __future__ import annotations
 
 import copy
 import hashlib
-from typing import Any
+from typing import Any, cast
 
 import dspy  # type: ignore[import-untyped]
 import pytest
@@ -23,7 +23,7 @@ from tracefold.news.learning.optimizer import (
     build_task_lm,
     run_gepa,
 )
-from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_state
 from tracefold.news.program.contracts import TriageContext
 from tracefold.news.program.lm import LMCallLedger
 from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
@@ -273,15 +273,17 @@ def _run_synthetic_gepa(
     aggregate_scores: tuple[float, ...],
     validation_subscores: tuple[dict[int, float], ...] | None = None,
     auto: str | None = None,
+    target: str = "classification",
 ) -> GepaRunResult:
     task, reflection, _task, _reflection, _ledger = _models()
     val_count = len(build_gepa_objective_plan(_corpus()).development_selection_episodes)
     rows = validation_subscores or tuple(dict.fromkeys(range(val_count), score) for score in aggregate_scores)
     return run_gepa(
-        base_program=load_stable_program_artifact(),
+        base_program=load_stable_program_state(),
         episodes=_corpus(),
         task_lm=task,
         reflection_lm=reflection,
+        target=target,
         auto=auto,
         max_metric_calls=None if auto else 40,
         seed=456,
@@ -294,8 +296,8 @@ def _run_synthetic_gepa(
     )
 
 
-def _candidates() -> tuple[str, str, str]:
-    stable = load_stable_program_artifact().taxonomy_instruction
+def _candidates(predictor: str = "taxonomy") -> tuple[str, str, str]:
+    stable = load_stable_program_state().instruction_for(predictor)
     return stable, stable + "\n\nCandidate one.", stable + "\n\nCandidate two."
 
 
@@ -309,24 +311,91 @@ def test_every_gold_case_is_an_optimizer_sample_whatever_its_owner_column_says()
     assert len(plan.train_episodes) == 8 and len(plan.development_selection_episodes) == 4
 
 
-def test_gepa_best_strictly_above_the_seed_advances_with_only_the_taxonomy_instruction_changed() -> None:
-    stable_artifact = load_stable_program_artifact()
-    stable, candidate_one, candidate_two = _candidates()
+@pytest.mark.parametrize(
+    ("target", "predictor"),
+    [
+        pytest.param("classification", "taxonomy", id="classification"),
+        pytest.param("understanding", "event_semantics", id="understanding"),
+        pytest.param("explanation", "reader_card", id="explanation"),
+    ],
+)
+def test_gepa_best_strictly_above_the_seed_advances_only_the_target_predictor(target: str, predictor: str) -> None:
+    """#651: one assembly, three targets, and only the target Predictor's state moves."""
 
-    result = _run_synthetic_gepa(instructions=(stable, candidate_one, candidate_two), aggregate_scores=(0.5, 0.7, 0.9))
+    stable_state = load_stable_program_state()
+    stable, candidate_one, candidate_two = _candidates(predictor)
 
-    assert result.patch.taxonomy_instruction == candidate_two
-    assert result.patch.event_semantics_instruction == stable_artifact.event_semantics_instruction
-    assert result.patch.reader_card_instruction == stable_artifact.reader_card_instruction
-    selection = result.metric["taxonomy_selection_score"]
-    assert selection["schema"] == "tracefold.news.taxonomy_selection_score.v3"
+    result = _run_synthetic_gepa(
+        instructions=(stable, candidate_one, candidate_two),
+        aggregate_scores=(0.5, 0.7, 0.9),
+        target=target,
+    )
+
+    assert result.target == target
+    assert result.state.changed_predictors(stable_state) == (predictor,)
+    assert result.state.instruction_for(predictor) == candidate_two
+    for other in ("event_semantics", "taxonomy", "reader_card"):
+        if other != predictor:
+            assert result.state.predictor_document(other) == stable_state.predictor_document(other)
+    selection = result.metric["target_selection_score"]
+    assert selection["schema"] == "tracefold.news.target_selection_score.v4"
     assert selection["gepa_best_index"] == 2
     assert selection["admitted"] is True
     assert selection["gepa_best_instruction_valid"] is True
-    assert selection["delta"]["taxonomy_overall"] == 0.4
+    assert selection["gepa_best_demo_n"] == 0
+    assert selection["delta"]["target_overall"] == 0.4
+    assert result.metric["predictor_change"]["target"] == target
+    assert result.metric["predictor_change"]["predictor"] == predictor
     assert result.public_result["gepa_best_index"] == 2
     assert result.public_result["admitted"] is True
     assert result.optimizer_cluster_ids == build_gepa_objective_plan(_corpus()).optimizer_cluster_ids
+
+
+def test_gepa_demos_travel_with_the_winning_candidate() -> None:
+    """#651: a GEPA winner that attaches few-shot demos is a candidate, not a refusal."""
+
+    stable_state = load_stable_program_state()
+    stable, candidate_one, _unused = _candidates()
+    demo = {"evidence_json": "<evidence>", "taxonomy": dict(_OTHER_TAXONOMY)}
+
+    def compile_with_demos(student: dspy.Module, **_kwargs: Any) -> dspy.Module:
+        val_count = len(build_gepa_objective_plan(_corpus()).development_selection_episodes)
+        candidates = []
+        for index, instruction in enumerate((stable, candidate_one)):
+            candidate = copy.deepcopy(student)
+            predictor = next(iter(dict(candidate.named_predictors()).values()))
+            predictor.signature = predictor.signature.with_instructions(instruction)
+            if index:
+                predictor.demos = [dict(demo)]
+            candidates.append(candidate)
+        student.detailed_results = DspyGEPAResult(
+            candidates=candidates,
+            parents=[[None], [0]],
+            val_aggregate_scores=[0.5, 0.9],
+            val_subscores=[dict.fromkeys(range(val_count), score) for score in (0.5, 0.9)],
+            val_aggregate_subscores=[{"four_axis_exact_accuracy": score} for score in (0.5, 0.9)],
+            per_val_instance_best_candidates={},
+            discovery_eval_counts=[0, 1],
+            total_metric_calls=10,
+        )
+        return student
+
+    task, reflection, _task, _reflection, _ledger = _models()
+    result = run_gepa(
+        base_program=stable_state,
+        episodes=_corpus(),
+        task_lm=task,
+        reflection_lm=reflection,
+        max_metric_calls=40,
+        seed=456,
+        review_rubric_version=REVIEW_RUBRIC_VERSION,
+        compile_fn=compile_with_demos,
+    )
+
+    assert result.state.demos_for("taxonomy") == (demo,)
+    assert result.state.changed_predictors(stable_state) == ("taxonomy",)
+    assert result.metric["target_selection_score"]["gepa_best_demo_n"] == 1
+    assert result.metric["predictor_change"]["taxonomy"]["after_demo_n"] == 1
 
 
 @pytest.mark.parametrize(
@@ -345,9 +414,10 @@ def test_gepa_best_not_strictly_above_the_seed_is_a_no_op(
         _run_synthetic_gepa(instructions=(stable, candidate), aggregate_scores=aggregate_scores)
 
     result = caught.value.result
-    assert result.metric["taxonomy_selection_score"]["gepa_best_index"] == expected_best
-    assert result.metric["taxonomy_selection_score"]["admitted"] is False
-    assert result.patch.taxonomy_instruction == stable
+    assert result.metric["target_selection_score"]["gepa_best_index"] == expected_best
+    assert result.metric["target_selection_score"]["admitted"] is False
+    assert result.state.instruction_for("taxonomy") == stable
+    assert result.state.changed_predictors(load_stable_program_state()) == ()
     assert result.public_result["admitted"] is False
 
 
@@ -365,14 +435,15 @@ def test_selection_never_replays_controls_or_a_growth_budget() -> None:
         validation_subscores=rows,
     )
 
-    assert result.patch.taxonomy_instruction != stable
-    selection = result.metric["taxonomy_selection_score"]
+    assert result.state.instruction_for("taxonomy") != stable
+    selection = result.metric["target_selection_score"]
     assert set(selection) == {
         "schema",
         "candidate_0",
         "gepa_best_index",
         "gepa_best",
         "gepa_best_instruction_valid",
+        "gepa_best_demo_n",
         "admitted",
         "delta",
     }
@@ -384,8 +455,8 @@ def test_an_oversized_best_candidate_is_a_no_op_not_a_crash() -> None:
     with pytest.raises(GepaNoProgramChange) as caught:
         _run_synthetic_gepa(instructions=(stable, "y" * 40_000), aggregate_scores=(0.5, 0.9))
 
-    assert caught.value.result.metric["taxonomy_selection_score"]["gepa_best_instruction_valid"] is False
-    assert caught.value.result.metric["taxonomy_selection_score"]["admitted"] is False
+    assert caught.value.result.metric["target_selection_score"]["gepa_best_instruction_valid"] is False
+    assert caught.value.result.metric["target_selection_score"]["admitted"] is False
 
 
 def test_auto_light_resolves_to_dspys_own_budget_and_the_receipt_records_it() -> None:
@@ -403,7 +474,7 @@ def test_auto_light_resolves_to_dspys_own_budget_and_the_receipt_records_it() ->
 
 def test_real_gepa_uses_one_native_taxonomy_predict_and_returns_public_trajectory() -> None:
     task, reflection, task_delegate, reflection_delegate, _ledger = _models()
-    stable = load_stable_program_artifact()
+    stable = load_stable_program_state()
 
     result = run_gepa(
         base_program=stable,
@@ -415,20 +486,21 @@ def test_real_gepa_uses_one_native_taxonomy_predict_and_returns_public_trajector
         review_rubric_version=REVIEW_RUBRIC_VERSION,
     )
 
-    assert result.patch.taxonomy_instruction == _ADVISORY
-    assert result.patch.event_semantics_instruction == stable.event_semantics_instruction
-    assert result.patch.reader_card_instruction == stable.reader_card_instruction
+    assert result.target == "classification"
+    assert result.state.instruction_for("taxonomy") == _ADVISORY
+    assert result.state.changed_predictors(stable) == ("taxonomy",)
     assert result.metric["schema"] == "tracefold.news.taxonomy_gepa_metric.v4"
-    assert result.metric["taxonomy_selection_score"]["delta"]["taxonomy_overall"] > 0
-    assert result.metric["taxonomy_selection_score"]["admitted"] is True
-    change = result.metric["instruction_change"]
-    assert change["schema"] == "tracefold.news.taxonomy_instruction_change.v2"
+    assert result.metric["target_selection_score"]["delta"]["target_overall"] > 0
+    assert result.metric["target_selection_score"]["admitted"] is True
+    change = result.metric["predictor_change"]
+    assert change["schema"] == "tracefold.news.predictor_state_change.v1"
     assert change["taxonomy"]["changed"] is True
     assert change["taxonomy"]["estimated_token_growth"] < 0
     assert _ADVISORY in change["taxonomy"]["unified_diff"]
     for predictor in ("event_semantics", "reader_card"):
         assert change[predictor] == {
             "instruction_sha256": hashlib.sha256(stable.instruction_for(predictor).encode()).hexdigest(),
+            "demo_n": 0,
             "unchanged": True,
         }
     assert result.public_result["schema"] == "tracefold.news.dspy_gepa_public_result.v3"
@@ -452,7 +524,7 @@ def test_run_gepa_requires_exactly_one_budget_form() -> None:
     for budget in ({}, {"auto": "light", "max_metric_calls": 40}):
         with pytest.raises(ValueError, match="exactly_one_of_auto_or_max_metric_calls"):
             run_gepa(
-                base_program=load_stable_program_artifact(),
+                base_program=load_stable_program_state(),
                 episodes=_corpus(),
                 task_lm=task,
                 reflection_lm=reflection,
@@ -471,7 +543,7 @@ def test_run_gepa_rejects_a_non_native_detailed_result() -> None:
 
     with pytest.raises(ValueError, match="news_program_compile_detailed_results_missing"):
         run_gepa(
-            base_program=load_stable_program_artifact(),
+            base_program=load_stable_program_state(),
             episodes=_corpus(),
             task_lm=task,
             reflection_lm=reflection,
@@ -504,7 +576,7 @@ def test_candidate_task_truncation_scores_zero_and_keeps_the_batch_aligned() -> 
 
     try:
         result = run_gepa(
-            base_program=load_stable_program_artifact(),
+            base_program=load_stable_program_state(),
             episodes=_corpus(),
             task_lm=metered_task,
             reflection_lm=metered_reflection,
@@ -546,7 +618,7 @@ def test_candidate_typed_invalid_output_keeps_gepa_batch_aligned() -> None:
     task, reflection, task_delegate, _reflection_delegate, _ledger = _models(_CandidateInvalidTaskLM())
 
     result = run_gepa(
-        base_program=load_stable_program_artifact(),
+        base_program=load_stable_program_state(),
         episodes=_corpus(),
         task_lm=task,
         reflection_lm=reflection,
@@ -570,3 +642,119 @@ def test_candidate_typed_invalid_output_keeps_gepa_batch_aligned() -> None:
     )
     # The batch stayed aligned: the run kept asking after the typed-invalid answer.
     assert task_delegate.requests[invalid_index + 1 :]
+
+
+_SEMANTICS_ANSWER: dict[str, Any] = {
+    "novelty": "new_fact",
+    "restates": -1,
+    "assets": [{"symbol": "TSLA", "role": "primary"}],
+    "direction": "bullish",
+    "scope": "single_name",
+    "magnitude": 2,
+    "confidence": 0.9,
+    "audience": "us_equity",
+    "relevance": {
+        "impact_breadth": "single_name",
+        "tradability": "direct",
+        "surprise": "expected",
+        "development_delta": "new_fact",
+        "channels": ["us_equity"],
+        "affected_markets": ["us_equity"],
+        "reader_value": "actionable",
+    },
+}
+_CARD_ANSWER: dict[str, Any] = {"headline_zh": "特斯拉发布产品", "why_zh": "产品变化影响交付预期。"}
+
+
+class _FixedAnswerTaskLM(dspy.BaseLM):  # type: ignore[misc]
+    """One scripted typed answer for whichever Predictor the target names. No network, no provider."""
+
+    forward_contract = "typed_lm"
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        super().__init__("openai/scripted-task", cache=False, num_retries=0)
+        self._payload = payload
+        self.requests: list[dspy.LMRequest] = []
+
+    @property
+    def supports_response_schema(self) -> bool:
+        return True
+
+    @property
+    def supported_params(self) -> set[str]:
+        return {"response_format"}
+
+    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+        self.requests.append(request)
+        return dspy.LMResponse.from_text(
+            canonical_json(self._payload),
+            model=self.model,
+            usage={"input_tokens": 10, "output_tokens": 10, "total_tokens": 20},
+            cost=0,
+        )
+
+
+def _graded_corpus() -> tuple[DevelopmentEpisode, ...]:
+    """The same corpus with accepted semantics and card Gold, so the non-taxonomy rulers can separate."""
+
+    return tuple(
+        _episode(
+            index,
+            target=index % 2 == 1,
+            novelty={"judgment": "progression" if index % 2 else "new_fact", "duplicate_of": ""},
+            dimensions={"asset_grounding": "fail", "headline_fidelity": "fail", "why_support": "fail"},
+            expected={
+                "assets": [{"symbol": "NVDA" if index % 2 else "TSLA", "role": "primary"}],
+                "headline_zh": "英伟达发布产品" if index % 2 else "特斯拉发布产品",
+                "why_zh": "产品变化影响交付预期。",
+            },
+        )
+        for index in range(1, 13)
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "payload_key", "payload"),
+    [
+        pytest.param("understanding", "semantics", _SEMANTICS_ANSWER, id="understanding"),
+        pytest.param("explanation", "card", _CARD_ANSWER, id="explanation"),
+    ],
+)
+def test_real_gepa_runs_end_to_end_for_every_target_without_a_network(
+    target: str, payload_key: str, payload: dict[str, Any]
+) -> None:
+    """#651: the same stock `dspy.GEPA.compile` drives each target against scripted typed doubles."""
+
+    task, reflection, task_delegate, _reflection_delegate, _ledger = _models(
+        cast(Any, _FixedAnswerTaskLM({payload_key: payload}))
+    )
+    stable = load_stable_program_state()
+    corpus = _graded_corpus()
+
+    try:
+        result = run_gepa(
+            base_program=stable,
+            episodes=corpus,
+            task_lm=task,
+            reflection_lm=reflection,
+            target=target,
+            max_metric_calls=12,
+            seed=456,
+            review_rubric_version=REVIEW_RUBRIC_VERSION,
+        )
+    except GepaNoProgramChange as caught:
+        result = caught.result
+
+    predictor = {"understanding": "event_semantics", "explanation": "reader_card"}[target]
+    assert result.target == target
+    assert result.metric["predictor_change"]["predictor"] == predictor
+    assert result.state.changed_predictors(stable) in ((), (predictor,))
+    assert result.public_result["candidate_count"] >= 1
+    assert result.public_result["validation_aggregate_objective_scores"]
+    assert task_delegate.requests
+    rendered = str([request.messages for request in task_delegate.requests])
+    # Each target asks exactly its own Predictor's frozen question. ReaderCard is the only one handed the
+    # accepted semantics view; EventSemantics is the only one shown the told ledger. Both comparisons are
+    # written as `is` so a failure prints a boolean rather than diffing a multi-megabyte transcript.
+    assert ("semantics_json" in rendered) is (target == "explanation")
+    assert ("event_status" in rendered) is (target == "understanding")

@@ -14,7 +14,7 @@ from tracefold.app.cli.commands import news_learning as news_commands
 from tracefold.app.cli.commands.news_learning import _handle_learning
 from tracefold.app.cli.commands.news_learning_runtime import _learning_program_judges
 from tracefold.app.cli.parser import build_parser
-from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_state
 from tracefold.news.program.resources import candidates as candidate_programs
 from tracefold.news.program.runtime import PROGRAM_PRIMARY_BREAKER_FAILURES, PROGRAM_VERSION
 from tracefold.platform.config.models import LlmRequestConfig
@@ -320,7 +320,7 @@ def test_policy_candidate_gets_arm_local_program_adapter_and_breaker_state() -> 
             assert "news_model_recordings" in query
             return _Rows()
 
-    artifact = load_stable_program_artifact()
+    artifact = load_stable_program_state()
     stable = SimpleNamespace(program_sha256=artifact.program_sha256, bundle_sha="1" * 64)
     candidate_arm = SimpleNamespace(program_sha256=artifact.program_sha256, bundle_sha="2" * 64)
     candidate = SimpleNamespace(candidate_arm=candidate_arm)
@@ -558,7 +558,7 @@ def test_readiness_republishes_the_frozen_datasets_own_coverage_counts(monkeypat
     assert coverage["independent_cluster_n"] == 141
     assert coverage["eligible_event_n"] == 733
     assert "strata" not in coverage and "eligibility" not in coverage
-    assert payload["data"]["schema"] == "tracefold.news.gepa_readiness_report.v4"
+    assert payload["data"]["schema"] == "tracefold.news.gepa_readiness_report.v5"
 
 
 def test_readiness_lets_a_wrong_dataset_argument_stay_an_error(monkeypatch: Any) -> None:
@@ -715,11 +715,11 @@ def test_each_live_mode_builds_its_route_from_the_code_owned_execution_budget(mo
     program, identity = _baseline_model_route(
         "compile_live",
         settings=object(),
-        artifact=load_stable_program_artifact(),
+        artifact=load_stable_program_state(),
     )
 
     assert program is not None
-    assert built["artifact"] == load_stable_program_artifact()
+    assert built["artifact"] == load_stable_program_state()
     assert identity["compile_task_model"] == "local/qwen-test"
 
 

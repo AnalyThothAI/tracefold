@@ -14,9 +14,9 @@ import re
 import pytest
 
 from tracefold.news.program.artifact import (
-    build_code_owned_program_artifact,
+    build_code_owned_program_state,
     build_predictor_state,
-    load_stable_program_artifact,
+    load_stable_program_state,
     validate_program_instruction,
 )
 from tracefold.news.program.runtime import (
@@ -32,7 +32,7 @@ _PREDICTORS = ("event_semantics", "taxonomy", "reader_card")
 def test_the_shipped_stable_artifact_is_the_seed_text_itself() -> None:
     """No renderer, so "the optimized bytes are the production bytes" is structural rather than tested."""
 
-    stable = load_stable_program_artifact()
+    stable = load_stable_program_state()
 
     for predictor in _PREDICTORS:
         assert stable.instruction_for(predictor) == seed_instruction(predictor)
@@ -43,7 +43,7 @@ def test_the_shipped_stable_artifact_is_the_seed_text_itself() -> None:
 
 
 def test_the_code_owned_baseline_root_is_the_shipped_stable_root() -> None:
-    assert build_code_owned_program_artifact() == load_stable_program_artifact()
+    assert build_code_owned_program_state() == load_stable_program_state()
 
 
 @pytest.mark.parametrize("predictor", _PREDICTORS)
@@ -123,7 +123,7 @@ def test_the_taxonomy_seed_is_rendered_byte_for_byte_from_the_codebook_constants
     """One codebook (#501 D3): the seed, the metric's feedback and the blind drafters read the same text."""
 
     assert seed_instruction("taxonomy") == render_taxonomy_seed_instruction()
-    assert load_stable_program_artifact().taxonomy_instruction == render_taxonomy_seed_instruction()
+    assert load_stable_program_state().instruction_for("taxonomy") == render_taxonomy_seed_instruction()
 
 
 def test_the_event_semantics_seed_no_longer_carries_any_taxonomy_label() -> None:

@@ -10,11 +10,10 @@ import pytest
 
 import tracefold.news.learning.evaluate as candidate_evaluator_module
 from tests.support.news_judgment import news_taxonomy
-from tracefold.news.learning.contracts import PromptPatchV1
 from tracefold.news.learning.evaluate import ArmManifest, development_coverage_blockers
 from tracefold.news.learning.profile import _PROFILE
 from tracefold.news.models import TriageVerdict
-from tracefold.news.program.artifact import ProgramStrategyArtifactV1
+from tracefold.news.program.artifact import NewsProgramStateV1
 from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
 from tracefold.news.program.runtime import PROGRAM_VERSION
@@ -526,41 +525,46 @@ def test_stable_or_common_execution_blocks_only_past_the_shared_rate_cap() -> No
     assert unavailability(1, 0) == (1.0, True)
 
 
-def _stable_artifact() -> ProgramStrategyArtifactV1:
-    from tracefold.news.program.artifact import load_stable_program_artifact
+def _stable_artifact() -> NewsProgramStateV1:
+    from tracefold.news.program.artifact import load_stable_program_state
 
-    return load_stable_program_artifact()
+    return load_stable_program_state()
 
 
-def _patch(**overrides: str) -> PromptPatchV1:
+def _state(**overrides: str) -> NewsProgramStateV1:
     parent = _stable_artifact()
-    values = {
-        "event_semantics_instruction": parent.event_semantics_instruction,
-        "taxonomy_instruction": parent.taxonomy_instruction,
-        "reader_card_instruction": parent.reader_card_instruction,
-    }
-    values.update(overrides)
-    return PromptPatchV1(**values)
+    instructions = {name: parent.instruction_for(name) for name in ("event_semantics", "taxonomy", "reader_card")}
+    instructions.update(overrides)
+    return NewsProgramStateV1.from_instructions(instructions)
 
 
-def test_taxonomy_only_is_read_off_the_write_set_not_declared() -> None:
+def test_taxonomy_only_is_read_off_the_state_document_not_declared() -> None:
     """#548: the class is the byte difference against the parent, and nothing else says so."""
 
     parent = _stable_artifact()
-    taxonomy_only = _patch(taxonomy_instruction=parent.taxonomy_instruction + "\nPrefer the narrower code.")
+    taxonomy_only = _state(taxonomy=parent.instruction_for("taxonomy") + "\nPrefer the narrower code.")
 
     assert taxonomy_only.changed_predictors(parent) == ("taxonomy",)
-    assert taxonomy_only.is_taxonomy_only(parent)
-    # A write-set that also moves a reader-facing Predictor keeps every pairwise stage.
-    also_reader_card = _patch(
-        taxonomy_instruction=parent.taxonomy_instruction + "\nPrefer the narrower code.",
-        reader_card_instruction=parent.reader_card_instruction + "\nKeep the first clause concrete.",
+    # A state that also moves a reader-facing Predictor keeps every pairwise stage.
+    also_reader_card = _state(
+        taxonomy=parent.instruction_for("taxonomy") + "\nPrefer the narrower code.",
+        reader_card=parent.instruction_for("reader_card") + "\nKeep the first clause concrete.",
     )
     assert also_reader_card.changed_predictors(parent) == ("taxonomy", "reader_card")
-    assert not also_reader_card.is_taxonomy_only(parent)
-    # An unchanged write-set changes nothing and is not this class either.
-    assert not _patch().is_taxonomy_only(parent)
-    assert not _patch().changes(parent)
+    # An unchanged state changes nothing and is not this class either.
+    assert _state().changed_predictors(parent) == ()
+    # A demo attached to the taxonomy Predictor is a change, which the three-string patch could not say.
+    from tracefold.news.program.artifact import predictor_document
+
+    with_demo = parent.with_predictor_document(
+        "taxonomy",
+        predictor_document(
+            "taxonomy",
+            instruction=parent.instruction_for("taxonomy"),
+            demos=[{"evidence_json": "<evidence>", "taxonomy": {"subject_codes": []}}],
+        ),
+    )
+    assert with_demo.changed_predictors(parent) == ("taxonomy",)
 
 
 _GOLD_AXES: dict[str, Any] = {
@@ -803,16 +807,15 @@ def test_the_token_guardrail_admits_a_fifth_more_prompt_and_still_refuses_a_thir
         assert regressed([10_000] * 8, [12_000] * 8, growth_pct=cap)
 
 
-def test_a_taxonomy_only_holdout_pass_promotes_without_shadow_or_canary() -> None:
-    """#548: both later stages measure reader-facing samples this class cannot move."""
+def test_a_taxonomy_only_holdout_pass_promotes_without_canary() -> None:
+    """#548: canary measures reader-facing samples this class cannot move. #651 removed shadow."""
 
     next_stage = candidate_evaluator_module._next_stage
 
     assert next_stage("holdout", "pass", taxonomy_only=True) == ("promotion", "advance")
-    assert next_stage("holdout", "pass", taxonomy_only=False) == ("shadow", "advance")
+    assert next_stage("holdout", "pass", taxonomy_only=False) == ("canary", "advance")
     # Every other transition is the one the release plane already had.
     assert next_stage("offline", "pass", taxonomy_only=True) == ("holdout", "advance")
-    assert next_stage("shadow", "pass", taxonomy_only=False) == ("canary", "advance")
     assert next_stage("canary", "pass", taxonomy_only=False) == ("promotion", "advance")
     assert next_stage("holdout", "fail", taxonomy_only=True) == ("none", "reject")
     assert next_stage("canary", "fail", taxonomy_only=False) == ("none", "rollback")

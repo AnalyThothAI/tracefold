@@ -98,7 +98,7 @@ class RoutedSemanticJudge:
         ):
             raise ValueError("news_program_route_deadline_invalid")
         self.program = program
-        self.artifact = program.artifact
+        self.state = program.state
         self.primary = primary
         self.fallback = fallback
         self.route_deadline_seconds = route_deadline_seconds
@@ -119,7 +119,7 @@ class RoutedSemanticJudge:
                 raise TypeError("news_program_route_lm_invalid")
             declared_predictor = lm.predictor
             declared_route = lm.route
-            expected_binding = getattr(getattr(self.artifact, predictor).model_bindings, route)
+            expected_binding = getattr(getattr(self.state, predictor).model_bindings, route)
             declared_binding = lm.model_binding
             if (declared_predictor, declared_route, declared_binding) != (predictor, route, expected_binding):
                 raise ValueError("news_program_route_lm_binding_mismatch")
@@ -219,7 +219,7 @@ class RoutedSemanticJudge:
         route_deadline = None if self.route_deadline_seconds is None else route_started + self.route_deadline_seconds
         lm_context = LMCallContext(
             program_version=PROGRAM_VERSION,
-            program_sha256=self.artifact.program_sha256,
+            program_sha256=self.state.program_sha256,
             context_sha256=context_sha,
             deadline_at_monotonic=route_deadline,
         )
@@ -416,7 +416,7 @@ class RoutedSemanticJudge:
         )
         trace = ProgramTrace(
             program_version=PROGRAM_VERSION,
-            program_sha256=self.artifact.program_sha256,
+            program_sha256=self.state.program_sha256,
             context_sha256=context_sha,
             envelope_sha256=EXECUTION_ENVELOPE_SHA256,
             event_semantics_sha256=canonical_sha(semantics.model_dump(mode="json")),
@@ -432,7 +432,7 @@ class RoutedSemanticJudge:
             verdict=verdict,
             editorial=editorial,
             program_version=PROGRAM_VERSION,
-            program_sha256=self.artifact.program_sha256,
+            program_sha256=self.state.program_sha256,
             trace=trace,
             usage=ProgramUsage(
                 wall_latency_ms=max(0, round((time.perf_counter() - started) * 1000)),
@@ -452,7 +452,7 @@ class RoutedSemanticJudge:
     ) -> SemanticJudgeError:
         trace = ProgramTrace(
             program_version=PROGRAM_VERSION,
-            program_sha256=self.artifact.program_sha256,
+            program_sha256=self.state.program_sha256,
             context_sha256=context_sha,
             envelope_sha256=EXECUTION_ENVELOPE_SHA256,
             fallback_from=primary_failure.code if primary_failure is not None else None,

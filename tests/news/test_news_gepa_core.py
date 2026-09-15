@@ -19,13 +19,14 @@ from tracefold.news.learning.optimizer import (
     OptimizationBudgetExceeded,
     OptimizationRunTerminated,
     _BudgetMeter,
-    _DspyTaxonomyMetric,
-    _LearningTaxonomy,
+    _ClassificationMetric,
+    _LearningStudent,
     _MeteredLearningLM,
     gepa_metric_call_ceiling,
     optimizer_config_receipt,
     optimizer_constructor,
     resolve_auto_metric_calls,
+    target_plan,
 )
 from tracefold.news.program.lm import LMOutputTruncatedError
 from tracefold.news.taxonomy import EVENT_FAMILY_DEFINITIONS, ModelTaxonomyV1
@@ -110,7 +111,7 @@ def test_direct_metric_is_the_mean_of_the_four_taxonomy_axes() -> None:
         taxonomy=ModelTaxonomyV1.model_validate(_taxonomy(event_family="other", assertion_status="rumor"))
     )
 
-    result = _DspyTaxonomyMetric()(gold, prediction)
+    result = _ClassificationMetric()(gold, prediction)
 
     assert result.score == 0.5
     assert result.objective_scores == {
@@ -126,7 +127,7 @@ def test_metric_feedback_quotes_the_codebook_definitions_and_the_matching_preced
     gold = dspy.Example(gold_taxonomy=_taxonomy(change_state="effective", assertion_status="confirmed"))
     prediction = dspy.Prediction(taxonomy=_taxonomy(change_state="reported", assertion_status="claimed"))
 
-    feedback = _DspyTaxonomyMetric()(gold, prediction).feedback
+    feedback = _ClassificationMetric()(gold, prediction).feedback
 
     assert "change_state: expected=effective (the change is live, completed or legally in force," in feedback
     assert "predicted=reported (a published measurement" in feedback
@@ -139,7 +140,7 @@ def test_metric_feedback_names_missing_and_extra_subjects_with_their_glossary_la
     gold = dspy.Example(gold_taxonomy=_taxonomy(subject_codes=["medtop:20000178"]))
     prediction = dspy.Prediction(taxonomy=_taxonomy(subject_codes=["medtop:20001279"], event_family="other"))
 
-    feedback = _DspyTaxonomyMetric()(gold, prediction).feedback
+    feedback = _ClassificationMetric()(gold, prediction).feedback
 
     assert "missing subjects: medtop:20000178 (corporate earnings)" in feedback
     assert "extra subjects: medtop:20001279 (cryptocurrency)" in feedback
@@ -155,6 +156,7 @@ def test_optimizer_receipt_records_native_budget_and_disabled_format_feedback() 
     assert constructor["max_metric_calls"] == 40 and "auto" not in constructor
     receipt = optimizer_config_receipt(
         constructor=constructor,
+        target=target_plan("classification", review_rubric_version="news_review_v6"),
         resolved_metric_calls=40,
         task_lm=task,
         reflection_lm=reflection,
@@ -164,8 +166,10 @@ def test_optimizer_receipt_records_native_budget_and_disabled_format_feedback() 
         val_count=4,
     )
 
-    assert receipt["schema"] == "tracefold.news.compile_optimizer_config_receipt.v8"
-    assert receipt["optimizer"]["evaluator"] == "LearningTaxonomy(NativeNewsProgram.taxonomy) on one explicit task LM"
+    assert receipt["schema"] == "tracefold.news.compile_optimizer_config_receipt.v9"
+    assert receipt["target"] == "classification"
+    assert receipt["target_predictor"] == "taxonomy"
+    assert receipt["optimizer"]["evaluator"] == "LearningStudent(NativeNewsProgram.taxonomy) on one explicit task LM"
     assert receipt["optimizer"]["add_format_failure_as_feedback"] is False
     assert receipt["instruction_proposer"] is None
     assert receipt["admission"] == "gepa_best_idx_strictly_above_seed"
@@ -191,6 +195,7 @@ def test_auto_light_passes_through_and_resolves_to_dspys_own_budget() -> None:
     assert resolved == dspy.GEPA.auto_budget(None, num_preds=1, num_candidates=6, valset_size=4)
     receipt = optimizer_config_receipt(
         constructor=constructor,
+        target=target_plan("classification", review_rubric_version="news_review_v6"),
         resolved_metric_calls=resolved,
         task_lm=_RoleLM("task"),
         reflection_lm=_RoleLM("reflection"),
@@ -289,7 +294,7 @@ def test_truncated_and_invalid_task_output_score_the_native_failure_score() -> N
     """#501 D5: no sentinel below the real scale; a failure is `failure_score`, which is 0.0."""
 
     constructor = optimizer_constructor(max_metric_calls=40, seed=456, train_count=8)
-    metric = _DspyTaxonomyMetric()
+    metric = _ClassificationMetric()
 
     truncated = metric(
         dspy.Example(gold_taxonomy=_taxonomy()),
@@ -318,7 +323,7 @@ def test_reflection_minibatch_never_exceeds_the_trainset() -> None:
 
 
 def test_learning_wrapper_converts_only_its_own_typed_failure() -> None:
-    wrapper = _LearningTaxonomy(cast(dspy.Predict, _TaxonomyInvalidPredictor()))
+    wrapper = _LearningStudent(cast(dspy.Predict, _TaxonomyInvalidPredictor()), output_type=ModelTaxonomyV1)
 
     prediction = wrapper(evidence_json="evidence")
 
@@ -327,7 +332,23 @@ def test_learning_wrapper_converts_only_its_own_typed_failure() -> None:
 
 
 def test_learning_wrapper_propagates_unrelated_pydantic_validation() -> None:
-    wrapper = _LearningTaxonomy(cast(dspy.Predict, _UnrelatedValidationPredictor()))
+    wrapper = _LearningStudent(cast(dspy.Predict, _UnrelatedValidationPredictor()), output_type=ModelTaxonomyV1)
 
     with pytest.raises(ValueError, match="OtherConfig"):
         wrapper(evidence_json="evidence")
+
+
+def test_each_target_resolves_to_its_own_predictor_ruler_and_receipt() -> None:
+    """#651: one assembly, three injected rulers, and the target is readable off every receipt."""
+
+    plans = {
+        target: target_plan(target, review_rubric_version="news_review_v6")
+        for target in ("classification", "understanding", "explanation")
+    }
+
+    assert [plan.predictor for plan in plans.values()] == ["taxonomy", "event_semantics", "reader_card"]
+    assert len({plan.metric_receipt["metric_id"] for plan in plans.values()}) == 3
+    assert len({canonical_sha(plan.metric_receipt) for plan in plans.values()}) == 3
+    for target, plan in plans.items():
+        assert plan.target == target
+        assert set(plan.zero_objectives().values()) == {0.0}

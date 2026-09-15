@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from tracefold.news.program import module as native_program_module
-from tracefold.news.program.artifact import build_code_owned_program_artifact
+from tracefold.news.program.artifact import build_code_owned_program_state
 from tracefold.news.program.contracts import TriageContext
 from tracefold.news.program.lm import (
     AuditedConfiguredLM,
@@ -148,19 +148,19 @@ def _lms() -> tuple[_ScriptedLM, _ScriptedLM, _ScriptedLM]:
 
 def _run_sync() -> tuple[NativeNewsProgram, NativeProgramResult, _ScriptedLM, _ScriptedLM, _ScriptedLM]:
     event_lm, taxonomy_lm, card_lm = _lms()
-    program = NativeNewsProgram(build_code_owned_program_artifact())
+    program = NativeNewsProgram(build_code_owned_program_state())
     result = program(context=_context(), event_lm=event_lm, taxonomy_lm=taxonomy_lm, card_lm=card_lm)
     return program, result, event_lm, taxonomy_lm, card_lm
 
 
 def test_three_named_predictors_run_in_order_with_exact_instructions_and_bounded_inputs() -> None:
-    artifact = build_code_owned_program_artifact()
+    artifact = build_code_owned_program_state()
     program, result, event_lm, taxonomy_lm, card_lm = _run_sync()
 
     assert [(name, predictor.signature.instructions) for name, predictor in program.named_predictors()] == [
-        ("event_semantics", artifact.event_semantics_instruction),
-        ("taxonomy", artifact.taxonomy_instruction),
-        ("reader_card", artifact.reader_card_instruction),
+        ("event_semantics", artifact.instruction_for("event_semantics")),
+        ("taxonomy", artifact.instruction_for("taxonomy")),
+        ("reader_card", artifact.instruction_for("reader_card")),
     ]
     assert len(event_lm.calls) == len(taxonomy_lm.calls) == len(card_lm.calls) == 1
     event_request = json.dumps(event_lm.calls[0], ensure_ascii=False)
@@ -207,7 +207,7 @@ def test_three_named_predictors_run_in_order_with_exact_instructions_and_bounded
 def test_event_semantics_no_longer_accepts_a_taxonomy_field() -> None:
     event_lm = _ScriptedLM({"semantics": {**_semantics(), "taxonomy": _taxonomy()}})
     _unused, taxonomy_lm, card_lm = _lms()
-    program = NativeNewsProgram(build_code_owned_program_artifact())
+    program = NativeNewsProgram(build_code_owned_program_state())
 
     with pytest.raises(ValidationError):
         program(context=_context(), event_lm=event_lm, taxonomy_lm=taxonomy_lm, card_lm=card_lm)
@@ -217,7 +217,7 @@ def test_event_semantics_no_longer_accepts_a_taxonomy_field() -> None:
 
 def test_sync_and_async_entries_have_typed_output_parity() -> None:
     _, sync_result, _, _, _ = _run_sync()
-    async_program = NativeNewsProgram(build_code_owned_program_artifact())
+    async_program = NativeNewsProgram(build_code_owned_program_state())
     async_event_lm, async_taxonomy_lm, async_card_lm = _lms()
     async_result = asyncio.run(
         async_program.acall(
@@ -241,7 +241,7 @@ def test_sync_and_async_entries_have_typed_output_parity() -> None:
 
 def test_gepa_context_lm_is_used_when_explicit_lms_are_absent() -> None:
     lm = _ScriptedLM({"semantics": _semantics()}, {"taxonomy": _taxonomy()}, {"card": _card()})
-    program = NativeNewsProgram(build_code_owned_program_artifact())
+    program = NativeNewsProgram(build_code_owned_program_state())
 
     with dspy.context(lm=lm):
         result = program(context=_context())
@@ -260,7 +260,7 @@ def test_candidate_guard_rejects_mutated_instructions_before_adapter_or_lm_call(
         seen.append((event_instruction, taxonomy_instruction, card_instruction))
         return "news_program_candidate_growth_exceeded"
 
-    artifact = build_code_owned_program_artifact()
+    artifact = build_code_owned_program_state()
     program = NativeNewsProgram(artifact, candidate_guard=reject)
     program.taxonomy.signature = program.taxonomy.signature.with_instructions("mutated instruction")
     event_lm, taxonomy_lm, card_lm = _lms()
@@ -275,7 +275,11 @@ def test_candidate_guard_rejects_mutated_instructions_before_adapter_or_lm_call(
         program.acall(context=_context(), event_lm=event_lm, taxonomy_lm=taxonomy_lm, card_lm=card_lm)
     )
 
-    expected = (artifact.event_semantics_instruction, "mutated instruction", artifact.reader_card_instruction)
+    expected = (
+        artifact.instruction_for("event_semantics"),
+        "mutated instruction",
+        artifact.instruction_for("reader_card"),
+    )
     assert seen == [expected, expected]
     assert result.instruction_rejected == "news_program_candidate_growth_exceeded"
     assert async_result.instruction_rejected == result.instruction_rejected
@@ -286,7 +290,7 @@ def test_candidate_guard_rejects_mutated_instructions_before_adapter_or_lm_call(
 def test_invalid_restatement_stops_before_reader_predictor() -> None:
     event_lm = _ScriptedLM({"semantics": _semantics(novelty="restatement", restates=9)})
     _unused, taxonomy_lm, card_lm = _lms()
-    program = NativeNewsProgram(build_code_owned_program_artifact())
+    program = NativeNewsProgram(build_code_owned_program_state())
 
     with pytest.raises(ValueError, match="news_program_restatement_index_invalid"):
         program(context=_context(), event_lm=event_lm, taxonomy_lm=taxonomy_lm, card_lm=card_lm)
@@ -297,7 +301,7 @@ def test_invalid_restatement_stops_before_reader_predictor() -> None:
 
 @pytest.mark.parametrize("async_entry", [False, True], ids=("sync", "async"))
 def test_direct_native_scope_marks_post_predictor_domain_failure_terminal(async_entry: bool) -> None:
-    artifact = build_code_owned_program_artifact()
+    artifact = build_code_owned_program_state()
     ledger = LMCallLedger()
 
     def audited(predictor: str, steps: list[Any]) -> AuditedConfiguredLM:
@@ -352,7 +356,7 @@ def test_business_output_shape_failures_never_reach_reader_predictor(
         {"semantics": invalid_semantics},
     )
     _unused, taxonomy_lm, card_lm = _lms()
-    program = NativeNewsProgram(build_code_owned_program_artifact())
+    program = NativeNewsProgram(build_code_owned_program_state())
 
     with pytest.raises(ValidationError):
         program(context=_context(), event_lm=event_lm, taxonomy_lm=taxonomy_lm, card_lm=card_lm)
@@ -373,7 +377,7 @@ def test_business_output_shape_failures_never_reach_reader_predictor(
 def test_taxonomy_output_shape_failures_never_reach_reader_predictor(invalid_taxonomy: dict[str, Any]) -> None:
     event_lm, _unused, card_lm = _lms()
     taxonomy_lm = _ScriptedLM({"taxonomy": invalid_taxonomy}, {"taxonomy": invalid_taxonomy})
-    program = NativeNewsProgram(build_code_owned_program_artifact())
+    program = NativeNewsProgram(build_code_owned_program_state())
 
     with pytest.raises(ValidationError):
         program(context=_context(), event_lm=event_lm, taxonomy_lm=taxonomy_lm, card_lm=card_lm)
@@ -386,7 +390,7 @@ def test_outer_dspy_envelope_sibling_is_filtered_but_business_model_remains_exac
     event_lm = _ScriptedLM({"semantics": _semantics(), "diagnostic": "adapter-owned sibling"})
     taxonomy_lm = _ScriptedLM({"taxonomy": _taxonomy(), "diagnostic": "adapter-owned sibling"})
     card_lm = _ScriptedLM({"card": _card(), "diagnostic": "adapter-owned sibling"})
-    program = NativeNewsProgram(build_code_owned_program_artifact())
+    program = NativeNewsProgram(build_code_owned_program_state())
 
     result = program(context=_context(), event_lm=event_lm, taxonomy_lm=taxonomy_lm, card_lm=card_lm)
 

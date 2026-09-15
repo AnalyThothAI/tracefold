@@ -74,7 +74,7 @@ def test_objective_compilability_and_development_profile_readiness_are_separate(
 
     report = build_readiness_report(plan, episodes=episodes, identity={"dataset": "test"}, coverage={})
 
-    assert report["schema"] == "tracefold.news.gepa_readiness_report.v4"
+    assert report["schema"] == "tracefold.news.gepa_readiness_report.v5"
     assert report["objective"]["compilable"] is True
     assert report["objective"]["blockers"] == []
     assert report["development_profile"]["ready"] is False

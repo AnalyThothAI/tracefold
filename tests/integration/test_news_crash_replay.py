@@ -58,14 +58,14 @@ from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
 from tracefold.news.pipeline.triage import TriageConsumer
-from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_state
 from tracefold.news.program.runtime import PROGRAM_VERSION
 
 pytestmark = pytest.mark.integration
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 WATCHLIST = frozenset({"BTC", "NVDA", "ETH"})
-PROGRAM_SHA256 = load_stable_program_artifact().program_sha256
+PROGRAM_SHA256 = load_stable_program_state().program_sha256
 
 
 class RecordingBus:

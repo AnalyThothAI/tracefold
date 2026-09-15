@@ -18,7 +18,7 @@ _DATASET = "d" * 64
 
 def _readiness(**updates: Any) -> dict[str, Any]:
     report: dict[str, Any] = {
-        "schema": "tracefold.news.gepa_readiness_report.v4",
+        "schema": "tracefold.news.gepa_readiness_report.v5",
         "objective": {"compilable": True, "blockers": []},
         "development_profile": {"ready": True, "blockers": []},
     }

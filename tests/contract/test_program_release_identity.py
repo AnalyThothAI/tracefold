@@ -8,7 +8,7 @@ from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.contracts import COMPILE_EPISODE_PROJECTION_SCHEMA
 from tracefold.news.learning.metric import METRIC_ID
 from tracefold.news.models import TRIAGE_POLICY_VERSION
-from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_state
 from tracefold.news.program.identity import (
     _material_module_ast_sha,
     _material_symbol_ast_sha,
@@ -70,7 +70,7 @@ def test_current_news_release_identity_is_byte_exact() -> None:
         "policy_version": TRIAGE_POLICY_VERSION,
         "review_rubric_version": REVIEW_RUBRIC_VERSION,
         "metric_id": METRIC_ID,
-        "program_sha256": load_stable_program_artifact().program_sha256,
+        "program_sha256": load_stable_program_state().program_sha256,
     } == {
         "program_version": "news_semantic_program_v9",
         "policy_version": "news_triage_policy_v13",
@@ -88,7 +88,7 @@ def test_current_predictor_bytes_keep_the_reviewed_instruction_identity() -> Non
     later identity-only edits cannot silently move any of the three.
     """
 
-    artifact = load_stable_program_artifact()
+    artifact = load_stable_program_state()
     bound = {
         predictor: artifact.predictor_state(predictor).instruction
         for predictor in ("event_semantics", "taxonomy", "reader_card")

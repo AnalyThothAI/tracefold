@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning import optimizer as optimizer_module
-from tracefold.news.learning.contracts import DevelopmentDatasetRef, OptimizationBudget, PromptPatchV1
+from tracefold.news.learning.contracts import DevelopmentDatasetRef, OptimizationBudget, PromptCandidateV1
 from tracefold.news.learning.objective import build_gepa_objective_plan
 from tracefold.news.learning.optimizer import (
     FrozenDevelopmentDataset,
@@ -20,7 +20,7 @@ from tracefold.news.learning.optimizer import (
     build_task_lm,
     optimize,
 )
-from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_state
 from tracefold.news.program.lm import LMCallContext, LMCallLedger, ScriptedLM
 from tracefold.news.program.runtime import PROGRAM_VERSION
 
@@ -225,7 +225,7 @@ def test_report_keeps_spend_that_exceeds_the_per_call_reservation(monkeypatch: p
 def _synthetic_result(aggregate_scores: tuple[float, float]) -> Any:
     dataset = _ready_dataset()
     plan = build_gepa_objective_plan(dataset.episodes)
-    stable = dataset.parent_program.taxonomy_instruction
+    stable = dataset.parent_program.instruction_for("taxonomy")
     val_count = len(plan.development_selection_episodes)
     rows = tuple(dict.fromkeys(range(val_count), score) for score in aggregate_scores)
     task, reflection, _ledger = _learning_models(role="reflection")
@@ -252,14 +252,16 @@ def test_a_seed_that_stays_gepa_best_is_a_no_op_with_public_receipts() -> None:
     assert result.report.schema_version == "news_optimization_run_report_v4"
     assert result.report.reasons == ("news_program_compile_no_program_change",)
     assert result.report.metric is not None
-    selection = result.report.metric["taxonomy_selection_score"]
+    selection = result.report.metric["target_selection_score"]
     assert selection["gepa_best_index"] == 0
     assert selection["admitted"] is False
-    assert selection["delta"]["taxonomy_overall"] == 0.0
+    assert selection["delta"]["target_overall"] == 0.0
     assert result.report.gepa_public_result is not None
     assert result.report.gepa_public_result["admitted"] is False
     assert result.candidate is None
-    assert result.report.objective["schema"] == "tracefold.news.optimization_objective_summary.v4"
+    assert result.report.objective["schema"] == "tracefold.news.optimization_objective_summary.v5"
+    assert result.report.objective["target"] == "classification"
+    assert result.report.objective["target_predictor"] == "taxonomy"
     assert "owner_distribution" not in result.report.objective
     assert result.report.objective["target_predictors"] == ["taxonomy"]
 
@@ -269,10 +271,12 @@ def test_a_strictly_better_gepa_best_advances_with_only_the_taxonomy_instruction
 
     assert result.outcome == "ADVANCE"
     assert result.candidate is not None
-    stable = load_stable_program_artifact()
-    assert result.candidate.patch.taxonomy_instruction != stable.taxonomy_instruction
-    assert result.candidate.patch.event_semantics_instruction == stable.event_semantics_instruction
-    assert result.candidate.patch.reader_card_instruction == stable.reader_card_instruction
+    stable = load_stable_program_state()
+    state = result.candidate.program_state
+    assert state.changed_predictors(stable) == ("taxonomy",)
+    assert state.instruction_for("taxonomy") != stable.instruction_for("taxonomy")
+    assert state.predictor_document("event_semantics") == stable.predictor_document("event_semantics")
+    assert state.predictor_document("reader_card") == stable.predictor_document("reader_card")
     assert result.candidate.budget["auto"] is None
     assert result.candidate.budget["max_metric_calls"] == 40
 
@@ -280,7 +284,7 @@ def test_a_strictly_better_gepa_best_advances_with_only_the_taxonomy_instruction
 def test_auto_budget_is_carried_into_the_candidate_and_the_optimizer_receipt() -> None:
     dataset = _ready_dataset()
     plan = build_gepa_objective_plan(dataset.episodes)
-    stable = dataset.parent_program.taxonomy_instruction
+    stable = dataset.parent_program.instruction_for("taxonomy")
     val_count = len(plan.development_selection_episodes)
     task, reflection, _ledger = _learning_models(role="reflection")
 
@@ -357,18 +361,30 @@ def test_dataset_ref_cannot_name_a_different_episode_projection() -> None:
         )
 
 
-def test_prompt_patch_write_set_remains_exactly_three_instructions() -> None:
-    stable = load_stable_program_artifact()
-    instructions = {
-        "event_semantics_instruction": stable.event_semantics_instruction,
-        "taxonomy_instruction": stable.taxonomy_instruction,
-        "reader_card_instruction": stable.reader_card_instruction,
+def test_prompt_candidate_write_set_is_the_whole_program_state() -> None:
+    """#651: the candidate carries a `NewsProgramStateV1` envelope, and only that."""
+
+    stable = load_stable_program_state()
+    values: dict[str, Any] = {
+        "parent_program_sha256": stable.program_sha256,
+        "development_dataset_sha256": "a" * 64,
+        "target_runtime_manifest_sha256": "b" * 64,
+        "state": stable.model_dump(mode="json"),
+        "objective_summary": {},
+        "optimizer": {},
+        "model_identities": {},
+        "budget": {},
+        "usage": {},
+        "created_at_ms": 1,
     }
 
-    assert PromptPatchV1.model_validate(instructions).changes(stable) is False
+    candidate = PromptCandidateV1.issue(**values)
+    assert candidate.schema_version == "news_prompt_candidate_v3"
+    assert candidate.program_state == stable
+    assert candidate.changed_predictors(stable) == ()
     with pytest.raises(ValidationError):
-        PromptPatchV1.model_validate({**instructions, "policy": {"similarity_max": 0.5}})
+        PromptCandidateV1.issue(**{**values, "policy": {"similarity_max": 0.5}})
+    routed = stable.model_dump(mode="json")
+    routed["state"]["taxonomy"]["lm"] = {"model": "openai/somewhere-else"}
     with pytest.raises(ValidationError):
-        PromptPatchV1.model_validate(
-            {key: value for key, value in instructions.items() if key != "taxonomy_instruction"}
-        )
+        PromptCandidateV1.issue(**{**values, "state": routed})

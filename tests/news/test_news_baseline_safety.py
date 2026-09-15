@@ -28,7 +28,7 @@ _WRITE_VERBS = (
     "update",
     "delete",
     "commit",
-    "write_program_candidate_artifact",
+    "write_program_candidate_state",
     "apply_trusted_program_patch",
     "apply_program_patch_v2",
 )

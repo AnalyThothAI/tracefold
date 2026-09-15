@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import uuid
-from collections import Counter, deque
+from collections import deque
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -18,7 +18,7 @@ from tests.support.news_judgment import news_taxonomy
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning import dataset as dataset_module
-from tracefold.news.learning.contracts import PromptCandidateV1, PromptPatchV1, epoch_id_for_bundle
+from tracefold.news.learning.contracts import PromptCandidateV1, epoch_id_for_bundle
 from tracefold.news.learning.dataset import DevelopmentDatasetStore
 from tracefold.news.learning.evaluate import (
     ArmManifest,
@@ -44,8 +44,8 @@ from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
 from tracefold.news.program.artifact import (
-    apply_program_patch,
-    load_stable_program_artifact,
+    NewsProgramStateV1,
+    load_stable_program_state,
 )
 from tracefold.news.program.contracts import (
     JUDGMENT_CONTRACT_VERSION,
@@ -318,7 +318,7 @@ def _model_taxonomy(editorial: EditorialEnvelope) -> dict[str, object]:
     ).model_dump(mode="json")
 
 
-_STABLE_TAXONOMY_INSTRUCTION = load_stable_program_artifact().taxonomy_instruction
+_STABLE_TAXONOMY_INSTRUCTION = load_stable_program_state().instruction_for("taxonomy")
 
 
 def _editorial() -> EditorialEnvelope:
@@ -727,16 +727,22 @@ def _objective_plan(conn, *, stable: ArmManifest, development_sha: str) -> GepaO
     return build_gepa_objective_plan(tuple(DevelopmentEpisode.model_validate(e) for e in exported.episodes))
 
 
+def _fixture_state(**instructions: str) -> dict[str, object]:
+    """One fixture Program state: three complete instructions, no demos, as the release image shape."""
+
+    return NewsProgramStateV1.from_instructions(instructions).model_dump(mode="json")
+
+
 def _prompt_candidate(
     conn,
     *,
     development_sha: str,
     stable: ArmManifest,
-    patch: PromptPatchV1,
+    state: dict[str, object],
     objective_summary: dict[str, object] | None = None,
     **overrides: object,
 ) -> PromptCandidateV1:
-    """One registered write-set: two advisory instructions, and what they were optimized against.
+    """One registered write-set: a complete Program state, and what it was optimized against.
 
     It replaced a `CompileRecordV1` that carried a sandbox launch receipt, a metered proxy ledger, a
     three-party build attestation and a tariff — none of which said anything about the two instructions.
@@ -751,7 +757,7 @@ def _prompt_candidate(
         "parent_program_sha256": stable.program_sha256,
         "development_dataset_sha256": development_sha,
         "target_runtime_manifest_sha256": stable.runtime_model_bindings_sha256,
-        "patch": patch,
+        "state": state,
         "objective_summary": (
             objective_summary
             if objective_summary is not None
@@ -787,23 +793,22 @@ def _program_candidate(
     variant: str = "",
     registered_at_ms: int = NOW,
 ) -> CandidateManifest:
-    base = load_stable_program_artifact()
     registered = prompt or _prompt_candidate(
         conn,
         development_sha=development_sha,
         stable=stable,
         # One distinct instruction per cluster and variant, so two fixtures in one test are two different
         # Programs — and two different registration receipts, which the ledger addresses uniquely.
-        patch=PromptPatchV1(
-            event_semantics_instruction=f"A bounded fixture advisory for {cluster_id}{variant}.",
-            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-            reader_card_instruction="Keep reader language direct and evidence-bound.",
+        state=_fixture_state(
+            event_semantics=f"A bounded fixture advisory for {cluster_id}{variant}.",
+            taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+            reader_card="Keep reader language direct and evidence-bound.",
         ),
     )
-    # The arm's Program identity is *derived* now, not declared: the release gate re-applies the
-    # registered patch to the running stable and refuses anything else. A fixture that invented a program
-    # SHA was asserting a lineage nobody checked.
-    applied = apply_program_patch(base, registered.patch.applied_to(base))
+    # The arm's Program identity is *derived* now, not declared: the release gate re-hashes the
+    # registered state document and refuses anything else. A fixture that invented a program SHA was
+    # asserting a lineage nobody checked.
+    applied = registered.program_state
     arm_payload = stable.model_dump(mode="json")
     arm_payload.update(
         program_version=program_version or PROGRAM_VERSION,
@@ -1838,15 +1843,15 @@ def test_the_ledger_stores_a_prompt_candidate_under_the_identity_its_receipt_nam
             DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
         )
     )
-    base = load_stable_program_artifact()
+    base = load_stable_program_state()
     registered = _prompt_candidate(
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        patch=PromptPatchV1(
-            event_semantics_instruction="Written through the repository.",
-            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-            reader_card_instruction="Keep the mechanism concrete.",
+        state=_fixture_state(
+            event_semantics="Written through the repository.",
+            taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+            reader_card="Keep the mechanism concrete.",
         ),
     )
     written = repositories_for_connection(conn).news.append_proposal_artifact(
@@ -1858,7 +1863,8 @@ def test_the_ledger_stores_a_prompt_candidate_under_the_identity_its_receipt_nam
 
     assert written == registered.candidate_sha256
 
-    applied = apply_program_patch(base, registered.patch.applied_to(base))
+    applied = registered.program_state
+    assert applied.changed_predictors(base) == ("event_semantics", "reader_card")
     candidate = CandidateManifest(
         parent_stable_sha=stable.bundle_sha,
         candidate_arm=ArmManifest.model_validate(
@@ -1973,10 +1979,10 @@ def test_a_candidate_is_only_as_good_as_the_write_set_it_names(conn) -> None:
             conn,
             development_sha=development.artifact_sha,
             stable=stable,
-            patch=PromptPatchV1(
-                event_semantics_instruction="An operator wrote this advisory by hand.",
-                taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-                reader_card_instruction="Keep the mechanism concrete.",
+            state=_fixture_state(
+                event_semantics="An operator wrote this advisory by hand.",
+                taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+                reader_card="Keep the mechanism concrete.",
             ),
             # No optimizer receipt and no objective summary: an external proposal claims nothing about how
             # it was produced, and registration binds it to the corpus it re-projected.
@@ -2056,10 +2062,10 @@ def test_a_candidate_requires_the_exact_persisted_write_set(
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        patch=PromptPatchV1(
-            event_semantics_instruction=f"A bounded fixture advisory for {mode}.",
-            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-            reader_card_instruction="Keep the mechanism concrete.",
+        state=_fixture_state(
+            event_semantics=f"A bounded fixture advisory for {mode}.",
+            taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+            reader_card="Keep the mechanism concrete.",
         ),
     )
     payload = registered.model_dump(mode="json")
@@ -2163,7 +2169,7 @@ def test_a_dataset_bound_baseline_scores_the_objective_corpus_and_republishes_it
 
     from tracefold.news.learning.baseline import build_baseline_cases, run_baseline
 
-    stable_artifact = load_stable_program_artifact()
+    stable_artifact = load_stable_program_state()
     stable = _arm(program_sha256=stable_artifact.program_sha256)
     with repositories_for_connection(conn).transaction():
         repositories_for_connection(conn).news.register_agent_runtime_manifest(
@@ -2255,10 +2261,10 @@ def test_a_dataset_bound_baseline_scores_the_objective_corpus_and_republishes_it
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        patch=PromptPatchV1(
-            event_semantics_instruction="Dataset baseline parity.",
-            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-            reader_card_instruction="Keep the mechanism concrete.",
+        state=_fixture_state(
+            event_semantics="Dataset baseline parity.",
+            taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+            reader_card="Keep the mechanism concrete.",
         ),
     )
     assert exported.episode_projection_root_sha256 == report.identity["episode_projection_root_sha256"]
@@ -2277,7 +2283,7 @@ def test_release_register_rejects_a_stale_optimizer_population_before_any_artifa
     from tracefold.app.cli.commands import news_learning as news_commands
     from tracefold.app.cli.parser import build_parser
 
-    base = load_stable_program_artifact()
+    base = load_stable_program_state()
     stable = _arm(program_sha256=base.program_sha256)
     with repositories_for_connection(conn).transaction():
         repositories_for_connection(conn).news.register_agent_runtime_manifest(
@@ -2302,17 +2308,17 @@ def test_release_register_rejects_a_stale_optimizer_population_before_any_artifa
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        patch=PromptPatchV1(
-            event_semantics_instruction="A stale population must never be registered.",
-            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-            reader_card_instruction="Keep the mechanism concrete.",
+        state=_fixture_state(
+            event_semantics="A stale population must never be registered.",
+            taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+            reader_card="Keep the mechanism concrete.",
         ),
     )
     stale = _prompt_candidate(
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        patch=honest.patch,
+        state=honest.state,
         objective_summary={**honest.objective_summary, "optimizer_case_root_sha256": "0" * 64},
     )
     candidate_path = tmp_path / "candidate.json"
@@ -2380,10 +2386,10 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
             conn,
             development_sha=development.artifact_sha,
             stable=stable,
-            patch=PromptPatchV1(
-                event_semantics_instruction="Objective tamper baseline.",
-                taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-                reader_card_instruction="Keep the mechanism concrete.",
+            state=_fixture_state(
+                event_semantics="Objective tamper baseline.",
+                taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+                reader_card="Keep the mechanism concrete.",
             ),
         ).objective_summary
     )
@@ -2391,10 +2397,10 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        patch=PromptPatchV1(
-            event_semantics_instruction="A split this corpus never produced.",
-            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-            reader_card_instruction="Keep the mechanism concrete.",
+        state=_fixture_state(
+            event_semantics="A split this corpus never produced.",
+            taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+            reader_card="Keep the mechanism concrete.",
         ),
         objective_summary={
             **honest_summary,
@@ -2407,10 +2413,10 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        patch=PromptPatchV1(
-            event_semantics_instruction="A legacy objective identity cannot be re-armed.",
-            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-            reader_card_instruction="Keep the mechanism concrete.",
+        state=_fixture_state(
+            event_semantics="A legacy objective identity cannot be re-armed.",
+            taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+            reader_card="Keep the mechanism concrete.",
         ),
         objective_summary=legacy_summary,
     )
@@ -2418,10 +2424,10 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        patch=PromptPatchV1(
-            event_semantics_instruction="A representative root this corpus never produced.",
-            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-            reader_card_instruction="Keep the mechanism concrete.",
+        state=_fixture_state(
+            event_semantics="A representative root this corpus never produced.",
+            taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+            reader_card="Keep the mechanism concrete.",
         ),
         objective_summary={**honest_summary, "optimizer_case_root_sha256": "0" * 64},
     )
@@ -3520,117 +3526,16 @@ def test_holdout_cannot_spend_model_budget_before_offline_pass(conn) -> None:
     assert _judge_call_count(judges) == 0
 
 
-def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -> None:
-    event_id = _accepted_compilable_event(conn, stale_reask=True)
-    stable = _arm()
-    _open_event(
-        conn,
-        hit_id=112002,
-        title="An event produced by a different deployed bundle",
-        bundle_sha=_sha("other-bundle"),
-    )
-    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
-    development = asyncio.run(
-        bootstrap._datasets.freeze_dataset(
-            DatasetSpec(
-                role="development",
-                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
-            )
-        )
-    )
-    candidate = _program_candidate(
-        conn,
-        stable=stable,
-        development_sha=development.artifact_sha,
-        cluster_id=development.cases[0].cluster_id,
-    )
-    validation_sha = _insert_validation_dataset(conn, development=development, candidate=candidate)
-    _insert_stage_pass(conn, candidate_sha=candidate.candidate_sha, stage="holdout")
-    before = conn.execute(
-        "SELECT (SELECT count(*) FROM news_verdicts) AS verdicts, (SELECT count(*) FROM news_deliveries) AS deliveries"
-    ).fetchone()
-    judges = _static_judges(stable, candidate.candidate_arm)
-    evaluator = CandidateEvaluator(
-        conn,
-        stable=stable,
-        judges=judges,
-        candidate_catalog=(candidate,),
-    )
-    report = asyncio.run(
-        evaluator.evaluate(
-            EvaluationRequest(
-                development_dataset_sha=development.artifact_sha,
-                validation_dataset_sha=validation_sha,
-                candidate_sha=candidate.candidate_sha,
-                stage="shadow",
-            )
-        )
-    )
-    after = conn.execute(
-        "SELECT (SELECT count(*) FROM news_verdicts) AS verdicts, (SELECT count(*) FROM news_deliveries) AS deliveries"
-    ).fetchone()
+def test_the_evaluator_refuses_a_shadow_stage_request(conn) -> None:
+    """#651: `shadow` is not a stage any more, and the request contract says so before any Program call."""
 
-    assert after == before
-    assert (
-        len(judges[("candidate", candidate.candidate_arm.bundle_sha)].calls)
-        == len(development.cases)
-        == len(_COMPILABLE_CORPUS)
-    )
-    assert report.gate_outcome == "unknown"  # fixture is only six hours, not the required 24
-    assert report.evidence["observation_n"] == len(development.cases) == len(_COMPILABLE_CORPUS)
-    assert report.evidence["evidence_dimensions"]["observation_scope"] == "all_live_triage_eligible"
-    assert report.evidence["observation_manifest_sha"]
-    stored = conn.execute(
-        "SELECT event_id, evaluation_stage, stable_observation, candidate_observation "
-        "FROM news_learning_cases WHERE run_sha = %s AND event_id = %s",
-        (report.run_sha, event_id),
-    ).fetchone()
-    assert stored["event_id"] == event_id
-    assert stored["evaluation_stage"] == "shadow"
-    assert stored["stable_observation"]["delivery"] == "observed_sent"
-    assert stored["candidate_observation"]["delivery"] == "simulated"
-    observed_program = stored["stable_observation"]["program"][0]
-    execution_context_shas = [execution["context_sha256"] for execution in observed_program["executions"]]
-    assert execution_context_shas == [_sha(execution["context"]) for execution in observed_program["executions"]]
-    assert observed_program["trace"]["context_sha256"] == execution_context_shas[1]
-    assert [call["execution_index"] for call in observed_program["calls"]] == [0, 0, 0, 1, 1, 1]
-    assert [call["execution_phase"] for call in observed_program["calls"]] == [
-        *["initial"] * 3,
-        *["stale_reask"] * 3,
-    ]
-    assert [call["execution_status"] for call in observed_program["calls"]] == [
-        *["superseded_stale_ledger"] * 3,
-        *["accepted"] * 3,
-    ]
-    assert [call["recording_call_index"] for call in observed_program["calls"]] == [0, 1, 2, 3, 4, 5]
-    assert [call["execution_context_sha256"] for call in observed_program["calls"]] == [
-        *[execution_context_shas[0]] * 3,
-        *[execution_context_shas[1]] * 3,
-    ]
-    assert observed_program["usage"]["call_count"] == 6
-    assert observed_program["usage"]["physical_call_count"] == 6
-    assert [execution["status"] for execution in observed_program["executions"]] == [
-        "superseded_stale_ledger",
-        "accepted",
-    ]
-    recordings = conn.execute(
-        "SELECT arm, predictor_name FROM news_model_recordings WHERE run_sha = %s ORDER BY call_index",
-        (report.run_sha,),
-    ).fetchall()
-    # One candidate call per Predictor per case, the three Predictors in graph order. Only the candidate is
-    # re-run: the stable arm's calls are what production already recorded.
-    assert [(row["arm"], row["predictor_name"]) for row in recordings] == [
-        *[("candidate", "event_semantics")] * len(_COMPILABLE_CORPUS),
-        *[("candidate", "taxonomy")] * len(_COMPILABLE_CORPUS),
-        *[("candidate", "reader_card")] * len(_COMPILABLE_CORPUS),
-    ]
-    assert Counter(row["arm"] for row in recordings) == Counter({"candidate": 3 * len(_COMPILABLE_CORPUS)})
-    manifest = conn.execute(
-        "SELECT payload FROM news_learning_artifacts WHERE artifact_sha = %s",
-        (report.evidence["observation_manifest_sha"],),
-    ).fetchone()["payload"]
-    assert manifest["case_n"] == len(development.cases) == len(_COMPILABLE_CORPUS)
-    assert "observations" not in manifest
+    with pytest.raises(ValueError):
+        EvaluationRequest(
+            development_dataset_sha="a" * 64,
+            validation_dataset_sha="b" * 64,
+            candidate_sha="c" * 64,
+            stage="shadow",
+        )
 
 
 @pytest.mark.parametrize("program_matches_assignment", [True, False])
@@ -3653,7 +3558,7 @@ def test_canary_evaluation_reads_one_arm_assignments_and_receipts(conn, *, progr
         cluster_id=development.cases[0].cluster_id,
     )
     validation_sha = _insert_validation_dataset(conn, development=development, candidate=candidate)
-    _insert_stage_pass(conn, candidate_sha=candidate.candidate_sha, stage="shadow")
+    _insert_stage_pass(conn, candidate_sha=candidate.candidate_sha, stage="holdout")
     repos = repositories_for_connection(conn)
     with repos.transaction():
         repos.news.arm_canary(
@@ -3805,7 +3710,7 @@ def _taxonomy_only_candidate(
 ) -> CandidateManifest:
     """A candidate whose EventSemantics and ReaderCard are the parent's byte for byte (#548)."""
 
-    base = load_stable_program_artifact()
+    base = load_stable_program_state()
     return _program_candidate(
         conn,
         stable=stable,
@@ -3816,12 +3721,12 @@ def _taxonomy_only_candidate(
             conn,
             development_sha=development_sha,
             stable=stable,
-            patch=PromptPatchV1(
-                event_semantics_instruction=base.event_semantics_instruction,
-                taxonomy_instruction=(
-                    f"{base.taxonomy_instruction}\nPrefer the narrower subject code{variant} when both apply."
+            state=_fixture_state(
+                event_semantics=base.instruction_for("event_semantics"),
+                taxonomy=(
+                    f"{base.instruction_for("taxonomy")}\nPrefer the narrower subject code{variant} when both apply."
                 ),
-                reader_card_instruction=base.reader_card_instruction,
+                reader_card=base.instruction_for("reader_card"),
             ),
         ),
     )

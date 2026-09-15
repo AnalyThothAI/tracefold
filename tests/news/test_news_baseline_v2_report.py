@@ -17,7 +17,7 @@ from tracefold.news.learning.baseline import (
 from tracefold.news.learning.judge import CardEquivalenceJudge, MetricJudgeEndpoint
 from tracefold.news.learning.objective import _SEMANTICS_DIMENSIONS, DevelopmentEpisode
 from tracefold.news.models import TRIAGE_POLICY_VERSION
-from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_state
 from tracefold.news.program.contracts import TriageContext
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
 from tracefold.news.program.lm import ScriptedLM
@@ -113,7 +113,7 @@ def _case(index: int, *, cluster: str | None = None, should_push: str = "should_
 
 
 def _report(cases: list[BaselineCase]) -> Any:
-    return run_baseline(cases, mode="recorded", artifact=load_stable_program_artifact())
+    return run_baseline(cases, mode="recorded", artifact=load_stable_program_state())
 
 
 class _SilentJudgeLM(MetricJudgeEndpoint):
@@ -146,7 +146,7 @@ def test_recorded_factual_failure_fails_closed_without_a_judge_call() -> None:
     report = run_baseline(
         [recorded],
         mode="recorded",
-        artifact=load_stable_program_artifact(),
+        artifact=load_stable_program_state(),
         judge=CardEquivalenceJudge(lm),
     )
 
@@ -175,7 +175,7 @@ def test_failures_are_published_as_a_second_score_not_dropped_from_the_first() -
         [answered, _failed_case(_case(2), "provider_timeout")],
         cases=[_case(1), _case(2)],
         mode="recorded",
-        artifact=load_stable_program_artifact(),
+        artifact=load_stable_program_state(),
         judge=None,
         strict_scores={},
         latency={},
@@ -208,7 +208,7 @@ def test_a_run_that_answered_nothing_still_publishes_its_receipt() -> None:
         [_failed_case(_case(1), "provider_timeout")],
         cases=[_case(1)],
         mode="recorded",
-        artifact=load_stable_program_artifact(),
+        artifact=load_stable_program_state(),
         judge=None,
         strict_scores={},
         latency={},
@@ -264,7 +264,7 @@ def test_prediction_dimensions_move_with_predictions_while_labels_do_not() -> No
             )
         ],
         mode="recorded",
-        artifact=load_stable_program_artifact(),
+        artifact=load_stable_program_state(),
     )
     assert kept.review_label_distribution == changed.review_label_distribution
     assert kept.prediction_dimensions == changed.prediction_dimensions, (
@@ -368,7 +368,7 @@ def test_timeliness_is_delivery_owned_and_still_visible_as_a_label() -> None:
 def test_report_identity_pins_program_and_corpus_and_names_no_unused_policy() -> None:
     report = _report([_case(1)])
     identity = report.identity
-    assert identity["program_sha256"] == load_stable_program_artifact().program_sha256
+    assert identity["program_sha256"] == load_stable_program_state().program_sha256
     # Two halves of one identity: the sha addresses the optimizer write-set, the envelope hash addresses
     # the code-owned behavior it runs under. A receipt naming only the first cannot say what executed.
     assert identity["envelope_sha256"] == EXECUTION_ENVELOPE_SHA256
@@ -415,7 +415,7 @@ def test_every_identity_component_moves_the_report_sha() -> None:
     or a receipt could be reused for a run it does not describe.
     """
 
-    artifact = load_stable_program_artifact()
+    artifact = load_stable_program_state()
     base = run_baseline([_case(1)], mode="recorded", artifact=artifact)
     variants: dict[str, str] = {"baseline": base.report_sha256}
     # Policy is covered in `test_news_baseline_modes.py`: `recorded` returns before policy replay, so its

@@ -17,7 +17,7 @@ from tracefold.news.learning.baseline import (
 from tracefold.news.learning.metric import CandidatePrediction, MetricOutcome, accepted_review_metric
 from tracefold.news.learning.objective import DevelopmentEpisode
 from tracefold.news.models import TRIAGE_POLICY_VERSION
-from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_state
 from tracefold.news.review.desk import EventRubricSubmission
 
 _TAXONOMY = {
@@ -303,12 +303,12 @@ def test_recorded_mode_scores_the_shipped_action_not_todays_policy() -> None:
     held = run_baseline(
         [BaselineCase(episode=episode, recorded_decision_result=recorded_decision("drop"))],
         mode="recorded",
-        artifact=load_stable_program_artifact(),
+        artifact=load_stable_program_state(),
     )
     pushed = run_baseline(
         [BaselineCase(episode=episode, recorded_decision_result=recorded_decision("push"))],
         mode="recorded",
-        artifact=load_stable_program_artifact(),
+        artifact=load_stable_program_state(),
     )
     assert held.cases[0].action == "drop" and pushed.cases[0].action == "push"
     # The reviewer wanted this pushed, so only the pushed arm satisfies the action component.
@@ -333,7 +333,7 @@ def test_recorded_decision_preserves_zero_seen_against_index() -> None:
 def test_baseline_report_is_content_addressable_and_names_its_subject() -> None:
     episode = _episode(dimensions={"factual_fidelity": "pass"})
     cases = [BaselineCase(episode=episode, recorded_decision_result=recorded_decision("push"))]
-    artifact = load_stable_program_artifact()
+    artifact = load_stable_program_state()
     first = run_baseline(cases, mode="recorded", artifact=artifact)
     second = run_baseline(cases, mode="recorded", artifact=artifact)
     assert first.report_sha256 == second.report_sha256
@@ -365,7 +365,7 @@ def test_hard_gate_keeps_component_denominators_and_effective_weight_mass() -> N
     report = run_baseline(
         [BaselineCase(episode=episode, recorded_decision_result=recorded_decision("push"))],
         mode="recorded",
-        artifact=load_stable_program_artifact(),
+        artifact=load_stable_program_state(),
     )
 
     case = report.cases[0]

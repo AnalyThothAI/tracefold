@@ -77,14 +77,15 @@ def _clone_event(conn, source_event_id: str, *, suffix: str, opened_at_ms: int) 
     return event_id
 
 
-def test_canary_control_requires_shadow_pass_and_keeps_one_event_arm(conn) -> None:
+def test_canary_control_requires_holdout_pass_and_keeps_one_event_arm(conn) -> None:
     candidate_sha = "a" * 64
     candidate_bundle = "b" * 64
     stable_bundle = "c" * 64
     event_id = _open_event(conn)
     release = {
         "candidate_sha": candidate_sha,
-        "stage": "shadow",
+        # #651: the eligibility gate reads the holdout PASS directly; shadow is gone.
+        "stage": "holdout",
         "gate_outcome": "pass",
         "report_sha": "d" * 64,
         "run_sha": "e" * 64,
@@ -203,12 +204,12 @@ def test_canary_arm_rejects_an_invalid_program_artifact_before_writing_activatio
             program_candidate_sha256="b" * 64,
         ),
     )
-    monkeypatch.setattr(release_runtime, "load_stable_program_artifact", lambda: stable_artifact)
+    monkeypatch.setattr(release_runtime, "load_stable_program_state", lambda: stable_artifact)
 
     def reject_artifact(_program_sha256: str):
         raise ValueError("news_program_artifact_hash_mismatch")
 
-    monkeypatch.setattr(release_runtime, "load_program_artifact", reject_artifact)
+    monkeypatch.setattr(release_runtime, "load_program_state", reject_artifact)
     shipped = release_runtime.artifact_valid_candidate_bundles(stable, {candidate_sha: candidate})
     assert shipped == {}
 
