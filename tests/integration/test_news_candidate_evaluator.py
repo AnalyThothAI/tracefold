@@ -174,9 +174,9 @@ def test_the_deployment_that_appoints_an_agent_opens_that_agent_s_epoch(conn) ->
 
     stable = _arm()
     row = conn.execute(
-        "SELECT epoch_id, bundle_sha, envelope_sha256, artifact_schema_version, baseline_program_version, "
-        "baseline_program_sha256, prior_evidence_disposition, reset_reason, program_factory_id "
-        "FROM news_learning_epochs WHERE bundle_sha = %s",
+        "SELECT epoch_id, starts_at_ms, bundle_sha, envelope_sha256, artifact_schema_version, "
+        "baseline_program_version, baseline_program_sha256, prior_evidence_disposition, reset_reason, "
+        "program_factory_id FROM news_learning_epochs WHERE bundle_sha = %s",
         (stable.bundle_sha,),
     ).fetchone()
 

@@ -40,7 +40,9 @@ READER_HISTORY_CONTRACT: Final = {
     # nothing settles in the future -- but the evaluator reads the same ledger at a frozen stamp, where
     # `seed_receipts` bounds both ends and this band used to bound only the lower one. That gap put a
     # late-settling delivery into the SQL history and not into the replayed one, which is the one thing a
-    # replay may never disagree with production about.
+    # replay may never disagree with production about. The CAS token Triage re-reads under the storyline
+    # lock is deliberately *not* bounded this way, and is not part of this contract: it answers whether the
+    # ledger moved after the snapshot, which is the one question a late-settling card is the answer to.
     "read_clock": "settled_at_ms < read_clock",
     "windows": {
         "recent": {"age": ">=0_and<=", "window_ms": RECENT_HISTORY_WINDOW_MS},

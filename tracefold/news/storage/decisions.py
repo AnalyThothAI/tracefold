@@ -176,7 +176,14 @@ class DecisionStorage:
     conn: Any
 
     def reader_history_revision(self, *, now_ms: int) -> tuple[int, int, str]:
-        """Return a primitive CAS token for the delivered-card ledger used by Triage."""
+        """Return a primitive CAS token for the delivered-card ledger used by Triage.
+
+        Open above `now_ms` on purpose, unlike the snapshot bands below. This answers "has the ledger
+        changed since I read it", and the change it exists to catch is precisely a card that settled
+        *after* the stamp the snapshot was taken at: Triage refreshes the ledger outside any transaction
+        and re-reads this token inside `lock_storyline`, both at the same stamp, so an upper bound at that
+        stamp would hide the racing delivery from both reads and buy the lost CAS nothing.
+        """
 
         row = self.conn.execute(
             """
@@ -186,9 +193,9 @@ class DecisionStorage:
               FROM news_deliveries
              WHERE kind = 'first' AND state = 'sent'
                AND delete_state IS DISTINCT FROM 'deleted'
-               AND settled_at_ms >= %s AND settled_at_ms < %s
+               AND settled_at_ms >= %s
             """,
-            (int(now_ms) - TARGETED_HISTORY_WINDOW_MS, int(now_ms)),
+            (int(now_ms) - TARGETED_HISTORY_WINDOW_MS,),
         ).fetchone()
         if row is None:  # pragma: no cover - aggregate queries always return one row
             return (0, 0, "")
@@ -204,6 +211,10 @@ class DecisionStorage:
         ``learning/evaluation_history.seed_receipts`` bounds the look-back at both ends, so a delivery that
         settled after the frozen stamp entered the SQL history and not the replayed one, and the two
         histories are supposed to be the same ledger read two ways.
+
+        ``reader_history_revision`` above stays open, and the asymmetry is the point: a snapshot may only
+        contain cards the reader had at this stamp, while the CAS token beside it has to notice the card
+        that arrives after it.
         """
 
         revision = self.reader_history_revision(now_ms=now_ms)
