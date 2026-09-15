@@ -70,6 +70,7 @@ from .projection import (
     _program_cost_by_predictor,
     _program_metric,
 )
+from .target_metrics import classification_axis_values, classification_score
 from .taxonomy_metric import TaxonomyComparison, accepted_taxonomy_gold, compare_taxonomy, summarize_taxonomy
 
 # Re-exported, not restated. A second literal here would be one more copy of the identity #193 exists to
@@ -80,14 +81,19 @@ MODEL_RECORDING_BYTES_MAX = 64 * 1024
 ArmName = Literal["stable", "candidate"]
 ArmJudgeKey = tuple[ArmName, str]
 
+# The axes a release decision reads. `four_axis_exact_accuracy` is deliberately not among them since
+# #651 §8: the share of clusters whose four axes are all right at once is a joint rate over four
+# correlated axes, so one axis slipping moves it twice -- once on its own axis and once here -- and a
+# release could be failed by the same cluster counted twice. It remains published in
+# `summarize_taxonomy`, in the deltas and in the intervals, as the diagnostic an operator reads.
 _TAXONOMY_RELEASE_AXES = (
     "subject_codes_set_f1",
     "event_family_accuracy",
     "change_state_accuracy",
     "assertion_status_accuracy",
-    "four_axis_exact_accuracy",
 )
-_TAXONOMY_INTERVAL_AXES = ("taxonomy_overall", *_TAXONOMY_RELEASE_AXES)
+_TAXONOMY_DIAGNOSTIC_AXES = ("four_axis_exact_accuracy",)
+_TAXONOMY_INTERVAL_AXES = ("taxonomy_overall", *_TAXONOMY_RELEASE_AXES, *_TAXONOMY_DIAGNOSTIC_AXES)
 
 
 def _output_editorial(output: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -153,14 +159,18 @@ def _taxonomy_release_evidence(
     Two per-axis readings come out of that one population and they are not interchangeable. `delta` and
     `regressed_axes` are the sign test #501 wrote, and they still decide the axis failure of a candidate
     that also moves a reader-facing Predictor — that class is judged by blind pairwise preference, and the
-    sign test is a cheap veto beside it. `axis_interval_95`, `interval_regressed_axes`,
-    `four_axis_exact_improved` and `taxonomy_overall_improved` are #567's paired bootstrap, and they are
-    the whole decision for a taxonomy-only candidate, whose *only* held-out evidence these axes are.
+    sign test is a cheap veto beside it. `axis_interval_95`, `interval_regressed_axes` and
+    `taxonomy_overall_improved` are #567's paired bootstrap, and they are the whole decision for a
+    taxonomy-only candidate, whose *only* held-out evidence these axes are.
 
-    Which of those two improvement readings admits that candidate is #626's answer: `four_axis_exact`,
-    the share of clusters where all four axes are right at once, because that is the card a reader sees
-    as correctly classified, while the `taxonomy_overall` mean nets one axis's gain against another's
-    slip. Both are published — the mean is receipt evidence, the exact rate is the gate.
+    Which reading admits that candidate moved back to `taxonomy_overall` in #651 §8, and it is now the
+    classification ruler's own partial score — the mean over the axes the Gold states — so the number a
+    release turns on and the number the classification target is optimized on are the same number.
+    `four_axis_exact_improved` stays published as a diagnostic beside it. #626 had made the joint exact
+    rate the gate because it separates from zero on a corpus this size where the mean does not; what it
+    also does is count one cluster's slip twice, on its own axis and again jointly, which is how a
+    candidate that improved four axes could still be blocked. The exact rate answers "what share of cards
+    would a reader see correctly classified"; it is not the ruler.
     """
 
     eligible: list[dict[str, Any]] = []
@@ -235,16 +245,17 @@ def _taxonomy_release_evidence(
     }
 
 
-def _taxonomy_axis_values(comparison: TaxonomyComparison) -> dict[str, float]:
-    """One cluster's score on each published axis, from the one comparison the summary already means over."""
+def _taxonomy_axis_values(gold: Any, comparison: TaxonomyComparison) -> dict[str, float]:
+    """One cluster's score on each published axis, from the one comparison the summary already means over.
+
+    `taxonomy_overall` is `target_metrics.classification_score`, not a second mean written here: the
+    release primary and the GEPA scalar have to be the same bytes, which was the whole reason the rulers
+    moved to one owner (#651 §8).
+    """
 
     return {
-        "taxonomy_overall": float(comparison.score),
-        "subject_codes_set_f1": float(comparison.subject_f1),
-        "event_family_accuracy": float(comparison.event_family_match),
-        "change_state_accuracy": float(comparison.change_state_match),
-        "assertion_status_accuracy": float(comparison.assertion_status_match),
-        "four_axis_exact_accuracy": float(comparison.exact),
+        "taxonomy_overall": classification_score(gold, comparison),
+        **classification_axis_values(comparison),
     }
 
 
@@ -267,8 +278,12 @@ def _taxonomy_axis_intervals(
 
     paired: dict[str, list[float]] = {axis: [] for axis in _TAXONOMY_INTERVAL_AXES}
     for stable_row, candidate_row in zip(stable_rows, candidate_rows, strict=True):
-        stable_axes = _taxonomy_axis_values(compare_taxonomy(stable_row["gold"], stable_row["predicted"]))
-        candidate_axes = _taxonomy_axis_values(compare_taxonomy(candidate_row["gold"], candidate_row["predicted"]))
+        stable_axes = _taxonomy_axis_values(
+            stable_row["gold"], compare_taxonomy(stable_row["gold"], stable_row["predicted"])
+        )
+        candidate_axes = _taxonomy_axis_values(
+            candidate_row["gold"], compare_taxonomy(candidate_row["gold"], candidate_row["predicted"])
+        )
         for axis, deltas in paired.items():
             deltas.append(candidate_axes[axis] - stable_axes[axis])
     intervals: dict[str, dict[str, Any] | None] = {}
@@ -307,9 +322,9 @@ def _taxonomy_primary_result(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "candidate_taxonomy_overall": evidence["candidate"]["taxonomy_overall"],
         "taxonomy_overall_delta": delta.get("taxonomy_overall"),
         "taxonomy_overall_interval_95": intervals.get("taxonomy_overall"),
-        # Both improvement readings, published side by side: since #626 the four-axis exact rate is the
-        # one the gate below reads and the overall mean is receipt evidence. The interval behind the
-        # exact rate is already in `axis_interval_95`, so it is not repeated as its own key.
+        # Both improvement readings, published side by side: since #651 §8 the classification partial
+        # score is the one the gate below reads and the joint exact rate is the diagnostic. The interval
+        # behind the exact rate is already in `axis_interval_95`, so it is not repeated as its own key.
         "taxonomy_overall_improved": bool(evidence["taxonomy_overall_improved"]),
         "four_axis_exact_improved": bool(evidence["four_axis_exact_improved"]),
         "axis_delta": {axis: delta.get(axis) for axis in _TAXONOMY_RELEASE_AXES},
@@ -331,21 +346,20 @@ def _taxonomy_only_release_codes(
 
     Every reading is the paired per-cluster bootstrap interval, never the sign of a mean. An axis
     REGRESSES only when its interval lies entirely below zero; the candidate IMPROVES only when
-    `four_axis_exact_accuracy`'s interval lies entirely above zero. PASS is improved with no axis
-    regressed, FAIL is any axis regressed, and an exact-rate interval that crosses zero with nothing
-    regressed is UNKNOWN under `four_axis_exact_not_improved`. Empty Gold, or fewer Gold-bearing clusters
-    than the profile's `primary_clusters_min`, stays UNKNOWN as before.
+    `taxonomy_overall`'s interval lies entirely above zero. PASS is improved with no axis regressed, FAIL
+    is any axis regressed, and an overall interval that crosses zero with nothing regressed is UNKNOWN
+    under `taxonomy_partial_score_not_improved`. Empty Gold, or fewer Gold-bearing clusters than the
+    profile's `primary_clusters_min`, stays UNKNOWN as before.
 
-    #626 moved that admission from `taxonomy_overall` to the four-axis exact rate. The overall score is a
-    mean of five per-axis means, so a candidate that fixes many `event_family` mistakes and loses a couple
-    of `change_state` ones nets out near zero on it — which is exactly what candidate `5c559c44…` did over
-    311 clusters: overall +0.0125 with an interval crossing zero, while the share of cards whose four axes
-    were *all* right rose 0.434 → 0.495, interval [+0.003, +0.116]. A card is correctly classified only
-    when every axis on it is correct, so the exact rate is what a reader experiences and the only one of
-    the two that a corpus this size could separate from zero. The overall mean and every axis interval
-    stay published for the receipt; they simply no longer decide. The per-axis regression rule is
-    untouched, `four_axis_exact_accuracy` included: an axis whose whole interval is below zero is still a
-    FAIL, so this admission cannot be bought by trading one axis away.
+    #651 §8 moved that admission back from the four-axis exact rate to `taxonomy_overall`, which is now
+    the classification ruler's own masked partial score. The joint exact rate is a rate over four
+    correlated axes: one cluster flipping `change_state` costs the candidate on `change_state_accuracy`
+    and again on the joint rate, so the same evidence enters the decision twice, and the four regression
+    axes below already refuse a candidate that bought a gain by trading an axis away. #626 chose it
+    because it separated from zero on a 311-cluster corpus where the mean did not — candidate `5c559c44…`
+    read +0.0125 overall with an interval crossing zero against 0.434 → 0.495 exact, [+0.003, +0.116] —
+    and that remains the honest reading of what a reader experiences. It is published for exactly that,
+    beside every axis interval; it is not what the gate reads.
 
     #548 compared the two means directly, which made this class's only evidence a zero-tolerance test:
     candidate `3f7d1e12…` raised four axes and the four-axis exact rate by 6.1 points over 311 clusters
@@ -366,8 +380,8 @@ def _taxonomy_only_release_codes(
         blockers.append("validation_primary_review_insufficient")
     if evidence["interval_regressed_axes"]:
         failures.append("candidate_taxonomy_axis_regression")
-    if not evidence["four_axis_exact_improved"]:
-        blockers.append("four_axis_exact_not_improved")
+    if not evidence["taxonomy_overall_improved"]:
+        blockers.append("taxonomy_partial_score_not_improved")
     return tuple(blockers), tuple(failures)
 
 
