@@ -4773,3 +4773,81 @@ def test_an_ordinary_news_frame_still_opens_an_event_and_never_reaches_the_marke
     assert news.kwargs_of("insert_event")["event_kind"] == "news"
     for writer in ("insert_oi_signal", "insert_market_liquidation", "insert_market_smart_money"):
         assert writer not in news.names(), writer
+
+
+def test_a_progression_review_that_has_not_answered_cannot_hold_the_first_delivery() -> None:
+    """#651 §6.3: novelty decides before the send, and `ProgressionVerifier` decides nothing about it.
+
+    The restatement guard now drops a repeat whichever way the model read its direction, which makes
+    novelty a pre-delivery decision in full. The one model check that runs *after* the send has to stay
+    there: this verifier is entered and never answers, and the receipt is written anyway. What an
+    unanswered review may cost is a badge that stays `pending`; what it may never cost is the card.
+    """
+
+    async def scenario() -> tuple[RecordingNews, RecordingEditableSender, list[str]]:
+        order: list[str] = []
+        news = _delivery_news(
+            event_card=_card(grounded_assets=[]),
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "bearish",
+                    "magnitude": 2,
+                    "scope": "single_name",
+                    "novelty": "progression",
+                    "headline_zh": "美光台湾工会初步投票支持罢工比例达 80%",
+                    "why_zh": "工会行动从劳资协商进入有明确门槛的罢工程序。",
+                    "assets": [],
+                },
+                "trace": {
+                    "told": [
+                        {
+                            "i": 0,
+                            "event_id": "ev-parent",
+                            "tier": "storyline",
+                            "similarity": 0.31,
+                            "headline_zh": "美光工会此前启动劳资协商",
+                            "symbols": ["MU"],
+                            "at_ms": NOW_MS - 150_000,
+                        }
+                    ]
+                },
+            },
+            delivery=lambda *, event_id, kind: (
+                {
+                    "event_id": event_id,
+                    "kind": kind,
+                    "state": "sent",
+                    "delete_state": None,
+                    "receipt": {
+                        "provider": "telegram",
+                        "message_id": 41,
+                        "pushed_at_ms": NOW_MS - 150_000,
+                        "target_sha256": "a" * 64,
+                    },
+                }
+                if event_id == "ev-parent" and kind == "first"
+                else None
+            ),
+        )
+        sender = RecordingEditableSender(order)
+        verifier = BlockingProgressionVerifier(order)
+        consumer = _deliverer(news, sender=sender, progression_verifier=verifier)
+
+        await asyncio.wait_for(consumer.deliver(event_id="ev-strong"), timeout=0.2)
+        # The receipt exists before the review is even entered, and it does not change afterwards.
+        assert news.kwargs_of("settle_delivery")["state"] == "sent"
+        await asyncio.wait_for(verifier.started.wait(), timeout=0.2)
+        assert order == ["prepare", "send", "review"]
+        assert news.kwargs_of("settle_delivery")["state"] == "sent"
+        assert sender.presentations[0].progression_review_state == "pending"
+        assert sender.edited_presentations == []
+        # Released only so the loop can be closed; the assertions above all hold while it is blocked.
+        verifier.release.set()
+        await consumer.close()
+        return news, sender, order
+
+    news, _sender, order = asyncio.run(scenario())
+
+    assert order.index("send") < order.index("review")
+    assert news.kwargs_of("settle_delivery")["state"] == "sent"

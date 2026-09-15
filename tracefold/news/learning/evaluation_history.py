@@ -31,6 +31,20 @@ class Receipt:
     assets: tuple[MarketAsset, ...] = ()
     canonical_assets: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        """Establish the one comparable asset identity here, because two sources build a Receipt.
+
+        `receipt_from_output` hands over `MarketAsset`s; `seed_receipts` hands over the `{symbol,
+        market_type}` objects PostgreSQL returned for the jsonb column, and `Receipt(**row)` is how both
+        `DatasetRepository._project_episodes` and `CandidateEvaluator` build the replay's opening ledger.
+        Without this the second kind reached `as_told_row` as plain dicts and raised on `asset.symbol`,
+        so a replay seeded from real receipts could not build a told ledger at all.
+        """
+
+        self.assets = tuple(MarketAsset.of(value) for value in self.assets)
+        self.grounded_assets = tuple(str(value) for value in self.grounded_assets)
+        self.canonical_assets = tuple(str(value) for value in self.canonical_assets)
+
     def as_told_row(self) -> dict[str, Any]:
         return {
             "event_id": self.event_id,

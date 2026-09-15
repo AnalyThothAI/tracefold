@@ -2,20 +2,25 @@ from __future__ import annotations
 
 import gzip
 import json
+from collections import deque
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support import news_novelty_sequences as sequences
 from tests.support.news_judgment import scored_judgment
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.learning.evaluation_history import ArmState, EvaluationReaderHistory, Receipt
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
 from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
 from tracefold.news.reader_history import build_reader_history
 from tracefold.news.similarity import trigram_similarity
+from tracefold.news.told_context import ToldLedgerSnapshot
 
 pytestmark = pytest.mark.integration
 
@@ -29,7 +34,7 @@ def conn(postgres_clone_dsn: str):
     connection.close()
 
 
-def _admit(repos, *, hit_id: int, text: str, symbol: str, ts: str) -> str:
+def _admit(repos, *, hit_id: int, text: str, symbol: str, ts: str, engine_type: str = "news") -> str:
     event = parse_opennews_message(
         {
             "method": "strategy.triggered",
@@ -38,8 +43,8 @@ def _admit(repos, *, hit_id: int, text: str, symbol: str, ts: str) -> str:
                 "text": text,
                 "link": f"https://example.test/{hit_id}",
                 "source": f"wire-{hit_id}",
-                "newsType": "news",
-                "engineType": "news",
+                "newsType": engine_type,
+                "engineType": engine_type,
                 "ts": ts,
                 "aiRating": {"score": 90, "signal": "short", "status": "done"},
                 "coins": [{"expired": False, "grade": "A", "market_type": "cex", "score": 90, "symbol": symbol}],
@@ -68,17 +73,19 @@ def _persist_triage_verdict(
     event_id: str,
     at_ms: int,
     symbol: str,
+    direction: str = "bearish",
+    headline_zh: str = "阿里巴巴配售新股",
 ) -> None:
     evidence = repos.news.latest_evidence_snapshot(event_id)
     assert evidence is not None
     verdict = TriageVerdict(
         novelty="new_fact",
         assets=[{"symbol": symbol, "role": "primary"}],
-        direction="bearish",
+        direction=direction,
         scope="single_name",
         magnitude=2,
         confidence=0.9,
-        headline_zh="阿里巴巴配售新股",
+        headline_zh=headline_zh,
         why_zh="",
     )
     judgment = scored_judgment(verdict)
@@ -125,15 +132,31 @@ def _persist_triage_verdict(
     )
 
 
-def _persist_sent_triage_card(repos, *, event_id: str, at_ms: int, symbol: str) -> None:
-    _persist_triage_verdict(repos, event_id=event_id, at_ms=at_ms, symbol=symbol)
+def _persist_sent_triage_card(
+    repos,
+    *,
+    event_id: str,
+    at_ms: int,
+    symbol: str,
+    direction: str = "bearish",
+    headline_zh: str = "阿里巴巴配售新股",
+    state: str = "sent",
+) -> None:
+    _persist_triage_verdict(
+        repos,
+        event_id=event_id,
+        at_ms=at_ms,
+        symbol=symbol,
+        direction=direction,
+        headline_zh=headline_zh,
+    )
     assert repos.news.begin_delivery(event_id=event_id, kind="first", card={}, now_ms=at_ms - 1) == "new"
     assert repos.news.settle_delivery(
         event_id=event_id,
         kind="first",
-        state="sent",
-        receipt={"ok": True},
-        error_code=None,
+        state=state,
+        receipt={"ok": True} if state == "sent" else None,
+        error_code=None if state == "sent" else "provider_rejected",
         now_ms=at_ms,
     )
 
@@ -479,3 +502,170 @@ def test_trigram_similarity_is_pg_trgm_similarity_on_the_calibration_titles(conn
     ]
     assert mismatched == []
     assert sum(1 for row in rows if float(row["s"]) > 0) >= 143
+
+
+def _sequence_events(repos, sequence_id: str) -> list[dict[str, object]]:
+    """Admit the frozen sequence's Events, in its own clock order.
+
+    Titles, symbols and clocks come from the read-only production export, so the ledger this builds is the
+    one the sequence's last card was judged against rather than a made-up chain.
+    """
+
+    admitted: list[dict[str, object]] = []
+    for offset, step in enumerate(sequences.sequence(sequence_id)["steps"]):
+        case_key = str(step["case"])
+        event = sequences.event(case_key)
+        verdict = sequences.verdict_row(case_key)["verdict"]
+        symbol = next(asset["symbol"] for asset in verdict["assets"] if asset["role"] == "primary")
+        event_id = _admit(
+            repos,
+            hit_id=651_000 + offset + (0 if sequence_id.startswith("visa") else 100),
+            text=str(event["leader_title"]),
+            symbol=str(symbol),
+            ts=datetime.fromtimestamp(int(event["opened_at_ms"]) / 1000, tz=UTC).isoformat(),
+            # The Upbit notice and the wire repeat of it were two Events in production because the
+            # provider tagged them with two engine types; collapsing that here would replay a chain the
+            # reader never had.
+            engine_type=str(event["engine_type"]),
+        )
+        admitted.append(
+            {
+                "case": case_key,
+                "event_id": event_id,
+                "symbol": symbol,
+                "settled_at_ms": step["settled_at_ms"],
+                "triage_stamp": sequences.triage_stamp(case_key),
+                "direction": str(verdict["direction"]),
+                "headline_zh": str(verdict["headline_zh"]),
+            }
+        )
+    return admitted
+
+
+@pytest.mark.parametrize("sequence_id", ["visa_onchain_credit", "cp_listing_three_venues"])
+def test_sql_and_replayed_history_select_the_same_told_candidates_for_a_frozen_sequence(conn, sequence_id: str) -> None:
+    """One reader ledger, two readers of it (#651 §6.3).
+
+    Production asks PostgreSQL for the bounded bands; CandidateEvaluator replays receipts through
+    `EvaluationReaderHistory`, which is the same `build_reader_history` over rows `seed_receipts` projected.
+    A sequence replay is evidence about what the reader was shown only if those two agree on the rows *and*
+    on the visible indices the model cites, because `restates` is an index into the second list.
+
+    The clocks are the frozen ones: each card's receipt settles when it actually settled, and the ledger is
+    read at the last card's own triage stamp. A queued delivery and a failed one also exist in the database
+    and must appear in neither list: a receipt is proof the reader received a card, and neither of those is.
+    """
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        admitted = _sequence_events(repos, sequence_id)
+        for row in admitted[:-1]:
+            if row["settled_at_ms"] is None:
+                continue
+            _persist_sent_triage_card(
+                repos,
+                event_id=str(row["event_id"]),
+                at_ms=int(row["settled_at_ms"]),
+                symbol=str(row["symbol"]),
+                direction=str(row["direction"]),
+                headline_zh=str(row["headline_zh"]),
+            )
+        current = admitted[-1]
+        now_ms = int(current["triage_stamp"])
+        excluded: dict[str, str] = {}
+        fillers: list[str] = []
+        for label, state, at_ms in (
+            ("queued", "sending", now_ms - 600_000),
+            ("failed", "terminal", now_ms - 900_000),
+            ("future", "sent", now_ms + 600_000),
+        ):
+            symbol = f"EX{len(excluded)}"
+            event_id = _admit(
+                repos,
+                hit_id=651_900 + len(excluded) + (0 if sequence_id.startswith("visa") else 50),
+                text=f"An unrelated issuer files a {label} operational notice",
+                symbol=symbol,
+                ts=datetime.fromtimestamp((now_ms - 1_800_000) / 1000, tz=UTC).isoformat(),
+            )
+            _persist_sent_triage_card(repos, event_id=event_id, at_ms=at_ms, symbol=symbol, state=state)
+            excluded[label] = event_id
+        # A `sending` row carries no settle stamp at all, which is what "not proven delivered" means.
+        conn.execute("UPDATE news_deliveries SET settled_at_ms = NULL WHERE event_id = %s", (excluded["queued"],))
+        # Ordinary cards the reader also received while the sequence ran. The bands order by settle stamp
+        # and then by event id, so more than one row is what makes "the same indices" mean anything.
+        for index in range(3):
+            symbol = f"FL{index}"
+            filler = _admit(
+                repos,
+                hit_id=651_940 + index + (0 if sequence_id.startswith("visa") else 20),
+                text=f"Issuer {symbol} completes a distinct unrelated operational milestone {symbol}",
+                symbol=symbol,
+                ts=datetime.fromtimestamp((now_ms - 2_400_000) / 1000, tz=UTC).isoformat(),
+            )
+            _persist_sent_triage_card(
+                repos,
+                event_id=filler,
+                at_ms=now_ms - (index + 1) * 120_000,
+                symbol=symbol,
+            )
+            fillers.append(filler)
+
+    delivered = [row for row in admitted[:-1] if row["settled_at_ms"] is not None]
+    delivered_ids = [str(row["event_id"]) for row in delivered]
+    current_event = conn.execute(
+        "SELECT comparison_title, comparison_fingerprint, dedupe_family, grounded_assets"
+        "  FROM news_events WHERE event_id = %s",
+        (str(current["event_id"]),),
+    ).fetchone()
+    assert current_event is not None
+
+    production = repos.news.reader_history(event_id=str(current["event_id"]), now_ms=now_ms)
+    history = EvaluationReaderHistory(conn)
+    state = ArmState(deque(Receipt(**receipt) for receipt in history.seed_receipts(from_ms=now_ms)))
+    replayed = history.build({"snapshot": {"card": dict(current_event)}, "opened_at_ms": now_ms}, state)
+
+    sql_rows = [row for row in production.told_source_rows]
+    replay_rows = [row for row in replayed.told_source_rows]
+    # A card the policy dropped is never a receipt, so the CP chain's middle step contributes no row.
+    assert [str(row["case"]) for row in admitted[:-1] if row["settled_at_ms"] is None] == (
+        ["cp_upbit_cross_channel"] if sequence_id == "cp_listing_three_venues" else []
+    )
+    assert delivered_ids
+
+    # The queued and the failed delivery are absent from both, for the same reason in both: `state='sent'`
+    # with a settle stamp is the whole definition of a receipt.
+    for label in ("queued", "failed"):
+        assert excluded[label] not in {row.event_id for row in sql_rows}, label
+        assert excluded[label] not in {receipt.event_id for receipt in state.receipts}, label
+
+    # One row the two sides genuinely read differently, named here rather than papered over: a delivery
+    # that settles *after* the read clock. `seed_receipts` bounds the look-back at both ends; the SQL
+    # recent band bounds it only below, because production reads this ledger at the wall clock, where no
+    # delivery has settled in the future. The divergence is therefore replay-only, and closing it would
+    # mean widening `READER_HISTORY_CONTRACT` -- a retrieval-identity change #651 §6.3 does not open.
+    assert excluded["future"] in {row.event_id for row in sql_rows}
+    assert excluded["future"] not in {receipt.event_id for receipt in state.receipts}
+    sql_rows = [row for row in sql_rows if row.event_id != excluded["future"]]
+
+    sql_ids = [row.event_id for row in sql_rows]
+    assert sql_ids == [row.event_id for row in replay_rows]
+    assert set(delivered_ids) | set(fillers) == set(sql_ids)
+
+    indexed = [
+        [
+            (entry.i, entry.event_id)
+            for entry in ToldLedgerSnapshot.select(
+                [row.as_told_row() for row in rows],
+                now_ms=now_ms,
+                storyline_key=sequences.storyline_key(str(current["case"])),
+                symbols=[str(current["symbol"])],
+                comparison_title=str(current_event["comparison_title"] or ""),
+                exclude_event_id=str(current["event_id"]),
+            ).entries
+        ]
+        for rows in (sql_rows, replay_rows)
+    ]
+    assert indexed[0] == indexed[1]
+    assert len(indexed[0]) == len(sql_ids)
+    assert set(delivered_ids) <= {event_id for _, event_id in indexed[0]}
+    conn.commit()

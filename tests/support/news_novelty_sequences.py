@@ -80,9 +80,7 @@ def triage_stamp(case_key: str) -> int:
 def settled_at_ms(case_key: str) -> int | None:
     """When the reader was proven to have received the card, or None when none was sent."""
 
-    delivered = [
-        row for row in case(case_key)["deliveries"] if row["kind"] == "first" and row["state"] == "sent"
-    ]
+    delivered = [row for row in case(case_key)["deliveries"] if row["kind"] == "first" and row["state"] == "sent"]
     return int(delivered[0]["settled_at_ms"]) if delivered else None
 
 

@@ -144,12 +144,12 @@ def test_the_novelty_contract_no_longer_exempts_the_model_s_own_direction() -> N
     assert "restates must name the told index of the same fact" in semantics
     for counterexample in (
         # The #630 pair that shipped twice: one release, two outlets.
-        "\"Visa brings onchain credit to its growing stablecoin card business\" is restatement/restates 6",
+        '"Visa brings onchain credit to its growing stablecoin card business" is restatement/restates 6',
         # The three-step listing sequence: same notice, other channel, other venue.
         "The same Upbit notice arriving through another channel is restatement/restates 6",
-        "\"Bithumb 新增集群协议（CP）韩元交易对\" is progression: another venue listed it",
+        '"Bithumb 新增集群协议（CP）韩元交易对" is progression: another venue listed it',
         # A real reversal is still a progression, which is the label the policy exemptions answer to.
-        "\"该国取消上述加征计划\" is progression/restates=-1",
+        '"该国取消上述加征计划" is progression/restates=-1',
         # Different economic events inside one storyline.
         "is new_fact: a different country's release.",
         "is new_fact: a different traded quantity of the same trade story.",
