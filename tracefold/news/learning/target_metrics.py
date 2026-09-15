@@ -34,18 +34,20 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Final, Literal
 
 import dspy  # type: ignore[import-untyped]
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
-from ..program.signatures import EventSemantics, ReaderCard
+from ..models import Novelty
 from ..taxonomy import ModelTaxonomyV1
 from .card_lint import lint_reader_card
 from .objective import (
+    _NO_GOLD,
     TypedAssetClaim,
+    _gold_value,
     asset_claims_match,
     known_wrong_markets,
     typed_asset_claims,
 )
-from .taxonomy_metric import TAXONOMY_AXES, TaxonomyComparison, compare_taxonomy
+from .taxonomy_metric import TAXONOMY_AXES, TaxonomyComparison, compare_taxonomy, model_taxonomy
 
 TARGET_METRICS_ID: Final = "tracefold.news.target_metrics.v1"
 
@@ -195,6 +197,75 @@ def _not_applicable(gold: Any, target: str) -> dspy.Prediction | None:
     )
 
 
+# --- the accepted-Gold readers ---------------------------------------------------------------------
+#
+# Which accepted fact answers which target's question is a property of the rubric, not of the caller, so
+# it is read here. The optimizer renders frozen examples from these and the baseline and the release
+# evaluator read the same fields off the same reviews; three readers would be three chances for a report
+# and a run to disagree about what a reviewer said.
+
+
+def accepted_taxonomy(review: Mapping[str, Any]) -> ModelTaxonomyV1 | None:
+    """The four model-owned axes one accepted review carries, whichever of its two shapes it is in.
+
+    A persisted `news_review_records_v1` row keeps the label under `payload`; the frozen episode
+    projection lifts it to the top level. Both are the same review, and a reader that knew only one of
+    them silently reported "no Gold" for half the callers.
+    """
+
+    taxonomy = review.get("taxonomy")
+    if taxonomy is None:
+        taxonomy = dict(review.get("payload") or {}).get("taxonomy")
+    axes = dict(taxonomy or {})
+    if not axes:
+        return None
+    try:
+        return ModelTaxonomyV1.model_validate(
+            {field: axes[field] for field in ModelTaxonomyV1.model_fields if field in axes}
+        )
+    except ValueError:
+        return None
+
+
+def accepted_assets(review: Mapping[str, Any]) -> frozenset[TypedAssetClaim] | None:
+    """The accepted typed asset claims for one case, or None when nobody accepted one.
+
+    `asset_grounding` labelled `fail` carries the reviewer's repair in `expected`; labelled `pass` accepts
+    the production judgment verbatim. Anything else — unlabelled, uncertain — has no accepted answer, and
+    inventing one would score a candidate against a question no reviewer answered.
+    """
+
+    label = str(dict(review.get("dimensions") or {}).get("asset_grounding") or "")
+    if label != "fail":
+        return None
+    gold = _gold_value(dict(review.get("expected") or {}), "asset_grounding")
+    return None if gold is _NO_GOLD else frozenset(gold)
+
+
+def accepted_novelty(review: Mapping[str, Any]) -> str | None:
+    judgment = str(dict(review.get("novelty") or {}).get("judgment") or "")
+    return judgment if judgment in {"new_fact", "progression", "restatement"} else None
+
+
+def accepted_duplicate_of(review: Mapping[str, Any]) -> str:
+    return str(dict(review.get("novelty") or {}).get("duplicate_of") or "")
+
+
+def accepted_explanation(review: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
+    """The reviewer's explanation supervision, as the three ordered lists the ruler reads.
+
+    `reference_why_zh` is deliberately not among them: it is one reviewer's phrasing of the sentence, kept
+    so a later reader can see what they had in mind, and no metric may score equality against it.
+    """
+
+    explanation = dict(review.get("explanation") or {})
+    return {
+        "key_facts": tuple(str(fact) for fact in explanation.get("key_facts") or ()),
+        "forbidden_claims": tuple(str(claim) for claim in explanation.get("forbidden_claims") or ()),
+        "error_types": tuple(str(name) for name in explanation.get("error_types") or ()),
+    }
+
+
 # --- classification -------------------------------------------------------------------------------
 
 CLASSIFICATION_AXES: Final[tuple[str, ...]] = (
@@ -253,6 +324,12 @@ def classification_score(gold: Any, comparison: TaxonomyComparison) -> float:
     values = classification_axis_values(comparison)
     stated = _stated_axes(gold)
     return _mean([values[_AXIS_BY_FIELD[axis]] for axis in stated])
+
+
+def _subject_codes(taxonomy: Any) -> tuple[str, ...]:
+    if isinstance(taxonomy, ModelTaxonomyV1):
+        return tuple(taxonomy.subject_codes)
+    return tuple(str(code) for code in dict(taxonomy or {}).get("subject_codes") or ())
 
 
 def _axis_label(taxonomy: Any, axis: str) -> str:
@@ -316,7 +393,7 @@ def classification_metric(
             objective_scores=zero,
         )
     try:
-        observed = ModelTaxonomyV1.model_validate(getattr(pred, "taxonomy", None))
+        observed = model_taxonomy(getattr(pred, "taxonomy", None))
         comparison = compare_taxonomy(expected, observed)
     except ValueError as exc:
         return _result(
@@ -328,6 +405,8 @@ def classification_metric(
         )
     axes = classification_axis_values(comparison)
     stated = _stated_axes(expected)
+    gold_subjects = frozenset(_subject_codes(expected))
+    subject_precision, subject_recall = _set_precision_recall(gold_subjects, frozenset(observed.subject_codes))
     return _result(
         score=classification_score(expected, comparison),
         feedback=comparison.feedback,
@@ -338,6 +417,8 @@ def classification_metric(
             "missing_subjects": list(comparison.missing_subjects),
             "extra_subjects": list(comparison.extra_subjects),
             "subject_f1": _round(comparison.subject_f1),
+            "subject_precision": _round(subject_precision),
+            "subject_recall": _round(subject_recall),
             "four_axis_exact": bool(comparison.exact),
             "gold_event_family": str(_axis_label(expected, "event_family")),
             "predicted_event_family": str(observed.event_family),
@@ -364,6 +445,27 @@ def asset_grounding_outcome(
 
 
 # --- understanding --------------------------------------------------------------------------------
+
+class _ObservedSemantics(BaseModel):
+    """The three fields the understanding ruler reads, from whichever shape the caller holds.
+
+    A GEPA prediction carries a typed `EventSemantics`; a baseline or a release observation carries the
+    persisted `TriageVerdict`, which is a wider shape with the same three answers in it. Validating the
+    narrow thing both of them contain is what lets one ruler score both, instead of a second ruler
+    growing beside the first for the shape the report happens to have.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    novelty: Novelty
+    restates: int = -1
+    assets: tuple[dict[str, Any], ...] = ()
+
+
+def _observed_semantics(value: Any) -> _ObservedSemantics:
+    payload = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
+    return _ObservedSemantics.model_validate(payload)
+
 
 UNDERSTANDING_AXES: Final[tuple[str, ...]] = (
     "typed_semantics_valid",
@@ -460,7 +562,7 @@ def understanding_metric(
     if failure is not None:
         return failure
     try:
-        semantics = EventSemantics.model_validate(getattr(pred, "semantics", None))
+        semantics = _observed_semantics(getattr(pred, "semantics", None))
     except ValidationError as exc:
         return _result(
             score=0.0,
@@ -478,7 +580,7 @@ def understanding_metric(
     expected_assets = getattr(gold, "gold_assets", None)
     if expected_assets is not None:
         expected_claims = frozenset(expected_assets)
-        observed_claims = typed_asset_claims([asset.model_dump(mode="json") for asset in semantics.assets])
+        observed_claims = typed_asset_claims(semantics.assets)
         expected_primaries = _primaries(expected_claims)
         observed_primaries = _primaries(observed_claims)
         precision, recall = _set_precision_recall(expected_primaries, observed_primaries)
@@ -587,12 +689,16 @@ def zero_explanation_objectives() -> dict[str, float]:
 
 
 def _card_of(pred: Any) -> Mapping[str, Any] | None:
+    """The two reader-visible strings, from a typed card or from a persisted judgment that carries them."""
+
     card = getattr(pred, "card", None)
     if card is None:
         return None
-    if isinstance(card, ReaderCard):
-        return card.model_dump(mode="json")
-    return ReaderCard.model_validate(card).model_dump(mode="json")
+    if isinstance(card, BaseModel):
+        card = card.model_dump(mode="json")
+    if not isinstance(card, Mapping):
+        raise ValidationError.from_exception_data("ReaderCard", [])
+    return {"headline_zh": str(card.get("headline_zh") or ""), "why_zh": str(card.get("why_zh") or "")}
 
 
 def _literal_hits(needles: Sequence[str], haystack: str) -> list[bool]:
@@ -925,12 +1031,189 @@ def summarize_target_outcomes(
     }
 
 
+PRODUCT_SCOREBOARD_SCHEMA: Final = "tracefold.news.product_scoreboard.v1"
+
+
+def _macro_f1(confusion: Sequence[Mapping[str, Any]]) -> float | None:
+    """Macro-F1 over whatever labels the corpus actually carries, from the confusion pairs alone.
+
+    Macro rather than micro because the corpus is heavily skewed: `other` and `product_service_change`
+    dominate, and a micro-average would report a classifier that answers the two majority families to
+    everything as good. A label nobody labelled and nobody predicted contributes nothing rather than a
+    free 1.0, which is the other way an average of this kind flatters a model.
+    """
+
+    labels = {str(row["gold"]) for row in confusion} | {str(row["predicted"]) for row in confusion}
+    scores: list[float] = []
+    for label in sorted(labels):
+        tp = sum(int(row["n"]) for row in confusion if row["gold"] == label and row["predicted"] == label)
+        fp = sum(int(row["n"]) for row in confusion if row["gold"] != label and row["predicted"] == label)
+        fn = sum(int(row["n"]) for row in confusion if row["gold"] == label and row["predicted"] != label)
+        if not (tp or fp or fn):
+            continue
+        precision = tp / (tp + fp) if tp + fp else 0.0
+        recall = tp / (tp + fn) if tp + fn else 0.0
+        scores.append(_f1(precision, recall))
+    return None if not scores else _round(_mean(scores))
+
+
+def _component_mean(rows: Sequence[Mapping[str, Any]], name: str) -> float | None:
+    values = [
+        float(dict(row.get("components") or {})[name])
+        for row in rows
+        if isinstance(dict(row.get("components") or {}).get(name), (int, float))
+    ]
+    return None if not values else _round(_mean(values))
+
+
+def product_scoreboard(
+    rows_by_target: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    taxonomy_summary: Mapping[str, Any] | None = None,
+    runtime: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The five blocks #651 §8.1 asks a baseline or an evaluation report to publish.
+
+    One projection over the per-case rows the rulers already produced, so every number here has the same
+    denominators the `targets` block states beside it. Nothing is re-scored: a block that could not be
+    computed is `None`, which is a different statement from zero and is what an operator needs to read.
+    """
+
+    classification = list(rows_by_target.get("classification") or ())
+    understanding = list(rows_by_target.get("understanding") or ())
+    explanation = list(rows_by_target.get("explanation") or ())
+    summary = dict(taxonomy_summary or {})
+    confusion = dict(summary.get("confusion") or {}).get("event_family") or []
+    applicable_classification = [row for row in classification if str(row.get("outcome")) != "not_applicable"]
+    abstained = sum(1 for row in classification if str(row.get("outcome")) == "taxonomy_unavailable")
+
+    known_wrong = sorted(
+        {
+            str(name)
+            for row in understanding
+            for name in dict(row.get("components") or {}).get("known_wrong_market") or ()
+        }
+    )
+    unrecognized = sorted(
+        {
+            symbol
+            for row in understanding
+            for components in (dict(row.get("components") or {}),)
+            for symbol in set(components.get("predicted_primaries") or ())
+            - set(components.get("gold_primaries") or ())
+        }
+    )
+
+    gold_restatements = [
+        row
+        for row in understanding
+        if str(dict(row.get("components") or {}).get("gold_novelty") or "") == "restatement"
+    ]
+    predicted_restatements = [
+        row
+        for row in understanding
+        if str(dict(row.get("components") or {}).get("predicted_novelty") or "") == "restatement"
+    ]
+    retrieval_misses = sum(1 for row in understanding if str(row.get("outcome")) == "retrieval_miss")
+    told_reachable = [row for row in gold_restatements if str(row.get("outcome")) != "retrieval_miss"]
+    target_answers = [
+        bool(dict(row.get("components") or {}).get("restatement_target_correct"))
+        for row in understanding
+        if "restatement_target_correct" in dict(row.get("components") or {})
+    ]
+
+    severe = sorted(
+        {
+            str(name)
+            for row in explanation
+            for name in dict(row.get("components") or {}).get("severe_error_types") or ()
+        }
+    )
+    return {
+        "schema": PRODUCT_SCOREBOARD_SCHEMA,
+        "classification": {
+            "subject_precision": _component_mean(classification, "subject_precision"),
+            "subject_recall": _component_mean(classification, "subject_recall"),
+            "subject_f1": _component_mean(classification, "subject_f1"),
+            "event_family_macro_f1": _macro_f1(confusion),
+            "event_family_confusion": confusion,
+            "axis_accuracy": {
+                axis: summary.get(axis)
+                for axis in ("event_family_accuracy", "change_state_accuracy", "assertion_status_accuracy")
+            },
+            "support": summary.get("support"),
+            "zero_support": summary.get("zero_support"),
+            # What share of the cases a reviewer classified the Predictor declined to classify. Published
+            # here rather than only as a failure count, because abstention is a product fact: those cards
+            # reached a reader with no classification on them at all.
+            "abstention_coverage": _round(abstained / len(applicable_classification))
+            if applicable_classification
+            else None,
+            "abstention_n": abstained,
+        },
+        "entities": {
+            "typed_primary_precision": _component_mean(understanding, "primary_precision"),
+            "typed_primary_recall": _component_mean(understanding, "primary_recall"),
+            "typed_primary_f1": _component_mean(understanding, "primary_f1"),
+            "role_accuracy": _component_mean(understanding, "role_accuracy"),
+            "known_wrong_market": known_wrong,
+            "known_wrong_market_n": len(known_wrong),
+            # Primaries the candidate named that the accepted answer does not carry. Named for what it is
+            # rather than "hallucinated": the reviewer's set is the authority here, not the catalogue.
+            "unrecognized_primaries": unrecognized,
+            "unrecognized_primary_n": len(unrecognized),
+        },
+        "explanation": {
+            "support_rate": _component_mean(explanation, "evidence_support"),
+            "key_fact_coverage": _component_mean(explanation, "key_facts_covered"),
+            "severe_error_types": severe,
+            "forbidden_claim_n": sum(
+                1 for row in explanation if dict(row.get("components") or {}).get("forbidden_claims_asserted")
+            ),
+            # `why_value` is the one rubric judgment with no accepted answer, so it is reported as pending
+            # rather than scored. A ruler that scored it would be scoring a preference (#651 §7.2).
+            "value_pending": True,
+        },
+        "novelty": {
+            "told_recall": _round(len(told_reachable) / len(gold_restatements)) if gold_restatements else None,
+            "restatement_precision": _round(
+                sum(
+                    1
+                    for row in predicted_restatements
+                    if str(dict(row.get("components") or {}).get("gold_novelty") or "") == "restatement"
+                )
+                / len(predicted_restatements)
+            )
+            if predicted_restatements
+            else None,
+            "restatement_recall": _round(
+                sum(
+                    1
+                    for row in gold_restatements
+                    if str(dict(row.get("components") or {}).get("predicted_novelty") or "") == "restatement"
+                )
+                / len(gold_restatements)
+            )
+            if gold_restatements
+            else None,
+            # Only visible when the candidate answered `restatement` on a case whose Gold said so too;
+            # on every other case there is no target to be right or wrong about.
+            "restatement_target_accuracy": _round(_mean([float(hit) for hit in target_answers]))
+            if target_answers
+            else None,
+            "retrieval_miss_n": retrieval_misses,
+        },
+        "runtime": dict(runtime or {}),
+    }
+
+
 __all__ = [
     "CLASSIFICATION_AXES",
     "EXCLUDED_OUTCOMES",
     "EXPLANATION_AXES",
     "FAILURE_OUTCOMES",
     "JUDGE_UNAVAILABLE_SHARE_MAX",
+    "PRODUCT_SCOREBOARD_SCHEMA",
     "SEVERE_ERROR_TYPES",
     "TARGET_AXES",
     "TARGET_METRIC",
@@ -940,12 +1223,18 @@ __all__ = [
     "TASK_OUTPUT_TRUNCATED",
     "UNDERSTANDING_AXES",
     "ZERO_OBJECTIVES",
+    "accepted_assets",
+    "accepted_duplicate_of",
+    "accepted_explanation",
+    "accepted_novelty",
+    "accepted_taxonomy",
     "asset_grounding_outcome",
     "bind_target_metric",
     "classification_axis_values",
     "classification_metric",
     "classification_score",
     "explanation_metric",
+    "product_scoreboard",
     "summarize_target_outcomes",
     "target_metric_receipt",
     "understanding_metric",

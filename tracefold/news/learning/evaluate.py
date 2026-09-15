@@ -20,6 +20,7 @@ from collections import deque
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
+import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_json, canonical_sha
@@ -37,6 +38,7 @@ from ..review.desk import (
 from ..storage.root import NewsRepository
 from .contracts import (
     LEARNING_PROFILE_ID,
+    LEARNING_TARGETS,
     ArmManifest,
     CandidateManifest,
     ClosedWindow,
@@ -70,7 +72,17 @@ from .projection import (
     _program_cost_by_predictor,
     _program_metric,
 )
-from .target_metrics import classification_axis_values, classification_score
+from .target_metrics import (
+    accepted_assets,
+    accepted_duplicate_of,
+    accepted_explanation,
+    accepted_novelty,
+    accepted_taxonomy,
+    bind_target_metric,
+    classification_axis_values,
+    classification_score,
+    summarize_target_outcomes,
+)
 from .taxonomy_metric import TaxonomyComparison, accepted_taxonomy_gold, compare_taxonomy, summarize_taxonomy
 
 # Re-exported, not restated. A second literal here would be one more copy of the identity #193 exists to
@@ -242,6 +254,112 @@ def _taxonomy_release_evidence(
         "four_axis_exact_improved": bool(
             (exact := intervals["four_axis_exact_accuracy"]) is not None and float(exact["lower"]) > 0
         ),
+    }
+
+
+def _accepted_review_view(review: Mapping[str, Any]) -> dict[str, Any]:
+    """One persisted review row in the shape the accepted-Gold readers expect.
+
+    The ledger row keeps the reviewer's labels at the top level and the correction inside `payload`; the
+    frozen episode projection flattens the two. Flattening here rather than teaching the readers two
+    shapes is what keeps one definition of "what did this reviewer answer" across the optimizer, the
+    baseline and this evaluator.
+    """
+
+    payload = dict(review.get("payload") or {})
+    return {
+        "dimensions": dict(review.get("dimensions") or payload.get("dimensions") or {}),
+        "novelty": dict(review.get("novelty") or payload.get("novelty") or {}),
+        "expected": dict(payload.get("expected") or {}),
+        "explanation": dict(payload.get("explanation") or {}),
+        "taxonomy": payload.get("taxonomy"),
+        "should_push": review.get("should_push") or payload.get("should_push") or "",
+    }
+
+
+def _target_release_evidence(
+    observations: Sequence[Mapping[str, Any]],
+    reviews: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Per arm and per target, how many cases the corpus could ask and what happened to each (#651 §8).
+
+    Published beside the taxonomy axis evidence and read by nobody as a gate. Its job is to make the
+    denominators visible: a candidate whose `classification` scored on 40 of 300 applicable cases and a
+    candidate that scored on 290 are not comparable, and before this the report could not say which one
+    it was describing. `judge_unavailable` is deliberately *counted* rather than scored, so a metric-judge
+    outage reads as an unavailable explanation evaluation instead of a candidate that got worse.
+
+    The rulers run with no judge here: the two live arms already spent their model budget on the Program
+    itself, and adding a third route would make a release decision depend on a provider the run never
+    declared. The explanation rows therefore carry the deterministic arm's bound, which the receipt names.
+    """
+
+    rows: dict[str, dict[str, list[dict[str, Any]]]] = {
+        arm: {target: [] for target in LEARNING_TARGETS} for arm in ("stable", "candidate")
+    }
+    for item in observations:
+        case_ref = dict(item.get("case_ref") or {})
+        review = _accepted_review_view(reviews.get(str(case_ref.get("review_id") or ""), {}))
+        applicable = tuple(case_ref.get("applicable_targets") or LEARNING_TARGETS)
+        stratum = str(case_ref.get("stratum") or "")
+        explanation = accepted_explanation(review)
+        assets = accepted_assets(review)
+        novelty = accepted_novelty(review)
+        taxonomy_gold = accepted_taxonomy(review)
+        golds = {
+            "classification": dspy.Example(
+                applicable_targets=applicable,
+                **({} if taxonomy_gold is None else {"gold_taxonomy": taxonomy_gold.model_dump(mode="json")}),
+            ),
+            "understanding": dspy.Example(
+                applicable_targets=applicable,
+                **({} if assets is None else {"gold_assets": assets}),
+                **(
+                    {}
+                    if novelty is None
+                    else {"gold_novelty": novelty, "gold_duplicate_of": accepted_duplicate_of(review)}
+                ),
+            ),
+            "explanation": dspy.Example(
+                applicable_targets=applicable,
+                gold_key_facts=explanation["key_facts"],
+                gold_forbidden_claims=explanation["forbidden_claims"],
+                gold_error_types=explanation["error_types"],
+            ),
+        }
+        for arm in ("stable", "candidate"):
+            output = item.get(arm)
+            if not isinstance(output, Mapping) or output.get("not_assigned"):
+                continue
+            judgment = output.get("scored_judgment")
+            verdict = dict(dict(judgment or {}).get("verdict") or {})
+            editorial = _output_editorial(dict(output)) or {}
+            predictions = {
+                "classification": dspy.Prediction(taxonomy=editorial.get("taxonomy"), editorial=dict(editorial)),
+                "understanding": dspy.Prediction(semantics=verdict or None),
+                "explanation": dspy.Prediction(card=verdict or None),
+            }
+            for target in LEARNING_TARGETS:
+                if judgment is None:
+                    if target in applicable:
+                        rows[arm][target].append(
+                            {"outcome": "technical_failure", "score": 0.0, "stratum": stratum}
+                        )
+                    continue
+                outcome = bind_target_metric(target, None)(golds[target], predictions[target])
+                rows[arm][target].append(
+                    {"outcome": str(outcome.outcome), "score": outcome.score, "stratum": stratum}
+                )
+    return {
+        "schema": "tracefold.news.target_release_evidence.v1",
+        "judge_route": "none_deterministic_arm",
+        **{
+            arm: {
+                target: summarize_target_outcomes(rows[arm][target], target=target)
+                for target in LEARNING_TARGETS
+            }
+            for arm in ("stable", "candidate")
+        },
     }
 
 
@@ -1413,8 +1531,10 @@ class CandidateEvaluator:
                 ):
                     critical_regressions.append(str(item["case_ref"]["case_id"]))
         taxonomy_evidence: dict[str, Any] | None = None
+        target_evidence: dict[str, Any] = {}
         if request.stage in {"offline", "holdout"}:
             taxonomy_evidence = _taxonomy_release_evidence(observations, reviews)
+            target_evidence = _target_release_evidence(observations, reviews)
             if taxonomy_only:
                 taxonomy_blockers, taxonomy_failures = _taxonomy_only_release_codes(
                     taxonomy_evidence, stage=request.stage
@@ -1609,6 +1729,9 @@ class CandidateEvaluator:
             "candidate_degraded_or_error_n": candidate_bad_n,
             "candidate_degraded_or_error_rate": candidate_bad_rate,
             "component_failures": _component_failures(observations),
+            # Per arm and per target: applicable, scored, failed, and every excluded case named for why
+            # it was excluded (#651 §8). Evidence, not a gate.
+            "targets": target_evidence,
             "critical_regressions": critical_regressions,
             "stability": stability,
             "blockers": blockers,

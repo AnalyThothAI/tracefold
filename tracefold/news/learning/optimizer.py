@@ -78,11 +78,8 @@ from .contracts import (
 )
 from .metric import _json_safe
 from .objective import (
-    _NO_GOLD,
     DevelopmentEpisode,
     GepaObjectivePlan,
-    TypedAssetClaim,
-    _gold_value,
     build_gepa_objective_plan,
     build_readiness_report,
     optimizer_population_identity,
@@ -92,6 +89,10 @@ from .target_metrics import (
     TASK_OUTPUT_INVALID,
     TASK_OUTPUT_TRUNCATED,
     ZERO_OBJECTIVES,
+    accepted_assets,
+    accepted_duplicate_of,
+    accepted_explanation,
+    accepted_novelty,
     bind_target_metric,
     target_metric_receipt,
 )
@@ -334,26 +335,6 @@ class _LearningStudent(dspy.Module):  # type: ignore[misc]
 # target's example carries, which is a property of the corpus rather than of the ruler.
 
 
-def _accepted_assets(review: Mapping[str, Any]) -> frozenset[TypedAssetClaim] | None:
-    """The accepted typed asset claims for one case, or None when nobody accepted one.
-
-    `asset_grounding` labelled `fail` carries the reviewer's repair in `expected`; labelled `pass` accepts
-    the production judgment verbatim. Anything else — unlabelled, uncertain — has no accepted answer, and
-    inventing one would score a candidate against a question no reviewer answered.
-    """
-
-    label = str(dict(review.get("dimensions") or {}).get("asset_grounding") or "")
-    if label == "fail":
-        gold = _gold_value(dict(review.get("expected") or {}), "asset_grounding")
-        return None if gold is _NO_GOLD else frozenset(gold)
-    return None
-
-
-def _accepted_novelty(review: Mapping[str, Any]) -> str | None:
-    judgment = str(dict(review.get("novelty") or {}).get("judgment") or "")
-    return judgment if judgment in {"new_fact", "progression", "restatement"} else None
-
-
 def _accepted_copy(review: Mapping[str, Any], field: str) -> str | None:
     """The accepted Chinese copy for one card field, or None when nobody accepted one."""
 
@@ -401,13 +382,13 @@ def _understanding_example(
         "case_id": episode.case_id,
         "cluster_id": episode.cluster_id,
     }
-    assets = _accepted_assets(review)
+    assets = accepted_assets(review)
     if assets is not None:
         values["gold_assets"] = assets
-    novelty = _accepted_novelty(review)
+    novelty = accepted_novelty(review)
     if novelty is not None:
         values["gold_novelty"] = novelty
-        values["gold_duplicate_of"] = str(dict(review.get("novelty") or {}).get("duplicate_of") or "")
+        values["gold_duplicate_of"] = accepted_duplicate_of(review)
         index = dict(cluster_event_ids or {})
         values["gold_cluster_event_ids"] = frozenset(
             event_id for event_id, cluster_id in index.items() if cluster_id == episode.cluster_id
@@ -428,16 +409,16 @@ def _explanation_example(episode: DevelopmentEpisode) -> dspy.Example:
     if judgment is None:
         raise ValueError("news_program_compile_reader_card_semantics_missing")
     review = dict(episode.accepted_review or {})
-    explanation = dict(review.get("explanation") or {})
+    explanation = accepted_explanation(review)
     evidence_json = render_model_evidence_json(episode.context.reader_card_payload(), predictor="reader_card")
     values: dict[str, Any] = {
         "evidence_json": evidence_json,
         "semantics_json": _recorded_semantics_json(judgment),
         "source_title": str(episode.context.evidence.title),
         "applicable_targets": tuple(episode.applicable_targets),
-        "gold_key_facts": tuple(str(fact) for fact in explanation.get("key_facts") or ()),
-        "gold_forbidden_claims": tuple(str(claim) for claim in explanation.get("forbidden_claims") or ()),
-        "gold_error_types": tuple(str(name) for name in explanation.get("error_types") or ()),
+        "gold_key_facts": explanation["key_facts"],
+        "gold_forbidden_claims": explanation["forbidden_claims"],
+        "gold_error_types": explanation["error_types"],
         "case_id": episode.case_id,
         "cluster_id": episode.cluster_id,
     }

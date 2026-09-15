@@ -78,11 +78,18 @@ def _policy() -> dict[str, Any]:
     }
 
 
-def _case(index: int, *, cluster: str | None = None, should_push: str = "should_push") -> BaselineCase:
+def _case(
+    index: int,
+    *,
+    cluster: str | None = None,
+    should_push: str = "should_push",
+    applicable_targets: tuple[str, ...] = ("classification", "understanding"),
+) -> BaselineCase:
     episode = DevelopmentEpisode(
         case_id=f"{index:064x}",
         cluster_id=cluster or f"{index:064x}",
         stratum="delivered",
+        applicable_targets=applicable_targets,
         context=TriageContext.from_card(
             {**_CARD, "opened_at_ms": 1787000000000 + index * 1000},
             watchlist=(),
@@ -482,3 +489,58 @@ def test_the_published_policy_hash_is_recomputed_not_forwarded() -> None:
     tampered = BaselineCase(episode=_case(1).episode.model_copy(update={"policy_metric": drifted}))
     with pytest.raises(ValueError, match="news_program_baseline_policy_identity_mismatch"):
         _policy_identity([tampered])
+
+
+def test_the_report_states_a_denominator_and_a_scoreboard_for_each_of_the_three_targets() -> None:
+    """#651 §8: three per-target numbers, each with the population it was measured over.
+
+    The corpus here is applicable to `classification` and `understanding` and to nothing else, and the
+    report has to say so: `explanation` is `not_applicable` on every case rather than a zero, which is the
+    difference between "this candidate explains badly" and "nobody asked it to explain".
+    """
+
+    report = _report([_case(1), _case(2)])
+
+    assert report.schema_id == "tracefold.news.program_baseline_report.v5"
+    targets = report.targets
+    assert set(targets) == {"classification", "understanding", "explanation"}
+    for target, block in targets.items():
+        assert block["schema"] == "tracefold.news.target_denominators.v1"
+        assert block["case_n"] == 2
+        assert block["case_n"] == block["applicable_n"] + block["not_applicable_n"]
+        assert block["applicable_n"] == (
+            block["scored_n"]
+            + block["failure_n"]
+            + block["no_gold_n"]
+            + block["judge_unavailable_n"]
+            + block["retrieval_miss_n"]
+        ), target
+    assert targets["classification"]["applicable_n"] == targets["classification"]["scored_n"] == 2
+    assert targets["explanation"]["applicable_n"] == 0
+    assert targets["explanation"]["not_applicable_n"] == 2
+    assert targets["explanation"]["score"] is None
+    # The native `dspy.Evaluate` aggregate, converted from its percentage in exactly one place.
+    assert targets["classification"]["dspy_evaluate_lower_bound"] == targets["classification"]["score"]
+
+    scoreboard = report.scoreboard
+    assert scoreboard["schema"] == "tracefold.news.product_scoreboard.v1"
+    assert set(scoreboard) == {"schema", "classification", "entities", "explanation", "novelty", "runtime"}
+    assert scoreboard["classification"]["abstention_coverage"] == 0.0
+    assert scoreboard["classification"]["event_family_confusion"]
+    assert scoreboard["explanation"]["value_pending"] is True
+    assert scoreboard["runtime"]["component_failures"] == {"unanswered_n": 0}
+
+
+def test_a_route_failure_is_a_failure_of_every_target_the_case_was_applicable_to() -> None:
+    """Excluding an unanswered case would publish the answered ones as the corpus."""
+
+    case = _case(3)
+    report = run_baseline(
+        [case],
+        mode="recorded",
+        artifact=load_stable_program_state(),
+    )
+    assert report.targets["classification"]["failure_n"] == 0
+
+    failed = _failed_case(case, "program_route_failure", latency_ms=7)
+    assert failed.error_code == "program_route_failure"
