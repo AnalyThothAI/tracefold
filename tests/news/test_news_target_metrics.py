@@ -16,6 +16,14 @@ import dspy  # type: ignore[import-untyped]
 import pytest
 
 from tracefold.news.learning.judge import CardClaimAssessment, FactualEvidenceAssessment, FactualEvidenceSupport
+from tracefold.news.learning.judge_calibration import (
+    CALIBRATION_RECEIPT_SCHEMA,
+    MUST_PASS_CLASSES,
+    PERTURBATION_CLASSES,
+    calibration_receipt_sha256,
+    load_calibration_cases,
+    run_judge_calibration,
+)
 from tracefold.news.learning.target_metrics import (
     JUDGE_UNAVAILABLE_SHARE_MAX,
     TASK_OUTPUT_INVALID,
@@ -571,3 +579,87 @@ def test_every_651_snapshot_carries_a_verdict_and_no_accepted_review() -> None:
         verdict = dict(case["verdicts"][0]["verdict"])
         result = understanding_metric(dspy.Example(), dspy.Prediction(semantics=verdict))
         assert (result.outcome, result.score) == ("no_gold", None)
+
+
+# ------------------------------------------------------------------------------- judge calibration
+
+
+class _PerfectJudge(_ScriptedJudge):
+    """A judge that answers every calibration case the way the fixture says a competent reader would."""
+
+    def __init__(self, cases: Any) -> None:
+        super().__init__()
+        self._by_card = {(str(case.card["headline_zh"]), str(case.card["why_zh"])): case for case in cases}
+
+    def facts_supported(self, evidence_json: str, candidate: Any) -> FactualEvidenceAssessment:
+        del evidence_json
+        case = self._by_card[(str(candidate["headline_zh"]), str(candidate["why_zh"]))]
+        return FactualEvidenceAssessment(
+            status="answered", verdict=FactualEvidenceSupport(supported_by_evidence=case.expected_supported)
+        )
+
+    def key_facts_covered(self, evidence_json: str, candidate: Any, key_facts: Any) -> CardClaimAssessment:
+        del evidence_json, key_facts
+        case = self._by_card[(str(candidate["headline_zh"]), str(candidate["why_zh"]))]
+        return CardClaimAssessment(status="answered", answers=case.expected_key_facts_covered)
+
+
+class _AlwaysSupportedJudge(_ScriptedJudge):
+    """The failure mode the corpus exists to catch: a judge that never refuses anything."""
+
+    def facts_supported(self, evidence_json: str, candidate: Any) -> FactualEvidenceAssessment:
+        del evidence_json, candidate
+        return FactualEvidenceAssessment(status="answered", verdict=FactualEvidenceSupport(supported_by_evidence=True))
+
+
+def test_the_calibration_corpus_spans_every_perturbation_class_with_two_cases_each() -> None:
+    cases = load_calibration_cases()
+
+    assert len(cases) == 14
+    by_class = {name: [case for case in cases if case.perturbation == name] for name in PERTURBATION_CLASSES}
+    assert {name: len(rows) for name, rows in by_class.items()} == dict.fromkeys(PERTURBATION_CLASSES, 2)
+    # The two must-pass classes carry the card a judge has to accept, and every other class carries one
+    # it has to refuse. A corpus of refusals alone cannot see a judge that refuses everything.
+    for name, rows in by_class.items():
+        expected = name in MUST_PASS_CLASSES
+        assert all(case.expected_supported is expected for case in rows), name
+
+
+def test_a_judge_that_answers_the_corpus_correctly_scores_one_on_every_class() -> None:
+    cases = load_calibration_cases()
+
+    receipt = run_judge_calibration(_PerfectJudge(cases), cases)
+
+    assert receipt["schema"] == CALIBRATION_RECEIPT_SCHEMA
+    assert receipt["case_n"] == 14
+    assert receipt["unavailable_n"] == 0
+    assert receipt["support_accuracy"] == receipt["key_fact_accuracy"] == 1.0
+    assert receipt["disagreements"] == []
+    assert {row["support_accuracy"] for row in receipt["per_class"].values()} == {1.0}
+    assert calibration_receipt_sha256(receipt)
+
+
+def test_a_judge_that_supports_everything_is_caught_by_the_five_perturbation_classes() -> None:
+    cases = load_calibration_cases()
+
+    receipt = run_judge_calibration(_AlwaysSupportedJudge(), cases)
+
+    per_class = receipt["per_class"]
+    assert {name: per_class[name]["support_accuracy"] for name in MUST_PASS_CLASSES} == dict.fromkeys(
+        MUST_PASS_CLASSES, 1.0
+    )
+    caught = {name for name in PERTURBATION_CLASSES if name not in MUST_PASS_CLASSES}
+    assert {per_class[name]["support_accuracy"] for name in caught} == {0.0}
+    assert receipt["support_accuracy"] == pytest.approx(4 / 14)
+    assert len([row for row in receipt["disagreements"] if row["question"] == "facts_supported"]) == 10
+
+
+def test_an_unreachable_judge_is_counted_as_unavailable_and_not_as_a_miscalibration() -> None:
+    cases = load_calibration_cases()
+
+    receipt = run_judge_calibration(_ScriptedJudge(unavailable=True), cases)
+
+    assert receipt["unavailable_n"] == 28  # one support question and one key-fact question per case
+    assert receipt["questions_answered_n"] == 0
+    assert receipt["support_accuracy"] is None and receipt["key_fact_accuracy"] is None
+    assert receipt["disagreements"] == []
