@@ -27,6 +27,7 @@ from tracefold.news.program.artifact import load_stable_program_state
 from tracefold.news.program.contracts import TriageContext
 from tracefold.news.program.lm import LMCallLedger
 from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
+from tracefold.news.taxonomy import ModelTaxonomyV1
 
 _ADVISORY = "Classify taxonomy-target evidence as other with unknown state and assertion."
 _PRODUCT_TAXONOMY = {
@@ -758,3 +759,53 @@ def test_real_gepa_runs_end_to_end_for_every_target_without_a_network(
     # written as `is` so a failure prints a boolean rather than diffing a multi-megabyte transcript.
     assert ("semantics_json" in rendered) is (target == "explanation")
     assert ("event_status" in rendered) is (target == "understanding")
+
+
+class _TypedInvalidModule(dspy.Module):  # type: ignore[misc]
+    """Raises the exact typed failure a candidate produces when its JSON does not validate."""
+
+    def forward(self, evidence_json: str) -> dspy.Prediction:
+        del evidence_json
+        ModelTaxonomyV1.model_validate({})
+        raise AssertionError("news_program_test_typed_failure_not_raised")
+
+
+def test_the_learning_student_is_what_keeps_a_typed_failure_scoreable_on_dspy_331() -> None:
+    """Reproduce the upstream limit `_LearningStudent` exists for, against the installed dspy 3.3.1.
+
+    GEPA evaluates a candidate through `bootstrap_trace.bootstrap_trace_data`, whose `patched_forward`
+    handles `AdapterParseError` and re-raises everything else. `Evaluate` then records the example as an
+    error, its prediction is not the `(prediction, trace)` tuple the caller unpacks, and that row is
+    dropped — so the batch GEPA gets back is shorter than the one it submitted. The wrapper turns the same
+    failure into an ordinary Prediction the metric scores at `failure_score`.
+    """
+
+    from dspy.teleprompt.bootstrap_trace import bootstrap_trace_data
+
+    from tracefold.news.learning.optimizer import _ClassificationMetric, _LearningStudent
+
+    example = dspy.Example(
+        evidence_json="<tracefold-untrusted-event-json-v1>\n{}\n</tracefold-untrusted-event-json-v1>",
+        gold_taxonomy=dict(_OTHER_TAXONOMY),
+    ).with_inputs("evidence_json")
+
+    def trajectories(program: dspy.Module) -> list[dict[str, Any]]:
+        return bootstrap_trace_data(
+            program=program,
+            dataset=[example],
+            metric=_ClassificationMetric(),
+            raise_on_error=False,
+            capture_failed_parses=True,
+            failure_score=0.0,
+            format_failure_score=0.0,
+        )
+
+    naked = trajectories(_TypedInvalidModule())
+    wrapped = trajectories(_LearningStudent(cast(dspy.Predict, _TypedInvalidModule()), output_type=ModelTaxonomyV1))
+
+    # Native behaviour drops the row: GEPA would then index past the end of a shortened batch.
+    assert naked == []
+    # The wrapper keeps it, scored at the native `failure_score`, with the typed failure as feedback.
+    assert len(wrapped) == 1
+    assert wrapped[0]["score"].score == 0.0
+    assert "ModelTaxonomyV1 is invalid" in wrapped[0]["score"].feedback
