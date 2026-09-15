@@ -123,6 +123,7 @@ WRITE_REPOSITORY_METHODS = (
     "wallet_freeze_send_snapshot",
     "wallet_suppress_delivery",
     "chain_tape_record_outcome",
+    "chain_tape_record_reference",
 )
 
 

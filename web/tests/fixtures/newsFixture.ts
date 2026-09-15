@@ -707,6 +707,7 @@ export function newsWalletRosterMemberFixture(
     realized_pnl: 510_000,
     wallet: "0x69326e48f68500fb6cf3b3a7da640737b9cc347b",
     win_rate: 0.44,
+    monitoring_from_ms: NEWS_NOW_MS - 86_400_000,
     ...overrides,
   };
 }
@@ -716,8 +717,14 @@ export function newsWalletsFixture(overrides: Partial<NewsWallets> = {}): NewsWa
     roster: {
       members: [newsWalletRosterMemberFixture()],
       provider: "robinhoodtrenches",
-      roster_version: 3,
+      version: 3,
       taken_at_ms: NEWS_NOW_MS - 1_800_000,
+      quality_count: 6,
+      whale_count: 20,
+      supported_quality_count: 6,
+      last_attempt_at_ms: null,
+      last_success_at_ms: NEWS_NOW_MS - 1_800_000,
+      last_error: null,
     },
     tape: {
       high_water_block: 55_432_960,
@@ -738,6 +745,18 @@ export function newsWalletsFixture(overrides: Partial<NewsWallets> = {}): NewsWa
       scanned_log: 2_147_483_647,
       gap_at_ms: null,
     },
+    thresholds: { fast_n: 3, slow_n: 5, sufficient: true },
+    funnel: {
+      window_from_ms: NEWS_NOW_MS - 86_400_000,
+      window_to_ms: NEWS_NOW_MS,
+      events: 2,
+      intents: 2,
+      sent: 2,
+      unsent_reason: null,
+      unsent_reason_count: 0,
+    },
+    collection_lagging: false,
+    notifications_enabled: true,
     ...overrides,
   };
 }

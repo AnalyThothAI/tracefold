@@ -4,12 +4,8 @@ import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
 import { Link, useSearchParams } from "react-router-dom";
 
-import {
-  NEWS_WALLET_HISTORY_RANGES,
-  useNewsWalletEventsWithToken,
-  useNewsWalletsWithToken,
-} from "../../api/newsQueries";
-import { displayTime, optionalTime } from "../../model/newsLabels";
+import { NEWS_WALLET_HISTORY_RANGES, useNewsWalletEventsWithToken } from "../../api/newsQueries";
+import { displayTime } from "../../model/newsLabels";
 import {
   parseWalletEventFilters,
   walletDecimal,
@@ -19,7 +15,7 @@ import {
 import { NewsPageHeader } from "../chrome/NewsChrome";
 
 import { WalletEventDetail } from "./WalletEventDetail";
-import { WalletRosterTable } from "./WalletSupportingTables";
+import { WalletStatusBlock } from "./WalletStatusBlock";
 import "./newsWallets.css";
 
 export function NewsWalletsPage({ token }: { token: string }) {
@@ -27,10 +23,7 @@ export function NewsWalletsPage({ token }: { token: string }) {
   const filters = parseWalletEventFilters(params);
   const episodeId = params.get("episode") ?? "";
   const eventsQuery = useNewsWalletEventsWithToken(token, filters);
-  const walletsQuery = useNewsWalletsWithToken(token);
   const data = eventsQuery.data;
-  const tape = walletsQuery.data?.tape;
-  const roster = walletsQuery.data?.roster;
   const changeRange = (historyRange: string) => {
     const next = new URLSearchParams();
     if (historyRange !== "24h") next.set("history_range", historyRange);
@@ -40,6 +33,7 @@ export function NewsWalletsPage({ token }: { token: string }) {
   return (
     <PageShell archetype="scan" className="news-wallets-shell" label="聪明钱警报">
       <NewsPageHeader title="聪明钱警报" subtitle="Robinhood Chain · 多钱包集中净买入" />
+      <WalletStatusBlock token={token} />
       {episodeId ? <WalletEventDetail token={token} episodeId={episodeId} /> : null}
       <section className="news-wallets-panel" aria-label="集中净买入事件">
         <div className="news-wallets-toolbar">
@@ -180,36 +174,6 @@ export function NewsWalletsPage({ token }: { token: string }) {
           </PageState.Stale>
         )}
       </section>
-      <details className="news-wallets-panel news-wallet-data-details">
-        <summary>名单与采集状态</summary>
-        {walletsQuery.isError ? (
-          <p className="news-wallets-note">
-            名单 / 状态读取失败，事件仍可查阅。
-            <ActionButton size="sm" onClick={() => void walletsQuery.refetch()}>
-              重试状态
-            </ActionButton>
-          </p>
-        ) : null}
-        <p className="news-wallets-note">
-          最近成功采集 {optionalTime(tape?.last_success_at_ms)} · 链数据截止{" "}
-          {optionalTime(tape?.scanned_at_ms)}
-        </p>
-        <p className="news-wallets-note">
-          {tape?.last_error
-            ? `采集异常：${tape.last_error}`
-            : tape
-              ? "按已完成的链范围计算"
-              : "尚未取得采集状态"}
-          {tape?.scanned_at_ms && Date.now() - tape.scanned_at_ms > 60_000
-            ? " · 采集落后，当前变化可能尚未完整"
-            : ""}
-        </p>
-        <p className="news-wallets-note">
-          来源 {roster?.provider ?? "未取得"} · {optionalTime(roster?.taken_at_ms)} 取得。
-          来源表现榜才参与人数门槛；规模榜仅作观察背景。供应商短期统计不是长期策略胜率。
-        </p>
-        {roster ? <WalletRosterTable members={roster.members} /> : null}
-      </details>
     </PageShell>
   );
 }

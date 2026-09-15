@@ -6586,6 +6586,58 @@
         "title": "NewsWalletFillData",
         "type": "object"
       },
+      "NewsWalletFunnelData": {
+        "additionalProperties": false,
+        "description": "Episodes to intents to sends over one window, and the reason most of the rest stopped at.\n\nCounts describe the stated window and are never accumulated totals. `unsent_reason` is the server's\nown reason string for the episodes that did not reach a channel, not a translated summary.",
+        "properties": {
+          "events": {
+            "title": "Events",
+            "type": "integer"
+          },
+          "intents": {
+            "title": "Intents",
+            "type": "integer"
+          },
+          "sent": {
+            "title": "Sent",
+            "type": "integer"
+          },
+          "unsent_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unsent Reason"
+          },
+          "unsent_reason_count": {
+            "title": "Unsent Reason Count",
+            "type": "integer"
+          },
+          "window_from_ms": {
+            "title": "Window From Ms",
+            "type": "integer"
+          },
+          "window_to_ms": {
+            "title": "Window To Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "window_from_ms",
+          "window_to_ms",
+          "events",
+          "intents",
+          "sent",
+          "unsent_reason",
+          "unsent_reason_count"
+        ],
+        "title": "NewsWalletFunnelData",
+        "type": "object"
+      },
       "NewsWalletOutcomeData": {
         "additionalProperties": false,
         "properties": {
@@ -6681,8 +6733,41 @@
       },
       "NewsWalletRosterData": {
         "additionalProperties": false,
-        "description": "The roster as one version: when it was taken, and who was on it.",
+        "description": "The roster as one version: when it was taken, who was on it, and how the last refresh went.\n\n`quality_count` is the pool the 5m/30m thresholds are counted against; `whale_count` is observation\nbackground and never stands in for it. `supported_quality_count` is the subset whose monitoring\nalready covers a whole fast window at the collection cutoff -- a wallet the list gained minutes ago\ncannot complete a quorum yet, and a page that counted it would promise a trigger that cannot fire.",
         "properties": {
+          "last_attempt_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Attempt At Ms"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "last_success_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At Ms"
+          },
           "members": {
             "items": {
               "$ref": "#/components/schemas/NewsWalletRosterMemberData"
@@ -6701,9 +6786,14 @@
             ],
             "title": "Provider"
           },
-          "roster_version": {
+          "quality_count": {
             "default": 0,
-            "title": "Roster Version",
+            "title": "Quality Count",
+            "type": "integer"
+          },
+          "supported_quality_count": {
+            "default": 0,
+            "title": "Supported Quality Count",
             "type": "integer"
           },
           "taken_at_ms": {
@@ -6716,6 +6806,16 @@
               }
             ],
             "title": "Taken At Ms"
+          },
+          "version": {
+            "default": 0,
+            "title": "Version",
+            "type": "integer"
+          },
+          "whale_count": {
+            "default": 0,
+            "title": "Whale Count",
+            "type": "integer"
           }
         },
         "required": [
@@ -6741,6 +6841,17 @@
           "handle": {
             "title": "Handle",
             "type": "string"
+          },
+          "monitoring_from_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monitoring From Ms"
           },
           "open_cost": {
             "default": 0.0,
@@ -6955,9 +7066,45 @@
         "title": "NewsWalletTapeStateData",
         "type": "object"
       },
+      "NewsWalletThresholdsData": {
+        "additionalProperties": false,
+        "description": "The two window quorums, and whether the current pool can reach either of them.",
+        "properties": {
+          "fast_n": {
+            "title": "Fast N",
+            "type": "integer"
+          },
+          "slow_n": {
+            "title": "Slow N",
+            "type": "integer"
+          },
+          "sufficient": {
+            "title": "Sufficient",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "fast_n",
+          "slow_n",
+          "sufficient"
+        ],
+        "title": "NewsWalletThresholdsData",
+        "type": "object"
+      },
       "NewsWalletsData": {
         "additionalProperties": false,
         "properties": {
+          "collection_lagging": {
+            "title": "Collection Lagging",
+            "type": "boolean"
+          },
+          "funnel": {
+            "$ref": "#/components/schemas/NewsWalletFunnelData"
+          },
+          "notifications_enabled": {
+            "title": "Notifications Enabled",
+            "type": "boolean"
+          },
           "roster": {
             "$ref": "#/components/schemas/NewsWalletRosterData"
           },
@@ -6970,11 +7117,18 @@
                 "type": "null"
               }
             ]
+          },
+          "thresholds": {
+            "$ref": "#/components/schemas/NewsWalletThresholdsData"
           }
         },
         "required": [
           "roster",
-          "tape"
+          "tape",
+          "thresholds",
+          "funnel",
+          "collection_lagging",
+          "notifications_enabled"
         ],
         "title": "NewsWalletsData",
         "type": "object"
@@ -9138,6 +9292,7 @@
     },
     "/api/news/wallets": {
       "get": {
+        "description": "Whether the current list, the current collection and the send chain can produce an alert at all.\n\nA reader who sees no events needs to tell \"nothing qualified\" from \"nothing could have qualified\",\nand every number that answers that is counted here rather than in the browser: the quality pool\nagainst the two quorums, the monitoring support behind it, how far behind the chain cutoff is, and\nwhat happened to the episodes that did exist.",
         "operationId": "get_news_wallets_api_news_wallets_get",
         "responses": {
           "200": {

@@ -110,7 +110,7 @@ describe("wallet net-buy events", () => {
     expect(await screen.findByText(/本页 1 轮 · 全范围 250 轮/)).toBeVisible();
   });
 
-  it("keeps events visible when the independent roster fails", async () => {
+  it("keeps events visible when the independent status read fails, and says so in its own block", async () => {
     server.use(
       http.get(/.*\/api\/news\/wallets$/, () =>
         HttpResponse.json({ ok: false, error: "unavailable" }, { status: 503 }),
@@ -118,8 +118,100 @@ describe("wallet net-buy events", () => {
     );
     renderWallets();
     expect(await screen.findByRole("link", { name: "XYZ" })).toBeVisible();
-    fireEvent.click(screen.getByText("名单与采集状态"));
     expect(await screen.findByText(/名单 \/ 状态读取失败，事件仍可查阅/)).toBeVisible();
+    expect(await statusState()).toBe("query_failed");
+  });
+
+  it("keeps the status block readable when the event list is the read that failed", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/wallets\/events$/, () =>
+        HttpResponse.json({ ok: false, error: "unavailable" }, { status: 503 }),
+      ),
+    );
+    renderWallets();
+    expect(await screen.findByText("质量地址 / 观察地址")).toBeVisible();
+    expect(await statusState()).toBe("healthy");
+  });
+
+  it("names the production case: one quality address is a list that cannot trigger, not a quiet market", async () => {
+    server.use(
+      walletsStatus({
+        roster: { quality_count: 1, whale_count: 147, supported_quality_count: 1 },
+        thresholds: { sufficient: false },
+      }),
+    );
+    renderWallets();
+    expect(
+      await screen.findByText("当前质量地址 1 个，低于 5m 3 个及 30m 5 个门槛；当前名单不足以触发"),
+    ).toBeVisible();
+    expect(await statusState()).toBe("roster_insufficient");
+    expect(screen.getByRole("region", { name: "名单与采集状态" })).toHaveTextContent("不足以触发");
+  });
+
+  it.each([
+    [
+      "warming_up",
+      {
+        roster: { quality_count: 6, supported_quality_count: 1 },
+        thresholds: { sufficient: false },
+      },
+      /其中 1 个已具备完整窗口监控支持/,
+    ],
+    ["collection_lagging", { collection_lagging: true }, /链采集落后于当前时间/],
+    ["notifications_disabled", { notifications_enabled: false }, /钱包通知已关闭/],
+    [
+      "no_match",
+      { funnel: { events: 0, intents: 0, sent: 0 } },
+      /名单与采集正常，24 小时内没有满足条件的集中净买入。/,
+    ],
+    [
+      "send_failed",
+      {
+        funnel: {
+          events: 3,
+          intents: 3,
+          sent: 1,
+          unsent_reason: "episode_already_reported",
+          unsent_reason_count: 2,
+        },
+      },
+      /2 个首报意图没有送达：本轮已首报，不重复发送。/,
+    ],
+  ])(
+    "renders %s with its own sentence rather than one empty list",
+    async (state, patch, sentence) => {
+      server.use(walletsStatus(patch as Record<string, unknown>));
+      renderWallets();
+      expect(await screen.findByText(sentence as RegExp)).toBeVisible();
+      expect(await statusState()).toBe(state);
+    },
+  );
+
+  it("reads the collection lag from the server instead of comparing the cutoff with the browser clock", async () => {
+    server.use(
+      walletsStatus({
+        collection_lagging: false,
+        tape: { scanned_at_ms: Date.now() - 3_600_000 },
+      }),
+    );
+    renderWallets();
+    expect(await screen.findByText(/按已完成的链范围计算/)).toBeVisible();
+    expect(await statusState()).toBe("healthy");
+    expect(screen.getByRole("region", { name: "名单与采集状态" })).not.toHaveTextContent(
+      "采集落后",
+    );
+  });
+
+  it("reports the roster refresh failure beside the last complete version it kept", async () => {
+    server.use(
+      walletsStatus({
+        roster: { last_error: "robinhoodtrenches:http_429", last_attempt_at_ms: Date.now() },
+      }),
+    );
+    renderWallets();
+    expect(
+      await screen.findByText(/名单刷新失败 .*：robinhoodtrenches:http_429；保留上一份完整名单。/),
+    ).toBeVisible();
   });
 
   it("distinguishes an empty event range from a failed read", async () => {
@@ -137,6 +229,22 @@ describe("wallet net-buy events", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });
+
+function walletsStatus(patch: Record<string, unknown>) {
+  const base = newsWalletsFixture();
+  const merged = { ...base, ...patch } as Record<string, unknown>;
+  for (const key of ["roster", "tape", "thresholds", "funnel"]) {
+    if (patch[key])
+      merged[key] = { ...(base[key as keyof typeof base] as object), ...(patch[key] as object) };
+  }
+  return http.get(/.*\/api\/news\/wallets$/, () => HttpResponse.json({ ok: true, data: merged }));
+}
+
+async function statusState() {
+  return (await screen.findByRole("region", { name: "名单与采集状态" })).getAttribute(
+    "data-status-state",
+  );
+}
 
 function renderWallets(path = "/news/wallets") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from typing import Any, Final, cast
 
 from ..chain_tape.contracts import ClassifiedFill
-from ..wallet_contracts import WALLET_OUTCOME_HORIZONS, WalletEvent, WalletOutcome
+from ..wallet_contracts import WALLET_OUTCOME_HORIZONS, WalletEvent, WalletOutcome, WalletReference
 from .sql_values import _dumps
 
 FILL_COLUMNS: Final = """chain_id, tx_hash, log_index, block_number, block_hash, wallet, token,
@@ -90,6 +90,34 @@ WALLET_DUE_OUTCOMES_SQL: Final = """
                  ORDER BY COALESCE(e.outcome_attempted_at_ms,0), e.event_at_ms, e.item_id LIMIT %s
             """
 
+WALLET_DUE_REFERENCES_SQL: Final = """
+            SELECT item_id, chain_id, token, event_at_ms
+              FROM news_market_wallet_events
+             WHERE reference_price IS NULL AND event_at_ms > %s AND event_at_ms <= %s
+             ORDER BY COALESCE(outcome_attempted_at_ms, 0), event_at_ms, item_id LIMIT %s
+        """
+
+WALLET_NOTIFICATION_FUNNEL_SQL: Final = """
+            WITH scoped AS (
+                SELECT d.state AS state, d.delivery_key AS delivery_key,
+                       COALESCE(d.error, e.notification_reason, t.pending_reason) AS reason
+                  FROM news_market_wallet_events e
+                  JOIN news_items i ON i.item_id = e.item_id
+                  LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
+                  LEFT JOIN news_market_tracks t ON t.group_key = i.market_notify_group_key
+                 WHERE e.event_at_ms >= %s AND e.event_at_ms < %s
+            ), leading_reason AS (
+                SELECT reason, count(*) AS n FROM scoped
+                 WHERE reason IS NOT NULL AND (state IS NULL OR state <> 'sent')
+                 GROUP BY reason ORDER BY n DESC, reason LIMIT 1
+            )
+            SELECT (SELECT count(*) FROM scoped) AS events,
+                   (SELECT count(*) FROM scoped WHERE delivery_key IS NOT NULL) AS intents,
+                   (SELECT count(*) FROM scoped WHERE state = 'sent') AS sent,
+                   (SELECT reason FROM leading_reason) AS unsent_reason,
+                   COALESCE((SELECT n FROM leading_reason), 0) AS unsent_reason_count
+        """
+
 WALLET_OUTCOMES_SQL: Final = """
             SELECT horizon, target_at_ms, at_ms, price::text, source, reference_price::text,
                    reference_at_ms, status,
@@ -127,7 +155,9 @@ class WalletEventStorage:
             yield
 
     def wallet_pending_receipts(self, *, limit: int = 20) -> list[list[ClassifiedFill]]:
-        """LIMIT applies to transactions; every returned receipt includes all of its fills."""
+        """`limit` bounds the undelivered fills that seed the batch, and each of their transactions
+        comes back complete: a batch holds at most `limit` receipts and may hold more fills than that.
+        """
         rows = self.conn.execute(
             WALLET_PENDING_RECEIPTS_SQL,
             (int(limit),),
@@ -379,6 +409,39 @@ class WalletEventStorage:
                 (chain_id, token),
             ).fetchone()
             is not None
+        )
+
+    def wallet_notification_funnel(self, *, from_ms: int, to_ms: int) -> dict[str, Any]:
+        """Episodes, intents and sends over one window, and the reason most of the rest stopped at.
+
+        One statement over one snapshot: an episode counted here and the reason beside it describe the
+        same row, which a second query against a moving ledger could not promise.
+        """
+
+        return cast(dict[str, Any], self.conn.execute(WALLET_NOTIFICATION_FUNNEL_SQL, (from_ms, to_ms)).fetchone())
+
+    def chain_tape_due_references(self, *, now_ms: int, max_delay_ms: int, limit: int) -> list[dict[str, Any]]:
+        """Fresh episodes that still have no t0 baseline, least recently attempted first.
+
+        The lower bound is the sampling budget itself, so an episode that aged past it is never
+        backfilled, and the ordering is the sampler's own attempt stamp, so one token the price
+        provider cannot answer for rotates to the back instead of holding every other episode.
+        """
+
+        return list(self.conn.execute(WALLET_DUE_REFERENCES_SQL, (now_ms - max_delay_ms, now_ms, limit)).fetchall())
+
+    def chain_tape_record_reference(self, reference: WalletReference) -> bool:
+        """The sampler is the only writer here, and it writes once: a set baseline is never rewritten."""
+
+        return bool(
+            self.conn.execute(
+                """
+            UPDATE news_market_wallet_events
+               SET reference_price = %s, reference_at_ms = %s, reference_source = %s
+             WHERE item_id = %s AND reference_price IS NULL
+        """,
+                (reference.price, reference.at_ms, reference.source, reference.item_id),
+            ).rowcount
         )
 
     def chain_tape_due_outcomes(self, *, now_ms: int, limit: int) -> list[dict[str, Any]]:

@@ -3,6 +3,7 @@ import {
   type NewsWalletEventFilters,
   type NewsWalletFill,
   type NewsWalletFillKind,
+  type NewsWallets,
 } from "../api/newsQueries";
 
 import { formatPrice } from "./newsPrice";
@@ -57,6 +58,67 @@ export function parseWalletEventFilters(params: URLSearchParams): NewsWalletEven
   };
 }
 
+/**
+ * Why this page currently shows what it shows. Every branch is a different answer to "there is no
+ * alert": a list that cannot reach either quorum, addresses that have not watched long enough, a
+ * collection that is behind, a real absence of qualifying buys, and the three ways the page itself or
+ * the send chain can be the reason. The browser decides none of the numbers — it orders the answers.
+ */
+export type WalletStatusState =
+  | "unread"
+  | "query_failed"
+  | "notifications_disabled"
+  | "roster_insufficient"
+  | "warming_up"
+  | "collection_lagging"
+  | "send_failed"
+  | "no_match"
+  | "healthy";
+
+export function walletStatusState(
+  status: NewsWallets | undefined,
+  { failed }: { failed: boolean },
+): WalletStatusState {
+  // An unanswered read is never an answer: "nothing has come back yet" is its own state, not health.
+  if (!status) return failed ? "query_failed" : "unread";
+  if (!status.notifications_enabled) return "notifications_disabled";
+  const { fast_n, slow_n, sufficient } = status.thresholds;
+  if (!sufficient)
+    return status.roster.quality_count < Math.min(fast_n, slow_n)
+      ? "roster_insufficient"
+      : "warming_up";
+  if (status.collection_lagging) return "collection_lagging";
+  if (status.funnel.intents > status.funnel.sent) return "send_failed";
+  return status.funnel.events === 0 ? "no_match" : "healthy";
+}
+
+/** One sentence naming the state, built from the server's own counts and thresholds. */
+export function walletStatusSentence(
+  state: WalletStatusState,
+  status: NewsWallets | undefined,
+): string {
+  if (state === "unread") return "正在读取名单与采集状态。";
+  if (!status || state === "query_failed") return "名单与采集状态读取失败，事件仍可查阅。";
+  const { roster, thresholds, funnel } = status;
+  const quorum = `5m ${thresholds.fast_n} 个及 30m ${thresholds.slow_n} 个门槛`;
+  switch (state) {
+    case "notifications_disabled":
+      return "钱包通知已关闭：仍在采集与记录事件，不会发送任何通知。";
+    case "roster_insufficient":
+      return `当前质量地址 ${roster.quality_count} 个，低于 ${quorum}；当前名单不足以触发`;
+    case "warming_up":
+      return `质量地址 ${roster.quality_count} 个，其中 ${roster.supported_quality_count} 个已具备完整窗口监控支持；其余仍在预热，尚不足以凑齐 ${quorum}。`;
+    case "collection_lagging":
+      return "链采集落后于当前时间，窗口内的变化可能尚未完整。";
+    case "send_failed":
+      return `${funnel.intents - funnel.sent} 个首报意图没有送达：${walletReason(funnel.unsent_reason)}。`;
+    case "no_match":
+      return "名单与采集正常，24 小时内没有满足条件的集中净买入。";
+    default:
+      return `名单与采集正常，24 小时内 ${funnel.events} 轮事件、${funnel.sent} 条已发送。`;
+  }
+}
+
 export function walletReason(reason: string | null | undefined): string {
   if (!reason) return "未发送";
   const labels: Record<string, string> = {
@@ -72,6 +134,13 @@ export function walletReason(reason: string | null | undefined): string {
     stale_trigger: "触发事实已超时",
     future_chain_timestamp: "链时间超前",
     wallet_notifications_disabled: "钱包通知已静音",
+    wallet_not_selected: "本轮未被选为首报",
+    episode_already_reported: "本轮已首报，不重复发送",
+    merging_into_prepared_card: "正在并入待发送卡片",
+    market_sender_unavailable: "发送渠道暂不可用",
+    before_cutover: "产品切换前的事实，不补发",
+    conditions_not_met: "未达到集中净买入条件",
+    active_episode: "本轮已在进行中",
     wallet_net_buy_cutover: "产品切换，旧意图已终结",
     roster_changed: "名单发生变化",
     window_expiry: "成交滑出观察窗口",

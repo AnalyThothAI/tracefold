@@ -683,9 +683,19 @@ every Event this code can open.
   `wallet_notifications_disabled` while the track is muted. Previously pending cards stopped by that
   policy retain their delivery row as `failed` with that reason and their original attempt evidence.
   A later alert round may report earlier unclaimed observations as `uncovered`; it never adopts them.
-- `GET /api/news/wallets` returns only `roster` and `tape`. Authentication
-  `token` is its only query parameter. Roster source statistics and quality/whale ranks
-  retain their original meaning; monitoring and scanned-chain state disclose coverage.
+- `GET /api/news/wallets` returns `roster`, `tape`, `thresholds`, `funnel`,
+  `collection_lagging` and `notifications_enabled`. Authentication `token` is its only query
+  parameter. Roster source statistics and quality/whale ranks retain their original meaning;
+  monitoring and scanned-chain state disclose coverage. The roster publishes the quality and whale
+  counts separately — the whale list never stands in for the quality pool — with
+  `supported_quality_count`, the quality addresses whose `monitoring_from_ms` already covers a whole
+  fast window at the collection cutoff, and the last refresh's `last_attempt_at_ms` /
+  `last_success_at_ms` / `last_error`; only a complete refresh publishes a version, so the success
+  stamp is that version's own `taken_at_ms`. `thresholds` carries the two window quorums and whether
+  the current pool can reach either. `collection_lagging` is the server's judgement on the chain
+  cutoff and the browser makes no clock comparison of its own. `funnel` counts episodes, intents and
+  sends over its own stated 24-hour window with the leading unsent reason — window counts, never
+  accumulated totals, and never summed with each other.
 - `GET /api/news/wallets/events` returns `events`, full-scope `totals`, and a keyset
   `next_cursor`. `history_range=24h|72h|7d` defaults to 24h; `limit=1..200` defaults
   to 50 (UI 25). Optional `to_ms` anchors the range. Cursors bind the range and end
@@ -698,8 +708,13 @@ every Event this code can open.
   Both initial and latest snapshots carry exact decimal strings, original raw quantities,
   quality membership, exclusions and exact chain cutoff. The first snapshot is immutable.
   Timeline pages never define the totals. Notification status and episode end are separate.
-  Price outcomes record target/actual time, source, nullable price/reference/change and
-  `comparable|missing_reference|unavailable|late`; missing never becomes 0%.
+  Price outcomes record target/actual/reference time, source, nullable price/reference/change and
+  `comparable|missing_reference|unavailable|late`; missing never becomes 0%. `reference_price` /
+  `reference_at_ms` / `reference_source` are the episode's t0 baseline, written once by the price
+  sampler from the first price really available within its budget and never afterwards; the delay
+  from the trigger is the two stamps. An episode that aged past the budget keeps no baseline rather
+  than acquiring a backfilled one, and a baseline recorded at or after a horizon's target cannot
+  make that horizon `comparable`.
   Retired `/api/news/wallets/cards`, single-wallet filters, segment views and DTOs have
   no redirect, alias or fallback. Unknown query keys return 400.
 

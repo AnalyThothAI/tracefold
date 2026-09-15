@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import replace
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -26,7 +27,7 @@ from tracefold.news.market_contracts import REASON_UNPROCESSED
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame, admit_market_item, prepare_wallet_observation
 from tracefold.news.storage.market import _OBSERVATION_KEYS, INTERNAL_OBSERVATION_KEYS
-from tracefold.news.wallet_contracts import WalletEvent
+from tracefold.news.wallet_contracts import WalletEvent, WalletReference
 from tracefold.platform.config.models import NewsSettings, Settings
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
@@ -555,7 +556,8 @@ def test_oi_sort_requires_a_comparable_scope_and_pages_without_losing_ties(app, 
 
 
 def test_wallet_events_paging_totals_deep_link_and_old_contract_rejection(app, conn):
-    stamp = int(time.time() * 1000) - 1000
+    # Two minutes back: inside every history range, and inside the status funnel's whole-minute window.
+    stamp = int(time.time() * 1000) - 120_000
     ids = []
     for offset in range(3):
         ids.append(
@@ -585,7 +587,25 @@ def test_wallet_events_paging_totals_deep_link_and_old_contract_rejection(app, c
         assert direct.status_code == 200, direct.text
         detail = direct.json()["data"]
         assert detail["event"]["initial_snapshot"]["fast"]["net_usd"] == "6000"
+        # The sampler's t0 stage is the only writer of the baseline, and the detail projects what it
+        # wrote -- price, moment and source together, with no horizon receipt yet (#649 §8).
         assert detail["event"]["reference_price"] is None and detail["outcomes"] == []
+        repos = repositories_for_connection(conn)
+        with repos.transaction():
+            assert repos.news.chain_tape_record_reference(
+                WalletReference(
+                    item_id=ids[0],
+                    price=Decimal("1.25"),
+                    at_ms=stamp + 4000,
+                    source="dexscreener_robinhood_chain_base_token",
+                    trigger_at_ms=stamp,
+                )
+            )
+        conn.commit()
+        baseline = client.get(f"/api/news/wallets/events/{ids[0]}", headers=AUTH).json()["data"]["event"]
+        assert baseline["reference_price"] == "1.25"
+        assert baseline["reference_at_ms"] == stamp + 4000
+        assert baseline["reference_source"] == "dexscreener_robinhood_chain_base_token"
         assert client.get("/api/news/wallets/cards", headers=AUTH).status_code == 404
         for params in (
             {"window": "24h"},
@@ -600,7 +620,125 @@ def test_wallet_events_paging_totals_deep_link_and_old_contract_rejection(app, c
         assert client.get("/api/news/wallets/events/missing", headers=AUTH).status_code == 404
         auxiliary = client.get("/api/news/wallets", headers=AUTH)
         assert auxiliary.status_code == 200
-        assert set(auxiliary.json()["data"]) == {"roster", "tape"}
+        status = auxiliary.json()["data"]
+        assert set(status) == {
+            "roster",
+            "tape",
+            "thresholds",
+            "funnel",
+            "collection_lagging",
+            "notifications_enabled",
+        }
+        # An empty roster cannot reach either quorum, and the page must say so rather than "no chance
+        # today": the counts, the two thresholds and the verdict are all the server's (#649 §7.3).
+        assert status["thresholds"] == {"fast_n": 3, "slow_n": 5, "sufficient": False}
+        assert status["roster"]["quality_count"] == status["roster"]["whale_count"] == 0
+        assert status["roster"]["supported_quality_count"] == 0
+        assert status["collection_lagging"] is True, "no collection cutoff at all is not a fresh one"
+        # Three episodes, none of which reached a channel, and one stated leading reason.
+        assert status["funnel"]["events"] == 3 and status["funnel"]["sent"] == 0
+        assert status["funnel"]["unsent_reason"] == "wallet_notifications_disabled"
+        assert status["funnel"]["unsent_reason_count"] == 1
+        assert status["funnel"]["window_to_ms"] - status["funnel"]["window_from_ms"] == 86_400_000
+
+
+def _roster_and_tape(conn: Any, *, quality: int, whale: int, at_ms: int, monitoring_from_ms: int) -> None:
+    """The production shape of this defect: many observed addresses, almost no qualifying ones."""
+
+    from tracefold.news.chain_tape.contracts import BLOCK_COMPLETE_TX_INDEX, RosterMember, TapeCursor
+
+    members = [
+        RosterMember(
+            wallet="0x" + f"{index + 1:040x}",
+            handle=f"handle{index + 1}",
+            followers=0,
+            realized_pnl=1000.0,
+            closed_trades=20,
+            win_rate=0.5,
+            profit_factor=2.0,
+            open_cost=10000.0,
+            rank_quality=index + 1 if index < quality else None,
+            rank_whale=index + 1 if index < whale else None,
+        )
+        for index in range(whale)
+    ]
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        snapshot = repos.news.chain_tape_store_roster(members, now_ms=at_ms - 600_000)
+        repos.news.chain_tape_save_state(
+            cursor=TapeCursor(1000, BLOCK_COMPLETE_TX_INDEX),
+            roster_version=snapshot.roster_version,
+            outcome="success",
+            error=None,
+            now_ms=at_ms,
+            succeeded=True,
+        )
+        repos.news.chain_tape_record_coverage(
+            from_ms=at_ms - 3_600_000,
+            through_ms=at_ms,
+            through_block=1000,
+            through_log=BLOCK_COMPLETE_TX_INDEX,
+            gap_at_ms=None,
+            wallets=snapshot.wallets,
+        )
+        conn.execute("UPDATE news_market_wallet_roster SET monitoring_from_ms = %s", (monitoring_from_ms,))
+    conn.commit()
+
+
+def test_wallet_status_counts_the_quality_pool_against_both_quorums_rather_than_the_whole_list(app, conn):
+    """147 observed addresses and one qualifying one is 「the list cannot trigger」, not 「no opportunity」."""
+
+    now = int(time.time() * 1000)
+    _roster_and_tape(conn, quality=1, whale=147, at_ms=now, monitoring_from_ms=now - 3_600_000)
+    with TestClient(app) as client:
+        status = client.get("/api/news/wallets", headers=AUTH).json()["data"]
+    assert status["roster"]["quality_count"] == 1
+    assert status["roster"]["whale_count"] == 147
+    assert status["roster"]["supported_quality_count"] == 1
+    assert status["thresholds"] == {"fast_n": 3, "slow_n": 5, "sufficient": False}
+    assert status["collection_lagging"] is False
+    assert status["roster"]["last_success_at_ms"] == status["roster"]["taken_at_ms"]
+    assert status["roster"]["last_error"] is None and status["roster"]["last_attempt_at_ms"] is None
+    assert status["notifications_enabled"] is True
+    assert len(status["roster"]["members"]) == 147
+
+
+def test_wallet_status_separates_a_warming_up_pool_from_one_that_is_simply_too_small(app, conn):
+    now = int(time.time() * 1000)
+    _roster_and_tape(conn, quality=6, whale=147, at_ms=now, monitoring_from_ms=now - 60_000)
+    with TestClient(app) as client:
+        status = client.get("/api/news/wallets", headers=AUTH).json()["data"]
+    # Six qualifying addresses, none of which has watched a whole 5m window yet.
+    assert status["roster"]["quality_count"] == 6
+    assert status["roster"]["supported_quality_count"] == 0
+    assert status["thresholds"]["sufficient"] is False
+
+
+def test_wallet_status_reports_a_roster_refresh_failure_without_moving_the_published_version(app, conn):
+    now = int(time.time() * 1000)
+    _roster_and_tape(conn, quality=6, whale=6, at_ms=now, monitoring_from_ms=now - 3_600_000)
+    conn.execute(
+        "UPDATE news_market_wallet_tape_state SET last_error = %s, last_outcome = 'partial', updated_at_ms = %s",
+        ("robinhoodtrenches:http_429", now + 5_000),
+    )
+    conn.commit()
+    with TestClient(app) as client:
+        status = client.get("/api/news/wallets", headers=AUTH).json()["data"]
+    assert status["roster"]["last_error"] == "robinhoodtrenches:http_429"
+    assert status["roster"]["last_attempt_at_ms"] == now + 5_000
+    # The failure publishes nothing, so the last complete version and its real stamp are untouched.
+    assert status["roster"]["last_success_at_ms"] == status["roster"]["taken_at_ms"] == now - 600_000
+    assert status["thresholds"]["sufficient"] is True
+
+
+def test_wallet_status_calls_a_stale_collection_cutoff_lagging(app, conn):
+    now = int(time.time() * 1000)
+    _roster_and_tape(conn, quality=6, whale=6, at_ms=now, monitoring_from_ms=now - 3_600_000)
+    conn.execute("UPDATE news_market_wallet_tape_state SET scanned_at_ms = %s", (now - 120_000,))
+    conn.commit()
+    with TestClient(app) as client:
+        status = client.get("/api/news/wallets", headers=AUTH).json()["data"]
+    assert status["collection_lagging"] is True
 
 
 def test_wallet_detail_timeline_exact_cutoff_and_keyset_include_small_sell_and_transfer(app, conn):

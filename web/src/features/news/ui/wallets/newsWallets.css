@@ -49,6 +49,29 @@
   .news-wallets-scroll {
     overflow-x: auto;
   }
+  .news-wallet-status {
+    padding: 12px;
+  }
+  /* The one sentence a reader came for. It leads the page, so it is set as body copy rather than as
+     another muted note beside the facts that support it. */
+  .news-wallet-status-verdict {
+    margin: 0 0 10px;
+    color: var(--text-primary);
+    font: 620 var(--font-size-body)/1.5 var(--font-sans);
+    overflow-wrap: anywhere;
+  }
+  .news-wallet-status-facts {
+    --ui-fact-columns: 4;
+  }
+  .news-wallet-status .news-wallets-note {
+    padding: 8px 0 0;
+  }
+  .news-wallet-status .news-wallet-data-details {
+    margin-top: 8px;
+  }
+  .news-wallet-status summary {
+    padding: 8px 0;
+  }
   .news-wallets-table {
     width: 100%;
     border-collapse: collapse;
@@ -145,6 +168,13 @@
     }
     .news-wallets-window {
       min-height: 48px;
+    }
+    /* Eight framed cells cannot hold four columns at 390px; two keep every figure on one line and
+       give the page no horizontal scroll of its own. */
+    .news-wallet-status-facts {
+      --ui-fact-columns: 2;
+
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
     .news-wallet-event-detail .news-wallets-table {
       min-width: 620px;

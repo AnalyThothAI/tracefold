@@ -17,6 +17,10 @@ WALLET_OUTCOME_HORIZONS: Final[tuple[tuple[OutcomeHorizon, int], ...]] = (
     ("4h", 14_400_000),
 )
 OUTCOME_MAX_DELAY_MS: Final = 60_000
+# How long after the trigger a first price still counts as *the trigger's* price. It is one fast
+# window: past it the sample describes a later market, so the episode keeps no baseline at all rather
+# than acquiring a misleading one, and an episode older than this is never backfilled (#649 §8).
+REFERENCE_MAX_DELAY_MS: Final = 300_000
 
 
 class NetBuyMember(BaseModel):
@@ -101,6 +105,26 @@ class WalletEvent:
     reference_price: Decimal | None = None
     reference_at_ms: int | None = None
     reference_source: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WalletReference:
+    """The episode's t0 baseline: the first price that was really available after the trigger.
+
+    `at_ms` is the moment the provider answered, not the trigger, so the delay the baseline carries is
+    recorded rather than hidden -- `at_ms - trigger_at_ms` is the whole of it, and both halves are
+    stored columns. Only the price sampler builds one, and only once per episode.
+    """
+
+    item_id: str
+    price: Decimal
+    at_ms: int
+    source: str
+    trigger_at_ms: int
+
+    @property
+    def delay_ms(self) -> int:
+        return self.at_ms - self.trigger_at_ms
 
 
 @dataclass(frozen=True, slots=True)

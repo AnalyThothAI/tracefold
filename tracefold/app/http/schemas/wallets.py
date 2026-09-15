@@ -28,14 +28,27 @@ class NewsWalletRosterMemberData(ExactApiSchema):
     rank_quality: int | None = None
     rank_whale: int | None = None
     provider: str
+    monitoring_from_ms: int | None = None
 
 
 class NewsWalletRosterData(ExactApiSchema):
-    """The roster as one version: when it was taken, and who was on it."""
+    """The roster as one version: when it was taken, who was on it, and how the last refresh went.
 
-    roster_version: int = 0
+    `quality_count` is the pool the 5m/30m thresholds are counted against; `whale_count` is observation
+    background and never stands in for it. `supported_quality_count` is the subset whose monitoring
+    already covers a whole fast window at the collection cutoff -- a wallet the list gained minutes ago
+    cannot complete a quorum yet, and a page that counted it would promise a trigger that cannot fire.
+    """
+
+    version: int = 0
     taken_at_ms: int | None = None
     provider: str | None = None
+    quality_count: int = 0
+    whale_count: int = 0
+    supported_quality_count: int = 0
+    last_attempt_at_ms: int | None = None
+    last_success_at_ms: int | None = None
+    last_error: str | None = None
     members: list[NewsWalletRosterMemberData]
 
 
@@ -65,9 +78,37 @@ class NewsWalletTapeStateData(ExactApiSchema):
     gap_at_ms: int | None
 
 
+class NewsWalletThresholdsData(ExactApiSchema):
+    """The two window quorums, and whether the current pool can reach either of them."""
+
+    fast_n: int
+    slow_n: int
+    sufficient: bool
+
+
+class NewsWalletFunnelData(ExactApiSchema):
+    """Episodes to intents to sends over one window, and the reason most of the rest stopped at.
+
+    Counts describe the stated window and are never accumulated totals. `unsent_reason` is the server's
+    own reason string for the episodes that did not reach a channel, not a translated summary.
+    """
+
+    window_from_ms: int
+    window_to_ms: int
+    events: int
+    intents: int
+    sent: int
+    unsent_reason: str | None
+    unsent_reason_count: int
+
+
 class NewsWalletsData(ExactApiSchema):
     roster: NewsWalletRosterData
     tape: NewsWalletTapeStateData | None
+    thresholds: NewsWalletThresholdsData
+    funnel: NewsWalletFunnelData
+    collection_lagging: bool
+    notifications_enabled: bool
 
 
 class NewsWalletEventData(ExactApiSchema):

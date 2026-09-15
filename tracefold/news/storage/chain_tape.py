@@ -110,7 +110,8 @@ DELETE FROM news_market_wallet_fills
 
 WALLET_ROSTER_ROWS_SQL: Final = """
 SELECT roster_version, taken_at_ms, wallet, handle, followers, realized_pnl,
-       closed_trades, win_rate, profit_factor, open_cost, rank_quality, rank_whale, provider
+       closed_trades, win_rate, profit_factor, open_cost, rank_quality, rank_whale, provider,
+       monitoring_from_ms
   FROM news_market_wallet_roster
  WHERE roster_version = (SELECT max(roster_version) FROM news_market_wallet_roster)
  ORDER BY COALESCE(rank_quality, 1000000), COALESCE(rank_whale, 1000000), wallet
@@ -293,6 +294,9 @@ class ChainTapeStorage:
                 "rank_quality": None if row["rank_quality"] is None else int(row["rank_quality"]),
                 "rank_whale": None if row["rank_whale"] is None else int(row["rank_whale"]),
                 "provider": str(row["provider"] or ROSTER_PROVIDER),
+                # A statistics refresh inherits this rather than restarting it, so it is the honest
+                # answer to "can this address complete a quorum yet" (#641 §5.2).
+                "monitoring_from_ms": None if row["monitoring_from_ms"] is None else int(row["monitoring_from_ms"]),
             }
             for row in self.conn.execute(WALLET_ROSTER_ROWS_SQL).fetchall()
         ]
