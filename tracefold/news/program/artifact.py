@@ -36,7 +36,6 @@ execution budget — is code, and `identity.compute_execution_identity` hashes w
 from __future__ import annotations
 
 import copy
-import importlib.metadata
 import importlib.resources
 import json
 import os
@@ -522,21 +521,12 @@ def _write_exclusive(path: Path, document: str) -> None:
         os.close(descriptor)
 
 
-def assert_installed_dspy_matches_state_version() -> None:
-    """Refuse a process whose installed DSPy is not the version every packaged state was written for."""
-
-    installed = importlib.metadata.version("dspy")
-    if installed != DSPY_STATE_VERSION:
-        raise ValueError(f"news_program_state_dspy_version_unsupported:{installed}")
-
-
 __all__ = [
     "DSPY_STATE_VERSION",
     "PREDICTOR_SIGNATURES",
     "NewsProgramStateV1",
     "PredictorModelBindings",
     "PredictorState",
-    "assert_installed_dspy_matches_state_version",
     "build_code_owned_program_state",
     "build_predictor_state",
     "decode_program_state",
