@@ -147,7 +147,7 @@ optional `feishu_signing_secret`, or Telegram fields
 `min_interval_seconds`), and
 `news.venues.*` (`enabled`, public-data switches `binance`, `hyperliquid`,
 `okx`, `lighter`, `bitget`, reference-only `us_reference`, and `snapshot_period_hours`), and
-`news.watchlist[]` (`{symbol, market_type}`) are the only News knobs.
+`news.watchlist[]` (`{symbol}`) are the only News knobs.
 `news.triage.concurrency` (default 4) is the real consumer width of its queue.
 Lexicons, prefix tables, LSH geometry, the code-owned Program registry, and
 policy versions are image state. `tracefold config` exposes only redacted booleans, counts,

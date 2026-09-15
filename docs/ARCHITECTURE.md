@@ -233,7 +233,11 @@ learning run names one target — `classification` (Taxonomy), `understanding`
 state, on that predictor's own production primary endpoint. Assets carry a typed
 market identity `(market_type, symbol, role)`; Taxonomy may fail on its own
 (`taxonomy_status=unavailable`) while the code-owned `source_authority` on the
-editorial envelope and the reader card survive. [News taxonomy](NEWS_TAXONOMY.md)
+editorial envelope and the reader card survive. A storyline key is recomputed only
+for the judgment that is being produced: the told and receipt ledgers a replay reads
+carry the key their own delivery recorded, because a verdict written before the key
+carried a market would recompute into a key the ledger never held.
+[News taxonomy](NEWS_TAXONOMY.md)
 owns classification language; program and learning code own signatures, budgets,
 identity, metrics, and selection.
 

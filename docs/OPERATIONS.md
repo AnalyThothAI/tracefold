@@ -1528,8 +1528,11 @@ Diagnose News in this order:
    `direction` had flipped against the told entry they cite, which policy v13
    let through; `pipeline.reasked_24h` counts Events whose
    full Program was executed again because a card landed while it was thinking
-   (expect a handful per day; a surge means same-key floods). Program v8 fails
-   closed on missing `novelty` or taxonomy. Migration `0336` deletes pre-current
+   (expect a handful per day; a surge means same-key floods). Program v10 still
+   fails closed on missing `novelty`, but no longer on taxonomy: since #651 the
+   taxonomy Predictor is validated on its own, and its failure leaves the
+   judgment standing with `taxonomy=None`, a `taxonomy_failure` code in the
+   trace and the card unchanged. Migration `0336` deletes pre-current
    trace diagnostics; they do not appear in the current status contract.
 8. `tracefold news replay <hits.json>`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
@@ -1912,6 +1915,27 @@ opportunities or ghost notifications. Existing outcomes keep their old delivery 
 `reference_kind = 'legacy_delivery'` with `reference_price IS NULL`. Their old entry/mark is not
 reinterpreted as a known observation or notification price. The migration is transactional and its
 downgrade is refused; recover by roll-forward or verified backup restore.
+
+`20260915_0378`, `20260915_0379` and `20260915_0380` are the #651 News cut and go
+out as one sequence. Each of the first two drops and re-adds
+`news_verdicts_current_judgment_check`, validating every verdict row in place,
+and each moves an identity the running Workers emit: `0378` takes
+`PROGRAM_VERSION` to `news_semantic_program_v10`, makes the typed asset a
+database fact and moves the Reaction ledger to `reaction_v2`; `0379` takes the
+editorial contract to `news_editorial_v3` and `TRIAGE_POLICY_VERSION` to
+`news_triage_policy_v14`; `0380` replaces the review contract functions for
+`news_review_v7` with `reader_contract_v3`. Old Workers cannot write under the
+new CHECKs and new Workers cannot write under the old ones, so there is no
+overlap window: stop Serve and Workers, drain the News queues, apply the three
+revisions under the existing maintenance gate, then start the matching new
+image. The separate Nautilus runtime writes no `news_*` table and needs no stop
+of its own; a deploy that also carries a Trading schema change keeps the
+`make runtime-down` -> `make up` -> `make runtime-up` order. Nothing is
+rewritten: v8/v9 verdicts, `news_editorial_v2` judgments, `reaction_v1` rows and
+`news_review_v6` reviews stay exactly as written and stay readable, and an Event
+measured before `0378` reports no reaction number until the typed planner has
+measured it again. All three refuse their downgrade; recover by roll-forward or
+verified backup restore.
 
 `20260904_0360` needs no operator step and refuses nothing: it collapses any
 duplicate admission `source_key` to the row every reader already showed. It is
