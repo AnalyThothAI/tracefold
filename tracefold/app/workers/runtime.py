@@ -33,6 +33,10 @@ MARKET_NOTIFICATIONS = "market_notifications"
 # faults -- the followed wallets' on-chain fills -- rather than for the provider behind it, because a
 # second chain or a second roster site would not be a second capability.
 CHAIN_TAPE = "chain_tape"
+# The published follow list's own key (#649 §5.1). It is a capability rather than a detail of the
+# tape because an operator who has lost it has lost *who is watched*, while collection, detection and
+# pricing all keep working against the last version that was published.
+WALLET_ROSTER = "wallet_roster"
 WALLET_NET_BUY = "wallet_net_buy"
 WALLET_PRICES = "wallet_prices"
 TRADING_SIGNAL_LANE = "trading_signal_lane"

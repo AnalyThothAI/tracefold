@@ -65,7 +65,7 @@ or use the verified backup restore under the same stopped-writer boundary.
 
 ## Receipt after startup
 
-Verify `chain_tape`, `wallet_net_buy`, `wallet_prices` capabilities and absence of the
+Verify `wallet_roster`, `chain_tape`, `wallet_net_buy`, `wallet_prices` capabilities and absence of the
 retired research/digest task names. Compare archive record counts and sampled/full JSON
 against the backup, and compare frozen attempted/sent/unknown deliveries without
 re-rendering them. Confirm no old pending candidate is adopted.

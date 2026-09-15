@@ -317,6 +317,14 @@ def add_news_commands(
         action="store_true",
         help="replay without the instrument universe (offline); the Gate then guesses asset_class from XYZ- tags",
     )
+    news_wallets = news_subcommands.add_parser(
+        "wallets",
+        help="explain the smart-money alert flow: roster, thresholds, collected flow, decisions, send queue",
+    )
+    news_wallets.add_argument("--hours", type=_positive_int, default=24, help="window for the flow and decision counts")
+    news_wallets.add_argument(
+        "--queue-limit", type=_positive_int, default=10, help="how many waiting deliveries to list"
+    )
     news_why = news_subcommands.add_parser("why", help="print one Event's chain: item, gate, triage, decide, delivery")
     news_why.add_argument("event_id")
     news_dlq = news_subcommands.add_parser("dlq", help="inspect, replay, or purge the News dead-letter queue")

@@ -38,11 +38,20 @@ class NewsWalletRosterData(ExactApiSchema):
     background and never stands in for it. `supported_quality_count` is the subset whose monitoring
     already covers a whole fast window at the collection cutoff -- a wallet the list gained minutes ago
     cannot complete a quorum yet, and a page that counted it would promise a trigger that cannot fire.
+
+    The published version and the last refresh attempt are separate on purpose. `taken_at_ms` and
+    `last_success_at_ms` belong to a refresh that completed; `last_attempt_at_ms` and `last_error`
+    belong to the refresh task whether or not it published, so a provider that has been refusing to
+    answer for five hours reads as exactly that rather than as a fresh list (#649 §5.1).
     """
 
     version: int = 0
     taken_at_ms: int | None = None
     provider: str | None = None
+    # The provider statistics window both roster endpoints were asked for. It is published because the
+    # closed-trade count and the profit factor are only comparable over one window, and because moving
+    # it from `7d` to `30d` is what made the quality pool reachable at all (#649 §5.3).
+    window: str
     quality_count: int = 0
     whale_count: int = 0
     supported_quality_count: int = 0
@@ -76,6 +85,12 @@ class NewsWalletTapeStateData(ExactApiSchema):
     scanned_block: int | None
     scanned_log: int | None
     gap_at_ms: int | None
+    # The `news-wallet-roster` task's own record, kept on this row because it is the one place an
+    # operator already reads the wallet flow's progress from. The attempt stamp moves on every
+    # refresh; the success stamp only on one that published (#649 §5.1).
+    roster_last_attempt_at_ms: int | None = None
+    roster_last_success_at_ms: int | None = None
+    roster_last_error: str | None = None
 
 
 class NewsWalletThresholdsData(ExactApiSchema):
@@ -128,6 +143,9 @@ class NewsWalletEventData(ExactApiSchema):
     updated_at_ms: int
     notification_state: str
     notification_reason: str | None
+    # When the delivery track will next be looked at. Present exactly when `notification_state` is
+    # `pending`, which is the only state that owes the reader a next step (#649 §7.1).
+    notification_next_due_at_ms: int | None
     intent_at_ms: int | None
     first_attempt_at_ms: int | None
     settled_at_ms: int | None
@@ -181,7 +199,10 @@ class NewsWalletOutcomeData(ExactApiSchema):
     source: str
     reference_price: str | None
     reference_at_ms: int | None
-    status: Literal["comparable", "missing_reference", "unavailable", "late"]
+    # Three, not four. `unavailable` was in the column's CHECK, this union and the generated TS type
+    # since #641, and `WalletPriceSampler` has never written it: a horizon it could not price is
+    # `missing_reference` or `late` (#649 §9). Migration 20260915_0381 removes the fourth value.
+    status: Literal["comparable", "missing_reference", "late"]
     change_percent: str | None
 
 

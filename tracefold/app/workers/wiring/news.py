@@ -47,6 +47,7 @@ from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenN
 from tracefold.integrations.telegram import TelegramNewsPushSender
 from tracefold.integrations.venues import VenueCatalogTradabilityVerifier
 from tracefold.news import ProgressionVerifier
+from tracefold.news.chain_tape.rules import WalletRules
 from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
 from tracefold.news.market_notifications import TICK_SECONDS, MarketNotificationLoop
 from tracefold.news.market_review.loops import QuoteDatabasePort, ReactionDatabasePort
@@ -236,6 +237,15 @@ async def _wire_news_pipeline(
         sender=pipeline.deliverer.send_entry,
         console_base_url=settings.api.public_url,
         wallet_notifications_enabled=settings.news.chain_tape.notifications_enabled,
+        # One set of thresholds for the whole flow: the detector opens an episode with these, and the
+        # sender re-evaluates the same evidence against the same numbers at the committed collection
+        # cutoff (#649 §6.1).
+        wallet_rules=WalletRules(
+            net_buy_fast_n=settings.news.chain_tape.rules.net_buy_fast_n,
+            net_buy_slow_n=settings.news.chain_tape.rules.net_buy_slow_n,
+            min_net_buy_usd=settings.news.chain_tape.rules.min_net_buy_usd,
+            trigger_max_age_s=settings.news.chain_tape.rules.trigger_max_age_s,
+        ),
     )
     capabilities.running(MARKET_NOTIFICATIONS)
     return bus, pipeline, market_notifications

@@ -6,14 +6,17 @@ site is deliberately **not** used for is fills. Its `tape` endpoint is missing a
 closes its own ledger reports (#572 §3.1), so trades come from chain logs and only the roster comes from
 here.
 
-Two unauthenticated roster endpoints:
-* GET /api/traders?window=7d&stocks=false supplies addresses and source statistics.
-* GET /api/trader/{handle}?stocks=false supplies the source profit factor.
+Two unauthenticated roster endpoints, both taking the same statistics window:
+* GET /api/traders?window=W&stocks=false supplies addresses and source statistics.
+* GET /api/trader/{handle}?window=W&stocks=false supplies the source profit factor.
 Wallet position/bags and token mark/depth endpoints have no current consumer.
 Their adapters and caches were removed with the retired wallet research product (#641).
 
 Calls are paced at least `PACE_SECONDS` apart because this is somebody's small public site, and the
 caller only asks for a per-trader document when the list row already passed the closed-trade floor.
+A throttled call is retried `RETRY_ATTEMPTS` times and then raised, never swallowed: the refresh task
+treats an exhausted retry as a failed refresh rather than as a trader with an unknown profit factor
+(#649 §5.1).
 """
 
 from __future__ import annotations
@@ -30,8 +33,21 @@ import httpx
 from tracefold.integrations.http_bounds import ResponseTooLarge, read_bounded
 
 ROBINHOODTRENCHES_BASE_URL: Final = "https://rhtrenches.com"
-# Deliberate courtesy floor between two calls to one small site. Not a rate limit it published.
-PACE_SECONDS: Final = 0.25
+# Measured, not chosen for politeness. At 0.25 s the per-trader endpoint -- which answers in about
+# 1.2 s -- returned 429 on the eighteenth call inside 25 s, and a refresh that hits 429 publishes
+# nothing at all, so the pace is what decides whether the roster is ever rebuilt. Two seconds walks
+# 45 candidates in about 90 s and 92 in about three minutes, inside a one-hour refresh period
+# (#649 §2.1, §5.1).
+PACE_SECONDS: Final = 2.0
+# Measured 2026-09-15: the site answers 429 sporadically whatever the pace -- two of twenty calls at a
+# four-second pace, twelve of forty-five at two seconds -- so throttling here is not something a pace
+# alone can walk around. Since a refresh publishes nothing unless *every* candidate answered, one
+# unlucky handle would otherwise withhold the whole list, so a throttled or timed-out call is retried
+# this many times in total before it becomes the refresh's failure. Nothing is cached and nothing is
+# remembered between refreshes: this is one call being made again (#649 §5.1).
+RETRY_ATTEMPTS: Final = 3
+RETRY_BACKOFF_SECONDS: Final = (5.0, 15.0)
+_RETRIABLE_CODES: Final = frozenset({"roster_rate_limited", "roster_timeout", "roster_transport_error"})
 
 _CONNECT_TIMEOUT_SECONDS: Final = 5.0
 _READ_TIMEOUT_SECONDS: Final = 15.0
@@ -81,9 +97,13 @@ class RobinhoodTrenchesClient:
         transport: httpx.AsyncBaseTransport | None = None,
         pace_seconds: float = PACE_SECONDS,
         read_timeout_seconds: float = _READ_TIMEOUT_SECONDS,
+        retry_attempts: int = RETRY_ATTEMPTS,
+        retry_backoff_seconds: tuple[float, ...] = RETRY_BACKOFF_SECONDS,
     ) -> None:
         self.base_url = str(base_url).rstrip("/")
         self.pace_seconds = max(0.0, float(pace_seconds))
+        self.retry_attempts = max(1, int(retry_attempts))
+        self.retry_backoff_seconds = tuple(max(0.0, float(value)) for value in retry_backoff_seconds)
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(read_timeout_seconds, connect=_CONNECT_TIMEOUT_SECONDS),
             follow_redirects=False,
@@ -114,13 +134,18 @@ class RobinhoodTrenchesClient:
             raise RosterProviderError("roster_payload_empty")
         return tuple(rows)
 
-    async def trader(self, handle: str) -> TraderStats | None:
-        """One trader document, or `None` when the site does not know that handle."""
+    async def trader(self, handle: str, *, window: str = "7d") -> TraderStats | None:
+        """One trader document, or `None` when the site does not know that handle.
+
+        The window is passed because the profit factor is computed over it, exactly as the list's
+        statistics are. Omitting it here left the factor on the provider's own default while the list
+        was requested explicitly, which is two windows in one rule (#649 §2.1).
+        """
 
         name = str(handle or "").strip()
         if not name:
             return None
-        payload = await self._get(f"/api/trader/{name}", {"stocks": "false"}, missing_is_none=True)
+        payload = await self._get(f"/api/trader/{name}", {"window": window, "stocks": "false"}, missing_is_none=True)
         if payload is None:
             return None
         if not isinstance(payload, Mapping):
@@ -136,6 +161,30 @@ class RobinhoodTrenchesClient:
         )
 
     async def _get(
+        self,
+        path: str,
+        params: Mapping[str, str],
+        *,
+        missing_is_none: bool = False,
+    ) -> Any:
+        """One bounded read, retried only for the failures that are about the moment, not the answer.
+
+        A 404, a redirect, a block and an unparseable body all say something about the request or the
+        resource and are raised at once. A throttle, a timeout and a transport error say the site was
+        busy, and the caller cannot publish without an answer, so they are asked again.
+        """
+
+        for attempt in range(self.retry_attempts):
+            try:
+                return await self._attempt(path, params, missing_is_none=missing_is_none)
+            except RosterProviderError as error:
+                if error.code not in _RETRIABLE_CODES or attempt == self.retry_attempts - 1:
+                    raise
+                index = min(attempt, len(self.retry_backoff_seconds) - 1)
+                await asyncio.sleep(self.retry_backoff_seconds[index] if self.retry_backoff_seconds else 0.0)
+        raise RosterProviderError("roster_retries_exhausted")  # pragma: no cover -- the loop returns or raises
+
+    async def _attempt(
         self,
         path: str,
         params: Mapping[str, str],

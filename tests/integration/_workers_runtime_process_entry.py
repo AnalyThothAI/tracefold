@@ -51,6 +51,7 @@ def _arguments() -> argparse.Namespace:
             "optional_task_fault",
             "market_notifications_fault",
             "chain_tape_fault",
+            "wallet_roster_fault",
             "wallet_net_buy_fault",
             "wallet_prices_fault",
             "ingestion_task_fault",
@@ -554,10 +555,15 @@ async def _main() -> None:
             )
 
         workers_wiring._wire_news_pipeline = wire_market_fault
-    elif arguments.mode in {"chain_tape_fault", "wallet_net_buy_fault", "wallet_prices_fault"}:
+    elif arguments.mode in {
+        "chain_tape_fault",
+        "wallet_roster_fault",
+        "wallet_net_buy_fault",
+        "wallet_prices_fault",
+    }:
         # The real task wrappers, registration and capability publication. Only the domain turn is
         # replaced: its unexpected error must close that stage and leave both wallet siblings running.
-        from tracefold.app.workers.runtime import CHAIN_TAPE, WALLET_NET_BUY, WALLET_PRICES
+        from tracefold.app.workers.runtime import CHAIN_TAPE, WALLET_NET_BUY, WALLET_PRICES, WALLET_ROSTER
         from tracefold.app.workers.wiring.chain_tape import ChainTapeComposition
 
         failing_capability = arguments.mode.removesuffix("_fault")
@@ -582,10 +588,11 @@ async def _main() -> None:
             return None, _TurnPipeline((("news-deduper", _fact_writer(kwargs["db"]), 1.0),)), None
 
         def wire_wallet_stages(**kwargs: Any) -> ChainTapeComposition:
-            for capability in (CHAIN_TAPE, WALLET_NET_BUY, WALLET_PRICES):
+            for capability in (CHAIN_TAPE, WALLET_ROSTER, WALLET_NET_BUY, WALLET_PRICES):
                 kwargs["capabilities"].running(capability)
             return ChainTapeComposition(
                 loop=_WalletStage(CHAIN_TAPE),
+                roster=_WalletStage(WALLET_ROSTER),
                 detector=_WalletStage(WALLET_NET_BUY),
                 prices=_WalletStage(WALLET_PRICES),
                 poll_seconds=0.2,
@@ -667,6 +674,7 @@ async def _main() -> None:
         "optional_task_fault",
         "market_notifications_fault",
         "chain_tape_fault",
+        "wallet_roster_fault",
         "wallet_net_buy_fault",
         "wallet_prices_fault",
         "ingestion_task_fault",

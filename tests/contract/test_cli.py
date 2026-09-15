@@ -394,6 +394,8 @@ class CliTests(unittest.TestCase):
                     "min_profit_factor": 1.2,
                     "top_quality": 20,
                     "top_whale_by_open_cost": 20,
+                    "window": "30d",
+                    "refresh_interval_s": 3600,
                 },
                 "rules": {
                     "net_buy_fast_n": 3,

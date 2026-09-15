@@ -682,6 +682,9 @@ def _roster_and_tape(conn: Any, *, quality: int, whale: int, at_ms: int, monitor
             wallets=snapshot.wallets,
         )
         conn.execute("UPDATE news_market_wallet_roster SET monitoring_from_ms = %s", (monitoring_from_ms,))
+        # The refresh task's own record, which is what the page reads since #649 §5.1: this list was
+        # published by a refresh that completed, so both stamps are that refresh's.
+        repos.news.chain_tape_save_roster_refresh(now_ms=at_ms - 600_000, succeeded=True, error=None)
     conn.commit()
 
 
@@ -698,7 +701,11 @@ def test_wallet_status_counts_the_quality_pool_against_both_quorums_rather_than_
     assert status["thresholds"] == {"fast_n": 3, "slow_n": 5, "sufficient": False}
     assert status["collection_lagging"] is False
     assert status["roster"]["last_success_at_ms"] == status["roster"]["taken_at_ms"]
-    assert status["roster"]["last_error"] is None and status["roster"]["last_attempt_at_ms"] is None
+    # The attempt stamp is the refresh task's, and a refresh that published set both to the same
+    # moment. It is not derived from the collection turn (#649 §5.1).
+    assert status["roster"]["last_attempt_at_ms"] == status["roster"]["last_success_at_ms"]
+    assert status["roster"]["last_error"] is None
+    assert status["roster"]["window"] == "30d"
     assert status["notifications_enabled"] is True
     assert len(status["roster"]["members"]) == 147
 
@@ -715,19 +722,28 @@ def test_wallet_status_separates_a_warming_up_pool_from_one_that_is_simply_too_s
 
 
 def test_wallet_status_reports_a_roster_refresh_failure_without_moving_the_published_version(app, conn):
+    """The refresh task's own record, not the collection turn's error (#649 §5.1).
+
+    The collection turn is a success here and the refresh is the thing that failed, which is the whole
+    point of separating them: a page that inferred the roster's health from the tape's `last_error`
+    could not tell a throttled refresh from a chain RPC that would not answer.
+    """
+
     now = int(time.time() * 1000)
     _roster_and_tape(conn, quality=6, whale=6, at_ms=now, monitoring_from_ms=now - 3_600_000)
-    conn.execute(
-        "UPDATE news_market_wallet_tape_state SET last_error = %s, last_outcome = 'partial', updated_at_ms = %s",
-        ("robinhoodtrenches:http_429", now + 5_000),
-    )
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.news.chain_tape_save_roster_refresh(
+            now_ms=now + 5_000, succeeded=False, error="robinhoodtrenches:roster_rate_limited"
+        )
     conn.commit()
     with TestClient(app) as client:
         status = client.get("/api/news/wallets", headers=AUTH).json()["data"]
-    assert status["roster"]["last_error"] == "robinhoodtrenches:http_429"
+    assert status["roster"]["last_error"] == "robinhoodtrenches:roster_rate_limited"
     assert status["roster"]["last_attempt_at_ms"] == now + 5_000
     # The failure publishes nothing, so the last complete version and its real stamp are untouched.
     assert status["roster"]["last_success_at_ms"] == status["roster"]["taken_at_ms"] == now - 600_000
+    assert status["tape"]["last_outcome"] == "success", "the chain half succeeded; only the refresh failed"
     assert status["thresholds"]["sufficient"] is True
 
 

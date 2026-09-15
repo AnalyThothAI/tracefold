@@ -542,6 +542,28 @@ MARKET_BEGIN_SEND_SQL = """
        AND next_attempt_at_ms <= %s
 """
 
+# Put one un-started card back in the queue at a later time, without spending an attempt on it.
+# `attempts = 0` is the guard rather than a decoration: a deferral is only ever the answer to "the
+# evidence this card needs is not committed yet", which is a question about a *first* send, and a
+# card already in flight or already retried has a settle path of its own (#649 §6.2).
+MARKET_DEFER_DELIVERY_SQL = """
+    UPDATE news_market_deliveries
+       SET next_attempt_at_ms = %s,
+           error = %s,
+           updated_at_ms = %s
+     WHERE delivery_key = %s
+       AND state = ANY (ARRAY['pending', 'unavailable'])
+       AND attempts = 0
+"""
+
+# The track's own next-due time follows the delivery's, so the page's "waiting to be sent, next
+# attempt at" reads one number rather than two that can disagree.
+MARKET_DEFER_TRACK_SQL = """
+    UPDATE news_market_tracks
+       SET next_due_at_ms = %s, pending_reason = %s, updated_at_ms = %s
+     WHERE open_delivery_key = %s
+"""
+
 MARKET_SETTLE_DELIVERY_SQL = """
     UPDATE news_market_deliveries
        SET state = %s,
@@ -922,6 +944,22 @@ class MarketStorage:
                 int(due_at_ms),
             ),
         )
+        return bool(cursor.rowcount)
+
+    def market_defer_delivery(
+        self,
+        *,
+        delivery_key: str,
+        reason: str,
+        next_attempt_at_ms: int,
+        now_ms: int,
+    ) -> bool:
+        """Delay one un-started card and say why. No attempt is consumed and no state is terminal."""
+
+        cursor = self.conn.execute(
+            MARKET_DEFER_DELIVERY_SQL, (int(next_attempt_at_ms), reason, int(now_ms), delivery_key)
+        )
+        self.conn.execute(MARKET_DEFER_TRACK_SQL, (int(next_attempt_at_ms), reason, int(now_ms), delivery_key))
         return bool(cursor.rowcount)
 
     def market_settle_delivery(

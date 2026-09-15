@@ -24,7 +24,7 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.bus import DeferError, TransientError
+from tracefold.news.bus import DeferError
 from tracefold.news.chain_tape.contracts import (
     BLOCK_COMPLETE_TX_INDEX,
     STABLE_CASH_TOKEN,
@@ -215,6 +215,8 @@ class _Chain:
         # Transactions the node will not produce a receipt for, however many times it is asked.
         self.withhold_receipts: set[str] = set()
         self.mark_logs_removed = False
+        # Token addresses whose metadata call raises, however often it is asked.
+        self.fail_token_with: dict[str, Exception] = {}
         self.tokens = {
             STABLE_CASH_TOKEN: _Token(STABLE_CASH_TOKEN, "USDG", 6),
             FSD: _Token(FSD, "FSD", 18),
@@ -261,36 +263,9 @@ class _Chain:
 
     async def token(self, address: str) -> _Token:
         normalized = normalize_address(address)
+        if normalized in self.fail_token_with:
+            raise self.fail_token_with[normalized]
         return self.tokens.get(normalized, _Token(normalized, None, None))
-
-
-class _Roster:
-    """The roster site, answering with whatever list the test wants it to publish."""
-
-    def __init__(self, rows: Sequence[Any], *, factors: dict[str, float | None] | None = None) -> None:
-        self.rows = list(rows)
-        self.factors = dict(factors or {})
-        self.last_response_bytes = 0
-        self.fail_with: Exception | None = None
-        self.calls = 0
-
-    async def traders(self, *, window: str = "7d") -> tuple[Any, ...]:
-        self.calls += 1
-        if self.fail_with is not None:
-            raise self.fail_with
-        return tuple(self.rows)
-
-    async def trader(self, handle: str) -> Any | None:
-        self.calls += 1
-        if self.fail_with is not None:
-            raise self.fail_with
-        return _Stats(handle, self.factors.get(handle))
-
-
-@dataclass(frozen=True, slots=True)
-class _Stats:
-    handle: str
-    profit_factor: float | None
 
 
 def _member(wallet: str, *, quality: int | None = 1, whale: int | None = None) -> RosterMember:
@@ -318,16 +293,15 @@ def _seed_roster(conn: Any, wallets: Sequence[str], *, now_ms: int = 1_788_600_0
     return snapshot.roster_version
 
 
-def _loop(conn: Any, chain: _Chain, roster: _Roster, **kwargs: Any) -> ChainTapeLoop:
-    return ChainTapeLoop(
-        db=_Db(conn),
-        chain=chain,
-        roster_provider=roster,
-        # The roster is seeded directly in most of these tests; a refresh of 0 would call the site every
-        # turn and prove nothing about the chain half.
-        roster_refresh_ms=kwargs.pop("roster_refresh_ms", 10**15),
-        **kwargs,
-    )
+def _loop(conn: Any, chain: _Chain, **kwargs: Any) -> ChainTapeLoop:
+    """The collector, which since #649 §5.1 never talks to the roster site at all.
+
+    The published list is seeded directly, exactly as production's collector reads it: one PostgreSQL
+    row written by the `news-wallet-roster` task, whose own regressions live in
+    `test_wallet_roster_refresh.py`.
+    """
+
+    return ChainTapeLoop(db=_Db(conn), chain=chain, **kwargs)
 
 
 def _seed_cursor(conn: Any, *, block: int, roster_version: int, tx_index: int = -1) -> None:
@@ -366,7 +340,7 @@ def test_one_turn_writes_the_recorded_sell_with_its_dollar_figure(conn: Any) -> 
 
     version = _seed_roster(conn, [SELL_WALLET])
     chain = _Chain([_recorded("receipt_sell_fsd.json")], head=SELL_BLOCK + 5)
-    loop = _loop(conn, chain, _Roster([]))
+    loop = _loop(conn, chain)
     # Start one overlap behind the recorded block so the first turn covers it.
     _seed_cursor(conn, block=SELL_BLOCK, roster_version=version)
 
@@ -395,8 +369,8 @@ def test_the_same_movement_delivered_twice_is_one_row(conn: Any) -> None:
     chain = _Chain([_recorded("receipt_sell_fsd.json")], head=SELL_BLOCK + 5)
     _seed_cursor(conn, block=SELL_BLOCK, roster_version=version)
 
-    first = asyncio.run(_loop(conn, chain, _Roster([])).advance())
-    repeat = asyncio.run(_loop(conn, chain, _Roster([])).advance())
+    first = asyncio.run(_loop(conn, chain).advance())
+    repeat = asyncio.run(_loop(conn, chain).advance())
 
     assert first["written"] == 1
     assert repeat["written"] == 0
@@ -413,7 +387,7 @@ def test_a_restart_resumes_from_the_durable_position_and_the_overlap_adds_nothin
     )
     _seed_cursor(conn, block=SELL_BLOCK, roster_version=version)
 
-    asyncio.run(_loop(conn, chain, _Roster([]), catch_up_blocks_max=100_000).advance())
+    asyncio.run(_loop(conn, chain, catch_up_blocks_max=100_000).advance())
     after_first = _state(conn)
     assert after_first is not None
     assert after_first["last_outcome"] == "success"
@@ -425,7 +399,7 @@ def test_a_restart_resumes_from_the_durable_position_and_the_overlap_adds_nothin
     assert after_first["high_water_tx_index"] == BLOCK_COMPLETE_TX_INDEX
 
     # A new process, a new loop object, nothing carried over but the row in PostgreSQL.
-    restarted = _loop(conn, chain, _Roster([]), catch_up_blocks_max=100_000)
+    restarted = _loop(conn, chain, catch_up_blocks_max=100_000)
     result = asyncio.run(restarted.advance())
 
     # The re-read is genuine: the buy is offered again, its receipt is fetched again, and the chain's
@@ -452,7 +426,7 @@ def test_a_tip_that_answered_short_is_stored_on_the_next_turn(conn: Any) -> None
     chain = _Chain([_recorded("receipt_sell_fsd.json")], head=SELL_BLOCK + 2)
     chain.hide_logs_until_call = 2  # both of turn 1's topic calls answer short
     _seed_cursor(conn, block=SELL_BLOCK - 1, roster_version=version)
-    loop = _loop(conn, chain, _Roster([]))
+    loop = _loop(conn, chain)
 
     first = asyncio.run(loop.advance())
     assert (first["logs"], first["candidates"], first["written"]) == (0, 0, 0)
@@ -472,7 +446,7 @@ def test_a_log_the_node_has_withdrawn_is_not_classified(conn: Any) -> None:
     chain.mark_logs_removed = True
     _seed_cursor(conn, block=SELL_BLOCK - 1, roster_version=version)
 
-    result = asyncio.run(_loop(conn, chain, _Roster([])).advance())
+    result = asyncio.run(_loop(conn, chain).advance())
 
     assert result["logs"] == 1
     assert (result["candidates"], result["written"]) == (0, 0)
@@ -486,7 +460,7 @@ def test_missing_receipt_never_advances_cursor_and_recovers_when_complete(conn: 
     chain = _Chain([_recorded("receipt_sell_fsd.json")], head=SELL_BLOCK + 2)
     chain.withhold_receipts = {SELL_TX}
     _seed_cursor(conn, block=SELL_BLOCK - 1, roster_version=version)
-    loop = _loop(conn, chain, _Roster([]))
+    loop = _loop(conn, chain)
 
     # Carried: the position does not pass it, and the turn says so.
     for _turn in range(2):
@@ -514,7 +488,7 @@ def test_a_wide_backlog_is_walked_in_bounded_ranges_rather_than_one_request(conn
     version = _seed_roster(conn, [SELL_WALLET])
     chain = _Chain([], head=SELL_BLOCK + 300_000)
     _seed_cursor(conn, block=SELL_BLOCK, roster_version=version)
-    loop = _loop(conn, chain, _Roster([]), catch_up_blocks_max=100_000)
+    loop = _loop(conn, chain, catch_up_blocks_max=100_000)
 
     for _turn in range(4):
         asyncio.run(loop.advance())
@@ -538,7 +512,7 @@ def test_a_turn_beyond_the_receipt_bound_leaves_the_rest_pending_for_the_next_on
         head=BUY_BLOCK,
     )
     _seed_cursor(conn, block=SELL_BLOCK, roster_version=version)
-    loop = _loop(conn, chain, _Roster([]), receipts_per_turn_max=1)
+    loop = _loop(conn, chain, receipts_per_turn_max=1)
 
     first = asyncio.run(loop.advance())
     assert (first["receipts"], first["pending"], first["written"]) == (1, 1, 1)
@@ -549,6 +523,65 @@ def test_a_turn_beyond_the_receipt_bound_leaves_the_rest_pending_for_the_next_on
     assert {row["kind"] for row in _fills(conn)} == {"sell", "buy"}
 
 
+def test_a_token_whose_metadata_will_not_answer_holds_only_its_own_transaction(conn: Any) -> None:
+    """#649 §6.3: one ERC-20 that will not say its decimals is not a reason to stop the batch.
+
+    The sell comes first and its tokens answer. The buy's traded token does not, so the buy is held:
+    its fills are not written, the durable position stops at the sell, and the next turn re-offers it.
+    What is *not* held is the rest of the turn -- before this, `_classify` returning `None` broke out
+    of the loop and every later transaction in the planned batch waited on one metadata call.
+    """
+
+    version = _seed_roster(conn, [SELL_WALLET, BUY_WALLET])
+    chain = _Chain(
+        [_recorded("receipt_sell_fsd.json"), _recorded("receipt_buy_madetest.json", block_number=BUY_BLOCK)],
+        head=BUY_BLOCK,
+    )
+    _seed_cursor(conn, block=SELL_BLOCK - 1, roster_version=version)
+    chain.fail_token_with = {MADETEST: RuntimeError("chain_rpc_rate_limited")}
+    loop = _loop(conn, chain, catch_up_blocks_max=100_000)
+
+    held = asyncio.run(loop.advance())
+
+    assert held["receipts"] == 1
+    assert [row["kind"] for row in _fills(conn)] == ["sell"]
+    state = _state(conn)
+    assert state is not None
+    # The mark stopped at the sell, so the buy is planned again rather than skipped past.
+    assert state["high_water_block"] == SELL_BLOCK
+    assert state["last_outcome"] == "partial"
+
+    chain.fail_token_with = {}
+    asyncio.run(loop.advance())
+    assert {row["kind"] for row in _fills(conn)} == {"sell", "buy"}
+
+
+def test_a_held_transaction_does_not_stop_the_transactions_after_it(conn: Any) -> None:
+    """The batch carries on: the *later* transaction is classified and written in the same turn.
+
+    The chain's own identity makes re-writing it on the next turn one `ON CONFLICT DO NOTHING`, which
+    is what lets the position stop at the held transaction while the work behind it still happens.
+    """
+
+    version = _seed_roster(conn, [SELL_WALLET, BUY_WALLET])
+    chain = _Chain(
+        [_recorded("receipt_sell_fsd.json"), _recorded("receipt_buy_madetest.json", block_number=BUY_BLOCK)],
+        head=BUY_BLOCK,
+    )
+    _seed_cursor(conn, block=SELL_BLOCK - 1, roster_version=version)
+    # The *first* transaction is the one that will not answer.
+    chain.fail_token_with = {FSD: RuntimeError("chain_rpc_rate_limited")}
+    loop = _loop(conn, chain, catch_up_blocks_max=100_000)
+
+    result = asyncio.run(loop.advance())
+
+    assert result["receipts"] == 1
+    assert [row["kind"] for row in _fills(conn)] == ["buy"]
+    state = _state(conn)
+    assert state is not None
+    assert state["high_water_block"] == SELL_BLOCK - 1
+
+
 def test_a_chain_failure_ends_the_turn_with_the_previous_position_intact(conn: Any) -> None:
     """An RPC that will not answer is a recorded outcome, never a lost position and never a raise."""
 
@@ -556,7 +589,7 @@ def test_a_chain_failure_ends_the_turn_with_the_previous_position_intact(conn: A
     chain = _Chain([_recorded("receipt_sell_fsd.json")], head=SELL_BLOCK + 5)
     _seed_cursor(conn, block=SELL_BLOCK, roster_version=version)
     chain.fail_logs_with = RuntimeError("chain_rpc_rate_limited")
-    loop = _loop(conn, chain, _Roster([]))
+    loop = _loop(conn, chain)
 
     result = asyncio.run(loop.advance())
 
@@ -574,7 +607,7 @@ def test_a_chain_failure_ends_the_turn_with_the_previous_position_intact(conn: A
     assert loop.last_error is not None
 
     chain.fail_logs_with = None
-    assert asyncio.run(_loop(conn, chain, _Roster([])).advance())["written"] == 1
+    assert asyncio.run(_loop(conn, chain).advance())["written"] == 1
     recovered = _state(conn)
     assert recovered is not None
     assert (recovered["last_outcome"], recovered["last_error"]) == ("success", None)
@@ -584,7 +617,7 @@ def test_a_chain_failure_ends_the_turn_with_the_previous_position_intact(conn: A
 def test_a_first_start_begins_at_the_head_rather_than_backfilling_history(conn: Any) -> None:
     _seed_roster(conn, [SELL_WALLET])
     chain = _Chain([], head=SELL_BLOCK)
-    loop = _loop(conn, chain, _Roster([]))
+    loop = _loop(conn, chain)
 
     asyncio.run(loop.advance())
 
@@ -597,7 +630,7 @@ def test_a_first_start_begins_at_the_head_rather_than_backfilling_history(conn: 
 
 def test_no_roster_is_no_work_and_writes_nothing(conn: Any) -> None:
     chain = _Chain([_recorded("receipt_sell_fsd.json")], head=SELL_BLOCK)
-    loop = _loop(conn, chain, _Roster([]))
+    loop = _loop(conn, chain)
 
     result = asyncio.run(loop.advance())
 
@@ -614,7 +647,7 @@ def test_an_airdrop_is_counted_on_the_state_row_rather_than_stored(conn: Any) ->
     chain = _Chain([airdrop], head=SELL_BLOCK + 2)
     _seed_cursor(conn, block=SELL_BLOCK - 1, roster_version=version)
 
-    result = asyncio.run(_loop(conn, chain, _Roster([])).advance())
+    result = asyncio.run(_loop(conn, chain).advance())
 
     assert (result["ignored_inbound"], result["written"]) == (1, 0)
     assert _fills(conn) == []
@@ -636,7 +669,7 @@ def test_one_movement_re_read_across_turns_is_counted_once(conn: Any) -> None:
     version = _seed_roster(conn, [SELL_WALLET])
     airdrop = _synthetic_receipt("airdrop_in", block_number=SELL_BLOCK, transaction_index=2)
     _seed_cursor(conn, block=SELL_BLOCK - 1, roster_version=version)
-    loop = _loop(conn, chain := _Chain([airdrop], head=SELL_BLOCK + 2), _Roster([]))
+    loop = _loop(conn, chain := _Chain([airdrop], head=SELL_BLOCK + 2))
 
     classified = 0
     for turn in range(3):
@@ -659,7 +692,7 @@ def test_a_second_movement_above_the_marker_is_still_counted(conn: Any) -> None:
     version = _seed_roster(conn, [SELL_WALLET])
     first = _synthetic_receipt("airdrop_in", block_number=SELL_BLOCK, transaction_index=2)
     _seed_cursor(conn, block=SELL_BLOCK - 1, roster_version=version)
-    asyncio.run(_loop(conn, _Chain([first], head=SELL_BLOCK + 2), _Roster([])).advance())
+    asyncio.run(_loop(conn, _Chain([first], head=SELL_BLOCK + 2)).advance())
 
     # Its own identity, so both movements are on the chain at once and the second turn re-reads the
     # first rather than replacing it.
@@ -670,7 +703,7 @@ def test_a_second_movement_above_the_marker_is_still_counted(conn: Any) -> None:
         transaction_hash="0x" + "7" * 64,
     )
     chain = _Chain([first, later], head=SELL_BLOCK + 7)
-    result = asyncio.run(_loop(conn, chain, _Roster([])).advance())
+    result = asyncio.run(_loop(conn, chain).advance())
 
     assert result["receipts"] == 2  # both were classified this turn
     assert result["ignored_inbound"] == 1  # and only the one above the marker was counted
@@ -720,7 +753,6 @@ def test_the_skip_counters_wait_for_a_committed_write(conn: Any) -> None:
     loop = ChainTapeLoop(
         db=db,
         chain=_Chain([airdrop], head=SELL_BLOCK + 2),
-        roster_provider=_Roster([]),
         telemetry=telemetry,  # type: ignore[arg-type]
     )
 
@@ -754,32 +786,12 @@ def test_a_refused_read_ends_the_turn_and_leaves_the_capability_running(conn: An
     _seed_roster(conn, [SELL_WALLET])
     db = _Db(conn)
     db.fail_on = {"news_chain_tape_state": DeferError("db_admission_timeout")}
-    loop = ChainTapeLoop(db=db, chain=_Chain([], head=SELL_BLOCK), roster_provider=_Roster([]))
+    loop = ChainTapeLoop(db=db, chain=_Chain([], head=SELL_BLOCK))
 
     result = asyncio.run(loop.advance())
 
     assert result["written"] == 0
     assert loop.last_error == "db:DeferError"
-
-
-def test_a_refused_roster_write_keeps_the_previous_version_and_the_turn_carries_on(conn: Any) -> None:
-    version = _seed_roster(conn, [SELL_WALLET])
-    db = _Db(conn)
-    db.fail_on = {"news_chain_tape_roster": TransientError("db_overrun")}
-    loop = ChainTapeLoop(
-        db=db,
-        chain=_Chain([], head=SELL_BLOCK),
-        roster_provider=_Roster([_Candidate(SELL_WALLET, "somebody", 1, 1.0, 20, 0.5, 5.0)]),
-        roster_refresh_ms=0,
-    )
-
-    result = asyncio.run(loop.advance())
-
-    assert result["roster_version"] == version
-    assert loop.last_error == "db:TransientError"
-    current = repositories_for_connection(conn).news.chain_tape_current_roster()
-    assert current is not None
-    assert current.roster_version == version
 
 
 # --------------------------------------------------------------------------- roster versions
@@ -807,66 +819,6 @@ def test_a_roster_version_appears_only_when_the_membership_or_the_ranks_change(c
         )
     assert joined.roster_version == 3
     assert conn.execute("SELECT count(*) AS n FROM news_market_wallet_roster").fetchone()["n"] == 4
-
-
-def test_a_provider_failure_keeps_the_previous_roster_version(conn: Any) -> None:
-    """`latest_state`: an unanswered refresh is not an empty list."""
-
-    version = _seed_roster(conn, [SELL_WALLET])
-    roster = _Roster([])
-    roster.fail_with = RuntimeError("roster_timeout")
-    loop = _loop(conn, _Chain([], head=SELL_BLOCK), roster, roster_refresh_ms=0)
-
-    result = asyncio.run(loop.advance())
-
-    assert result["roster_version"] == version
-    assert loop.last_error is not None
-    current = repositories_for_connection(conn).news.chain_tape_current_roster()
-    assert current is not None
-    assert current.roster_version == version
-    assert [member.wallet for member in current.members] == [SELL_WALLET]
-
-
-def test_a_due_refresh_versions_the_list_the_site_published(conn: Any) -> None:
-    rows = json.loads((FIXTURES / "traders_window_7d.json").read_text(encoding="utf-8"))
-    stats = json.loads((FIXTURES / "trader_stats.json").read_text(encoding="utf-8"))
-    candidates = [
-        _Candidate(
-            address=str(row["address"]),
-            handle=str(row["handle"]),
-            followers=int(row["followers"]),
-            realized_pnl=float(row["realized_pnl"]),
-            closed_trades=int(row["closed_trades"]),
-            win_rate=float(row["win_rate"]),
-            open_cost=float(row["open_cost"]),
-        )
-        for row in rows
-    ]
-    factors = {handle: document["stats"].get("profit_factor") for handle, document in stats.items()}
-    roster = _Roster(candidates, factors=factors)
-    loop = _loop(conn, _Chain([], head=SELL_BLOCK), roster, roster_refresh_ms=0)
-
-    asyncio.run(loop.advance())
-
-    current = repositories_for_connection(conn).news.chain_tape_current_roster()
-    assert current is not None
-    assert current.roster_version == 1
-    by_handle = {member.handle: member for member in current.members}
-    assert by_handle["frankdegods"].rank_quality == 1
-    assert by_handle["FartmanSacks"].rank_whale == 1
-    assert by_handle["FartmanSacks"].rank_quality is None
-    assert "0xleo" not in by_handle or by_handle["0xleo"].rank_quality is None
-
-
-@dataclass(frozen=True, slots=True)
-class _Candidate:
-    address: str
-    handle: str
-    followers: int
-    realized_pnl: float
-    closed_trades: int
-    win_rate: float
-    open_cost: float
 
 
 # --------------------------------------------------------------------------- retention
@@ -988,7 +940,7 @@ def test_missing_previously_committed_overlap_log_records_gap_without_erasing_fa
     version = _seed_roster(conn, [SELL_WALLET])
     chain = _Chain([_recorded("receipt_sell_fsd.json")], head=SELL_BLOCK + 2)
     _seed_cursor(conn, block=SELL_BLOCK - 1, roster_version=version)
-    loop = _loop(conn, chain, _Roster([]))
+    loop = _loop(conn, chain)
     assert asyncio.run(loop.advance())["written"] == 1
     before = _fills(conn)
     chain.receipts = {}

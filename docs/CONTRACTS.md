@@ -679,6 +679,13 @@ every Event this code can open.
 
   "Not pushed" is not a filter and never becomes one: whether a card was sent is
   reported per group and is not a precondition for reading the observation.
+  Wallet episode `notification_state` is one projection over the delivery row, the track and the
+  episode's own eligibility: `awaiting_decision` before the notification loop has decided,
+  `pending` only while an unattempted intent has a next due time, `unavailable`, `sending`, `sent`,
+  `failed` and `unknown` as the delivery says, and `not_alerted` with the real terminal reason
+  otherwise. Every terminal reason is projected — there is no whitelist and no route-side fallback,
+  so a notification-stage rejection with no intent row reads as its reason rather than as pending.
+  `notification_next_due_at_ms` is present exactly when the state is `pending`.
   Wallet observations processed with notifications disabled read as `not_alerted` with reason
   `wallet_notifications_disabled` while the track is muted. Previously pending cards stopped by that
   policy retain their delivery row as `failed` with that reason and their original attempt evidence.
@@ -689,9 +696,11 @@ every Event this code can open.
   monitoring and scanned-chain state disclose coverage. The roster publishes the quality and whale
   counts separately — the whale list never stands in for the quality pool — with
   `supported_quality_count`, the quality addresses whose `monitoring_from_ms` already covers a whole
-  fast window at the collection cutoff, and the last refresh's `last_attempt_at_ms` /
-  `last_success_at_ms` / `last_error`; only a complete refresh publishes a version, so the success
-  stamp is that version's own `taken_at_ms`. `thresholds` carries the two window quorums and whether
+  fast window at the collection cutoff, the `window` both provider endpoints were asked for, and the
+  refresh task's own `last_attempt_at_ms` / `last_success_at_ms` / `last_error`. Those three are the
+  `news-wallet-roster` task's record rather than a guess from the collection turn: only a complete
+  refresh publishes a version and moves the success stamp, so a provider that has been refusing to
+  answer moves the attempt stamp alone and the published version keeps its own `taken_at_ms`. `thresholds` carries the two window quorums and whether
   the current pool can reach either. `collection_lagging` is the server's judgement on the chain
   cutoff and the browser makes no clock comparison of its own. `funnel` counts episodes, intents and
   sends over its own stated 24-hour window with the leading unsent reason — window counts, never
@@ -705,6 +714,8 @@ every Event this code can open.
   of list scope. It returns the event, bounded raw `fills`, `next_fills_cursor` and
   `outcomes`. `limit=1..200` defaults to 100; `fills_cursor` preserves the timeline
   time boundary and descends by block/log. An unknown episode is 404.
+  A horizon outcome's `status` is `comparable`, `missing_reference` or `late`. The fourth value the
+  column and the wire union used to admit, `unavailable`, had no writer and is removed (#649 §9).
   Both initial and latest snapshots carry exact decimal strings, original raw quantities,
   quality membership, exclusions and exact chain cutoff. The first snapshot is immutable.
   Timeline pages never define the totals. Notification status and episode end are separate.

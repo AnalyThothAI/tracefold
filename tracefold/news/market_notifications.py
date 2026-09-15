@@ -39,7 +39,7 @@ from functools import partial
 from typing import Any, Final, Literal, Protocol
 from urllib.parse import urlsplit
 
-from .chain_tape.rules import trigger_age_reason
+from .chain_tape.rules import SLOW_WINDOW_MS, WalletRules, calculate_windows, trigger_age_reason
 from .delivery_contracts import (
     DELIVERY_FAILURE_RETRIABLE,
     DELIVERY_FAILURE_UNKNOWN,
@@ -85,6 +85,11 @@ BACKLOG_BATCH_MAX: Final = 100
 # How many due cards one turn may send, one at a time. A bound on how long a turn holds the shared
 # send entry, not a discard rule: what is still due is sent by the next turn.
 SENDS_PER_TURN_MAX: Final = 20
+# What a deferred card waits before it is due again. Short, because a deferral means "the evidence
+# this card needs is being written right now" and the detector's own tick is two seconds -- and long
+# enough that the same row is not the head of the queue again within the turn that deferred it, which
+# is the whole reason the old `return None` starved everything behind it (#649 §6.2).
+DEFER_BACKOFF_MS: Final = 5_000
 
 # An OI group with no live observation for four hours starts a fresh round: the next observation is a
 # first card again. This manages alerting only; it is not a claim that the market went quiet.
@@ -1163,6 +1168,40 @@ class ClaimedCard:
     anchor_position_side: str | None
 
 
+ClaimOutcome = Literal["claimed", "deferred", "suppressed", "lost_claim"]
+
+
+@dataclass(frozen=True, slots=True)
+class _WalletEvidence:
+    """One wallet first report re-decided at the collector's committed cutoff, and what to do with it."""
+
+    outcome: ClaimOutcome
+    snapshot: NetBuySnapshot | None = None
+    reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimResult:
+    """What one claim attempt decided. Four answers, because there are four different next steps.
+
+    They used to be three different `None`s out of `_claim`, and the turn treated all of them as
+    "try the next card": a suppressed card had written its terminal reason, a lost compare-and-set
+    had changed nothing and would be claimed by whoever won, and the third -- the unbounded
+    token gate -- had changed *nothing at all*, so `_drain_due` read the same row back from
+    `market_due_delivery` on the next iteration, twenty times, and every OI or liquidation card
+    behind it waited a whole tick (#649 §3 row 4).
+
+    * `claimed` carries the frozen card and the attempt that was spent on it.
+    * `deferred` has moved `next_attempt_at_ms` forward and consumed no attempt.
+    * `suppressed` has written a terminal reason and settled the row.
+    * `lost_claim` did nothing: another process owns this card now.
+    """
+
+    outcome: ClaimOutcome
+    card: ClaimedCard | None = None
+    reason: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class MarketTurn:
     """What one turn did. Counted rather than logged, so a test can assert on a turn."""
@@ -1176,6 +1215,8 @@ class MarketTurn:
     retried: int = 0
     held_unavailable: int = 0
     swept: int = 0
+    deferred: int = 0
+    suppressed: int = 0
 
 
 def classify_send_failure(exc: BaseException, *, attempts: int) -> SendOutcome:
@@ -1217,6 +1258,7 @@ class MarketNotificationLoop:
         sender: PreparedCardSender,
         console_base_url: str | None = None,
         wallet_notifications_enabled: bool = True,
+        wallet_rules: WalletRules | None = None,
         clock: Callable[[], int] | None = None,
     ) -> None:
         self.db = db
@@ -1225,6 +1267,10 @@ class MarketNotificationLoop:
         # passed by the Workers wiring. `market_detail_url` decides what unset means for the card.
         self.console_base_url = console_base_url
         self.wallet_notifications_enabled = wallet_notifications_enabled
+        # The same two thresholds the detector opened the episode with. The send-time re-evaluation
+        # in `_claim_wallet_evidence` runs the detector's own pure function, so it has to run it with
+        # the operator's numbers rather than with this module's defaults (#649 §6.1).
+        self.wallet_rules = wallet_rules or WalletRules()
         self._clock = clock or (lambda: int(time.time() * 1000))
 
     async def start(self) -> int:
@@ -1392,7 +1438,7 @@ class MarketNotificationLoop:
             # Between the two transactions on purpose: the card is quoted with no database
             # transaction of this loop's open, and whatever the reads answer, the claim below runs.
             quotes, news_pushed, news_total = await self._display_reads(due, stamp)
-            claimed = await self.db.tx(
+            result = await self.db.tx(
                 "news_market_notify_claim",
                 partial(
                     self._claim,
@@ -1403,11 +1449,18 @@ class MarketNotificationLoop:
                     now_ms=stamp,
                 ),
             )
-            if claimed is None:
-                # Another process claimed this card between the read and the compare-and-set. Nothing
-                # was sent and no attempt was spent, and the *next* due card is still this turn's
-                # work -- ending the turn here would idle a whole tick behind one lost race.
+            if result.outcome != "claimed" or result.card is None:
+                # Nothing was sent and no attempt was spent. The *next* due card is still this turn's
+                # work -- ending the turn here would idle a whole tick behind one card -- and a
+                # deferred one has moved its own due time, so the next read cannot answer with it
+                # again (#649 §6.2).
+                turn = replace(
+                    turn,
+                    deferred=turn.deferred + (1 if result.outcome == "deferred" else 0),
+                    suppressed=turn.suppressed + (1 if result.outcome == "suppressed" else 0),
+                )
                 continue
+            claimed = result.card
             # The PostgreSQL connection is released before the external call: the send entry queues
             # fairly with ordinary News, and a slow provider never holds a database slot.
             outcome = await self._send(claimed)
@@ -1546,7 +1599,7 @@ class MarketNotificationLoop:
         news_pushed: Sequence[ReaderCardHeadline],
         news_total: int,
         now_ms: int,
-    ) -> ClaimedCard | None:
+    ) -> ClaimResult:
         """Freeze this card and claim the attempt. A retry keeps the snapshot it already froze.
 
         `market_begin_send` is the claim, and it compares against the attempt count and due time this
@@ -1559,38 +1612,10 @@ class MarketNotificationLoop:
         news = repos.news
         track, observations = due.track, list(due.observations)
         if track.family == "wallet" and due.attempts == 0:
-            event = news.wallet_event(observations[0].item_id, for_update=True)
-            reason = None
-            if event is None or not event["latest_matched"] or event["ended_at_ms"] is not None:
-                reason = "invalidated_before_send"
-            elif (
-                trigger_age_reason(
-                    event_at_ms=event["event_at_ms"],
-                    received_at_ms=event["received_at_ms"],
-                    now_ms=now_ms,
-                    max_age_s=event["trigger_max_age_s"],
-                )
-                is not None
-            ):
-                reason = "stale_before_send"
-            if reason is None:
-                # Collector and detector are independent. A newly committed coverage gap must
-                # invalidate the first attempt even before the detector updates this episode.
-                state = news.chain_tape_state(for_share=True)
-                snapshot = NetBuySnapshot.model_validate(event["latest_snapshot"])
-                if state is None or not any(
-                    window.matched and (state["gap_at_ms"] is None or state["gap_at_ms"] <= window.from_ms)
-                    for window in (snapshot.fast, snapshot.slow)
-                ):
-                    reason = "invalidated_before_send"
-            if reason is not None:
-                news.wallet_suppress_delivery(delivery_key=due.delivery_key, reason=reason, now_ms=now_ms)
-                return None
-            if news.wallet_unprocessed_token(chain_id=event["chain_id"], token=event["token"]):
-                return None
-            observations = [
-                replace(observations[0], wallet_snapshot=NetBuySnapshot.model_validate(event["latest_snapshot"]))
-            ]
+            decided = self._claim_wallet_evidence(news, due, now_ms=now_ms)
+            if decided.outcome != "claimed" or decided.snapshot is None:
+                return ClaimResult(decided.outcome, reason=decided.reason)
+            observations = [replace(observations[0], wallet_snapshot=decided.snapshot)]
         detail_url = market_detail_url(self.console_base_url, observations[-1].item_id)
         if track.family == "wallet" and detail_url:
             detail_url = detail_url.split("/news/market/")[0] + "/news/wallets?episode=" + observations[-1].item_id
@@ -1622,27 +1647,121 @@ class MarketNotificationLoop:
             due_at_ms=due.read_at_ms,
             now_ms=now_ms,
         ):
-            return None
+            return ClaimResult("lost_claim")
         if track.family == "wallet" and due.attempts == 0 and observations[0].wallet_snapshot is not None:
             news.wallet_freeze_send_snapshot(
                 item_id=observations[0].item_id, snapshot=observations[0].wallet_snapshot.model_dump(mode="json")
             )
         news.market_set_track_attempt(group_key=due.group_key, delivery_key=due.delivery_key, attempt_at_ms=now_ms)
         latest = observations[-1]
-        return ClaimedCard(
-            delivery_key=due.delivery_key,
-            group_key=due.group_key,
-            market_kind=due.market_kind,
-            trigger_reason=due.trigger_reason,
-            attempts=due.attempts + 1,
-            card=card,
-            channel_payload=channel_payload,
-            covered_count=len(observations),
-            anchor_oi_change_bps=latest.oi_change_bps,
-            anchor_direction=latest.direction,
-            anchor_action=latest.action,
-            anchor_position_side=latest.position_side,
+        return ClaimResult(
+            "claimed",
+            card=ClaimedCard(
+                delivery_key=due.delivery_key,
+                group_key=due.group_key,
+                market_kind=due.market_kind,
+                trigger_reason=due.trigger_reason,
+                attempts=due.attempts + 1,
+                card=card,
+                channel_payload=channel_payload,
+                covered_count=len(observations),
+                anchor_oi_change_bps=latest.oi_change_bps,
+                anchor_direction=latest.direction,
+                anchor_action=latest.action,
+                anchor_position_side=latest.position_side,
+            ),
         )
+
+    def _claim_wallet_evidence(self, news: Any, due: DueCard, *, now_ms: int) -> _WalletEvidence:
+        """Re-decide one wallet first report against the collector's own committed cutoff (#649 §6.1).
+
+        There is one bound here and it is `C = (scanned_block, scanned_log)` from the tape's state row:
+        not host time, not the chain head, and not "does this token have any underived fill anywhere",
+        which is the gate this replaces and which a token the roster keeps trading answers yes to for
+        ever.
+
+        Three questions, in the order their answers differ:
+
+        * is the *trigger* still a first report at all -- the episode alive, and inside its own age
+          budget? Those are terminal, and they settle the row with the reason.
+        * is the evidence up to `C` actually derived? If the detector has not caught up to the
+          collector inside the window this report is about, the card is **deferred**: nothing is
+          decided on half-written facts, and the tail above `C` is nobody's business here.
+        * does the same pure function still find a matching window at `C`? This is the one
+          re-evaluation, over `rules.calculate_windows`, with the same roster, the same coverage
+          bounds and the same gap the detector reads. A sell or a transfer that landed inside `C` is
+          part of that answer; one above it is not. The sender writes no `latest_snapshot` -- the
+          snapshot it computes is frozen as `send_snapshot` and nowhere else.
+        """
+
+        event = news.wallet_event(due.observations[0].item_id, for_update=True)
+        if event is None or event["ended_at_ms"] is not None:
+            return self._suppress(news, due, "invalidated_before_send", now_ms=now_ms)
+        if (
+            trigger_age_reason(
+                event_at_ms=event["event_at_ms"],
+                received_at_ms=event["received_at_ms"],
+                now_ms=now_ms,
+                max_age_s=event["trigger_max_age_s"],
+            )
+            is not None
+        ):
+            return self._suppress(news, due, "stale_before_send", now_ms=now_ms)
+        state = news.chain_tape_state(for_share=True)
+        if (
+            state is None
+            or state["scanned_block"] is None
+            or state["scanned_log"] is None
+            or state["scanned_at_ms"] is None
+            or not state["roster_version"]
+        ):
+            # The collector has not committed a cutoff, or has not recorded which published list it
+            # was following at it, so there is nothing to evaluate the evidence against. Deferred
+            # rather than suppressed: this says nothing at all about the evidence.
+            return self._defer(news, due, "collection_cutoff_unknown", now_ms=now_ms)
+        if news.wallet_underived_within_cutoff(
+            chain_id=event["chain_id"],
+            token=event["token"],
+            cutoff_block=state["scanned_block"],
+            cutoff_log=state["scanned_log"],
+        ):
+            return self._defer(news, due, "evidence_not_derived", now_ms=now_ms)
+        snapshot = calculate_windows(
+            fills=news.wallet_window_fills(
+                chain_id=event["chain_id"],
+                token=event["token"],
+                from_ms=state["scanned_at_ms"] - SLOW_WINDOW_MS,
+                to_ms=state["scanned_at_ms"],
+                block=state["scanned_block"],
+                log=state["scanned_log"],
+            ),
+            members=news.chain_tape_members(state["roster_version"]),
+            chain_id=event["chain_id"],
+            token=event["token"],
+            cutoff_at_ms=state["scanned_at_ms"],
+            cutoff_block=state["scanned_block"],
+            cutoff_log=state["scanned_log"],
+            coverage_from_ms=state["coverage_from_ms"],
+            coverage_gap_at_ms=state["gap_at_ms"],
+            roster_version=state["roster_version"],
+            rules=self.wallet_rules,
+        )
+        if not snapshot.matched:
+            return self._suppress(news, due, "invalidated_before_send", now_ms=now_ms)
+        return _WalletEvidence("claimed", snapshot=snapshot)
+
+    def _suppress(self, news: Any, due: DueCard, reason: str, *, now_ms: int) -> _WalletEvidence:
+        news.wallet_suppress_delivery(delivery_key=due.delivery_key, reason=reason, now_ms=now_ms)
+        return _WalletEvidence("suppressed", reason=reason)
+
+    def _defer(self, news: Any, due: DueCard, reason: str, *, now_ms: int) -> _WalletEvidence:
+        news.market_defer_delivery(
+            delivery_key=due.delivery_key,
+            reason=reason,
+            next_attempt_at_ms=now_ms + DEFER_BACKOFF_MS,
+            now_ms=now_ms,
+        )
+        return _WalletEvidence("deferred", reason=reason)
 
     async def _send(self, claimed: ClaimedCard) -> SendOutcome:
         """Every failure of the send is a delivery state, never a fault of this loop."""

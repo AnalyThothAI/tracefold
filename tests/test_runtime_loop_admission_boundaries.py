@@ -11,6 +11,7 @@ from tracefold.app.workers.runtime import (
     MARKET_NOTIFICATIONS,
     WALLET_NET_BUY,
     WALLET_PRICES,
+    WALLET_ROSTER,
     CapabilityStates,
 )
 from tracefold.app.workers.task_contract import WorkerTask, worker_business_tasks
@@ -142,7 +143,11 @@ def test_every_news_ingestion_task_is_foundational_and_every_optional_one_owns_i
         signal_lane=None,
         market_notifications=_StubMarketNotifications(),
         chain_tape=ChainTapeComposition(
-            loop=_StubChainTape(), detector=_StubChainTape(), prices=_StubChainTape(), poll_seconds=2.0
+            loop=_StubChainTape(),
+            roster=_StubChainTape(),
+            detector=_StubChainTape(),
+            prices=_StubChainTape(),
+            poll_seconds=2.0,
         ),
     )
     by_name = {task.name: task for task in tasks}
@@ -158,6 +163,10 @@ def test_every_news_ingestion_task_is_foundational_and_every_optional_one_owns_i
     # #572 PR-1's wallet tape joins the same way: one more task, one more capability key, and the
     # information entry above is unchanged.
     assert by_name["news-chain-tape"].capability == CHAIN_TAPE
+    # #649 §5.1's roster refresh joins the same way, and is declared before the collector because it
+    # is what the collector reads.
+    assert by_name["news-wallet-roster"].capability == WALLET_ROSTER
+    assert by_name["news-wallet-roster"].foundational is False
     assert by_name["news-chain-tape"].foundational is False
     assert by_name["news-wallet-net-buy"].capability == WALLET_NET_BUY
     assert by_name["news-wallet-prices"].capability == WALLET_PRICES
