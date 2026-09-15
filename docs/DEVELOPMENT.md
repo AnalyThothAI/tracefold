@@ -459,7 +459,44 @@ uv run tracefold news review queue --view coverage --hours 168
 uv run tracefold news review queue --stratum model_drop --hours 168
 uv run tracefold news review evidence TASK --version TASK_VERSION
 uv run tracefold news review submit TASK --version TASK_VERSION \
-  --file /tmp/rubric.json --idempotency-key UUID
+  --file /tmp/rubric.json --idempotency-key UUID --reviewer owner_authorized_you
+
+# `news_review_v7` is task-level: answer what this Event poses and leave the rest
+# out. `dimensions` is the only required field, and an answer you do not write is
+# absent rather than a `pass` -- the freeze records which questions the review is
+# evidence for and no ruler may read a missing answer as a passing one. The three
+# payloads below are all complete, valid submissions.
+#
+# One factual defect, with the supervision that makes it trainable. `source_spans`
+# are verbatim excerpts of this task's frozen evidence and are checked at submit;
+# `key_facts` are what a correct card must keep. A `why_support` failure without
+# this block is still accepted and stored, flagged `explanation_supervision:
+# "pending"`, and excluded from the explanation train split.
+#   {"kind": "event_rubric",
+#    "dimensions": {"why_support": "fail", "factual_fidelity": "pass"},
+#    "evidence_refs": ["source:sentence:1"],
+#    "explanation": {
+#      "source_spans": ["Micron says DRAM contract prices rose again in August"],
+#      "key_facts": ["DRAM 合约价 8 月再次上涨"],
+#      "forbidden_claims": ["涨幅已被市场完全定价"],
+#      "error_types": ["unsupported_cause"]}}
+#
+# Taxonomy only. All four axes and all four `taxonomy_*` dimensions, or none of
+# either: a label nobody compared and a comparison against a label nobody stated
+# are both unreadable. `source_authority` is not here and never was a reviewer's
+# answer -- code derives it from the reporting source.
+#   {"kind": "event_rubric",
+#    "dimensions": {"taxonomy_subject_codes": "pass", "taxonomy_event_family": "pass",
+#                   "taxonomy_change_state": "pass", "taxonomy_assertion_status": "pass"},
+#    "taxonomy": {"subject_codes": [], "event_family": "regulatory_legal",
+#                 "change_state": "reported", "assertion_status": "claimed"}}
+#
+# The wrong instrument, with the right one. `timeliness` is required only when
+# `should_push` is `must_push` or `should_push`.
+#   {"kind": "event_rubric",
+#    "dimensions": {"asset_grounding": "fail"},
+#    "evidence_refs": ["source:sentence:1"],
+#    "expected": {"assets": [{"symbol": "MU", "market_type": "equity", "role": "primary"}]}}
 
 # Measure before you change anything. This is the only command in the learning
 # plane that needs no dataset, sandbox, tariff or container, and it writes
@@ -505,8 +542,11 @@ uv run tracefold news review accept-drafts --file /tmp/drafts.json --dry-run
 uv run tracefold news review accept-drafts --file /tmp/drafts.json \
   --only EVENT_OR_TASK_PREFIX[,PREFIX...] --reviewer owner_authorized_codex
 
-# The one candidate path (#453, #501, #651). Freeze once (κ over dual-labelled
-# clusters is reported in counts.calibration), inspect zero-call readiness, then
+# The one candidate path (#453, #501, #651). Freeze once -- the window and the
+# accepted labels are the whole contract, with no epoch floor, no settlement
+# grace and no filter on which arm answered the Event (κ over dual-labelled
+# clusters is reported in counts.calibration) -- inspect zero-call readiness for
+# the target you mean, then
 # run stock GEPA exactly once under DSPy's own `auto` budget. The admitted
 # candidate is GEPA's best_idx when strictly above the seed; NO_OP otherwise.
 # Exit 0 means ADVANCE; 1 means NO_OP or REJECTED.
@@ -524,7 +564,7 @@ uv run tracefold news review accept-drafts --file /tmp/drafts.json \
 uv run tracefold news learning freeze --role development \
   --from-ms START --to-ms END --out artifacts/run-1/development.json
 uv run tracefold news learning readiness --development DATASET_SHA \
-  --out /tmp/readiness.json   # 0 model calls, 0 writes
+  --target classification --out /tmp/readiness.json   # 0 model calls, 0 writes
 uv run tracefold news learning run --development DATASET_SHA \
   --out artifacts/run-1 --target classification \
   --auto light --max-task-model-calls 3000 \
@@ -564,10 +604,13 @@ preserves history and starts `program_v6` for
 factory/executable v4, policy v10, `news_review_v4`, metric v4 and compiler
 protocol/receipt v3. `0303` preserves history and starts the current
 `program_v7` for factory/executable v5. Every earlier review, dataset, recording
-and release receipt remains immutable audit history but is not optimizer,
-validation, holdout or promotion evidence. New datasets require post-epoch
-reviews and acceptance receipts bound to the exact stable Program bundle, so
-quality evidence begins at zero. Issue #190 later reissues the sole bundle
+and release receipt remains immutable audit history. Since #651 §9 an epoch no
+longer decides data eligibility: a review is usable because its evidence
+snapshot is frozen and release-eligible and a reviewer accepted a label on it,
+not because of when the running deployment started, and the arm that answered
+the Event is recorded on the frozen case as provenance. What stays
+epoch-shaped is release authority — a candidate is registered against one parent
+stable and evaluated against it. Issue #190 later reissues the sole bundle
 inside v7 for canonical non-finite-number rejection, and Issue #193 reissues it
 again as the single-document strategy artifact under factory v6; `0304` trips
 open canaries and receipts that cut. `0305` admits the `compile_record`
@@ -581,13 +624,14 @@ source route and factory-v7 hard cut without rewriting or appending the
 history, but exact current-bundle acceptance makes factory-v6 evidence
 audit-only and starts the factory-v7 eligible cohort at zero.
 
-Current Review v6 retains exact gold for `trade_impact_breadth`, `trade_tradability`,
+Current Review v7 retains exact gold for `trade_impact_breadth`, `trade_tradability`,
 `trade_surprise`, `trade_development_delta`, `trade_channels`,
-`trade_affected_markets` and `reader_value`, and adds exact Gold for the four
-model-owned `news_taxonomy_v1` axes. `source_authority` remains code-derived and
-is not model Gold. One explicit ReviewDesk acceptance by an owner-authorized reviewer is ordinary taxonomy
-Gold. Development readiness additionally requires a source-only 50-cluster calibration set, two independent
-primary reviewers per task, and an independent adjudicator for every disagreement. Work the fixed targeted strata
+`trade_affected_markets` and `reader_value`, keeps exact Gold for the four
+model-owned `news_taxonomy_v1` axes as an *optional* block, and adds the
+`explanation` supervision a `why_support` failure needs. `source_authority` remains code-derived and
+is not model Gold, and its review dimension is deleted. One explicit ReviewDesk acceptance by an
+owner-authorized reviewer is ordinary taxonomy Gold; readiness asks for no calibration set, no second
+primary reviewer and no adjudicator. Work the fixed targeted strata
 `local_macro_false_interrupt`, `systemic_macro_must_interrupt`,
 `regional_direct_exception`, `scheduled_or_in_line_macro`,
 `color_only_progression` and `macro_random_control`. Model drafts remain files;
@@ -595,8 +639,8 @@ only an explicit append-only review submission and acceptance receipt becomes
 truth.
 
 `learning run` (#453, #501) is the only candidate-generating GEPA path. It writes the zero-call readiness
-report and refuses before endpoint construction unless both `objective.compilable` and
-`development_profile.ready` are true. It then invokes one stock `dspy.GEPA.compile()` on the single native
+report for its own `--target` and refuses before endpoint construction unless `objective.compilable` is
+true. It then invokes one stock `dspy.GEPA.compile()` on the single native
 `NativeNewsProgram.taxonomy` Predict under DSPy's own budget (`--auto` or `--max-metric-calls`, exactly
 one). The direct scalar is the mean of subject-code set F1 and exact event-family, change-state and
 assertion-status scores; feedback quotes the codebook definitions and precedence rules. EventSemantics,
@@ -619,16 +663,19 @@ aggregate validation scores, per-example subscores, per-objective aggregate scor
 Tracefold admitted index and total metric calls when DSPy returns its public result. An interrupted compile records `metric_calls=null` while
 keeping physical task/reflection usage exact; it does not invent a count from private checkpoint state.
 
-**When a corpus is big enough (#259).** Coverage decides it: independent
-connected fact clusters by role, at least one safety case, the required strata
-on both sides of the split, and Gold-bearing clusters to optimize on.
-A day count never did. `natural_days_min` is gone from the release profile; it
-counted how many distinct UTC dates the accepted cases opened on, so two cases
-two minutes apart across midnight were two and a hundred cases spread over 23 h
-inside one date were one, and combined with the active-bundle filter it made a
-Stable deployed this morning unusable until the calendar caught up. Phase A runs
-as soon as `news learning readiness` says `ready`, whatever the age of the
-bundle. `natural_day_n` and `window_duration_hours` remain in the dataset counts and
+**When a corpus is big enough (#259, #651 §9).** One question decides it, per
+target: does this target have a non-empty train split, a non-empty selection
+split, examples it can build, and no connected fact cluster in both halves.
+Nothing else. A day count never decided it, and neither do the corpus-size
+quotas that used to sit beside it: 30 boundary clusters, 100 retention, 50
+negative, three strata and one safety case are deleted from the release profile
+along with `development_coverage_blockers`. They measured quantity in a unit
+that did not match the question — 40 reviewed explanation cases and no taxonomy
+Gold is an excellent explanation corpus and was refused as an insufficient
+classification one — and a corpus too thin to teach anything ends in `NO_OP` on
+its own. Run `news learning readiness --target NAME` and read the `targets`
+block: it names every target's counts, so a refusal tells you which kind of
+evidence to go and collect. `natural_day_n` and `window_duration_hours` remain in the dataset counts and
 the readiness `coverage` block as diagnostics of case
 concentration — read together, since a 72 h freeze whose reviews all landed in
 one afternoon reads `1` and `72.0`; a corpus that concentrated is worth
@@ -640,7 +687,9 @@ its own eligible-Event and reviewed-cluster floors. The profile change is a hard
 cut — it moves `TRUSTED_ROOT_SHA`, and the profile is named
 `news_learning_release_v4` since #501 (v3 carried the taxonomy target/control floors and the calibration
 gate that #501 deleted) — so datasets and candidates frozen under older profiles stay as
-audit history and a new experiment re-freezes.
+audit history and a new experiment re-freezes. #651 §9 moves it again, which is
+why `EVALUATOR_VERSION` is `news_candidate_evaluator_v9` and the corpus contract
+is `news_learning_dataset_v4`.
 
 The optimization leg of `learning run` is a cold, operator-invoked GEPA
 workflow, not a Worker and not a release gate. It reads the frozen development corpus once as

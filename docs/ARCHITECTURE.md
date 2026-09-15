@@ -371,14 +371,27 @@ as a synchronous startup barrier before its probe can become ready.
 deployment opens its own: the same startup barrier that appoints the active
 Agent appends a row for its bundle if it has never run here, named
 `bundle_<first eight hex of bundle_sha>`, carrying that bundle's
-`envelope_sha256`, and tripping every armed or active canary. Because a bundle
-covers the two instructions, the computed execution envelope, the four model
-slots, the retrieval contract and the policy, a deployment that changes what the
-model sees cannot go on accruing evidence into the previous cohort. Rows
+`envelope_sha256`, and tripping every armed or active canary. Rows
 `program_v1`–`program_v9`, each opened by a hand-written migration, remain
-append-only audit history. Only accepted `news_review_v6` evidence created in
-the running bundle's epoch and bound to that exact bundle is eligible for
-metric v9, optimizer, replay or release gates.
+append-only audit history.
+
+An epoch is runtime identity and audit, and since #651 §9 it is nothing else. It
+does not decide which evidence a corpus may hold. The previous rule — only
+accepted review created in the running bundle's epoch and bound to that exact
+bundle — made every deployment reset the visible corpus to zero, and the
+evidence it discarded was the review of cards a reader had just been sent. What
+makes a case usable is the frozen, release-eligible observed evidence snapshot
+and the accepted label attached to it; a review is about the words the reader
+saw, and those words do not change when a new bundle is appointed. The arm that
+answered the Event is recorded on the frozen case as `provenance`
+(`program_version`, `program_sha256`, `policy_version`, `bundle_sha`), so a
+report can still say which Program it is describing.
+
+Release identity keeps its pins. A candidate is registered against the parent
+stable it was generated from, a blind pairwise case compares that candidate
+against that stable, and both still refuse when the appointed Agent has moved.
+The line is between evidence and authority: what a reviewer read is evidence,
+and which arm a candidate may be promoted over is authority.
 The operator fast loop that used to sit beside that plane
 (`tracefold.news.learning.experiment`, #193) was deleted in #343, and with it
 its on-disk run directories, snapshot/compare arm comparison and the
@@ -1810,12 +1823,33 @@ high-reaction and random strata. The operator sees the exact historical
 evidence, verdict, policy trace and real sent receipt, then records a
 multi-dimensional rubric (`should_push`, factuality, evidence sufficiency,
 entity grounding, novelty, direction, magnitude, copy value, timeliness and
-first bad owner). Current `news_review_v6` retains exact gold for the seven
-TradeRelevance fields from v4 and adds exact taxonomy Gold plus draft/reviewer
-provenance. One explicit ReviewDesk acceptance by an owner-authorized reviewer is sufficient taxonomy Gold; no taxonomy-specific
-second reviewer or adjudication is required. A failed scored dimension without expected
-gold is not scored. A judgment becomes training/eval truth only after a separate
-acceptance receipt. An important fact missing before Event creation enters as
+first bad owner). Current `news_review_v7` is **task-level** (#651 §7.2): every
+field is optional except a non-empty `dimensions` map, so a reviewer answers
+what this Event actually poses and leaves the rest out. v6 required a complete
+taxonomy, a novelty judgment, a push verdict and `factual_fidelity` on every
+submission, which meant a reviewer who had noticed one wrong number had to
+invent four taxonomy axes and a delivery opinion before the defect could be
+recorded — and every invented answer then entered the corpus as accepted truth.
+What a reviewer leaves out is absent, never defaulted: no consumer may read a
+missing answer as a `pass`, and the frozen case's `applicable_targets` says
+which questions the review is evidence for.
+
+v7 retains exact gold for the seven TradeRelevance fields from v4 and the
+optional four-axis taxonomy Gold with its draft/reviewer provenance, and adds
+the `explanation` supervision block: verbatim `source_spans` of the frozen
+evidence, `key_facts` a correct card must keep, `forbidden_claims` it must not
+make, and an error-type vocabulary. That block is the first thing a
+`why_support` failure has ever had that a ruler can check — without it "wrong"
+scores a rewrite into a different wrong sentence exactly as highly as a repair,
+so a `why_support=fail` submitted without one is stored and flagged
+`explanation_supervision: "pending"`: visible, counted, and not trainable. The
+`taxonomy_source_authority` dimension is deleted, because source authority is
+derived from the reporting source by code and a reviewer labelling it could
+only restate the registry. One explicit ReviewDesk acceptance by an
+owner-authorized reviewer is sufficient taxonomy Gold; no taxonomy-specific
+second reviewer or adjudication is required. A failed scored dimension without
+expected gold is not scored. A judgment becomes training/eval truth only after a
+separate acceptance receipt. An important fact missing before Event creation enters as
 an immutable external-miss snapshot, rather than a fake Event id.
 
 Issue #453 reuses that same accepted review and frozen development Dataset for
@@ -1829,26 +1863,31 @@ registration, evaluator, or release lifecycle exists.
 
 Epoch rows `program_v1`-`program_v9` were each opened by a hand-written
 migration and remain append-only audit history; [Migrations](MIGRATIONS.md)
-records which revision opened which. The invariant that outlives them: earlier
-reviews, datasets, recordings, reports and release receipts stay readable audit
-evidence, but they are promotion-ineligible and cannot seed the current Program.
-Evidence accumulation starts from zero at every epoch — Event reviews and
-acceptance receipts must be created after the current epoch, and eligible
-verdicts must match the exact stable Program bundle.
+records which revision opened which. Evidence accumulation no longer starts from
+zero at every epoch (#651 §9): a review is eligible because its evidence
+snapshot is frozen and release-eligible and a reviewer accepted a label on it,
+not because of when the running deployment started. What stays
+promotion-ineligible across an arm change is a *candidate* and its release
+receipts, which are about one arm by construction.
 
 `CandidateEvaluator` is a deep Module whose Interface freezes accepted
-current-bundle / `news_review_v6` evidence, compares Stable with exactly one registered Prompt candidate,
+`news_review_v7` evidence, compares Stable with exactly one registered Prompt candidate,
 and publishes release evidence. Validation/holdout replay
 both arms sequentially because each arm's would-reach-reader ledger changes
 later decisions. Predictor requests/responses are recorded per call and
 content-addressed — retained as auditable forensic evidence — and the default
 replay path answers each arm from those recordings, surfacing a request or
 identity miss as an incomplete evaluation rather than falling through to live
-I/O. A frozen dataset accepts Event cases only
-from the exact active Program bundle cohort and records every Program,
-retrieval, runtime-model, execution and policy hash plus the reader-contract
-version; a mutable provider model alias is marked as mutable rather than
-described as an immutable snapshot. Hidden validation
+I/O. A frozen dataset accepts an Event case
+whichever arm answered it, records that arm on the case as provenance, and
+records the sealing arm's Program, retrieval, runtime-model, execution and
+policy hashes plus the reader-contract version beside the corpus; a mutable
+provider model alias is marked as mutable rather than described as an immutable
+snapshot. The corpus contract is `news_learning_dataset_v4`, which seals no
+learning epoch, names the `targets` its cases can explain, and publishes
+per-target counts, `rubric_ineligible_n` and
+`explanation_supervision_pending_n` so a thin answer says which kind of evidence
+is missing. Hidden validation
 pre-registers at most 50 independent fact-cluster representatives before either
 arm output is inspected, permits at most 100 human judgments, and returns
 `UNKNOWN` when the batch remains unresolved. A candidate-only critical error
@@ -1968,19 +2007,27 @@ What GEPA is allowed to optimize is decided once, by `learning/objective.py`,
 and every plane that needs the answer rebuilds the same plan from the same
 frozen episodes: `news learning readiness`, `run_gepa` through the one offline
 entry point, and `CandidateEvaluator` when it
-re-projects a registered candidate's corpus. Under #501 a case is **included** when accepted four-axis
-taxonomy Gold is valid and recorded Stable taxonomy exists; an owner column, a derived owner or a
-taxonomy review dimension grants no optimizer authority and takes none away. Everything else is
+re-projects a registered candidate's corpus. Since #651 §9 the plan is built **per target**, because one
+corpus now explains three different Predictor compiles and its cases are evidence for different subsets
+of them. A case is **included** for a target when the frozen case's `applicable_targets` names that
+target — the reviewer labelled something that target scores — and the target's example can be built from
+the episode; an owner column, a derived owner or a taxonomy review dimension grants no optimizer
+authority and takes none away. A missing recorded Stable answer no longer excludes a case: GEPA scores
+the candidate against Gold, and `stable_exact` is a readiness diagnostic. Everything else is
 an **excluded diagnostic** and never enters a reflective minibatch. `run_gepa` splits the included cases
-after Objective Plan v4 elects one deterministic representative per connected fact cluster. Shadowed media
+after Objective Plan v5 elects one deterministic representative per connected fact cluster. Shadowed media
 members remain frozen audit facts but add no optimizer weight.
 The candidate's `optimization_objective_summary.v4` binds the plan schema and
 representative ids/count/root; registration re-derives that population and refuses claims that do not
 carry the current identity, while leaving their artifact bytes intact.
-`news learning readiness --development SHA` publishes the plan with zero model
+`news learning readiness --development SHA --target NAME` publishes the plan with zero model
 calls, and `run` rebuilds it and refuses on the same conditions before any
-endpoint is touched. Its v4 report separately publishes `objective.compilable` and
-`development_profile.ready`; it has no ambiguous top-level outcome. Its `taxonomy_gold` block summarizes
+endpoint is touched. Its v6 report answers for one target and publishes every target's counts beside it,
+because "is this corpus ready" has no answer until someone says ready for what: 40 reviewed explanation
+cases and no taxonomy Gold make an excellent explanation corpus and a useless classification one.
+`objective.compilable` is the whole gate, and it blocks on exactly four structural codes — `train_empty`,
+`selection_empty`, `input_contract_invalid`, `cluster_leak`. The report has no ambiguous top-level
+outcome. Its `taxonomy_gold` block summarizes
 the elected cluster representatives — the same one-vote-per-connected-fact-cluster population the freeze's
 dataset distributions summarize — so per-case Gold that legitimately differs between media members of one
 fact (`announced` versus `effective`, a subject-code superset) cannot make readiness refuse a corpus the
@@ -1997,25 +2044,28 @@ is still computed at freeze time over every dual-labelled cluster and published 
 (`counts.calibration`, `dataset_calibration_receipt.v2`); it is reported, never gated, because the
 holdout is the gate.
 
-Whether a development corpus is *enough* is decided by coverage, never by the
-calendar (#259). The release profile asks for independent connected fact
-clusters by role — boundary, retention, negative, at least one safety — plus the
-strata both split halves must carry, and the Objective Plan asks for Gold-bearing
-clusters and a cluster-disjoint, time-ordered
-split. A case is *boundary* when the reviewer marked it `must_push`/`must_hold`,
-failed a reviewer-owned rubric dimension, or wrote an `expected_correction`, and
-*retention* otherwise; the five code-written `taxonomy_*` dimensions never count
-(#534), because they record whether Stable's taxonomy equalled Gold rather than
-judging Stable, and treating them as rubric defects turned the retention floor
-into a quota of Stable taxonomy successes. `natural_day_n` — how many
-distinct UTC dates the accepted cases opened
+Whether a development corpus is *enough* is a question about one target's split,
+and nothing else (#651 §9). The release profile holds no development quota at
+all: the 30 boundary, 100 retention and 50 negative clusters, the three-stratum
+minimum and the one required safety case are deleted along with
+`development_coverage_blockers`. Every one of them measured quantity in a unit
+that did not match the question being asked — a corpus of 40 reviewed
+explanation cases and no taxonomy Gold was refused as an insufficient
+classification corpus — and a corpus too thin to teach anything ends in `NO_OP`
+on its own, which it always did. What is left is the Objective Plan's own
+question: does this target have a non-empty train split, a non-empty selection
+split, examples it can build, and no connected fact cluster in both halves.
+
+The role counts survive as published diagnostics. A case is *boundary* when the
+reviewer marked it `must_push`/`must_hold`, failed a reviewer-owned rubric
+dimension, or wrote an `expected_correction`, and *retention* otherwise; the
+four code-written `taxonomy_*` dimensions never count (#534), because they
+record whether Stable's taxonomy equalled Gold rather than judging Stable.
+`natural_day_n` — how many distinct UTC dates the accepted cases opened
 on — and `window_duration_hours` are published beside those counts as
 diagnostics of case concentration and gate nothing. The two say different things
 and may disagree freely: a 72 h freeze whose reviews all landed in one afternoon
-reads `1` and `72.0`. Counting dates measures midnights rather than evidence,
-and because a frozen corpus admits only cases produced by the *active* Stable
-bundle, a calendar gate delayed every Stable iteration by days it had no way to
-produce. Out-of-time generalization is
+reads `1` and `72.0`. Out-of-time generalization is
 proven once, later, by the Future Holdout — a ValidationDataset frozen strictly
 after candidate registration, at least 24 h long, with its own eligible-Event
 and reviewed-cluster floors. No stable-age, window-age or calendar-day gate may

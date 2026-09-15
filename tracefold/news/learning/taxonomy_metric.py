@@ -125,17 +125,31 @@ def compare_taxonomy(
     )
 
 
+def _model_taxonomy(value: Any) -> ModelTaxonomyV1:
+    """Read one taxonomy as its four model axes, whatever wider shape the caller happened to hold."""
+
+    if isinstance(value, ModelTaxonomyV1):
+        return ModelTaxonomyV1.model_validate({field: getattr(value, field) for field in ModelTaxonomyV1.model_fields})
+    axes = dict(value or {})
+    return ModelTaxonomyV1.model_validate(
+        {field: axes[field] for field in ModelTaxonomyV1.model_fields if field in axes}
+    )
+
+
 def summarize_taxonomy(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Aggregate deterministic taxonomy quality with one vote per connected fact cluster."""
 
-    representatives: dict[str, tuple[str, ModelTaxonomyV1, NewsTaxonomyV1]] = {}
+    # Both sides are the four model axes (#651 §7.2). `predicted` used to be validated as the persisted
+    # `NewsTaxonomyV1`, which forced every caller to attach a `source_authority` this summary never reads
+    # — and a review no longer states one at all, because it is a code fact about the reporting source.
+    representatives: dict[str, tuple[str, ModelTaxonomyV1, ModelTaxonomyV1]] = {}
     for row in rows:
         case_id = str(row.get("case_id") or "")
         cluster_id = str(row.get("cluster_id") or "")
         if not case_id or not cluster_id:
             raise ValueError("news_taxonomy_summary_identity_missing")
-        gold = ModelTaxonomyV1.model_validate(row.get("gold"))
-        predicted = NewsTaxonomyV1.model_validate(row.get("predicted"))
+        gold = _model_taxonomy(row.get("gold"))
+        predicted = _model_taxonomy(row.get("predicted"))
         previous = representatives.get(cluster_id)
         if previous is not None and previous[1] != gold:
             raise ValueError(f"news_taxonomy_summary_cluster_conflict:{cluster_id}")

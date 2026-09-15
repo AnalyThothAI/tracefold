@@ -19,7 +19,7 @@ independent connected-fact clusters are scored, the result is
   `9aa960aa5ff29d08b4a0223c5a745ac767f9161f7862885818d2d0035917da50`.
 - Production Program: `news_semantic_program_v10`, Program SHA
   `8f344c77c49f8563f83be4f6715152b7332e84ca8adc240c5365090bbb9ba751`.
-- Review contract: `news_review_v6`.
+- Review contract: `news_review_v7`.
 - The model emits `subject_codes`, `event_family`, `change_state`, and
   `assertion_status`. Code derives `source_authority` only from the structured
   reporting-source field. Strategy/provenance routing IDs carry no source
@@ -111,14 +111,31 @@ ToldContext, progression, learning replay, and evaluation carry full current
 field names and exact current identities; none accepts a compact or historical
 shape. Structured listing, OI, and liquidation presentation reads code-owned
 `event_kind`; OI and liquidation use their own typed judgments and do not
-fabricate model taxonomy or enter the generic Review v6 queue.
+fabricate model taxonomy or enter the generic Review v7 queue.
 
 ## Gold and GEPA measurement
 
-One explicitly accepted `news_review_v6` taxonomy is Gold. Gold is an
+One explicitly accepted `news_review_v7` taxonomy is Gold. Gold is an
 acceptance state, not a claim that an independent human supplied the label. An
 owner-authorized AI adjudicator may accept an explicitly reviewed subset and is
 recorded as AI, never as human.
+
+Under v7 the taxonomy is **optional** (#651 §7.2). A review that states one must
+state all four axes and carry the four `taxonomy_*` dimensions, and a review
+that states none must carry none of them — a label nobody compared and a
+comparison against a label nobody stated are both answers the corpus cannot
+read. A review with no taxonomy is still a real review of everything else it
+judged; it simply is not classification evidence, which the frozen case records
+as `applicable_targets` without `classification`. That is the point of making it
+optional: v6 forced a reviewer who had noticed a wrong number to invent four
+axes first, and those invented axes then became Gold that a candidate was
+scored against.
+
+The review submission carries the four model axes only. `source_authority` was
+never a reviewer's answer — it is derived from the reporting source by code — so
+#651 removed it from the submitted taxonomy and deleted the
+`taxonomy_source_authority` dimension, which compared a code fact with itself
+and was always `pass`.
 
 Gold is drafted blind, twice (#501 D8). `news learning draft-reviews
 --rubric-model M --taxonomy-models A,B` runs two drafters, each over the
@@ -166,15 +183,19 @@ come from that one comparison; feedback quotes the codebook definition of the
 expected and predicted label and any precedence rule written for that
 confusion, never source authority.
 
-Every case with valid accepted Gold and a replayable Stable answer is an
-optimizer sample (#501 D9); the plan calls it `included`, records whether
-Stable already matched (`stable_exact`), and reports `stable_exact_n` /
-`stable_mismatch_n` as readiness diagnostics. Owner columns and `taxonomy_*`
-dimension labels are audit metadata and grant no optimization authority; since
-#534 the development corpus also ignores every `taxonomy_*` dimension when it
-splits accepted cases into boundary and retention, because those labels are
-written by code from whether Stable matched Gold, so counting them would make
-`retention_clusters_min` a quota of Stable taxonomy successes. The
+Every case with valid accepted Gold is a `classification` optimizer sample
+(#501 D9, #651 §9); the plan calls it `included`, records whether Stable already
+matched (`stable_exact`, `null` when the previous arm left no comparison), and
+reports `stable_exact_n` / `stable_mismatch_n` as readiness diagnostics. A
+missing recorded Stable answer no longer excludes the case, because GEPA scores
+the candidate against Gold and discarding a reviewer's label to protect a
+diagnostic is the wrong trade. Owner columns and `taxonomy_*` dimension labels
+are audit metadata and grant no optimization authority; since #534 the
+development corpus also ignores every `taxonomy_*` dimension when it splits
+accepted cases into boundary and retention, because those labels are written by
+code from whether Stable matched Gold. Those role counts are published
+diagnostics and gate nothing at all since #651 §9 deleted the corpus quotas
+they used to feed. The
 GEPA student is the single `taxonomy` Predict; the admitted candidate is GEPA's
 own `best_idx` when its selection score is strictly above the seed's, otherwise
 the run is `NO_OP`. The held-out measurement is the same scalar over a window
@@ -195,8 +216,8 @@ when all four of its axes are, whereas the `taxonomy_overall` mean it replaced
 nets a gain on one axis against a slip on another. That mean and every axis
 interval stay published for the receipt.
 
-The public chain is the existing `news learning readiness` followed by one
-`news learning run`; Dataset forms of `baseline` and standalone `optimize` do
+The public chain is the existing `news learning readiness --target classification` followed by one
+`news learning run --target classification`; Dataset forms of `baseline` and standalone `optimize` do
 not exist. The Candidate still passes the existing evaluator and release path.
 
 ## Non-authority and rollback

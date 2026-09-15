@@ -214,7 +214,7 @@ What actually bounds the job is what it holds, and that is now a short list.
 `news learning run` reads one frozen development corpus through the shared application login, closes the
 database before provider work, and then holds two model endpoints plus a typed in-process budget. It has no
 database writer, broker, delivery, canary or promotion credential. Zero-call readiness runs before endpoint
-construction and requires both `objective.compilable` and `development_profile.ready`.
+construction and requires `objective.compilable` for the run's own `--target`.
 
 The task and reflection roles are separate `ModelExecutionIdentity` values. Their endpoint URLs are
 fingerprinted rather than stored, credentials never enter hashes or traces, and bounded provider errors are

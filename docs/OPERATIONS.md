@@ -1532,21 +1532,29 @@ Diagnose News in this order:
 8. `tracefold news replay <hits.json>`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
 
-The current evidence eligibility window starts at the deployment timestamp the
-running deployment wrote into `news_learning_epochs` for its own bundle. Find it
-with `WITH agent AS (SELECT stable_sha FROM news_review_active_agent_v1 ORDER BY
-created_at_ms DESC LIMIT 1) SELECT e.epoch_id, e.starts_at_ms FROM
-news_learning_epochs e JOIN agent ON agent.stable_sha = e.bundle_sha`. Take the
-newest agent *before* the join, not after: joining the whole appointment history
-and then taking one row reports the previous deployment's epoch when the current
-agent has no row yet, which is exactly the case worth diagnosing. Only accepted `news_review_v6` rows from that
-epoch, bound to that exact bundle, enter metric v9, GEPA or release evidence. Every earlier Prompt/Program
-baseline remains readable audit history but cannot enter a dataset or release
-stage. Do not
+Evidence eligibility is not a window on the clock (#651 §9). A review enters a
+dataset when its evidence snapshot is frozen and release-eligible, it opened
+inside the window the freeze asked for, and an accepted `news_review_v7` label
+is attached to it — whichever arm answered the Event. The arm is recorded on the
+frozen case as `provenance` and the sealing arm beside the corpus; neither
+admits or refuses a case. `news_review_v6` rows stay readable audit history and
+are counted as `rubric_ineligible_n` rather than silently dropped, because "no
+reviews in this window" and "every review here predates the current rubric" have
+different operator actions behind them.
+
+`news_learning_epochs` is still the runtime's own identity and audit row, and
+the appointed Agent still decides which candidate may be evaluated and which
+blind pair may be judged. Read the running epoch with `WITH agent AS (SELECT
+stable_sha FROM news_review_active_agent_v1 ORDER BY created_at_ms DESC LIMIT 1)
+SELECT e.epoch_id, e.starts_at_ms FROM news_learning_epochs e JOIN agent ON
+agent.stable_sha = e.bundle_sha`. Take the newest agent *before* the join, not
+after: joining the whole appointment history and then taking one row reports the
+previous deployment's epoch when the current agent has no row yet, which is
+exactly the case worth diagnosing. Do not
 interpret a successful migration, a valid Program artifact, or the new
 three-Predictor trace as proof of higher quality. Issue #117 deliberately lands
 the production persistence/read/UI seam before taxonomy denominators exist;
-issue #501 uses them through the existing Review v6, Dataset, Objective, direct taxonomy GEPA metric and
+issue #501 uses them through the existing Review, Dataset, Objective, direct taxonomy GEPA metric and
 release path only.
 
 For the taxonomy Gold → Candidate workflow (#501 PR-D, drafter routes #534):
@@ -1587,11 +1595,16 @@ For the taxonomy Gold → Candidate workflow (#501 PR-D, drafter routes #534):
 2. Freeze only current-contract accepted reviews with `news learning freeze
    --role development ...`. Do not reuse or migrate an older Dataset. Accepted
    four-axis taxonomy is part of each existing episode and its projection root.
-3. Run `news learning readiness --development DATASET_SHA --out FILE`. This is
-   a zero-provider-call check. Every Gold-bearing cluster with a replayable
-   Stable answer is `included`; read `taxonomy_gold.stable_exact_n` and
-   `stable_mismatch_n`, the freeze's `counts.calibration` κ, and confirm the
-   connected-fact cluster overlap between halves is zero.
+3. Run `news learning readiness --development DATASET_SHA --target
+   classification --out FILE`. This is a zero-provider-call check, and it
+   answers for one target: every cluster whose accepted review states a taxonomy
+   is `included`, whether or not the previous arm left a comparison. Read
+   `taxonomy_gold.stable_exact_n` and `stable_mismatch_n`, the freeze's
+   `counts.calibration` κ, the `targets` block (`rubric_ineligible_n` and
+   `explanation_supervision_pending_n` say which evidence the window held but
+   could not use), and confirm `objective.blockers` is empty — the whole
+   vocabulary is `train_empty`, `selection_empty`, `input_contract_invalid` and
+   `cluster_leak`.
 4. Run `news learning run --development DATASET_SHA --out NEW_EMPTY_DIR --auto
    light --seed 112 ...` with the remaining budget flags. The reflection model
    (`llm.news_compiler_reflection`) must be a strong model with at least a 128K

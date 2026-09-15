@@ -653,7 +653,9 @@ def _event_queue_statement(
         params.extend(cursor)
     params.append(int(limit))
     return ReviewReadStatement(
-        name="news_review_task_queue",
+        # Two shapes, two names: the audit plans both the unfiltered queue an operator opens by default
+        # and the narrowed one they get by naming a cohort, and a shared name would plan only one.
+        name="news_review_task_queue" if cohort_sha is None else "news_review_task_queue_cohort",
         sql=f"""
             SELECT * FROM news_review_task_source_v1
              WHERE {" AND ".join(filters)}

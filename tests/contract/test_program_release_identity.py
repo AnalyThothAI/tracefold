@@ -42,8 +42,9 @@ NEWS_STABLE_PROGRAM_SHA256 = "8f344c77c49f8563f83be4f6715152b7332e84ca8adc240c53
 
 # #437 changes Gold projection. It remains release evidence after #453 moves taxonomy Gold into the one
 # development Objective and Metric: a behavior edit must visibly re-pin this name. v7 (#501) carries the
-# review's taxonomy provenance, including the blind drafts.
-NEWS_COMPILE_EPISODE_PROJECTION_SCHEMA = "tracefold.news.development_compile_episode.v7"
+# review's taxonomy provenance, including the blind drafts. v8 (#651) lets the accepted taxonomy be
+# absent, carries the reviewer's explanation supervision, and names the targets the case is evidence for.
+NEWS_COMPILE_EPISODE_PROJECTION_SCHEMA = "tracefold.news.development_compile_episode.v8"
 
 
 def test_execution_envelope_identity_is_pinned() -> None:
@@ -82,7 +83,7 @@ def test_current_news_release_identity_is_byte_exact() -> None:
     } == {
         "program_version": "news_semantic_program_v10",
         "policy_version": "news_triage_policy_v13",
-        "review_rubric_version": "news_review_v6",
+        "review_rubric_version": "news_review_v7",
         "metric_id": "tracefold.news.production_action_trade_relevance_v10",
         "program_sha256": NEWS_STABLE_PROGRAM_SHA256,
     }
